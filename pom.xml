@@ -59,7 +59,7 @@ limitations under the License.
 
         <!-- Main dependencies -->
         <flink.version>2.1.2</flink.version>
-        <google-cloud-libraries-bom.version>26.83.0</google-cloud-libraries-bom.version>
+        <google-cloud-libraries-bom.version>26.85.1</google-cloud-libraries-bom.version>
 
         <!-- Test dependencies -->
         <assertj.version>3.27.7</assertj.version>
