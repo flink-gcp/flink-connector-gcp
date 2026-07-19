@@ -349,7 +349,28 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
     }
 
     @Test
-    void tableIsCreatedOnlyOncePerDestination() throws Exception {
+    void flushRecoversAllFailedBatchesOfADestinationWithOneRebuild() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(notFound());
+        factory.scriptedResults.add(notFound());
+        RecordingTableCreator creator = new RecordingTableCreator();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(config(CreateDisposition.CREATE_IF_NEEDED, null), factory, creator, 1, 3);
+
+        writer.write("aa", CONTEXT);
+        writer.write("bb", CONTEXT); // appends [aa], which fails with NOT_FOUND
+        writer.flush(false); // appends [bb] (fails too); recovery re-appends both batches
+
+        assertThat(creator.destinations).containsExactly(DESTINATION);
+        // One original appender plus exactly one rebuilt appender shared by both batches.
+        assertThat(factory.created).hasSize(2);
+        assertThat(factory.created.get(0).closed).isTrue();
+        assertThat(factory.created.get(1).appends).hasSize(2);
+        assertThat(factory.allAppendedRows()).containsExactlyInAnyOrder("aa", "bb", "aa", "bb");
+    }
+
+    @Test
+    void tableIsNotRecreatedOnSubsequentWrites() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(notFound());
         RecordingTableCreator creator = new RecordingTableCreator();

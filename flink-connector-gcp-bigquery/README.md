@@ -83,6 +83,8 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   — reference for Storage Write API sink internals and the serializer contract
   (descriptor accessor + `ByteString` rows)
 - [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage)
-  (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`) — reference for proto/schema conversion
+  (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`, `BqToBqStorageSchemaConverter`) —
+  reference for proto/schema conversion (`StorageSchemaConverter` is an independent
+  implementation of the reverse direction of the last)
 
 No source code has been copied into this module so far.
