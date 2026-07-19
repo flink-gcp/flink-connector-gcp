@@ -97,6 +97,93 @@ class BigQueryTableAdminTest {
     }
 
     @Test
+    void mergeSchemaPreservesRestOnlyAttributesOfExistingFields() {
+        com.google.cloud.bigquery.Schema existing =
+                com.google.cloud.bigquery.Schema.of(
+                        com.google.cloud.bigquery.Field.newBuilder(
+                                        "name",
+                                        com.google.cloud.bigquery.StandardSQLTypeName.STRING)
+                                .setMode(com.google.cloud.bigquery.Field.Mode.REQUIRED)
+                                .setDescription("the name")
+                                .setPolicyTags(
+                                        com.google.cloud.bigquery.PolicyTags.newBuilder()
+                                                .setNames(
+                                                        java.util.List.of(
+                                                                "projects/p/locations/l/taxonomies"
+                                                                        + "/t/policyTags/pii"))
+                                                .build())
+                                .build());
+        TableSchema proposed =
+                TableSchema.newBuilder()
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("name")
+                                        .setType(TableFieldSchema.Type.STRING)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE))
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("email")
+                                        .setType(TableFieldSchema.Type.STRING)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE))
+                        .build();
+
+        com.google.cloud.bigquery.Schema merged =
+                BigQueryTableAdmin.mergeSchema(existing, proposed);
+
+        com.google.cloud.bigquery.Field name = merged.getFields().get(0);
+        // Relaxation applied, everything the Storage form cannot express preserved.
+        assertThat(name.getMode()).isEqualTo(com.google.cloud.bigquery.Field.Mode.NULLABLE);
+        assertThat(name.getDescription()).isEqualTo("the name");
+        assertThat(name.getPolicyTags().getNames()).isNotEmpty();
+        assertThat(merged.getFields().get(1).getName()).isEqualTo("email");
+        assertThat(merged.getFields()).hasSize(2);
+    }
+
+    @Test
+    void mergeSchemaRecursesIntoStructs() {
+        com.google.cloud.bigquery.Schema existing =
+                com.google.cloud.bigquery.Schema.of(
+                        com.google.cloud.bigquery.Field.newBuilder(
+                                        "address",
+                                        com.google.cloud.bigquery.StandardSQLTypeName.STRUCT,
+                                        com.google.cloud.bigquery.FieldList.of(
+                                                com.google.cloud.bigquery.Field.newBuilder(
+                                                                "city",
+                                                                com.google.cloud.bigquery
+                                                                        .StandardSQLTypeName.STRING)
+                                                        .setDescription("the city")
+                                                        .build()))
+                                .setMode(com.google.cloud.bigquery.Field.Mode.NULLABLE)
+                                .build());
+        TableSchema proposed =
+                TableSchema.newBuilder()
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("address")
+                                        .setType(TableFieldSchema.Type.STRUCT)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE)
+                                        .addFields(
+                                                TableFieldSchema.newBuilder()
+                                                        .setName("city")
+                                                        .setType(TableFieldSchema.Type.STRING)
+                                                        .setMode(TableFieldSchema.Mode.NULLABLE))
+                                        .addFields(
+                                                TableFieldSchema.newBuilder()
+                                                        .setName("zip")
+                                                        .setType(TableFieldSchema.Type.STRING)
+                                                        .setMode(TableFieldSchema.Mode.NULLABLE)))
+                        .build();
+
+        com.google.cloud.bigquery.Schema merged =
+                BigQueryTableAdmin.mergeSchema(existing, proposed);
+
+        com.google.cloud.bigquery.FieldList subFields = merged.getFields().get(0).getSubFields();
+        assertThat(subFields).hasSize(2);
+        assertThat(subFields.get(0).getDescription()).isEqualTo("the city");
+        assertThat(subFields.get(1).getName()).isEqualTo("zip");
+    }
+
+    @Test
     void lostRacesAreRecognizedByHttpCode() {
         assertThat(BigQueryTableAdmin.isLostRace(new BigQueryException(409, "conflict"))).isTrue();
         assertThat(BigQueryTableAdmin.isLostRace(new BigQueryException(412, "precondition failed")))

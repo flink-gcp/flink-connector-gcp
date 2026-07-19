@@ -190,9 +190,11 @@ public final class SchemaUnifier {
         }
         TableFieldSchema.Builder unified = existing.toBuilder();
         if (existing.getMode() == TableFieldSchema.Mode.REQUIRED
-                && desired.getMode() != TableFieldSchema.Mode.REQUIRED
+                && desired.getMode() == TableFieldSchema.Mode.NULLABLE
                 && options.isAllowFieldRelaxation()) {
-            // Relax only on an explicitly observed nullable declaration; never tighten.
+            // Relax only on an explicitly declared NULLABLE mode; never tighten, and never treat
+            // an unset mode (MODE_UNSPECIFIED) as an observed nullable declaration — relaxation
+            // is irreversible on the BigQuery side.
             unified.setMode(TableFieldSchema.Mode.NULLABLE);
         }
         if (existing.getType() == TableFieldSchema.Type.STRUCT) {

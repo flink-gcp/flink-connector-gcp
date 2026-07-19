@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.writer;
 import org.apache.flink.annotation.Internal;
 
 import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.FieldElementType;
 import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
@@ -49,17 +50,23 @@ public final class StorageSchemaConverter {
     public static Schema toBigQuerySchema(TableSchema schema) {
         List<Field> fields = new ArrayList<>(schema.getFieldsCount());
         for (TableFieldSchema field : schema.getFieldsList()) {
-            fields.add(convertField(field));
+            fields.add(toBigQueryField(field));
         }
         return Schema.of(fields);
     }
 
-    private static Field convertField(TableFieldSchema field) {
+    /**
+     * Converts a single Storage API field to a REST client field.
+     *
+     * @param field the Storage API field
+     * @return the equivalent REST client field
+     */
+    static Field toBigQueryField(TableFieldSchema field) {
         Field.Builder builder;
         if (field.getType() == TableFieldSchema.Type.STRUCT) {
             List<Field> subFields = new ArrayList<>(field.getFieldsCount());
             for (TableFieldSchema subField : field.getFieldsList()) {
-                subFields.add(convertField(subField));
+                subFields.add(toBigQueryField(subField));
             }
             builder =
                     Field.newBuilder(
@@ -82,6 +89,12 @@ public final class StorageSchemaConverter {
         }
         if (!field.getDefaultValueExpression().isEmpty()) {
             builder.setDefaultValueExpression(field.getDefaultValueExpression());
+        }
+        if (field.hasRangeElementType()) {
+            builder.setRangeElementType(
+                    FieldElementType.newBuilder()
+                            .setType(field.getRangeElementType().getType().name())
+                            .build());
         }
         return builder.build();
     }
@@ -116,6 +129,8 @@ public final class StorageSchemaConverter {
                 return StandardSQLTypeName.INTERVAL;
             case JSON:
                 return StandardSQLTypeName.JSON;
+            case RANGE:
+                return StandardSQLTypeName.RANGE;
             default:
                 throw new IllegalArgumentException(
                         "Unsupported Storage API field type "

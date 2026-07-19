@@ -149,6 +149,25 @@ class SchemaUnifierTest {
     }
 
     @Test
+    void unspecifiedDesiredModeDoesNotRelax() throws Exception {
+        TableFieldSchema required =
+                field("name", TableFieldSchema.Type.STRING, TableFieldSchema.Mode.REQUIRED);
+        TableFieldSchema modeless =
+                TableFieldSchema.newBuilder()
+                        .setName("name")
+                        .setType(TableFieldSchema.Type.STRING)
+                        .build();
+
+        SchemaUnifier.UnionResult result =
+                SchemaUnifier.union(schema(required), schema(modeless), ALL);
+
+        // Relaxation is irreversible; an unset mode is not an observed nullable declaration.
+        assertThat(result.isChanged()).isFalse();
+        assertThat(result.getSchema().getFields(0).getMode())
+                .isEqualTo(TableFieldSchema.Mode.REQUIRED);
+    }
+
+    @Test
     void modesAreNeverTightened() throws Exception {
         TableFieldSchema required =
                 field("name", TableFieldSchema.Type.STRING, TableFieldSchema.Mode.REQUIRED);

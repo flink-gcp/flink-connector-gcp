@@ -16,11 +16,6 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.writer;
 
-import org.apache.flink.api.connector.sink2.SinkWriter;
-
-import com.google.cloud.NoCredentials;
-import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.QueryJobConfiguration;
@@ -42,13 +37,7 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -69,56 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * values cannot be queried back; the assertions verify the metadata schema and that rows keep
  * landing instead.
  */
-@Testcontainers
-@Timeout(180)
-class BigQuerySchemaEvolutionITCase {
-
-    private static final String PROJECT = "it-project";
-    private static final String DATASET = "it_dataset";
-    private static final int REST_PORT = 9050;
-    private static final int GRPC_PORT = 9060;
-
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
-
-    @Container
-    private static final GenericContainer<?> EMULATOR =
-            new GenericContainer<>("ghcr.io/goccy/bigquery-emulator:0.8.1")
-                    .withCommand("--project=" + PROJECT, "--dataset=" + DATASET)
-                    .withExposedPorts(REST_PORT, GRPC_PORT)
-                    .waitingFor(Wait.forListeningPorts(REST_PORT, GRPC_PORT));
-
-    private static BigQuery restClient;
-
-    @BeforeAll
-    static void createRestClient() {
-        restClient =
-                BigQueryOptions.newBuilder()
-                        .setHost(
-                                "http://"
-                                        + EMULATOR.getHost()
-                                        + ":"
-                                        + EMULATOR.getMappedPort(REST_PORT))
-                        .setProjectId(PROJECT)
-                        .setCredentials(NoCredentials.getInstance())
-                        .build()
-                        .getService();
-    }
-
-    private static String grpcEndpoint() {
-        return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(GRPC_PORT);
-    }
-
+class BigQuerySchemaEvolutionITCase extends AbstractBigQueryEmulatorITCase {
     private static TableFieldSchema nullableString(String name) {
         return TableFieldSchema.newBuilder()
                 .setName(name)

@@ -23,6 +23,9 @@ import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Clustering;
+import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.FieldList;
+import com.google.cloud.bigquery.LegacySQLTypeName;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.Table;
@@ -30,6 +33,7 @@ import com.google.cloud.bigquery.TableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TimePartitioning;
+import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -37,6 +41,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Default {@link TableAdmin} backed by the BigQuery REST client.
@@ -50,7 +59,9 @@ import java.io.IOException;
  * rejects the update when the table changed since the snapshot. Lost races — the etag precondition
  * failing, a concurrent-modification conflict, or the per-table metadata-update quota (about five
  * updates per ten seconds) being momentarily exceeded — are reported as {@code false} for the
- * caller to re-read and retry.
+ * caller to re-read and retry. The updated schema is assembled by <em>merging</em> the proposed
+ * Storage-form schema onto the snapshot's REST fields, so REST-only column attributes the Storage
+ * form cannot represent (policy tags, collation, ...) are preserved for existing columns.
  */
 @Internal
 public class BigQueryTableAdmin implements TableAdmin {
@@ -111,22 +122,48 @@ public class BigQueryTableAdmin implements TableAdmin {
         if (schema == null) {
             throw new IOException("BigQuery table " + destination + " has no schema");
         }
-        return TableSchemaSnapshot.of(BigQuerySchemaConverter.toStorageSchema(schema), table);
+        try {
+            return TableSchemaSnapshot.of(BigQuerySchemaConverter.toStorageSchema(schema), table);
+        } catch (RuntimeException e) {
+            // For example a column type the converter does not support.
+            throw new IOException(
+                    "Failed to convert the schema of BigQuery table "
+                            + destination
+                            + " to its Storage API form",
+                    e);
+        }
     }
 
     @Override
     public boolean updateSchema(
             TableDestination destination, TableSchemaSnapshot base, TableSchema proposed)
             throws IOException {
-        Table baseTable = (Table) base.getRaw();
-        StandardTableDefinition definition =
-                baseTable.<StandardTableDefinition>getDefinition().toBuilder()
-                        .setSchema(StorageSchemaConverter.toBigQuerySchema(proposed))
-                        .build();
+        Table baseTable = base.getTable();
+        if (baseTable == null) {
+            throw new IOException(
+                    "The schema snapshot of BigQuery table "
+                            + destination
+                            + " carries no table resource to update");
+        }
+        TableDefinition definition = baseTable.getDefinition();
+        if (!(definition instanceof StandardTableDefinition)) {
+            throw new IOException(
+                    "Cannot update the schema of BigQuery table "
+                            + destination
+                            + ": only standard tables are supported, found "
+                            + definition.getType());
+        }
+        Schema existingSchema = definition.getSchema();
+        Schema mergedSchema =
+                existingSchema == null
+                        ? StorageSchemaConverter.toBigQuerySchema(proposed)
+                        : mergeSchema(existingSchema, proposed);
+        StandardTableDefinition updated =
+                ((StandardTableDefinition) definition).toBuilder().setSchema(mergedSchema).build();
         try {
             // The table carries the snapshot's etag, so BigQuery rejects the update when the
             // table changed since the snapshot was taken.
-            client().update(baseTable.toBuilder().setDefinition(definition).build());
+            client().update(baseTable.toBuilder().setDefinition(updated).build());
             LOG.info("Updated the schema of BigQuery table {}", destination);
             return true;
         } catch (BigQueryException e) {
@@ -141,6 +178,49 @@ public class BigQueryTableAdmin implements TableAdmin {
             throw new IOException(
                     "Failed to update the schema of BigQuery table " + destination, e);
         }
+    }
+
+    /**
+     * Merges a proposed Storage-form schema onto the existing REST schema it was derived from:
+     * fields already present keep their REST {@code Field} — including attributes the Storage form
+     * cannot represent, such as policy tags and collation — with only a {@code REQUIRED} → {@code
+     * NULLABLE} relaxation applied when the proposal asks for it (and struct subfields merged
+     * recursively); proposed-only fields are appended in Storage-converted form.
+     */
+    @VisibleForTesting
+    static Schema mergeSchema(Schema existing, TableSchema proposed) {
+        return Schema.of(mergeFields(existing.getFields(), proposed.getFieldsList()));
+    }
+
+    private static List<Field> mergeFields(
+            FieldList existing, List<TableFieldSchema> proposedFields) {
+        Map<String, Field> existingByName = new HashMap<>();
+        for (Field field : existing) {
+            existingByName.put(field.getName().toLowerCase(Locale.ROOT), field);
+        }
+        List<Field> merged = new ArrayList<>(proposedFields.size());
+        for (TableFieldSchema proposed : proposedFields) {
+            Field existingField = existingByName.get(proposed.getName().toLowerCase(Locale.ROOT));
+            if (existingField == null) {
+                merged.add(StorageSchemaConverter.toBigQueryField(proposed));
+                continue;
+            }
+            Field.Builder builder = existingField.toBuilder();
+            if (existingField.getMode() == Field.Mode.REQUIRED
+                    && proposed.getMode() == TableFieldSchema.Mode.NULLABLE) {
+                builder.setMode(Field.Mode.NULLABLE);
+            }
+            if (proposed.getType() == TableFieldSchema.Type.STRUCT
+                    && existingField.getType() == LegacySQLTypeName.RECORD) {
+                builder.setType(
+                        LegacySQLTypeName.RECORD,
+                        FieldList.of(
+                                mergeFields(
+                                        existingField.getSubFields(), proposed.getFieldsList())));
+            }
+            merged.add(builder.build());
+        }
+        return merged;
     }
 
     /**

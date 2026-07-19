@@ -78,6 +78,14 @@ public final class BigQuerySchemaConverter {
         if (field.getDefaultValueExpression() != null) {
             builder.setDefaultValueExpression(field.getDefaultValueExpression());
         }
+        if (field.getRangeElementType() != null) {
+            builder.setRangeElementType(
+                    TableFieldSchema.FieldElementType.newBuilder()
+                            .setType(
+                                    TableFieldSchema.Type.valueOf(
+                                            field.getRangeElementType().getType()))
+                            .build());
+        }
         return builder.build();
     }
 
@@ -112,6 +120,8 @@ public final class BigQuerySchemaConverter {
                 return TableFieldSchema.Type.INTERVAL;
             case JSON:
                 return TableFieldSchema.Type.JSON;
+            case RANGE:
+                return TableFieldSchema.Type.RANGE;
             case STRUCT:
                 return TableFieldSchema.Type.STRUCT;
             default:

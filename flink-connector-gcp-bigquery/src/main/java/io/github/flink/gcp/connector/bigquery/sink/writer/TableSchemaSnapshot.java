@@ -19,38 +19,40 @@ package io.github.flink.gcp.connector.bigquery.sink.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 
 /**
  * A point-in-time read of a destination table's schema, as returned by {@link
  * TableAdmin#getSchema}.
  *
- * <p>Besides the schema in Storage API form, the snapshot carries an implementation-specific token
- * ({@link #getRaw()}) that {@link TableAdmin#updateSchema} uses to condition the update on the
- * table not having changed since this read (for {@link BigQueryTableAdmin}: the REST {@code Table},
- * whose etag makes the update optimistic-concurrency safe).
+ * <p>Besides the schema in Storage API form, the snapshot carries the REST {@code Table} it was
+ * read from ({@link #getTable()}, {@code null} in test fakes), which {@link
+ * TableAdmin#updateSchema} uses both to condition the update on the table not having changed since
+ * this read (the table's etag makes the update optimistic-concurrency safe) and to preserve
+ * REST-only column attributes the Storage API form cannot represent.
  */
 @Internal
 public final class TableSchemaSnapshot {
 
     private final TableSchema schema;
-    private final Object raw;
+    private final Table table;
 
-    private TableSchemaSnapshot(TableSchema schema, Object raw) {
+    private TableSchemaSnapshot(TableSchema schema, Table table) {
         this.schema = schema;
-        this.raw = raw;
+        this.table = table;
     }
 
     /**
      * Creates a snapshot.
      *
      * @param schema the schema in Storage API form
-     * @param raw the reader's token for conditional updates, or {@code null}
+     * @param table the REST table the schema was read from, or {@code null}
      * @return the snapshot
      */
-    public static TableSchemaSnapshot of(TableSchema schema, Object raw) {
+    public static TableSchemaSnapshot of(TableSchema schema, Table table) {
         return new TableSchemaSnapshot(
-                Preconditions.checkNotNull(schema, "schema must not be null"), raw);
+                Preconditions.checkNotNull(schema, "schema must not be null"), table);
     }
 
     /** Returns the schema in Storage API form. */
@@ -58,8 +60,8 @@ public final class TableSchemaSnapshot {
         return schema;
     }
 
-    /** Returns the reader's token for conditional updates, or {@code null}. */
-    public Object getRaw() {
-        return raw;
+    /** Returns the REST table the schema was read from, or {@code null}. */
+    public Table getTable() {
+        return table;
     }
 }

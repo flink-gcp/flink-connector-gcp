@@ -23,6 +23,7 @@ import com.google.api.core.ApiFutures;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
+import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.cloud.bigquery.storage.v1.StorageError;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
@@ -32,7 +33,10 @@ import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.DestinationResolver;
+import io.github.flink.gcp.connector.bigquery.sink.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -439,12 +443,13 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                         AppendRowsResponse.newBuilder().setUpdatedSchema(V2).build()));
         RecordingTableAdmin admin = new RecordingTableAdmin(V2);
         TableDestination other = TableDestination.of("p", "d", "other");
+        EvolvingSerializer serializer = new EvolvingSerializer(V1);
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
                         config(
                                 (element, context) ->
                                         element.startsWith("other") ? other : DESTINATION,
-                                new EvolvingSerializer(V1),
+                                serializer,
                                 SchemaUpdateOptions.defaults()),
                         factory,
                         admin);
@@ -452,6 +457,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
         writer.write("aa", CONTEXT);
         writer.write("other-a", CONTEXT);
         writer.flush(false); // the response of [aa] carries updated_schema
+        serializer.evolveTo(V2);
         writer.write("bb", CONTEXT); // drains the refresh: rebuilds DESTINATION only
         writer.flush(false);
 
@@ -463,7 +469,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
     }
 
     @Test
-    void updatedSchemaDuringFlushIsDrainedOnTheNextFlush() throws Exception {
+    void updatedSchemaWithUnchangedSerializerSchemaDoesNotRebuild() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(
                 ApiFutures.immediateFuture(
@@ -476,13 +482,35 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                         admin);
 
         writer.write("aa", CONTEXT);
-        writer.flush(false);
+        writer.flush(false); // the response carries updated_schema
         writer.write("bb", CONTEXT);
         writer.flush(false);
 
+        // The rebuilt writer would install the identical serializer schema: no rebuild.
+        assertThat(factory.created).hasSize(1);
+        assertThat(factory.created.get(0).closed).isFalse();
+        assertThat(factory.allAppendedRows()).containsExactly("aa", "bb");
+    }
+
+    @Test
+    void updatedSchemaIsDrainedOnFlushAfterSerializerEvolution() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(
+                ApiFutures.immediateFuture(
+                        AppendRowsResponse.newBuilder().setUpdatedSchema(V2).build()));
+        RecordingTableAdmin admin = new RecordingTableAdmin(V2);
+        EvolvingSerializer serializer = new EvolvingSerializer(V1);
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(config(serializer, SchemaUpdateOptions.defaults()), factory, admin);
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+        serializer.evolveTo(V2);
+        writer.flush(false); // drains the refresh without any intervening write
+
         assertThat(factory.created).hasSize(2);
         assertThat(factory.created.get(0).closed).isTrue();
-        assertThat(factory.allAppendedRows()).containsExactly("aa", "bb");
+        assertThat(factory.allAppendedRows()).containsExactly("aa");
     }
 
     // --- serializer fingerprint changes ---
@@ -505,6 +533,9 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
         assertThat(factory.created.get(0).appends).isEmpty();
         assertThat(factory.created.get(1).appends).hasSize(1);
         assertThat(factory.allAppendedRows()).containsExactly("aa", "bb");
+        // The rebuilt appender was built with the evolved two-field descriptor.
+        assertThat(factory.created.get(0).descriptor.getFields()).hasSize(1);
+        assertThat(factory.created.get(1).descriptor.getFields()).hasSize(2);
     }
 
     @Test
@@ -547,6 +578,114 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
 
         assertThat(factory.created).hasSize(1);
         assertThat(admin.reads).isZero();
+    }
+
+    @Test
+    void missingTableDuringReconciliationFailsUnderCreateNever() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(schemaMismatch());
+        RecordingTableAdmin admin = new RecordingTableAdmin(null);
+        BigQuerySinkConfig<String> config =
+                ((BigQueryDefaultStreamSink<String>)
+                                BigQuerySink.<String>builder()
+                                        .destination(DESTINATION)
+                                        .serializer(new EvolvingSerializer(V2))
+                                        .createDisposition(CreateDisposition.CREATE_NEVER)
+                                        .schemaUpdateOptions(
+                                                SchemaUpdateOptions.builder()
+                                                        .allowNewFields()
+                                                        .build())
+                                        .build())
+                        .getConfig();
+        BigQueryDefaultStreamWriter<String> writer = writer(config, factory, admin);
+
+        writer.write("aa", CONTEXT);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("CREATE_NEVER");
+        assertThat(admin.creates).isEmpty();
+    }
+
+    // --- response-embedded storage errors ---
+
+    @Test
+    void invalidStreamStateResponseErrorIsRepairedByRebuilding() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        // The SDK has no typed exception for INVALID_STREAM_STATE; the writer must still detect
+        // the packed storage error in the response and repair by rebuilding.
+        factory.scriptedResults.add(
+                ApiFutures.immediateFuture(
+                        AppendRowsResponse.newBuilder()
+                                .setError(
+                                        com.google.rpc.Status.newBuilder()
+                                                .setCode(Status.Code.FAILED_PRECONDITION.value())
+                                                .setMessage("invalid stream state")
+                                                .addDetails(
+                                                        Any.pack(
+                                                                StorageError.newBuilder()
+                                                                        .setCode(
+                                                                                StorageError
+                                                                                        .StorageErrorCode
+                                                                                        .INVALID_STREAM_STATE)
+                                                                        .build())))
+                                .build()));
+        RecordingTableAdmin admin = new RecordingTableAdmin(V1);
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(new EvolvingSerializer(V1), SchemaUpdateOptions.defaults()),
+                        factory,
+                        admin);
+
+        writer.write("aa", CONTEXT);
+
+        assertThatCode(() -> writer.flush(false)).doesNotThrowAnyException();
+        assertThat(factory.created).hasSize(2);
+        assertThat(factory.allAppendedRows()).containsExactly("aa", "aa");
+    }
+
+    @Test
+    void mismatchResponseWithRowErrorsAndUpdatesDisabledRoutesRows() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(
+                ApiFutures.immediateFuture(
+                        AppendRowsResponse.newBuilder()
+                                .setError(
+                                        com.google.rpc.Status.newBuilder()
+                                                .setCode(Status.Code.INVALID_ARGUMENT.value())
+                                                .setMessage("schema mismatch")
+                                                .addDetails(
+                                                        Any.pack(
+                                                                StorageError.newBuilder()
+                                                                        .setCode(
+                                                                                StorageError
+                                                                                        .StorageErrorCode
+                                                                                        .SCHEMA_MISMATCH_EXTRA_FIELDS)
+                                                                        .build())))
+                                .addRowErrors(
+                                        RowError.newBuilder().setIndex(0).setMessage("extra field"))
+                                .build()));
+        RecordingTableAdmin admin = new RecordingTableAdmin(V1);
+        List<FailedRow> routed = new ArrayList<>();
+        BigQuerySinkConfig<String> config =
+                ((BigQueryDefaultStreamSink<String>)
+                                BigQuerySink.<String>builder()
+                                        .destination(DESTINATION)
+                                        .serializer(new EvolvingSerializer(V2))
+                                        .failedRowHandler((FailedRowHandler) routed::add)
+                                        .build())
+                        .getConfig();
+        BigQueryDefaultStreamWriter<String> writer = writer(config, factory, admin);
+
+        writer.write("aa", CONTEXT);
+        writer.write("bb", CONTEXT);
+
+        // With schema updates disabled, the row-error details keep the configured per-row policy
+        // in charge instead of failing the whole job on the mismatch.
+        assertThatCode(() -> writer.flush(false)).doesNotThrowAnyException();
+        assertThat(routed).hasSize(1);
+        assertThat(routed.get(0).getRowBytes().toStringUtf8()).isEqualTo("aa");
+        assertThat(factory.allAppendedRows()).containsExactly("aa", "bb", "bb");
     }
 
     // --- stale stream writers ---

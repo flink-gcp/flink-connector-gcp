@@ -16,11 +16,6 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.writer;
 
-import org.apache.flink.api.connector.sink2.SinkWriter;
-
-import com.google.cloud.NoCredentials;
-import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
@@ -34,13 +29,7 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -54,56 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * (goccy/bigquery-emulator): the at-least-once writer writing to a table that does not exist,
  * end-to-end through the Storage Write API gRPC endpoint and the REST table-creation path.
  */
-@Testcontainers
-@Timeout(180)
-class BigQueryTableAutoCreationITCase {
-
-    private static final String PROJECT = "it-project";
-    private static final String DATASET = "it_dataset";
-    private static final int REST_PORT = 9050;
-    private static final int GRPC_PORT = 9060;
-
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
-
-    @Container
-    private static final GenericContainer<?> EMULATOR =
-            new GenericContainer<>("ghcr.io/goccy/bigquery-emulator:0.8.1")
-                    .withCommand("--project=" + PROJECT, "--dataset=" + DATASET)
-                    .withExposedPorts(REST_PORT, GRPC_PORT)
-                    .waitingFor(Wait.forListeningPorts(REST_PORT, GRPC_PORT));
-
-    private static BigQuery restClient;
-
-    @BeforeAll
-    static void createRestClient() {
-        restClient =
-                BigQueryOptions.newBuilder()
-                        .setHost(
-                                "http://"
-                                        + EMULATOR.getHost()
-                                        + ":"
-                                        + EMULATOR.getMappedPort(REST_PORT))
-                        .setProjectId(PROJECT)
-                        .setCredentials(NoCredentials.getInstance())
-                        .build()
-                        .getService();
-    }
-
-    private static String grpcEndpoint() {
-        return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(GRPC_PORT);
-    }
-
+class BigQueryTableAutoCreationITCase extends AbstractBigQueryEmulatorITCase {
     /** Serializer with a fixed one-column schema, writing rows via {@link DynamicMessage}. */
     private static final class NameSerializer extends BigQueryProtoSerializer<String> {
         private static final long serialVersionUID = 1L;
