@@ -1,0 +1,133 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigquery.sink;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.StringUtils;
+
+import com.google.cloud.bigquery.storage.v1.TableName;
+
+import java.io.Serializable;
+import java.util.Objects;
+
+/**
+ * A fully-qualified BigQuery table reference: project, dataset and table.
+ *
+ * <p>Instances are pure table <em>identity</em>: {@link #equals(Object)} and {@link #hashCode()}
+ * are defined over exactly (project, dataset, table) so the class can serve as a per-destination
+ * key (writer caches, connection routing). Per-destination creation metadata (partitioning,
+ * clustering, descriptions) is intentionally not part of this class and will be supplied through
+ * separate hooks, keeping destination identity stable.
+ *
+ * <p>Instances are immutable; the resource path and hash are precomputed, so they are cheap to use
+ * as map keys on the per-record write path. Resolvers should still cache and reuse instances
+ * instead of re-creating them per record.
+ */
+@PublicEvolving
+public final class TableDestination implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private final String project;
+    private final String dataset;
+    private final String table;
+    private final String tablePath;
+    private final int hash;
+
+    private TableDestination(String project, String dataset, String table) {
+        this.project = project;
+        this.dataset = dataset;
+        this.table = table;
+        this.tablePath = TableName.format(project, dataset, table);
+        this.hash = Objects.hash(project, dataset, table);
+    }
+
+    /**
+     * Creates a {@link TableDestination}.
+     *
+     * @param project the Google Cloud project id
+     * @param dataset the BigQuery dataset id
+     * @param table the BigQuery table id
+     * @return the destination
+     */
+    public static TableDestination of(String project, String dataset, String table) {
+        checkComponent(project, "project");
+        checkComponent(dataset, "dataset");
+        checkComponent(table, "table");
+        return new TableDestination(project, dataset, table);
+    }
+
+    private static void checkComponent(String value, String name) {
+        Preconditions.checkArgument(
+                !StringUtils.isNullOrWhitespaceOnly(value), "%s must not be blank", name);
+        Preconditions.checkArgument(
+                value.equals(value.trim()),
+                "%s must not have leading or trailing whitespace: '%s'",
+                name,
+                value);
+        Preconditions.checkArgument(
+                value.indexOf('/') < 0, "%s must not contain '/': '%s'", name, value);
+    }
+
+    /** Returns the Google Cloud project id. */
+    public String getProject() {
+        return project;
+    }
+
+    /** Returns the BigQuery dataset id. */
+    public String getDataset() {
+        return dataset;
+    }
+
+    /** Returns the BigQuery table id. */
+    public String getTable() {
+        return table;
+    }
+
+    /**
+     * Returns the table path in the {@code projects/<p>/datasets/<d>/tables/<t>} form used by the
+     * BigQuery Storage API.
+     */
+    public String toTablePath() {
+        return tablePath;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        TableDestination that = (TableDestination) o;
+        return project.equals(that.project)
+                && dataset.equals(that.dataset)
+                && table.equals(that.table);
+    }
+
+    @Override
+    public int hashCode() {
+        return hash;
+    }
+
+    @Override
+    public String toString() {
+        return project + "." + dataset + "." + table;
+    }
+}

@@ -56,5 +56,11 @@ limitations under the License.
             <groupId>com.google.cloud</groupId>
             <artifactId>google-cloud-bigquery</artifactId>
         </dependency>
+        <dependency>
+            <!-- Direct dependency: protobuf types (ByteString, Descriptors) are part of this
+                 module's public API surface. Version managed by the libraries BOM. -->
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+        </dependency>
     </dependencies>
 </project>
