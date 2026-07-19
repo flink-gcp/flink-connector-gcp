@@ -50,6 +50,19 @@ class TableDestinationTest {
     }
 
     @Test
+    void rejectsStructureBreakingComponents() {
+        assertThatThrownBy(() -> TableDestination.of("p", "d", "a/b"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("/");
+        assertThatThrownBy(() -> TableDestination.of("p", "d", "events\n"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("whitespace");
+        assertThatThrownBy(() -> TableDestination.of("p", " d", "t"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("whitespace");
+    }
+
+    @Test
     void equalsAndHashCodeUseAllComponents() {
         TableDestination a = TableDestination.of("p", "d", "t");
         TableDestination b = TableDestination.of("p", "d", "t");

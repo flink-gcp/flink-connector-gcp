@@ -20,10 +20,24 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
+import com.google.cloud.bigquery.storage.v1.TableName;
+
 import java.io.Serializable;
 import java.util.Objects;
 
-/** A fully-qualified BigQuery table reference: project, dataset and table. */
+/**
+ * A fully-qualified BigQuery table reference: project, dataset and table.
+ *
+ * <p>Instances are pure table <em>identity</em>: {@link #equals(Object)} and {@link #hashCode()}
+ * are defined over exactly (project, dataset, table) so the class can serve as a per-destination
+ * key (writer caches, connection routing). Per-destination creation metadata (partitioning,
+ * clustering, descriptions) is intentionally not part of this class and will be supplied through
+ * separate hooks, keeping destination identity stable.
+ *
+ * <p>Instances are immutable; the resource path and hash are precomputed, so they are cheap to use
+ * as map keys on the per-record write path. Resolvers should still cache and reuse instances
+ * instead of re-creating them per record.
+ */
 @PublicEvolving
 public final class TableDestination implements Serializable {
 
@@ -32,11 +46,15 @@ public final class TableDestination implements Serializable {
     private final String project;
     private final String dataset;
     private final String table;
+    private final String tablePath;
+    private final int hash;
 
     private TableDestination(String project, String dataset, String table) {
         this.project = project;
         this.dataset = dataset;
         this.table = table;
+        this.tablePath = TableName.format(project, dataset, table);
+        this.hash = Objects.hash(project, dataset, table);
     }
 
     /**
@@ -48,13 +66,22 @@ public final class TableDestination implements Serializable {
      * @return the destination
      */
     public static TableDestination of(String project, String dataset, String table) {
-        Preconditions.checkArgument(
-                !StringUtils.isNullOrWhitespaceOnly(project), "project must not be blank");
-        Preconditions.checkArgument(
-                !StringUtils.isNullOrWhitespaceOnly(dataset), "dataset must not be blank");
-        Preconditions.checkArgument(
-                !StringUtils.isNullOrWhitespaceOnly(table), "table must not be blank");
+        checkComponent(project, "project");
+        checkComponent(dataset, "dataset");
+        checkComponent(table, "table");
         return new TableDestination(project, dataset, table);
+    }
+
+    private static void checkComponent(String value, String name) {
+        Preconditions.checkArgument(
+                !StringUtils.isNullOrWhitespaceOnly(value), "%s must not be blank", name);
+        Preconditions.checkArgument(
+                value.equals(value.trim()),
+                "%s must not have leading or trailing whitespace: '%s'",
+                name,
+                value);
+        Preconditions.checkArgument(
+                value.indexOf('/') < 0, "%s must not contain '/': '%s'", name, value);
     }
 
     /** Returns the Google Cloud project id. */
@@ -77,7 +104,7 @@ public final class TableDestination implements Serializable {
      * BigQuery Storage API.
      */
     public String toTablePath() {
-        return "projects/" + project + "/datasets/" + dataset + "/tables/" + table;
+        return tablePath;
     }
 
     @Override
@@ -96,7 +123,7 @@ public final class TableDestination implements Serializable {
 
     @Override
     public int hashCode() {
-        return Objects.hash(project, dataset, table);
+        return hash;
     }
 
     @Override

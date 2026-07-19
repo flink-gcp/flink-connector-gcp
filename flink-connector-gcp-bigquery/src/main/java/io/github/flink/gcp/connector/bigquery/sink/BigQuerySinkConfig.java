@@ -33,14 +33,14 @@ public final class BigQuerySinkConfig<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final DestinationResolver<T> destinationResolver;
-    private final BigQueryProtoSerializer<T> serializer;
+    private final DestinationResolver<? super T> destinationResolver;
+    private final BigQueryProtoSerializer<? super T> serializer;
     private final CreateDisposition createDisposition;
     private final String location;
 
     BigQuerySinkConfig(
-            DestinationResolver<T> destinationResolver,
-            BigQueryProtoSerializer<T> serializer,
+            DestinationResolver<? super T> destinationResolver,
+            BigQueryProtoSerializer<? super T> serializer,
             CreateDisposition createDisposition,
             String location) {
         this.destinationResolver = destinationResolver;
@@ -50,12 +50,12 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     }
 
     /** Returns the per-record destination resolver. */
-    public DestinationResolver<T> getDestinationResolver() {
+    public DestinationResolver<? super T> getDestinationResolver() {
         return destinationResolver;
     }
 
     /** Returns the record serializer. */
-    public BigQueryProtoSerializer<T> getSerializer() {
+    public BigQueryProtoSerializer<? super T> getSerializer() {
         return serializer;
     }
 

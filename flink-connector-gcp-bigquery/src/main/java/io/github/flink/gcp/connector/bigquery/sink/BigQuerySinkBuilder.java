@@ -23,10 +23,12 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 
 /**
- * Builder for {@link BigQuerySink}.
+ * Builder for BigQuery sinks, obtained from {@link BigQuerySink#builder()}.
  *
- * <p>Required settings: a serializer and exactly one of {@link #destination(TableDestination)} or
- * {@link #destinationResolver(DestinationResolver)}.
+ * <p>Required settings: a serializer and a destination. The destination is set through either
+ * {@link #destination(TableDestination)} (fixed table) or {@link
+ * #destinationResolver(DestinationResolver)} (per-record dynamic destinations); the two override
+ * each other and the last call wins.
  *
  * @param <T> type of the records written by the sink
  */
@@ -34,9 +36,8 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
 public class BigQuerySinkBuilder<T> {
 
     private WriteMethod writeMethod = WriteMethod.STORAGE_API_AT_LEAST_ONCE;
-    private TableDestination fixedDestination;
-    private DestinationResolver<T> destinationResolver;
-    private BigQueryProtoSerializer<T> serializer;
+    private DestinationResolver<? super T> destinationResolver;
+    private BigQueryProtoSerializer<? super T> serializer;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
     private String location;
 
@@ -54,26 +55,28 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
-     * Writes every record to the given fixed table. Mutually exclusive with {@link
-     * #destinationResolver(DestinationResolver)}.
+     * Writes every record to the given fixed table. Overrides any previously set destination or
+     * resolver.
      *
      * @param destination the destination table
      * @return this builder
      */
     public BigQuerySinkBuilder<T> destination(TableDestination destination) {
-        this.fixedDestination =
-                Preconditions.checkNotNull(destination, "destination must not be null");
+        this.destinationResolver =
+                new FixedDestinationResolver(
+                        Preconditions.checkNotNull(destination, "destination must not be null"));
         return this;
     }
 
     /**
-     * Resolves the destination table per record (dynamic destinations). Mutually exclusive with
-     * {@link #destination(TableDestination)}.
+     * Resolves the destination table per record (dynamic destinations). Overrides any previously
+     * set destination or resolver.
      *
      * @param destinationResolver the resolver
      * @return this builder
      */
-    public BigQuerySinkBuilder<T> destinationResolver(DestinationResolver<T> destinationResolver) {
+    public BigQuerySinkBuilder<T> destinationResolver(
+            DestinationResolver<? super T> destinationResolver) {
         this.destinationResolver =
                 Preconditions.checkNotNull(
                         destinationResolver, "destinationResolver must not be null");
@@ -86,7 +89,7 @@ public class BigQuerySinkBuilder<T> {
      * @param serializer the serializer
      * @return this builder
      */
-    public BigQuerySinkBuilder<T> serializer(BigQueryProtoSerializer<T> serializer) {
+    public BigQuerySinkBuilder<T> serializer(BigQueryProtoSerializer<? super T> serializer) {
         this.serializer = Preconditions.checkNotNull(serializer, "serializer must not be null");
         return this;
     }
@@ -104,8 +107,8 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
-     * Sets the BigQuery location (for example {@code US} or {@code asia-northeast1}) of the
-     * destination tables. Setting the location explicitly avoids a metadata lookup when opening
+     * Sets the BigQuery location (for example {@code US} or {@code asia-northeast1}) shared by the
+     * destination tables. Optional; setting it avoids a per-table metadata lookup when opening
      * Storage Write API connections.
      *
      * @param location the BigQuery location
@@ -124,29 +127,22 @@ public class BigQuerySinkBuilder<T> {
     public Sink<T> build() {
         Preconditions.checkState(serializer != null, "A serializer is required.");
         Preconditions.checkState(
-                fixedDestination != null || destinationResolver != null,
-                "A destination is required: set either destination(...) or"
-                        + " destinationResolver(...).");
-        Preconditions.checkState(
-                fixedDestination == null || destinationResolver == null,
-                "destination(...) and destinationResolver(...) are mutually exclusive; set only"
-                        + " one of them.");
-
-        DestinationResolver<T> resolver = destinationResolver;
-        if (resolver == null) {
-            TableDestination destination = fixedDestination;
-            resolver = element -> destination;
-        }
+                destinationResolver != null,
+                "A destination is required: set destination(...) or destinationResolver(...).");
 
         BigQuerySinkConfig<T> config =
-                new BigQuerySinkConfig<>(resolver, serializer, createDisposition, location);
+                new BigQuerySinkConfig<>(
+                        destinationResolver, serializer, createDisposition, location);
         switch (writeMethod) {
             case STORAGE_API_AT_LEAST_ONCE:
                 return new BigQueryDefaultStreamSink<>(config);
             case STORAGE_API_EXACTLY_ONCE:
-                return new BigQueryExactlyOnceSink<>(config);
+                throw new UnsupportedOperationException(
+                        "WriteMethod.STORAGE_API_EXACTLY_ONCE is not implemented yet"
+                                + " (tracked in issue #30).");
             case FILE_LOADS:
-                return new BigQueryFileLoadsSink<>(config);
+                throw new UnsupportedOperationException(
+                        "WriteMethod.FILE_LOADS is not implemented yet (tracked in issue #14).");
             default:
                 throw new IllegalStateException("Unknown write method: " + writeMethod);
         }

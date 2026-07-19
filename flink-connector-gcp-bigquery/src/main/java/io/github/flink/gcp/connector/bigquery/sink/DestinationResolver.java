@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import java.io.Serializable;
 
@@ -24,8 +25,13 @@ import java.io.Serializable;
  * Resolves the destination table for each record, enabling one sink instance to write to many
  * tables (dynamic destinations).
  *
- * <p>Implementations must be deterministic and cheap: the resolver is invoked once per record on
- * the hot write path.
+ * <p>The resolver is invoked once per record on the hot write path. Implementations must be
+ * deterministic and cheap; when destinations repeat, return cached {@link TableDestination}
+ * instances instead of re-creating them per record (for example via a small {@code
+ * Map#computeIfAbsent} keyed on the varying component).
+ *
+ * <p>The {@link SinkWriter.Context} exposes the record's event timestamp for time-based routing
+ * (for example daily tables).
  *
  * @param <T> type of the records written by the sink
  */
@@ -37,7 +43,8 @@ public interface DestinationResolver<T> extends Serializable {
      * Returns the destination table for the given record.
      *
      * @param element the record
+     * @param context writer context exposing the record's event timestamp and current watermark
      * @return the destination table
      */
-    TableDestination resolve(T element);
+    TableDestination resolve(T element, SinkWriter.Context context);
 }

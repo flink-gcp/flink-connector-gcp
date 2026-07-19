@@ -17,10 +17,12 @@
 package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Descriptors;
 import com.google.protobuf.Empty;
-import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import org.junit.jupiter.api.Test;
 
@@ -33,13 +35,31 @@ class BigQuerySinkBuilderTest {
     private static final TableDestination DESTINATION =
             TableDestination.of("my-project", "my_dataset", "my_table");
 
+    private static final SinkWriter.Context CONTEXT =
+            new SinkWriter.Context() {
+                @Override
+                public long currentWatermark() {
+                    return 0;
+                }
+
+                @Override
+                public Long timestamp() {
+                    return null;
+                }
+            };
+
     /** A trivial serializable test serializer. */
-    private static class TestSerializer implements BigQueryProtoSerializer<String> {
+    private static class TestSerializer extends BigQueryProtoSerializer<Object> {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public Message serialize(String element) {
-            return Empty.getDefaultInstance();
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            return Empty.getDescriptor();
+        }
+
+        @Override
+        public ByteString serialize(Object element) {
+            return Empty.getDefaultInstance().toByteString();
         }
     }
 
@@ -55,31 +75,30 @@ class BigQuerySinkBuilderTest {
     }
 
     @Test
-    void dispatchesToExactlyOnceSink() {
-        Sink<String> sink =
-                BigQuerySink.<String>builder()
-                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                        .destination(DESTINATION)
-                        .serializer(new TestSerializer())
-                        .build();
+    void rejectsUnimplementedWriteMethods() {
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .build())
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessageContaining("#30");
 
-        assertThat(sink).isInstanceOf(BigQueryExactlyOnceSink.class);
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .build())
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessageContaining("#14");
     }
 
     @Test
-    void dispatchesToFileLoadsSink() {
-        Sink<String> sink =
-                BigQuerySink.<String>builder()
-                        .writeMethod(WriteMethod.FILE_LOADS)
-                        .destination(DESTINATION)
-                        .serializer(new TestSerializer())
-                        .build();
-
-        assertThat(sink).isInstanceOf(BigQueryFileLoadsSink.class);
-    }
-
-    @Test
-    void fixedDestinationIsWrappedAsResolver() {
+    void fixedDestinationUsesNamedResolver() {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
@@ -87,7 +106,10 @@ class BigQuerySinkBuilderTest {
                                 .serializer(new TestSerializer())
                                 .build();
 
-        assertThat(sink.getConfig().getDestinationResolver().resolve("any")).isEqualTo(DESTINATION);
+        DestinationResolver<? super String> resolver = sink.getConfig().getDestinationResolver();
+        assertThat(resolver).isInstanceOf(FixedDestinationResolver.class);
+        assertThat(((FixedDestinationResolver) resolver).getDestination()).isEqualTo(DESTINATION);
+        assertThat(resolver.resolve("any", CONTEXT)).isEqualTo(DESTINATION);
     }
 
     @Test
@@ -96,14 +118,81 @@ class BigQuerySinkBuilderTest {
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .destinationResolver(
-                                        element ->
+                                        (element, context) ->
                                                 TableDestination.of(
-                                                        "my-project", "my_dataset", element))
+                                                        "my-project",
+                                                        "my_dataset",
+                                                        String.valueOf(element)))
                                 .serializer(new TestSerializer())
                                 .build();
 
-        assertThat(sink.getConfig().getDestinationResolver().resolve("events"))
+        assertThat(sink.getConfig().getDestinationResolver().resolve("events", CONTEXT))
                 .isEqualTo(TableDestination.of("my-project", "my_dataset", "events"));
+    }
+
+    @Test
+    void lastDestinationCallWins() {
+        BigQueryDefaultStreamSink<String> resolverWins =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .destinationResolver(
+                                        (element, context) ->
+                                                TableDestination.of("p", "d", "dynamic"))
+                                .serializer(new TestSerializer())
+                                .build();
+        assertThat(resolverWins.getConfig().getDestinationResolver().resolve("x", CONTEXT))
+                .isEqualTo(TableDestination.of("p", "d", "dynamic"));
+
+        BigQueryDefaultStreamSink<String> destinationWins =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destinationResolver(
+                                        (element, context) ->
+                                                TableDestination.of("p", "d", "dynamic"))
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .build();
+        assertThat(destinationWins.getConfig().getDestinationResolver())
+                .isInstanceOf(FixedDestinationResolver.class);
+    }
+
+    @Test
+    void acceptsContravariantResolverAndSerializer() {
+        DestinationResolver<Object> resolverForAnyType = (element, context) -> DESTINATION;
+
+        Sink<String> sink =
+                BigQuerySink.<String>builder()
+                        .destinationResolver(resolverForAnyType)
+                        .serializer(new TestSerializer()) // BigQueryProtoSerializer<Object>
+                        .build();
+
+        assertThat(sink).isInstanceOf(BigQueryDefaultStreamSink.class);
+    }
+
+    @Test
+    void propagatesConfigurationDefaultsAndOverrides() {
+        BigQueryDefaultStreamSink<String> defaults =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .build();
+        assertThat(defaults.getConfig().getCreateDisposition())
+                .isEqualTo(CreateDisposition.CREATE_IF_NEEDED);
+        assertThat(defaults.getConfig().getLocation()).isNull();
+
+        BigQueryDefaultStreamSink<String> overridden =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .createDisposition(CreateDisposition.CREATE_NEVER)
+                                .location("asia-northeast1")
+                                .build();
+        assertThat(overridden.getConfig().getCreateDisposition())
+                .isEqualTo(CreateDisposition.CREATE_NEVER);
+        assertThat(overridden.getConfig().getLocation()).isEqualTo("asia-northeast1");
     }
 
     @Test
@@ -125,33 +214,37 @@ class BigQuerySinkBuilderTest {
     }
 
     @Test
-    void failsWhenBothDestinationAndResolverAreSet() {
-        assertThatThrownBy(
-                        () ->
-                                BigQuerySink.<String>builder()
-                                        .destination(DESTINATION)
-                                        .destinationResolver(element -> DESTINATION)
-                                        .serializer(new TestSerializer())
-                                        .build())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("mutually exclusive");
-    }
-
-    @Test
-    void sinkIsJavaSerializable() throws Exception {
+    void sinkWithFixedDestinationIsJavaSerializable() throws Exception {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destinationResolver(
-                                        element ->
-                                                TableDestination.of(
-                                                        "my-project", "my_dataset", element))
+                                .destination(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .build();
 
         BigQueryDefaultStreamSink<String> copy = InstantiationUtil.clone(sink);
 
-        assertThat(copy.getConfig().getDestinationResolver().resolve("events"))
+        assertThat(copy.getConfig().getDestinationResolver().resolve("events", CONTEXT))
+                .isEqualTo(DESTINATION);
+    }
+
+    @Test
+    void sinkWithResolverLambdaIsJavaSerializable() throws Exception {
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destinationResolver(
+                                        (element, context) ->
+                                                TableDestination.of(
+                                                        "my-project",
+                                                        "my_dataset",
+                                                        String.valueOf(element)))
+                                .serializer(new TestSerializer())
+                                .build();
+
+        BigQueryDefaultStreamSink<String> copy = InstantiationUtil.clone(sink);
+
+        assertThat(copy.getConfig().getDestinationResolver().resolve("events", CONTEXT))
                 .isEqualTo(TableDestination.of("my-project", "my_dataset", "events"));
     }
 }

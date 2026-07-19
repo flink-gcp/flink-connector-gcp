@@ -33,6 +33,9 @@ import org.apache.flink.annotation.PublicEvolving;
  *       jobs, batch execution only
  * </ul>
  *
+ * <p>Write methods that are not implemented yet are rejected by {@link BigQuerySinkBuilder#build()}
+ * with an {@link UnsupportedOperationException}.
+ *
  * <p>Example:
  *
  * <pre>{@code
@@ -40,7 +43,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *         BigQuerySink.<MyEvent>builder()
  *                 .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
  *                 .destinationResolver(
- *                         e -> TableDestination.of("my-project", "my_dataset", e.tableName()))
+ *                         (e, ctx) -> TableDestination.of("my-project", "my_dataset", e.tableName()))
  *                 .serializer(new MyEventProtoSerializer())
  *                 .build();
  * }</pre>
