@@ -1,3 +1,8 @@
 [tools]
 java = "temurin-17"
 maven = "latest"
+
+[env]
+# Local, uncommitted settings — e.g. credentials and BQ_IT_* variables for the
+# real-GCP integration tests (see flink-connector-gcp-bigquery/README.md).
+_.file = { path = ".env", redact = true }

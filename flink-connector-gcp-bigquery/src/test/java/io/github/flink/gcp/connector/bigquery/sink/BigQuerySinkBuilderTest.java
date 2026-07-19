@@ -99,7 +99,29 @@ class BigQuerySinkBuilderTest {
                                         .build())
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessageContaining("#30");
+    }
 
+    @Test
+    void buildsFileLoadsSink() {
+        BigQueryFileLoadsSink<String> sink =
+                (BigQueryFileLoadsSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.FILE_LOADS)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .fileLoadsOptions(
+                                        FileLoadsOptions.builder()
+                                                .stagingPath("gs://staging-bucket/prefix")
+                                                .build())
+                                .build();
+
+        assertThat(sink.getOptions().getStagingPath()).isEqualTo("gs://staging-bucket/prefix");
+        assertThat(sink.getConfig().getDestinationResolver().resolve("any", CONTEXT))
+                .isEqualTo(DESTINATION);
+    }
+
+    @Test
+    void fileLoadsRequiresFileLoadsOptions() {
         assertThatThrownBy(
                         () ->
                                 BigQuerySink.<String>builder()
@@ -107,8 +129,45 @@ class BigQuerySinkBuilderTest {
                                         .destination(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .build())
-                .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("#14");
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("fileLoadsOptions");
+    }
+
+    @Test
+    void rejectsFileLoadsOptionsForOtherWriteMethods() {
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .fileLoadsOptions(
+                                                FileLoadsOptions.builder()
+                                                        .stagingPath("gs://staging-bucket")
+                                                        .build())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("only valid for WriteMethod.FILE_LOADS");
+    }
+
+    @Test
+    void fileLoadsSinkIsJavaSerializable() throws Exception {
+        BigQueryFileLoadsSink<String> sink =
+                (BigQueryFileLoadsSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.FILE_LOADS)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .fileLoadsOptions(
+                                        FileLoadsOptions.builder()
+                                                .stagingPath("gs://staging-bucket")
+                                                .build())
+                                .build();
+
+        BigQueryFileLoadsSink<String> copy = InstantiationUtil.clone(sink);
+
+        assertThat(copy.getOptions()).isEqualTo(sink.getOptions());
+        assertThat(copy.getConfig().getDestinationResolver().resolve("any", CONTEXT))
+                .isEqualTo(DESTINATION);
     }
 
     @Test

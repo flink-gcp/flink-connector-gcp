@@ -72,9 +72,19 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   `FailedRow` carries serialized protobuf bytes, not the original record (the writer is
   stateless). SDK in-stream retry settings are hardcoded in `StreamWriterRowAppenderFactory`;
   exposing them is deferred until a real-world need shows which knobs matter
+- **BigQuery FILE_LOADS** (#14): batch-only, exactly-once via deterministic BigQuery job ids
+  (hash of destination + sorted staged URIs) with get-then-submit re-attach — no committer-side
+  state. Avro-only staging in v0.1, written with the `google-cloud-storage` client directly (no
+  Flink filesystem plugin dependency). Load jobs run in a parallelism-1 post-commit topology
+  (`SupportsPostCommitTopology`), submitted all at once then awaited — no self-managed thread
+  pool. Cleanup is best-effort on success only; a staging bucket lifecycle rule is the
+  documented mitigation for orphans
+- **Per-write-method option scoping** (decided in #14, was deferred on PR #46): write-method-only
+  options live in a nested immutable options object set on the builder (`FileLoadsOptions` via
+  `fileLoadsOptions(...)`); `build()` requires it for its write method and rejects it for
+  others. Future write methods (#30) follow the same pattern
 - **Pub/Sub**: base implementation is vendored from `GoogleCloudPlatform/pubsub`
   `flink-connector/` (decision record: issues #17 and #31); the Apache connector is only a
   design reference (table-factory plumbing, emulator harness). All packages are normalized to
   `io.github.flink.gcp.connector.pubsub.*`
-- Deferred decisions are recorded on PR #46: per-write-method option scoping (decide in #14) and
-  `location()` granularity (decide in #10)
+- Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)

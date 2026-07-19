@@ -27,14 +27,23 @@ import java.util.concurrent.ThreadLocalRandom;
  * retrying against the same table).
  */
 @Internal
-final class RetrySchedule {
+public final class RetrySchedule {
 
     private final long initialBackoffMs;
     private final long maxBackoffMs;
     private final int maxAttempts;
     private final double jitterRatio;
 
-    RetrySchedule(long initialBackoffMs, long maxBackoffMs, int maxAttempts, double jitterRatio) {
+    /**
+     * Creates a schedule.
+     *
+     * @param initialBackoffMs the first backoff
+     * @param maxBackoffMs the backoff cap
+     * @param maxAttempts the maximum number of attempts
+     * @param jitterRatio the proportional jitter, in {@code [0, 1)}
+     */
+    public RetrySchedule(
+            long initialBackoffMs, long maxBackoffMs, int maxAttempts, double jitterRatio) {
         Preconditions.checkArgument(initialBackoffMs > 0, "initialBackoffMs must be positive");
         Preconditions.checkArgument(
                 maxBackoffMs >= initialBackoffMs, "maxBackoffMs must be >= initialBackoffMs");
@@ -48,7 +57,7 @@ final class RetrySchedule {
     }
 
     /** Returns the maximum number of attempts. */
-    int maxAttempts() {
+    public int maxAttempts() {
         return maxAttempts;
     }
 
@@ -57,7 +66,7 @@ final class RetrySchedule {
      * attempt up to the cap, multiplied by a random factor in {@code [1 - jitterRatio, 1 +
      * jitterRatio]}.
      */
-    long backoffMs(int attempt) {
+    public long backoffMs(int attempt) {
         long base = initialBackoffMs;
         for (int i = 1; i < attempt && base < maxBackoffMs; i++) {
             base = Math.min(base * 2, maxBackoffMs);
