@@ -29,11 +29,15 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   workflow is added or an action version changes
 - Commit messages, PR titles/descriptions, code comments, javadoc and issues are written in
   English
-- Issues use milestones `v0.1` / `v0.2` / `v0.3+` and GitHub sub-issues; PRs close their issue
-  with `Closes #N`
+- Issues use milestones `v0.1.0` / `v0.2.0` / `v0.3.0+` and GitHub sub-issues; PRs close their
+  issue with `Closes #N`
 
 ## Version policy
 
+- Releases follow full semver (`v0.1.0`, `v0.2.0`, ...). Early milestones are **tags only** — no
+  artifact publishing. Publishing to Maven Central happens once all connectors are implemented,
+  as `v1.0.0` (Central namespace registration, signing and the Flink 1.x/2.x publishing strategy
+  are decided then; see issues #29 and #39)
 - `main` targets **Flink 2.1.x** (planned artifact suffix `-2.1`). Do not bump `flink.version`
   to a newer minor/major via dependabot — that is a deliberate, manual decision (see closed PR
   #42). Flink 1.20 support will live on a dedicated `v1.20` branch
