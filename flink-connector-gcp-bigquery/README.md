@@ -39,6 +39,24 @@ API notes:
   per-destination creation metadata (partitioning, clustering) will be supplied through separate
   hooks so destination identity stays stable as a cache/connection key.
 
+## Delivery guarantees and state
+
+The `STORAGE_API_AT_LEAST_ONCE` writer is **stateless by design**: rows are appended
+asynchronously as batches fill, and on **every checkpoint** Flink invokes the writer's `flush()`
+(before the barrier is emitted), which appends all pending batches and awaits every in-flight
+append with direct response inspection. A successful checkpoint therefore means *all* records up
+to the barrier are acknowledged by BigQuery, and the writer stores nothing in Flink state —
+**discarding operator state (savepoint-less redeploys, state resets) can never lose
+sink-buffered data**. This is a deliberate decision: the alternative `AsyncSinkWriter`-style
+model persists unflushed buffers into writer state instead of flushing at the barrier, which
+silently loses those buffers whenever state is dropped.
+
+Checkpointing must be enabled for the at-least-once guarantee in streaming jobs: without it,
+Flink never calls `flush()` mid-stream, so sub-threshold buffers are lost on failure (a
+time-based flush option for checkpoint-less jobs is tracked in #54). Batch execution is covered
+by the end-of-input flush. End-to-end loss behavior additionally depends on the source's own
+state handling.
+
 ## Provenance and attribution
 
 This module is an original implementation. Its design references the following Apache-2.0

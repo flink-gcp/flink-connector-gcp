@@ -51,6 +51,12 @@ import java.util.concurrent.atomic.AtomicReference;
  * append failures are additionally captured by completion callbacks and rethrown on the next {@link
  * #write} or {@link #flush} call.
  *
+ * <p>The writer is <em>stateless</em>: it stores nothing in Flink state, so discarding operator
+ * state can never lose sink-buffered data (the {@code AsyncSinkWriter}-style alternative of
+ * persisting unflushed buffers into writer state was deliberately rejected for exactly that failure
+ * mode). Checkpointing must be enabled for the at-least-once guarantee in streaming jobs; without
+ * it {@code flush()} is only invoked at end of input.
+ *
  * <p>In-flight batches are retained together with their destination until acknowledged (the
  * groundwork for table auto-creation (#11) and schema-evolution rebuilds (#12), which re-append
  * failed batches).
