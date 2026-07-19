@@ -226,6 +226,7 @@ limitations under the License.
                         <exclude>**/*.iml</exclude>
                         <exclude>**/target/**</exclude>
                         <exclude>**/README.md</exclude>
+                        <exclude>CLAUDE.md</exclude>
                         <exclude>.github/**</exclude>
                         <exclude>LICENSE</exclude>
                         <exclude>NOTICE</exclude>
