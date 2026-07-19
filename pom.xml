@@ -63,7 +63,7 @@ limitations under the License.
 
         <!-- Test dependencies -->
         <assertj.version>3.27.7</assertj.version>
-        <junit5.version>5.13.3</junit5.version>
+        <junit5.version>6.1.2</junit5.version>
         <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
