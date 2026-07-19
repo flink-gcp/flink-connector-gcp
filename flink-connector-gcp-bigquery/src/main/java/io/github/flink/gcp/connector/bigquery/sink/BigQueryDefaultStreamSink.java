@@ -17,9 +17,13 @@
 package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
+
+import io.github.flink.gcp.connector.bigquery.sink.writer.BigQueryDefaultStreamWriter;
+import io.github.flink.gcp.connector.bigquery.sink.writer.StreamWriterRowAppenderFactory;
 
 /**
  * At-least-once sink appending to Storage Write API default streams with dynamic per-record table
@@ -45,8 +49,12 @@ public class BigQueryDefaultStreamSink<T> implements Sink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) {
-        throw new UnsupportedOperationException(
-                "The Storage Write API at-least-once writer is not implemented yet"
-                        + " (tracked in issue #10).");
+        return createWriter(new StreamWriterRowAppenderFactory());
+    }
+
+    @VisibleForTesting
+    public SinkWriter<T> createWriter(
+            io.github.flink.gcp.connector.bigquery.sink.writer.RowAppenderFactory appenderFactory) {
+        return new BigQueryDefaultStreamWriter<>(config, appenderFactory);
     }
 }

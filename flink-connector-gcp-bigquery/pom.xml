@@ -67,5 +67,17 @@ limitations under the License.
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java-util</artifactId>
         </dependency>
+        <dependency>
+            <!-- ApiFuture types used on the writer's public/internal surface.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>api-common</artifactId>
+        </dependency>
+        <dependency>
+            <!-- com.google.rpc types (AppendRowsResponse.getError) used in main and tests.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.api.grpc</groupId>
+            <artifactId>proto-google-common-protos</artifactId>
+        </dependency>
     </dependencies>
 </project>
