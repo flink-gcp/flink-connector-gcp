@@ -67,5 +67,11 @@ limitations under the License.
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java-util</artifactId>
         </dependency>
+        <dependency>
+            <!-- ApiFuture types used on the writer's public/internal surface.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>api-common</artifactId>
+        </dependency>
     </dependencies>
 </project>

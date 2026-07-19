@@ -6,7 +6,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 
 | Write method | Semantics | Status |
 |---|---|---|
-| `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | API only (writer: #10) |
+| `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | Writer implemented (table auto-creation: #11, emulator IT: #15) |
 | `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit | Not buildable yet — `build()` rejects (#30) |
 | `FILE_LOADS` | GCS-staged files + BigQuery load jobs; batch only | Not buildable yet — `build()` rejects (#14) |
 

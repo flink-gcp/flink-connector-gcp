@@ -1,0 +1,306 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigquery.sink.writer;
+
+import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.sink2.SinkWriter;
+
+import com.google.api.core.ApiFuture;
+import com.google.api.core.ApiFutures;
+import com.google.api.core.SettableApiFuture;
+import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
+import com.google.cloud.bigquery.storage.v1.ProtoRows;
+import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
+import com.google.cloud.bigquery.storage.v1.TableSchema;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Descriptors;
+import com.google.protobuf.Empty;
+import com.google.rpc.Status;
+import io.github.flink.gcp.connector.bigquery.sink.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
+import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.DestinationResolver;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/** Tests for {@link BigQueryDefaultStreamWriter}. */
+class BigQueryDefaultStreamWriterTest {
+
+    private static final SinkWriter.Context CONTEXT =
+            new SinkWriter.Context() {
+                @Override
+                public long currentWatermark() {
+                    return 0;
+                }
+
+                @Override
+                public Long timestamp() {
+                    return null;
+                }
+            };
+
+    /** Serializer writing the record string bytes; descriptor is irrelevant for the fake. */
+    private static class StringSerializer extends BigQueryProtoSerializer<String> {
+        private static final long serialVersionUID = 1L;
+
+        private final List<TableDestination> descriptorRequests = new ArrayList<>();
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return TableSchema.newBuilder()
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("f")
+                                    .setType(TableFieldSchema.Type.INT64)
+                                    .setMode(TableFieldSchema.Mode.NULLABLE)
+                                    .build())
+                    .build();
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            descriptorRequests.add(destination);
+            return Empty.getDescriptor();
+        }
+
+        @Override
+        public ByteString serialize(String element) {
+            return ByteString.copyFromUtf8(element);
+        }
+    }
+
+    private static class FakeAppender implements RowAppender {
+        private final List<ProtoRows> appends = new ArrayList<>();
+        private final List<ApiFuture<AppendRowsResponse>> results;
+        private boolean closed;
+
+        FakeAppender(List<ApiFuture<AppendRowsResponse>> results) {
+            this.results = results;
+        }
+
+        @Override
+        public ApiFuture<AppendRowsResponse> append(ProtoRows rows) {
+            appends.add(rows);
+            if (results.isEmpty()) {
+                return ApiFutures.immediateFuture(AppendRowsResponse.getDefaultInstance());
+            }
+            return results.remove(0);
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+    }
+
+    private static class FakeAppenderFactory implements RowAppenderFactory {
+        private static final long serialVersionUID = 1L;
+
+        private final Map<TableDestination, FakeAppender> appenders = new LinkedHashMap<>();
+        private final List<ApiFuture<AppendRowsResponse>> results = new ArrayList<>();
+
+        @Override
+        public RowAppender create(
+                TableDestination destination,
+                Descriptors.Descriptor rowDescriptor,
+                String location) {
+            FakeAppender appender = new FakeAppender(results);
+            appenders.put(destination, appender);
+            return appender;
+        }
+    }
+
+    private static BigQuerySinkConfig<String> config(DestinationResolver<? super String> resolver) {
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destinationResolver(resolver)
+                                .serializer(new StringSerializer())
+                                .build();
+        return sink.getConfig();
+    }
+
+    private static List<String> rowsOf(ProtoRows rows) {
+        List<String> values = new ArrayList<>();
+        rows.getSerializedRowsList().forEach(b -> values.add(b.toStringUtf8()));
+        return values;
+    }
+
+    @Test
+    void routesRowsToPerDestinationAppenders() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config(
+                                (element, context) ->
+                                        TableDestination.of("p", "d", element.substring(0, 1))),
+                        factory);
+
+        writer.write("a1", CONTEXT);
+        writer.write("b1", CONTEXT);
+        writer.write("a2", CONTEXT);
+        writer.flush(false);
+
+        assertThat(factory.appenders.keySet())
+                .containsExactly(
+                        TableDestination.of("p", "d", "a"), TableDestination.of("p", "d", "b"));
+        FakeAppender a = factory.appenders.get(TableDestination.of("p", "d", "a"));
+        FakeAppender b = factory.appenders.get(TableDestination.of("p", "d", "b"));
+        assertThat(a.appends).hasSize(1);
+        assertThat(rowsOf(a.appends.get(0))).containsExactly("a1", "a2");
+        assertThat(b.appends).hasSize(1);
+        assertThat(rowsOf(b.appends.get(0))).containsExactly("b1");
+    }
+
+    @Test
+    void appendsWhenBatchSizeThresholdIsReached() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config((element, context) -> TableDestination.of("p", "d", "t")),
+                        factory,
+                        4);
+
+        writer.write("aa", CONTEXT);
+        writer.write("bb", CONTEXT);
+        writer.write("cc", CONTEXT);
+        writer.flush(false);
+
+        FakeAppender appender = factory.appenders.values().iterator().next();
+        assertThat(appender.appends).hasSize(2);
+        assertThat(rowsOf(appender.appends.get(0))).containsExactly("aa", "bb");
+        assertThat(rowsOf(appender.appends.get(1))).containsExactly("cc");
+    }
+
+    @Test
+    void asyncAppendFailureFailsSubsequentWrite() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        SettableApiFuture<AppendRowsResponse> failing = SettableApiFuture.create();
+        factory.results.add(failing);
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config((element, context) -> TableDestination.of("p", "d", "t")),
+                        factory,
+                        1);
+
+        writer.write("aa", CONTEXT);
+        writer.write("bb", CONTEXT); // triggers async append of "aa"
+        failing.setException(new RuntimeException("boom"));
+
+        assertThatThrownBy(() -> writer.write("cc", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasRootCauseMessage("boom");
+    }
+
+    @Test
+    void flushSurfacesFailedAppends() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        SettableApiFuture<AppendRowsResponse> failing = SettableApiFuture.create();
+        failing.setException(new RuntimeException("append failed"));
+        factory.results.add(failing);
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config((element, context) -> TableDestination.of("p", "d", "t")), factory);
+
+        writer.write("aa", CONTEXT);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasRootCauseMessage("append failed");
+    }
+
+    @Test
+    void responseLevelErrorsFailTheNextCall() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        factory.results.add(
+                ApiFutures.immediateFuture(
+                        AppendRowsResponse.newBuilder()
+                                .setError(Status.newBuilder().setMessage("schema mismatch"))
+                                .build()));
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config((element, context) -> TableDestination.of("p", "d", "t")), factory);
+
+        writer.write("aa", CONTEXT);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasStackTraceContaining("schema mismatch");
+    }
+
+    @Test
+    void requestsDescriptorPerDestination() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        StringSerializer serializer = new StringSerializer();
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destinationResolver(
+                                        (element, context) ->
+                                                TableDestination.of("p", "d", element))
+                                .serializer(serializer)
+                                .build();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(sink.getConfig(), factory);
+
+        writer.write("t1", CONTEXT);
+        writer.write("t2", CONTEXT);
+        writer.write("t1", CONTEXT);
+        writer.flush(false);
+
+        assertThat(serializer.descriptorRequests)
+                .containsExactly(
+                        TableDestination.of("p", "d", "t1"), TableDestination.of("p", "d", "t2"));
+    }
+
+    @Test
+    void closeClosesAllAppenders() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config((element, context) -> TableDestination.of("p", "d", element)),
+                        factory);
+
+        writer.write("t1", CONTEXT);
+        writer.write("t2", CONTEXT);
+        writer.flush(false);
+        writer.close();
+
+        assertThat(factory.appenders.values()).allSatisfy(a -> assertThat(a.closed).isTrue());
+    }
+
+    @Test
+    void sinkCreatesWriter() {
+        Sink<String> sink =
+                BigQuerySink.<String>builder()
+                        .destination(TableDestination.of("p", "d", "t"))
+                        .serializer(new StringSerializer())
+                        .build();
+
+        assertThat(sink).isInstanceOf(BigQueryDefaultStreamSink.class);
+    }
+}
