@@ -32,3 +32,10 @@ Requires JDK 17 and Maven (or use the included wrapper):
 This is an independent open-source project. It is not affiliated with, endorsed by, or
 supported by the Apache Software Foundation or Google. Apache Flink, Flink, and the
 Flink logo are trademarks of the Apache Software Foundation.
+
+## Acknowledgements
+
+Development of this project is assisted by [Claude](https://claude.com/) under
+[Claude for OSS](https://claude.com/contact-sales/claude-for-oss), Anthropic's support program
+for open-source developers (granted through the maintainer's work on
+[PyAthena](https://github.com/laughingman7743/PyAthena)).
