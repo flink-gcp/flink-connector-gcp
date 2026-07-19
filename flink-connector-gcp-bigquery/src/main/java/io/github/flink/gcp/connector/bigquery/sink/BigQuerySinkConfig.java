@@ -37,6 +37,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final BigQueryProtoSerializer<? super T> serializer;
     private final CreateDisposition createDisposition;
     private final TableCreateOptionsProvider tableCreateOptionsProvider;
+    private final SchemaUpdateOptions schemaUpdateOptions;
     private final FailedRowHandler failedRowHandler;
     private final String location;
 
@@ -45,12 +46,14 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             BigQueryProtoSerializer<? super T> serializer,
             CreateDisposition createDisposition,
             TableCreateOptionsProvider tableCreateOptionsProvider,
+            SchemaUpdateOptions schemaUpdateOptions,
             FailedRowHandler failedRowHandler,
             String location) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.createDisposition = createDisposition;
         this.tableCreateOptionsProvider = tableCreateOptionsProvider;
+        this.schemaUpdateOptions = schemaUpdateOptions;
         this.failedRowHandler = failedRowHandler;
         this.location = location;
     }
@@ -73,6 +76,11 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     /** Returns the per-destination creation options provider for auto-created tables. */
     public TableCreateOptionsProvider getTableCreateOptionsProvider() {
         return tableCreateOptionsProvider;
+    }
+
+    /** Returns the options gating connector-driven table schema updates. */
+    public SchemaUpdateOptions getSchemaUpdateOptions() {
+        return schemaUpdateOptions;
     }
 
     /** Returns the handler for rows that terminally fail to be written. */

@@ -41,6 +41,7 @@ public class BigQuerySinkBuilder<T> {
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
     private TableCreateOptionsProvider tableCreateOptionsProvider =
             destination -> TableCreateOptions.defaults();
+    private SchemaUpdateOptions schemaUpdateOptions = SchemaUpdateOptions.defaults();
     private FailedRowHandler failedRowHandler = FailedRowHandler.failJob();
     private String location;
 
@@ -139,6 +140,24 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
+     * Sets the options gating connector-driven table schema updates. Defaults to {@link
+     * SchemaUpdateOptions#defaults()} (updates disabled).
+     *
+     * <p>Schema changes made externally (for example via DDL) are always picked up without a job
+     * restart; these options only control whether the sink may update destination table schemas
+     * itself when the serializer's schema evolves past the table's.
+     *
+     * @param schemaUpdateOptions the schema update options
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> schemaUpdateOptions(SchemaUpdateOptions schemaUpdateOptions) {
+        this.schemaUpdateOptions =
+                Preconditions.checkNotNull(
+                        schemaUpdateOptions, "schemaUpdateOptions must not be null");
+        return this;
+    }
+
+    /**
      * Sets the policy for rows that terminally fail to be written (rows rejected by the Storage
      * Write API with per-row error details, rows that fail serialization, and rows exceeding the
      * per-row size limit). Defaults to {@link FailedRowHandler#failJob()}.
@@ -186,6 +205,7 @@ public class BigQuerySinkBuilder<T> {
                         serializer,
                         createDisposition,
                         tableCreateOptionsProvider,
+                        schemaUpdateOptions,
                         failedRowHandler,
                         location);
         switch (writeMethod) {

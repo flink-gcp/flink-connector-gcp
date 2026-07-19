@@ -50,7 +50,32 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link BigQueryDefaultStreamWriter}. */
 class BigQueryDefaultStreamWriterTest {
 
-    static final TableCreator NOOP_CREATOR = (destination, schema, options) -> {};
+    static final TableAdmin NOOP_ADMIN = new NoopTableAdmin();
+
+    /** Admin whose tables always "exist" implicitly: creation is a no-op, reads find nothing. */
+    static class NoopTableAdmin implements TableAdmin {
+        @Override
+        public void create(
+                TableDestination destination,
+                TableSchema schema,
+                io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions options) {}
+
+        @Override
+        public TableSchemaSnapshot getSchema(TableDestination destination) {
+            return null;
+        }
+
+        @Override
+        public boolean updateSchema(
+                TableDestination destination, TableSchemaSnapshot base, TableSchema proposed) {
+            return true;
+        }
+    }
+
+    /** A fast retry schedule for tests: 1 ms backoffs, the given attempt budget. */
+    static RetrySchedule fastSchedule(int maxAttempts) {
+        return new RetrySchedule(1, 1, maxAttempts, 0);
+    }
 
     private static final SinkWriter.Context CONTEXT =
             new SinkWriter.Context() {
@@ -181,7 +206,7 @@ class BigQueryDefaultStreamWriterTest {
                                         TableDestination.of("p", "d", element.substring(0, 1)),
                                 new StringSerializer()),
                         factory,
-                        NOOP_CREATOR);
+                        NOOP_ADMIN);
 
         writer.write("a1", CONTEXT);
         writer.write("b1", CONTEXT);
@@ -210,11 +235,10 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
                         factory,
-                        NOOP_CREATOR,
+                        NOOP_ADMIN,
                         4,
-                        1,
-                        1,
-                        1);
+                        fastSchedule(1),
+                        fastSchedule(1));
 
         writer.write("aa", CONTEXT);
         writer.write("bb", CONTEXT);
@@ -236,7 +260,7 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new OversizedSerializer()),
                         factory,
-                        NOOP_CREATOR);
+                        NOOP_ADMIN);
 
         assertThatThrownBy(() -> writer.write("big", CONTEXT))
                 .isInstanceOf(IOException.class)
@@ -254,11 +278,10 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
                         factory,
-                        NOOP_CREATOR,
+                        NOOP_ADMIN,
                         1,
-                        1,
-                        1,
-                        1);
+                        fastSchedule(1),
+                        fastSchedule(1));
 
         writer.write("aa", CONTEXT);
         writer.write("bb", CONTEXT); // triggers async append of "aa"
@@ -281,7 +304,7 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
                         factory,
-                        NOOP_CREATOR);
+                        NOOP_ADMIN);
 
         writer.write("aa", CONTEXT);
 
@@ -304,7 +327,7 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
                         factory,
-                        NOOP_CREATOR);
+                        NOOP_ADMIN);
 
         writer.write("aa", CONTEXT);
 
@@ -324,7 +347,7 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
                         factory,
-                        NOOP_CREATOR);
+                        NOOP_ADMIN);
 
         writer.write("aa", CONTEXT);
 
@@ -365,7 +388,7 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", element),
                                 serializer),
                         factory,
-                        NOOP_CREATOR);
+                        NOOP_ADMIN);
 
         writer.write("t1", CONTEXT);
         writer.write("t2", CONTEXT);
@@ -386,7 +409,7 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", element),
                                 new StringSerializer()),
                         factory,
-                        NOOP_CREATOR);
+                        NOOP_ADMIN);
 
         writer.write("t1", CONTEXT);
         writer.write("t2", CONTEXT);
@@ -406,7 +429,7 @@ class BigQueryDefaultStreamWriterTest {
                                 .serializer(new StringSerializer())
                                 .build();
 
-        SinkWriter<String> writer = sink.createWriter(factory, NOOP_CREATOR);
+        SinkWriter<String> writer = sink.createWriter(factory, NOOP_ADMIN);
         writer.write("row", CONTEXT);
         writer.flush(false);
         writer.close();

@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.writer;
 
+import com.google.cloud.bigquery.BigQueryError;
+import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TimePartitioning;
@@ -30,8 +32,8 @@ import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Tests for {@link BigQueryTableCreator}. */
-class BigQueryTableCreatorTest {
+/** Tests for {@link BigQueryTableAdmin}. */
+class BigQueryTableAdminTest {
 
     private static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
 
@@ -48,7 +50,7 @@ class BigQueryTableCreatorTest {
     @Test
     void buildsPlainTableByDefault() {
         TableInfo tableInfo =
-                BigQueryTableCreator.buildTableInfo(
+                BigQueryTableAdmin.buildTableInfo(
                         DESTINATION, SCHEMA, TableCreateOptions.defaults());
 
         assertThat(tableInfo.getTableId().getProject()).isEqualTo("p");
@@ -69,7 +71,7 @@ class BigQueryTableCreatorTest {
                         .clusteredFields(Arrays.asList("event_ts"))
                         .build();
 
-        TableInfo tableInfo = BigQueryTableCreator.buildTableInfo(DESTINATION, SCHEMA, options);
+        TableInfo tableInfo = BigQueryTableAdmin.buildTableInfo(DESTINATION, SCHEMA, options);
 
         StandardTableDefinition definition = tableInfo.getDefinition();
         TimePartitioning partitioning = definition.getTimePartitioning();
@@ -86,11 +88,47 @@ class BigQueryTableCreatorTest {
                         .timePartitioning(TableCreateOptions.TimePartitioningType.MONTH)
                         .build();
 
-        TableInfo tableInfo = BigQueryTableCreator.buildTableInfo(DESTINATION, SCHEMA, options);
+        TableInfo tableInfo = BigQueryTableAdmin.buildTableInfo(DESTINATION, SCHEMA, options);
 
         StandardTableDefinition definition = tableInfo.getDefinition();
         assertThat(definition.getTimePartitioning().getType())
                 .isEqualTo(TimePartitioning.Type.MONTH);
         assertThat(definition.getTimePartitioning().getField()).isNull();
+    }
+
+    @Test
+    void lostRacesAreRecognizedByHttpCode() {
+        assertThat(BigQueryTableAdmin.isLostRace(new BigQueryException(409, "conflict"))).isTrue();
+        assertThat(BigQueryTableAdmin.isLostRace(new BigQueryException(412, "precondition failed")))
+                .isTrue();
+        assertThat(BigQueryTableAdmin.isLostRace(new BigQueryException(403, "forbidden")))
+                .isFalse();
+        assertThat(BigQueryTableAdmin.isLostRace(new BigQueryException(400, "bad request")))
+                .isFalse();
+    }
+
+    @Test
+    void lostRacesAreRecognizedByErrorReason() {
+        assertThat(
+                        BigQueryTableAdmin.isLostRace(
+                                new BigQueryException(
+                                        400,
+                                        "etag mismatch",
+                                        new BigQueryError("conditionNotMet", null, "etag"))))
+                .isTrue();
+        assertThat(
+                        BigQueryTableAdmin.isLostRace(
+                                new BigQueryException(
+                                        403,
+                                        "quota",
+                                        new BigQueryError("rateLimitExceeded", null, "quota"))))
+                .isTrue();
+        assertThat(
+                        BigQueryTableAdmin.isLostRace(
+                                new BigQueryException(
+                                        403,
+                                        "denied",
+                                        new BigQueryError("accessDenied", null, "denied"))))
+                .isFalse();
     }
 }

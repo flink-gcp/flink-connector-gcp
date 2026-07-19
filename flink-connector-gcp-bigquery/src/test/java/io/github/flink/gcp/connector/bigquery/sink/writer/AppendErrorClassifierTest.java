@@ -19,8 +19,11 @@ package io.github.flink.gcp.connector.bigquery.sink.writer;
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
+import com.google.cloud.bigquery.storage.v1.StorageError;
+import com.google.protobuf.Any;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -153,6 +156,109 @@ class AppendErrorClassifierTest {
                                         null, GrpcStatusCode.of(Status.Code.NOT_FOUND), false),
                                 Status.Code.NOT_FOUND))
                 .isTrue();
+    }
+
+    private static com.google.rpc.Status statusWithStorageError(
+            Status.Code grpcCode, StorageError.StorageErrorCode errorCode) {
+        return com.google.rpc.Status.newBuilder()
+                .setCode(grpcCode.value())
+                .setMessage("synthesized " + errorCode)
+                .addDetails(
+                        Any.pack(
+                                StorageError.newBuilder()
+                                        .setCode(errorCode)
+                                        .setEntity("projects/p/datasets/d/tables/t")
+                                        .setErrorMessage("synthesized " + errorCode)
+                                        .build()))
+                .build();
+    }
+
+    @Test
+    void schemaMismatchIsDetectedFromTypedException() {
+        Throwable typed =
+                Exceptions.toStorageException(
+                        statusWithStorageError(
+                                Status.Code.INVALID_ARGUMENT,
+                                StorageError.StorageErrorCode.SCHEMA_MISMATCH_EXTRA_FIELDS),
+                        null);
+        assertThat(typed).isInstanceOf(Exceptions.SchemaMismatchedException.class);
+        assertThat(AppendErrorClassifier.isSchemaMismatch(typed)).isTrue();
+        assertThat(AppendErrorClassifier.isSchemaMismatch(new IOException("wrapper", typed)))
+                .isTrue();
+    }
+
+    @Test
+    void schemaMismatchIsDetectedFromStatusDetails() {
+        // A raw gRPC failure carrying the storage error only in the status trailers, as it
+        // surfaces when the SDK has not translated it into a typed exception.
+        StatusRuntimeException raw =
+                StatusProto.toStatusRuntimeException(
+                        statusWithStorageError(
+                                Status.Code.INVALID_ARGUMENT,
+                                StorageError.StorageErrorCode.SCHEMA_MISMATCH_EXTRA_FIELDS));
+        assertThat(AppendErrorClassifier.isSchemaMismatch(raw)).isTrue();
+    }
+
+    @Test
+    void schemaMismatchIsNotDetectedForOtherFailures() {
+        assertThat(
+                        AppendErrorClassifier.isSchemaMismatch(
+                                new StatusRuntimeException(Status.INVALID_ARGUMENT)))
+                .isFalse();
+        assertThat(AppendErrorClassifier.isSchemaMismatch(new RuntimeException("boom"))).isFalse();
+    }
+
+    @Test
+    void staleStreamWriterFailuresRequireWriterRefresh() {
+        Throwable finalized =
+                Exceptions.toStorageException(
+                        statusWithStorageError(
+                                Status.Code.INVALID_ARGUMENT,
+                                StorageError.StorageErrorCode.STREAM_FINALIZED),
+                        null);
+        assertThat(finalized).isInstanceOf(Exceptions.StreamFinalizedException.class);
+        assertThat(AppendErrorClassifier.requiresWriterRefresh(finalized)).isTrue();
+        assertThat(
+                        AppendErrorClassifier.requiresWriterRefresh(
+                                new IOException("wrapper", finalized)))
+                .isTrue();
+
+        StatusRuntimeException invalidState =
+                StatusProto.toStatusRuntimeException(
+                        statusWithStorageError(
+                                Status.Code.INVALID_ARGUMENT,
+                                StorageError.StorageErrorCode.INVALID_STREAM_STATE));
+        assertThat(AppendErrorClassifier.requiresWriterRefresh(invalidState)).isTrue();
+    }
+
+    @Test
+    void ordinaryFailuresDoNotRequireWriterRefresh() {
+        assertThat(
+                        AppendErrorClassifier.requiresWriterRefresh(
+                                new StatusRuntimeException(Status.UNAVAILABLE)))
+                .isFalse();
+        assertThat(AppendErrorClassifier.requiresWriterRefresh(new RuntimeException("boom")))
+                .isFalse();
+        assertThat(
+                        AppendErrorClassifier.requiresWriterRefresh(
+                                Exceptions.toStorageException(
+                                        statusWithStorageError(
+                                                Status.Code.INVALID_ARGUMENT,
+                                                StorageError.StorageErrorCode
+                                                        .SCHEMA_MISMATCH_EXTRA_FIELDS),
+                                        null)))
+                .isFalse();
+    }
+
+    @Test
+    void responseErrorsWithoutStorageDetailsYieldNoTypedException() {
+        assertThat(
+                        AppendErrorClassifier.toStorageException(
+                                com.google.rpc.Status.newBuilder()
+                                        .setCode(Status.Code.INVALID_ARGUMENT.value())
+                                        .setMessage("no details")
+                                        .build()))
+                .isNull();
     }
 
     @Test

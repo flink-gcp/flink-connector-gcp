@@ -21,8 +21,12 @@ import org.apache.flink.util.ExceptionUtils;
 
 import com.google.api.gax.rpc.ApiException;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
+import com.google.cloud.bigquery.storage.v1.StorageError;
+import com.google.protobuf.Any;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 
 import java.util.Collections;
 import java.util.EnumSet;
@@ -48,6 +52,11 @@ import java.util.Set;
  *       classified terminal here; the writer intercepts it beforehand when table auto-creation
  *       applies.
  * </ul>
+ *
+ * <p>Orthogonal to the classes above, {@link #isSchemaMismatch} and {@link #requiresWriterRefresh}
+ * detect failures the writer intercepts before classification: schema mismatches (repaired by a
+ * schema update when enabled) and stale-stream-writer failures (repaired by rebuilding the
+ * destination's writer).
  */
 @Internal
 final class AppendErrorClassifier {
@@ -69,6 +78,14 @@ final class AppendErrorClassifier {
                             Status.Code.DEADLINE_EXCEEDED,
                             Status.Code.RESOURCE_EXHAUSTED,
                             Status.Code.UNKNOWN));
+
+    /** Storage error codes cured by rebuilding the destination's stream writer. */
+    private static final Set<StorageError.StorageErrorCode> REFRESH_CODES =
+            Collections.unmodifiableSet(
+                    EnumSet.of(
+                            StorageError.StorageErrorCode.STREAM_FINALIZED,
+                            StorageError.StorageErrorCode.STREAM_NOT_FOUND,
+                            StorageError.StorageErrorCode.INVALID_STREAM_STATE));
 
     private AppendErrorClassifier() {}
 
@@ -102,6 +119,76 @@ final class AppendErrorClassifier {
     static Optional<Exceptions.AppendSerializtionError> findRowLevel(Throwable t) {
         return ExceptionUtils.findThrowable(t, Exceptions.AppendSerializtionError.class)
                 .filter(e -> !e.getRowIndexToErrorMessage().isEmpty());
+    }
+
+    /**
+     * Returns whether the failure is a schema mismatch: the appended rows carry fields the
+     * destination table's schema (as cached by the Storage Write API backend) does not have.
+     *
+     * <p>Detected as the SDK's typed {@link Exceptions.SchemaMismatchedException} or as a {@link
+     * StorageError} of code {@code SCHEMA_MISMATCH_EXTRA_FIELDS} attached to a gRPC status in the
+     * cause chain.
+     *
+     * @param t the failure
+     * @return whether the failure is a schema mismatch
+     */
+    static boolean isSchemaMismatch(Throwable t) {
+        return ExceptionUtils.findThrowable(t, Exceptions.SchemaMismatchedException.class)
+                        .isPresent()
+                || hasStorageErrorCode(
+                        t, EnumSet.of(StorageError.StorageErrorCode.SCHEMA_MISMATCH_EXTRA_FIELDS));
+    }
+
+    /**
+     * Returns whether the failure reports the stream writer itself as stale — finalized, unknown to
+     * the backend, in an invalid state, or closed client-side — and is cured by rebuilding the
+     * destination's writer and re-appending, rather than being terminal.
+     *
+     * @param t the failure
+     * @return whether rebuilding the stream writer repairs the failure
+     */
+    static boolean requiresWriterRefresh(Throwable t) {
+        return ExceptionUtils.findThrowable(
+                                t,
+                                cause ->
+                                        cause instanceof Exceptions.StreamFinalizedException
+                                                || cause instanceof Exceptions.StreamNotFound
+                                                || cause
+                                                        instanceof
+                                                        Exceptions.StreamWriterClosedException)
+                        .isPresent()
+                || hasStorageErrorCode(t, REFRESH_CODES);
+    }
+
+    /**
+     * Converts a response-embedded error into the SDK's typed storage exception when it carries a
+     * packed {@link StorageError} the SDK recognizes.
+     *
+     * @param error the error of a completed append response
+     * @return the typed exception, or {@code null}
+     */
+    static Exceptions.StorageException toStorageException(com.google.rpc.Status error) {
+        return Exceptions.toStorageException(error, null);
+    }
+
+    /** Whether the cause chain carries a packed {@link StorageError} with one of the codes. */
+    private static boolean hasStorageErrorCode(
+            Throwable t, Set<StorageError.StorageErrorCode> codes) {
+        // StatusProto walks the cause chain to the nearest gRPC status trailers itself.
+        com.google.rpc.Status status = StatusProto.fromThrowable(t);
+        if (status == null) {
+            return false;
+        }
+        for (Any detail : status.getDetailsList()) {
+            if (detail.is(StorageError.class)) {
+                try {
+                    return codes.contains(detail.unpack(StorageError.class).getCode());
+                } catch (InvalidProtocolBufferException e) {
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     /**
