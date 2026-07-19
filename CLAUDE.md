@@ -66,6 +66,12 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   (`setEnableConnectionPool`); no self-built keyed writer pool. The serializer SPI is an abstract
   class (`BigQueryProtoSerializer`) with `getDescriptor(TableDestination)` + `ByteString`
   rows — not a functional interface (descriptors are not Java-serializable)
+- **BigQuery error handling** (#13): a single `FailedRowHandler` SPI covers all row-level
+  failure policies — fail-job (default), log-and-drop, and DLQ routing (the `DeadLetterQueue`
+  interface is an experimental stub; lifecycle and shared-module extraction are decided in #37).
+  `FailedRow` carries serialized protobuf bytes, not the original record (the writer is
+  stateless). SDK in-stream retry settings are hardcoded in `StreamWriterRowAppenderFactory`;
+  exposing them is deferred until a real-world need shows which knobs matter
 - **Pub/Sub**: base implementation is vendored from `GoogleCloudPlatform/pubsub`
   `flink-connector/` (decision record: issues #17 and #31); the Apache connector is only a
   design reference (table-factory plumbing, emulator harness). All packages are normalized to

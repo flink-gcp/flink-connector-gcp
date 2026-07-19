@@ -6,7 +6,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 
 | Write method | Semantics | Status |
 |---|---|---|
-| `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | Writer implemented, incl. table auto-creation with create dispositions (full emulator IT suite: #15) |
+| `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | Writer implemented, incl. table auto-creation with create dispositions and error classification/routing (full emulator IT suite: #15) |
 | `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit | Not buildable yet — `build()` rejects (#30) |
 | `FILE_LOADS` | GCS-staged files + BigQuery load jobs; batch only | Not buildable yet — `build()` rejects (#14) |
 
@@ -70,6 +70,45 @@ Flink never calls `flush()` mid-stream, so sub-threshold buffers are lost on fai
 time-based flush option for checkpoint-less jobs is tracked in #54). Batch execution is covered
 by the end-of-input flush. End-to-end loss behavior additionally depends on the source's own
 state handling.
+
+## Error handling
+
+Append failures are classified on the task thread and routed by class:
+
+| Class | Examples | Behavior |
+|---|---|---|
+| Transient | `UNAVAILABLE`, `ABORTED`, `INTERNAL`, `CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `UNKNOWN` | Retried by the SDK's in-stream retries first (500 ms initial delay, ×2 up to 30 s, 5 attempts); failures that still surface are re-appended by the writer on a rebuilt stream writer with backoff (500 ms initial, doubled up to 10 s, 10 attempts). They do not fail the job unless the retry budget is exhausted |
+| Terminal | `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `NOT_FOUND` under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code | Fail the ongoing write or checkpoint immediately |
+| Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured `FailedRowHandler`; surviving rows of the batch are re-appended |
+
+The failed-row policy is pluggable via `failedRowHandler(...)`:
+
+```java
+Sink<MyEvent> sink =
+        BigQuerySink.<MyEvent>builder()
+                .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                .serializer(new MyEventProtoSerializer())
+                .failedRowHandler(FailedRowHandler.logAndDrop())
+                .build();
+```
+
+- `FailedRowHandler.failJob()` (default) — every row-level failure fails the checkpoint
+- `FailedRowHandler.logAndDrop()` — logs each failed row at WARN and drops it
+- `FailedRowHandler.sendToDeadLetterQueue(...)` — forwards each failed row to a
+  `DeadLetterQueue`, an experimental stub interface for the cross-connector DLQ
+  standardization (#37). The stub has no flush/checkpoint lifecycle yet: implementations
+  should write through synchronously (throwing on failure), and restarts can produce
+  duplicate dead-letter entries
+- Custom handlers implement `FailedRowHandler`; throwing from `handle` fails the checkpoint,
+  returning drops the row. `FailedRow` carries the serialized protobuf bytes (the writer is
+  stateless, so the original record object is gone by the time server-side row errors arrive),
+  or `null` bytes when serialization itself failed
+
+Retries preserve the at-least-once contract: a batch whose append outcome was lost may be
+re-appended in full, so duplicates are possible (as with any retry in this write method). Worst
+case, a single repair can take about a minute of SDK retries plus a minute of writer re-appends
+before surfacing as terminal. The SDK retry schedule is not configurable yet — deliberately
+deferred until a real-world need shows which knobs matter.
 
 ## Provenance and attribution
 

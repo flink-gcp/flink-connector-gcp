@@ -41,6 +41,7 @@ public class BigQuerySinkBuilder<T> {
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
     private TableCreateOptionsProvider tableCreateOptionsProvider =
             destination -> TableCreateOptions.defaults();
+    private FailedRowHandler failedRowHandler = FailedRowHandler.failJob();
     private String location;
 
     BigQuerySinkBuilder() {}
@@ -138,6 +139,24 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
+     * Sets the policy for rows that terminally fail to be written (rows rejected by the Storage
+     * Write API with per-row error details, rows that fail serialization, and rows exceeding the
+     * per-row size limit). Defaults to {@link FailedRowHandler#failJob()}.
+     *
+     * <p>The handler decides per row: returning normally drops the row, throwing fails the ongoing
+     * write or checkpoint. Transient append failures are retried without involving the handler, and
+     * terminal request failures such as {@code PERMISSION_DENIED} always fail the job.
+     *
+     * @param failedRowHandler the handler
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> failedRowHandler(FailedRowHandler failedRowHandler) {
+        this.failedRowHandler =
+                Preconditions.checkNotNull(failedRowHandler, "failedRowHandler must not be null");
+        return this;
+    }
+
+    /**
      * Sets the BigQuery location (for example {@code US} or {@code asia-northeast1}) shared by the
      * destination tables. Optional; setting it avoids a per-table metadata lookup when opening
      * Storage Write API connections.
@@ -167,6 +186,7 @@ public class BigQuerySinkBuilder<T> {
                         serializer,
                         createDisposition,
                         tableCreateOptionsProvider,
+                        failedRowHandler,
                         location);
         switch (writeMethod) {
             case STORAGE_API_AT_LEAST_ONCE:
