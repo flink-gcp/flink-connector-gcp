@@ -54,6 +54,11 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
      * absorbed before they reach the sink writer; the writer's own bounded re-append budget sits
      * above these retries. Not configurable yet — a deliberate deferral until a real-world need
      * shows which knobs matter.
+     *
+     * <p>Caveat: the SDK's connection pool is JVM-static per (location, credentials) and adopts the
+     * retry settings of whichever writer creates it first. This factory always passes the same
+     * constant, but a different BigQuery client in the same JVM sharing the pool key could have
+     * created the pool with other settings; the writer's own retry budget still applies either way.
      */
     private static final RetrySettings RETRY_SETTINGS =
             RetrySettings.newBuilder()

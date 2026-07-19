@@ -18,15 +18,12 @@ package io.github.flink.gcp.connector.bigquery.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.SinkWriter;
-import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
-import com.google.api.gax.rpc.ApiException;
-import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
@@ -196,12 +193,18 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         // repair is actually pending.
         if (repairNeeded.get() && repairNeeded.getAndSet(false)) {
             repairFailedInFlight();
+            // A terminal failure may have been captured by a completion callback while the
+            // repair awaited its futures; surface it before accepting the record.
+            checkAsyncError();
         }
         TableDestination destination = config.getDestinationResolver().resolve(element, context);
         ByteString row;
         try {
+            // Unchecked exceptions are routed too: a poison record must reach the handler no
+            // matter how the serializer fails (resolver failures, by contrast, are
+            // configuration errors and propagate).
             row = config.getSerializer().serialize(element);
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             failedRowHandler.handle(
                     FailedRow.of(
                             destination,
@@ -244,15 +247,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         // callbacks have run, so relying on the callbacks alone could let a checkpoint succeed
         // ahead of a captured failure.
         for (Map.Entry<ApiFuture<AppendRowsResponse>, InFlightBatch> entry : inFlight.entrySet()) {
-            Throwable failure;
-            try {
-                failure = responseToThrowable(entry.getValue().destination, entry.getKey().get());
-            } catch (ExecutionException e) {
-                failure = e.getCause();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Interrupted while flushing appends to BigQuery", e);
-            }
+            Throwable failure =
+                    awaitFailure(
+                            entry.getValue().destination,
+                            entry.getKey(),
+                            "Interrupted while flushing appends to BigQuery");
             if (failure != null) {
                 handleFailedAppend(entry.getKey(), failure);
             }
@@ -334,14 +333,10 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                      * immediately.
                      */
                     private void park(Throwable failure) {
-                        if (isTaskThreadRepairable(failure)) {
+                        if (repairActionFor(failure) != RepairAction.FAIL) {
                             repairNeeded.set(true);
                         } else {
-                            asyncError.compareAndSet(
-                                    null,
-                                    failure instanceof IOException
-                                            ? failure
-                                            : wrapAppendFailure(destination, failure));
+                            asyncError.compareAndSet(null, terminalFailure(destination, failure));
                             inFlight.remove(future);
                         }
                     }
@@ -349,10 +344,33 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 Runnable::run);
     }
 
-    /** Whether the failure is one the task thread repairs instead of failing the job outright. */
-    private boolean isTaskThreadRepairable(Throwable t) {
-        return isRecoverableNotFound(t)
-                || AppendErrorClassifier.classify(t) != AppendErrorClassifier.Kind.TERMINAL;
+    /** How a failed append is repaired (or not) on the task thread. */
+    private enum RepairAction {
+        /** Recoverable {@code NOT_FOUND}: create the table, then re-append. */
+        CREATE_TABLE,
+        /** Row-level failure: route rows to the handler, re-append the survivors. */
+        ROUTE_ROWS,
+        /** Transient failure: re-append within the retry budget. */
+        RETRY,
+        /** Terminal failure: fail the writer. */
+        FAIL
+    }
+
+    /**
+     * The single authority for repair routing; every failure-handling site dispatches on this so
+     * the callback-thread park decision and the task-thread repairs can never diverge.
+     */
+    private RepairAction repairActionFor(Throwable cause) {
+        if (isRecoverableNotFound(cause)) {
+            return RepairAction.CREATE_TABLE;
+        }
+        if (AppendErrorClassifier.findRowLevel(cause).isPresent()) {
+            return RepairAction.ROUTE_ROWS;
+        }
+        if (AppendErrorClassifier.classify(cause) == AppendErrorClassifier.Kind.TRANSIENT) {
+            return RepairAction.RETRY;
+        }
+        return RepairAction.FAIL;
     }
 
     /**
@@ -365,18 +383,14 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             if (!entry.getKey().isDone()) {
                 continue;
             }
-            Throwable failure;
-            try {
-                failure = responseToThrowable(entry.getValue().destination, entry.getKey().get());
-            } catch (ExecutionException e) {
-                // Successful completions are owned by the callbacks; repairable failures are
-                // left in the map for exactly this sweep, and a terminal failure whose callback
-                // has not run yet is surfaced here directly.
-                failure = e.getCause();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Interrupted while recovering appends to BigQuery", e);
-            }
+            // Successful completions are owned by the callbacks; repairable failures are left
+            // in the map for exactly this sweep, and a terminal failure whose callback has not
+            // run yet is surfaced here directly.
+            Throwable failure =
+                    awaitFailure(
+                            entry.getValue().destination,
+                            entry.getKey(),
+                            "Interrupted while recovering appends to BigQuery");
             if (failure != null) {
                 handleFailedAppend(entry.getKey(), failure);
             }
@@ -397,42 +411,37 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             // The completion callback owned this failure; it is surfaced via checkAsyncError.
             return;
         }
-        if (isRecoverableNotFound(cause)) {
-            LOG.info(
-                    "An append to {} failed because the table does not exist, creating it"
-                            + " (CREATE_IF_NEEDED)",
-                    batch.destination);
-            List<ProtoRows> batches = new ArrayList<>();
-            batches.add(batch.rows);
-            collectFailedSiblings(batch.destination, batches);
-            recoverDestination(batch.destination, batches);
-            return;
+        RepairAction action = repairActionFor(cause);
+        if (action == RepairAction.FAIL) {
+            throw terminalFailure(batch.destination, cause);
         }
-        Optional<Exceptions.AppendSerializtionError> rowLevel =
-                AppendErrorClassifier.findRowLevel(cause);
-        if (rowLevel.isPresent()) {
-            List<ProtoRows> batches = new ArrayList<>();
-            ProtoRows survivors = routeRowLevel(batch.destination, batch.rows, rowLevel.get());
+        List<ProtoRows> batches = new ArrayList<>();
+        if (action == RepairAction.ROUTE_ROWS) {
+            ProtoRows survivors =
+                    routeRowLevel(
+                            batch.destination,
+                            batch.rows,
+                            AppendErrorClassifier.findRowLevel(cause).get());
             if (survivors.getSerializedRowsCount() > 0) {
                 batches.add(survivors);
             }
-            collectFailedSiblings(batch.destination, batches);
-            retryBatches(batch.destination, batches, false);
-            return;
-        }
-        if (AppendErrorClassifier.classify(cause) == AppendErrorClassifier.Kind.TRANSIENT) {
+        } else {
             LOG.info(
-                    "An append to {} failed transiently past the SDK retries, re-appending"
-                            + " (cause: {})",
+                    action == RepairAction.CREATE_TABLE
+                            ? "An append to {} failed because the table does not exist, creating"
+                                    + " it (CREATE_IF_NEEDED)"
+                            : "An append to {} failed transiently past the SDK retries,"
+                                    + " re-appending (cause: {})",
                     batch.destination,
                     cause.toString());
-            List<ProtoRows> batches = new ArrayList<>();
             batches.add(batch.rows);
-            collectFailedSiblings(batch.destination, batches);
-            retryBatches(batch.destination, batches, false);
-            return;
         }
-        throw terminalFailure(batch.destination, cause);
+        collectFailedSiblings(batch.destination, batches);
+        if (action == RepairAction.CREATE_TABLE) {
+            recoverDestination(batch.destination, batches);
+        } else {
+            retryBatches(batch.destination, batches, false);
+        }
     }
 
     /**
@@ -448,15 +457,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             if (!destination.equals(entry.getValue().destination)) {
                 continue;
             }
-            Throwable failure;
-            try {
-                failure = responseToThrowable(destination, entry.getKey().get());
-            } catch (ExecutionException e) {
-                failure = e.getCause();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Interrupted while recovering appends to BigQuery", e);
-            }
+            Throwable failure =
+                    awaitFailure(
+                            destination,
+                            entry.getKey(),
+                            "Interrupted while recovering appends to BigQuery");
             if (failure == null) {
                 continue;
             }
@@ -464,20 +469,42 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             if (sibling == null) {
                 continue;
             }
-            Optional<Exceptions.AppendSerializtionError> rowLevel =
-                    AppendErrorClassifier.findRowLevel(failure);
-            if (rowLevel.isPresent()) {
-                ProtoRows survivors = routeRowLevel(destination, sibling.rows, rowLevel.get());
-                if (survivors.getSerializedRowsCount() > 0) {
-                    batches.add(survivors);
-                }
-            } else if (isRecoverableNotFound(failure)
-                    || AppendErrorClassifier.classify(failure)
-                            == AppendErrorClassifier.Kind.TRANSIENT) {
-                batches.add(sibling.rows);
-            } else {
-                throw terminalFailure(destination, failure);
+            switch (repairActionFor(failure)) {
+                case ROUTE_ROWS:
+                    ProtoRows survivors =
+                            routeRowLevel(
+                                    destination,
+                                    sibling.rows,
+                                    AppendErrorClassifier.findRowLevel(failure).get());
+                    if (survivors.getSerializedRowsCount() > 0) {
+                        batches.add(survivors);
+                    }
+                    break;
+                case FAIL:
+                    throw terminalFailure(destination, failure);
+                default:
+                    batches.add(sibling.rows);
+                    break;
             }
+        }
+    }
+
+    /**
+     * Awaits an append future and returns the failure it completed with — unwrapped from the
+     * execution exception, or derived from the response — or {@code null} on success.
+     */
+    private static Throwable awaitFailure(
+            TableDestination destination,
+            ApiFuture<AppendRowsResponse> future,
+            String interruptMessage)
+            throws IOException {
+        try {
+            return responseToThrowable(destination, future.get());
+        } catch (ExecutionException e) {
+            return e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException(interruptMessage, e);
         }
     }
 
@@ -547,11 +574,12 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 state = rebuildState(destination);
             } catch (IOException | RuntimeException e) {
                 tableCreated = maybeCreateMissingTable(destination, e, tableCreated);
-                if (!isRetriable(e, tableCreated) || attempt >= recoveryMaxAttempts) {
+                boolean retriable = isRetriable(e, tableCreated);
+                if (!retriable || attempt >= recoveryMaxAttempts) {
                     throw wrapFailure(
                             retryFailureMessage(
                                     "Failed to open a BigQuery write stream to " + destination,
-                                    e,
+                                    retriable,
                                     tableCreated,
                                     attempt),
                             e);
@@ -560,16 +588,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             boolean backOff = state == null;
             while (state != null && !remaining.isEmpty() && !backOff) {
                 ProtoRows head = remaining.get(0);
-                Throwable failure;
-                try {
-                    failure = responseToThrowable(destination, state.appender.append(head).get());
-                } catch (ExecutionException e) {
-                    failure = e.getCause();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new IOException(
-                            "Interrupted while re-appending to BigQuery table " + destination, e);
-                }
+                Throwable failure =
+                        awaitFailure(
+                                destination,
+                                state.appender.append(head),
+                                "Interrupted while re-appending to BigQuery table " + destination);
                 if (failure == null) {
                     remaining.remove(0);
                     continue;
@@ -577,21 +600,33 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 Optional<Exceptions.AppendSerializtionError> rowLevel =
                         AppendErrorClassifier.findRowLevel(failure);
                 if (rowLevel.isPresent()) {
-                    // Shrink the batch to the surviving rows and stay in the same attempt; each
-                    // pass drops at least one row, so this terminates.
-                    remaining.remove(0);
+                    // Shrink the batch to the surviving rows and stay in the same attempt.
                     ProtoRows survivors = routeRowLevel(destination, head, rowLevel.get());
+                    if (survivors.getSerializedRowsCount() >= head.getSerializedRowsCount()) {
+                        // No row matched the reported indices, so nothing was dropped;
+                        // re-appending the identical batch could never make progress.
+                        throw wrapFailure(
+                                "A re-append to BigQuery table "
+                                        + destination
+                                        + " failed with row errors matching none of the batch's"
+                                        + " rows ("
+                                        + attempt
+                                        + " attempt(s))",
+                                failure);
+                    }
+                    remaining.remove(0);
                     if (survivors.getSerializedRowsCount() > 0) {
                         remaining.add(0, survivors);
                     }
                     continue;
                 }
                 tableCreated = maybeCreateMissingTable(destination, failure, tableCreated);
-                if (!isRetriable(failure, tableCreated) || attempt >= recoveryMaxAttempts) {
+                boolean retriable = isRetriable(failure, tableCreated);
+                if (!retriable || attempt >= recoveryMaxAttempts) {
                     throw wrapFailure(
                             retryFailureMessage(
                                     "A re-append to BigQuery table " + destination + " failed",
-                                    failure,
+                                    retriable,
                                     tableCreated,
                                     attempt),
                             failure);
@@ -641,12 +676,12 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     private String retryFailureMessage(
-            String base, Throwable failure, boolean tableCreated, int attempt) {
+            String base, boolean retriable, boolean tableCreated, int attempt) {
         StringBuilder message = new StringBuilder(base);
         if (tableCreated) {
             message.append(" after creating the table");
         }
-        if (isRetriable(failure, tableCreated) && attempt >= recoveryMaxAttempts) {
+        if (retriable && attempt >= recoveryMaxAttempts) {
             message.append(", the retry budget is exhausted");
         }
         return message.append(" (").append(attempt).append(" attempt(s))").toString();
@@ -677,27 +712,18 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     /** Walks the cause chain for a gax or gRPC {@code NOT_FOUND}. */
     private static boolean isNotFound(Throwable t) {
-        return ExceptionUtils.findThrowable(
-                        t,
-                        cause ->
-                                (cause instanceof ApiException
-                                                && ((ApiException) cause).getStatusCode().getCode()
-                                                        == StatusCode.Code.NOT_FOUND)
-                                        || (cause instanceof StatusRuntimeException
-                                                && ((StatusRuntimeException) cause)
-                                                                .getStatus()
-                                                                .getCode()
-                                                        == Status.Code.NOT_FOUND))
-                .isPresent();
+        return AppendErrorClassifier.hasCode(t, Status.Code.NOT_FOUND);
     }
 
     /**
      * Turns a terminal append failure into the {@link IOException} failing the writer. Failures
-     * synthesized from an errored response already carry the full message and are thrown as-is.
+     * synthesized from an errored response already carry the full message and are thrown as-is;
+     * everything else — including foreign {@link IOException}s — is wrapped with the destination
+     * context.
      */
     private IOException terminalFailure(TableDestination destination, Throwable cause) {
-        if (cause instanceof IOException) {
-            return (IOException) cause;
+        if (cause instanceof ResponseErrorException) {
+            return (ResponseErrorException) cause;
         }
         return wrapAppendFailure(destination, cause);
     }
@@ -724,12 +750,19 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     /**
      * Maps a completed append response to the failure it carries, or {@code null} for a clean
-     * response. Row errors become a synthesized row-level error (the same shape the SDK raises), an
-     * error with a transient status code becomes a synthesized {@link StatusRuntimeException} so
-     * classification treats it uniformly, and any other error is terminal.
+     * response. An error with a transient status code becomes a synthesized {@link
+     * StatusRuntimeException} so the whole batch is retried (checked before row errors: a transient
+     * request must not drop rows), row errors become a synthesized row-level error (the same shape
+     * the SDK raises), and any other error is terminal.
      */
     private static Throwable responseToThrowable(
             TableDestination destination, AppendRowsResponse response) {
+        if (response.hasError()
+                && AppendErrorClassifier.isTransientCode(response.getError().getCode())) {
+            return Status.fromCodeValue(response.getError().getCode())
+                    .withDescription(response.getError().getMessage())
+                    .asRuntimeException();
+        }
         if (response.getRowErrorsCount() > 0) {
             Map<Integer, String> rowErrors = new HashMap<>();
             for (RowError rowError : response.getRowErrorsList()) {
@@ -746,18 +779,26 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                     rowErrors);
         }
         if (response.hasError()) {
-            if (AppendErrorClassifier.isTransientCode(response.getError().getCode())) {
-                return Status.fromCodeValue(response.getError().getCode())
-                        .withDescription(response.getError().getMessage())
-                        .asRuntimeException();
-            }
-            return new IOException(
+            return new ResponseErrorException(
                     "An append to BigQuery table "
                             + destination
                             + " completed with an error: "
                             + response.getError().getMessage());
         }
         return null;
+    }
+
+    /**
+     * Terminal failure synthesized from an errored append response. A dedicated type marks the
+     * message as already carrying the full destination context, so it is surfaced as-is while
+     * foreign {@link IOException}s still get wrapped.
+     */
+    private static final class ResponseErrorException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        ResponseErrorException(String message) {
+            super(message);
+        }
     }
 
     private void checkAsyncError() throws IOException {

@@ -105,6 +105,18 @@ final class AppendErrorClassifier {
     }
 
     /**
+     * Returns whether the cause chain carries the given gRPC status code (from a gax or gRPC
+     * exception).
+     *
+     * @param t the failure
+     * @param code the status code to look for
+     * @return whether the code is present in the chain
+     */
+    static boolean hasCode(Throwable t, Status.Code code) {
+        return ExceptionUtils.findThrowable(t, cause -> codeOf(cause) == code).isPresent();
+    }
+
+    /**
      * Returns whether a numeric gRPC status code (as embedded in {@code
      * AppendRowsResponse.getError()}) is transient. Unrecognized code values are not transient.
      *

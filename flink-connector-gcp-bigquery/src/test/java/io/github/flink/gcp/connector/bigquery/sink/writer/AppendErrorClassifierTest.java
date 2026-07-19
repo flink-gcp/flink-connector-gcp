@@ -143,6 +143,19 @@ class AppendErrorClassifierTest {
     }
 
     @Test
+    void hasCodeFindsCodesAnywhereInTheChain() {
+        Throwable nested = new IOException("wrapper", new StatusRuntimeException(Status.NOT_FOUND));
+        assertThat(AppendErrorClassifier.hasCode(nested, Status.Code.NOT_FOUND)).isTrue();
+        assertThat(AppendErrorClassifier.hasCode(nested, Status.Code.UNAVAILABLE)).isFalse();
+        assertThat(
+                        AppendErrorClassifier.hasCode(
+                                ApiExceptionFactory.createException(
+                                        null, GrpcStatusCode.of(Status.Code.NOT_FOUND), false),
+                                Status.Code.NOT_FOUND))
+                .isTrue();
+    }
+
+    @Test
     void transientResponseCodesAreRecognizedByValue() {
         assertThat(AppendErrorClassifier.isTransientCode(Status.Code.UNAVAILABLE.value())).isTrue();
         assertThat(AppendErrorClassifier.isTransientCode(Status.Code.INVALID_ARGUMENT.value()))

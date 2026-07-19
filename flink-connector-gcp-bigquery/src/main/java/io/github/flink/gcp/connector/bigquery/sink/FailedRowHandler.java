@@ -71,7 +71,8 @@ public interface FailedRowHandler extends Serializable {
 
     /**
      * Returns a policy that routes each failed row to the given dead-letter queue; a failure of the
-     * queue itself fails the job.
+     * queue itself fails the job. Rows are offered before the ongoing checkpoint completes, so
+     * restarts can produce duplicate dead-letter entries (see {@link DeadLetterQueue}).
      *
      * @param deadLetterQueue the dead-letter queue
      * @return the dead-letter-queue handler

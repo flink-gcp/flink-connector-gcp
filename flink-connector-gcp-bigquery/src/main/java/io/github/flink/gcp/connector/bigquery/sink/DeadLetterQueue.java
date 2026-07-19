@@ -27,7 +27,16 @@ import java.io.Serializable;
  *
  * <p>This is a stub for the cross-connector dead-letter-queue standardization (issue #37): the
  * lifecycle contract (open/close, checkpoint integration) and the extraction into a shared module
- * are decided there. Until then the interface is a minimal, evolving extension point.
+ * are decided there. Until then the interface is a minimal, evolving extension point with two
+ * caveats implementations must account for themselves:
+ *
+ * <ul>
+ *   <li>there is no flush/close hook yet, so an implementation that buffers rows asynchronously can
+ *       lose them when the job stops — write through synchronously (throwing on failure) to stay
+ *       reliable;
+ *   <li>rows are offered before the ongoing checkpoint completes, so a restart can replay the same
+ *       records and offer them again — dead-letter output is at-least-once.
+ * </ul>
  */
 @Experimental
 public interface DeadLetterQueue extends Serializable {

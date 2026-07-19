@@ -106,6 +106,16 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         }
     }
 
+    /** Serializer failing with an unchecked exception for every record. */
+    private static class UncheckedFailingSerializer extends BigQueryProtoSerializerStub {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public ByteString serialize(String element) {
+            throw new IllegalStateException("unchecked serializer failure");
+        }
+    }
+
     private abstract static class BigQueryProtoSerializerStub
             extends io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer<
                     String> {
@@ -528,6 +538,80 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         assertThat(handler.rows.get(0).getRowBytes()).isNotNull();
         assertThat(handler.rows.get(0).getErrorMessage()).contains("per-row limit");
         assertThat(factory.allAppendedRows()).isEmpty();
+    }
+
+    @Test
+    void uncheckedSerializationFailureIsRoutedToTheHandler() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        RecordingFailedRowHandler handler = new RecordingFailedRowHandler();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(new UncheckedFailingSerializer(), handler),
+                        factory,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("poison", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.rows).hasSize(1);
+        assertThat(handler.rows.get(0).getRowBytes()).isNull();
+        assertThat(handler.rows.get(0).getCause()).isInstanceOf(IllegalStateException.class);
+        assertThat(factory.allAppendedRows()).isEmpty();
+    }
+
+    @Test
+    void rowErrorsMatchingNoRowOfTheBatchAreTerminal() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        // Both the initial append and the re-append report an index outside the two-row batch:
+        // nothing can be dropped, so retrying could never make progress.
+        factory.scriptedResults.add(rowLevelError(Map.of(5, "stale index")));
+        factory.scriptedResults.add(rowLevelError(Map.of(5, "stale index")));
+        RecordingFailedRowHandler handler = new RecordingFailedRowHandler();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler),
+                        factory,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("aa", CONTEXT);
+        writer.write("bb", CONTEXT);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("row errors matching none");
+        assertThat(handler.rows).isEmpty();
+    }
+
+    @Test
+    void transientResponseErrorWithRowErrorsIsRetriedNotRouted() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(
+                ApiFutures.immediateFuture(
+                        AppendRowsResponse.newBuilder()
+                                .setError(
+                                        com.google.rpc.Status.newBuilder()
+                                                .setCode(Status.Code.UNAVAILABLE.value())
+                                                .setMessage("backend busy"))
+                                .addRowErrors(
+                                        RowError.newBuilder().setIndex(0).setMessage("row noise"))
+                                .build()));
+        RecordingFailedRowHandler handler = new RecordingFailedRowHandler();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler),
+                        factory,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        // The transient request error takes precedence: the whole batch is retried, no row is
+        // dropped or routed to the handler.
+        assertThat(handler.rows).isEmpty();
+        assertThat(factory.allAppendedRows()).containsExactly("aa", "aa");
     }
 
     // --- handler lifecycle ---

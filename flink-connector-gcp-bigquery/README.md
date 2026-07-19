@@ -96,7 +96,9 @@ Sink<MyEvent> sink =
 - `FailedRowHandler.logAndDrop()` — logs each failed row at WARN and drops it
 - `FailedRowHandler.sendToDeadLetterQueue(...)` — forwards each failed row to a
   `DeadLetterQueue`, an experimental stub interface for the cross-connector DLQ
-  standardization (#37)
+  standardization (#37). The stub has no flush/checkpoint lifecycle yet: implementations
+  should write through synchronously (throwing on failure), and restarts can produce
+  duplicate dead-letter entries
 - Custom handlers implement `FailedRowHandler`; throwing from `handle` fails the checkpoint,
   returning drops the row. `FailedRow` carries the serialized protobuf bytes (the writer is
   stateless, so the original record object is gone by the time server-side row errors arrive),
