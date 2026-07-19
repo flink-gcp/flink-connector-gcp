@@ -58,7 +58,7 @@ limitations under the License.
         <flink.parent.artifactId>flink-connector-gcp-parent</flink.parent.artifactId>
 
         <!-- Main dependencies -->
-        <flink.version>2.1.2</flink.version>
+        <flink.version>2.3.0</flink.version>
         <google-cloud-libraries-bom.version>26.83.0</google-cloud-libraries-bom.version>
 
         <!-- Test dependencies -->
