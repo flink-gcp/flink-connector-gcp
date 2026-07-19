@@ -6,7 +6,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 
 | Write method | Semantics | Status |
 |---|---|---|
-| `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | Writer implemented (table auto-creation: #11, emulator IT: #15) |
+| `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | Writer implemented, incl. table auto-creation with create dispositions (full emulator IT suite: #15) |
 | `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit | Not buildable yet — `build()` rejects (#30) |
 | `FILE_LOADS` | GCS-staged files + BigQuery load jobs; batch only | Not buildable yet — `build()` rejects (#14) |
 
@@ -36,8 +36,22 @@ API notes:
   TIMESTAMP in microseconds, nested messages → STRUCT, maps → REPEATED STRUCT<key, value>), and
   `ProtoSchemaOptions` can map selected message fields to JSON columns.
 - `TableDestination` is pure table identity (`equals`/`hashCode` over project/dataset/table);
-  per-destination creation metadata (partitioning, clustering) will be supplied through separate
-  hooks so destination identity stays stable as a cache/connection key.
+  per-destination creation metadata (partitioning, clustering) is supplied through
+  `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
+
+## Table auto-creation
+
+Under the default `CreateDisposition.CREATE_IF_NEEDED`, an append failing with `NOT_FOUND` is
+recovered on the task thread: the destination table is created through the BigQuery REST API
+(schema from the serializer's `getTableSchema`; partitioning/clustering from
+`tableCreateOptions(...)` or a per-destination `tableCreateOptionsProvider(...)`), the
+destination's stream writer is rebuilt, and the failed batch is re-appended with backoff while
+table metadata propagates to the Storage Write API backend. Creation is idempotent across
+parallel subtasks (HTTP 409 is treated as success); the credentials need
+`bigquery.tables.create` on the destination dataset. Options apply only at creation time —
+existing tables are never modified.
+
+With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
 
 ## Delivery guarantees and state
 
@@ -69,6 +83,8 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   — reference for Storage Write API sink internals and the serializer contract
   (descriptor accessor + `ByteString` rows)
 - [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage)
-  (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`) — reference for proto/schema conversion
+  (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`, `BqToBqStorageSchemaConverter`) —
+  reference for proto/schema conversion (`StorageSchemaConverter` is an independent
+  implementation of the reverse direction of the last)
 
 No source code has been copied into this module so far.

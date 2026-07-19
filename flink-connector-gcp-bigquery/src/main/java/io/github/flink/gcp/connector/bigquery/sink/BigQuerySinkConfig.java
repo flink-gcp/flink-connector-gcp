@@ -36,16 +36,19 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final DestinationResolver<? super T> destinationResolver;
     private final BigQueryProtoSerializer<? super T> serializer;
     private final CreateDisposition createDisposition;
+    private final TableCreateOptionsProvider tableCreateOptionsProvider;
     private final String location;
 
     BigQuerySinkConfig(
             DestinationResolver<? super T> destinationResolver,
             BigQueryProtoSerializer<? super T> serializer,
             CreateDisposition createDisposition,
+            TableCreateOptionsProvider tableCreateOptionsProvider,
             String location) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.createDisposition = createDisposition;
+        this.tableCreateOptionsProvider = tableCreateOptionsProvider;
         this.location = location;
     }
 
@@ -62,6 +65,11 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     /** Returns the table create disposition. */
     public CreateDisposition getCreateDisposition() {
         return createDisposition;
+    }
+
+    /** Returns the per-destination creation options provider for auto-created tables. */
+    public TableCreateOptionsProvider getTableCreateOptionsProvider() {
+        return tableCreateOptionsProvider;
     }
 
     /**

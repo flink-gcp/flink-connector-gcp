@@ -23,7 +23,10 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
 import io.github.flink.gcp.connector.bigquery.sink.writer.BigQueryDefaultStreamWriter;
+import io.github.flink.gcp.connector.bigquery.sink.writer.BigQueryTableCreator;
+import io.github.flink.gcp.connector.bigquery.sink.writer.RowAppenderFactory;
 import io.github.flink.gcp.connector.bigquery.sink.writer.StreamWriterRowAppenderFactory;
+import io.github.flink.gcp.connector.bigquery.sink.writer.TableCreator;
 
 /**
  * At-least-once sink appending to Storage Write API default streams with dynamic per-record table
@@ -49,12 +52,12 @@ public class BigQueryDefaultStreamSink<T> implements Sink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) {
-        return createWriter(new StreamWriterRowAppenderFactory());
+        return createWriter(new StreamWriterRowAppenderFactory(), new BigQueryTableCreator());
     }
 
     @VisibleForTesting
     public SinkWriter<T> createWriter(
-            io.github.flink.gcp.connector.bigquery.sink.writer.RowAppenderFactory appenderFactory) {
-        return new BigQueryDefaultStreamWriter<>(config, appenderFactory);
+            RowAppenderFactory appenderFactory, TableCreator tableCreator) {
+        return new BigQueryDefaultStreamWriter<>(config, appenderFactory, tableCreator);
     }
 }

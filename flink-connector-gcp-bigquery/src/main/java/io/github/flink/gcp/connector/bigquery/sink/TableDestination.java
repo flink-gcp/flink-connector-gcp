@@ -31,8 +31,8 @@ import java.util.Objects;
  * <p>Instances are pure table <em>identity</em>: {@link #equals(Object)} and {@link #hashCode()}
  * are defined over exactly (project, dataset, table) so the class can serve as a per-destination
  * key (writer caches, connection routing). Per-destination creation metadata (partitioning,
- * clustering, descriptions) is intentionally not part of this class and will be supplied through
- * separate hooks, keeping destination identity stable.
+ * clustering) is intentionally not part of this class — it is supplied through {@link
+ * TableCreateOptionsProvider} — keeping destination identity stable.
  *
  * <p>Instances are immutable; the resource path and hash are precomputed, so they are cheap to use
  * as map keys on the per-record write path. Resolvers should still cache and reuse instances

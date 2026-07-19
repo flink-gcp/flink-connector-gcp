@@ -39,6 +39,8 @@ public class BigQuerySinkBuilder<T> {
     private DestinationResolver<? super T> destinationResolver;
     private BigQueryProtoSerializer<? super T> serializer;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
+    private TableCreateOptionsProvider tableCreateOptionsProvider =
+            destination -> TableCreateOptions.defaults();
     private String location;
 
     BigQuerySinkBuilder() {}
@@ -107,6 +109,35 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
+     * Applies the same creation options (partitioning, clustering) to every table created under
+     * {@link CreateDisposition#CREATE_IF_NEEDED}. Overrides any previously set options or provider.
+     * Defaults to {@link TableCreateOptions#defaults()} (plain tables).
+     *
+     * @param tableCreateOptions the creation options
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> tableCreateOptions(TableCreateOptions tableCreateOptions) {
+        Preconditions.checkNotNull(tableCreateOptions, "tableCreateOptions must not be null");
+        this.tableCreateOptionsProvider = destination -> tableCreateOptions;
+        return this;
+    }
+
+    /**
+     * Resolves creation options (partitioning, clustering) per destination for tables created under
+     * {@link CreateDisposition#CREATE_IF_NEEDED}. Overrides any previously set options or provider.
+     *
+     * @param tableCreateOptionsProvider the provider
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> tableCreateOptionsProvider(
+            TableCreateOptionsProvider tableCreateOptionsProvider) {
+        this.tableCreateOptionsProvider =
+                Preconditions.checkNotNull(
+                        tableCreateOptionsProvider, "tableCreateOptionsProvider must not be null");
+        return this;
+    }
+
+    /**
      * Sets the BigQuery location (for example {@code US} or {@code asia-northeast1}) shared by the
      * destination tables. Optional; setting it avoids a per-table metadata lookup when opening
      * Storage Write API connections.
@@ -132,7 +163,11 @@ public class BigQuerySinkBuilder<T> {
 
         BigQuerySinkConfig<T> config =
                 new BigQuerySinkConfig<>(
-                        destinationResolver, serializer, createDisposition, location);
+                        destinationResolver,
+                        serializer,
+                        createDisposition,
+                        tableCreateOptionsProvider,
+                        location);
         switch (writeMethod) {
             case STORAGE_API_AT_LEAST_ONCE:
                 return new BigQueryDefaultStreamSink<>(config);

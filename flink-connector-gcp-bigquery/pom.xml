@@ -79,5 +79,37 @@ limitations under the License.
             <groupId>com.google.api.grpc</groupId>
             <artifactId>proto-google-common-protos</artifactId>
         </dependency>
+        <dependency>
+            <!-- ApiException/StatusCode for NOT_FOUND classification in the writer.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax</artifactId>
+        </dependency>
+        <dependency>
+            <!-- StatusRuntimeException for NOT_FOUND classification in the writer.
+                 Version managed by the libraries BOM. -->
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-api</artifactId>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <!-- Emulator-based integration tests (goccy/bigquery-emulator). -->
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Plaintext gRPC channel setup against the emulator in integration tests.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax-grpc</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>
