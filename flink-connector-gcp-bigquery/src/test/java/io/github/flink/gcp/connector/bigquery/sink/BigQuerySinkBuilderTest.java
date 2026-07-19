@@ -20,6 +20,8 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
+import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Empty;
@@ -51,6 +53,18 @@ class BigQuerySinkBuilderTest {
     /** A trivial serializable test serializer. */
     private static class TestSerializer extends BigQueryProtoSerializer<Object> {
         private static final long serialVersionUID = 1L;
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return TableSchema.newBuilder()
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("f")
+                                    .setType(TableFieldSchema.Type.INT64)
+                                    .setMode(TableFieldSchema.Mode.NULLABLE)
+                                    .build())
+                    .build();
+        }
 
         @Override
         public Descriptors.Descriptor getDescriptor(TableDestination destination) {

@@ -19,25 +19,34 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.bigquery.storage.v1.BigQuerySchemaUtil;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
-import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageOrBuilder;
+import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.JsonFormat;
+import com.google.protobuf.util.Timestamps;
 
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Rewrites protobuf messages into {@link DynamicMessage}s conforming to a BigQuery-storage
  * compatible target descriptor (as produced by {@code BQTableSchemaToProtoDescriptor} from the
- * schema derived by {@link ProtoSchemaConverter}).
+ * schema derived by {@link ProtoToTableSchemaConverter}).
+ *
+ * <p>All descriptor-dependent decisions — source/target field pairing (via {@link
+ * BigQuerySchemaUtil#getFieldName}, which tracks the library's field-naming contract), value
+ * conversion kinds, JSON selection, timestamp sub-field descriptors — are resolved once into a
+ * conversion plan at construction time; per-record conversion is a flat loop over the plan with no
+ * lookups, string building or name comparisons.
  *
  * <p>Value conversions mirror the schema mapping: {@code google.protobuf.Timestamp} fields are
- * flattened to epoch microseconds, enum values become their names, JSON-mapped message fields are
- * printed as canonical protobuf JSON, nested and repeated fields (including maps) are converted
- * recursively.
+ * flattened to validated epoch microseconds ({@link Timestamps#toMicros}), uint32/fixed32 are
+ * widened unsigned, uint64/fixed64 values above {@code Long.MAX_VALUE} are rejected, enum values
+ * become their names, JSON-mapped message fields are printed as canonical protobuf JSON, and
+ * nested/repeated fields (including maps) are converted recursively.
  *
  * <p>Instances hold non-serializable descriptors and must be re-created after deserialization (see
  * {@link ProtoMessageSerializer}).
@@ -45,23 +54,26 @@ import java.util.Map;
 @Internal
 public final class ProtoRowConverter {
 
-    private static final String TIMESTAMP_FULL_NAME = "google.protobuf.Timestamp";
-
-    private final Descriptors.Descriptor targetDescriptor;
-    private final ProtoSchemaOptions options;
-    private final JsonFormat.Printer jsonPrinter =
+    private static final JsonFormat.Printer JSON_PRINTER =
             JsonFormat.printer().omittingInsignificantWhitespace();
 
+    private final MessagePlan plan;
+
     /**
-     * Creates a converter towards the given target descriptor.
+     * Creates a converter from the given source descriptor towards the given target descriptor.
      *
+     * @param sourceDescriptor the descriptor of the source messages
      * @param targetDescriptor the BigQuery-storage compatible row descriptor
      * @param options the schema mapping options used to derive the target descriptor
      */
-    public ProtoRowConverter(Descriptors.Descriptor targetDescriptor, ProtoSchemaOptions options) {
-        this.targetDescriptor =
-                Preconditions.checkNotNull(targetDescriptor, "targetDescriptor must not be null");
-        this.options = Preconditions.checkNotNull(options, "options must not be null");
+    public ProtoRowConverter(
+            Descriptors.Descriptor sourceDescriptor,
+            Descriptors.Descriptor targetDescriptor,
+            ProtoSchemaOptions options) {
+        Preconditions.checkNotNull(sourceDescriptor, "sourceDescriptor must not be null");
+        Preconditions.checkNotNull(targetDescriptor, "targetDescriptor must not be null");
+        Preconditions.checkNotNull(options, "options must not be null");
+        this.plan = buildMessagePlan(sourceDescriptor, targetDescriptor, options, "");
     }
 
     /**
@@ -69,79 +81,112 @@ public final class ProtoRowConverter {
      *
      * @param source the source protobuf message
      * @return the converted row
+     * @throws IOException if a JSON-mapped field cannot be printed
      */
-    public DynamicMessage convert(MessageOrBuilder source) {
-        return convertMessage(source, targetDescriptor, "");
+    public DynamicMessage convert(MessageOrBuilder source) throws IOException {
+        return plan.convert(source);
     }
 
-    private DynamicMessage convertMessage(
-            MessageOrBuilder source, Descriptors.Descriptor target, String parentPath) {
-        DynamicMessage.Builder builder = DynamicMessage.newBuilder(target);
-        Map<String, Descriptors.FieldDescriptor> sourceFields = fieldsByLowerName(source);
+    /** How a source value is converted to its target representation. */
+    private enum Kind {
+        IDENTITY,
+        INT_TO_LONG,
+        UINT32_TO_LONG,
+        UINT64_CHECKED,
+        FLOAT_TO_DOUBLE,
+        ENUM_NAME,
+        TIMESTAMP_MICROS,
+        JSON,
+        STRUCT
+    }
+
+    private static MessagePlan buildMessagePlan(
+            Descriptors.Descriptor source,
+            Descriptors.Descriptor target,
+            ProtoSchemaOptions options,
+            String parentPath) {
+        List<FieldPlan> fieldPlans = new ArrayList<>(target.getFields().size());
         for (Descriptors.FieldDescriptor targetField : target.getFields()) {
-            Descriptors.FieldDescriptor sourceField =
-                    sourceFields.get(targetField.getName().toLowerCase(Locale.ROOT));
-            if (sourceField == null) {
-                continue;
-            }
+            String sourceName = BigQuerySchemaUtil.getFieldName(targetField);
+            Descriptors.FieldDescriptor sourceField = source.findFieldByName(sourceName);
+            Preconditions.checkState(
+                    sourceField != null,
+                    "No source field named %s in %s for target field %s",
+                    sourceName,
+                    source.getFullName(),
+                    targetField.getName());
             String path =
                     parentPath.isEmpty()
                             ? sourceField.getName()
                             : parentPath + "." + sourceField.getName();
-            if (sourceField.isRepeated()) {
-                int count = source.getRepeatedFieldCount(sourceField);
-                for (int i = 0; i < count; i++) {
-                    builder.addRepeatedField(
-                            targetField,
-                            convertValue(
-                                    source.getRepeatedField(sourceField, i),
-                                    sourceField,
-                                    targetField,
-                                    path));
-                }
-            } else {
-                if (sourceField.hasPresence() && !source.hasField(sourceField)) {
-                    continue;
-                }
-                builder.setField(
-                        targetField,
-                        convertValue(source.getField(sourceField), sourceField, targetField, path));
-            }
+            fieldPlans.add(buildFieldPlan(sourceField, targetField, options, path));
         }
-        return builder.build();
+        return new MessagePlan(target, fieldPlans.toArray(new FieldPlan[0]));
     }
 
-    private Object convertValue(
-            Object value,
+    private static FieldPlan buildFieldPlan(
             Descriptors.FieldDescriptor sourceField,
             Descriptors.FieldDescriptor targetField,
+            ProtoSchemaOptions options,
             String path) {
-        if (options.getJsonFieldPaths().contains(path)) {
-            return printJson((MessageOrBuilder) value, path);
+        if (options.isJsonField(sourceField, path)) {
+            return new FieldPlan(sourceField, targetField, Kind.JSON, path, null, null, null);
         }
         switch (sourceField.getJavaType()) {
             case INT:
-                return ((Integer) value).longValue();
-            case FLOAT:
-                return ((Float) value).doubleValue();
+                return new FieldPlan(
+                        sourceField,
+                        targetField,
+                        isUnsigned(sourceField) ? Kind.UINT32_TO_LONG : Kind.INT_TO_LONG,
+                        path,
+                        null,
+                        null,
+                        null);
             case LONG:
+                return new FieldPlan(
+                        sourceField,
+                        targetField,
+                        isUnsigned(sourceField) ? Kind.UINT64_CHECKED : Kind.IDENTITY,
+                        path,
+                        null,
+                        null,
+                        null);
+            case FLOAT:
+                return new FieldPlan(
+                        sourceField, targetField, Kind.FLOAT_TO_DOUBLE, path, null, null, null);
             case DOUBLE:
             case BOOLEAN:
             case STRING:
             case BYTE_STRING:
-                return value;
+                return new FieldPlan(
+                        sourceField, targetField, Kind.IDENTITY, path, null, null, null);
             case ENUM:
-                return ((Descriptors.EnumValueDescriptor) value).getName();
+                return new FieldPlan(
+                        sourceField, targetField, Kind.ENUM_NAME, path, null, null, null);
             case MESSAGE:
-                MessageOrBuilder message = (MessageOrBuilder) value;
-                if (TIMESTAMP_FULL_NAME.equals(message.getDescriptorForType().getFullName())) {
-                    return toEpochMicros(message);
+                if (ProtoToTableSchemaConverter.isTimestampMessage(sourceField)) {
+                    Descriptors.Descriptor timestampType = sourceField.getMessageType();
+                    return new FieldPlan(
+                            sourceField,
+                            targetField,
+                            Kind.TIMESTAMP_MICROS,
+                            path,
+                            null,
+                            timestampType.findFieldByName("seconds"),
+                            timestampType.findFieldByName("nanos"));
                 }
-                Preconditions.checkArgument(
-                        targetField.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE,
-                        "Target field for %s is not a struct",
-                        path);
-                return convertMessage(message, targetField.getMessageType(), path);
+                return new FieldPlan(
+                        sourceField,
+                        targetField,
+                        Kind.STRUCT,
+                        path,
+                        buildMessagePlan(
+                                sourceField.getMessageType(),
+                                targetField.getMessageType(),
+                                options,
+                                path),
+                        null,
+                        null);
             default:
                 throw new IllegalArgumentException(
                         "Unsupported protobuf type "
@@ -151,27 +196,121 @@ public final class ProtoRowConverter {
         }
     }
 
-    private String printJson(MessageOrBuilder message, String path) {
-        try {
-            return jsonPrinter.print(message);
-        } catch (InvalidProtocolBufferException e) {
-            throw new IllegalArgumentException("Failed to serialize field " + path + " to JSON", e);
+    private static boolean isUnsigned(Descriptors.FieldDescriptor field) {
+        switch (field.getType()) {
+            case UINT32:
+            case FIXED32:
+            case UINT64:
+            case FIXED64:
+                return true;
+            default:
+                return false;
         }
     }
 
-    private static long toEpochMicros(MessageOrBuilder timestamp) {
-        Descriptors.Descriptor descriptor = timestamp.getDescriptorForType();
-        long seconds = (Long) timestamp.getField(descriptor.findFieldByName("seconds"));
-        int nanos = (Integer) timestamp.getField(descriptor.findFieldByName("nanos"));
-        return seconds * 1_000_000L + nanos / 1_000L;
+    private static final class MessagePlan {
+        private final Descriptors.Descriptor target;
+        private final FieldPlan[] fields;
+
+        MessagePlan(Descriptors.Descriptor target, FieldPlan[] fields) {
+            this.target = target;
+            this.fields = fields;
+        }
+
+        DynamicMessage convert(MessageOrBuilder source) throws IOException {
+            DynamicMessage.Builder builder = DynamicMessage.newBuilder(target);
+            for (FieldPlan field : fields) {
+                if (field.sourceField.isRepeated()) {
+                    int count = source.getRepeatedFieldCount(field.sourceField);
+                    for (int i = 0; i < count; i++) {
+                        builder.addRepeatedField(
+                                field.targetField,
+                                field.convertValue(source.getRepeatedField(field.sourceField, i)));
+                    }
+                } else {
+                    if (field.sourceField.hasPresence() && !source.hasField(field.sourceField)) {
+                        continue;
+                    }
+                    builder.setField(
+                            field.targetField,
+                            field.convertValue(source.getField(field.sourceField)));
+                }
+            }
+            return builder.build();
+        }
     }
 
-    private static Map<String, Descriptors.FieldDescriptor> fieldsByLowerName(
-            MessageOrBuilder message) {
-        Map<String, Descriptors.FieldDescriptor> byName = new HashMap<>();
-        for (Descriptors.FieldDescriptor field : message.getDescriptorForType().getFields()) {
-            byName.put(field.getName().toLowerCase(Locale.ROOT), field);
+    private static final class FieldPlan {
+        private final Descriptors.FieldDescriptor sourceField;
+        private final Descriptors.FieldDescriptor targetField;
+        private final Kind kind;
+        private final String path;
+        private final MessagePlan nested;
+        private final Descriptors.FieldDescriptor timestampSeconds;
+        private final Descriptors.FieldDescriptor timestampNanos;
+
+        FieldPlan(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                Kind kind,
+                String path,
+                MessagePlan nested,
+                Descriptors.FieldDescriptor timestampSeconds,
+                Descriptors.FieldDescriptor timestampNanos) {
+            this.sourceField = sourceField;
+            this.targetField = targetField;
+            this.kind = kind;
+            this.path = path;
+            this.nested = nested;
+            this.timestampSeconds = timestampSeconds;
+            this.timestampNanos = timestampNanos;
         }
-        return byName;
+
+        Object convertValue(Object value) throws IOException {
+            switch (kind) {
+                case IDENTITY:
+                    return value;
+                case INT_TO_LONG:
+                    return ((Integer) value).longValue();
+                case UINT32_TO_LONG:
+                    return Integer.toUnsignedLong((Integer) value);
+                case UINT64_CHECKED:
+                    long unsigned = (Long) value;
+                    if (unsigned < 0) {
+                        throw new IllegalArgumentException(
+                                "uint64 value "
+                                        + Long.toUnsignedString(unsigned)
+                                        + " of field "
+                                        + path
+                                        + " exceeds Long.MAX_VALUE and cannot be represented as"
+                                        + " INT64");
+                    }
+                    return unsigned;
+                case FLOAT_TO_DOUBLE:
+                    return ((Float) value).doubleValue();
+                case ENUM_NAME:
+                    return ((Descriptors.EnumValueDescriptor) value).getName();
+                case TIMESTAMP_MICROS:
+                    return toEpochMicros(value);
+                case JSON:
+                    return JSON_PRINTER.print((MessageOrBuilder) value);
+                case STRUCT:
+                    return nested.convert((MessageOrBuilder) value);
+                default:
+                    throw new IllegalStateException("Unknown conversion kind: " + kind);
+            }
+        }
+
+        private long toEpochMicros(Object value) {
+            if (value instanceof Timestamp) {
+                return Timestamps.toMicros((Timestamp) value);
+            }
+            MessageOrBuilder message = (MessageOrBuilder) value;
+            return Timestamps.toMicros(
+                    Timestamp.newBuilder()
+                            .setSeconds((Long) message.getField(timestampSeconds))
+                            .setNanos((Integer) message.getField(timestampNanos))
+                            .build());
+        }
     }
 }

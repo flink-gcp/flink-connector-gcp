@@ -61,6 +61,21 @@ public final class ProtoSchemaOptions implements Serializable {
         return jsonFieldPaths;
     }
 
+    /**
+     * Returns whether the given field is mapped to a BigQuery {@code JSON} column. This is the
+     * single decision point consulted by both schema derivation and row conversion (a
+     * proto-field-option based selection will extend it here).
+     *
+     * @param field the field descriptor
+     * @param path the dotted path of the field from the root message
+     * @return whether the field is written as JSON
+     */
+    public boolean isJsonField(
+            @SuppressWarnings("unused") com.google.protobuf.Descriptors.FieldDescriptor field,
+            String path) {
+        return jsonFieldPaths.contains(path);
+    }
+
     /** Builder for {@link ProtoSchemaOptions}. */
     @PublicEvolving
     public static final class Builder {

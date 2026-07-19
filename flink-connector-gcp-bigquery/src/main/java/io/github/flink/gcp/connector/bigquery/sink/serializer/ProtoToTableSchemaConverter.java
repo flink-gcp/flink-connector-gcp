@@ -22,35 +22,57 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.Timestamp;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 /**
  * Derives a BigQuery {@link TableSchema} from a protobuf {@link Descriptors.Descriptor}.
  *
+ * <p>(Named distinctly from the client library's {@code
+ * com.google.cloud.bigquery.storage.v1.ProtoSchemaConverter}, which converts descriptors to Storage
+ * API {@code ProtoSchema} messages.)
+ *
  * <p>Type mapping:
  *
  * <ul>
- *   <li>proto integer types (int32/int64/uint32/sint/fixed and uint64) → {@code INT64}. Note that
- *       uint64 values above {@code Long.MAX_VALUE} are not representable.
+ *   <li>proto integer types → {@code INT64}: int32/sint32/sfixed32/int64/sint64/sfixed64 map
+ *       losslessly, uint32/fixed32 are converted unsigned; uint64/fixed64 values above {@code
+ *       Long.MAX_VALUE} are not representable and are rejected at conversion time
  *   <li>float/double → {@code DOUBLE}, bool → {@code BOOL}, string → {@code STRING}, bytes → {@code
  *       BYTES}
- *   <li>enum → {@code STRING} (the enum value name)
+ *   <li>enum → {@code STRING} (the enum value name; unknown enum numbers surface as protobuf's
+ *       {@code UNKNOWN_ENUM_VALUE_*} placeholder names)
  *   <li>{@code google.protobuf.Timestamp} → {@code TIMESTAMP} (microsecond precision)
  *   <li>message → {@code STRUCT}, recursively; map fields → {@code REPEATED STRUCT<key, value>}
- *   <li>fields configured in {@link ProtoSchemaOptions#getJsonFieldPaths()} → {@code JSON}
- *   <li>repeated fields → {@code REPEATED} mode, everything else → {@code NULLABLE}
+ *   <li>fields selected by {@link ProtoSchemaOptions#isJsonField} → {@code JSON}
+ *   <li>repeated fields → {@code REPEATED} mode, everything else → {@code NULLABLE}. Note that
+ *       plain proto3 scalars have no presence: unset values materialize as protobuf defaults (0,
+ *       empty string, first enum value), never as NULL
  * </ul>
  *
- * <p>Recursive message types are rejected: BigQuery schemas cannot represent them.
+ * <p>Recursive message types are rejected (BigQuery schemas cannot represent them), as are sibling
+ * fields whose names differ only by case (the Storage API lowercases descriptor field names).
+ * Configured JSON field paths that match no message field are rejected.
  */
 @Internal
-public final class ProtoSchemaConverter {
+public final class ProtoToTableSchemaConverter {
 
-    private static final String TIMESTAMP_FULL_NAME = "google.protobuf.Timestamp";
+    private ProtoToTableSchemaConverter() {}
 
-    private ProtoSchemaConverter() {}
+    /**
+     * Returns whether the given message field is a {@code google.protobuf.Timestamp}, mapped to a
+     * BigQuery {@code TIMESTAMP} column. Shared with the row conversion planner so schema and value
+     * conversion cannot disagree.
+     *
+     * @param field a message-typed field
+     * @return whether the field maps to TIMESTAMP
+     */
+    static boolean isTimestampMessage(Descriptors.FieldDescriptor field) {
+        return Timestamp.getDescriptor().getFullName().equals(field.getMessageType().getFullName());
+    }
 
     /**
      * Converts the given descriptor to a BigQuery table schema.
@@ -64,9 +86,18 @@ public final class ProtoSchemaConverter {
         TableSchema.Builder builder = TableSchema.newBuilder();
         Set<String> ancestors = new HashSet<>();
         ancestors.add(descriptor.getFullName());
+        Set<String> matchedJsonPaths = new HashSet<>();
+        checkCaseCollisions(descriptor, "");
         for (Descriptors.FieldDescriptor field : descriptor.getFields()) {
-            builder.addFields(convertField(field, "", options, ancestors));
+            builder.addFields(convertField(field, "", options, ancestors, matchedJsonPaths));
         }
+        Set<String> unmatched = new HashSet<>(options.getJsonFieldPaths());
+        unmatched.removeAll(matchedJsonPaths);
+        Preconditions.checkArgument(
+                unmatched.isEmpty(),
+                "JSON field paths matching no message field of %s: %s",
+                descriptor.getFullName(),
+                unmatched);
         return builder.build();
     }
 
@@ -74,7 +105,8 @@ public final class ProtoSchemaConverter {
             Descriptors.FieldDescriptor field,
             String parentPath,
             ProtoSchemaOptions options,
-            Set<String> ancestors) {
+            Set<String> ancestors,
+            Set<String> matchedJsonPaths) {
         String path = parentPath.isEmpty() ? field.getName() : parentPath + "." + field.getName();
         TableFieldSchema.Builder builder =
                 TableFieldSchema.newBuilder()
@@ -84,12 +116,13 @@ public final class ProtoSchemaConverter {
                                         ? TableFieldSchema.Mode.REPEATED
                                         : TableFieldSchema.Mode.NULLABLE);
 
-        if (options.getJsonFieldPaths().contains(path)) {
+        if (options.isJsonField(field, path)) {
             Preconditions.checkArgument(
                     field.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE
                             && !field.isMapField(),
                     "JSON mapping requires a (possibly repeated) message field: %s",
                     path);
+            matchedJsonPaths.add(path);
             return builder.setType(TableFieldSchema.Type.JSON).build();
         }
 
@@ -113,7 +146,7 @@ public final class ProtoSchemaConverter {
                 builder.setType(TableFieldSchema.Type.BYTES);
                 break;
             case MESSAGE:
-                convertMessageField(field, path, options, ancestors, builder);
+                convertMessageField(field, path, options, ancestors, matchedJsonPaths, builder);
                 break;
             default:
                 throw new IllegalArgumentException(
@@ -127,9 +160,10 @@ public final class ProtoSchemaConverter {
             String path,
             ProtoSchemaOptions options,
             Set<String> ancestors,
+            Set<String> matchedJsonPaths,
             TableFieldSchema.Builder builder) {
         Descriptors.Descriptor messageType = field.getMessageType();
-        if (TIMESTAMP_FULL_NAME.equals(messageType.getFullName())) {
+        if (isTimestampMessage(field)) {
             builder.setType(TableFieldSchema.Type.TIMESTAMP);
             return;
         }
@@ -140,9 +174,23 @@ public final class ProtoSchemaConverter {
                 path);
         ancestors.add(messageType.getFullName());
         builder.setType(TableFieldSchema.Type.STRUCT);
+        checkCaseCollisions(messageType, path);
         for (Descriptors.FieldDescriptor sub : messageType.getFields()) {
-            builder.addFields(convertField(sub, path, options, ancestors));
+            builder.addFields(convertField(sub, path, options, ancestors, matchedJsonPaths));
         }
         ancestors.remove(messageType.getFullName());
+    }
+
+    private static void checkCaseCollisions(Descriptors.Descriptor descriptor, String path) {
+        Set<String> seen = new HashSet<>();
+        for (Descriptors.FieldDescriptor field : descriptor.getFields()) {
+            Preconditions.checkArgument(
+                    seen.add(field.getName().toLowerCase(Locale.ROOT)),
+                    "Fields of %s differ only by case (%s), which the BigQuery Storage API cannot"
+                            + " distinguish (at %s)",
+                    descriptor.getFullName(),
+                    field.getName(),
+                    path.isEmpty() ? "<root>" : path);
+        }
     }
 }

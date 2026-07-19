@@ -36,6 +36,18 @@ class ProtoMessageSerializerTest {
             TableDestination.of("my-project", "my_dataset", "my_table");
 
     @Test
+    void exposesTheLosslessTableSchema() {
+        ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
+
+        com.google.cloud.bigquery.storage.v1.TableSchema schema =
+                serializer.getTableSchema(DESTINATION);
+
+        assertThat(schema.getFieldsList())
+                .extracting(com.google.cloud.bigquery.storage.v1.TableFieldSchema::getName)
+                .containsExactlyInAnyOrder("seconds", "nanos");
+    }
+
+    @Test
     void derivesRowDescriptorFromMessageClass() {
         ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
 

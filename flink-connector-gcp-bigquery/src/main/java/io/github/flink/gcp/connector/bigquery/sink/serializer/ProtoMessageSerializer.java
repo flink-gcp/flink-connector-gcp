@@ -32,10 +32,10 @@ import java.io.IOException;
  * A {@link BigQueryProtoSerializer} for records that already are protobuf messages.
  *
  * <p>The BigQuery table schema is derived from the message's descriptor (see {@link
- * ProtoSchemaConverter} for the type mapping), and each record is rewritten into a BigQuery-storage
- * compatible row: {@code google.protobuf.Timestamp} fields become {@code TIMESTAMP} (microseconds),
- * enums become their value names, and message fields configured via {@link ProtoSchemaOptions} are
- * written as {@code JSON} columns.
+ * ProtoToTableSchemaConverter} for the type mapping), and each record is rewritten into a
+ * BigQuery-storage compatible row: {@code google.protobuf.Timestamp} fields become {@code
+ * TIMESTAMP} (microseconds), enums become their value names, and message fields configured via
+ * {@link ProtoSchemaOptions} are written as {@code JSON} columns.
  *
  * <p>All destinations share the schema of {@code T}; the message class (not its non-serializable
  * descriptor) is stored, so instances survive Flink's job-graph serialization and rebuild their
@@ -51,8 +51,7 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
     private final Class<T> messageClass;
     private final ProtoSchemaOptions options;
 
-    private transient Descriptors.Descriptor rowDescriptor;
-    private transient ProtoRowConverter rowConverter;
+    private transient volatile ConversionState state;
 
     private ProtoMessageSerializer(Class<T> messageClass, ProtoSchemaOptions options) {
         this.messageClass =
@@ -86,23 +85,36 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
     }
 
     @Override
+    public TableSchema getTableSchema(TableDestination destination) {
+        return state().tableSchema;
+    }
+
+    @Override
     public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-        initialize();
-        return rowDescriptor;
+        return state().rowDescriptor;
     }
 
     @Override
     public ByteString serialize(T element) throws IOException {
-        initialize();
-        return rowConverter.convert(element).toByteString();
+        return state().rowConverter.convert(element).toByteString();
     }
 
-    private synchronized void initialize() {
-        if (rowConverter != null) {
-            return;
+    private ConversionState state() {
+        ConversionState localState = state;
+        if (localState == null) {
+            localState = initialize();
+        }
+        return localState;
+    }
+
+    private synchronized ConversionState initialize() {
+        ConversionState localState = state;
+        if (localState != null) {
+            return localState;
         }
         Descriptors.Descriptor sourceDescriptor = sourceDescriptor();
-        TableSchema tableSchema = ProtoSchemaConverter.convert(sourceDescriptor, options);
+        TableSchema tableSchema = ProtoToTableSchemaConverter.convert(sourceDescriptor, options);
+        Descriptors.Descriptor rowDescriptor;
         try {
             rowDescriptor =
                     BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
@@ -113,7 +125,13 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
                             + messageClass.getName(),
                     e);
         }
-        rowConverter = new ProtoRowConverter(rowDescriptor, options);
+        localState =
+                new ConversionState(
+                        tableSchema,
+                        rowDescriptor,
+                        new ProtoRowConverter(sourceDescriptor, rowDescriptor, options));
+        state = localState;
+        return localState;
     }
 
     private Descriptors.Descriptor sourceDescriptor() {
@@ -125,6 +143,22 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
                             + messageClass.getName()
                             + "; a generated message class is required",
                     e);
+        }
+    }
+
+    /** Immutable holder published through one volatile read on the per-record path. */
+    private static final class ConversionState {
+        private final TableSchema tableSchema;
+        private final Descriptors.Descriptor rowDescriptor;
+        private final ProtoRowConverter rowConverter;
+
+        ConversionState(
+                TableSchema tableSchema,
+                Descriptors.Descriptor rowDescriptor,
+                ProtoRowConverter rowConverter) {
+            this.tableSchema = tableSchema;
+            this.rowDescriptor = rowDescriptor;
+            this.rowConverter = rowConverter;
         }
     }
 }

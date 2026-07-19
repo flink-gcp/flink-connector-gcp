@@ -36,6 +36,10 @@ final class TestProtos {
         return file().findMessageTypeByName("Recursive");
     }
 
+    static Descriptors.Descriptor caseCollision() {
+        return file().findMessageTypeByName("CaseCollision");
+    }
+
     private static Descriptors.FileDescriptor file() {
         try {
             return Descriptors.FileDescriptor.buildFrom(
@@ -158,6 +162,22 @@ final class TestProtos {
                                         .build())
                         .addField(message("f_map", 14, ".test.AllTypes.FMapEntry", true))
                         .addField(message("f_json", 15, ".test.Nested", false))
+                        .addField(message("f_rep_ts", 16, ".google.protobuf.Timestamp", true))
+                        .build();
+
+        DescriptorProtos.DescriptorProto caseCollision =
+                DescriptorProtos.DescriptorProto.newBuilder()
+                        .setName("CaseCollision")
+                        .addField(
+                                scalar(
+                                        "ID",
+                                        1,
+                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_STRING))
+                        .addField(
+                                scalar(
+                                        "id",
+                                        2,
+                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_STRING))
                         .build();
 
         DescriptorProtos.DescriptorProto recursive =
@@ -174,6 +194,7 @@ final class TestProtos {
                 .addEnumType(color)
                 .addMessageType(nested)
                 .addMessageType(allTypes)
+                .addMessageType(caseCollision)
                 .addMessageType(recursive)
                 .build();
     }

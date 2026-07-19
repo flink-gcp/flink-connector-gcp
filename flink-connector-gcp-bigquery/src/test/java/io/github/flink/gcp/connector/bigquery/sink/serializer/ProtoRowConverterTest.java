@@ -21,6 +21,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -28,6 +29,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link ProtoRowConverter}. */
 class ProtoRowConverterTest {
@@ -38,14 +40,18 @@ class ProtoRowConverterTest {
     @Test
     void convertsTheFullTypeMatrix() throws Exception {
         Descriptors.Descriptor source = TestProtos.allTypes();
-        Descriptors.Descriptor target = targetDescriptor(source, OPTIONS);
-        ProtoRowConverter converter = new ProtoRowConverter(target, OPTIONS);
+        ProtoRowConverter converter = converter(source, OPTIONS);
 
         Instant instant = Instant.parse("2026-01-02T03:04:05.123456789Z");
+        Timestamp ts =
+                Timestamp.newBuilder()
+                        .setSeconds(instant.getEpochSecond())
+                        .setNanos(instant.getNano())
+                        .build();
         DynamicMessage.Builder builder = DynamicMessage.newBuilder(source);
-        set(builder, source, "f_int32", 42);
+        set(builder, source, "f_int32", -42);
         set(builder, source, "f_int64", 43L);
-        set(builder, source, "f_uint32", 44);
+        set(builder, source, "f_uint32", (int) 3_000_000_000L);
         set(builder, source, "f_uint64", Long.MAX_VALUE);
         set(builder, source, "f_float", 1.5f);
         set(builder, source, "f_double", 2.5d);
@@ -57,14 +63,7 @@ class ProtoRowConverterTest {
                 source,
                 "f_enum",
                 source.getFile().findEnumTypeByName("Color").findValueByName("RED"));
-        set(
-                builder,
-                source,
-                "f_ts",
-                Timestamp.newBuilder()
-                        .setSeconds(instant.getEpochSecond())
-                        .setNanos(instant.getNano())
-                        .build());
+        set(builder, source, "f_ts", ts);
         Descriptors.Descriptor nestedType = source.getFile().findMessageTypeByName("Nested");
         set(
                 builder,
@@ -91,12 +90,14 @@ class ProtoRowConverterTest {
                         .setField(nestedType.findFieldByName("s"), "jsonvalue")
                         .setField(nestedType.findFieldByName("n"), 9L)
                         .build());
+        builder.addRepeatedField(source.findFieldByName("f_rep_ts"), ts);
+        builder.addRepeatedField(source.findFieldByName("f_rep_ts"), ts);
 
         DynamicMessage row = converter.convert(builder.build());
 
-        assertThat(get(row, "f_int32")).isEqualTo(42L);
+        assertThat(get(row, "f_int32")).isEqualTo(-42L);
         assertThat(get(row, "f_int64")).isEqualTo(43L);
-        assertThat(get(row, "f_uint32")).isEqualTo(44L);
+        assertThat(get(row, "f_uint32")).isEqualTo(3_000_000_000L);
         assertThat(get(row, "f_uint64")).isEqualTo(Long.MAX_VALUE);
         assertThat(get(row, "f_float")).isEqualTo(1.5d);
         assertThat(get(row, "f_double")).isEqualTo(2.5d);
@@ -104,7 +105,7 @@ class ProtoRowConverterTest {
         assertThat(get(row, "f_string")).isEqualTo("hello");
         assertThat(get(row, "f_bytes")).isEqualTo(ByteString.copyFromUtf8("raw"));
         assertThat(get(row, "f_enum")).isEqualTo("RED");
-        long expectedMicros = instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
+        long expectedMicros = Timestamps.toMicros(ts);
         assertThat(get(row, "f_ts")).isEqualTo(expectedMicros);
 
         DynamicMessage nestedRow = (DynamicMessage) get(row, "f_nested");
@@ -122,13 +123,30 @@ class ProtoRowConverterTest {
         assertThat((String) get(row, "f_json"))
                 .contains("\"s\":\"jsonvalue\"")
                 .contains("\"n\":\"9\"");
+
+        assertThat(get(row, "f_rep_ts")).isEqualTo(Arrays.asList(expectedMicros, expectedMicros));
+    }
+
+    @Test
+    void rejectsUnrepresentableUint64Values() throws Exception {
+        Descriptors.Descriptor source = TestProtos.allTypes();
+        ProtoRowConverter converter = converter(source, OPTIONS);
+
+        DynamicMessage message =
+                DynamicMessage.newBuilder(source)
+                        .setField(source.findFieldByName("f_uint64"), 0xF000000000000000L)
+                        .build();
+
+        assertThatThrownBy(() -> converter.convert(message))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("f_uint64")
+                .hasMessageContaining("17293822569102704640");
     }
 
     @Test
     void leavesUnsetMessageFieldsUnset() throws Exception {
         Descriptors.Descriptor source = TestProtos.allTypes();
-        Descriptors.Descriptor target = targetDescriptor(source, OPTIONS);
-        ProtoRowConverter converter = new ProtoRowConverter(target, OPTIONS);
+        ProtoRowConverter converter = converter(source, OPTIONS);
 
         DynamicMessage row =
                 converter.convert(
@@ -141,10 +159,12 @@ class ProtoRowConverterTest {
         assertThat(get(row, "f_string")).isEqualTo("only");
     }
 
-    private static Descriptors.Descriptor targetDescriptor(
+    private static ProtoRowConverter converter(
             Descriptors.Descriptor source, ProtoSchemaOptions options) throws Exception {
-        return BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                ProtoSchemaConverter.convert(source, options));
+        Descriptors.Descriptor target =
+                BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
+                        ProtoToTableSchemaConverter.convert(source, options));
+        return new ProtoRowConverter(source, target, options);
     }
 
     private static void set(

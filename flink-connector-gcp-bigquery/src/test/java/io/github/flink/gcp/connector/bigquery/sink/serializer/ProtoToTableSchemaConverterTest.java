@@ -27,13 +27,14 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link ProtoSchemaConverter}. */
-class ProtoSchemaConverterTest {
+/** Tests for {@link ProtoToTableSchemaConverter}. */
+class ProtoToTableSchemaConverterTest {
 
     @Test
     void mapsTheFullTypeMatrix() {
         TableSchema schema =
-                ProtoSchemaConverter.convert(TestProtos.allTypes(), ProtoSchemaOptions.defaults());
+                ProtoToTableSchemaConverter.convert(
+                        TestProtos.allTypes(), ProtoSchemaOptions.defaults());
         Map<String, TableFieldSchema> fields = byName(schema);
 
         assertThat(fields.get("f_int32").getType()).isEqualTo(TableFieldSchema.Type.INT64);
@@ -49,15 +50,17 @@ class ProtoSchemaConverterTest {
         assertThat(fields.get("f_ts").getType()).isEqualTo(TableFieldSchema.Type.TIMESTAMP);
 
         assertThat(fields.values())
-                .filteredOn(
-                        f -> !f.getName().equals("f_rep_string") && !f.getName().equals("f_map"))
+                .filteredOn(f -> f.getMode() != TableFieldSchema.Mode.REPEATED)
                 .allSatisfy(f -> assertThat(f.getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE));
+        assertThat(fields.get("f_rep_ts").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+        assertThat(fields.get("f_rep_ts").getType()).isEqualTo(TableFieldSchema.Type.TIMESTAMP);
     }
 
     @Test
     void mapsNestedMessagesToStructs() {
         TableSchema schema =
-                ProtoSchemaConverter.convert(TestProtos.allTypes(), ProtoSchemaOptions.defaults());
+                ProtoToTableSchemaConverter.convert(
+                        TestProtos.allTypes(), ProtoSchemaOptions.defaults());
         TableFieldSchema nested = byName(schema).get("f_nested");
 
         assertThat(nested.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
@@ -71,7 +74,8 @@ class ProtoSchemaConverterTest {
     @Test
     void mapsRepeatedAndMapFields() {
         TableSchema schema =
-                ProtoSchemaConverter.convert(TestProtos.allTypes(), ProtoSchemaOptions.defaults());
+                ProtoToTableSchemaConverter.convert(
+                        TestProtos.allTypes(), ProtoSchemaOptions.defaults());
         Map<String, TableFieldSchema> fields = byName(schema);
 
         TableFieldSchema repeated = fields.get("f_rep_string");
@@ -91,7 +95,7 @@ class ProtoSchemaConverterTest {
     @Test
     void mapsConfiguredMessageFieldsToJson() {
         ProtoSchemaOptions options = ProtoSchemaOptions.builder().jsonFieldPath("f_json").build();
-        TableSchema schema = ProtoSchemaConverter.convert(TestProtos.allTypes(), options);
+        TableSchema schema = ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options);
 
         TableFieldSchema json = byName(schema).get("f_json");
         assertThat(json.getType()).isEqualTo(TableFieldSchema.Type.JSON);
@@ -102,16 +106,37 @@ class ProtoSchemaConverterTest {
     void rejectsJsonMappingOnNonMessageFields() {
         ProtoSchemaOptions options = ProtoSchemaOptions.builder().jsonFieldPath("f_string").build();
 
-        assertThatThrownBy(() -> ProtoSchemaConverter.convert(TestProtos.allTypes(), options))
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("f_string");
+    }
+
+    @Test
+    void rejectsCaseInsensitiveDuplicateFieldNames() {
+        assertThatThrownBy(
+                        () ->
+                                ProtoToTableSchemaConverter.convert(
+                                        TestProtos.caseCollision(), ProtoSchemaOptions.defaults()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("case");
+    }
+
+    @Test
+    void rejectsJsonPathsMatchingNoField() {
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().jsonFieldPath("f_jsonn").build();
+
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("f_jsonn");
     }
 
     @Test
     void rejectsRecursiveMessages() {
         assertThatThrownBy(
                         () ->
-                                ProtoSchemaConverter.convert(
+                                ProtoToTableSchemaConverter.convert(
                                         TestProtos.recursive(), ProtoSchemaOptions.defaults()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Recursive");
