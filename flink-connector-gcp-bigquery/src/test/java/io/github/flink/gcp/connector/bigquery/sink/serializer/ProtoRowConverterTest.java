@@ -1,0 +1,161 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigquery.sink.serializer;
+
+import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Descriptors;
+import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.Timestamp;
+import org.junit.jupiter.api.Test;
+
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** Tests for {@link ProtoRowConverter}. */
+class ProtoRowConverterTest {
+
+    private static final ProtoSchemaOptions OPTIONS =
+            ProtoSchemaOptions.builder().jsonFieldPath("f_json").build();
+
+    @Test
+    void convertsTheFullTypeMatrix() throws Exception {
+        Descriptors.Descriptor source = TestProtos.allTypes();
+        Descriptors.Descriptor target = targetDescriptor(source, OPTIONS);
+        ProtoRowConverter converter = new ProtoRowConverter(target, OPTIONS);
+
+        Instant instant = Instant.parse("2026-01-02T03:04:05.123456789Z");
+        DynamicMessage.Builder builder = DynamicMessage.newBuilder(source);
+        set(builder, source, "f_int32", 42);
+        set(builder, source, "f_int64", 43L);
+        set(builder, source, "f_uint32", 44);
+        set(builder, source, "f_uint64", Long.MAX_VALUE);
+        set(builder, source, "f_float", 1.5f);
+        set(builder, source, "f_double", 2.5d);
+        set(builder, source, "f_bool", true);
+        set(builder, source, "f_string", "hello");
+        set(builder, source, "f_bytes", ByteString.copyFromUtf8("raw"));
+        set(
+                builder,
+                source,
+                "f_enum",
+                source.getFile().findEnumTypeByName("Color").findValueByName("RED"));
+        set(
+                builder,
+                source,
+                "f_ts",
+                Timestamp.newBuilder()
+                        .setSeconds(instant.getEpochSecond())
+                        .setNanos(instant.getNano())
+                        .build());
+        Descriptors.Descriptor nestedType = source.getFile().findMessageTypeByName("Nested");
+        set(
+                builder,
+                source,
+                "f_nested",
+                DynamicMessage.newBuilder(nestedType)
+                        .setField(nestedType.findFieldByName("s"), "x")
+                        .setField(nestedType.findFieldByName("n"), 7L)
+                        .build());
+        builder.addRepeatedField(source.findFieldByName("f_rep_string"), "a");
+        builder.addRepeatedField(source.findFieldByName("f_rep_string"), "b");
+        Descriptors.Descriptor entryType = source.findFieldByName("f_map").getMessageType();
+        builder.addRepeatedField(
+                source.findFieldByName("f_map"),
+                DynamicMessage.newBuilder(entryType)
+                        .setField(entryType.findFieldByName("key"), "k1")
+                        .setField(entryType.findFieldByName("value"), 100L)
+                        .build());
+        set(
+                builder,
+                source,
+                "f_json",
+                DynamicMessage.newBuilder(nestedType)
+                        .setField(nestedType.findFieldByName("s"), "jsonvalue")
+                        .setField(nestedType.findFieldByName("n"), 9L)
+                        .build());
+
+        DynamicMessage row = converter.convert(builder.build());
+
+        assertThat(get(row, "f_int32")).isEqualTo(42L);
+        assertThat(get(row, "f_int64")).isEqualTo(43L);
+        assertThat(get(row, "f_uint32")).isEqualTo(44L);
+        assertThat(get(row, "f_uint64")).isEqualTo(Long.MAX_VALUE);
+        assertThat(get(row, "f_float")).isEqualTo(1.5d);
+        assertThat(get(row, "f_double")).isEqualTo(2.5d);
+        assertThat(get(row, "f_bool")).isEqualTo(true);
+        assertThat(get(row, "f_string")).isEqualTo("hello");
+        assertThat(get(row, "f_bytes")).isEqualTo(ByteString.copyFromUtf8("raw"));
+        assertThat(get(row, "f_enum")).isEqualTo("RED");
+        long expectedMicros = instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
+        assertThat(get(row, "f_ts")).isEqualTo(expectedMicros);
+
+        DynamicMessage nestedRow = (DynamicMessage) get(row, "f_nested");
+        assertThat(get(nestedRow, "s")).isEqualTo("x");
+        assertThat(get(nestedRow, "n")).isEqualTo(7L);
+
+        assertThat(get(row, "f_rep_string")).isEqualTo(Arrays.asList("a", "b"));
+
+        List<?> mapEntries = (List<?>) get(row, "f_map");
+        assertThat(mapEntries).hasSize(1);
+        DynamicMessage entryRow = (DynamicMessage) mapEntries.get(0);
+        assertThat(get(entryRow, "key")).isEqualTo("k1");
+        assertThat(get(entryRow, "value")).isEqualTo(100L);
+
+        assertThat((String) get(row, "f_json"))
+                .contains("\"s\":\"jsonvalue\"")
+                .contains("\"n\":\"9\"");
+    }
+
+    @Test
+    void leavesUnsetMessageFieldsUnset() throws Exception {
+        Descriptors.Descriptor source = TestProtos.allTypes();
+        Descriptors.Descriptor target = targetDescriptor(source, OPTIONS);
+        ProtoRowConverter converter = new ProtoRowConverter(target, OPTIONS);
+
+        DynamicMessage row =
+                converter.convert(
+                        DynamicMessage.newBuilder(source)
+                                .setField(source.findFieldByName("f_string"), "only")
+                                .build());
+
+        assertThat(row.hasField(row.getDescriptorForType().findFieldByName("f_nested"))).isFalse();
+        assertThat(row.hasField(row.getDescriptorForType().findFieldByName("f_ts"))).isFalse();
+        assertThat(get(row, "f_string")).isEqualTo("only");
+    }
+
+    private static Descriptors.Descriptor targetDescriptor(
+            Descriptors.Descriptor source, ProtoSchemaOptions options) throws Exception {
+        return BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
+                ProtoSchemaConverter.convert(source, options));
+    }
+
+    private static void set(
+            DynamicMessage.Builder builder,
+            Descriptors.Descriptor descriptor,
+            String field,
+            Object value) {
+        builder.setField(descriptor.findFieldByName(field), value);
+    }
+
+    private static Object get(DynamicMessage message, String field) {
+        return message.getField(message.getDescriptorForType().findFieldByName(field));
+    }
+}
