@@ -1,0 +1,9 @@
+GCP Connectors for Apache Flink
+Copyright 2026 laughingman7743
+
+This product includes software developed at
+The Apache Software Foundation (https://www.apache.org/):
+
+- Checkstyle configuration under tools/maven/ is taken from the Apache Flink
+  project (https://github.com/apache/flink-connector-kafka), licensed under
+  the Apache License, Version 2.0.
