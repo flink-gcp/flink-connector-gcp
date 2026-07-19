@@ -188,8 +188,12 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   reference for proto/schema conversion (`StorageSchemaConverter` and
   `BigQuerySchemaConverter` are independent implementations of the two directions)
 - [Aiven-Open/bigquery-connector-for-apache-kafka](https://github.com/Aiven-Open/bigquery-connector-for-apache-kafka)
-  — design reference for the schema-evolution mechanics: the schema union rules, the
-  update-on-error flow, and the coordinator-free concurrent-update retry pattern
-  (`SchemaUnifier` and the writer's reconciliation are independent reimplementations)
+  (the maintained continuation of
+  [wepay/kafka-connect-bigquery](https://github.com/wepay/kafka-connect-bigquery)) — design
+  reference for the schema-evolution mechanics: the schema union rules and their gating flags,
+  the update-on-error flow with a bounded jittered wait for schema propagation, and the
+  coordinator-free concurrent-update retry pattern (`SchemaUnifier`,
+  `BigQueryDefaultStreamWriter`'s reconciliation and `BigQueryTableAdmin`'s lost-race handling
+  are independent reimplementations; the full design research is recorded on issue #12)
 
 No source code has been copied into this module so far.

@@ -62,6 +62,10 @@ import java.util.Map;
  * caller to re-read and retry. The updated schema is assembled by <em>merging</em> the proposed
  * Storage-form schema onto the snapshot's REST fields, so REST-only column attributes the Storage
  * form cannot represent (policy tags, collation, ...) are preserved for existing columns.
+ *
+ * <p>(The lost-race handling follows the coordinator-free concurrent-update pattern of the
+ * Aiven/kafka-connect-bigquery connector, reimplemented independently; see the module README's
+ * provenance section.)
  */
 @Internal
 public class BigQueryTableAdmin implements TableAdmin {

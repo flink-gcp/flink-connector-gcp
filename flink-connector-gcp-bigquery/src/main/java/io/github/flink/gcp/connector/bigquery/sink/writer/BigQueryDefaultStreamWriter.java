@@ -119,6 +119,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * the serializer evolving additively (see {@code BigQueryProtoSerializer#getSchemaFingerprint}),
  * which keeps previously serialized bytes valid under the new descriptor.
  *
+ * <p>(The schema-evolution mechanics — update-on-error with a bounded jittered wait for schema
+ * propagation, the proactive local pre-check, and the coordinator-free concurrent updates — are
+ * independent reimplementations informed by the design of the Aiven/kafka-connect-bigquery
+ * connector; see the module README's provenance section.)
+ *
  * @param <T> type of the records written by the sink
  */
 @Internal
