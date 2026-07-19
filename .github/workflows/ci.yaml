@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - v1.20
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # Runs the full lifecycle: spotless/checkstyle (validate), compile,
+      # unit tests (test), packaging, integration tests (integration-test)
+      # and the apache-rat license-header check (verify). Integration tests
+      # use testcontainers-based emulators and require no cloud credentials,
+      # so this job is safe to run on any pull request.
+      - name: Build and verify
+        run: ./mvnw -ntp verify
