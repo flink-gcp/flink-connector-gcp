@@ -42,7 +42,8 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
 
     private static final long serialVersionUID = 1L;
 
-    private static final String TRACE_ID = "flink-connector-gcp-bigquery";
+    /** The SDK requires the "A:B" trace-id format (an interior colon is mandatory). */
+    private static final String TRACE_ID = "flink-gcp:flink-connector-gcp-bigquery";
 
     @Override
     public RowAppender create(

@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
@@ -48,6 +49,12 @@ public class BigQueryDefaultStreamSink<T> implements Sink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) {
-        return new BigQueryDefaultStreamWriter<>(config, new StreamWriterRowAppenderFactory());
+        return createWriter(new StreamWriterRowAppenderFactory());
+    }
+
+    @VisibleForTesting
+    public SinkWriter<T> createWriter(
+            io.github.flink.gcp.connector.bigquery.sink.writer.RowAppenderFactory appenderFactory) {
+        return new BigQueryDefaultStreamWriter<>(config, appenderFactory);
     }
 }

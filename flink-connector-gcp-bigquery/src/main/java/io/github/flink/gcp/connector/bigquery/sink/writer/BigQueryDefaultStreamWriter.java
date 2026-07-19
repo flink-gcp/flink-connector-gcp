@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
@@ -34,7 +35,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -46,9 +46,14 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>Per destination, rows are buffered into append batches (bounded by {@link
  * #DEFAULT_MAX_APPEND_REQUEST_BYTES}) and appended asynchronously; backpressure is provided by the
  * stream writer's own in-flight limits. {@link #flush(boolean)} appends all pending batches and
- * awaits every in-flight append, so records never pass a checkpoint barrier unacknowledged — this
- * is what makes the sink at-least-once. Asynchronous append failures are captured and rethrown on
- * the next {@link #write} or {@link #flush} call.
+ * awaits every in-flight append, inspecting each response directly, so records never pass a
+ * checkpoint barrier unacknowledged — this is what makes the sink at-least-once. Asynchronous
+ * append failures are additionally captured by completion callbacks and rethrown on the next {@link
+ * #write} or {@link #flush} call.
+ *
+ * <p>In-flight batches are retained together with their destination until acknowledged (the
+ * groundwork for table auto-creation (#11) and schema-evolution rebuilds (#12), which re-append
+ * failed batches).
  *
  * <p>Table auto-creation ({@code CREATE_IF_NEEDED}) is tracked in issue #11; until it lands,
  * destination tables must exist.
@@ -65,6 +70,13 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      */
     static final long DEFAULT_MAX_APPEND_REQUEST_BYTES = 512 * 1024;
 
+    /**
+     * Hard per-row limit, kept under the Storage Write API's 10 MB AppendRows request cap (with
+     * headroom for request framing). Rejected client-side so the offending record is identified
+     * immediately instead of poisoning the pipeline through replayed server-side rejections.
+     */
+    static final int MAX_ROW_BYTES = 9 * 1024 * 1024;
+
     private final BigQuerySinkConfig<T> config;
     private final RowAppenderFactory appenderFactory;
     private final long maxAppendRequestBytes;
@@ -73,7 +85,8 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private final Map<TableDestination, DestinationState> states = new HashMap<>();
 
     /** Completed entries are removed by gRPC callback threads. */
-    private final Set<ApiFuture<AppendRowsResponse>> inFlight = ConcurrentHashMap.newKeySet();
+    private final Map<ApiFuture<AppendRowsResponse>, TableDestination> inFlight =
+            new ConcurrentHashMap<>();
 
     private final AtomicReference<Throwable> asyncError = new AtomicReference<>();
 
@@ -103,31 +116,46 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         checkAsyncError();
         TableDestination destination = config.getDestinationResolver().resolve(element, context);
         ByteString row = config.getSerializer().serialize(element);
+        if (row.size() > MAX_ROW_BYTES) {
+            throw new IOException(
+                    "A row for "
+                            + destination
+                            + " is "
+                            + row.size()
+                            + " bytes, exceeding the "
+                            + MAX_ROW_BYTES
+                            + "-byte per-row limit of the BigQuery Storage Write API");
+        }
         DestinationState state = states.get(destination);
         if (state == null) {
             state = createState(destination);
             states.put(destination, state);
         }
-        if (!state.rows.isEmpty() && state.pendingBytes + row.size() > maxAppendRequestBytes) {
-            appendPending(state);
+        if (state.pendingCount() > 0 && state.pendingBytes + row.size() > maxAppendRequestBytes) {
+            appendPending(destination, state);
         }
-        state.rows.add(row);
-        state.pendingBytes += row.size();
+        state.add(row);
     }
 
     @Override
     public void flush(boolean endOfInput) throws IOException {
         checkAsyncError();
-        for (DestinationState state : states.values()) {
-            if (!state.rows.isEmpty()) {
-                appendPending(state);
+        for (Map.Entry<TableDestination, DestinationState> entry : states.entrySet()) {
+            if (entry.getValue().pendingCount() > 0) {
+                appendPending(entry.getKey(), entry.getValue());
             }
         }
-        for (ApiFuture<AppendRowsResponse> future : inFlight.toArray(new ApiFuture[0])) {
+        // Inspect every in-flight response directly: waiters can be released before completion
+        // callbacks have run, so relying on the callbacks alone could let a checkpoint succeed
+        // ahead of a captured failure.
+        for (Map.Entry<ApiFuture<AppendRowsResponse>, TableDestination> entry :
+                inFlight.entrySet()) {
             try {
-                future.get();
+                checkResponse(entry.getValue(), entry.getKey().get());
             } catch (ExecutionException e) {
-                throw new IOException("An append to BigQuery failed", e.getCause());
+                throw new IOException(
+                        "An append to BigQuery table " + entry.getValue() + " failed",
+                        e.getCause());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IOException("Interrupted while flushing appends to BigQuery", e);
@@ -138,22 +166,12 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     @Override
     public void close() throws Exception {
-        Exception failure = null;
+        List<AutoCloseable> appenders = new ArrayList<>(states.size());
         for (DestinationState state : states.values()) {
-            try {
-                state.appender.close();
-            } catch (Exception e) {
-                if (failure == null) {
-                    failure = e;
-                } else {
-                    failure.addSuppressed(e);
-                }
-            }
+            appenders.add(state.appender);
         }
         states.clear();
-        if (failure != null) {
-            throw failure;
-        }
+        IOUtils.closeAll(appenders);
     }
 
     private DestinationState createState(TableDestination destination) throws IOException {
@@ -165,53 +183,89 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         return new DestinationState(appender);
     }
 
-    private void appendPending(DestinationState state) {
-        ProtoRows rows = ProtoRows.newBuilder().addAllSerializedRows(state.rows).build();
-        state.rows = new ArrayList<>();
-        state.pendingBytes = 0;
+    private void appendPending(TableDestination destination, DestinationState state) {
+        ProtoRows rows = state.take();
         ApiFuture<AppendRowsResponse> future = state.appender.append(rows);
-        inFlight.add(future);
+        inFlight.put(future, destination);
         ApiFutures.addCallback(
                 future,
                 new ApiFutureCallback<AppendRowsResponse>() {
                     @Override
                     public void onSuccess(AppendRowsResponse response) {
-                        if (response.hasError() || response.getRowErrorsCount() > 0) {
-                            asyncError.compareAndSet(
-                                    null,
-                                    new IOException(
-                                            "BigQuery append completed with errors: "
-                                                    + (response.hasError()
-                                                            ? response.getError().getMessage()
-                                                            : response.getRowErrors(0)
-                                                                    .getMessage())));
+                        try {
+                            checkResponse(destination, response);
+                        } catch (IOException e) {
+                            asyncError.compareAndSet(null, e);
                         }
                         inFlight.remove(future);
                     }
 
                     @Override
                     public void onFailure(Throwable t) {
-                        asyncError.compareAndSet(null, t);
+                        asyncError.compareAndSet(
+                                null,
+                                new IOException(
+                                        "An append to BigQuery table " + destination + " failed",
+                                        t));
                         inFlight.remove(future);
                     }
                 },
                 Runnable::run);
     }
 
+    private static void checkResponse(TableDestination destination, AppendRowsResponse response)
+            throws IOException {
+        if (response.hasError()) {
+            throw new IOException(
+                    "An append to BigQuery table "
+                            + destination
+                            + " completed with an error: "
+                            + response.getError().getMessage());
+        }
+        if (response.getRowErrorsCount() > 0) {
+            throw new IOException(
+                    "An append to BigQuery table "
+                            + destination
+                            + " completed with "
+                            + response.getRowErrorsCount()
+                            + " row error(s), first: "
+                            + response.getRowErrors(0).getMessage());
+        }
+    }
+
     private void checkAsyncError() throws IOException {
         Throwable error = asyncError.get();
         if (error != null) {
+            if (error instanceof IOException) {
+                throw (IOException) error;
+            }
             throw new IOException("An append to BigQuery failed", error);
         }
     }
 
     private static final class DestinationState {
         private final RowAppender appender;
-        private List<ByteString> rows = new ArrayList<>();
+        private ProtoRows.Builder rows = ProtoRows.newBuilder();
         private long pendingBytes;
 
         DestinationState(RowAppender appender) {
             this.appender = appender;
+        }
+
+        void add(ByteString row) {
+            rows.addSerializedRows(row);
+            pendingBytes += row.size();
+        }
+
+        int pendingCount() {
+            return rows.getSerializedRowsCount();
+        }
+
+        ProtoRows take() {
+            ProtoRows batch = rows.build();
+            rows = ProtoRows.newBuilder();
+            pendingBytes = 0;
+            return batch;
         }
     }
 }
