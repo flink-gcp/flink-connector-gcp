@@ -60,6 +60,8 @@ limitations under the License.
         <!-- Main dependencies -->
         <flink.version>2.1.2</flink.version>
         <google-cloud-libraries-bom.version>26.85.1</google-cloud-libraries-bom.version>
+        <!-- Not managed by the Google Cloud libraries BOM -->
+        <avro.version>1.12.0</avro.version>
 
         <!-- Test dependencies -->
         <assertj.version>3.27.7</assertj.version>
@@ -101,6 +103,12 @@ limitations under the License.
                 <groupId>org.apache.flink</groupId>
                 <artifactId>flink-test-utils</artifactId>
                 <version>${flink.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.avro</groupId>
+                <artifactId>avro</artifactId>
+                <version>${avro.version}</version>
             </dependency>
 
             <dependency>

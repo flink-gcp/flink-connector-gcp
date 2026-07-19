@@ -8,7 +8,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 |---|---|---|
 | `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: #15) |
 | `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit | Not buildable yet — `build()` rejects (#30) |
-| `FILE_LOADS` | GCS-staged files + BigQuery load jobs; batch only | Not buildable yet — `build()` rejects (#14) |
+| `FILE_LOADS` | GCS-staged Avro files + BigQuery load jobs; batch only, exactly-once | Implemented (#14), see [File loads](#file-loads-batch-only) |
 
 ```java
 Sink<MyEvent> sink =
@@ -131,6 +131,82 @@ time-based flush option for checkpoint-less jobs is tracked in #54). Batch execu
 by the end-of-input flush. End-to-end loss behavior additionally depends on the source's own
 state handling.
 
+## File loads (batch only)
+
+`WriteMethod.FILE_LOADS` writes each destination table's rows to Avro files on Cloud Storage and
+loads them with BigQuery load jobs — free of streaming-insert cost, always exactly-once, batch
+execution only:
+
+```java
+Sink<MyEvent> sink =
+        BigQuerySink.<MyEvent>builder()
+                .writeMethod(WriteMethod.FILE_LOADS)
+                .destinationResolver(
+                        (e, ctx) -> TableDestination.of("my-project", "my_dataset", e.tableName()))
+                .serializer(new MyEventProtoSerializer())
+                .fileLoadsOptions(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://my-staging-bucket/flink-loads")
+                                .build())
+                .build();
+
+env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+```
+
+FILE_LOADS-only settings live in `FileLoadsOptions` (required for this write method, rejected for
+the others): `stagingPath` (required), `writeDisposition` (`WRITE_APPEND` default,
+`WRITE_TRUNCATE` for atomic batch reloads, `WRITE_EMPTY`) and `tempDataset` (see below).
+
+**Topology.** Parallel writers encode records (serializer proto bytes → Avro `GenericRecord`) and
+stream them straight to per-destination GCS objects — rows never accumulate on the heap, so memory
+use is ~5 MiB per open destination regardless of data volume. Files roll at 1.5 GiB. At end of
+input a single parallelism-1 operator groups the staged files by destination table and runs **one
+load job per table** (all jobs submitted first, then awaited — BigQuery runs them concurrently
+server-side). Load jobs carry the serializer's schema explicitly (`useAvroLogicalTypes`), plus the
+partitioning/clustering from `tableCreateOptions(...)` for tables created under
+`CREATE_IF_NEEDED`.
+
+**Batch only.** Streaming execution is rejected when the job graph is built; a runtime guard also
+rejects the first checkpoint in case `RuntimeExecutionMode.AUTOMATIC` resolved to streaming. This
+is deliberate: checkpoint-frequency load jobs would run into BigQuery's per-table load quota
+(1,500/table/day) — streaming pipelines belong on the Storage Write API methods.
+
+**Exactly-once.** Load jobs reference exactly the file URIs emitted by the writers at end of input
+— never a bucket prefix — so files from failed/restarted attempts (which use unique names:
+Flink job id, subtask, attempt, random component) can never leak into a load. Job ids are
+deterministic hashes of the destination and its sorted file list: a retry after a failure
+re-attaches to the already-running/completed BigQuery job instead of loading twice.
+
+**Per-load-job limits.** A table whose staged files exceed one load job's limits (10,000 source
+URIs / 11 TiB) is loaded partition-wise into temporary tables (`WRITE_TRUNCATE`, so retries are
+idempotent) and appended to the final table with one atomic copy job. Temporary tables go to the
+destination's dataset by default, or to `tempDataset(...)` — a dedicated dataset with a default
+table expiration is recommended so tables orphaned by hard failures are garbage-collected. Copy
+jobs support no schema update options, so on this path the final table is created/schema-unioned
+via the REST API before the copy (same union rules as [Schema evolution](#schema-evolution)).
+
+**Schema evolution.** The same `schemaUpdateOptions(...)` flags map to the load jobs' native
+`ALLOW_FIELD_ADDITION`/`ALLOW_FIELD_RELAXATION` options. BigQuery honors them only for
+`WRITE_APPEND` loads; with `WRITE_TRUNCATE` the loaded schema replaces the table schema anyway.
+
+**Staging cleanup.** Staged files are deleted after a successful load — best-effort; on failure
+they are deliberately kept so a Flink restart retries deterministically. Point `stagingPath` at a
+**dedicated bucket (separate from checkpoint/savepoint storage) with a lifecycle rule** (for
+example: delete objects after 1–7 days) so orphans from hard failures expire on their own.
+
+**Errors.** `FailedRowHandler` covers serialization/Avro-conversion failures (row-level, before
+staging). A load job itself is all-or-nothing: there is no per-row policy at load time, and a
+failed load fails the Flink job.
+
+**Type mapping.** `TIMESTAMP`/`DATE`/`TIME` use Avro logical types, `DATETIME` travels as a
+canonical civil-time string, `NUMERIC`/`BIGNUMERIC` as Avro decimals (parameterized
+precision/scale respected), `JSON`/`GEOGRAPHY` as strings, `STRUCT`/`REPEATED` nest naturally.
+`INTERVAL` and `RANGE` columns are not supported by this write method.
+
+The integration test (`BigQueryFileLoadsITCase`) runs a real batch job against BigQuery and GCS
+and is gated on `BQ_IT_PROJECT`, `BQ_IT_DATASET` and `BQ_IT_GCS_BUCKET` (application-default
+credentials); it is skipped when they are unset, keeping `./mvnw verify` credential-free.
+
 ## Error handling
 
 Append failures are classified on the task thread and routed by class:
@@ -179,10 +255,17 @@ projects; when code is adapted from them, the fact is recorded here and in the r
 `NOTICE` file, keeping the original license headers where applicable:
 
 - [Apache Beam](https://github.com/apache/beam) `BigQueryIO` — the unified write-method API shape
-  and the dynamic destinations concept
+  and the dynamic destinations concept; for FILE_LOADS, the
+  `BatchLoads`/`WritePartition`/`WriteTables`/`WriteRename` design (per-destination bin-packing
+  against load-job limits, temp-table + copy-job overflow path, updating the final table schema
+  before the copy since copy jobs support no schema update options, and GC of staged files only
+  after load completion)
 - [GoogleCloudDataproc/flink-bigquery-connector](https://github.com/GoogleCloudDataproc/flink-bigquery-connector)
   — reference for Storage Write API sink internals and the serializer contract
-  (descriptor accessor + `ByteString` rows)
+  (descriptor accessor + `ByteString` rows); for FILE_LOADS, the `BigQueryIndirectSink`/
+  `BigQueryLoadJobOperator` design (SinkV2 post-commit topology on a single non-parallel
+  operator, deterministic BigQuery job ids with get-then-submit re-attach for exactly-once
+  retries, 1.5 GiB size-based file rolling, best-effort cleanup)
 - [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage)
   (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`, `BqToBqStorageSchemaConverter`) —
   reference for proto/schema conversion (`StorageSchemaConverter` and
