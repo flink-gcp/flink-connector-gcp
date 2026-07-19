@@ -91,6 +91,32 @@ public abstract class BigQueryProtoSerializer<T> implements Serializable {
     }
 
     /**
+     * Returns a cheap token identifying the destination's current schema, or {@code null} (the
+     * default) for serializers whose schema never changes while the job runs.
+     *
+     * <p>Sinks compare the token per record (with {@link java.util.Objects#equals}) against the
+     * token captured when the destination's write stream was opened, and refresh the stream —
+     * rebuilding the row descriptor via {@link #getDescriptor(TableDestination)} and, where schema
+     * updates are enabled, reconciling the destination table's schema — <em>before</em> appending
+     * rows serialized under a changed schema. Implementations with evolving schemas should return a
+     * value that changes whenever {@link #getTableSchema(TableDestination)} would return a
+     * different schema: a version counter, the cached descriptor instance, or similar. The call
+     * must be O(1); deriving a fingerprint from the schema on every call defeats its purpose.
+     *
+     * <p>Schema evolution contract: rows already handed to the sink are retained as serialized
+     * bytes and are never re-encoded, so an evolved schema must keep previously serialized bytes
+     * valid. Appending new fields (at the end, including inside nested types) and relaxing {@code
+     * REQUIRED} fields to {@code NULLABLE} are wire-compatible; removing, reordering or re-typing
+     * fields is not and leads to corrupt rows or failed appends.
+     *
+     * @param destination the destination table
+     * @return the schema fingerprint, or {@code null} for static schemas
+     */
+    public Object getSchemaFingerprint(TableDestination destination) {
+        return null;
+    }
+
+    /**
      * Serializes a record into protobuf row bytes.
      *
      * <p>For record types that already are protobuf messages this is typically {@code

@@ -229,11 +229,10 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         return new BigQueryDefaultStreamWriter<>(
                 config,
                 factory,
-                BigQueryDefaultStreamWriterTest.NOOP_CREATOR,
+                BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
                 maxAppendRequestBytes,
-                1,
-                1,
-                recoveryMaxAttempts);
+                BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts),
+                BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts));
     }
 
     private static List<String> rowsOf(ProtoRows rows) {

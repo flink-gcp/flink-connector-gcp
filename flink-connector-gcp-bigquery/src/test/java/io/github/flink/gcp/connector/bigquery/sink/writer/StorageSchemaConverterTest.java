@@ -153,18 +153,41 @@ class StorageSchemaConverterTest {
     }
 
     @Test
+    void convertsRangeWithElementType() {
+        TableSchema schema =
+                TableSchema.newBuilder()
+                        .addFields(
+                                field(
+                                                "r",
+                                                TableFieldSchema.Type.RANGE,
+                                                TableFieldSchema.Mode.NULLABLE)
+                                        .toBuilder()
+                                        .setRangeElementType(
+                                                TableFieldSchema.FieldElementType.newBuilder()
+                                                        .setType(TableFieldSchema.Type.DATE))
+                                        .build())
+                        .build();
+
+        Schema converted = StorageSchemaConverter.toBigQuerySchema(schema);
+
+        Field r = converted.getFields().get("r");
+        assertThat(r.getType().getStandardType()).isEqualTo(StandardSQLTypeName.RANGE);
+        assertThat(r.getRangeElementType().getType()).isEqualTo("DATE");
+    }
+
+    @Test
     void rejectsUnsupportedTypes() {
         TableSchema schema =
                 TableSchema.newBuilder()
                         .addFields(
                                 field(
-                                        "r",
-                                        TableFieldSchema.Type.RANGE,
+                                        "u",
+                                        TableFieldSchema.Type.TYPE_UNSPECIFIED,
                                         TableFieldSchema.Mode.NULLABLE))
                         .build();
 
         assertThatThrownBy(() -> StorageSchemaConverter.toBigQuerySchema(schema))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("RANGE");
+                .hasMessageContaining("TYPE_UNSPECIFIED");
     }
 }

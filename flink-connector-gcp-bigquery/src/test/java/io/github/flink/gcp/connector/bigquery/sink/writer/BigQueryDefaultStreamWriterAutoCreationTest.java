@@ -101,7 +101,8 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         }
     }
 
-    private static class RecordingTableCreator implements TableCreator {
+    private static class RecordingTableAdmin
+            extends BigQueryDefaultStreamWriterTest.NoopTableAdmin {
         private final List<TableDestination> destinations = new ArrayList<>();
         private final List<TableSchema> schemas = new ArrayList<>();
         private final List<TableCreateOptions> options = new ArrayList<>();
@@ -186,18 +187,23 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
     private static BigQueryDefaultStreamWriter<String> writer(
             BigQuerySinkConfig<String> config,
             ScriptedAppenderFactory factory,
-            TableCreator creator,
+            TableAdmin creator,
             long maxAppendRequestBytes,
             int recoveryMaxAttempts) {
         return new BigQueryDefaultStreamWriter<>(
-                config, factory, creator, maxAppendRequestBytes, 1, 1, recoveryMaxAttempts);
+                config,
+                factory,
+                creator,
+                maxAppendRequestBytes,
+                BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts),
+                BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts));
     }
 
     @Test
     void flushCreatesMissingTableRebuildsWriterAndRetriesAppend() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(notFound());
-        RecordingTableCreator creator = new RecordingTableCreator();
+        RecordingTableAdmin creator = new RecordingTableAdmin();
         TableCreateOptions options =
                 TableCreateOptions.builder()
                         .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
@@ -227,7 +233,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
     void createNeverFailsFastOnMissingTable() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(notFound());
-        RecordingTableCreator creator = new RecordingTableCreator();
+        RecordingTableAdmin creator = new RecordingTableAdmin();
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
                         config(CreateDisposition.CREATE_NEVER, null),
@@ -249,7 +255,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
     void asyncNotFoundIsRecoveredOnNextWriteAndBufferedRowsSurvive() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(notFound());
-        RecordingTableCreator creator = new RecordingTableCreator();
+        RecordingTableAdmin creator = new RecordingTableAdmin();
         BigQueryDefaultStreamWriter<String> writer =
                 writer(config(CreateDisposition.CREATE_IF_NEEDED, null), factory, creator, 1, 3);
 
@@ -268,7 +274,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
     void appenderCreationNotFoundTriggersTableCreation() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.failingCreations = 1;
-        RecordingTableCreator creator = new RecordingTableCreator();
+        RecordingTableAdmin creator = new RecordingTableAdmin();
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
                         config(CreateDisposition.CREATE_IF_NEEDED, null),
@@ -289,7 +295,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
     void appenderCreationNotFoundFailsFastUnderCreateNever() {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.failingCreations = 1;
-        RecordingTableCreator creator = new RecordingTableCreator();
+        RecordingTableAdmin creator = new RecordingTableAdmin();
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
                         config(CreateDisposition.CREATE_NEVER, null),
@@ -310,7 +316,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         factory.scriptedResults.add(notFound()); // initial append
         factory.scriptedResults.add(notFound()); // recovery attempt 1
         factory.scriptedResults.add(notFound()); // recovery attempt 2
-        RecordingTableCreator creator = new RecordingTableCreator();
+        RecordingTableAdmin creator = new RecordingTableAdmin();
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
                         config(CreateDisposition.CREATE_IF_NEEDED, null),
@@ -332,7 +338,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(notFound());
         factory.scriptedResults.add(ApiFutures.immediateFailedFuture(new RuntimeException("boom")));
-        RecordingTableCreator creator = new RecordingTableCreator();
+        RecordingTableAdmin creator = new RecordingTableAdmin();
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
                         config(CreateDisposition.CREATE_IF_NEEDED, null),
@@ -353,7 +359,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(notFound());
         factory.scriptedResults.add(notFound());
-        RecordingTableCreator creator = new RecordingTableCreator();
+        RecordingTableAdmin creator = new RecordingTableAdmin();
         BigQueryDefaultStreamWriter<String> writer =
                 writer(config(CreateDisposition.CREATE_IF_NEEDED, null), factory, creator, 1, 3);
 
@@ -373,7 +379,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
     void tableIsNotRecreatedOnSubsequentWrites() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(notFound());
-        RecordingTableCreator creator = new RecordingTableCreator();
+        RecordingTableAdmin creator = new RecordingTableAdmin();
         BigQueryDefaultStreamWriter<String> writer =
                 writer(config(CreateDisposition.CREATE_IF_NEEDED, null), factory, creator, 1, 3);
 

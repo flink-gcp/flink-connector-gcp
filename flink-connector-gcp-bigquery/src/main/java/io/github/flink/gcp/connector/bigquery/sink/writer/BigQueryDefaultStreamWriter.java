@@ -28,6 +28,7 @@ import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.RowError;
+import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
@@ -36,6 +37,7 @@ import io.github.flink.gcp.connector.bigquery.sink.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,9 +47,11 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -70,21 +74,55 @@ import java.util.concurrent.atomic.AtomicReference;
  * it {@code flush()} is only invoked at end of input.
  *
  * <p>Append failures are routed by {@link AppendErrorClassifier} on the task thread. Transient
- * failures that surface past the SDK's own in-stream retries are re-appended on a rebuilt stream
- * writer with backoff within a bounded retry budget; exhausting the budget is terminal. Row-level
- * failures (rows rejected with per-row error details) are routed row by row to the configured
- * {@link FailedRowHandler} — which fails the job, drops the row, or forwards it to a dead-letter
- * queue — and the surviving rows of the batch are re-appended. Everything else (for example {@code
+ * failures that surface past the SDK's own in-stream retries — and failures reporting the stream
+ * writer itself as stale (finalized, unknown, closed) — are re-appended on a rebuilt stream writer
+ * with backoff within a bounded retry budget; exhausting the budget is terminal. Row-level failures
+ * (rows rejected with per-row error details) are routed row by row to the configured {@link
+ * FailedRowHandler} — which fails the job, drops the row, or forwards it to a dead-letter queue —
+ * and the surviving rows of the batch are re-appended. Everything else (for example {@code
  * INVALID_ARGUMENT} or {@code PERMISSION_DENIED}) is terminal and fails the ongoing write or
  * checkpoint. In-flight batches are retained together with their destination until acknowledged so
- * they can be re-appended (this also is the groundwork for schema-evolution rebuilds, #12).
+ * they can be re-appended.
  *
  * <p>Under {@link CreateDisposition#CREATE_IF_NEEDED}, appends failing with {@code NOT_FOUND} are
- * recovered on the task thread: the destination table is created via the {@link TableCreator}
- * (schema from the serializer, partitioning/clustering from the configured options provider), the
+ * recovered on the task thread: the destination table is created via the {@link TableAdmin} (schema
+ * from the serializer, partitioning/clustering from the configured options provider), the
  * destination's stream writer is rebuilt, and the failed batch is re-appended with backoff while
  * table metadata propagates to the Storage Write API backend. Under {@link
  * CreateDisposition#CREATE_NEVER}, {@code NOT_FOUND} fails the write or checkpoint immediately.
+ *
+ * <h2>Schema evolution</h2>
+ *
+ * <p>Schema changes are handled without a job restart, on three paths that all converge on
+ * rebuilding the destination's stream writer with a fresh serializer descriptor:
+ *
+ * <ul>
+ *   <li><em>Server-pushed schema updates:</em> when an append response carries {@code
+ *       updated_schema} (the table's schema changed, for example through DDL), the destination's
+ *       writer is rebuilt on the task thread — a raw {@code StreamWriter} never refreshes its
+ *       schema by itself, also not under connection-pool multiplexing.
+ *   <li><em>Serializer schema changes:</em> when {@code getSchemaFingerprint} reports a change, the
+ *       writer is rebuilt <em>before</em> rows serialized under the new schema are appended — and,
+ *       when schema updates are enabled, the destination table's schema is reconciled first (fresh
+ *       read, union with the serializer schema, etag-conditioned update; concurrent subtasks
+ *       converge because unions are additive and lost races re-read), so the first append under the
+ *       new schema does not have to fail.
+ *   <li><em>Schema-mismatch append failures:</em> with schema updates enabled, the table schema is
+ *       reconciled the same way and the failed batches are re-appended within a long jittered retry
+ *       budget while the update propagates to the Storage Write API backend (typically minutes; the
+ *       budget allows roughly fifteen — a schema repair can therefore block a checkpoint longer
+ *       than Flink's default checkpoint timeout of ten minutes, which may need raising). With
+ *       updates disabled, schema mismatches stay terminal.
+ * </ul>
+ *
+ * <p>Retained batches are serialized bytes and are never re-encoded; rebuilding writers relies on
+ * the serializer evolving additively (see {@code BigQueryProtoSerializer#getSchemaFingerprint}),
+ * which keeps previously serialized bytes valid under the new descriptor.
+ *
+ * <p>(The schema-evolution mechanics — update-on-error with a bounded jittered wait for schema
+ * propagation, the proactive local pre-check, and the coordinator-free concurrent updates — are
+ * independent reimplementations informed by the design of the Aiven/kafka-connect-bigquery
+ * connector; see the module README's provenance section.)
  *
  * @param <T> type of the records written by the sink
  */
@@ -110,24 +148,42 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     /**
      * Retry schedule for re-appends on the task thread, shared by {@code NOT_FOUND} recovery after
      * creating a table (metadata propagation to the Storage Write API backend is usually seconds
-     * but can take considerably longer) and by transient append failures that surfaced past the
-     * SDK's own retries. The defaults (500 ms initial, doubled up to 10 s, 10 attempts) allow
-     * roughly a minute in total.
+     * but can take considerably longer), transient append failures that surfaced past the SDK's own
+     * retries, and stale-stream-writer refreshes. The defaults (500 ms initial, doubled up to 10 s,
+     * 10 attempts) allow roughly a minute in total.
      */
-    static final long DEFAULT_RECOVERY_INITIAL_BACKOFF_MS = 500;
+    static final RetrySchedule DEFAULT_RECOVERY_SCHEDULE = new RetrySchedule(500, 10_000, 10, 0);
 
-    static final long DEFAULT_RECOVERY_MAX_BACKOFF_MS = 10_000;
+    /**
+     * Retry schedule for re-appends after a table schema update, while the update propagates to the
+     * Storage Write API backend — which takes minutes, considerably longer than table-creation
+     * propagation. Flat 30 s waits with ±25% jitter (de-synchronizing parallel subtasks), 30
+     * attempts: a ceiling of roughly fifteen minutes.
+     */
+    static final RetrySchedule DEFAULT_SCHEMA_WAIT_SCHEDULE =
+            new RetrySchedule(30_000, 30_000, 30, 0.25);
 
-    static final int DEFAULT_RECOVERY_MAX_ATTEMPTS = 10;
+    /**
+     * Attempts at applying a schema update before giving up; each attempt is a fresh read, union
+     * and etag-conditioned update, so only concurrent updates (or the per-table metadata quota)
+     * consume attempts. Concurrent unions converge, so a handful suffices.
+     */
+    static final int SCHEMA_UPDATE_MAX_ATTEMPTS = 5;
+
+    /**
+     * Upper bound of the random sleep before reading and updating a table's schema, spreading
+     * parallel subtasks that discovered the same schema change at the same time across the
+     * per-table metadata-update quota (about five updates per ten seconds).
+     */
+    static final long SCHEMA_UPDATE_MAX_JITTER_MS = 500;
 
     private final BigQuerySinkConfig<T> config;
     private final RowAppenderFactory appenderFactory;
-    private final TableCreator tableCreator;
+    private final TableAdmin tableAdmin;
     private final FailedRowHandler failedRowHandler;
     private final long maxAppendRequestBytes;
-    private final long recoveryInitialBackoffMs;
-    private final long recoveryMaxBackoffMs;
-    private final int recoveryMaxAttempts;
+    private final RetrySchedule recoverySchedule;
+    private final RetrySchedule schemaWaitSchedule;
 
     /** Accessed only from the task thread. */
     private final Map<TableDestination, DestinationState> states = new HashMap<>();
@@ -140,69 +196,81 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     /**
      * Set by completion callbacks when an append failed in a way the task thread can repair
-     * (recoverable {@code NOT_FOUND}, transient failures, row-level failures); the task thread then
-     * sweeps {@link #inFlight} for failed batches and repairs them.
+     * (recoverable {@code NOT_FOUND}, schema mismatches, transient failures, row-level failures);
+     * the task thread then sweeps {@link #inFlight} for failed batches and repairs them.
      */
     private final AtomicBoolean repairNeeded = new AtomicBoolean();
+
+    /**
+     * Destinations whose append responses carried {@code updated_schema}, recorded by completion
+     * callbacks and drained on the task thread, which refreshes their stream writers (the rebuilt
+     * writer's schema always comes from the serializer, so destinations whose serializer
+     * fingerprint is unchanged are skipped).
+     */
+    private final Set<TableDestination> pushedSchemaRefreshes = ConcurrentHashMap.newKeySet();
 
     /**
      * Creates a writer.
      *
      * @param config the sink configuration
      * @param appenderFactory the appender factory
-     * @param tableCreator the creator for missing destination tables
+     * @param tableAdmin the admin for creating and updating destination tables
      */
     public BigQueryDefaultStreamWriter(
             BigQuerySinkConfig<T> config,
             RowAppenderFactory appenderFactory,
-            TableCreator tableCreator) {
+            TableAdmin tableAdmin) {
         this(
                 config,
                 appenderFactory,
-                tableCreator,
+                tableAdmin,
                 DEFAULT_MAX_APPEND_REQUEST_BYTES,
-                DEFAULT_RECOVERY_INITIAL_BACKOFF_MS,
-                DEFAULT_RECOVERY_MAX_BACKOFF_MS,
-                DEFAULT_RECOVERY_MAX_ATTEMPTS);
+                DEFAULT_RECOVERY_SCHEDULE,
+                DEFAULT_SCHEMA_WAIT_SCHEDULE);
     }
 
     BigQueryDefaultStreamWriter(
             BigQuerySinkConfig<T> config,
             RowAppenderFactory appenderFactory,
-            TableCreator tableCreator,
+            TableAdmin tableAdmin,
             long maxAppendRequestBytes,
-            long recoveryInitialBackoffMs,
-            long recoveryMaxBackoffMs,
-            int recoveryMaxAttempts) {
+            RetrySchedule recoverySchedule,
+            RetrySchedule schemaWaitSchedule) {
         this.config = Preconditions.checkNotNull(config, "config must not be null");
         this.appenderFactory =
                 Preconditions.checkNotNull(appenderFactory, "appenderFactory must not be null");
-        this.tableCreator =
-                Preconditions.checkNotNull(tableCreator, "tableCreator must not be null");
+        this.tableAdmin = Preconditions.checkNotNull(tableAdmin, "tableAdmin must not be null");
         this.failedRowHandler = config.getFailedRowHandler();
         this.maxAppendRequestBytes = maxAppendRequestBytes;
-        this.recoveryInitialBackoffMs = recoveryInitialBackoffMs;
-        this.recoveryMaxBackoffMs = recoveryMaxBackoffMs;
-        this.recoveryMaxAttempts = recoveryMaxAttempts;
+        this.recoverySchedule =
+                Preconditions.checkNotNull(recoverySchedule, "recoverySchedule must not be null");
+        this.schemaWaitSchedule =
+                Preconditions.checkNotNull(
+                        schemaWaitSchedule, "schemaWaitSchedule must not be null");
     }
 
     @Override
     public void write(T element, Context context) throws IOException {
         checkAsyncError();
-        // Plain volatile read on the per-record fast path; the atomic clear runs only when a
-        // repair is actually pending.
+        // Plain volatile reads on the per-record fast path; the atomic clears run only when a
+        // repair or refresh is actually pending.
         if (repairNeeded.get() && repairNeeded.getAndSet(false)) {
             repairFailedInFlight();
             // A terminal failure may have been captured by a completion callback while the
             // repair awaited its futures; surface it before accepting the record.
             checkAsyncError();
         }
+        if (!pushedSchemaRefreshes.isEmpty()) {
+            refreshPushedSchemas();
+            checkAsyncError();
+        }
         TableDestination destination = config.getDestinationResolver().resolve(element, context);
         ByteString row;
         try {
-            // Unchecked exceptions are routed too: a poison record must reach the handler no
-            // matter how the serializer fails (resolver failures, by contrast, are
-            // configuration errors and propagate).
+            // Serialized before any per-destination state exists: a poison record must reach the
+            // handler no matter how the serializer fails, without opening a write stream (or
+            // auto-creating a table) for a destination that may never receive a row. Resolver
+            // failures, by contrast, are configuration errors and propagate.
             row = config.getSerializer().serialize(element);
         } catch (IOException | RuntimeException e) {
             failedRowHandler.handle(
@@ -229,6 +297,10 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             return;
         }
         DestinationState state = ensureState(destination);
+        // The fingerprint check runs after serialize(), so even a serializer that advances its
+        // schema while serializing this very record gets the stream refreshed before the record's
+        // bytes are appended.
+        state = refreshOnFingerprintChange(destination, state);
         if (state.pendingCount() > 0 && state.pendingBytes + row.size() > maxAppendRequestBytes) {
             appendPending(destination, state);
         }
@@ -238,6 +310,10 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     @Override
     public void flush(boolean endOfInput) throws IOException {
         checkAsyncError();
+        if (!pushedSchemaRefreshes.isEmpty()) {
+            refreshPushedSchemas();
+            checkAsyncError();
+        }
         for (Map.Entry<TableDestination, DestinationState> entry : states.entrySet()) {
             if (entry.getValue().pendingCount() > 0) {
                 appendPending(entry.getKey(), entry.getValue());
@@ -297,12 +373,92 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     private DestinationState createState(TableDestination destination) throws IOException {
+        // The fingerprint is captured before the descriptor: if the serializer schema evolves
+        // between the two calls, the stale fingerprint triggers a redundant-but-harmless refresh
+        // on the next record, whereas the opposite order could miss a change.
+        Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
         RowAppender appender =
                 appenderFactory.create(
                         destination,
                         config.getSerializer().getDescriptor(destination),
                         config.getLocation());
-        return new DestinationState(appender);
+        return new DestinationState(appender, fingerprint);
+    }
+
+    /**
+     * Rebuilds the destination's stream writer when the serializer reports a schema fingerprint
+     * different from the one its current writer was built with — <em>before</em> any row serialized
+     * under the changed schema is appended, so the first append does not have to fail. When schema
+     * updates are enabled, the destination table's schema is reconciled first, proactively.
+     */
+    private DestinationState refreshOnFingerprintChange(
+            TableDestination destination, DestinationState state) throws IOException {
+        if (state.schemaFingerprint == null) {
+            // A null fingerprint at stream-open time means the schema never changes; skip the
+            // per-record serializer call entirely.
+            return state;
+        }
+        Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
+        if (Objects.equals(fingerprint, state.schemaFingerprint)) {
+            return state;
+        }
+        LOG.info("The serializer schema for {} changed, refreshing the write stream", destination);
+        boolean reconciled =
+                config.getSchemaUpdateOptions().isEnabled() && reconcileSchema(destination);
+        refreshDestination(destination, reconciled);
+        return states.get(destination);
+    }
+
+    /**
+     * Refreshes the stream writers of destinations for which append responses carried {@code
+     * updated_schema}: the table's schema changed, and a stream writer never picks that up by
+     * itself. The rebuilt writer's schema comes from the serializer, so destinations whose
+     * serializer fingerprint is unchanged (including static-schema serializers) are skipped — a
+     * rebuild would install the identical schema and only churn the stream. Called on the task
+     * thread.
+     */
+    private void refreshPushedSchemas() throws IOException {
+        for (TableDestination destination : new ArrayList<>(pushedSchemaRefreshes)) {
+            pushedSchemaRefreshes.remove(destination);
+            DestinationState state = states.get(destination);
+            if (state == null) {
+                continue;
+            }
+            Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
+            if (Objects.equals(fingerprint, state.schemaFingerprint)) {
+                LOG.debug(
+                        "BigQuery reported an updated schema for {} but the serializer schema is"
+                                + " unchanged, not refreshing the write stream",
+                        destination);
+                continue;
+            }
+            LOG.info(
+                    "BigQuery reported an updated schema for {}, refreshing the write stream",
+                    destination);
+            refreshDestination(destination, false);
+        }
+    }
+
+    /**
+     * Replaces the destination's stream writer with one built from the serializer's current schema.
+     * In-flight appends are awaited first (the rebuild would cancel them); those that failed
+     * repairably are re-appended on the rebuilt writer, and the rebuild itself runs under {@link
+     * #retryBatches}' guarded budget so a table missing or still propagating is recovered rather
+     * than surfacing as a raw failure.
+     *
+     * @param destination the destination to refresh
+     * @param schemaUpdated whether the table schema was just reconciled for this refresh
+     */
+    private void refreshDestination(TableDestination destination, boolean schemaUpdated)
+            throws IOException {
+        List<ProtoRows> failedBatches = new ArrayList<>();
+        collectFailedSiblings(destination, failedBatches);
+        retryBatches(
+                destination,
+                failedBatches,
+                false,
+                schemaUpdated,
+                schemaUpdated ? schemaWaitSchedule : recoverySchedule);
     }
 
     private void appendPending(TableDestination destination, DestinationState state) {
@@ -316,6 +472,9 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                     public void onSuccess(AppendRowsResponse response) {
                         Throwable failure = responseToThrowable(destination, response);
                         if (failure == null) {
+                            if (response.hasUpdatedSchema()) {
+                                pushedSchemaRefreshes.add(destination);
+                            }
                             inFlight.remove(future);
                         } else {
                             park(failure);
@@ -348,9 +507,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private enum RepairAction {
         /** Recoverable {@code NOT_FOUND}: create the table, then re-append. */
         CREATE_TABLE,
+        /** Schema mismatch with updates enabled: reconcile the table schema, then re-append. */
+        UPDATE_SCHEMA,
         /** Row-level failure: route rows to the handler, re-append the survivors. */
         ROUTE_ROWS,
-        /** Transient failure: re-append within the retry budget. */
+        /** Transient or stale-writer failure: re-append within the retry budget. */
         RETRY,
         /** Terminal failure: fail the writer. */
         FAIL
@@ -364,10 +525,15 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         if (isRecoverableNotFound(cause)) {
             return RepairAction.CREATE_TABLE;
         }
+        if (AppendErrorClassifier.isSchemaMismatch(cause)
+                && config.getSchemaUpdateOptions().isEnabled()) {
+            return RepairAction.UPDATE_SCHEMA;
+        }
         if (AppendErrorClassifier.findRowLevel(cause).isPresent()) {
             return RepairAction.ROUTE_ROWS;
         }
-        if (AppendErrorClassifier.classify(cause) == AppendErrorClassifier.Kind.TRANSIENT) {
+        if (AppendErrorClassifier.classify(cause) == AppendErrorClassifier.Kind.TRANSIENT
+                || AppendErrorClassifier.requiresWriterRefresh(cause)) {
             return RepairAction.RETRY;
         }
         return RepairAction.FAIL;
@@ -399,10 +565,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     /**
      * Handles a completed-with-failure append on the task thread: recoverable {@code NOT_FOUND}
-     * batches are re-appended after creating the table, transient failures are re-appended within
-     * the retry budget, row-level failures are routed to the {@link FailedRowHandler} (surviving
-     * rows are re-appended), and anything else fails the writer. The {@link #inFlight} removal
-     * arbitrates ownership against the completion callbacks.
+     * batches are re-appended after creating the table, schema mismatches are re-appended after
+     * reconciling the table schema (when updates are enabled), transient and stale-writer failures
+     * are re-appended within the retry budget, row-level failures are routed to the {@link
+     * FailedRowHandler} (surviving rows are re-appended), and anything else fails the writer. The
+     * {@link #inFlight} removal arbitrates ownership against the completion callbacks.
      */
     private void handleFailedAppend(ApiFuture<AppendRowsResponse> future, Throwable cause)
             throws IOException {
@@ -426,22 +593,45 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 batches.add(survivors);
             }
         } else {
-            LOG.info(
-                    action == RepairAction.CREATE_TABLE
-                            ? "An append to {} failed because the table does not exist, creating"
-                                    + " it (CREATE_IF_NEEDED)"
-                            : "An append to {} failed transiently past the SDK retries,"
-                                    + " re-appending (cause: {})",
-                    batch.destination,
-                    cause.toString());
+            logRepair(action, batch.destination, cause);
             batches.add(batch.rows);
         }
         collectFailedSiblings(batch.destination, batches);
-        if (action == RepairAction.CREATE_TABLE) {
-            recoverDestination(batch.destination, batches);
-        } else {
-            retryBatches(batch.destination, batches, false);
+        switch (action) {
+            case CREATE_TABLE:
+                recoverDestination(batch.destination, batches);
+                break;
+            case UPDATE_SCHEMA:
+                reconcileSchema(batch.destination);
+                retryBatches(batch.destination, batches, false, true, schemaWaitSchedule);
+                break;
+            default:
+                retryBatches(batch.destination, batches, false, false, recoverySchedule);
+                break;
         }
+    }
+
+    private static void logRepair(
+            RepairAction action, TableDestination destination, Throwable cause) {
+        String reason;
+        switch (action) {
+            case CREATE_TABLE:
+                reason =
+                        "An append to {} failed because the table does not exist, creating it"
+                                + " (CREATE_IF_NEEDED)";
+                break;
+            case UPDATE_SCHEMA:
+                reason =
+                        "An append to {} failed with a schema mismatch, reconciling the table"
+                                + " schema (cause: {})";
+                break;
+            default:
+                reason =
+                        "An append to {} failed transiently past the SDK retries, re-appending"
+                                + " (cause: {})";
+                break;
+        }
+        LOG.info(reason, destination, cause.toString());
     }
 
     /**
@@ -493,7 +683,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * Awaits an append future and returns the failure it completed with — unwrapped from the
      * execution exception, or derived from the response — or {@code null} on success.
      */
-    private static Throwable awaitFailure(
+    private Throwable awaitFailure(
             TableDestination destination,
             ApiFuture<AppendRowsResponse> future,
             String interruptMessage)
@@ -541,47 +731,112 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private void recoverDestination(TableDestination destination, List<ProtoRows> batches)
             throws IOException {
         createTable(destination);
-        retryBatches(destination, batches, true);
+        retryBatches(destination, batches, true, false, recoverySchedule);
     }
 
     private void createTable(TableDestination destination) throws IOException {
-        tableCreator.create(
+        tableAdmin.create(
                 destination,
                 config.getSerializer().getTableSchema(destination),
                 config.getTableCreateOptionsProvider().optionsFor(destination));
     }
 
     /**
-     * Re-appends the given batches on a rebuilt appender, retrying with backoff within the retry
-     * budget as long as failures stay repairable: {@code NOT_FOUND} while table metadata has not
-     * propagated yet (creating the table first if it has not been created during this repair and
-     * the disposition allows it), transient failures, and row-level failures (which are routed to
-     * the {@link FailedRowHandler}, shrinking the batch to the surviving rows). Terminal failures
-     * and retry-budget exhaustion fail the writer.
+     * Reconciles the destination table's schema with the serializer's: fresh read of the live
+     * schema, union with the serializer schema under the configured {@code SchemaUpdateOptions},
+     * and — only when the union differs — an etag-conditioned update. Lost races (a parallel
+     * subtask updated the table concurrently, or the per-table metadata-update quota was exceeded)
+     * re-read and re-union after a jittered sleep; because unions are additive, concurrent
+     * reconciliations converge and usually end in the no-change short-circuit, so no up-front
+     * jitter is needed — the etag makes optimistic first attempts safe. An impermissible union
+     * (dropped field, changed type, gated change) throws and is terminal.
+     *
+     * @param destination the destination to reconcile
+     * @return whether the table was changed (schema updated, or created after disappearing)
+     */
+    private boolean reconcileSchema(TableDestination destination) throws IOException {
+        TableSchema desired = config.getSerializer().getTableSchema(destination);
+        for (int attempt = 1; attempt <= SCHEMA_UPDATE_MAX_ATTEMPTS; attempt++) {
+            TableSchemaSnapshot live = tableAdmin.getSchema(destination);
+            if (live == null) {
+                // Degenerate: the table has meanwhile disappeared. Creation applies the full
+                // serializer schema, so there is nothing left to reconcile — but it stays gated
+                // by the disposition like every other create path.
+                if (config.getCreateDisposition() != CreateDisposition.CREATE_IF_NEEDED) {
+                    throw new IOException(
+                            "Cannot update the schema of BigQuery table "
+                                    + destination
+                                    + " because the table does not exist and createDisposition"
+                                    + " is CREATE_NEVER");
+                }
+                LOG.info(
+                        "The table behind {} does not exist, creating it instead of updating its"
+                                + " schema (CREATE_IF_NEEDED)",
+                        destination);
+                createTable(destination);
+                return true;
+            }
+            SchemaUnifier.UnionResult union =
+                    SchemaUnifier.union(live.getSchema(), desired, config.getSchemaUpdateOptions());
+            if (!union.isChanged()) {
+                // The table already covers the serializer schema (possibly thanks to a
+                // concurrent subtask).
+                return false;
+            }
+            if (tableAdmin.updateSchema(destination, live, union.getSchema())) {
+                LOG.info("Updated the schema of {} to cover the serializer schema", destination);
+                return true;
+            }
+            sleepJitter();
+        }
+        throw new IOException(
+                "Failed to update the schema of BigQuery table "
+                        + destination
+                        + ": lost a concurrent-update race "
+                        + SCHEMA_UPDATE_MAX_ATTEMPTS
+                        + " times");
+    }
+
+    /**
+     * Re-appends the given batches on a rebuilt appender, retrying with backoff within the given
+     * schedule's budget as long as failures stay repairable: {@code NOT_FOUND} while table metadata
+     * has not propagated yet (creating the table first if it has not been created during this
+     * repair and the disposition allows it), schema mismatches while a schema update propagates
+     * (reconciling first if the mismatch is discovered during this repair and updates are enabled),
+     * stale-writer and transient failures, and row-level failures (which are routed to the {@link
+     * FailedRowHandler}, shrinking the batch to the surviving rows). Terminal failures and
+     * retry-budget exhaustion fail the writer.
      *
      * @param destination the destination whose appender is rebuilt
      * @param batches the batches to re-append
      * @param tableCreated whether the destination table was just created for this repair
+     * @param schemaUpdated whether the table schema was just reconciled for this repair
+     * @param schedule the retry schedule bounding this repair
      */
     private void retryBatches(
-            TableDestination destination, List<ProtoRows> batches, boolean tableCreated)
+            TableDestination destination,
+            List<ProtoRows> batches,
+            boolean tableCreated,
+            boolean schemaUpdated,
+            RetrySchedule schedule)
             throws IOException {
         List<ProtoRows> remaining = new ArrayList<>(batches);
-        long backoffMs = recoveryInitialBackoffMs;
         for (int attempt = 1; ; attempt++) {
             DestinationState state = null;
             try {
                 state = rebuildState(destination);
             } catch (IOException | RuntimeException e) {
                 tableCreated = maybeCreateMissingTable(destination, e, tableCreated);
-                boolean retriable = isRetriable(e, tableCreated);
-                if (!retriable || attempt >= recoveryMaxAttempts) {
+                boolean retriable = isRetriable(e, tableCreated, schemaUpdated);
+                if (!retriable || attempt >= schedule.maxAttempts()) {
                     throw wrapFailure(
                             retryFailureMessage(
                                     "Failed to open a BigQuery write stream to " + destination,
                                     retriable,
                                     tableCreated,
-                                    attempt),
+                                    schemaUpdated,
+                                    attempt,
+                                    schedule),
                             e);
                 }
             }
@@ -597,11 +852,19 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                     remaining.remove(0);
                     continue;
                 }
-                Optional<Exceptions.AppendSerializtionError> rowLevel =
-                        AppendErrorClassifier.findRowLevel(failure);
-                if (rowLevel.isPresent()) {
+                // Schema-mismatch reconciliation is checked before row-level routing, mirroring
+                // repairActionFor: a mismatch fails the batch as a whole, and a schema update can
+                // save rows that per-row routing would drop.
+                if (maybeReconcileSchema(destination, failure, schemaUpdated)) {
+                    // The remaining re-appends now wait on schema propagation, which needs the
+                    // longer budget.
+                    schemaUpdated = true;
+                    schedule = schemaWaitSchedule;
+                } else if (AppendErrorClassifier.findRowLevel(failure).isPresent()) {
+                    Exceptions.AppendSerializtionError rowLevel =
+                            AppendErrorClassifier.findRowLevel(failure).get();
                     // Shrink the batch to the surviving rows and stay in the same attempt.
-                    ProtoRows survivors = routeRowLevel(destination, head, rowLevel.get());
+                    ProtoRows survivors = routeRowLevel(destination, head, rowLevel);
                     if (survivors.getSerializedRowsCount() >= head.getSerializedRowsCount()) {
                         // No row matched the reported indices, so nothing was dropped;
                         // re-appending the identical batch could never make progress.
@@ -621,14 +884,16 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                     continue;
                 }
                 tableCreated = maybeCreateMissingTable(destination, failure, tableCreated);
-                boolean retriable = isRetriable(failure, tableCreated);
-                if (!retriable || attempt >= recoveryMaxAttempts) {
+                boolean retriable = isRetriable(failure, tableCreated, schemaUpdated);
+                if (!retriable || attempt >= schedule.maxAttempts()) {
                     throw wrapFailure(
                             retryFailureMessage(
                                     "A re-append to BigQuery table " + destination + " failed",
                                     retriable,
                                     tableCreated,
-                                    attempt),
+                                    schemaUpdated,
+                                    attempt,
+                                    schedule),
                             failure);
                 }
                 backOff = true;
@@ -636,15 +901,15 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             if (!backOff) {
                 return;
             }
+            long backoffMs = schedule.backoffMs(attempt);
             LOG.info(
                     "Re-appending to BigQuery table {} is not possible yet"
                             + " (attempt {}/{}), backing off {} ms",
                     destination,
                     attempt,
-                    recoveryMaxAttempts,
+                    schedule.maxAttempts(),
                     backoffMs);
             sleep(backoffMs);
-            backoffMs = Math.min(backoffMs * 2, recoveryMaxBackoffMs);
         }
     }
 
@@ -667,21 +932,53 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Whether a repair-time failure warrants another attempt: {@code NOT_FOUND} while created table
-     * metadata propagates, or a transient failure.
+     * Reconciles the destination table's schema when a repair-time failure is a schema mismatch,
+     * updates are enabled, and no reconciliation has run during this repair yet (a transient repair
+     * can discover a schema mismatch). Returns whether a reconciliation ran just now.
      */
-    private static boolean isRetriable(Throwable failure, boolean tableCreated) {
+    private boolean maybeReconcileSchema(
+            TableDestination destination, Throwable failure, boolean schemaUpdated)
+            throws IOException {
+        if (schemaUpdated
+                || !config.getSchemaUpdateOptions().isEnabled()
+                || !AppendErrorClassifier.isSchemaMismatch(failure)) {
+            return false;
+        }
+        LOG.info(
+                "A re-append to {} failed with a schema mismatch, reconciling the table schema",
+                destination);
+        reconcileSchema(destination);
+        return true;
+    }
+
+    /**
+     * Whether a repair-time failure warrants another attempt: {@code NOT_FOUND} while created table
+     * metadata propagates, a schema mismatch while a schema update propagates, a stale-writer
+     * failure, or a transient failure.
+     */
+    private static boolean isRetriable(
+            Throwable failure, boolean tableCreated, boolean schemaUpdated) {
         return (tableCreated && isNotFound(failure))
+                || (schemaUpdated && AppendErrorClassifier.isSchemaMismatch(failure))
+                || AppendErrorClassifier.requiresWriterRefresh(failure)
                 || AppendErrorClassifier.classify(failure) == AppendErrorClassifier.Kind.TRANSIENT;
     }
 
     private String retryFailureMessage(
-            String base, boolean retriable, boolean tableCreated, int attempt) {
+            String base,
+            boolean retriable,
+            boolean tableCreated,
+            boolean schemaUpdated,
+            int attempt,
+            RetrySchedule schedule) {
         StringBuilder message = new StringBuilder(base);
         if (tableCreated) {
             message.append(" after creating the table");
         }
-        if (retriable && attempt >= recoveryMaxAttempts) {
+        if (schemaUpdated) {
+            message.append(" after reconciling the table schema");
+        }
+        if (retriable && attempt >= schedule.maxAttempts()) {
             message.append(", the retry budget is exhausted");
         }
         return message.append(" (").append(attempt).append(" attempt(s))").toString();
@@ -736,10 +1033,25 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         if (isNotFound(cause) && config.getCreateDisposition() == CreateDisposition.CREATE_NEVER) {
             message += " because the table does not exist and createDisposition is CREATE_NEVER";
         }
+        if (AppendErrorClassifier.isSchemaMismatch(cause)
+                && !config.getSchemaUpdateOptions().isEnabled()) {
+            message +=
+                    " because the rows carry fields the table does not have; update the table"
+                            + " schema, or enable schemaUpdateOptions(...) to let the sink update"
+                            + " it";
+        }
         return new IOException(message, cause);
     }
 
+    /** Sleeps a random duration up to {@link #SCHEMA_UPDATE_MAX_JITTER_MS}. */
+    private static void sleepJitter() throws IOException {
+        sleep(ThreadLocalRandom.current().nextLong(SCHEMA_UPDATE_MAX_JITTER_MS + 1));
+    }
+
     private static void sleep(long millis) throws IOException {
+        if (millis <= 0) {
+            return;
+        }
         try {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
@@ -752,16 +1064,38 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * Maps a completed append response to the failure it carries, or {@code null} for a clean
      * response. An error with a transient status code becomes a synthesized {@link
      * StatusRuntimeException} so the whole batch is retried (checked before row errors: a transient
-     * request must not drop rows), row errors become a synthesized row-level error (the same shape
-     * the SDK raises), and any other error is terminal.
+     * request must not drop rows). An error carrying a storage error identifying a stale stream
+     * writer — or, with schema updates enabled, a schema mismatch — is surfaced as a typed failure
+     * (the SDK's typed exception where it has one, otherwise a synthesized status exception with
+     * the storage error in its trailers) so those responses are repaired like the equivalent
+     * append-future failures instead of dropping every row. With schema updates disabled, a schema
+     * mismatch accompanied by row errors falls through to row-level routing so the configured
+     * {@link FailedRowHandler} policy still applies. Remaining row errors become a synthesized
+     * row-level error (the same shape the SDK raises), and any other error is terminal.
      */
-    private static Throwable responseToThrowable(
+    private Throwable responseToThrowable(
             TableDestination destination, AppendRowsResponse response) {
-        if (response.hasError()
-                && AppendErrorClassifier.isTransientCode(response.getError().getCode())) {
-            return Status.fromCodeValue(response.getError().getCode())
-                    .withDescription(response.getError().getMessage())
-                    .asRuntimeException();
+        if (response.hasError()) {
+            if (AppendErrorClassifier.isTransientCode(response.getError().getCode())) {
+                return Status.fromCodeValue(response.getError().getCode())
+                        .withDescription(response.getError().getMessage())
+                        .asRuntimeException();
+            }
+            // The SDK types only some storage errors (SCHEMA_MISMATCH_EXTRA_FIELDS,
+            // STREAM_FINALIZED, STREAM_NOT_FOUND, offsets); the synthesized fallback keeps the
+            // storage error detectable in the status trailers for the rest (INVALID_STREAM_STATE).
+            Throwable storageError = AppendErrorClassifier.toStorageException(response.getError());
+            if (storageError == null) {
+                storageError = StatusProto.toStatusRuntimeException(response.getError());
+            }
+            if (AppendErrorClassifier.requiresWriterRefresh(storageError)) {
+                return storageError;
+            }
+            if (AppendErrorClassifier.isSchemaMismatch(storageError)
+                    && (config.getSchemaUpdateOptions().isEnabled()
+                            || response.getRowErrorsCount() == 0)) {
+                return storageError;
+            }
         }
         if (response.getRowErrorsCount() > 0) {
             Map<Integer, String> rowErrors = new HashMap<>();
@@ -824,11 +1158,16 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     private static final class DestinationState {
         private final RowAppender appender;
+
+        /** The serializer's schema fingerprint captured when the appender was built. */
+        private final Object schemaFingerprint;
+
         private ProtoRows.Builder rows = ProtoRows.newBuilder();
         private long pendingBytes;
 
-        DestinationState(RowAppender appender) {
+        DestinationState(RowAppender appender, Object schemaFingerprint) {
             this.appender = appender;
+            this.schemaFingerprint = schemaFingerprint;
         }
 
         void add(ByteString row) {

@@ -1,0 +1,281 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigquery.sink.writer;
+
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
+
+import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryException;
+import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.Clustering;
+import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.FieldList;
+import com.google.cloud.bigquery.LegacySQLTypeName;
+import com.google.cloud.bigquery.Schema;
+import com.google.cloud.bigquery.StandardTableDefinition;
+import com.google.cloud.bigquery.Table;
+import com.google.cloud.bigquery.TableDefinition;
+import com.google.cloud.bigquery.TableId;
+import com.google.cloud.bigquery.TableInfo;
+import com.google.cloud.bigquery.TimePartitioning;
+import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
+import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+/**
+ * Default {@link TableAdmin} backed by the BigQuery REST client.
+ *
+ * <p>The client is created lazily on the first use, so jobs whose destination tables all exist and
+ * never evolve their schemas never construct it. HTTP conflicts on creation (409, the table was
+ * created concurrently — for example by a parallel subtask) are treated as success.
+ *
+ * <p>Schema updates are etag-conditioned: {@link #getSchema} snapshots the REST {@code Table}
+ * (which carries the etag), and {@link #updateSchema} submits the modified table so BigQuery
+ * rejects the update when the table changed since the snapshot. Lost races — the etag precondition
+ * failing, a concurrent-modification conflict, or the per-table metadata-update quota (about five
+ * updates per ten seconds) being momentarily exceeded — are reported as {@code false} for the
+ * caller to re-read and retry. The updated schema is assembled by <em>merging</em> the proposed
+ * Storage-form schema onto the snapshot's REST fields, so REST-only column attributes the Storage
+ * form cannot represent (policy tags, collation, ...) are preserved for existing columns.
+ *
+ * <p>(The lost-race handling follows the coordinator-free concurrent-update pattern of the
+ * Aiven/kafka-connect-bigquery connector, reimplemented independently; see the module README's
+ * provenance section.)
+ */
+@Internal
+public class BigQueryTableAdmin implements TableAdmin {
+
+    private static final Logger LOG = LoggerFactory.getLogger(BigQueryTableAdmin.class);
+
+    private static final int HTTP_CONFLICT = 409;
+    private static final int HTTP_PRECONDITION_FAILED = 412;
+
+    /** Error reason of a failed etag precondition. */
+    private static final String REASON_CONDITION_NOT_MET = "conditionNotMet";
+
+    /** Error reason of the per-table metadata-update quota. */
+    private static final String REASON_RATE_LIMIT_EXCEEDED = "rateLimitExceeded";
+
+    private BigQuery client;
+
+    /** Creates an admin using application-default credentials. */
+    public BigQueryTableAdmin() {}
+
+    /**
+     * Creates an admin using the given client.
+     *
+     * @param client the BigQuery REST client
+     */
+    public BigQueryTableAdmin(BigQuery client) {
+        this.client = client;
+    }
+
+    @Override
+    public void create(TableDestination destination, TableSchema schema, TableCreateOptions options)
+            throws IOException {
+        TableInfo tableInfo = buildTableInfo(destination, schema, options);
+        try {
+            client().create(tableInfo);
+            LOG.info("Created BigQuery table {} with options {}", destination, options);
+        } catch (BigQueryException e) {
+            if (e.getCode() == HTTP_CONFLICT) {
+                LOG.info("BigQuery table {} already exists, not creating it", destination);
+                return;
+            }
+            throw new IOException("Failed to create BigQuery table " + destination, e);
+        }
+    }
+
+    @Override
+    public TableSchemaSnapshot getSchema(TableDestination destination) throws IOException {
+        Table table;
+        try {
+            table = client().getTable(toTableId(destination));
+        } catch (BigQueryException e) {
+            throw new IOException("Failed to read the schema of BigQuery table " + destination, e);
+        }
+        if (table == null) {
+            return null;
+        }
+        Schema schema = table.<TableDefinition>getDefinition().getSchema();
+        if (schema == null) {
+            throw new IOException("BigQuery table " + destination + " has no schema");
+        }
+        try {
+            return TableSchemaSnapshot.of(BigQuerySchemaConverter.toStorageSchema(schema), table);
+        } catch (RuntimeException e) {
+            // For example a column type the converter does not support.
+            throw new IOException(
+                    "Failed to convert the schema of BigQuery table "
+                            + destination
+                            + " to its Storage API form",
+                    e);
+        }
+    }
+
+    @Override
+    public boolean updateSchema(
+            TableDestination destination, TableSchemaSnapshot base, TableSchema proposed)
+            throws IOException {
+        Table baseTable = base.getTable();
+        if (baseTable == null) {
+            throw new IOException(
+                    "The schema snapshot of BigQuery table "
+                            + destination
+                            + " carries no table resource to update");
+        }
+        TableDefinition definition = baseTable.getDefinition();
+        if (!(definition instanceof StandardTableDefinition)) {
+            throw new IOException(
+                    "Cannot update the schema of BigQuery table "
+                            + destination
+                            + ": only standard tables are supported, found "
+                            + definition.getType());
+        }
+        Schema existingSchema = definition.getSchema();
+        Schema mergedSchema =
+                existingSchema == null
+                        ? StorageSchemaConverter.toBigQuerySchema(proposed)
+                        : mergeSchema(existingSchema, proposed);
+        StandardTableDefinition updated =
+                ((StandardTableDefinition) definition).toBuilder().setSchema(mergedSchema).build();
+        try {
+            // The table carries the snapshot's etag, so BigQuery rejects the update when the
+            // table changed since the snapshot was taken.
+            client().update(baseTable.toBuilder().setDefinition(updated).build());
+            LOG.info("Updated the schema of BigQuery table {}", destination);
+            return true;
+        } catch (BigQueryException e) {
+            if (isLostRace(e)) {
+                LOG.info(
+                        "A schema update of BigQuery table {} lost a race and will be retried"
+                                + " from a fresh read (cause: {})",
+                        destination,
+                        e.toString());
+                return false;
+            }
+            throw new IOException(
+                    "Failed to update the schema of BigQuery table " + destination, e);
+        }
+    }
+
+    /**
+     * Merges a proposed Storage-form schema onto the existing REST schema it was derived from:
+     * fields already present keep their REST {@code Field} — including attributes the Storage form
+     * cannot represent, such as policy tags and collation — with only a {@code REQUIRED} → {@code
+     * NULLABLE} relaxation applied when the proposal asks for it (and struct subfields merged
+     * recursively); proposed-only fields are appended in Storage-converted form.
+     */
+    @VisibleForTesting
+    static Schema mergeSchema(Schema existing, TableSchema proposed) {
+        return Schema.of(mergeFields(existing.getFields(), proposed.getFieldsList()));
+    }
+
+    private static List<Field> mergeFields(
+            FieldList existing, List<TableFieldSchema> proposedFields) {
+        Map<String, Field> existingByName = new HashMap<>();
+        for (Field field : existing) {
+            existingByName.put(field.getName().toLowerCase(Locale.ROOT), field);
+        }
+        List<Field> merged = new ArrayList<>(proposedFields.size());
+        for (TableFieldSchema proposed : proposedFields) {
+            Field existingField = existingByName.get(proposed.getName().toLowerCase(Locale.ROOT));
+            if (existingField == null) {
+                merged.add(StorageSchemaConverter.toBigQueryField(proposed));
+                continue;
+            }
+            Field.Builder builder = existingField.toBuilder();
+            if (existingField.getMode() == Field.Mode.REQUIRED
+                    && proposed.getMode() == TableFieldSchema.Mode.NULLABLE) {
+                builder.setMode(Field.Mode.NULLABLE);
+            }
+            if (proposed.getType() == TableFieldSchema.Type.STRUCT
+                    && existingField.getType() == LegacySQLTypeName.RECORD) {
+                builder.setType(
+                        LegacySQLTypeName.RECORD,
+                        FieldList.of(
+                                mergeFields(
+                                        existingField.getSubFields(), proposed.getFieldsList())));
+            }
+            merged.add(builder.build());
+        }
+        return merged;
+    }
+
+    /**
+     * Whether a schema-update failure means the update lost a race (concurrent change or metadata
+     * quota) rather than being invalid: an etag-precondition failure, a conflict, or the per-table
+     * metadata-update rate limit.
+     */
+    @VisibleForTesting
+    static boolean isLostRace(BigQueryException e) {
+        if (e.getCode() == HTTP_CONFLICT || e.getCode() == HTTP_PRECONDITION_FAILED) {
+            return true;
+        }
+        String reason = e.getError() != null ? e.getError().getReason() : e.getReason();
+        return REASON_CONDITION_NOT_MET.equals(reason) || REASON_RATE_LIMIT_EXCEEDED.equals(reason);
+    }
+
+    private static TableId toTableId(TableDestination destination) {
+        return TableId.of(
+                destination.getProject(), destination.getDataset(), destination.getTable());
+    }
+
+    @VisibleForTesting
+    static TableInfo buildTableInfo(
+            TableDestination destination, TableSchema schema, TableCreateOptions options) {
+        StandardTableDefinition.Builder definition =
+                StandardTableDefinition.newBuilder()
+                        .setSchema(StorageSchemaConverter.toBigQuerySchema(schema));
+        if (options.getTimePartitioningType() != null) {
+            TimePartitioning.Builder partitioning =
+                    TimePartitioning.newBuilder(
+                            TimePartitioning.Type.valueOf(
+                                    options.getTimePartitioningType().name()));
+            if (options.getTimePartitioningField() != null) {
+                partitioning.setField(options.getTimePartitioningField());
+            }
+            if (options.getTimePartitioningExpirationMs() != null) {
+                partitioning.setExpirationMs(options.getTimePartitioningExpirationMs());
+            }
+            definition.setTimePartitioning(partitioning.build());
+        }
+        if (!options.getClusteredFields().isEmpty()) {
+            definition.setClustering(
+                    Clustering.newBuilder().setFields(options.getClusteredFields()).build());
+        }
+        return TableInfo.newBuilder(toTableId(destination), definition.build()).build();
+    }
+
+    private BigQuery client() {
+        if (client == null) {
+            client = BigQueryOptions.getDefaultInstance().getService();
+        }
+        return client;
+    }
+}
