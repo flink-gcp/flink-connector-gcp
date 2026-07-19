@@ -40,6 +40,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -121,20 +122,20 @@ public final class ProtoToAvroConverter {
             Descriptors.Descriptor descriptor,
             Schema avroSchema,
             String parentPath) {
+        // BigQuery column names are case-insensitive (and BQTableSchemaToProtoDescriptor
+        // lowercases proto field names), so pairing is uniformly case-insensitive.
         Map<String, Descriptors.FieldDescriptor> protoFieldsByName = new HashMap<>();
         for (Descriptors.FieldDescriptor protoField : descriptor.getFields()) {
-            protoFieldsByName.put(BigQuerySchemaUtil.getFieldName(protoField), protoField);
+            protoFieldsByName.put(
+                    BigQuerySchemaUtil.getFieldName(protoField).toLowerCase(Locale.ROOT),
+                    protoField);
         }
         List<FieldPlan> fieldPlans = new ArrayList<>(fields.size());
         for (TableFieldSchema field : fields) {
             String path =
                     parentPath.isEmpty() ? field.getName() : parentPath + "." + field.getName();
-            Descriptors.FieldDescriptor protoField = protoFieldsByName.get(field.getName());
-            if (protoField == null) {
-                // BQTableSchemaToProtoDescriptor lowercases proto field names.
-                protoField =
-                        protoFieldsByName.get(field.getName().toLowerCase(java.util.Locale.ROOT));
-            }
+            Descriptors.FieldDescriptor protoField =
+                    protoFieldsByName.get(field.getName().toLowerCase(Locale.ROOT));
             Preconditions.checkState(
                     protoField != null,
                     "The serializer's descriptor has no field for schema field %s",
@@ -195,41 +196,33 @@ public final class ProtoToAvroConverter {
             case STRING:
             case JSON:
             case GEOGRAPHY:
-                return checkWire(wire, Descriptors.FieldDescriptor.JavaType.STRING, path)
-                        ? Kind.IDENTITY
-                        : null;
+                checkWire(wire, Descriptors.FieldDescriptor.JavaType.STRING, path);
+                return Kind.IDENTITY;
             case INT64:
             case TIMESTAMP:
-                return checkWire(wire, Descriptors.FieldDescriptor.JavaType.LONG, path)
-                        ? Kind.IDENTITY
-                        : null;
+                checkWire(wire, Descriptors.FieldDescriptor.JavaType.LONG, path);
+                return Kind.IDENTITY;
             case DATE:
-                return checkWire(wire, Descriptors.FieldDescriptor.JavaType.INT, path)
-                        ? Kind.IDENTITY
-                        : null;
+                checkWire(wire, Descriptors.FieldDescriptor.JavaType.INT, path);
+                return Kind.IDENTITY;
             case DOUBLE:
-                return checkWire(wire, Descriptors.FieldDescriptor.JavaType.DOUBLE, path)
-                        ? Kind.IDENTITY
-                        : null;
+                checkWire(wire, Descriptors.FieldDescriptor.JavaType.DOUBLE, path);
+                return Kind.IDENTITY;
             case BOOL:
-                return checkWire(wire, Descriptors.FieldDescriptor.JavaType.BOOLEAN, path)
-                        ? Kind.IDENTITY
-                        : null;
+                checkWire(wire, Descriptors.FieldDescriptor.JavaType.BOOLEAN, path);
+                return Kind.IDENTITY;
             case BYTES:
-                return checkWire(wire, Descriptors.FieldDescriptor.JavaType.BYTE_STRING, path)
-                        ? Kind.BYTES
-                        : null;
+                checkWire(wire, Descriptors.FieldDescriptor.JavaType.BYTE_STRING, path);
+                return Kind.BYTES;
             case TIME:
-                return checkWire(wire, Descriptors.FieldDescriptor.JavaType.LONG, path)
-                        ? Kind.TIME_PACKED
-                        : null;
+                checkWire(wire, Descriptors.FieldDescriptor.JavaType.LONG, path);
+                return Kind.TIME_PACKED;
             case DATETIME:
                 if (wire == Descriptors.FieldDescriptor.JavaType.STRING) {
                     return Kind.IDENTITY;
                 }
-                return checkWire(wire, Descriptors.FieldDescriptor.JavaType.LONG, path)
-                        ? Kind.DATETIME_PACKED
-                        : null;
+                checkWire(wire, Descriptors.FieldDescriptor.JavaType.LONG, path);
+                return Kind.DATETIME_PACKED;
             case NUMERIC:
                 checkDecimalWire(wire, path);
                 return Kind.NUMERIC;
@@ -237,9 +230,8 @@ public final class ProtoToAvroConverter {
                 checkDecimalWire(wire, path);
                 return Kind.BIGNUMERIC;
             case STRUCT:
-                return checkWire(wire, Descriptors.FieldDescriptor.JavaType.MESSAGE, path)
-                        ? Kind.STRUCT
-                        : null;
+                checkWire(wire, Descriptors.FieldDescriptor.JavaType.MESSAGE, path);
+                return Kind.STRUCT;
             default:
                 throw new IllegalArgumentException(
                         "Field "
@@ -250,7 +242,7 @@ public final class ProtoToAvroConverter {
         }
     }
 
-    private static boolean checkWire(
+    private static void checkWire(
             Descriptors.FieldDescriptor.JavaType actual,
             Descriptors.FieldDescriptor.JavaType expected,
             String path) {
@@ -261,7 +253,6 @@ public final class ProtoToAvroConverter {
                 path,
                 expected,
                 actual);
-        return true;
     }
 
     private static void checkDecimalWire(Descriptors.FieldDescriptor.JavaType wire, String path) {
@@ -346,7 +337,8 @@ public final class ProtoToAvroConverter {
                     case IDENTITY:
                         return value;
                     case BYTES:
-                        return ByteBuffer.wrap(((ByteString) value).toByteArray());
+                        // Zero-copy; Avro's encoder handles non-array-backed buffers.
+                        return ((ByteString) value).asReadOnlyByteBuffer();
                     case TIME_PACKED:
                         return CivilTimeEncoder.decodePacked64TimeMicrosLocalTime((Long) value)
                                         .toNanoOfDay()

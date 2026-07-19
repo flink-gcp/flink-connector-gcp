@@ -47,9 +47,12 @@ public final class FileLoadsOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    /** {@code gs://bucket} or {@code gs://bucket/prefix} (bucket naming checked by GCS itself). */
-    private static final Pattern STAGING_PATH_PATTERN =
-            Pattern.compile("gs://[^/]+(/.+)?", Pattern.CASE_INSENSITIVE);
+    /**
+     * {@code gs://bucket} or {@code gs://bucket/prefix} (bucket naming checked by GCS itself). The
+     * scheme is case-sensitive: the GCS client and BigQuery load jobs only accept lowercase {@code
+     * gs://}.
+     */
+    private static final Pattern STAGING_PATH_PATTERN = Pattern.compile("gs://[^/]+(/.+)?");
 
     private final String stagingPath;
     @Nullable private final String tempDataset;

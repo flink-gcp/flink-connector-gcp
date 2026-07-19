@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.JobInfo;
@@ -31,6 +32,7 @@ import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.writer.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.writer.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.writer.SchemaUnifier;
 import io.github.flink.gcp.connector.bigquery.sink.writer.StorageSchemaConverter;
@@ -45,6 +47,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -98,6 +101,9 @@ public final class LoadJobOrchestrator {
     private final TableAdmin tableAdmin;
     private final StagingStorage storage;
     private final String flinkJobId;
+
+    /** Whether a destination table was missing when first checked; see {@link #mayCreate}. */
+    private final Map<TableDestination, Boolean> missingTables = new HashMap<>();
 
     /**
      * Creates an orchestrator.
@@ -160,11 +166,17 @@ public final class LoadJobOrchestrator {
         }
 
         List<String> uris = new ArrayList<>(committables.size());
+        long rows = 0;
         for (FileLoadsCommittable committable : committables) {
             uris.add(committable.getUri());
+            rows += committable.getRowCount();
         }
         storage.deleteObjects(uris);
-        LOG.info("Loaded {} staged files into {} tables", committables.size(), loads.size());
+        LOG.info(
+                "Loaded {} rows from {} staged files into {} tables",
+                rows,
+                committables.size(),
+                loads.size());
     }
 
     /** Groups, sorts and bin-packs the committables into per-destination load plans. */
@@ -208,13 +220,11 @@ public final class LoadJobOrchestrator {
 
     private void submitLoads(DestinationLoad load) throws IOException {
         TableDestination destination = load.destination;
-        Schema schema =
-                StorageSchemaConverter.toBigQuerySchema(
-                        config.getSerializer().getTableSchema(destination));
         if (load.partitions.size() == 1) {
+            Schema schema =
+                    StorageSchemaConverter.toBigQuerySchema(
+                            config.getSerializer().getTableSchema(destination));
             List<String> uris = urisOf(load.partitions.get(0));
-            TableCreateOptions createOptions =
-                    config.getTableCreateOptionsProvider().optionsFor(destination);
             String jobId = jobId("flink-bq-load", destination, uris, null);
             load.loadJobIds.add(jobId);
             runner.submitLoad(
@@ -226,10 +236,14 @@ public final class LoadJobOrchestrator {
                             toCreateDisposition(config.getCreateDisposition()),
                             toWriteDisposition(options.getWriteDisposition()),
                             schemaUpdateOptions(),
-                            toTimePartitioning(createOptions),
-                            toClustering(createOptions)));
+                            creationTimePartitioning(destination),
+                            creationClustering(destination)));
             return;
         }
+        // Copy jobs require matching schemas, so temp tables are loaded with the final table's
+        // schema, reconciled up front (a table-only column would otherwise fail the copy while
+        // the same rows load fine on the single-job path).
+        Schema schema = ensureFinalTable(destination);
         for (int i = 0; i < load.partitions.size(); i++) {
             List<String> uris = urisOf(load.partitions.get(i));
             TableDestination tempTable = tempTable(destination, i);
@@ -251,12 +265,45 @@ public final class LoadJobOrchestrator {
         }
     }
 
+    /**
+     * Returns the partitioning a load job may create the destination table with: the configured
+     * one, but only when the table does not exist yet — a load job carrying a partitioning spec
+     * against an existing, differently-laid-out table fails, whereas creation options are defined
+     * to apply at creation time only.
+     */
+    private TimePartitioning creationTimePartitioning(TableDestination destination)
+            throws IOException {
+        TableCreateOptions createOptions =
+                config.getTableCreateOptionsProvider().optionsFor(destination);
+        TimePartitioning partitioning = BigQueryTableAdmin.toTimePartitioning(createOptions);
+        return partitioning != null && mayCreate(destination) ? partitioning : null;
+    }
+
+    /** See {@link #creationTimePartitioning}. */
+    private Clustering creationClustering(TableDestination destination) throws IOException {
+        TableCreateOptions createOptions =
+                config.getTableCreateOptionsProvider().optionsFor(destination);
+        Clustering clustering = BigQueryTableAdmin.toClustering(createOptions);
+        return clustering != null && mayCreate(destination) ? clustering : null;
+    }
+
+    private boolean mayCreate(TableDestination destination) throws IOException {
+        if (config.getCreateDisposition() != CreateDisposition.CREATE_IF_NEEDED) {
+            return false;
+        }
+        Boolean missing = missingTables.get(destination);
+        if (missing == null) {
+            missing = tableAdmin.getSchema(destination) == null;
+            missingTables.put(destination, missing);
+        }
+        return missing;
+    }
+
     private void submitCopyIfNeeded(DestinationLoad load) throws IOException {
         if (load.tempTables.isEmpty()) {
             return;
         }
         TableDestination destination = load.destination;
-        ensureFinalTable(destination);
         List<String> tempTablePaths = new ArrayList<>(load.tempTables.size());
         for (TableDestination tempTable : load.tempTables) {
             tempTablePaths.add(tempTable.toTablePath());
@@ -271,12 +318,15 @@ public final class LoadJobOrchestrator {
     }
 
     /**
-     * Makes the final table ready for the copy job, which can neither create it with
-     * partitioning/clustering nor update its schema: creates a missing table under {@code
-     * CREATE_IF_NEEDED} (fails under {@code CREATE_NEVER}), and — when schema updates are enabled —
-     * unions the live schema with the serializer's, retrying lost update races.
+     * Makes the final table ready for the copy job — which can neither create it with
+     * partitioning/clustering nor update its schema — and returns the schema temporary tables must
+     * be loaded with so the copy's schemas match: creates a missing table under {@code
+     * CREATE_IF_NEEDED} (fails under {@code CREATE_NEVER}), and — when schema updates are enabled
+     * and rows will be appended — unions the live schema with the serializer's, retrying lost
+     * update races. Under {@code WRITE_TRUNCATE} the copy replaces the final table's schema
+     * wholesale, so no union is needed and the serializer's schema is used as-is.
      */
-    private void ensureFinalTable(TableDestination destination) throws IOException {
+    private Schema ensureFinalTable(TableDestination destination) throws IOException {
         TableSchema desired = config.getSerializer().getTableSchema(destination);
         TableSchemaSnapshot snapshot = tableAdmin.getSchema(destination);
         if (snapshot == null) {
@@ -290,10 +340,13 @@ public final class LoadJobOrchestrator {
                     destination,
                     desired,
                     config.getTableCreateOptionsProvider().optionsFor(destination));
-            return;
+            return StorageSchemaConverter.toBigQuerySchema(desired);
+        }
+        if (options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE) {
+            return StorageSchemaConverter.toBigQuerySchema(desired);
         }
         if (!config.getSchemaUpdateOptions().isEnabled()) {
-            return;
+            return StorageSchemaConverter.toBigQuerySchema(snapshot.getSchema());
         }
         for (int attempt = 1; attempt <= SCHEMA_UPDATE_SCHEDULE.maxAttempts(); attempt++) {
             SchemaUnifier.UnionResult union =
@@ -301,7 +354,7 @@ public final class LoadJobOrchestrator {
                             snapshot.getSchema(), desired, config.getSchemaUpdateOptions());
             if (!union.isChanged()
                     || tableAdmin.updateSchema(destination, snapshot, union.getSchema())) {
-                return;
+                return StorageSchemaConverter.toBigQuerySchema(union.getSchema());
             }
             try {
                 Thread.sleep(SCHEMA_UPDATE_SCHEDULE.backoffMs(attempt));
@@ -389,11 +442,7 @@ public final class LoadJobOrchestrator {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is unavailable", e);
         }
-        StringBuilder hex = new StringBuilder();
-        for (byte b : digest.digest(value.getBytes(StandardCharsets.UTF_8))) {
-            hex.append(String.format("%02x", b));
-        }
-        return hex.toString();
+        return StringUtils.byteToHexString(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
     }
 
     private static JobInfo.CreateDisposition toCreateDisposition(CreateDisposition disposition) {
@@ -411,29 +460,6 @@ public final class LoadJobOrchestrator {
             default:
                 return JobInfo.WriteDisposition.WRITE_APPEND;
         }
-    }
-
-    private static TimePartitioning toTimePartitioning(TableCreateOptions options) {
-        if (options.getTimePartitioningType() == null) {
-            return null;
-        }
-        TimePartitioning.Builder partitioning =
-                TimePartitioning.newBuilder(
-                        TimePartitioning.Type.valueOf(options.getTimePartitioningType().name()));
-        if (options.getTimePartitioningField() != null) {
-            partitioning.setField(options.getTimePartitioningField());
-        }
-        if (options.getTimePartitioningExpirationMs() != null) {
-            partitioning.setExpirationMs(options.getTimePartitioningExpirationMs());
-        }
-        return partitioning.build();
-    }
-
-    private static Clustering toClustering(TableCreateOptions options) {
-        if (options.getClusteredFields().isEmpty()) {
-            return null;
-        }
-        return Clustering.newBuilder().setFields(options.getClusteredFields()).build();
     }
 
     /** One destination table's load plan and the job/table names it produced. */

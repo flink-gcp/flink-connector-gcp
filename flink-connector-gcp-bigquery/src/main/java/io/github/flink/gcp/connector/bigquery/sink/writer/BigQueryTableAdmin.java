@@ -241,9 +241,50 @@ public class BigQueryTableAdmin implements TableAdmin {
         return REASON_CONDITION_NOT_MET.equals(reason) || REASON_RATE_LIMIT_EXCEEDED.equals(reason);
     }
 
-    private static TableId toTableId(TableDestination destination) {
+    /**
+     * Converts a destination to the REST client's table id.
+     *
+     * @param destination the destination
+     * @return the table id
+     */
+    public static TableId toTableId(TableDestination destination) {
         return TableId.of(
                 destination.getProject(), destination.getDataset(), destination.getTable());
+    }
+
+    /**
+     * Converts creation options to the REST client's partitioning spec.
+     *
+     * @param options the creation options
+     * @return the partitioning, or {@code null} when none is configured
+     */
+    public static TimePartitioning toTimePartitioning(TableCreateOptions options) {
+        if (options.getTimePartitioningType() == null) {
+            return null;
+        }
+        TimePartitioning.Builder partitioning =
+                TimePartitioning.newBuilder(
+                        TimePartitioning.Type.valueOf(options.getTimePartitioningType().name()));
+        if (options.getTimePartitioningField() != null) {
+            partitioning.setField(options.getTimePartitioningField());
+        }
+        if (options.getTimePartitioningExpirationMs() != null) {
+            partitioning.setExpirationMs(options.getTimePartitioningExpirationMs());
+        }
+        return partitioning.build();
+    }
+
+    /**
+     * Converts creation options to the REST client's clustering spec.
+     *
+     * @param options the creation options
+     * @return the clustering, or {@code null} when none is configured
+     */
+    public static Clustering toClustering(TableCreateOptions options) {
+        if (options.getClusteredFields().isEmpty()) {
+            return null;
+        }
+        return Clustering.newBuilder().setFields(options.getClusteredFields()).build();
     }
 
     @VisibleForTesting
@@ -252,22 +293,13 @@ public class BigQueryTableAdmin implements TableAdmin {
         StandardTableDefinition.Builder definition =
                 StandardTableDefinition.newBuilder()
                         .setSchema(StorageSchemaConverter.toBigQuerySchema(schema));
-        if (options.getTimePartitioningType() != null) {
-            TimePartitioning.Builder partitioning =
-                    TimePartitioning.newBuilder(
-                            TimePartitioning.Type.valueOf(
-                                    options.getTimePartitioningType().name()));
-            if (options.getTimePartitioningField() != null) {
-                partitioning.setField(options.getTimePartitioningField());
-            }
-            if (options.getTimePartitioningExpirationMs() != null) {
-                partitioning.setExpirationMs(options.getTimePartitioningExpirationMs());
-            }
-            definition.setTimePartitioning(partitioning.build());
+        TimePartitioning partitioning = toTimePartitioning(options);
+        if (partitioning != null) {
+            definition.setTimePartitioning(partitioning);
         }
-        if (!options.getClusteredFields().isEmpty()) {
-            definition.setClustering(
-                    Clustering.newBuilder().setFields(options.getClusteredFields()).build());
+        Clustering clustering = toClustering(options);
+        if (clustering != null) {
+            definition.setClustering(clustering);
         }
         return TableInfo.newBuilder(toTableId(destination), definition.build()).build();
     }

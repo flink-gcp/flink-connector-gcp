@@ -89,6 +89,19 @@ class BigQueryFileLoadsSinkTopologyTest {
     }
 
     @Test
+    void automaticExecutionModeIsRejectedAtGraphConstruction() {
+        // AUTOMATIC could resolve to streaming, where end of input — and therefore the load
+        // jobs — would never come; explicit BATCH is required.
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setRuntimeMode(RuntimeExecutionMode.AUTOMATIC);
+        env.fromData("a", "b").sinkTo(sink());
+
+        assertThatThrownBy(env::getStreamGraph)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("RuntimeExecutionMode.BATCH");
+    }
+
+    @Test
     void batchExecutionBuildsLoadJobOperator() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setRuntimeMode(RuntimeExecutionMode.BATCH);

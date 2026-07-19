@@ -31,8 +31,8 @@ import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.LoadJobConfiguration;
-import com.google.cloud.bigquery.TableId;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.writer.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.writer.RetrySchedule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,7 +92,8 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
         LoadJobConfiguration.Builder load =
                 LoadJobConfiguration.newBuilder(
-                                toTableId(spec.getDestination()), spec.getSourceUris())
+                                BigQueryTableAdmin.toTableId(spec.getDestination()),
+                                spec.getSourceUris())
                         .setFormatOptions(FormatOptions.avro())
                         .setUseAvroLogicalTypes(true)
                         .setSchema(spec.getSchema())
@@ -114,9 +115,9 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     public void submitCopy(String jobId, CopyJobSpec spec) throws IOException {
         CopyJobConfiguration copy =
                 CopyJobConfiguration.newBuilder(
-                                toTableId(spec.getDestination()),
+                                BigQueryTableAdmin.toTableId(spec.getDestination()),
                                 spec.getSourceTables().stream()
-                                        .map(BigQueryLoadJobRunner::toTableId)
+                                        .map(BigQueryTableAdmin::toTableId)
                                         .collect(Collectors.toList()))
                         .setCreateDisposition(JobInfo.CreateDisposition.CREATE_NEVER)
                         .setWriteDisposition(spec.getWriteDisposition())
@@ -155,7 +156,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     @Override
     public void deleteTable(TableDestination table) {
         try {
-            client().delete(toTableId(table));
+            client().delete(BigQueryTableAdmin.toTableId(table));
         } catch (RuntimeException e) {
             LOG.warn("Failed to delete temporary table {}", table, e);
         }
@@ -236,11 +237,6 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             jobId.setLocation(location);
         }
         return jobId.build();
-    }
-
-    private static TableId toTableId(TableDestination destination) {
-        return TableId.of(
-                destination.getProject(), destination.getDataset(), destination.getTable());
     }
 
     private BigQuery client() {

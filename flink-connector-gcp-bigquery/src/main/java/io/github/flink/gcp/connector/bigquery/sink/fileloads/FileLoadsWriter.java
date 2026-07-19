@@ -141,8 +141,10 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
         TableDestination destination = config.getDestinationResolver().resolve(element, context);
         ByteString rowBytes;
         try {
+            // A poison record must reach the handler no matter how the serializer fails,
+            // matching the streaming writer's contract.
             rowBytes = config.getSerializer().serialize(element);
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             config.getFailedRowHandler()
                     .handle(
                             FailedRow.of(

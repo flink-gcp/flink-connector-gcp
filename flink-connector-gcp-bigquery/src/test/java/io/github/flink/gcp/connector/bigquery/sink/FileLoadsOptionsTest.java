@@ -59,6 +59,9 @@ class FileLoadsOptionsTest {
                 .hasMessageContaining("gs://");
         assertThatThrownBy(() -> FileLoadsOptions.builder().stagingPath("gs://"))
                 .isInstanceOf(IllegalArgumentException.class);
+        // The GCS client and load jobs only accept a lowercase scheme.
+        assertThatThrownBy(() -> FileLoadsOptions.builder().stagingPath("GS://bucket"))
+                .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> FileLoadsOptions.builder().stagingPath(null))
                 .isInstanceOf(NullPointerException.class);
     }

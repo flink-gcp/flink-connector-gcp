@@ -207,6 +207,19 @@ class TableSchemaToAvroConverterTest {
     }
 
     @Test
+    void rejectsFlexibleColumnNames() {
+        assertThatThrownBy(
+                        () ->
+                                convertSingle(
+                                        field(
+                                                "1st_field",
+                                                TableFieldSchema.Type.STRING,
+                                                TableFieldSchema.Mode.REQUIRED)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("flexible column names");
+    }
+
+    @Test
     void rejectsUnsupportedTypes() {
         assertThatThrownBy(() -> requiredSchemaOf(TableFieldSchema.Type.INTERVAL))
                 .isInstanceOf(IllegalArgumentException.class)

@@ -222,13 +222,16 @@ public class BigQuerySinkBuilder<T> {
                         schemaUpdateOptions,
                         failedRowHandler,
                         location);
-        if (writeMethod != WriteMethod.FILE_LOADS) {
-            Preconditions.checkState(
-                    fileLoadsOptions == null,
-                    "fileLoadsOptions(...) is only valid for WriteMethod.FILE_LOADS"
-                            + " (write method is %s).",
-                    writeMethod);
-        }
+        // The required/forbidden pairing for write-method-scoped options; future write-method
+        // option objects follow the same two adjacent checks.
+        Preconditions.checkState(
+                writeMethod == WriteMethod.FILE_LOADS || fileLoadsOptions == null,
+                "fileLoadsOptions(...) is only valid for WriteMethod.FILE_LOADS"
+                        + " (write method is %s).",
+                writeMethod);
+        Preconditions.checkState(
+                writeMethod != WriteMethod.FILE_LOADS || fileLoadsOptions != null,
+                "fileLoadsOptions(...) is required for WriteMethod.FILE_LOADS.");
         switch (writeMethod) {
             case STORAGE_API_AT_LEAST_ONCE:
                 return new BigQueryDefaultStreamSink<>(config);
@@ -237,9 +240,6 @@ public class BigQuerySinkBuilder<T> {
                         "WriteMethod.STORAGE_API_EXACTLY_ONCE is not implemented yet"
                                 + " (tracked in issue #30).");
             case FILE_LOADS:
-                Preconditions.checkState(
-                        fileLoadsOptions != null,
-                        "fileLoadsOptions(...) is required for WriteMethod.FILE_LOADS.");
                 return new BigQueryFileLoadsSink<>(config, fileLoadsOptions);
             default:
                 throw new IllegalStateException("Unknown write method: " + writeMethod);

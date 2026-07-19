@@ -52,8 +52,14 @@ final class StagedFileWriter {
                         .setCodec(CodecFactory.deflateCodec(CodecFactory.DEFAULT_DEFLATE_LEVEL));
         try {
             this.avroWriter = writer.create(schema, countingStream);
-        } catch (IOException e) {
-            writer.close();
+        } catch (IOException | RuntimeException e) {
+            // DataFileWriter.close() is a no-op before create() succeeds; close the staging
+            // stream directly so the upload channel does not leak.
+            try {
+                stream.close();
+            } catch (IOException | RuntimeException suppressed) {
+                e.addSuppressed(suppressed);
+            }
             throw e;
         }
     }

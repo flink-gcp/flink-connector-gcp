@@ -47,13 +47,18 @@ import java.util.List;
  *
  * <p>{@code INTERVAL} and {@code RANGE} fields are rejected: the Storage Write API serializer
  * surface has no canonical wire form for them yet, so the FILE_LOADS path does not accept them
- * either.
+ * either. BigQuery flexible column names (leading digits, dashes, non-ASCII) are rejected too —
+ * Avro names cannot represent them, so they cannot travel through Avro staging files.
  */
 @Internal
 public final class TableSchemaToAvroConverter {
 
     /** Namespace prefix keeping nested record names unique per field path. */
     private static final String NAMESPACE = "io.github.flink.gcp.connector.bigquery.fileloads";
+
+    /** The names Avro accepts; BigQuery flexible column names fall outside it. */
+    private static final java.util.regex.Pattern AVRO_NAME =
+            java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
 
     private TableSchemaToAvroConverter() {}
 
@@ -76,6 +81,13 @@ public final class TableSchemaToAvroConverter {
     }
 
     private static Schema.Field toField(TableFieldSchema field, String namespace) {
+        if (!AVRO_NAME.matcher(field.getName()).matches()) {
+            throw new IllegalArgumentException(
+                    "Field "
+                            + field.getName()
+                            + " is not representable as an Avro name; BigQuery flexible column"
+                            + " names are not supported by WriteMethod.FILE_LOADS.");
+        }
         Schema base = toBaseSchema(field, namespace);
         switch (field.getMode()) {
             case REPEATED:

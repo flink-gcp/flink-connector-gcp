@@ -50,6 +50,9 @@ public final class GcsStagingStorage implements StagingStorage {
 
     private static final int UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 
+    /** Objects per batched delete request (the GCS batch API accepts up to 100 operations). */
+    private static final int DELETE_BATCH_SIZE = 100;
+
     private transient Storage storage;
 
     @Override
@@ -63,12 +66,22 @@ public final class GcsStagingStorage implements StagingStorage {
     @Override
     public void deleteObjects(List<String> gcsUris) {
         int failed = 0;
-        for (String gcsUri : gcsUris) {
+        for (int from = 0; from < gcsUris.size(); from += DELETE_BATCH_SIZE) {
+            List<String> chunk =
+                    gcsUris.subList(from, Math.min(from + DELETE_BATCH_SIZE, gcsUris.size()));
+            BlobId[] blobIds = new BlobId[chunk.size()];
+            for (int i = 0; i < chunk.size(); i++) {
+                blobIds[i] = BlobId.fromGsUtilUri(chunk.get(i));
+            }
             try {
-                storage().delete(BlobId.fromGsUtilUri(gcsUri));
+                for (Boolean deleted : storage().delete(blobIds)) {
+                    if (!Boolean.TRUE.equals(deleted)) {
+                        failed++;
+                    }
+                }
             } catch (RuntimeException e) {
-                failed++;
-                LOG.warn("Failed to delete staging object {}", gcsUri, e);
+                failed += chunk.size();
+                LOG.warn("Failed to delete a batch of {} staging objects", chunk.size(), e);
             }
         }
         if (failed > 0) {

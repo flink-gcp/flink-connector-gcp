@@ -166,16 +166,21 @@ server-side). Load jobs carry the serializer's schema explicitly (`useAvroLogica
 partitioning/clustering from `tableCreateOptions(...)` for tables created under
 `CREATE_IF_NEEDED`.
 
-**Batch only.** Streaming execution is rejected when the job graph is built; a runtime guard also
-rejects the first checkpoint in case `RuntimeExecutionMode.AUTOMATIC` resolved to streaming. This
-is deliberate: checkpoint-frequency load jobs would run into BigQuery's per-table load quota
-(1,500/table/day) — streaming pipelines belong on the Storage Write API methods.
+**Batch only.** Anything but an explicit `RuntimeExecutionMode.BATCH` (including `AUTOMATIC`,
+which could resolve to streaming, where end of input — and therefore the load jobs — would never
+come) is rejected when the job graph is built; a runtime guard also rejects checkpoints as a
+backstop. This is deliberate: checkpoint-frequency load jobs would run into BigQuery's per-table
+load quota (1,500/table/day) — streaming pipelines belong on the Storage Write API methods.
 
 **Exactly-once.** Load jobs reference exactly the file URIs emitted by the writers at end of input
 — never a bucket prefix — so files from failed/restarted attempts (which use unique names:
 Flink job id, subtask, attempt, random component) can never leak into a load. Job ids are
 deterministic hashes of the destination and its sorted file list: a retry after a failure
-re-attaches to the already-running/completed BigQuery job instead of loading twice.
+re-attaches to the already-running/completed BigQuery job instead of loading twice. Known residual
+risk (shared with the Beam and Dataproc designs): if a failure destroys the persisted committables
+*and* re-runs the writer stage after load jobs were already submitted, the retried run produces
+new file names — and thus new job ids — while the first run's jobs keep running server-side,
+which can duplicate rows under `WRITE_APPEND`.
 
 **Per-load-job limits.** A table whose staged files exceed one load job's limits (10,000 source
 URIs / 11 TiB) is loaded partition-wise into temporary tables (`WRITE_TRUNCATE`, so retries are
@@ -205,7 +210,9 @@ precision/scale respected), `JSON`/`GEOGRAPHY` as strings, `STRUCT`/`REPEATED` n
 
 The integration test (`BigQueryFileLoadsITCase`) runs a real batch job against BigQuery and GCS
 and is gated on `BQ_IT_PROJECT`, `BQ_IT_DATASET` and `BQ_IT_GCS_BUCKET` (application-default
-credentials); it is skipped when they are unset, keeping `./mvnw verify` credential-free.
+credentials); it is skipped when they are unset, keeping `./mvnw verify` credential-free. For
+local runs, put the variables (plus `GOOGLE_APPLICATION_CREDENTIALS` if not using the default ADC
+location) in an uncommitted `.env` at the repository root — mise loads it automatically.
 
 ## Error handling
 

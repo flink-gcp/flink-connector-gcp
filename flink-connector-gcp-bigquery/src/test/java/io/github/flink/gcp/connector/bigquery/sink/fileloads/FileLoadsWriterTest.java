@@ -137,6 +137,9 @@ class FileLoadsWriterTest {
             if (element.failSerialization) {
                 throw new IOException("boom");
             }
+            if ("runtime-boom".equals(element.name)) {
+                throw new IllegalStateException("unchecked boom");
+            }
             if (element.produceGarbageBytes) {
                 // Missing the REQUIRED name field; parsing rejects it.
                 return ByteString.EMPTY;
@@ -271,6 +274,23 @@ class FileLoadsWriterTest {
         assertThat(handler.rows.get(0).getRowBytes()).isNull();
         assertThat(handler.rows.get(0).getDestination())
                 .isEqualTo(TableDestination.of("p", "d", "t1"));
+    }
+
+    @Test
+    void routesSerializerRuntimeExceptionsToHandler() throws Exception {
+        // A poison record must reach the handler no matter how the serializer fails.
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        CollectingHandler handler = new CollectingHandler();
+        FileLoadsWriter<TestRow> writer =
+                writer(config(handler), storage, FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+
+        writer.write(new TestRow("t1", "runtime-boom", 1L), CONTEXT);
+        Collection<FileLoadsCommittable> committables = writer.prepareCommit();
+        writer.close();
+
+        assertThat(committables).isEmpty();
+        assertThat(handler.rows).hasSize(1);
+        assertThat(handler.rows.get(0).getCause()).isInstanceOf(IllegalStateException.class);
     }
 
     @Test

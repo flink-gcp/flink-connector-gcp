@@ -46,9 +46,9 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingStorage;
  * turns them into BigQuery load jobs at end of input (see {@link
  * io.github.flink.gcp.connector.bigquery.sink.fileloads.LoadJobOrchestrator}).
  *
- * <p>Batch execution only, enforced twice: at graph construction here (streaming mode is rejected
- * when the post-commit topology is added) and at runtime in the writer (a pre-end-of-input flush
- * means a checkpoint, catching {@link RuntimeExecutionMode#AUTOMATIC} resolving to streaming).
+ * <p>Batch execution only, enforced twice: at graph construction here (anything but an explicit
+ * {@link RuntimeExecutionMode#BATCH} is rejected when the post-commit topology is added) and at
+ * runtime in the writer (a pre-end-of-input flush means a checkpoint, i.e. streaming execution).
  *
  * @param <T> type of the records written by the sink
  */
@@ -105,11 +105,14 @@ public class BigQueryFileLoadsSink<T>
                         .getExecutionEnvironment()
                         .getConfiguration()
                         .get(ExecutionOptions.RUNTIME_MODE);
-        if (mode == RuntimeExecutionMode.STREAMING) {
+        if (mode != RuntimeExecutionMode.BATCH) {
+            // AUTOMATIC is rejected too: were it to resolve to streaming, end of input would
+            // never come, and the pipeline would stage files forever without ever loading them.
             throw new IllegalStateException(
                     WriteMethod.FILE_LOADS
-                            + " supports batch execution only. Run the pipeline in"
-                            + " RuntimeExecutionMode.BATCH.");
+                            + " supports batch execution only, but the runtime mode is "
+                            + mode
+                            + ". Set RuntimeExecutionMode.BATCH explicitly.");
         }
         committables
                 .global()

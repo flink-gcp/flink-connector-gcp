@@ -256,6 +256,34 @@ class LoadJobOrchestratorTest {
     }
 
     @Test
+    void partitioningIsOmittedWhenTheTableAlreadyExists() throws IOException {
+        // Creation options apply at creation time only; a partitioning spec against an existing,
+        // differently-laid-out table would fail the load job.
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        builder ->
+                                builder.tableCreateOptions(
+                                        TableCreateOptions.builder()
+                                                .timePartitioning(
+                                                        TableCreateOptions.TimePartitioningType.DAY,
+                                                        "f1")
+                                                .clusteredFields(List.of("f2"))
+                                                .build()));
+        harness.tableAdmin.tables.put(T1, SCHEMA);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        spec -> {
+                            assertThat(spec.getTimePartitioning()).isNull();
+                            assertThat(spec.getClustering()).isNull();
+                        });
+    }
+
+    @Test
     void oversizedTablesGoThroughTempTablesAndOneCopyJob() throws IOException {
         Harness harness = Harness.plain();
         long sixTiB = 6L << 40;
@@ -357,6 +385,41 @@ class LoadJobOrchestratorTest {
         assertThat(harness.tableAdmin.tables.get(T1).getFieldsList())
                 .extracting(TableFieldSchema::getName)
                 .containsExactly("f1", "f2");
+        // Temp tables are loaded with the reconciled final-table schema so the copy matches.
+        assertThat(harness.runner.loads.values())
+                .allSatisfy(spec -> assertThat(spec.getSchema().getFields()).hasSize(2));
+        assertThat(harness.runner.copies).hasSize(1);
+    }
+
+    @Test
+    void truncatingCopySkipsSchemaReconciliation() throws IOException {
+        // WRITE_TRUNCATE replaces the final table's schema wholesale; unioning first would only
+        // waste update races (or fail on combinations the truncate would simply replace).
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(WriteDisposition.WRITE_TRUNCATE)
+                                .build(),
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build()));
+        harness.tableAdmin.tables.put(
+                T1,
+                TableSchema.newBuilder()
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("f1")
+                                        .setType(TableFieldSchema.Type.STRING)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE))
+                        .build());
+        long sixTiB = 6L << 40;
+
+        harness.orchestrator.run(List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB)));
+
+        assertThat(harness.tableAdmin.schemaUpdates).isEmpty();
+        assertThat(harness.runner.loads.values())
+                .allSatisfy(spec -> assertThat(spec.getSchema().getFields()).hasSize(2));
         assertThat(harness.runner.copies).hasSize(1);
     }
 
