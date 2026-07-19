@@ -1,0 +1,154 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigquery.sink;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.util.Preconditions;
+
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+
+/**
+ * Builder for {@link BigQuerySink}.
+ *
+ * <p>Required settings: a serializer and exactly one of {@link #destination(TableDestination)} or
+ * {@link #destinationResolver(DestinationResolver)}.
+ *
+ * @param <T> type of the records written by the sink
+ */
+@PublicEvolving
+public class BigQuerySinkBuilder<T> {
+
+    private WriteMethod writeMethod = WriteMethod.STORAGE_API_AT_LEAST_ONCE;
+    private TableDestination fixedDestination;
+    private DestinationResolver<T> destinationResolver;
+    private BigQueryProtoSerializer<T> serializer;
+    private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
+    private String location;
+
+    BigQuerySinkBuilder() {}
+
+    /**
+     * Sets the write method. Defaults to {@link WriteMethod#STORAGE_API_AT_LEAST_ONCE}.
+     *
+     * @param writeMethod the write method
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> writeMethod(WriteMethod writeMethod) {
+        this.writeMethod = Preconditions.checkNotNull(writeMethod, "writeMethod must not be null");
+        return this;
+    }
+
+    /**
+     * Writes every record to the given fixed table. Mutually exclusive with {@link
+     * #destinationResolver(DestinationResolver)}.
+     *
+     * @param destination the destination table
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> destination(TableDestination destination) {
+        this.fixedDestination =
+                Preconditions.checkNotNull(destination, "destination must not be null");
+        return this;
+    }
+
+    /**
+     * Resolves the destination table per record (dynamic destinations). Mutually exclusive with
+     * {@link #destination(TableDestination)}.
+     *
+     * @param destinationResolver the resolver
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> destinationResolver(DestinationResolver<T> destinationResolver) {
+        this.destinationResolver =
+                Preconditions.checkNotNull(
+                        destinationResolver, "destinationResolver must not be null");
+        return this;
+    }
+
+    /**
+     * Sets the record serializer.
+     *
+     * @param serializer the serializer
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> serializer(BigQueryProtoSerializer<T> serializer) {
+        this.serializer = Preconditions.checkNotNull(serializer, "serializer must not be null");
+        return this;
+    }
+
+    /**
+     * Sets the table create disposition. Defaults to {@link CreateDisposition#CREATE_IF_NEEDED}.
+     *
+     * @param createDisposition the create disposition
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> createDisposition(CreateDisposition createDisposition) {
+        this.createDisposition =
+                Preconditions.checkNotNull(createDisposition, "createDisposition must not be null");
+        return this;
+    }
+
+    /**
+     * Sets the BigQuery location (for example {@code US} or {@code asia-northeast1}) of the
+     * destination tables. Setting the location explicitly avoids a metadata lookup when opening
+     * Storage Write API connections.
+     *
+     * @param location the BigQuery location
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> location(String location) {
+        this.location = Preconditions.checkNotNull(location, "location must not be null");
+        return this;
+    }
+
+    /**
+     * Builds the sink for the configured {@link WriteMethod}.
+     *
+     * @return the sink
+     */
+    public Sink<T> build() {
+        Preconditions.checkState(serializer != null, "A serializer is required.");
+        Preconditions.checkState(
+                fixedDestination != null || destinationResolver != null,
+                "A destination is required: set either destination(...) or"
+                        + " destinationResolver(...).");
+        Preconditions.checkState(
+                fixedDestination == null || destinationResolver == null,
+                "destination(...) and destinationResolver(...) are mutually exclusive; set only"
+                        + " one of them.");
+
+        DestinationResolver<T> resolver = destinationResolver;
+        if (resolver == null) {
+            TableDestination destination = fixedDestination;
+            resolver = element -> destination;
+        }
+
+        BigQuerySinkConfig<T> config =
+                new BigQuerySinkConfig<>(resolver, serializer, createDisposition, location);
+        switch (writeMethod) {
+            case STORAGE_API_AT_LEAST_ONCE:
+                return new BigQueryDefaultStreamSink<>(config);
+            case STORAGE_API_EXACTLY_ONCE:
+                return new BigQueryExactlyOnceSink<>(config);
+            case FILE_LOADS:
+                return new BigQueryFileLoadsSink<>(config);
+            default:
+                throw new IllegalStateException("Unknown write method: " + writeMethod);
+        }
+    }
+}
