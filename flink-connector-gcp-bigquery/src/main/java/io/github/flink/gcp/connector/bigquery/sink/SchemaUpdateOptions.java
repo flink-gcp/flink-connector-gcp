@@ -36,8 +36,8 @@ import java.util.Objects;
  *       BigQuery cannot add {@code REQUIRED} columns to an existing table, so new fields are always
  *       added as {@code NULLABLE} even when the serializer declares them {@code REQUIRED}.
  *   <li>{@link Builder#allowFieldRelaxation()} — a table field declared {@code REQUIRED} is relaxed
- *       to {@code NULLABLE} when the serializer declares it nullable. {@code REPEATED} fields are
- *       never changed.
+ *       to {@code NULLABLE} when the serializer does not declare it {@code REQUIRED}. {@code
+ *       REPEATED} fields are never changed.
  * </ul>
  *
  * <p>Both flags default to off, in which case the sink never modifies table schemas (schema changes
@@ -141,7 +141,7 @@ public final class SchemaUpdateOptions implements Serializable {
 
         /**
          * Allows relaxing {@code REQUIRED} table fields to {@code NULLABLE} when the serializer
-         * declares them nullable.
+         * does not declare them {@code REQUIRED}.
          *
          * @return this builder
          */

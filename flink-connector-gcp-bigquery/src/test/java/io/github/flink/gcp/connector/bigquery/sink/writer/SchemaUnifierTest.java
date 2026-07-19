@@ -149,7 +149,7 @@ class SchemaUnifierTest {
     }
 
     @Test
-    void unspecifiedDesiredModeDoesNotRelax() throws Exception {
+    void unspecifiedDesiredModeCountsAsNullableForRelaxation() throws Exception {
         TableFieldSchema required =
                 field("name", TableFieldSchema.Type.STRING, TableFieldSchema.Mode.REQUIRED);
         TableFieldSchema modeless =
@@ -161,10 +161,11 @@ class SchemaUnifierTest {
         SchemaUnifier.UnionResult result =
                 SchemaUnifier.union(schema(required), schema(modeless), ALL);
 
-        // Relaxation is irreversible; an unset mode is not an observed nullable declaration.
-        assertThat(result.isChanged()).isFalse();
+        // Anything not explicitly REQUIRED counts as nullable, matching the converters'
+        // mode defaulting.
+        assertThat(result.isChanged()).isTrue();
         assertThat(result.getSchema().getFields(0).getMode())
-                .isEqualTo(TableFieldSchema.Mode.REQUIRED);
+                .isEqualTo(TableFieldSchema.Mode.NULLABLE);
     }
 
     @Test

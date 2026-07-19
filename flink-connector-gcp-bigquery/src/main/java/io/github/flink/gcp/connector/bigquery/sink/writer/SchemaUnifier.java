@@ -42,8 +42,8 @@ import java.util.Map;
  *   <li>desired-only fields are appended at the end (top level and inside {@code STRUCT}s), forced
  *       {@code NULLABLE} unless {@code REPEATED} (BigQuery cannot add {@code REQUIRED} columns);
  *       gated by {@link SchemaUpdateOptions#isAllowNewFields()}
- *   <li>{@code REQUIRED} existing fields are relaxed to {@code NULLABLE} only when the desired
- *       schema explicitly declares the field nullable and {@link
+ *   <li>{@code REQUIRED} existing fields are relaxed to {@code NULLABLE} when the desired schema
+ *       does not declare the field {@code REQUIRED} (an unset mode counts as nullable) and {@link
  *       SchemaUpdateOptions#isAllowFieldRelaxation()} is set; modes are never tightened, and {@code
  *       REPEATED} can neither be added to nor removed from an existing field
  *   <li>field names match case-insensitively (BigQuery column names are case-insensitive); the
@@ -190,11 +190,12 @@ public final class SchemaUnifier {
         }
         TableFieldSchema.Builder unified = existing.toBuilder();
         if (existing.getMode() == TableFieldSchema.Mode.REQUIRED
-                && desired.getMode() == TableFieldSchema.Mode.NULLABLE
+                && desired.getMode() != TableFieldSchema.Mode.REQUIRED
                 && options.isAllowFieldRelaxation()) {
-            // Relax only on an explicitly declared NULLABLE mode; never tighten, and never treat
-            // an unset mode (MODE_UNSPECIFIED) as an observed nullable declaration — relaxation
-            // is irreversible on the BigQuery side.
+            // Anything not explicitly declared REQUIRED counts as nullable (an unset mode
+            // included), mirroring how the converters default modes; modes are never tightened.
+            // Relaxation stays behind the allowFieldRelaxation opt-in because it is irreversible
+            // on the BigQuery side.
             unified.setMode(TableFieldSchema.Mode.NULLABLE);
         }
         if (existing.getType() == TableFieldSchema.Type.STRUCT) {
