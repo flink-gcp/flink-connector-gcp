@@ -37,5 +37,4 @@ Flink logo are trademarks of the Apache Software Foundation.
 
 Development of this project is assisted by [Claude](https://claude.com/) under
 [Claude for OSS](https://claude.com/contact-sales/claude-for-oss), Anthropic's support program
-for open-source developers (granted through the maintainer's work on
-[PyAthena](https://github.com/laughingman7743/PyAthena)).
+for open-source developers.
