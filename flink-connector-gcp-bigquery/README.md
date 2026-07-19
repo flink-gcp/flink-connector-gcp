@@ -30,6 +30,11 @@ API notes:
 - `DestinationResolver.resolve(element, context)` receives the writer context (event timestamp,
   watermark) so time-based routing such as daily tables is expressible. Resolvers run per record:
   cache and reuse `TableDestination` instances.
+- `ProtoMessageSerializer.of(MyMessage.class)` is the built-in serializer for records that
+  already are protobuf messages: the BigQuery schema is derived from the message descriptor
+  (integers → INT64, float/double → DOUBLE, enum → STRING, `google.protobuf.Timestamp` →
+  TIMESTAMP in microseconds, nested messages → STRUCT, maps → REPEATED STRUCT<key, value>), and
+  `ProtoSchemaOptions` can map selected message fields to JSON columns.
 - `TableDestination` is pure table identity (`equals`/`hashCode` over project/dataset/table);
   per-destination creation metadata (partitioning, clustering) will be supplied through separate
   hooks so destination identity stays stable as a cache/connection key.
