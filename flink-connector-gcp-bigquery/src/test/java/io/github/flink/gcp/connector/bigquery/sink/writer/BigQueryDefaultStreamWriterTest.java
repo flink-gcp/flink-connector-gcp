@@ -50,6 +50,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link BigQueryDefaultStreamWriter}. */
 class BigQueryDefaultStreamWriterTest {
 
+    static final TableCreator NOOP_CREATOR = (destination, schema, options) -> {};
+
     private static final SinkWriter.Context CONTEXT =
             new SinkWriter.Context() {
                 @Override
@@ -178,7 +180,8 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) ->
                                         TableDestination.of("p", "d", element.substring(0, 1)),
                                 new StringSerializer()),
-                        factory);
+                        factory,
+                        NOOP_CREATOR);
 
         writer.write("a1", CONTEXT);
         writer.write("b1", CONTEXT);
@@ -207,7 +210,11 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
                         factory,
-                        4);
+                        NOOP_CREATOR,
+                        4,
+                        1,
+                        1,
+                        1);
 
         writer.write("aa", CONTEXT);
         writer.write("bb", CONTEXT);
@@ -228,7 +235,8 @@ class BigQueryDefaultStreamWriterTest {
                         config(
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new OversizedSerializer()),
-                        factory);
+                        factory,
+                        NOOP_CREATOR);
 
         assertThatThrownBy(() -> writer.write("big", CONTEXT))
                 .isInstanceOf(IOException.class)
@@ -246,6 +254,10 @@ class BigQueryDefaultStreamWriterTest {
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
                         factory,
+                        NOOP_CREATOR,
+                        1,
+                        1,
+                        1,
                         1);
 
         writer.write("aa", CONTEXT);
@@ -268,7 +280,8 @@ class BigQueryDefaultStreamWriterTest {
                         config(
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
-                        factory);
+                        factory,
+                        NOOP_CREATOR);
 
         writer.write("aa", CONTEXT);
 
@@ -290,7 +303,8 @@ class BigQueryDefaultStreamWriterTest {
                         config(
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
-                        factory);
+                        factory,
+                        NOOP_CREATOR);
 
         writer.write("aa", CONTEXT);
 
@@ -309,7 +323,8 @@ class BigQueryDefaultStreamWriterTest {
                         config(
                                 (element, context) -> TableDestination.of("p", "d", "t"),
                                 new StringSerializer()),
-                        factory);
+                        factory,
+                        NOOP_CREATOR);
 
         writer.write("aa", CONTEXT);
 
@@ -349,7 +364,8 @@ class BigQueryDefaultStreamWriterTest {
                         config(
                                 (element, context) -> TableDestination.of("p", "d", element),
                                 serializer),
-                        factory);
+                        factory,
+                        NOOP_CREATOR);
 
         writer.write("t1", CONTEXT);
         writer.write("t2", CONTEXT);
@@ -369,7 +385,8 @@ class BigQueryDefaultStreamWriterTest {
                         config(
                                 (element, context) -> TableDestination.of("p", "d", element),
                                 new StringSerializer()),
-                        factory);
+                        factory,
+                        NOOP_CREATOR);
 
         writer.write("t1", CONTEXT);
         writer.write("t2", CONTEXT);
@@ -389,7 +406,7 @@ class BigQueryDefaultStreamWriterTest {
                                 .serializer(new StringSerializer())
                                 .build();
 
-        SinkWriter<String> writer = sink.createWriter(factory);
+        SinkWriter<String> writer = sink.createWriter(factory, NOOP_CREATOR);
         writer.write("row", CONTEXT);
         writer.flush(false);
         writer.close();
