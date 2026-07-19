@@ -195,6 +195,8 @@ class BigQuerySinkBuilderTest {
         assertThat(defaults.getConfig().getCreateDisposition())
                 .isEqualTo(CreateDisposition.CREATE_IF_NEEDED);
         assertThat(defaults.getConfig().getLocation()).isNull();
+        assertThat(defaults.getConfig().getFailedRowHandler())
+                .isEqualTo(FailedRowHandler.failJob());
 
         BigQueryDefaultStreamSink<String> overridden =
                 (BigQueryDefaultStreamSink<String>)
@@ -202,11 +204,21 @@ class BigQuerySinkBuilderTest {
                                 .destination(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .createDisposition(CreateDisposition.CREATE_NEVER)
+                                .failedRowHandler(FailedRowHandler.logAndDrop())
                                 .location("asia-northeast1")
                                 .build();
         assertThat(overridden.getConfig().getCreateDisposition())
                 .isEqualTo(CreateDisposition.CREATE_NEVER);
         assertThat(overridden.getConfig().getLocation()).isEqualTo("asia-northeast1");
+        assertThat(overridden.getConfig().getFailedRowHandler())
+                .isEqualTo(FailedRowHandler.logAndDrop());
+    }
+
+    @Test
+    void rejectsNullFailedRowHandler() {
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().failedRowHandler(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("failedRowHandler");
     }
 
     @Test

@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.writer;
 import org.apache.flink.annotation.Internal;
 
 import com.google.api.core.ApiFuture;
+import com.google.api.gax.retrying.RetrySettings;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.ProtoSchemaConverter;
@@ -27,6 +28,7 @@ import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 import java.io.IOException;
+import java.time.Duration;
 
 /**
  * Default {@link RowAppenderFactory} backed by Storage Write API {@link StreamWriter}s on the
@@ -45,6 +47,22 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
     /** The SDK requires the "A:B" trace-id format (an interior colon is mandatory). */
     private static final String TRACE_ID = "flink-gcp:flink-connector-gcp-bigquery";
 
+    /**
+     * Enables the SDK's in-stream retry of retriable append failures on default streams (for
+     * example {@code ABORTED}, {@code UNAVAILABLE}, {@code CANCELLED}, {@code INTERNAL}, {@code
+     * DEADLINE_EXCEEDED} and quota {@code RESOURCE_EXHAUSTED}), so transient errors are normally
+     * absorbed before they reach the sink writer; the writer's own bounded re-append budget sits
+     * above these retries. Not configurable yet — a deliberate deferral until a real-world need
+     * shows which knobs matter.
+     */
+    private static final RetrySettings RETRY_SETTINGS =
+            RetrySettings.newBuilder()
+                    .setInitialRetryDelayDuration(Duration.ofMillis(500))
+                    .setRetryDelayMultiplier(2.0)
+                    .setMaxRetryDelayDuration(Duration.ofSeconds(30))
+                    .setMaxAttempts(5)
+                    .build();
+
     @Override
     public RowAppender create(
             TableDestination destination, Descriptors.Descriptor rowDescriptor, String location)
@@ -53,6 +71,7 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
                 StreamWriter.newBuilder(destination.toTablePath() + "/_default")
                         .setWriterSchema(ProtoSchemaConverter.convert(rowDescriptor))
                         .setEnableConnectionPool(true)
+                        .setRetrySettings(RETRY_SETTINGS)
                         .setTraceId(TRACE_ID);
         if (location != null) {
             builder.setLocation(location);
