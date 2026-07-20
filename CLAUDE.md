@@ -59,6 +59,25 @@ dependencies managed through `com.google.cloud:libraries-bom`.
 - Never open or reference the private in-house implementation this project supersedes; design
   references must be public OSS or official documentation only
 
+## Package layout convention (all connector modules)
+
+Under `io.github.flink.gcp.connector.<product>` (decided in #63, applied to BigQuery first;
+Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
+
+- `sink` — public sink API only: the facade + builder, write-method enum, shared options/enums,
+  destination types, and the `@Internal` shared config consumed by the implementations
+- `sink.<impl>` — one subpackage per write method / implementation, containing its Sink class
+  and machinery (BigQuery: `sink.writer` for the Storage Write API default stream,
+  `sink.fileloads` for FILE_LOADS; future write methods such as #30 get their own)
+- `sink.serializer` — record-conversion SPI and its implementations
+- `sink.failure` — row-level failure SPI (`FailedRow`, handlers, DLQ stub), kept separate so the
+  cross-connector extraction planned in #37 stays cheap
+- `source` / `table` — reserved for sources (#31, #34, #64) and Table API (#47, #57), with the
+  same philosophy: public API at the package root, implementation subpackages beneath
+
+A new top-level class in a module's `sink` root needs a reason to be public API; implementation
+types belong in the subpackages. Test sources mirror the main-tree packages.
+
 ## Design decisions (do not silently revisit)
 
 - **BigQuery**: `BigQueryIO`-style facade — one builder, per-write-method SinkV2 implementations.

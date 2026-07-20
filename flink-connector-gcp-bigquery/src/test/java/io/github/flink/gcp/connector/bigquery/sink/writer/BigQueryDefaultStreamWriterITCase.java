@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.bigquery.sink.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import io.github.flink.gcp.connector.bigquery.sink.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink;
+package io.github.flink.gcp.connector.bigquery.sink.failure;
 
 import org.apache.flink.annotation.Experimental;
 

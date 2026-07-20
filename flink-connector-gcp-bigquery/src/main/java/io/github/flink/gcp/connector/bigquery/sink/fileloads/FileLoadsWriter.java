@@ -26,10 +26,10 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
-import io.github.flink.gcp.connector.bigquery.sink.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.slf4j.Logger;
@@ -60,8 +60,8 @@ import java.util.UUID;
  * #prepareCommit()}.
  *
  * <p>Serialization and Avro-conversion failures are row-level and routed to the configured {@link
- * io.github.flink.gcp.connector.bigquery.sink.FailedRowHandler}; staging I/O failures fail the job.
- * There is no row-level policy at load time — a BigQuery load job is all-or-nothing.
+ * io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler}; staging I/O failures fail
+ * the job. There is no row-level policy at load time — a BigQuery load job is all-or-nothing.
  *
  * <p>The schema per destination is captured when its first record arrives and kept for the run;
  * FILE_LOADS is batch-only, so mid-run serializer schema changes (fingerprints) are not tracked.

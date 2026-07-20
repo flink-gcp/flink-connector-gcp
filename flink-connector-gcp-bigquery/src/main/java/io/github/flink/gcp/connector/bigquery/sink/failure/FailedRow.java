@@ -14,12 +14,13 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink;
+package io.github.flink.gcp.connector.bigquery.sink.failure;
 
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 /**
  * A single row that terminally failed to be written to BigQuery, as passed to a {@link

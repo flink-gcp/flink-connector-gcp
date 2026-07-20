@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink;
+package io.github.flink.gcp.connector.bigquery.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
@@ -22,11 +22,8 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
-import io.github.flink.gcp.connector.bigquery.sink.writer.BigQueryDefaultStreamWriter;
-import io.github.flink.gcp.connector.bigquery.sink.writer.BigQueryTableAdmin;
-import io.github.flink.gcp.connector.bigquery.sink.writer.RowAppenderFactory;
-import io.github.flink.gcp.connector.bigquery.sink.writer.StreamWriterRowAppenderFactory;
-import io.github.flink.gcp.connector.bigquery.sink.writer.TableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 
 /**
  * At-least-once sink appending to Storage Write API default streams with dynamic per-record table
@@ -41,7 +38,13 @@ public class BigQueryDefaultStreamSink<T> implements Sink<T> {
 
     private final BigQuerySinkConfig<T> config;
 
-    BigQueryDefaultStreamSink(BigQuerySinkConfig<T> config) {
+    /**
+     * Creates the sink; called by {@link
+     * io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder}.
+     *
+     * @param config the sink configuration
+     */
+    public BigQueryDefaultStreamSink(BigQuerySinkConfig<T> config) {
         this.config = config;
     }
 

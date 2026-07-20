@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink;
+package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
@@ -32,13 +32,9 @@ import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.SupportsPostCommitTopology;
 import org.apache.flink.streaming.api.datastream.DataStream;
 
-import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
-import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittableSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommitter;
-import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsPostCommitOperator;
-import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsWriter;
-import io.github.flink.gcp.connector.bigquery.sink.fileloads.GcsStagingStorage;
-import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingStorage;
+import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 
 /**
  * The {@link WriteMethod#FILE_LOADS} sink: writers stage per-destination Avro files on Cloud
@@ -64,7 +60,14 @@ public class BigQueryFileLoadsSink<T>
     private final FileLoadsOptions options;
     private final StagingStorage storage;
 
-    BigQueryFileLoadsSink(BigQuerySinkConfig<T> config, FileLoadsOptions options) {
+    /**
+     * Creates the sink; called by {@link
+     * io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder}.
+     *
+     * @param config the sink configuration
+     * @param options the FILE_LOADS options
+     */
+    public BigQueryFileLoadsSink(BigQuerySinkConfig<T> config, FileLoadsOptions options) {
         this(config, options, new GcsStagingStorage());
     }
 

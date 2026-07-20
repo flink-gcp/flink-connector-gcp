@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigquery.sink.writer;
 
 import com.google.cloud.bigquery.TableId;
-import io.github.flink.gcp.connector.bigquery.sink.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
