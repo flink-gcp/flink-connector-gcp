@@ -65,7 +65,8 @@ Under `io.github.flink.gcp.connector.<product>` (decided in #63, applied to BigQ
 Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
 
 - `sink` — public sink API only: the facade + builder, write-method enum, shared options/enums,
-  destination types, and the `@Internal` shared config consumed by the implementations
+  destination types, and the `@Internal` types shared by every implementation (the sink config,
+  the fixed-destination resolver)
 - `sink.<impl>` — one subpackage per write method / implementation, containing its Sink class
   and machinery (BigQuery: `sink.writer` for the Storage Write API default stream,
   `sink.fileloads` for FILE_LOADS; future write methods such as #30 get their own)
