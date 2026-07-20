@@ -40,10 +40,10 @@ import java.util.Objects;
  * exposed: failing the job on transient pressure ({@code ThrowException}) or configuring limits
  * that are not enforced ({@code Ignore}) are not useful sink behaviors. Note the writer's own
  * {@link Builder#maxInFlightMessages(int)} cap is the mailbox-friendly primary bound; a
- * flow-control element limit above it never triggers. Avoid combining flow-control limits with
- * {@link Builder#enableMessageOrdering(boolean)}: the SDK publisher (1.152.0) leaks a flow-control
- * permit for every publish rejected or cancelled on a paused ordering key, which under {@code
- * Block} can eventually hang publishing (see the module README).
+ * flow-control element limit above it never triggers. {@link Builder#build()} rejects combining
+ * flow-control limits with {@link Builder#enableMessageOrdering(boolean)}: the SDK publisher
+ * (1.152.0) leaks a flow-control permit for every publish rejected or cancelled on a paused
+ * ordering key, which under {@code Block} can eventually hang publishing (see the module README).
  *
  * <p>Instances are immutable and serializable.
  */
@@ -574,7 +574,7 @@ public final class PubSubPublisherOptions implements Serializable {
          */
         public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
             this.recoveryInitialBackoff =
-                    checkPositive(recoveryInitialBackoff, "recoveryInitialBackoff");
+                    checkAtLeastOneMilli(recoveryInitialBackoff, "recoveryInitialBackoff");
             return this;
         }
 
@@ -585,7 +585,8 @@ public final class PubSubPublisherOptions implements Serializable {
          * @return this builder
          */
         public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
-            this.recoveryMaxBackoff = checkPositive(recoveryMaxBackoff, "recoveryMaxBackoff");
+            this.recoveryMaxBackoff =
+                    checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
             return this;
         }
 
@@ -611,6 +612,15 @@ public final class PubSubPublisherOptions implements Serializable {
             Preconditions.checkState(
                     recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
                     "recoveryMaxBackoff must be at least recoveryInitialBackoff.");
+            Preconditions.checkState(
+                    !enableMessageOrdering
+                            || (flowControlMaxOutstandingElementCount == null
+                                    && flowControlMaxOutstandingRequestBytes == null),
+                    "Flow-control limits cannot be combined with enableMessageOrdering:"
+                            + " google-cloud-pubsub (1.152.0) leaks a flow-control permit for"
+                            + " every publish rejected or cancelled on a paused ordering key,"
+                            + " which can eventually hang publishing. Remove the flow-control"
+                            + " limits or disable message ordering.");
             return new PubSubPublisherOptions(this);
         }
 
@@ -618,6 +628,16 @@ public final class PubSubPublisherOptions implements Serializable {
             Preconditions.checkNotNull(duration, "%s must not be null", name);
             Preconditions.checkArgument(
                     !duration.isZero() && !duration.isNegative(), "%s must be positive", name);
+            return duration;
+        }
+
+        private static Duration checkAtLeastOneMilli(Duration duration, String name) {
+            checkPositive(duration, name);
+            Preconditions.checkArgument(
+                    duration.toMillis() >= 1,
+                    "%s must be at least 1 millisecond (it is applied at millisecond"
+                            + " granularity)",
+                    name);
             return duration;
         }
     }

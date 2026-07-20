@@ -141,8 +141,9 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   `TopicAdmin` SPI (`sink.topics`, ALREADY_EXISTS = success), gated by `CreateDisposition`.
   Tuning (#20) lives in one `PubSubPublisherOptions` object (nested-options pattern; plain
   serializable values, no gax types on the public API; unset = SDK/sink default): batching,
-  flow control (Block-only; do not combine with ordering — SDK 1.152.0 leaks permits on paused
-  keys), publish retries, `enableMessageOrdering`, the in-flight cap and the recovery backoff.
+  flow control (Block-only; the builder rejects combining with ordering — SDK 1.152.0 leaks
+  permits on paused keys), publish retries, `enableMessageOrdering`, the in-flight cap and the
+  recovery backoff.
   Ordering×repair: cascade cancellations park behind the NOT_FOUND root (mailbox FIFO preserves
   per-key order) and every repair attempt calls `resumePublish` before republishing. Per-record
   failure policy and the fatal-exception classifier moved to #37. Decision record in the module

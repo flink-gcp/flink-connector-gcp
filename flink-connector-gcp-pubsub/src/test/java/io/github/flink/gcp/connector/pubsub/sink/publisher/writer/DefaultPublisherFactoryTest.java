@@ -87,6 +87,25 @@ class DefaultPublisherFactoryTest {
     }
 
     @Test
+    void batchThresholdsAreCappedToFlowControlLimits() {
+        // The SDK publisher does not cap its batch thresholds to the flow-control limits, so a
+        // batch that could never fill under them would stall until the delay alarm while holding
+        // permits; the factory caps the thresholds itself.
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .batchRequestByteThreshold(4_096)
+                        .flowControlMaxOutstandingElementCount(10)
+                        .flowControlMaxOutstandingRequestBytes(1_024)
+                        .build();
+
+        BatchingSettings batching = DefaultPublisherFactory.batchingSettings(options);
+
+        assertThat(batching.getElementCountThreshold())
+                .isEqualTo(Math.min(10, SDK_BATCHING_DEFAULTS.getElementCountThreshold()));
+        assertThat(batching.getRequestByteThreshold()).isEqualTo(1_024);
+    }
+
+    @Test
     void retrySettingsOverlayOnlySetKnobsOverMirroredSdkDefaults() {
         PubSubPublisherOptions options =
                 PubSubPublisherOptions.builder()
@@ -136,7 +155,8 @@ class DefaultPublisherFactoryTest {
     /**
      * Wires the mapping into a real SDK publisher (a lazy plaintext channel to an unused port —
      * gRPC connects on first use, so build() succeeds offline) and asserts the settings took effect
-     * on the built instance.
+     * on the built instance. (Ordering wiring is covered behaviorally by the emulator ITs, which
+     * reuse {@code configure}; the SDK rejects ordered publishes unless the flag took effect.)
      */
     @Test
     void configureAppliesSettingsToABuiltPublisher() throws Exception {
@@ -144,7 +164,6 @@ class DefaultPublisherFactoryTest {
                 PubSubPublisherOptions.builder()
                         .batchElementCountThreshold(5)
                         .flowControlMaxOutstandingElementCount(10)
-                        .enableMessageOrdering(true)
                         .build();
         ManagedChannel channel =
                 ManagedChannelBuilder.forTarget("localhost:1").usePlaintext().build();
@@ -166,9 +185,6 @@ class DefaultPublisherFactoryTest {
                                     .getFlowControlSettings()
                                     .getLimitExceededBehavior())
                     .isEqualTo(FlowController.LimitExceededBehavior.Block);
-            Field orderingField = Publisher.class.getDeclaredField("enableMessageOrdering");
-            orderingField.setAccessible(true);
-            assertThat(orderingField.getBoolean(publisher)).isTrue();
         } finally {
             if (publisher != null) {
                 publisher.shutdown();

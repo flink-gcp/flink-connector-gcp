@@ -28,8 +28,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link PubSubPublisherOptions}. */
 class PubSubPublisherOptionsTest {
 
-    /** An options instance with every knob set, shared by the override and round-trip tests. */
-    private static PubSubPublisherOptions fullyPopulated() {
+    /**
+     * An options instance with every knob set, shared by the override and round-trip tests (also
+     * reused by the builder round trip in {@code PubSubSinkBuilderTest}). Ordering stays disabled
+     * because {@code build()} rejects combining it with the flow-control limits.
+     */
+    static PubSubPublisherOptions fullyPopulated() {
         return PubSubPublisherOptions.builder()
                 .batchElementCountThreshold(5)
                 .batchRequestByteThreshold(1_000)
@@ -44,7 +48,6 @@ class PubSubPublisherOptionsTest {
                 .retryRpcTimeoutMultiplier(1.5)
                 .retryMaxRpcTimeout(Duration.ofSeconds(30))
                 .retryMaxAttempts(7)
-                .enableMessageOrdering(true)
                 .maxInFlightMessages(42)
                 .recoveryInitialBackoff(Duration.ofMillis(100))
                 .recoveryMaxBackoff(Duration.ofSeconds(1))
@@ -96,7 +99,12 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getRetryRpcTimeoutMultiplier()).isEqualTo(1.5);
         assertThat(options.getRetryMaxRpcTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(options.getRetryMaxAttempts()).isEqualTo(7);
-        assertThat(options.isEnableMessageOrdering()).isTrue();
+        assertThat(
+                        PubSubPublisherOptions.builder()
+                                .enableMessageOrdering(true)
+                                .build()
+                                .isEnableMessageOrdering())
+                .isTrue();
         assertThat(options.getMaxInFlightMessages()).isEqualTo(42);
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
         assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(1));
@@ -163,6 +171,42 @@ class PubSubPublisherOptionsTest {
         assertThatThrownBy(() -> builder.recoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("recoveryMaxAttempts");
+    }
+
+    @Test
+    void rejectsFlowControlLimitsWithMessageOrdering() {
+        assertThatThrownBy(
+                        () ->
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .flowControlMaxOutstandingElementCount(10)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("enableMessageOrdering");
+        assertThatThrownBy(
+                        () ->
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .flowControlMaxOutstandingRequestBytes(1_000)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("enableMessageOrdering");
+    }
+
+    @Test
+    void rejectsSubMillisecondRecoveryBackoffs() {
+        assertThatThrownBy(
+                        () ->
+                                PubSubPublisherOptions.builder()
+                                        .recoveryInitialBackoff(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("millisecond");
+        assertThatThrownBy(
+                        () ->
+                                PubSubPublisherOptions.builder()
+                                        .recoveryMaxBackoff(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("millisecond");
     }
 
     @Test

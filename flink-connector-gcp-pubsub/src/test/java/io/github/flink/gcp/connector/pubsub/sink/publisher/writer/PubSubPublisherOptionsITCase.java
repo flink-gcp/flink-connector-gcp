@@ -21,11 +21,8 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
-import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
-import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
 import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
 
@@ -59,22 +56,35 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
             PubSubPublisherOptions options,
             FakeMailboxExecutor mailbox)
             throws IOException {
-        PubSubSinkConfig<String> config =
-                ((PubSubPublisherSink<String>)
-                                PubSubSink.<String>builder()
-                                        .topic(destination)
-                                        .serializer(serializer)
-                                        .createDisposition(CreateDisposition.CREATE_IF_NEEDED)
-                                        .publisherOptions(options)
-                                        .build())
-                        .getConfig();
         return new PubSubWriter<>(
-                config,
+                TestSinkConfigs.forTopic(
+                        destination, serializer, CreateDisposition.CREATE_IF_NEEDED, options),
                 new EmulatorPublisherFactory(emulatorEndpoint(), options),
                 newTopicAdmin(),
                 mailbox,
                 options.getMaxInFlightMessages(),
                 new RetrySchedule(100, 1_000, 30, 0));
+    }
+
+    /**
+     * Publishes a warm-up record so the auto-creation repair creates the topic (a subscription can
+     * only be created on an existing topic), then creates the subscription. Messages published
+     * before the subscription exists — including the warm-up record — are not retained for it.
+     */
+    private static void warmUpAndSubscribe(
+            PubSubWriter<String> writer,
+            TopicDestination destination,
+            String subscriptionId,
+            boolean ordered,
+            String warmUpRecord)
+            throws Exception {
+        writer.write(warmUpRecord, CONTEXT);
+        writer.flush(false);
+        if (ordered) {
+            createOrderedSubscription(destination, subscriptionId);
+        } else {
+            createSubscription(destination, subscriptionId);
+        }
     }
 
     private static PubSubSerializationSchema<String> dataOnly() {
@@ -95,9 +105,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
                                                         String.valueOf(element.length()))),
                         PubSubPublisherOptions.defaults());
         try {
-            writer.write("warm-up", CONTEXT);
-            writer.flush(false);
-            createSubscription(destination, "attributes-sub");
+            warmUpAndSubscribe(writer, destination, "attributes-sub", false, "warm-up");
 
             writer.write("hello", CONTEXT);
             writer.flush(false);
@@ -122,9 +130,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
                         dataOnly().withOrderingKey(element -> element.split(":")[0]),
                         options);
         try {
-            writer.write("warm-up:0", CONTEXT);
-            writer.flush(false);
-            createOrderedSubscription(destination, "ordering-sub");
+            warmUpAndSubscribe(writer, destination, "ordering-sub", true, "warm-up:0");
 
             writer.write("k1:1", CONTEXT);
             writer.write("k2:1", CONTEXT);
@@ -189,9 +195,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
         FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
         PubSubWriter<String> writer = writer(destination, dataOnly(), options, mailbox);
         try {
-            writer.write("warm-up", CONTEXT);
-            writer.flush(false);
-            createSubscription(destination, "batching-sub");
+            warmUpAndSubscribe(writer, destination, "batching-sub", false, "warm-up");
 
             writer.write("prompt", CONTEXT);
             // No flush: the element-count threshold of 1 must send the message on its own.

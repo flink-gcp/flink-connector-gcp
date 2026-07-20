@@ -112,7 +112,8 @@ public interface PubSubSerializationSchema<T> extends Serializable {
 
     /**
      * Returns a schema producing this schema's messages with the extracted attributes added
-     * (overwriting same-named attributes this schema already set).
+     * (overwriting same-named attributes this schema already set; a {@code null}/empty extraction
+     * leaves the message's attributes unchanged).
      *
      * @param extractor the attributes extractor
      * @return the composed schema
@@ -123,7 +124,8 @@ public interface PubSubSerializationSchema<T> extends Serializable {
 
     /**
      * Returns a schema producing this schema's messages with the extracted ordering key set
-     * (overwriting an ordering key this schema already set).
+     * (overwriting an ordering key this schema already set; a {@code null}/empty extraction leaves
+     * the message — including an ordering key this schema itself set — unchanged).
      *
      * <p>Ordering keys are only honored when {@code
      * PubSubPublisherOptions.builder().enableMessageOrdering(true)} is set on the sink; the writer

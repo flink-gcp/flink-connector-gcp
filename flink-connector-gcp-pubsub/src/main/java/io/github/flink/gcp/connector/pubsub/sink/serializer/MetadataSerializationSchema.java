@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.pubsub.sink.serializer;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.SerializationSchema;
-import org.apache.flink.util.Preconditions;
 
 import com.google.pubsub.v1.PubsubMessage;
 
@@ -70,12 +69,18 @@ final class MetadataSerializationSchema<T> implements PubSubSerializationSchema<
             if (attributes != null && !attributes.isEmpty()) {
                 builder = message.toBuilder();
                 for (Map.Entry<String, String> attribute : attributes.entrySet()) {
-                    Preconditions.checkNotNull(
-                            attribute.getKey(), "The attributes extractor returned a null key.");
-                    Preconditions.checkNotNull(
-                            attribute.getValue(),
-                            "The attributes extractor returned a null value for key '%s'.",
-                            attribute.getKey());
+                    // Explicit throws (not the varargs Preconditions overloads) keep the
+                    // per-entry checks allocation-free on the per-record path.
+                    if (attribute.getKey() == null) {
+                        throw new NullPointerException(
+                                "The attributes extractor returned a null key.");
+                    }
+                    if (attribute.getValue() == null) {
+                        throw new NullPointerException(
+                                "The attributes extractor returned a null value for key '"
+                                        + attribute.getKey()
+                                        + "'.");
+                    }
                     builder.putAttributes(attribute.getKey(), attribute.getValue());
                 }
             }
@@ -90,5 +95,27 @@ final class MetadataSerializationSchema<T> implements PubSubSerializationSchema<
             }
         }
         return builder == null ? message : builder.build();
+    }
+
+    /**
+     * Chaining onto an unoccupied slot merges into this wrapper instead of nesting another one, so
+     * the common {@code dataOnly(...).withAttributes(...).withOrderingKey(...)} chain pays one
+     * message rebuild per record, not two. An occupied slot falls back to nesting, which keeps the
+     * outermost-wins semantics.
+     */
+    @Override
+    public PubSubSerializationSchema<T> withAttributes(AttributesExtractor<? super T> extractor) {
+        if (attributesExtractor == null) {
+            return new MetadataSerializationSchema<>(inner, extractor, orderingKeyExtractor);
+        }
+        return PubSubSerializationSchema.super.withAttributes(extractor);
+    }
+
+    @Override
+    public PubSubSerializationSchema<T> withOrderingKey(OrderingKeyExtractor<? super T> extractor) {
+        if (orderingKeyExtractor == null) {
+            return new MetadataSerializationSchema<>(inner, attributesExtractor, extractor);
+        }
+        return PubSubSerializationSchema.super.withOrderingKey(extractor);
     }
 }

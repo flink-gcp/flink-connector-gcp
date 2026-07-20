@@ -23,10 +23,7 @@ import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
-import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
-import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
 
@@ -60,20 +57,16 @@ class PubSubWriterTest {
 
     private PubSubWriter<String> newWriter(
             PubSubSerializationSchema<String> serializer, int maxInFlightMessages) {
-        PubSubPublisherSink<String> sink =
-                (PubSubPublisherSink<String>)
-                        PubSubSink.<String>builder()
-                                .destinationResolver(
-                                        (element, context) -> TopicDestination.of(PROJECT, element))
-                                .serializer(serializer)
-                                .build();
         return new PubSubWriter<>(
-                sink.getConfig(),
+                TestSinkConfigs.forResolver(
+                        (element, context) -> TopicDestination.of(PROJECT, element),
+                        serializer,
+                        PubSubPublisherOptions.defaults()),
                 factory,
                 admin,
                 mailbox,
                 maxInFlightMessages,
-                new RetrySchedule(500, 10_000, 10, 0));
+                PubSubWriter.recoverySchedule(PubSubPublisherOptions.defaults()));
     }
 
     private static TopicDestination topic(String topic) {
@@ -194,20 +187,15 @@ class PubSubWriterTest {
 
     @Test
     void publicConstructorDerivesInFlightCapFromPublisherOptions() throws Exception {
-        PubSubPublisherSink<String> sink =
-                (PubSubPublisherSink<String>)
-                        PubSubSink.<String>builder()
-                                .destinationResolver(
-                                        (element, context) -> TopicDestination.of(PROJECT, element))
-                                .serializer(
-                                        PubSubSerializationSchema.dataOnly(
-                                                new SimpleStringSchema()))
-                                .publisherOptions(
-                                        PubSubPublisherOptions.builder()
-                                                .maxInFlightMessages(2)
-                                                .build())
-                                .build();
-        PubSubWriter<String> writer = new PubSubWriter<>(sink.getConfig(), factory, admin, mailbox);
+        PubSubWriter<String> writer =
+                new PubSubWriter<>(
+                        TestSinkConfigs.forResolver(
+                                (element, context) -> TopicDestination.of(PROJECT, element),
+                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubPublisherOptions.builder().maxInFlightMessages(2).build()),
+                        factory,
+                        admin,
+                        mailbox);
         SettableApiFuture<String> first = SettableApiFuture.create();
         SettableApiFuture<String> second = SettableApiFuture.create();
         factory.enqueueFuture(first);

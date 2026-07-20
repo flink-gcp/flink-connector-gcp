@@ -65,14 +65,18 @@ Flow-control limits use the SDK's `LimitExceededBehavior.Block`: a publish beyon
 the task thread until in-flight publishes complete — plain backpressure (permits are released on
 SDK threads, so there is no deadlock). `ThrowException` and `Ignore` are deliberately not
 exposed. The writer's `maxInFlightMessages` remains the mailbox-friendly primary cap; the
-flow-control byte limit is the bound the element-count cap cannot provide.
+flow-control byte limit is the bound the element-count cap cannot provide. Because the SDK
+publisher does not cap its batch thresholds to the flow-control limits (a batch that could never
+fill under them would stall until the delay alarm while holding permits), the sink caps the
+thresholds itself when limits are set.
 
-**Caution — flow-control limits with message ordering**: in `google-cloud-pubsub` 1.152.0,
-`Publisher.publish` acquires a flow-control permit *before* the paused-ordering-key check, and
-the paused-key rejection and per-key cancellation paths never release it (verified in the SDK
-source). After a per-key publish failure, leaked permits can therefore permanently shrink — and
-with `Block` eventually exhaust — the flow-control budget, hanging the task thread. Avoid
-combining flow-control limits with `enableMessageOrdering` until the SDK fixes the leak.
+**Flow-control limits cannot be combined with message ordering** — the options builder rejects
+the combination: in `google-cloud-pubsub` 1.152.0, `Publisher.publish` acquires a flow-control
+permit *before* the paused-ordering-key check, and the paused-key rejection and per-key
+cancellation paths never release it (verified in the SDK source). After a per-key publish
+failure, leaked permits would permanently shrink — and with `Block` eventually exhaust — the
+flow-control budget, hanging the task thread with no exception. The guard can be relaxed once
+the SDK fixes the leak.
 
 ## Delivery guarantees and state
 
@@ -204,4 +208,4 @@ AutoValue).
 
 [apache/flink-connector-gcp-pubsub](https://github.com/apache/flink-connector-gcp-pubsub) is a
 **design reference only** — the mailbox-based backpressure model and the idea of a
-fatal-exception classifier (#20) — no code has been copied from it.
+fatal-exception classifier (#37) — no code has been copied from it.

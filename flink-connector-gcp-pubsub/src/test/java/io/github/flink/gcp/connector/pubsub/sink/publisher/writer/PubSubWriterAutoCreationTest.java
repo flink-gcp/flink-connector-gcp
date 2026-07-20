@@ -25,10 +25,8 @@ import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
-import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
 import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -65,17 +63,12 @@ class PubSubWriterAutoCreationTest {
 
     private PubSubWriter<String> newWriter(
             CreateDisposition disposition, RetrySchedule recoverySchedule) {
-        PubSubPublisherSink<String> sink =
-                (PubSubPublisherSink<String>)
-                        PubSubSink.<String>builder()
-                                .topic(TOPIC)
-                                .serializer(
-                                        PubSubSerializationSchema.dataOnly(
-                                                new SimpleStringSchema()))
-                                .createDisposition(disposition)
-                                .build();
         return new PubSubWriter<>(
-                sink.getConfig(),
+                TestSinkConfigs.forTopic(
+                        TOPIC,
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        disposition,
+                        PubSubPublisherOptions.defaults()),
                 factory,
                 admin,
                 mailbox,
@@ -93,21 +86,13 @@ class PubSubWriterAutoCreationTest {
 
     private PubSubWriter<String> newOrderingWriter(
             CreateDisposition disposition, RetrySchedule recoverySchedule) {
-        PubSubPublisherSink<String> sink =
-                (PubSubPublisherSink<String>)
-                        PubSubSink.<String>builder()
-                                .topic(TOPIC)
-                                .serializer(
-                                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
-                                                .withOrderingKey(element -> element.split(":")[0]))
-                                .createDisposition(disposition)
-                                .publisherOptions(
-                                        PubSubPublisherOptions.builder()
-                                                .enableMessageOrdering(true)
-                                                .build())
-                                .build();
         return new PubSubWriter<>(
-                sink.getConfig(),
+                TestSinkConfigs.forTopic(
+                        TOPIC,
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> element.split(":")[0]),
+                        disposition,
+                        PubSubPublisherOptions.builder().enableMessageOrdering(true).build()),
                 factory,
                 admin,
                 mailbox,
@@ -352,6 +337,24 @@ class PubSubWriterAutoCreationTest {
                 .isInstanceOf(IOException.class)
                 .hasCause(denied);
         assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void cancellationWithOrderingDisabledIsTerminalEvenWithAPendingRepair() throws Exception {
+        PubSubWriter<String> writer = newWriter(CreateDisposition.CREATE_IF_NEEDED);
+        CancellationException cancellation = cascade();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cancellation));
+        writer.write("first", CONTEXT);
+        writer.write("second", CONTEXT);
+        mailbox.drain();
+
+        // Without ordering there are no key cascades, so a cancellation must surface as a
+        // terminal failure (with no ordering-key wording) instead of being parked for repair.
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasCause(cancellation)
+                .hasMessageNotContaining("ordering key");
     }
 
     @Test

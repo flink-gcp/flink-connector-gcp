@@ -180,7 +180,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     }
 
     /** Maps the public recovery knobs onto the internal schedule (jitter deliberately zero). */
-    private static RetrySchedule recoverySchedule(PubSubPublisherOptions options) {
+    @VisibleForTesting
+    static RetrySchedule recoverySchedule(PubSubPublisherOptions options) {
         return new RetrySchedule(
                 options.getRecoveryInitialBackoff().toMillis(),
                 options.getRecoveryMaxBackoff().toMillis(),
@@ -317,12 +318,15 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             state.pendingRetries.add(message);
             state.lastNotFound = throwable;
             repairNeeded = true;
-        } else if (isOrderingCascade(throwable) && !state.pendingRetries.isEmpty()) {
-            // A cancellation cascading from a failure already parked for this destination (the
-            // SDK cancels an ordering key's queued publishes after the key's first failure).
-            // Failure mails arrive in publish order — the root's mail runs before its cascades,
-            // and a fatal root reaches the asyncError branch below instead of parking — so
-            // parking here preserves per-key order behind the root. lastNotFound is deliberately
+        } else if (orderingEnabled
+                && !state.pendingRetries.isEmpty()
+                && isCancellation(throwable)) {
+            // A cancellation cascading from a failure already parked for this destination (with
+            // ordering enabled, the SDK cancels an ordering key's queued publishes after the
+            // key's first failure; a non-empty pending buffer implies CREATE_IF_NEEDED). Failure
+            // mails arrive in publish order — the root's mail runs before its cascades, and a
+            // fatal root reaches the asyncError branch below instead of parking — so parking
+            // here preserves per-key order behind the root. lastNotFound is deliberately
             // untouched: the budget-exhaustion cause stays the real NOT_FOUND.
             state.pendingRetries.add(message);
             repairNeeded = true;
@@ -331,20 +335,15 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
     }
 
-    /**
-     * Whether the failure is the SDK publisher's cancellation of an ordering key's queued publishes
-     * after the key's first failure (the root failure carries the real cause; cascades carry a bare
-     * {@link CancellationException}).
-     */
-    private boolean isOrderingCascade(Throwable throwable) {
-        return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED
-                && ExceptionUtils.findThrowable(throwable, CancellationException.class).isPresent();
-    }
-
     /** Repairs every destination with parked messages until none remain (or the repair fails). */
     private void repairPendingTopics() throws IOException, InterruptedException {
         while (repairNeeded) {
             repairNeeded = false;
+            // Drain before snapshotting the parked batches: a parked root's cascade-cancellation
+            // mails may still be queued (or still being enqueued by the SDK thread), and a repair
+            // started from a partial batch could republish a re-failing root behind its own
+            // cascades — breaking per-key order.
+            awaitInFlightBelow(1);
             // Iterate a snapshot: repairDestination yields to the mailbox, so hardening against
             // a mail ever reaching stateFor() keeps this loop safe from map mutation.
             for (DestinationState state : new ArrayList<>(states.values())) {
@@ -407,6 +406,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /** Resumes the distinct ordering keys of the batch on the destination's publisher. */
     private void resumeOrderingKeys(DestinationState state, List<PubsubMessage> batch) {
+        if (!orderingEnabled) {
+            return;
+        }
         Set<String> orderingKeys = new LinkedHashSet<>();
         for (PubsubMessage message : batch) {
             if (!message.getOrderingKey().isEmpty()) {
@@ -427,11 +429,19 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         String message = "A publish to Pub/Sub topic " + destination + " failed";
         if (isNotFound(throwable)) {
             message += " because the topic does not exist and createDisposition is CREATE_NEVER";
-        } else if (ExceptionUtils.findThrowable(throwable, CancellationException.class)
-                .isPresent()) {
+        } else if (orderingEnabled && isCancellation(throwable)) {
             message += " because an earlier publish for its ordering key failed";
         }
         return new IOException(message + ".", throwable);
+    }
+
+    /**
+     * Whether the failure is a publish cancellation — with ordering enabled, the SDK publisher's
+     * cancellation of an ordering key's queued publishes after the key's first failure (the root
+     * failure carries the real cause; cascades carry a bare {@link CancellationException}).
+     */
+    private static boolean isCancellation(Throwable throwable) {
+        return ExceptionUtils.findThrowable(throwable, CancellationException.class).isPresent();
     }
 
     /**
@@ -441,7 +451,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      *
      * <p>Mirrors the BigQuery module's {@code AppendErrorClassifier.hasCode}; folding status-code
      * classification into a shared module is tracked with issue #61, and a Pub/Sub fatal-exception
-     * classifier with issue #20.
+     * classifier with issue #37.
      */
     private static boolean isNotFound(Throwable throwable) {
         return ExceptionUtils.findThrowable(throwable, PubSubWriter::isNotFoundException)

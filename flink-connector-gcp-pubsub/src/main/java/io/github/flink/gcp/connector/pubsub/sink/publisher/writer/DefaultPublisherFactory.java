@@ -108,34 +108,42 @@ public final class DefaultPublisherFactory implements PublisherFactory {
      */
     @VisibleForTesting
     static BatchingSettings batchingSettings(PubSubPublisherOptions options) {
-        BatchingSettings.Builder batching =
-                Publisher.Builder.getDefaultBatchingSettings().toBuilder();
-        if (options.getBatchElementCountThreshold() != null) {
-            batching.setElementCountThreshold(options.getBatchElementCountThreshold());
-        }
-        if (options.getBatchRequestByteThreshold() != null) {
-            batching.setRequestByteThreshold(options.getBatchRequestByteThreshold());
-        }
+        BatchingSettings defaults = Publisher.Builder.getDefaultBatchingSettings();
+        long elementCountThreshold =
+                options.getBatchElementCountThreshold() != null
+                        ? options.getBatchElementCountThreshold()
+                        : defaults.getElementCountThreshold();
+        long requestByteThreshold =
+                options.getBatchRequestByteThreshold() != null
+                        ? options.getBatchRequestByteThreshold()
+                        : defaults.getRequestByteThreshold();
+        BatchingSettings.Builder batching = defaults.toBuilder();
         if (options.getBatchDelayThreshold() != null) {
             batching.setDelayThresholdDuration(options.getBatchDelayThreshold());
         }
         if (options.getFlowControlMaxOutstandingElementCount() != null
                 || options.getFlowControlMaxOutstandingRequestBytes() != null) {
-            // The SDK publisher requires both limits when flow control is enforced (it clamps the
-            // batch thresholds to them); an unset limit becomes effectively unlimited.
+            // The SDK publisher requires both limits when flow control is enforced; an unset
+            // limit becomes effectively unlimited. The publisher does not cap its batch
+            // thresholds to the limits, so a batch that could never fill under them would stall
+            // publishing until the delay alarm while holding permits — cap the thresholds here.
+            long elementLimit = orUnlimited(options.getFlowControlMaxOutstandingElementCount());
+            long byteLimit = orUnlimited(options.getFlowControlMaxOutstandingRequestBytes());
+            elementCountThreshold = Math.min(elementCountThreshold, elementLimit);
+            requestByteThreshold = Math.min(requestByteThreshold, byteLimit);
             batching.setFlowControlSettings(
                     FlowControlSettings.newBuilder()
-                            .setMaxOutstandingElementCount(
-                                    orUnlimited(options.getFlowControlMaxOutstandingElementCount()))
-                            .setMaxOutstandingRequestBytes(
-                                    orUnlimited(options.getFlowControlMaxOutstandingRequestBytes()))
+                            .setMaxOutstandingElementCount(elementLimit)
+                            .setMaxOutstandingRequestBytes(byteLimit)
                             .setLimitExceededBehavior(FlowController.LimitExceededBehavior.Block)
                             .build());
         }
-        return batching.build();
+        return batching.setElementCountThreshold(elementCountThreshold)
+                .setRequestByteThreshold(requestByteThreshold)
+                .build();
     }
 
-    private static Long orUnlimited(@Nullable Long limit) {
+    private static long orUnlimited(@Nullable Long limit) {
         return limit != null ? limit : Long.MAX_VALUE;
     }
 

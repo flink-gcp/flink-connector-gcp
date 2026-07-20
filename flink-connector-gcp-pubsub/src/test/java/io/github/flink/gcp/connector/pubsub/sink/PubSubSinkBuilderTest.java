@@ -24,8 +24,6 @@ import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
 
-import java.time.Duration;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -125,17 +123,8 @@ class PubSubSinkBuilderTest {
 
     @Test
     void builtSinkRoundTripsJavaSerialization() throws Exception {
-        PubSubPublisherOptions options =
-                PubSubPublisherOptions.builder()
-                        .batchElementCountThreshold(5)
-                        .flowControlMaxOutstandingRequestBytes(1_000_000)
-                        .retryMaxAttempts(7)
-                        .enableMessageOrdering(true)
-                        .maxInFlightMessages(42)
-                        .recoveryInitialBackoff(Duration.ofMillis(100))
-                        .recoveryMaxBackoff(Duration.ofSeconds(1))
-                        .recoveryMaxAttempts(3)
-                        .build();
+        // Shared fully-populated fixture: a knob added there is automatically covered here.
+        PubSubPublisherOptions options = PubSubPublisherOptionsTest.fullyPopulated();
         Sink<String> sink =
                 PubSubSink.<String>builder()
                         .topic(TOPIC)
