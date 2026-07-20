@@ -255,6 +255,43 @@ case, a single repair can take about a minute of SDK retries plus a minute of wr
 before surfacing as terminal. The SDK retry schedule is not configurable yet — deliberately
 deferred until a real-world need shows which knobs matter.
 
+## Testing
+
+The module is tested at three levels; `./mvnw verify` runs the first two and needs no GCP
+credentials.
+
+**Unit tests** cover the builder/facade dispatch, serializers, schema converters, error
+classification and the writer/committer state machines against in-memory fakes.
+
+**Emulator integration tests** run [goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator)
+in a testcontainer and exercise the Storage Write API gRPC endpoint plus the REST
+table-metadata path end to end: plain at-least-once appends across checkpoint-style flushes and
+dynamic multi-table destinations through the `BigQuerySink` facade
+(`BigQueryDefaultStreamWriterITCase`), table auto-creation with create dispositions
+(`BigQueryTableAutoCreationITCase`), and schema evolution
+(`BigQuerySchemaEvolutionITCase`). The tests connect through a test-only plaintext appender
+factory (`EmulatorAppenderFactory`) that also papers over two emulator deviations tracked by
+goccy/bigquery-emulator#342 (default-stream naming, `UNKNOWN` instead of `NOT_FOUND` for missing
+tables); routing the *production* factory at the emulator via an injection seam is tracked in
+#54. One further deviation: acknowledged follow-up appends on an already-used connection are
+intermittently invisible to queries issued after the connection closes, so the tests assert
+while the writer is still open (real BigQuery makes acknowledged default-stream appends
+immediately queryable).
+
+**Real-GCP tests** cover what the emulator cannot faithfully reproduce, and stay out of
+credential-less CI:
+
+- quotas and rate-limit behavior (per-table metadata-update quota, `RESOURCE_EXHAUSTED`
+  handling under real enforcement)
+- the SDK connection pool: multiplexing, scale-up and in-stream retry behavior of the
+  production `StreamWriterRowAppenderFactory`
+- load jobs: goccy/bigquery-emulator supports neither `gs://` load jobs nor a Cloud Storage
+  endpoint, so the whole `FILE_LOADS` path runs against real services
+  (`BigQueryFileLoadsITCase`, env-gated as described [above](#file-loads-batch-only))
+
+The remaining real-GCP coverage (MiniCluster E2E on GitHub Actions via WIF) is tracked in #16
+and #28.
+
 ## Provenance and attribution
 
 This module is an original implementation. Its design references the following Apache-2.0

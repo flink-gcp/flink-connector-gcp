@@ -18,17 +18,11 @@ package io.github.flink.gcp.connector.bigquery.sink.writer;
 
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.TableId;
-import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
-import com.google.cloud.bigquery.storage.v1.TableSchema;
-import com.google.protobuf.ByteString;
-import com.google.protobuf.Descriptors;
-import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -44,49 +38,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * end-to-end through the Storage Write API gRPC endpoint and the REST table-creation path.
  */
 class BigQueryTableAutoCreationITCase extends AbstractBigQueryEmulatorITCase {
-    /** Serializer with a fixed one-column schema, writing rows via {@link DynamicMessage}. */
-    private static final class NameSerializer extends BigQueryProtoSerializer<String> {
-        private static final long serialVersionUID = 1L;
-
-        private transient Descriptors.Descriptor descriptor;
-
-        @Override
-        public TableSchema getTableSchema(TableDestination destination) {
-            return TableSchema.newBuilder()
-                    .addFields(
-                            TableFieldSchema.newBuilder()
-                                    .setName("name")
-                                    .setType(TableFieldSchema.Type.STRING)
-                                    .setMode(TableFieldSchema.Mode.NULLABLE)
-                                    .build())
-                    .build();
-        }
-
-        @Override
-        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-            if (descriptor == null) {
-                descriptor = super.getDescriptor(destination);
-            }
-            return descriptor;
-        }
-
-        @Override
-        public ByteString serialize(String element) {
-            Descriptors.Descriptor d = getDescriptor(null);
-            return DynamicMessage.newBuilder(d)
-                    .setField(d.findFieldByName("name"), element)
-                    .build()
-                    .toByteString();
-        }
-    }
-
     private static BigQueryDefaultStreamWriter<String> writer(
             TableDestination destination, CreateDisposition disposition) {
         BigQuerySinkConfig<String> config =
                 ((BigQueryDefaultStreamSink<String>)
                                 BigQuerySink.<String>builder()
                                         .destination(destination)
-                                        .serializer(new NameSerializer())
+                                        .serializer(new NameColumnSerializer())
                                         .createDisposition(disposition)
                                         .build())
                         .getConfig();
