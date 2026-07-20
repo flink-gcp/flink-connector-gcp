@@ -45,7 +45,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * At-least-once writer publishing records to dynamic per-record Pub/Sub topic destinations.
@@ -58,7 +57,7 @@ import java.util.stream.Collectors;
  *
  * <h2>Threading model</h2>
  *
- * <p>All mutable state — the publisher map, the in-flight counters, the pending-retry buffers and
+ * <p>All mutable state — the publisher map, the in-flight counter, the pending-retry buffers and
  * the captured asynchronous error — is touched only on the task thread. Publish completion
  * callbacks do not mutate state directly; they re-dispatch onto the {@link MailboxExecutor}, whose
  * mails run on the task thread inside {@link MailboxExecutor#yield()} calls. This is the
@@ -77,7 +76,9 @@ import java.util.stream.Collectors;
  *
  * <p>The number of unacknowledged publishes is capped at {@link #DEFAULT_MAX_IN_FLIGHT_MESSAGES};
  * once the cap is reached, {@link #write} yields to the mailbox until completions bring the count
- * back down, bounding sink memory between checkpoints.
+ * back down, bounding sink memory between checkpoints. (A topic-creation repair republishes its
+ * parked batch without re-checking the cap, so the count can transiently exceed it by the batch
+ * size — bounded, since parked messages were themselves once under the cap.)
  *
  * <h2>Topic auto-creation</h2>
  *
@@ -159,7 +160,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     }
 
     @VisibleForTesting
-    public PubSubWriter(
+    PubSubWriter(
             PubSubSinkConfig<T> config,
             PublisherFactory publisherFactory,
             TopicAdmin topicAdmin,
@@ -222,10 +223,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         // with the writer: they are not covered by a completed checkpoint, so the restart
         // replays them.
         try {
-            List<AutoCloseable> closeables =
-                    states.values().stream()
-                            .map(state -> (AutoCloseable) state.publisher)
-                            .collect(Collectors.toList());
+            List<AutoCloseable> closeables = new ArrayList<>(states.size() + 1);
+            for (DestinationState state : states.values()) {
+                closeables.add(state.publisher);
+            }
             closeables.add(topicAdmin);
             IOUtils.closeAll(closeables);
         } finally {
@@ -262,7 +263,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                     "Failed to publish a record to Pub/Sub topic " + state.destination + ".", e);
         }
         inFlightMessages++;
-        state.inFlight++;
         ApiFutures.addCallback(future, new PublishCallback(state, message), Runnable::run);
     }
 
@@ -290,7 +290,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private void onPublishFailed(
             DestinationState state, PubsubMessage message, Throwable throwable) {
         inFlightMessages--;
-        state.inFlight--;
         if (isRecoverableNotFound(throwable)) {
             state.pendingRetries.add(message);
             state.lastNotFound = throwable;
@@ -304,7 +303,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private void repairPendingTopics() throws IOException, InterruptedException {
         while (repairNeeded) {
             repairNeeded = false;
-            for (DestinationState state : states.values()) {
+            // Iterate a snapshot: repairDestination yields to the mailbox, so hardening against
+            // a mail ever reaching stateFor() keeps this loop safe from map mutation.
+            for (DestinationState state : new ArrayList<>(states.values())) {
                 if (!state.pendingRetries.isEmpty()) {
                     repairDestination(state);
                 }
@@ -314,9 +315,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /**
      * Creates the destination's topic and republishes its parked messages, retrying within the
-     * recovery schedule while topic metadata propagates. Failures during a retry re-enter the
+     * recovery schedule while topic metadata propagates. Each attempt drains the writer completely
+     * (repair is rare, so waiting on unrelated destinations' publishes is acceptable for the
+     * simplicity of reusing {@link #awaitInFlightBelow}). Failures during a retry re-enter the
      * pending buffer through the normal callback path; non-{@code NOT_FOUND} failures abort the
-     * repair through {@link #checkAsyncError()}.
+     * repair from within the drain.
      */
     private void repairDestination(DestinationState state)
             throws IOException, InterruptedException {
@@ -332,11 +335,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 publishTo(state, message);
             }
             state.publisher.flushOutstanding();
-            while (state.inFlight > 0) {
-                checkAsyncError();
-                mailboxExecutor.yield();
-            }
-            checkAsyncError();
+            awaitInFlightBelow(1);
             if (state.pendingRetries.isEmpty()) {
                 return;
             }
@@ -378,6 +377,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Whether the failure's cause chain carries a {@code NOT_FOUND} status — either as the gax
      * {@link ApiException} the SDK publisher surfaces or as a raw gRPC {@link
      * StatusRuntimeException} (defense in depth).
+     *
+     * <p>Mirrors the BigQuery module's {@code AppendErrorClassifier.hasCode}; folding status-code
+     * classification into a shared module is tracked with issue #61, and a Pub/Sub fatal-exception
+     * classifier with issue #20.
      */
     private static boolean isNotFound(Throwable throwable) {
         return ExceptionUtils.findThrowable(throwable, PubSubWriter::isNotFoundException)
@@ -413,18 +416,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         /** Retained as the cause of a budget-exhaustion failure. */
         private Throwable lastNotFound;
 
-        /** This destination's unacknowledged publishes; touched only on the task thread. */
-        private int inFlight;
-
         /**
          * Success mail shared by every publish to this destination, so the success path enqueues no
          * per-record mail allocation (the per-publish callback itself is the only one).
          */
-        private final ThrowingRunnable<Exception> completionMail =
-                () -> {
-                    inFlightMessages--;
-                    inFlight--;
-                };
+        private final ThrowingRunnable<Exception> completionMail = () -> inFlightMessages--;
 
         private final String completionDescription;
         private final String failureDescription;

@@ -86,9 +86,11 @@ acceptable at moderate parallelism; gRPC channels are multiplexed inside the SDK
 Under `createDisposition(CreateDisposition.CREATE_IF_NEEDED)` — the default — publishes that
 fail with `NOT_FOUND` are recovered reactively on the task thread: the failed messages are
 parked per destination, the topic is created with default topic settings, and the messages are
-republished under a bounded backoff budget (500 ms doubling to 10 s, 10 attempts, ~1 minute)
-covering topic-metadata propagation. Existing topics cost nothing: no admin call is made (and
-no admin client is even constructed) unless a publish actually fails with `NOT_FOUND`.
+republished under a bounded backoff budget (500 ms doubling to 10 s, 10 attempts, ~1 minute
+**per destination**) covering topic-metadata propagation. Existing topics cost nothing: no
+admin call is made (and no admin client is even constructed) unless a publish actually fails
+with `NOT_FOUND`; when one does, the admin client is short-lived — opened for the creation
+call and closed with it.
 
 Creation is idempotent across parallel subtasks: `ALREADY_EXISTS` is treated as success, so
 subtasks racing to create the same topic need no coordination. The credentials running the job
@@ -99,8 +101,12 @@ auto-creation may trigger.
 publish fails the job immediately with a message naming the disposition.
 
 Caveats: repaired messages are republished after later writes may have published (no ordering
-regression — the sink is at-least-once and ordering keys are not honored until #20), and a
-repair inside `flush()` extends the checkpoint duration by up to the backoff budget.
+regression — the sink is at-least-once and ordering keys are not honored until #20); a repair
+inside `flush()` extends the checkpoint duration by up to the backoff budget of each repaired
+destination; auto-created topics start with **no subscriptions**, so messages published before
+a subscription exists are not retained for anyone — auto-creation suits pipelines whose
+consumers create their own subscriptions or attach them promptly (`CREATE_NEVER` restores
+fail-fast behavior for pipelines where a missing topic signals a routing bug).
 
 ## Error handling
 

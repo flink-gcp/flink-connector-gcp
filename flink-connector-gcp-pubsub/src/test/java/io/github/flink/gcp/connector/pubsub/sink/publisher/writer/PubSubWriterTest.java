@@ -40,18 +40,7 @@ class PubSubWriterTest {
 
     private static final String PROJECT = "test-project";
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return Long.MIN_VALUE;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private final FakePublisherFactory factory = new FakePublisherFactory();
     private final FakeTopicAdmin admin = new FakeTopicAdmin();

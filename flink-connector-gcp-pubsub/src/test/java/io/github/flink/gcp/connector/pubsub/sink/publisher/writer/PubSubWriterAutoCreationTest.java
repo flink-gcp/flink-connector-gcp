@@ -50,18 +50,7 @@ class PubSubWriterAutoCreationTest {
     /** A fast schedule keeping repair backoffs out of the test wall clock. */
     private static final RetrySchedule FAST_SCHEDULE = new RetrySchedule(1, 1, 5, 0);
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return Long.MIN_VALUE;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private final FakePublisherFactory factory = new FakePublisherFactory();
     private final FakeTopicAdmin admin = new FakeTopicAdmin();

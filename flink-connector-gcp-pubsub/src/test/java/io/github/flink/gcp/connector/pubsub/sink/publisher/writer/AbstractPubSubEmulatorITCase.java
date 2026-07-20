@@ -64,18 +64,7 @@ abstract class AbstractPubSubEmulatorITCase {
 
     static final String PROJECT = "it-project";
 
-    static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     @Container
     private static final PubSubEmulatorContainer EMULATOR =
@@ -99,12 +88,7 @@ abstract class AbstractPubSubEmulatorITCase {
         // per-writer admins handed out by newTopicAdmin()) can share this one channel.
         channelProvider =
                 FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel));
-        topicAdminClient =
-                TopicAdminClient.create(
-                        TopicAdminSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
+        topicAdminClient = newTopicAdminClient();
         subscriptionAdminClient =
                 SubscriptionAdminClient.create(
                         SubscriptionAdminSettings.newBuilder()
@@ -144,12 +128,15 @@ abstract class AbstractPubSubEmulatorITCase {
      * its admin, so it must not receive the harness-owned client).
      */
     static TopicAdmin newTopicAdmin() throws IOException {
-        return new PubSubTopicAdmin(
-                TopicAdminClient.create(
-                        TopicAdminSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build()));
+        return new PubSubTopicAdmin(newTopicAdminClient());
+    }
+
+    private static TopicAdminClient newTopicAdminClient() throws IOException {
+        return TopicAdminClient.create(
+                TopicAdminSettings.newBuilder()
+                        .setTransportChannelProvider(channelProvider)
+                        .setCredentialsProvider(NoCredentialsProvider.create())
+                        .build());
     }
 
     static boolean topicExists(TopicDestination destination) {

@@ -28,8 +28,8 @@ import java.io.IOException;
  *
  * <p>Instances are created on the task manager inside {@code createWriter} and are never shipped in
  * the job graph, so the interface is not {@link java.io.Serializable}. It is {@link AutoCloseable}
- * because the default implementation owns a gRPC client whose channel and threads must be shut down
- * with the writer.
+ * so implementations holding a gRPC client (for example one injected for tests) can shut down its
+ * channel and threads with the writer.
  */
 @Internal
 public interface TopicAdmin extends AutoCloseable {

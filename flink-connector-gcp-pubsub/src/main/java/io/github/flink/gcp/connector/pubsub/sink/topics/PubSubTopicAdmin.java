@@ -30,34 +30,57 @@ import java.io.IOException;
 /**
  * Default {@link TopicAdmin} backed by the Pub/Sub {@link TopicAdminClient}.
  *
- * <p>The client is created lazily on the first use, so jobs whose destination topics all exist
- * never construct it (and never open its gRPC channel). Creation conflicts ({@code ALREADY_EXISTS},
- * the topic was created concurrently — for example by a parallel subtask) are treated as success.
+ * <p>Jobs whose destination topics all exist never construct a client (and never open its gRPC
+ * channel). When auto-creation does trigger, the client is short-lived: opened for the creation
+ * call and closed with it, so its channel and threads are not held for the writer's remaining
+ * lifetime for what is typically a one-shot event. An injected client (tests, emulator) is used
+ * as-is and closed with the admin instead. Creation conflicts ({@code ALREADY_EXISTS}, the topic
+ * was created concurrently — for example by a parallel subtask) are treated as success.
  */
 @Internal
 public class PubSubTopicAdmin implements TopicAdmin {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubTopicAdmin.class);
 
-    private TopicAdminClient client;
+    private final TopicAdminClient injectedClient;
 
     /** Creates an admin using application-default credentials. */
-    public PubSubTopicAdmin() {}
+    public PubSubTopicAdmin() {
+        this.injectedClient = null;
+    }
 
     /**
-     * Creates an admin using the given client.
+     * Creates an admin using the given client, closed with the admin.
      *
      * @param client the Pub/Sub admin client
      */
     public PubSubTopicAdmin(TopicAdminClient client) {
-        this.client = client;
+        this.injectedClient = client;
     }
 
     @Override
     public void createTopic(TopicDestination destination) throws IOException {
+        if (injectedClient != null) {
+            createTopic(injectedClient, destination);
+            return;
+        }
+        try (TopicAdminClient client = newClient()) {
+            createTopic(client, destination);
+        }
+    }
+
+    @Override
+    public void close() {
+        if (injectedClient != null) {
+            injectedClient.close();
+        }
+    }
+
+    private static void createTopic(TopicAdminClient client, TopicDestination destination)
+            throws IOException {
         TopicName topicName = TopicName.of(destination.getProject(), destination.getTopic());
         try {
-            client().createTopic(topicName);
+            client.createTopic(topicName);
             LOG.info("Created Pub/Sub topic {}", destination);
         } catch (AlreadyExistsException e) {
             LOG.info("Pub/Sub topic {} already exists, not creating it", destination);
@@ -66,21 +89,11 @@ public class PubSubTopicAdmin implements TopicAdmin {
         }
     }
 
-    @Override
-    public void close() throws Exception {
-        if (client != null) {
-            client.close();
+    private static TopicAdminClient newClient() throws IOException {
+        try {
+            return TopicAdminClient.create();
+        } catch (IOException | RuntimeException e) {
+            throw new IOException("Failed to create the Pub/Sub admin client", e);
         }
-    }
-
-    private TopicAdminClient client() throws IOException {
-        if (client == null) {
-            try {
-                client = TopicAdminClient.create();
-            } catch (IOException | RuntimeException e) {
-                throw new IOException("Failed to create the Pub/Sub admin client", e);
-            }
-        }
-        return client;
     }
 }
