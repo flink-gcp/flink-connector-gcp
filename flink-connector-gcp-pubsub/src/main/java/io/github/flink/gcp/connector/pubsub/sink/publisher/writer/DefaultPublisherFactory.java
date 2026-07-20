@@ -21,8 +21,9 @@ import org.apache.flink.annotation.Internal;
 import com.google.api.core.ApiFuture;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.pubsub.v1.PubsubMessage;
-import com.google.pubsub.v1.TopicName;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
@@ -40,22 +41,25 @@ public final class DefaultPublisherFactory implements PublisherFactory {
 
     private static final long serialVersionUID = 1L;
 
+    private static final Logger LOG = LoggerFactory.getLogger(DefaultPublisherFactory.class);
+
     private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
 
     @Override
     public TopicPublisher create(TopicDestination destination) throws IOException {
         return new PublisherAdapter(
-                Publisher.newBuilder(TopicName.of(destination.getProject(), destination.getTopic()))
-                        .build());
+                Publisher.newBuilder(destination.toTopicPath()).build(), destination);
     }
 
     /** Adapts the SDK {@link Publisher} to the writer-facing {@link TopicPublisher} interface. */
     private static final class PublisherAdapter implements TopicPublisher {
 
         private final Publisher publisher;
+        private final TopicDestination destination;
 
-        private PublisherAdapter(Publisher publisher) {
+        private PublisherAdapter(Publisher publisher, TopicDestination destination) {
             this.publisher = publisher;
+            this.destination = destination;
         }
 
         @Override
@@ -71,7 +75,13 @@ public final class DefaultPublisherFactory implements PublisherFactory {
         @Override
         public void close() throws Exception {
             publisher.shutdown();
-            publisher.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!publisher.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                LOG.warn(
+                        "The Pub/Sub publisher for topic {} did not terminate within {} seconds;"
+                                + " its resources may leak until the JVM exits.",
+                        destination,
+                        SHUTDOWN_TIMEOUT_SECONDS);
+            }
         }
     }
 }

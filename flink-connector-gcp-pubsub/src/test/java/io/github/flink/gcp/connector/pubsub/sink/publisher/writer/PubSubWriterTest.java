@@ -181,6 +181,20 @@ class PubSubWriterTest {
     }
 
     @Test
+    void synchronousPublishFailureFailsWriteWithTopicContext() throws Exception {
+        PubSubWriter<String> writer = newWriter();
+        writer.write("topic-a", CONTEXT);
+        RuntimeException failure = new IllegalStateException("publisher is shut down");
+        factory.publishers.get(topic("topic-a")).publishFailure = failure;
+
+        assertThatThrownBy(() -> writer.write("topic-a", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("topic-a")
+                .hasCause(failure);
+        assertThat(writer.getInFlightMessages()).isEqualTo(1);
+    }
+
+    @Test
     void writeAtInFlightCapWaitsForCompletionsBeforePublishing() throws Exception {
         PubSubWriter<String> writer = newWriter(2);
         SettableApiFuture<String> first = SettableApiFuture.create();

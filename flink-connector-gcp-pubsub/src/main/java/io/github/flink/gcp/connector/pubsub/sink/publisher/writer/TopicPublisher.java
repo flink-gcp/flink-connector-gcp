@@ -48,8 +48,9 @@ public interface TopicPublisher extends AutoCloseable {
     void flushOutstanding();
 
     /**
-     * Shuts the publisher down, waiting a bounded time for termination. Does not publish buffered
-     * messages; callers flush first when needed.
+     * Shuts the publisher down, waiting a bounded time for termination. A graceful shutdown may
+     * still send messages buffered inside the publisher (the SDK {@code Publisher} does); callers
+     * needing completion guarantees flush and await the publish futures first.
      */
     @Override
     void close() throws Exception;

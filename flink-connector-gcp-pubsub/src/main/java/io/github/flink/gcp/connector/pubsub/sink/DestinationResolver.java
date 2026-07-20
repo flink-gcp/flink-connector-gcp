@@ -43,7 +43,7 @@ public interface DestinationResolver<T> extends Serializable {
      *
      * @param element the record
      * @param context writer context exposing the record's event timestamp and current watermark
-     * @return the destination topic
+     * @return the destination topic; never {@code null}
      */
     TopicDestination resolve(T element, SinkWriter.Context context);
 }

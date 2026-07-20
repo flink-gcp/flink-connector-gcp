@@ -59,6 +59,7 @@ final class FakePublisherFactory implements PublisherFactory {
         final List<PubsubMessage> published = new ArrayList<>();
         int flushCalls;
         int closeCalls;
+        RuntimeException publishFailure;
         RuntimeException closeFailure;
 
         private FakeTopicPublisher(FakePublisherFactory factory) {
@@ -67,6 +68,9 @@ final class FakePublisherFactory implements PublisherFactory {
 
         @Override
         public ApiFuture<String> publish(PubsubMessage message) {
+            if (publishFailure != null) {
+                throw publishFailure;
+            }
             published.add(message);
             ApiFuture<String> scripted = factory.scriptedFutures.poll();
             return scripted != null

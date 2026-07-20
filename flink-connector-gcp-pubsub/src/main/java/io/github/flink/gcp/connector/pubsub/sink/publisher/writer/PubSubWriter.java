@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.util.IOUtils;
+import org.apache.flink.util.function.ThrowingRunnable;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
@@ -32,6 +33,7 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * At-least-once writer publishing records to dynamic per-record Pub/Sub topic destinations.
@@ -80,8 +82,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private final MailboxExecutor mailboxExecutor;
     private final int maxInFlightMessages;
 
-    /** Lazily populated per-topic publishers; touched only on the task thread. */
-    private final Map<TopicDestination, TopicPublisher> publishers = new HashMap<>();
+    /** Lazily populated per-topic publisher state; touched only on the task thread. */
+    private final Map<TopicDestination, DestinationState> states = new HashMap<>();
 
     /** Number of publishes not yet acknowledged; touched only on the task thread. */
     private int inFlightMessages;
@@ -132,45 +134,58 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             throw new IOException(
                     "Failed to serialize a record for Pub/Sub topic " + destination + ".", e);
         }
-        TopicPublisher publisher = publisherFor(destination);
+        DestinationState state = stateFor(destination);
         awaitInFlightBelow(maxInFlightMessages);
-        ApiFuture<String> future = publisher.publish(message);
+        ApiFuture<String> future;
+        try {
+            future = state.publisher.publish(message);
+        } catch (RuntimeException e) {
+            throw new IOException(
+                    "Failed to publish a record to Pub/Sub topic " + destination + ".", e);
+        }
         inFlightMessages++;
-        ApiFutures.addCallback(future, new PublishCallback(destination), Runnable::run);
+        ApiFutures.addCallback(future, state.callback, Runnable::run);
     }
 
     @Override
     public void flush(boolean endOfInput) throws IOException, InterruptedException {
         checkAsyncError();
-        for (TopicPublisher publisher : publishers.values()) {
-            publisher.flushOutstanding();
+        for (DestinationState state : states.values()) {
+            state.publisher.flushOutstanding();
         }
         awaitInFlightBelow(1);
     }
 
     @Override
     public void close() throws Exception {
-        // No implicit flush: on success Flink calls flush(true) before close, and on the failure
-        // path close must not publish further messages.
+        // No explicit flush here: on success Flink calls flush(true) before close. On the failure
+        // path the writer publishes no further records itself; note the SDK publisher's graceful
+        // shutdown still sends messages buffered inside it, which at-least-once tolerates as
+        // duplicates after the restart.
         try {
-            IOUtils.closeAll(publishers.values());
+            IOUtils.closeAll(
+                    states.values().stream()
+                            .map(state -> (AutoCloseable) state.publisher)
+                            .collect(Collectors.toList()));
         } finally {
-            publishers.clear();
+            states.clear();
         }
     }
 
-    private TopicPublisher publisherFor(TopicDestination destination) throws IOException {
-        TopicPublisher publisher = publishers.get(destination);
-        if (publisher == null) {
+    private DestinationState stateFor(TopicDestination destination) throws IOException {
+        DestinationState state = states.get(destination);
+        if (state == null) {
+            TopicPublisher publisher;
             try {
                 publisher = publisherFactory.create(destination);
             } catch (IOException | RuntimeException e) {
                 throw new IOException(
                         "Failed to create a Pub/Sub publisher for topic " + destination + ".", e);
             }
-            publishers.put(destination, publisher);
+            state = new DestinationState(publisher, new PublishCallback(destination));
+            states.put(destination, state);
         }
-        return publisher;
+        return state;
     }
 
     /**
@@ -198,19 +213,40 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         return inFlightMessages;
     }
 
-    /** Re-dispatches publish completions onto the mailbox so state stays task-thread-only. */
+    /** Per-topic publisher plus its reusable completion callback. */
+    private final class DestinationState {
+
+        private final TopicPublisher publisher;
+        private final PublishCallback callback;
+
+        private DestinationState(TopicPublisher publisher, PublishCallback callback) {
+            this.publisher = publisher;
+            this.callback = callback;
+        }
+    }
+
+    /**
+     * Re-dispatches publish completions onto the mailbox so state stays task-thread-only.
+     *
+     * <p>One instance per destination, reused across records (the callback carries no per-record
+     * state), so registering a callback allocates nothing per publish on the success path.
+     */
     private final class PublishCallback implements ApiFutureCallback<String> {
 
         private final TopicDestination destination;
+        private final ThrowingRunnable<Exception> completionMail = () -> inFlightMessages--;
+        private final String completionDescription;
+        private final String failureDescription;
 
         private PublishCallback(TopicDestination destination) {
             this.destination = destination;
+            this.completionDescription = "Complete a Pub/Sub publish to " + destination;
+            this.failureDescription = "Fail a Pub/Sub publish to " + destination;
         }
 
         @Override
         public void onSuccess(String messageId) {
-            mailboxExecutor.execute(
-                    () -> inFlightMessages--, "Complete a Pub/Sub publish to %s", destination);
+            mailboxExecutor.execute(completionMail, completionDescription);
         }
 
         @Override
@@ -227,8 +263,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                                             throwable);
                         }
                     },
-                    "Fail a Pub/Sub publish to %s",
-                    destination);
+                    failureDescription);
         }
     }
 }

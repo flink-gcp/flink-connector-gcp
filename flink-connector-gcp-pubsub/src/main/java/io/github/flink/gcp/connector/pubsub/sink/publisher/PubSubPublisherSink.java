@@ -62,8 +62,9 @@ public class PubSubPublisherSink<T> implements Sink<T> {
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
         try {
             config.getSerializer().open(context.asSerializationSchemaInitializationContext());
-        } catch (IOException e) {
-            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while opening the Pub/Sub serialization schema.", e);
         } catch (Exception e) {
             throw new IOException("Failed to open the Pub/Sub serialization schema.", e);
         }
