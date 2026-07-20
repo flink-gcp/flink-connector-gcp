@@ -65,11 +65,16 @@ Under `io.github.flink.gcp.connector.<product>` (decided in #63, applied to BigQ
 Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
 
 - `sink` — public sink API only: the facade + builder, write-method enum, shared options/enums,
-  destination types, and the `@Internal` types shared by every implementation (the sink config,
-  the fixed-destination resolver)
-- `sink.<impl>` — one subpackage per write method / implementation, containing its Sink class
-  and machinery (BigQuery: `sink.writer` for the Storage Write API default stream,
-  `sink.fileloads` for FILE_LOADS; future write methods such as #30 get their own)
+  destination types, and the `@Internal` types shared by every write method (the sink config,
+  the fixed-destination resolver, `RetrySchedule` until #61 extracts a shared retry module)
+- `sink.<writemethod>` — one subpackage per write method (BigQuery: `sink.defaultstream`,
+  `sink.fileloads`; the #30 exactly-once method gets its own). The package root holds the
+  method's Sink class, its public options object and its committable contract; internal stages
+  follow the Flink FileSink precedent with `.writer`, `.committer` and post-commit-topology
+  subpackages (`.loadjob` here, FileSink's `.compactor`) as the method's topology requires —
+  a method without a committer (no 2PC) simply has no `.committer` package
+- `sink.tables` — shared table-metadata layer consumed by every write method: the `TableAdmin`
+  SPI and its REST implementation, schema snapshot/unifier, REST↔Storage schema converters
 - `sink.serializer` — record-conversion SPI and its implementations
 - `sink.failure` — row-level failure SPI (`FailedRow`, handlers, DLQ stub), kept separate so the
   cross-connector extraction planned in #37 stays cheap

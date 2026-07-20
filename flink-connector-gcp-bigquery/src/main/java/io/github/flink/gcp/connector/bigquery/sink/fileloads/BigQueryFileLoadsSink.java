@@ -33,14 +33,18 @@ import org.apache.flink.streaming.api.connector.sink2.SupportsPostCommitTopology
 import org.apache.flink.streaming.api.datastream.DataStream;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
-import io.github.flink.gcp.connector.bigquery.sink.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.committer.FileLoadsCommitter;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FileLoadsPostCommitOperator;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.FileLoadsWriter;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.GcsStagingStorage;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStorage;
 
 /**
  * The {@link WriteMethod#FILE_LOADS} sink: writers stage per-destination Avro files on Cloud
  * Storage, a no-op committer forwards their committables, and a parallelism-1 post-commit operator
  * turns them into BigQuery load jobs at end of input (see {@link
- * io.github.flink.gcp.connector.bigquery.sink.fileloads.LoadJobOrchestrator}).
+ * io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.LoadJobOrchestrator}).
  *
  * <p>Batch execution only, enforced twice: at graph construction here (anything but an explicit
  * {@link RuntimeExecutionMode#BATCH} is rejected when the post-commit topology is added) and at
