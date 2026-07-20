@@ -21,12 +21,21 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.FieldValueList;
+import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.StandardTableDefinition;
+import com.google.cloud.bigquery.TableId;
+import com.google.cloud.bigquery.TableInfo;
+import com.google.cloud.bigquery.storage.v1.TableSchema;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Shared harness for integration tests against the BigQuery emulator (goccy/bigquery-emulator): the
@@ -81,5 +90,35 @@ abstract class AbstractBigQueryEmulatorITCase {
 
     static String grpcEndpoint() {
         return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(GRPC_PORT);
+    }
+
+    /** Creates a table in the emulator dataset with the given Storage-form schema. */
+    static void createTable(String table, TableSchema schema) {
+        restClient.create(
+                TableInfo.newBuilder(
+                                TableId.of(PROJECT, DATASET, table),
+                                StandardTableDefinition.newBuilder()
+                                        .setSchema(StorageSchemaConverter.toBigQuerySchema(schema))
+                                        .build())
+                        .build());
+    }
+
+    /** Returns the values of the {@code name} column of the given table, sorted. */
+    static List<String> queryNames(String table) throws InterruptedException {
+        List<String> names = new ArrayList<>();
+        restClient
+                .query(
+                        QueryJobConfiguration.newBuilder(
+                                        "SELECT name FROM `"
+                                                + PROJECT
+                                                + "."
+                                                + DATASET
+                                                + "."
+                                                + table
+                                                + "` ORDER BY name")
+                                .build())
+                .iterateAll()
+                .forEach((FieldValueList row) -> names.add(row.get(0).getStringValue()));
+        return names;
     }
 }
