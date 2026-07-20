@@ -31,8 +31,10 @@ import com.google.cloud.pubsub.v1.stub.GrpcSubscriberStub;
 import com.google.cloud.pubsub.v1.stub.SubscriberStub;
 import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
 import com.google.pubsub.v1.ProjectSubscriptionName;
+import com.google.pubsub.v1.PubsubMessage;
 import com.google.pubsub.v1.PullRequest;
 import com.google.pubsub.v1.PushConfig;
+import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -157,8 +159,26 @@ abstract class AbstractPubSubEmulatorITCase {
                 10);
     }
 
+    /** Creates a subscription that preserves ordering-key delivery order. */
+    static void createOrderedSubscription(TopicDestination topic, String subscriptionId) {
+        subscriptionAdminClient.createSubscription(
+                Subscription.newBuilder()
+                        .setName(SubscriptionName.format(PROJECT, subscriptionId))
+                        .setTopic(TopicName.format(topic.getProject(), topic.getTopic()))
+                        .setAckDeadlineSeconds(10)
+                        .setEnableMessageOrdering(true)
+                        .build());
+    }
+
     /** Pulls up to {@code maxMessages} from the subscription and returns their UTF-8 payloads. */
     static List<String> pullPayloads(String subscriptionId, int maxMessages) {
+        return pullMessages(subscriptionId, maxMessages).stream()
+                .map(message -> message.getData().toString(StandardCharsets.UTF_8))
+                .collect(Collectors.toList());
+    }
+
+    /** Pulls up to {@code maxMessages} from the subscription and returns the full messages. */
+    static List<PubsubMessage> pullMessages(String subscriptionId, int maxMessages) {
         return subscriberStub
                 .pullCallable()
                 .call(
@@ -169,7 +189,7 @@ abstract class AbstractPubSubEmulatorITCase {
                                 .build())
                 .getReceivedMessagesList()
                 .stream()
-                .map(received -> received.getMessage().getData().toString(StandardCharsets.UTF_8))
+                .map(received -> received.getMessage())
                 .collect(Collectors.toList());
     }
 }

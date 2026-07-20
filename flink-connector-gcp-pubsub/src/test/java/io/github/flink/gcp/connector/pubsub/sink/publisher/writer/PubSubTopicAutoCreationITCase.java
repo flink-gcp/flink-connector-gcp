@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.sink.publisher.writer;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
 import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
@@ -57,7 +58,7 @@ class PubSubTopicAutoCreationITCase extends AbstractPubSubEmulatorITCase {
                 new EmulatorPublisherFactory(emulatorEndpoint()),
                 newTopicAdmin(),
                 new FakeMailboxExecutor(),
-                PubSubWriter.DEFAULT_MAX_IN_FLIGHT_MESSAGES,
+                PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
                 new RetrySchedule(100, 1_000, 30, 0));
     }
 

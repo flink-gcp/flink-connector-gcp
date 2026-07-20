@@ -6,7 +6,8 @@ Cloud Pub/Sub sink for Apache Flink with dynamic per-record topic destinations.
 |---|---|
 | SinkV2 at-least-once sink; per-record topic resolution; per-topic publishers; checkpoint flush | Implemented (#18) |
 | Topic auto-creation | Implemented (#19) |
-| Attributes/ordering-key conveniences; `BatchingSettings`/`FlowControlSettings`/`RetrySettings`; bounded retry policy | Planned (#20) |
+| Attributes/ordering-key conveniences; message ordering; batching/flow-control/retry options; recovery and in-flight knobs | Implemented (#20) |
+| Per-record failure policy; fatal-exception classifier | Planned (#37) |
 | Emulator integration tests | Planned (#21) |
 | Pub/Sub source | Planned for v0.2.0 (#31) |
 
@@ -15,24 +16,63 @@ Sink<MyEvent> sink =
         PubSubSink.<MyEvent>builder()
                 .destinationResolver(
                         (e, ctx) -> TopicDestination.of("my-project", e.topicName()))
-                .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+                .serializer(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withAttributes(e -> Map.of("source", e.source()))
+                                .withOrderingKey(MyEvent::deviceId))
+                .publisherOptions(
+                        PubSubPublisherOptions.builder()
+                                .enableMessageOrdering(true)
+                                .batchDelayThreshold(Duration.ofMillis(10))
+                                .build())
                 .build();
 ```
 
 API notes:
 
 - `PubSubSerializationSchema.serialize` returns a full `PubsubMessage`, so message attributes
-  and ordering keys are expressible today. Note that ordering keys are **not honored yet**: the
-  publisher-level `enableMessageOrdering` flag arrives with the publisher settings in #20 —
-  until then, publishing a message that carries an ordering key fails in the client SDK.
-  `PubSubSerializationSchema.dataOnly(...)` wraps a plain Flink `SerializationSchema` for
-  payload-only messages.
+  and ordering keys are expressible. `dataOnly(...)` wraps a plain Flink `SerializationSchema`
+  for payload-only messages; `withAttributes(...)` and `withOrderingKey(...)` layer extracted
+  attributes and an ordering key onto any schema (null/empty extractions add nothing).
+- **Message ordering** is honored when `PubSubPublisherOptions.enableMessageOrdering(true)` is
+  set; the writer rejects a message carrying an ordering key while ordering is disabled with an
+  error naming the option (instead of the SDK's less actionable failure). Ordering is per key
+  within one topic, and holds per writer subtask — route same-key records to the same subtask
+  (e.g. `keyBy` on the ordering key) for end-to-end order.
 - `DestinationResolver.resolve(element, context)` receives the writer context (event timestamp,
   watermark) so time-based routing is expressible. Resolvers run per record: cache and reuse
   `TopicDestination` instances.
 - `TopicDestination` is pure topic identity (`equals`/`hashCode` over project/topic) and serves
   as the key of the writer's per-topic publisher map; publisher settings stay on the sink so
   identity remains stable.
+
+## Publisher options
+
+`publisherOptions(PubSubPublisherOptions)` tunes the SDK publishers and the writer. Every knob
+left unset keeps the SDK's (or the sink's) current default — `PubSubPublisherOptions.defaults()`
+is equivalent to not setting options at all.
+
+| Knob | Default when unset |
+|---|---|
+| `batchElementCountThreshold` / `batchRequestByteThreshold` / `batchDelayThreshold` | SDK batching defaults (100 / 1000 B / 1 ms) |
+| `flowControlMaxOutstandingElementCount` / `flowControlMaxOutstandingRequestBytes` | no limit |
+| `retryTotalTimeout`, `retryInitialDelay`, `retryDelayMultiplier`, `retryMaxDelay`, `retryInitialRpcTimeout`, `retryRpcTimeoutMultiplier`, `retryMaxRpcTimeout`, `retryMaxAttempts` | SDK publish-retry defaults (600 s total, 100 ms initial, ×4, 60 s cap, ...) |
+| `enableMessageOrdering` | `false` |
+| `maxInFlightMessages` (writer cap) | 1000 |
+| `recoveryInitialBackoff` / `recoveryMaxBackoff` / `recoveryMaxAttempts` (topic auto-creation) | 500 ms / 10 s / 10 |
+
+Flow-control limits use the SDK's `LimitExceededBehavior.Block`: a publish beyond a limit blocks
+the task thread until in-flight publishes complete — plain backpressure (permits are released on
+SDK threads, so there is no deadlock). `ThrowException` and `Ignore` are deliberately not
+exposed. The writer's `maxInFlightMessages` remains the mailbox-friendly primary cap; the
+flow-control byte limit is the bound the element-count cap cannot provide.
+
+**Caution — flow-control limits with message ordering**: in `google-cloud-pubsub` 1.152.0,
+`Publisher.publish` acquires a flow-control permit *before* the paused-ordering-key check, and
+the paused-key rejection and per-key cancellation paths never release it (verified in the SDK
+source). After a per-key publish failure, leaked permits can therefore permanently shrink — and
+with `Block` eventually exhaust — the flow-control budget, hanging the task thread. Avoid
+combining flow-control limits with `enableMessageOrdering` until the SDK fixes the leak.
 
 ## Delivery guarantees and state
 
@@ -63,13 +103,14 @@ Checkpointing must be enabled for the at-least-once guarantee in streaming jobs:
 Flink never calls `flush()` mid-stream, so messages buffered in the SDK publishers are lost on
 failure. Batch execution is covered by the end-of-input flush.
 
-**Backpressure.** The number of unacknowledged publishes per writer is capped (1,000). Publish
-completions are re-dispatched onto the task mailbox, so all writer state is single-threaded; a
-write at the cap yields to the mailbox until completions bring the count back down, bounding
-sink memory between checkpoints. This is the mailbox model of the Apache
-`flink-connector-gcp-pubsub` writer (a design reference — no code is copied from it); that
-writer's infinite republish of non-fatally failed messages under `failOnError=false` is
-deliberately **not** adopted. Exposing the cap, and SDK-side flow control, is deferred to #20.
+**Backpressure.** The number of unacknowledged publishes per writer is capped
+(`maxInFlightMessages`, default 1,000). Publish completions are re-dispatched onto the task
+mailbox, so all writer state is single-threaded; a write at the cap yields to the mailbox until
+completions bring the count back down, bounding sink memory between checkpoints. This is the
+mailbox model of the Apache `flink-connector-gcp-pubsub` writer (a design reference — no code is
+copied from it); that writer's infinite republish of non-fatally failed messages under
+`failOnError=false` is deliberately **not** adopted. SDK-side flow control is available through
+the publisher options.
 
 ## Publisher lifecycle
 
@@ -86,8 +127,9 @@ acceptable at moderate parallelism; gRPC channels are multiplexed inside the SDK
 Under `createDisposition(CreateDisposition.CREATE_IF_NEEDED)` — the default — publishes that
 fail with `NOT_FOUND` are recovered reactively on the task thread: the failed messages are
 parked per destination, the topic is created with default topic settings, and the messages are
-republished under a bounded backoff budget (500 ms doubling to 10 s, 10 attempts, ~1 minute
-**per destination**) covering topic-metadata propagation. Existing topics cost nothing: no
+republished under a bounded backoff budget (`recoveryInitialBackoff` doubling to
+`recoveryMaxBackoff` over `recoveryMaxAttempts`; by default 500 ms → 10 s, 10 attempts,
+~1 minute **per destination**) covering topic-metadata propagation. Existing topics cost nothing: no
 admin call is made (and no admin client is even constructed) unless a publish actually fails
 with `NOT_FOUND`; when one does, the admin client is short-lived — opened for the creation
 call and closed with it.
@@ -100,11 +142,17 @@ auto-creation may trigger.
 `createDisposition(CreateDisposition.CREATE_NEVER)` disables auto-creation: a `NOT_FOUND`
 publish fails the job immediately with a message naming the disposition.
 
-Caveats: repaired messages are republished after later writes may have published (no ordering
-regression — the sink is at-least-once and ordering keys are not honored until #20); a repair
-inside `flush()` extends the checkpoint duration by up to the backoff budget of each repaired
-destination; auto-created topics start with **no subscriptions**, so messages published before
-a subscription exists are not retained for anyone — auto-creation suits pipelines whose
+With message ordering enabled, the repair preserves per-key order: after a per-key failure the
+SDK publisher pauses the key and cancels its queued publishes in order; those cascade
+cancellations are parked behind the parked `NOT_FOUND`, each repair attempt calls
+`resumePublish` for the batch's keys before republishing, and the batch is republished in
+original arrival order. Cross-key and cross-topic order are unaffected.
+
+Caveats: without ordering keys, repaired messages are republished after later writes may have
+published (no guarantee regression — the sink is at-least-once); a repair inside `flush()`
+extends the checkpoint duration by up to the backoff budget of each repaired destination;
+auto-created topics start with **no subscriptions**, so messages published before a
+subscription exists are not retained for anyone — auto-creation suits pipelines whose
 consumers create their own subscriptions or attach them promptly (`CREATE_NEVER` restores
 fail-fast behavior for pipelines where a missing topic signals a routing bug).
 
@@ -117,19 +165,22 @@ slip past a checkpoint barrier — `flush()` also repairs any `NOT_FOUND` failur
 while draining, so a completed checkpoint never leaves messages parked for topic creation.
 Publish completion callbacks carry their message (one small callback object per publish) so the
 `NOT_FOUND` repair can republish it; the success path still enqueues a per-destination shared
-mail. Publish retries within the SDK are its defaults. A per-record failure policy (the
-`FailedRowHandler` analog of the BigQuery module), a fatal-exception classifier and a bounded
-retry policy are deferred to #20/#37.
+mail. Publish retries within the SDK default to its settings and are tunable through the
+publisher options. A per-record failure policy (the `FailedRowHandler` analog of the BigQuery
+module) and a fatal-exception classifier are deferred to #37.
 
 ## Testing
 
-Unit tests cover the builder/facade, destination identity, the serialization adapter and the
-writer (fan-out to per-topic publishers, publisher reuse, checkpoint flush draining, async
-error capture, backpressure at the in-flight cap, close semantics, and the topic auto-creation
-repair paths) against in-memory fakes. Emulator integration tests (testcontainers
-`PubSubEmulatorContainer`) cover topic auto-creation end-to-end — publishing to a nonexistent
-topic, `CREATE_NEVER` fail-fast, admin idempotency; the broader emulator IT matrix is tracked
-in #21.
+Unit tests cover the builder/facade, destination identity, the serialization adapters
+(data-only, attributes/ordering-key composition), the publisher options (defaults, validation,
+SDK settings mapping with a drift guard pinned to the SDK's own retry defaults) and the writer
+(fan-out to per-topic publishers, publisher reuse, checkpoint flush draining, async error
+capture, backpressure at the in-flight cap, close semantics, the topic auto-creation repair
+paths, and the ordering-cascade park/resume/republish paths) against in-memory fakes. Emulator
+integration tests (testcontainers `PubSubEmulatorContainer`) cover topic auto-creation
+end-to-end, attributes and per-key ordered delivery (including ordering across the auto-creation
+repair), and publishing under overridden batching settings; the broader emulator IT matrix is
+tracked in #21.
 
 ## Provenance and attribution
 

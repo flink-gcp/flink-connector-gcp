@@ -39,6 +39,7 @@ public class PubSubSinkBuilder<T> {
     private DestinationResolver<? super T> destinationResolver;
     private PubSubSerializationSchema<? super T> serializer;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
+    private PubSubPublisherOptions publisherOptions = PubSubPublisherOptions.defaults();
 
     PubSubSinkBuilder() {}
 
@@ -96,6 +97,20 @@ public class PubSubSinkBuilder<T> {
     }
 
     /**
+     * Sets the publisher and writer tuning options (batching, flow control, publish retries,
+     * message ordering, the in-flight cap and the topic auto-creation recovery backoff). Optional;
+     * defaults to {@link PubSubPublisherOptions#defaults()}.
+     *
+     * @param publisherOptions the options
+     * @return this builder
+     */
+    public PubSubSinkBuilder<T> publisherOptions(PubSubPublisherOptions publisherOptions) {
+        this.publisherOptions =
+                Preconditions.checkNotNull(publisherOptions, "publisherOptions must not be null");
+        return this;
+    }
+
+    /**
      * Builds the sink.
      *
      * @return the sink
@@ -106,6 +121,7 @@ public class PubSubSinkBuilder<T> {
                 destinationResolver != null,
                 "A destination is required: set topic(...) or destinationResolver(...).");
         return new PubSubPublisherSink<>(
-                new PubSubSinkConfig<>(destinationResolver, serializer, createDisposition));
+                new PubSubSinkConfig<>(
+                        destinationResolver, serializer, createDisposition, publisherOptions));
     }
 }

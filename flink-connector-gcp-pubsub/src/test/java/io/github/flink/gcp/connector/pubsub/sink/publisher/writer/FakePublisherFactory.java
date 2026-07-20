@@ -57,6 +57,7 @@ final class FakePublisherFactory implements PublisherFactory {
 
         private final FakePublisherFactory factory;
         final List<PubsubMessage> published = new ArrayList<>();
+        final List<String> resumedKeys = new ArrayList<>();
         int flushCalls;
         int closeCalls;
         RuntimeException publishFailure;
@@ -76,6 +77,11 @@ final class FakePublisherFactory implements PublisherFactory {
             return scripted != null
                     ? scripted
                     : ApiFutures.immediateFuture("message-" + published.size());
+        }
+
+        @Override
+        public void resumePublish(String orderingKey) {
+            resumedKeys.add(orderingKey);
         }
 
         @Override

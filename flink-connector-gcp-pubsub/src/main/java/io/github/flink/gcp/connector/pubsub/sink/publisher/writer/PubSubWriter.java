@@ -31,6 +31,7 @@ import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
 import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -43,8 +44,11 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CancellationException;
 
 /**
  * At-least-once writer publishing records to dynamic per-record Pub/Sub topic destinations.
@@ -74,11 +78,12 @@ import java.util.Map;
  * failures captured by completion callbacks are rethrown on the task thread from the next {@link
  * #write} or {@link #flush}, failing the job (retries within a publish are delegated to the SDK).
  *
- * <p>The number of unacknowledged publishes is capped at {@link #DEFAULT_MAX_IN_FLIGHT_MESSAGES};
- * once the cap is reached, {@link #write} yields to the mailbox until completions bring the count
- * back down, bounding sink memory between checkpoints. (A topic-creation repair republishes its
- * parked batch without re-checking the cap, so the count can transiently exceed it by the batch
- * size — bounded, since parked messages were themselves once under the cap.)
+ * <p>The number of unacknowledged publishes is capped ({@code
+ * PubSubPublisherOptions.maxInFlightMessages}, default 1000); once the cap is reached, {@link
+ * #write} yields to the mailbox until completions bring the count back down, bounding sink memory
+ * between checkpoints. (A topic-creation repair republishes its parked batch without re-checking
+ * the cap, so the count can transiently exceed it by the batch size — bounded, since parked
+ * messages were themselves once under the cap.)
  *
  * <h2>Topic auto-creation</h2>
  *
@@ -91,6 +96,17 @@ import java.util.Map;
  * until nothing is pending, so a completed checkpoint never leaves parked messages behind. Under
  * {@link CreateDisposition#CREATE_NEVER}, a {@code NOT_FOUND} publish fails the job immediately.
  *
+ * <h2>Message ordering</h2>
+ *
+ * <p>Messages may carry ordering keys only when {@code
+ * PubSubPublisherOptions.enableMessageOrdering} is set; {@link #write} rejects a keyed message
+ * otherwise (the SDK would reject it with a less actionable error). After a failed publish the SDK
+ * publisher pauses the message's ordering key and cancels the key's queued publishes, in order,
+ * with a {@link java.util.concurrent.CancellationException}; under {@code CREATE_IF_NEEDED} those
+ * cascade cancellations behind a parked {@code NOT_FOUND} are parked too — the failure mails arrive
+ * in publish order, so the parked batch preserves per-key order — and the repair resumes each key
+ * before republishing the batch. Cross-key and cross-topic ordering are unaffected.
+ *
  * @param <T> type of the records written by the sink
  */
 @Internal
@@ -98,26 +114,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubWriter.class);
 
-    /**
-     * Default cap on unacknowledged publishes per writer. Matches the default of the Apache {@code
-     * flink-connector-gcp-pubsub} writer; exposing it on the builder is deferred until issue #20
-     * shows which knobs matter.
-     */
-    static final int DEFAULT_MAX_IN_FLIGHT_MESSAGES = 1000;
-
-    /**
-     * Default backoff budget for republishing after creating a missing topic (~1 minute). Pub/Sub
-     * topics are usually publishable immediately after creation; the budget covers propagation edge
-     * cases.
-     */
-    static final RetrySchedule DEFAULT_RECOVERY_SCHEDULE = new RetrySchedule(500, 10_000, 10, 0);
-
     private final PubSubSinkConfig<T> config;
     private final PublisherFactory publisherFactory;
     private final TopicAdmin topicAdmin;
     private final MailboxExecutor mailboxExecutor;
     private final int maxInFlightMessages;
     private final RetrySchedule recoverySchedule;
+    private final boolean orderingEnabled;
 
     /** Lazily populated per-topic publisher state; touched only on the task thread. */
     private final Map<TopicDestination, DestinationState> states = new HashMap<>();
@@ -155,8 +158,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 publisherFactory,
                 topicAdmin,
                 mailboxExecutor,
-                DEFAULT_MAX_IN_FLIGHT_MESSAGES,
-                DEFAULT_RECOVERY_SCHEDULE);
+                config.getPublisherOptions().getMaxInFlightMessages(),
+                recoverySchedule(config.getPublisherOptions()));
     }
 
     @VisibleForTesting
@@ -173,6 +176,16 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         this.mailboxExecutor = mailboxExecutor;
         this.maxInFlightMessages = maxInFlightMessages;
         this.recoverySchedule = recoverySchedule;
+        this.orderingEnabled = config.getPublisherOptions().isEnableMessageOrdering();
+    }
+
+    /** Maps the public recovery knobs onto the internal schedule (jitter deliberately zero). */
+    private static RetrySchedule recoverySchedule(PubSubPublisherOptions options) {
+        return new RetrySchedule(
+                options.getRecoveryInitialBackoff().toMillis(),
+                options.getRecoveryMaxBackoff().toMillis(),
+                options.getRecoveryMaxAttempts(),
+                0);
     }
 
     @Override
@@ -191,6 +204,16 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         } catch (IOException | RuntimeException e) {
             throw new IOException(
                     "Failed to serialize a record for Pub/Sub topic " + destination + ".", e);
+        }
+        if (!orderingEnabled && !message.getOrderingKey().isEmpty()) {
+            throw new IOException(
+                    "The serializer produced a message with ordering key '"
+                            + message.getOrderingKey()
+                            + "' for Pub/Sub topic "
+                            + destination
+                            + " but message ordering is not enabled; set"
+                            + " PubSubPublisherOptions.builder().enableMessageOrdering(true) on"
+                            + " the sink.");
         }
         DestinationState state = stateFor(destination);
         awaitInFlightBelow(maxInFlightMessages);
@@ -294,9 +317,28 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             state.pendingRetries.add(message);
             state.lastNotFound = throwable;
             repairNeeded = true;
+        } else if (isOrderingCascade(throwable) && !state.pendingRetries.isEmpty()) {
+            // A cancellation cascading from a failure already parked for this destination (the
+            // SDK cancels an ordering key's queued publishes after the key's first failure).
+            // Failure mails arrive in publish order — the root's mail runs before its cascades,
+            // and a fatal root reaches the asyncError branch below instead of parking — so
+            // parking here preserves per-key order behind the root. lastNotFound is deliberately
+            // untouched: the budget-exhaustion cause stays the real NOT_FOUND.
+            state.pendingRetries.add(message);
+            repairNeeded = true;
         } else if (asyncError == null) {
             asyncError = wrapPublishFailure(state.destination, throwable);
         }
+    }
+
+    /**
+     * Whether the failure is the SDK publisher's cancellation of an ordering key's queued publishes
+     * after the key's first failure (the root failure carries the real cause; cascades carry a bare
+     * {@link CancellationException}).
+     */
+    private boolean isOrderingCascade(Throwable throwable) {
+        return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED
+                && ExceptionUtils.findThrowable(throwable, CancellationException.class).isPresent();
     }
 
     /** Repairs every destination with parked messages until none remain (or the repair fails). */
@@ -331,6 +373,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         for (int attempt = 1; ; attempt++) {
             List<PubsubMessage> batch = new ArrayList<>(state.pendingRetries);
             state.pendingRetries.clear();
+            // Every attempt resumes the batch's ordering keys first: the failure that parked the
+            // batch — and every failed republish attempt since — paused them in the publisher.
+            resumeOrderingKeys(state, batch);
             for (PubsubMessage message : batch) {
                 publishTo(state, message);
             }
@@ -360,6 +405,19 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
     }
 
+    /** Resumes the distinct ordering keys of the batch on the destination's publisher. */
+    private void resumeOrderingKeys(DestinationState state, List<PubsubMessage> batch) {
+        Set<String> orderingKeys = new LinkedHashSet<>();
+        for (PubsubMessage message : batch) {
+            if (!message.getOrderingKey().isEmpty()) {
+                orderingKeys.add(message.getOrderingKey());
+            }
+        }
+        for (String orderingKey : orderingKeys) {
+            state.publisher.resumePublish(orderingKey);
+        }
+    }
+
     private boolean isRecoverableNotFound(Throwable throwable) {
         return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED
                 && isNotFound(throwable);
@@ -369,6 +427,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         String message = "A publish to Pub/Sub topic " + destination + " failed";
         if (isNotFound(throwable)) {
             message += " because the topic does not exist and createDisposition is CREATE_NEVER";
+        } else if (ExceptionUtils.findThrowable(throwable, CancellationException.class)
+                .isPresent()) {
+            message += " because an earlier publish for its ordering key failed";
         }
         return new IOException(message + ".", throwable);
     }

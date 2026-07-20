@@ -139,5 +139,12 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   Apache connector's infinite republish is deliberately not adopted). Topic auto-creation (#19)
   is reactive — NOT_FOUND publishes are parked and republished after creating the topic via the
   `TopicAdmin` SPI (`sink.topics`, ALREADY_EXISTS = success), gated by `CreateDisposition`.
-  Decision record in the module README
+  Tuning (#20) lives in one `PubSubPublisherOptions` object (nested-options pattern; plain
+  serializable values, no gax types on the public API; unset = SDK/sink default): batching,
+  flow control (Block-only; do not combine with ordering — SDK 1.152.0 leaks permits on paused
+  keys), publish retries, `enableMessageOrdering`, the in-flight cap and the recovery backoff.
+  Ordering×repair: cascade cancellations park behind the NOT_FOUND root (mailbox FIFO preserves
+  per-key order) and every repair attempt calls `resumePublish` before republishing. Per-record
+  failure policy and the fatal-exception classifier moved to #37. Decision record in the module
+  README
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)

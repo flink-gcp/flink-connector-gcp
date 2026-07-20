@@ -23,13 +23,16 @@ import com.google.pubsub.v1.PubsubMessage;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.Map;
 
 /**
  * Serializes sink records into Pub/Sub messages.
  *
  * <p>Implementations return a full {@link PubsubMessage}, so message attributes and ordering keys
  * are expressible in addition to the payload. Records that only carry a payload can wrap a plain
- * Flink {@link SerializationSchema} with {@link #dataOnly(SerializationSchema)}.
+ * Flink {@link SerializationSchema} with {@link #dataOnly(SerializationSchema)}; attributes and an
+ * ordering key extracted from the record can be layered onto any schema with {@link
+ * #withAttributes(AttributesExtractor)} and {@link #withOrderingKey(OrderingKeyExtractor)}.
  *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0).
@@ -38,6 +41,44 @@ import java.io.Serializable;
  */
 @PublicEvolving
 public interface PubSubSerializationSchema<T> extends Serializable {
+
+    /**
+     * Extracts message attributes from a record.
+     *
+     * @param <T> type of the records written by the sink
+     */
+    @PublicEvolving
+    @FunctionalInterface
+    interface AttributesExtractor<T> extends Serializable {
+
+        /**
+         * Returns the attributes of the message built for the given record. {@code null} or an
+         * empty map adds no attributes; entries must have non-null keys and values.
+         *
+         * @param element the record
+         * @return the attributes, or {@code null} for none
+         */
+        Map<String, String> extractAttributes(T element);
+    }
+
+    /**
+     * Extracts the ordering key from a record.
+     *
+     * @param <T> type of the records written by the sink
+     */
+    @PublicEvolving
+    @FunctionalInterface
+    interface OrderingKeyExtractor<T> extends Serializable {
+
+        /**
+         * Returns the ordering key of the message built for the given record. {@code null} or an
+         * empty string sets no ordering key.
+         *
+         * @param element the record
+         * @return the ordering key, or {@code null} for none
+         */
+        String extractOrderingKey(T element);
+    }
 
     /**
      * Initialization hook invoked once before serialization starts, on the task that runs the
@@ -67,5 +108,32 @@ public interface PubSubSerializationSchema<T> extends Serializable {
      */
     static <T> PubSubSerializationSchema<T> dataOnly(SerializationSchema<T> schema) {
         return new DataOnlySerializationSchema<>(schema);
+    }
+
+    /**
+     * Returns a schema producing this schema's messages with the extracted attributes added
+     * (overwriting same-named attributes this schema already set).
+     *
+     * @param extractor the attributes extractor
+     * @return the composed schema
+     */
+    default PubSubSerializationSchema<T> withAttributes(AttributesExtractor<? super T> extractor) {
+        return new MetadataSerializationSchema<>(this, extractor, null);
+    }
+
+    /**
+     * Returns a schema producing this schema's messages with the extracted ordering key set
+     * (overwriting an ordering key this schema already set).
+     *
+     * <p>Ordering keys are only honored when {@code
+     * PubSubPublisherOptions.builder().enableMessageOrdering(true)} is set on the sink; the writer
+     * rejects messages carrying an ordering key while ordering is disabled.
+     *
+     * @param extractor the ordering-key extractor
+     * @return the composed schema
+     */
+    default PubSubSerializationSchema<T> withOrderingKey(
+            OrderingKeyExtractor<? super T> extractor) {
+        return new MetadataSerializationSchema<>(this, null, extractor);
     }
 }

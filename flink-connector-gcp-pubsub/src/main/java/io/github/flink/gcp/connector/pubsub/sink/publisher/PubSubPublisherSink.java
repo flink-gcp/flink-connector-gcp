@@ -71,7 +71,7 @@ public class PubSubPublisherSink<T> implements Sink<T> {
             throw new IOException("Failed to open the Pub/Sub serialization schema.", e);
         }
         return createWriter(
-                new DefaultPublisherFactory(),
+                new DefaultPublisherFactory(config.getPublisherOptions()),
                 new PubSubTopicAdmin(),
                 context.getMailboxExecutor());
     }
