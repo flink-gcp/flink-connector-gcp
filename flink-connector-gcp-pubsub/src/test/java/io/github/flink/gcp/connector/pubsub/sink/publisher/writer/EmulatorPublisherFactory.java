@@ -22,6 +22,7 @@ import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -38,25 +39,38 @@ final class EmulatorPublisherFactory implements PublisherFactory {
     private static final long serialVersionUID = 1L;
 
     private final String endpoint;
+    private final PubSubPublisherOptions options;
 
     EmulatorPublisherFactory(String endpoint) {
+        this(endpoint, PubSubPublisherOptions.defaults());
+    }
+
+    EmulatorPublisherFactory(String endpoint, PubSubPublisherOptions options) {
         this.endpoint = endpoint;
+        this.options = options;
     }
 
     @Override
     public TopicPublisher create(TopicDestination destination) throws IOException {
         ManagedChannel channel = ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build();
-        Publisher publisher =
+        Publisher.Builder builder =
                 Publisher.newBuilder(destination.toTopicPath())
                         .setChannelProvider(
                                 FixedTransportChannelProvider.create(
                                         GrpcTransportChannel.create(channel)))
-                        .setCredentialsProvider(NoCredentialsProvider.create())
-                        .build();
+                        .setCredentialsProvider(NoCredentialsProvider.create());
+        // Reuse the production mapping so the ITs exercise the real settings wiring.
+        DefaultPublisherFactory.configure(builder, options);
+        Publisher publisher = builder.build();
         return new TopicPublisher() {
             @Override
             public ApiFuture<String> publish(PubsubMessage message) {
                 return publisher.publish(message);
+            }
+
+            @Override
+            public void resumePublish(String orderingKey) {
+                publisher.resumePublish(orderingKey);
             }
 
             @Override

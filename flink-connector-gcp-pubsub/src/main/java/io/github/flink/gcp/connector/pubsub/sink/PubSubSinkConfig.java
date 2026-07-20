@@ -35,14 +35,17 @@ public final class PubSubSinkConfig<T> implements Serializable {
     private final DestinationResolver<? super T> destinationResolver;
     private final PubSubSerializationSchema<? super T> serializer;
     private final CreateDisposition createDisposition;
+    private final PubSubPublisherOptions publisherOptions;
 
     PubSubSinkConfig(
             DestinationResolver<? super T> destinationResolver,
             PubSubSerializationSchema<? super T> serializer,
-            CreateDisposition createDisposition) {
+            CreateDisposition createDisposition,
+            PubSubPublisherOptions publisherOptions) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.createDisposition = createDisposition;
+        this.publisherOptions = publisherOptions;
     }
 
     /** Returns the per-record destination resolver. */
@@ -58,5 +61,10 @@ public final class PubSubSinkConfig<T> implements Serializable {
     /** Returns whether the sink may create destination topics that do not exist. */
     public CreateDisposition getCreateDisposition() {
         return createDisposition;
+    }
+
+    /** Returns the publisher and writer tuning options. */
+    public PubSubPublisherOptions getPublisherOptions() {
+        return publisherOptions;
     }
 }

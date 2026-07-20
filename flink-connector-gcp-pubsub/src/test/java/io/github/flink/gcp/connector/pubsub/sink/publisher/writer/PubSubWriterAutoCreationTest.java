@@ -24,10 +24,9 @@ import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
-import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -36,6 +35,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -63,26 +63,55 @@ class PubSubWriterAutoCreationTest {
 
     private PubSubWriter<String> newWriter(
             CreateDisposition disposition, RetrySchedule recoverySchedule) {
-        PubSubPublisherSink<String> sink =
-                (PubSubPublisherSink<String>)
-                        PubSubSink.<String>builder()
-                                .topic(TOPIC)
-                                .serializer(
-                                        PubSubSerializationSchema.dataOnly(
-                                                new SimpleStringSchema()))
-                                .createDisposition(disposition)
-                                .build();
         return new PubSubWriter<>(
-                sink.getConfig(),
+                TestSinkConfigs.forTopic(
+                        TOPIC,
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        disposition,
+                        PubSubPublisherOptions.defaults()),
                 factory,
                 admin,
                 mailbox,
-                PubSubWriter.DEFAULT_MAX_IN_FLIGHT_MESSAGES,
+                PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
+                recoverySchedule);
+    }
+
+    /**
+     * Publishes every record (the payload) to the fixed {@link #TOPIC} with message ordering
+     * enabled, taking the ordering key from the record's prefix before {@code ':'}.
+     */
+    private PubSubWriter<String> newOrderingWriter(CreateDisposition disposition) {
+        return newOrderingWriter(disposition, FAST_SCHEDULE);
+    }
+
+    private PubSubWriter<String> newOrderingWriter(
+            CreateDisposition disposition, RetrySchedule recoverySchedule) {
+        return new PubSubWriter<>(
+                TestSinkConfigs.forTopic(
+                        TOPIC,
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> element.split(":")[0]),
+                        disposition,
+                        PubSubPublisherOptions.builder().enableMessageOrdering(true).build()),
+                factory,
+                admin,
+                mailbox,
+                PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
                 recoverySchedule);
     }
 
     private static StatusRuntimeException notFound() {
         return new StatusRuntimeException(Status.NOT_FOUND);
+    }
+
+    /** The SDK publisher's cancellation of an ordering key's queued publishes (no cause). */
+    private static CancellationException cascade() {
+        return new CancellationException(
+                "Execution cancelled because executing previous runnable failed.");
+    }
+
+    private FakePublisherFactory.FakeTopicPublisher publisher() {
+        return factory.publishers.get(TOPIC);
     }
 
     private List<String> publishedPayloads() {
@@ -227,5 +256,138 @@ class PubSubWriterAutoCreationTest {
 
         assertThatThrownBy(() -> writer.flush(false)).isSameAs(admin.createFailure);
         assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void cascadesParkBehindNotFoundAndRepublishInOrderAfterResume() throws Exception {
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        writer.write("k1:first", CONTEXT);
+        writer.write("k1:second", CONTEXT);
+        writer.write("k1:third", CONTEXT);
+        mailbox.drain();
+
+        writer.flush(false);
+
+        assertThat(admin.created).containsExactly(TOPIC);
+        assertThat(publisher().resumedKeys).containsExactly("k1");
+        assertThat(publishedPayloads())
+                .containsExactly(
+                        "k1:first", "k1:second", "k1:third", "k1:first", "k1:second", "k1:third");
+    }
+
+    @Test
+    void repairResumesEveryDistinctOrderingKeyOfTheBatch() throws Exception {
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        writer.write("k1:a", CONTEXT);
+        writer.write("k2:b", CONTEXT);
+        mailbox.drain();
+
+        writer.flush(false);
+
+        assertThat(publisher().resumedKeys).containsExactly("k1", "k2");
+        assertThat(publishedPayloads()).containsExactly("k1:a", "k2:b", "k1:a", "k2:b");
+    }
+
+    @Test
+    void everyRepublishAttemptResumesTheKeysAgain() throws Exception {
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        // The initial publish and the first republish attempt fail; the second attempt succeeds.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        writer.write("k1:a", CONTEXT);
+        mailbox.drain();
+
+        writer.flush(false);
+
+        assertThat(publisher().resumedKeys).containsExactly("k1", "k1");
+        assertThat(publishedPayloads()).containsExactly("k1:a", "k1:a", "k1:a");
+    }
+
+    @Test
+    void createNeverIsNotMaskedByCascades() throws Exception {
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_NEVER);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        mailbox.drain();
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("CREATE_NEVER");
+        assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void fatalRootFailureDropsItsCascades() throws Exception {
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        StatusRuntimeException denied = new StatusRuntimeException(Status.PERMISSION_DENIED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(denied));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        mailbox.drain();
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasCause(denied);
+        assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void cancellationWithOrderingDisabledIsTerminalEvenWithAPendingRepair() throws Exception {
+        PubSubWriter<String> writer = newWriter(CreateDisposition.CREATE_IF_NEEDED);
+        CancellationException cancellation = cascade();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cancellation));
+        writer.write("first", CONTEXT);
+        writer.write("second", CONTEXT);
+        mailbox.drain();
+
+        // Without ordering there are no key cascades, so a cancellation must surface as a
+        // terminal failure (with no ordering-key wording) instead of being parked for repair.
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasCause(cancellation)
+                .hasMessageNotContaining("ordering key");
+    }
+
+    @Test
+    void bareCascadeWithoutAPendingRepairIsTerminalWithOrderingWording() throws Exception {
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        writer.write("k1:a", CONTEXT);
+        mailbox.drain();
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("ordering key");
+        assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void budgetExhaustionCauseIsTheRealNotFoundDespiteCascades() throws Exception {
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        CreateDisposition.CREATE_IF_NEEDED, new RetrySchedule(1, 1, 2, 0));
+        StatusRuntimeException failure = notFound();
+        // The initial publishes and both republish attempts fail: NOT_FOUND root + cascade each.
+        for (int i = 0; i < 3; i++) {
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(failure));
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        }
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        mailbox.drain();
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("2 attempt(s)")
+                .hasCause(failure);
     }
 }

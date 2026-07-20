@@ -105,12 +105,32 @@ class PubSubSinkBuilderTest {
     }
 
     @Test
+    void publisherOptionsDefaultToDefaults() {
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder().topic(TOPIC).serializer(serializer()).build();
+
+        assertThat(sink.getConfig().getPublisherOptions())
+                .isEqualTo(PubSubPublisherOptions.defaults());
+    }
+
+    @Test
+    void rejectsNullPublisherOptions() {
+        assertThatThrownBy(() -> PubSubSink.<String>builder().publisherOptions(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("publisherOptions must not be null");
+    }
+
+    @Test
     void builtSinkRoundTripsJavaSerialization() throws Exception {
+        // Shared fully-populated fixture: a knob added there is automatically covered here.
+        PubSubPublisherOptions options = PubSubPublisherOptionsTest.fullyPopulated();
         Sink<String> sink =
                 PubSubSink.<String>builder()
                         .topic(TOPIC)
                         .serializer(serializer())
                         .createDisposition(CreateDisposition.CREATE_NEVER)
+                        .publisherOptions(options)
                         .build();
 
         byte[] bytes = InstantiationUtil.serializeObject(sink);
@@ -124,5 +144,6 @@ class PubSubSinkBuilderTest {
         assertThat(copy.getConfig().getSerializer()).isNotNull();
         assertThat(copy.getConfig().getCreateDisposition())
                 .isEqualTo(CreateDisposition.CREATE_NEVER);
+        assertThat(copy.getConfig().getPublisherOptions()).isEqualTo(options);
     }
 }

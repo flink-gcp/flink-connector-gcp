@@ -22,9 +22,8 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
 import com.google.pubsub.v1.PubsubMessage;
-import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
 
@@ -48,7 +47,7 @@ class PubSubWriterTest {
 
     /** Routes each record to the topic named by the record itself. */
     private PubSubWriter<String> newWriter() {
-        return newWriter(PubSubWriter.DEFAULT_MAX_IN_FLIGHT_MESSAGES);
+        return newWriter(PubSubPublisherOptions.defaults().getMaxInFlightMessages());
     }
 
     private PubSubWriter<String> newWriter(int maxInFlightMessages) {
@@ -58,20 +57,16 @@ class PubSubWriterTest {
 
     private PubSubWriter<String> newWriter(
             PubSubSerializationSchema<String> serializer, int maxInFlightMessages) {
-        PubSubPublisherSink<String> sink =
-                (PubSubPublisherSink<String>)
-                        PubSubSink.<String>builder()
-                                .destinationResolver(
-                                        (element, context) -> TopicDestination.of(PROJECT, element))
-                                .serializer(serializer)
-                                .build();
         return new PubSubWriter<>(
-                sink.getConfig(),
+                TestSinkConfigs.forResolver(
+                        (element, context) -> TopicDestination.of(PROJECT, element),
+                        serializer,
+                        PubSubPublisherOptions.defaults()),
                 factory,
                 admin,
                 mailbox,
                 maxInFlightMessages,
-                PubSubWriter.DEFAULT_RECOVERY_SCHEDULE);
+                PubSubWriter.recoverySchedule(PubSubPublisherOptions.defaults()));
     }
 
     private static TopicDestination topic(String topic) {
@@ -167,7 +162,7 @@ class PubSubWriterTest {
                         element -> {
                             throw failure;
                         },
-                        PubSubWriter.DEFAULT_MAX_IN_FLIGHT_MESSAGES);
+                        PubSubPublisherOptions.defaults().getMaxInFlightMessages());
 
         assertThatThrownBy(() -> writer.write("topic-a", CONTEXT))
                 .isInstanceOf(IOException.class)
@@ -188,6 +183,48 @@ class PubSubWriterTest {
                 .hasMessageContaining("topic-a")
                 .hasCause(failure);
         assertThat(writer.getInFlightMessages()).isEqualTo(1);
+    }
+
+    @Test
+    void publicConstructorDerivesInFlightCapFromPublisherOptions() throws Exception {
+        PubSubWriter<String> writer =
+                new PubSubWriter<>(
+                        TestSinkConfigs.forResolver(
+                                (element, context) -> TopicDestination.of(PROJECT, element),
+                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubPublisherOptions.builder().maxInFlightMessages(2).build()),
+                        factory,
+                        admin,
+                        mailbox);
+        SettableApiFuture<String> first = SettableApiFuture.create();
+        SettableApiFuture<String> second = SettableApiFuture.create();
+        factory.enqueueFuture(first);
+        factory.enqueueFuture(second);
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-a", CONTEXT);
+        assertThat(writer.getInFlightMessages()).isEqualTo(2);
+
+        first.set("message-id");
+        writer.write("topic-a", CONTEXT);
+
+        assertThat(writer.getInFlightMessages()).isEqualTo(2);
+        assertThat(factory.publishers.get(topic("topic-a")).published).hasSize(3);
+    }
+
+    @Test
+    void rejectsOrderingKeyWhenMessageOrderingIsDisabled() {
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> "some-key"),
+                        PubSubPublisherOptions.defaults().getMaxInFlightMessages());
+
+        assertThatThrownBy(() -> writer.write("topic-a", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("topic-a")
+                .hasMessageContaining("some-key")
+                .hasMessageContaining("enableMessageOrdering");
+        assertThat(factory.publishers).isEmpty();
     }
 
     @Test

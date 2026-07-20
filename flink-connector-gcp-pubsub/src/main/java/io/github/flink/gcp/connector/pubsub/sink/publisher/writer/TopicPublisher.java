@@ -41,6 +41,15 @@ public interface TopicPublisher extends AutoCloseable {
     ApiFuture<String> publish(PubsubMessage message);
 
     /**
+     * Resumes publishing for an ordering key the publisher paused after a failed publish (the SDK
+     * {@code Publisher} rejects further publishes to a failed key until resumed). A no-op when the
+     * key is not paused or message ordering is disabled.
+     *
+     * @param orderingKey the ordering key to resume
+     */
+    void resumePublish(String orderingKey);
+
+    /**
      * Sends all messages buffered by the publisher without waiting for the batching thresholds to
      * be met. Completion is observed through the futures returned by {@link
      * #publish(PubsubMessage)}.

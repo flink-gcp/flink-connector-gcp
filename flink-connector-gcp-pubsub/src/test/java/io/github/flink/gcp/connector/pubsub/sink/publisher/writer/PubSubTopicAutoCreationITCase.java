@@ -19,11 +19,9 @@ package io.github.flink.gcp.connector.pubsub.sink.publisher.writer;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
-import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
-import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
 import org.junit.jupiter.api.Test;
@@ -42,22 +40,16 @@ class PubSubTopicAutoCreationITCase extends AbstractPubSubEmulatorITCase {
 
     private static PubSubWriter<String> writer(
             TopicDestination destination, CreateDisposition disposition) throws IOException {
-        PubSubSinkConfig<String> config =
-                ((PubSubPublisherSink<String>)
-                                PubSubSink.<String>builder()
-                                        .topic(destination)
-                                        .serializer(
-                                                PubSubSerializationSchema.dataOnly(
-                                                        new SimpleStringSchema()))
-                                        .createDisposition(disposition)
-                                        .build())
-                        .getConfig();
         return new PubSubWriter<>(
-                config,
+                TestSinkConfigs.forTopic(
+                        destination,
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        disposition,
+                        PubSubPublisherOptions.defaults()),
                 new EmulatorPublisherFactory(emulatorEndpoint()),
                 newTopicAdmin(),
                 new FakeMailboxExecutor(),
-                PubSubWriter.DEFAULT_MAX_IN_FLIGHT_MESSAGES,
+                PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
                 new RetrySchedule(100, 1_000, 30, 0));
     }
 
