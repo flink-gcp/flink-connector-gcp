@@ -27,6 +27,8 @@ import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
 import io.github.flink.gcp.connector.pubsub.sink.publisher.writer.DefaultPublisherFactory;
 import io.github.flink.gcp.connector.pubsub.sink.publisher.writer.PubSubWriter;
 import io.github.flink.gcp.connector.pubsub.sink.publisher.writer.PublisherFactory;
+import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
+import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
 
 import java.io.IOException;
 
@@ -68,12 +70,17 @@ public class PubSubPublisherSink<T> implements Sink<T> {
         } catch (Exception e) {
             throw new IOException("Failed to open the Pub/Sub serialization schema.", e);
         }
-        return createWriter(new DefaultPublisherFactory(), context.getMailboxExecutor());
+        return createWriter(
+                new DefaultPublisherFactory(),
+                new PubSubTopicAdmin(),
+                context.getMailboxExecutor());
     }
 
     @VisibleForTesting
     public SinkWriter<T> createWriter(
-            PublisherFactory publisherFactory, MailboxExecutor mailboxExecutor) {
-        return new PubSubWriter<>(config, publisherFactory, mailboxExecutor);
+            PublisherFactory publisherFactory,
+            TopicAdmin topicAdmin,
+            MailboxExecutor mailboxExecutor) {
+        return new PubSubWriter<>(config, publisherFactory, topicAdmin, mailboxExecutor);
     }
 }

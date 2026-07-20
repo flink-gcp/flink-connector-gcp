@@ -38,6 +38,7 @@ public class PubSubSinkBuilder<T> {
 
     private DestinationResolver<? super T> destinationResolver;
     private PubSubSerializationSchema<? super T> serializer;
+    private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
 
     PubSubSinkBuilder() {}
 
@@ -82,6 +83,19 @@ public class PubSubSinkBuilder<T> {
     }
 
     /**
+     * Sets whether the sink may create destination topics that do not exist. Defaults to {@link
+     * CreateDisposition#CREATE_IF_NEEDED}.
+     *
+     * @param createDisposition the disposition
+     * @return this builder
+     */
+    public PubSubSinkBuilder<T> createDisposition(CreateDisposition createDisposition) {
+        this.createDisposition =
+                Preconditions.checkNotNull(createDisposition, "createDisposition must not be null");
+        return this;
+    }
+
+    /**
      * Builds the sink.
      *
      * @return the sink
@@ -91,6 +105,7 @@ public class PubSubSinkBuilder<T> {
         Preconditions.checkState(
                 destinationResolver != null,
                 "A destination is required: set topic(...) or destinationResolver(...).");
-        return new PubSubPublisherSink<>(new PubSubSinkConfig<>(destinationResolver, serializer));
+        return new PubSubPublisherSink<>(
+                new PubSubSinkConfig<>(destinationResolver, serializer, createDisposition));
     }
 }

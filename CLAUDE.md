@@ -118,6 +118,8 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   `AsyncSinkBase` evaluated and rejected (SDK `Publisher` already batches; AsyncSink persists
   buffers into writer state). Mailbox-based backpressure with an in-flight cap; writer-owned
   per-topic publishers (no JVM-wide cache); publish failures are capture-and-rethrow (the
-  Apache connector's infinite republish is deliberately not adopted). Decision record in the
-  module README
+  Apache connector's infinite republish is deliberately not adopted). Topic auto-creation (#19)
+  is reactive — NOT_FOUND publishes are parked and republished after creating the topic via the
+  `TopicAdmin` SPI (`sink.topics`, ALREADY_EXISTS = success), gated by `CreateDisposition`.
+  Decision record in the module README
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)

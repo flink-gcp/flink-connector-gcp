@@ -5,7 +5,7 @@ Cloud Pub/Sub sink for Apache Flink with dynamic per-record topic destinations.
 | Feature | Status |
 |---|---|
 | SinkV2 at-least-once sink; per-record topic resolution; per-topic publishers; checkpoint flush | Implemented (#18) |
-| Topic auto-creation | Planned (#19) |
+| Topic auto-creation | Implemented (#19) |
 | Attributes/ordering-key conveniences; `BatchingSettings`/`FlowControlSettings`/`RetrySettings`; bounded retry policy | Planned (#20) |
 | Emulator integration tests | Planned (#21) |
 | Pub/Sub source | Planned for v0.2.0 (#31) |
@@ -81,21 +81,55 @@ shared TaskManagers. The tradeoff: several subtasks on one TaskManager publishin
 topic each hold their own `Publisher` (own batcher, own channel) instead of sharing one —
 acceptable at moderate parallelism; gRPC channels are multiplexed inside the SDK.
 
+## Topic auto-creation
+
+Under `createDisposition(CreateDisposition.CREATE_IF_NEEDED)` — the default — publishes that
+fail with `NOT_FOUND` are recovered reactively on the task thread: the failed messages are
+parked per destination, the topic is created with default topic settings, and the messages are
+republished under a bounded backoff budget (500 ms doubling to 10 s, 10 attempts, ~1 minute
+**per destination**) covering topic-metadata propagation. Existing topics cost nothing: no
+admin call is made (and no admin client is even constructed) unless a publish actually fails
+with `NOT_FOUND`; when one does, the admin client is short-lived — opened for the creation
+call and closed with it.
+
+Creation is idempotent across parallel subtasks: `ALREADY_EXISTS` is treated as success, so
+subtasks racing to create the same topic need no coordination. The credentials running the job
+need the `pubsub.topics.create` permission (roles/pubsub.editor) on the project when
+auto-creation may trigger.
+
+`createDisposition(CreateDisposition.CREATE_NEVER)` disables auto-creation: a `NOT_FOUND`
+publish fails the job immediately with a message naming the disposition.
+
+Caveats: repaired messages are republished after later writes may have published (no ordering
+regression — the sink is at-least-once and ordering keys are not honored until #20); a repair
+inside `flush()` extends the checkpoint duration by up to the backoff budget of each repaired
+destination; auto-created topics start with **no subscriptions**, so messages published before
+a subscription exists are not retained for anyone — auto-creation suits pipelines whose
+consumers create their own subscriptions or attach them promptly (`CREATE_NEVER` restores
+fail-fast behavior for pipelines where a missing topic signals a routing bug).
+
 ## Error handling
 
 Any terminally failed publish fails the ongoing write or checkpoint: failures captured by
 completion callbacks are rethrown on the task thread from the next `write()`/`flush()`
 (capture-and-rethrow), and `flush()` awaits every in-flight publish, so a failure can never
-slip past a checkpoint barrier. Publish retries within the SDK are its defaults. A per-record
-failure policy (the `FailedRowHandler` analog of the BigQuery module), a fatal-exception
-classifier and a bounded retry policy are deferred to #20/#37.
+slip past a checkpoint barrier — `flush()` also repairs any `NOT_FOUND` failure it discovers
+while draining, so a completed checkpoint never leaves messages parked for topic creation.
+Publish completion callbacks carry their message (one small callback object per publish) so the
+`NOT_FOUND` repair can republish it; the success path still enqueues a per-destination shared
+mail. Publish retries within the SDK are its defaults. A per-record failure policy (the
+`FailedRowHandler` analog of the BigQuery module), a fatal-exception classifier and a bounded
+retry policy are deferred to #20/#37.
 
 ## Testing
 
 Unit tests cover the builder/facade, destination identity, the serialization adapter and the
 writer (fan-out to per-topic publishers, publisher reuse, checkpoint flush draining, async
-error capture, backpressure at the in-flight cap, close semantics) against in-memory fakes.
-Emulator integration tests (testcontainers `PubSubEmulatorContainer`) are tracked in #21.
+error capture, backpressure at the in-flight cap, close semantics, and the topic auto-creation
+repair paths) against in-memory fakes. Emulator integration tests (testcontainers
+`PubSubEmulatorContainer`) cover topic auto-creation end-to-end — publishing to a nonexistent
+topic, `CREATE_NEVER` fail-fast, admin idempotency; the broader emulator IT matrix is tracked
+in #21.
 
 ## Provenance and attribution
 
