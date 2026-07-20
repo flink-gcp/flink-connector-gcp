@@ -59,6 +59,33 @@ dependencies managed through `com.google.cloud:libraries-bom`.
 - Never open or reference the private in-house implementation this project supersedes; design
   references must be public OSS or official documentation only
 
+## Package layout convention (all connector modules)
+
+Under `io.github.flink.gcp.connector.<product>` (decided in #63, applied to BigQuery first;
+Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
+
+- `sink` — public sink API only: the facade + builder, write-method enum, shared options/enums,
+  destination types, and the `@Internal` types shared by every write method (the sink config,
+  the fixed-destination resolver, `RetrySchedule` until #61 extracts a shared retry module)
+- `sink.<writepath>` — one subpackage per write-path family, which may host several write
+  methods (BigQuery: `sink.storageapi` holds the Storage Write API family — the default-stream
+  at-least-once method today, and the #30 buffered-stream exactly-once method beside it,
+  sharing the appender machinery; `sink.fileloads` holds FILE_LOADS). The package root holds
+  the Sink classes, the family's public options objects and committable contracts; internal
+  stages follow the Flink FileSink precedent with `.writer`, `.committer` and
+  post-commit-topology subpackages (`.loadjob` here, FileSink's `.compactor`) as the topology
+  requires — a family without 2PC simply has no `.committer` package
+- `sink.tables` — shared table-metadata layer consumed by every write method: the `TableAdmin`
+  SPI and its REST implementation, schema snapshot/unifier, REST↔Storage schema converters
+- `sink.serializer` — record-conversion SPI and its implementations
+- `sink.failure` — row-level failure SPI (`FailedRow`, handlers, DLQ stub), kept separate so the
+  cross-connector extraction planned in #37 stays cheap
+- `source` / `table` — reserved for sources (#31, #34, #64) and Table API (#47, #57), with the
+  same philosophy: public API at the package root, implementation subpackages beneath
+
+A new top-level class in a module's `sink` root needs a reason to be public API; implementation
+types belong in the subpackages. Test sources mirror the main-tree packages.
+
 ## Design decisions (do not silently revisit)
 
 - **BigQuery**: `BigQueryIO`-style facade — one builder, per-write-method SinkV2 implementations.
