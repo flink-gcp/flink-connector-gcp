@@ -28,12 +28,12 @@ import java.util.List;
 import java.util.Map;
 
 /** Recording in-memory {@link TableAdmin} fake with scriptable lost update races. */
-final class FakeTableAdmin implements TableAdmin {
+public final class FakeTableAdmin implements TableAdmin {
 
-    final Map<TableDestination, TableSchema> tables = new HashMap<>();
-    final List<TableDestination> created = new ArrayList<>();
-    final List<TableDestination> schemaUpdates = new ArrayList<>();
-    int updateRacesToLose;
+    public final Map<TableDestination, TableSchema> tables = new HashMap<>();
+    public final List<TableDestination> created = new ArrayList<>();
+    public final List<TableDestination> schemaUpdates = new ArrayList<>();
+    public int updateRacesToLose;
 
     @Override
     public void create(

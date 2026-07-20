@@ -27,14 +27,14 @@ import java.util.Map;
 import java.util.Set;
 
 /** Recording {@link LoadJobRunner} fake with scriptable await failures. */
-final class FakeLoadJobRunner implements LoadJobRunner {
+public final class FakeLoadJobRunner implements LoadJobRunner {
 
-    final Map<String, LoadJobSpec> loads = new LinkedHashMap<>();
-    final Map<String, CopyJobSpec> copies = new LinkedHashMap<>();
-    final List<String> awaited = new ArrayList<>();
-    final List<TableDestination> deletedTables = new ArrayList<>();
-    final Set<String> failOnAwait = new HashSet<>();
-    boolean failAllAwaits;
+    public final Map<String, LoadJobSpec> loads = new LinkedHashMap<>();
+    public final Map<String, CopyJobSpec> copies = new LinkedHashMap<>();
+    public final List<String> awaited = new ArrayList<>();
+    public final List<TableDestination> deletedTables = new ArrayList<>();
+    public final Set<String> failOnAwait = new HashSet<>();
+    public boolean failAllAwaits;
 
     @Override
     public void submitLoad(String jobId, LoadJobSpec spec) {
