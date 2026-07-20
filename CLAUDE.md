@@ -114,4 +114,10 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   `flink-connector/` (decision record: issues #17 and #31); the Apache connector is only a
   design reference (table-factory plumbing, emulator harness). All packages are normalized to
   `io.github.flink.gcp.connector.pubsub.*`
+- **Pub/Sub sink** (#18): Publisher-based flush-on-checkpoint stateless writer; FLIP-171
+  `AsyncSinkBase` evaluated and rejected (SDK `Publisher` already batches; AsyncSink persists
+  buffers into writer state). Mailbox-based backpressure with an in-flight cap; writer-owned
+  per-topic publishers (no JVM-wide cache); publish failures are capture-and-rethrow (the
+  Apache connector's infinite republish is deliberately not adopted). Decision record in the
+  module README
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)

@@ -14,5 +14,8 @@
  * limitations under the License.
  */
 
-/** Google Cloud Pub/Sub connector for Apache Flink. Work in progress. */
+/**
+ * Google Cloud Pub/Sub connector for Apache Flink: an at-least-once sink with dynamic per-record
+ * topic destinations.
+ */
 package io.github.flink.gcp.connector.pubsub;
