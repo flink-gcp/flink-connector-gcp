@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.defaultstream.writer;
+package io.github.flink.gcp.connector.bigquery.sink.storageapi.writer;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.NoCredentialsProvider;

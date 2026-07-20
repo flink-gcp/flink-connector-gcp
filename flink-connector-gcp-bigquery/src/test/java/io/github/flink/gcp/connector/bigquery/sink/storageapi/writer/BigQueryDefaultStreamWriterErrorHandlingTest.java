@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.defaultstream.writer;
+package io.github.flink.gcp.connector.bigquery.sink.storageapi.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
@@ -33,9 +33,9 @@ import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.defaultstream.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.BigQueryDefaultStreamSink;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;

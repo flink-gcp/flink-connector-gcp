@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.defaultstream;
+package io.github.flink.gcp.connector.bigquery.sink.storageapi;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
@@ -24,9 +24,9 @@ import org.apache.flink.api.connector.sink2.WriterInitContext;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.defaultstream.writer.BigQueryDefaultStreamWriter;
-import io.github.flink.gcp.connector.bigquery.sink.defaultstream.writer.RowAppenderFactory;
-import io.github.flink.gcp.connector.bigquery.sink.defaultstream.writer.StreamWriterRowAppenderFactory;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.writer.BigQueryDefaultStreamWriter;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.writer.RowAppenderFactory;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.writer.StreamWriterRowAppenderFactory;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 
