@@ -327,17 +327,48 @@ class FileLoadsWriterTest {
     }
 
     @Test
-    void flushBeforeEndOfInputRejectsStreamingExecution() {
+    void flushIsANoOpInBothModes() {
+        // A pre-end-of-input flush is a checkpoint — the streaming trigger; prepareCommit(),
+        // which follows every flush, does the actual file finishing.
         FileLoadsWriter<TestRow> writer =
                 writer(
                         config(FailedRowHandler.failJob()),
                         new InMemoryStagingStorage(),
                         FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
 
-        assertThatThrownBy(() -> writer.flush(false))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("batch");
-        writer.flush(true); // End-of-input flush is fine.
+        writer.flush(false);
+        writer.flush(true);
+    }
+
+    @Test
+    void multiplePrepareCommitCyclesYieldDistinctUris() throws Exception {
+        // Streaming execution calls prepareCommit once per checkpoint; the per-destination file
+        // sequence must keep growing so a later checkpoint's file never reuses an earlier URI.
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailedRowHandler.failJob()),
+                        storage,
+                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+
+        writer.write(new TestRow("t1", "a", 1L), CONTEXT);
+        writer.flush(false);
+        Collection<FileLoadsCommittable> first = writer.prepareCommit();
+
+        writer.write(new TestRow("t1", "b", 2L), CONTEXT);
+        writer.flush(false);
+        Collection<FileLoadsCommittable> second = writer.prepareCommit();
+        writer.close();
+
+        assertThat(first).hasSize(1);
+        assertThat(second).hasSize(1);
+        String firstUri = first.iterator().next().getUri();
+        String secondUri = second.iterator().next().getUri();
+        assertThat(secondUri).isNotEqualTo(firstUri);
+        assertThat(storage.getObjects()).containsKeys(firstUri, secondUri);
+        assertThat(readAvro(storage.getObjects().get(secondUri)))
+                .singleElement()
+                .satisfies(record -> assertThat(record.get("name")).hasToString("b"));
     }
 
     @Test

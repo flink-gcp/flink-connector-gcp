@@ -27,7 +27,6 @@ import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -47,25 +46,30 @@ import java.util.UUID;
 /**
  * The FILE_LOADS {@link org.apache.flink.api.connector.sink2.SinkWriter}: encodes records to Avro
  * and streams them to per-destination staging files on Cloud Storage, emitting one {@link
- * FileLoadsCommittable} per finalized file from {@link #prepareCommit()} at end of input.
+ * FileLoadsCommittable} per finalized file from {@link #prepareCommit()} — once at end of input in
+ * batch execution, once per checkpoint in streaming execution.
  *
  * <p>Rows never accumulate on the heap: each record is appended to an Avro writer that streams into
  * a GCS resumable upload, so memory use is proportional to the number of concurrently open
  * destinations (one upload chunk plus one Avro block each), not to the data volume or job length.
- * Files are rolled at {@link #DEFAULT_MAX_FILE_BYTES} so the common case stays within a single
- * direct load job (10,000 files x 1.5 GiB well exceeds typical batches).
+ * In streaming execution the inter-checkpoint buffer therefore <em>is</em> GCS. Files are rolled at
+ * {@link #DEFAULT_MAX_FILE_BYTES} so the common case stays within a single direct load job (10,000
+ * files x 1.5 GiB well exceeds typical batches).
  *
  * <p>Staging object names include the Flink job id, subtask index, attempt number and a random
  * component, so files written by failed attempts can neither collide with live ones nor be loaded:
- * load jobs only ever reference the URIs carried by committables, which are emitted once, at {@link
- * #prepareCommit()}.
+ * load jobs only ever reference the URIs carried by committables, which are emitted only from
+ * {@link #prepareCommit()}. The per-destination state (and with it the monotonic file sequence) is
+ * kept for the writer's lifetime — never reset between checkpoints — so a later checkpoint's file
+ * cannot reuse an earlier checkpoint's URI; the cost is a few KB of conversion state per distinct
+ * destination.
  *
  * <p>Serialization and Avro-conversion failures are row-level and routed to the configured {@link
  * io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler}; staging I/O failures fail
  * the job. There is no row-level policy at load time — a BigQuery load job is all-or-nothing.
  *
- * <p>The schema per destination is captured when its first record arrives and kept for the run;
- * FILE_LOADS is batch-only, so mid-run serializer schema changes (fingerprints) are not tracked.
+ * <p>The schema per destination is captured when its first record arrives and cached for the
+ * writer's lifetime; mid-run serializer schema changes are only picked up after a restart.
  *
  * @param <T> type of the records written
  */
@@ -195,15 +199,8 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
 
     @Override
     public void flush(boolean endOfInput) {
-        if (!endOfInput) {
-            // A flush before end of input is a checkpoint, i.e. streaming execution. This backstop
-            // catches RuntimeExecutionMode.AUTOMATIC resolving to streaming, which the
-            // graph-construction-time check cannot see.
-            throw new IllegalStateException(
-                    WriteMethod.FILE_LOADS
-                            + " supports batch execution only, but a checkpoint was triggered."
-                            + " Run the pipeline in RuntimeExecutionMode.BATCH.");
-        }
+        // Nothing to do: prepareCommit(), which follows every flush, finishes the open files.
+        // A pre-end-of-input flush is a checkpoint — the streaming trigger for FILE_LOADS.
     }
 
     @Override

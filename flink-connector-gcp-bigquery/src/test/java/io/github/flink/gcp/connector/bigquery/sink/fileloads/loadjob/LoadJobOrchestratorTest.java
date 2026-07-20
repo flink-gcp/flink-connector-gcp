@@ -102,6 +102,13 @@ class LoadJobOrchestratorTest {
         private final LoadJobOrchestrator orchestrator;
 
         Harness(FileLoadsOptions options, Consumer<BigQuerySinkBuilder<Object>> customizer) {
+            this(options, customizer, null);
+        }
+
+        Harness(
+                FileLoadsOptions options,
+                Consumer<BigQuerySinkBuilder<Object>> customizer,
+                Long checkpointId) {
             BigQuerySinkBuilder<Object> builder =
                     BigQuerySink.builder()
                             .writeMethod(WriteMethod.FILE_LOADS)
@@ -113,13 +120,26 @@ class LoadJobOrchestratorTest {
                     ((BigQueryFileLoadsSink<Object>) builder.build()).getConfig();
             this.orchestrator =
                     new LoadJobOrchestrator(
-                            config, options, runner, tableAdmin, storage, FLINK_JOB_ID);
+                            config,
+                            options,
+                            runner,
+                            tableAdmin,
+                            storage,
+                            FLINK_JOB_ID,
+                            checkpointId);
         }
 
         static Harness plain() {
             return new Harness(
                     FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
                     builder -> {});
+        }
+
+        static Harness streaming(long checkpointId) {
+            return new Harness(
+                    FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                    builder -> {},
+                    checkpointId);
         }
     }
 
@@ -455,6 +475,74 @@ class LoadJobOrchestratorTest {
         assertThat(byBytes).hasSize(2);
         assertThat(byBytes.get(0)).hasSize(1);
         assertThat(byBytes.get(1)).hasSize(2);
+    }
+
+    @Test
+    void streamingJobIdsCarryTheCheckpointSegment() throws IOException {
+        Harness harness = Harness.streaming(42);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10), file(T1, "b", 10)));
+
+        assertThat(harness.runner.loads.keySet())
+                .singleElement()
+                .satisfies(
+                        id -> assertThat(id).startsWith("flink-bq-load-" + FLINK_JOB_ID + "-c42-"));
+
+        // The hash is the idempotency key and does not include the checkpoint id: the same files
+        // under the same checkpoint reproduce the same job id across retries.
+        Harness retry = Harness.streaming(42);
+        retry.orchestrator.run(List.of(file(T1, "a", 10), file(T1, "b", 10)));
+        assertThat(retry.runner.loads.keySet()).isEqualTo(harness.runner.loads.keySet());
+    }
+
+    @Test
+    void batchJobIdsCarryNoCheckpointSegment() throws IOException {
+        Harness harness = Harness.plain();
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.runner.loads.keySet())
+                .singleElement()
+                .satisfies(
+                        id ->
+                                assertThat(id)
+                                        .matches(
+                                                "flink-bq-load-" + FLINK_JOB_ID + "-[0-9a-f]{16}"));
+    }
+
+    @Test
+    void streamingOverflowSubmitsDirectLoadsWithoutTempTables() throws IOException {
+        // The batch temp-table + copy path would need WRITE_TRUNCATE temp loads; streaming
+        // appends each partition directly, losing only the checkpoint's atomic visibility.
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build()),
+                        7L);
+        long sixTiB = 6L << 40;
+
+        harness.orchestrator.run(
+                List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", sixTiB)));
+
+        assertThat(harness.runner.loads).hasSize(3);
+        assertThat(harness.runner.loads.keySet())
+                .allSatisfy(id -> assertThat(id).contains("-c7-").containsPattern("-p\\d$"));
+        assertThat(harness.runner.loads.values())
+                .allSatisfy(
+                        spec -> {
+                            assertThat(spec.getDestination()).isEqualTo(T1);
+                            assertThat(spec.getWriteDisposition())
+                                    .isEqualTo(JobInfo.WriteDisposition.WRITE_APPEND);
+                            assertThat(spec.getSchemaUpdateOptions())
+                                    .containsExactly(
+                                            JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION);
+                        });
+        assertThat(harness.runner.copies).isEmpty();
+        assertThat(harness.runner.deletedTables).isEmpty();
+        assertThat(harness.tableAdmin.created).isEmpty();
+        assertThat(harness.storage.getDeleted()).hasSize(3);
     }
 
     @Test

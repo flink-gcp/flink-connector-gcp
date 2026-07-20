@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.connector.sink2.Committer;
 import org.apache.flink.api.connector.sink2.CommitterInitContext;
 import org.apache.flink.api.connector.sink2.Sink;
@@ -29,26 +28,46 @@ import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
-import org.apache.flink.streaming.api.connector.sink2.SupportsPostCommitTopology;
+import org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo;
+import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.environment.CheckpointConfig;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.committer.FileLoadsCheckpointStamper;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.committer.FileLoadsCommitter;
-import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FileLoadsPostCommitOperator;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.FileLoadsWriter;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.GcsStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStorage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.time.Duration;
 
 /**
  * The {@link WriteMethod#FILE_LOADS} sink: writers stage per-destination Avro files on Cloud
- * Storage, a no-op committer forwards their committables, and a parallelism-1 post-commit operator
- * turns them into BigQuery load jobs at end of input (see {@link
- * io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.LoadJobOrchestrator}).
+ * Storage, the pre-commit topology routes every subtask's committables to a single committer
+ * subtask (stamping their checkpoint id in streaming, see {@link FileLoadsCheckpointStamper}), and
+ * the committer turns each batch into BigQuery load jobs (see {@link FileLoadsCommitter} and {@link
+ * io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.LoadJobOrchestrator}) — the whole
+ * run at end of input in batch execution, each checkpoint's files at its completion in streaming
+ * execution.
  *
- * <p>Batch execution only, enforced twice: at graph construction here (anything but an explicit
- * {@link RuntimeExecutionMode#BATCH} is rejected when the post-commit topology is added) and at
- * runtime in the writer (a pre-end-of-input flush means a checkpoint, i.e. streaming execution).
+ * <p>Loading in the committer (not a post-commit topology) is deliberate: the framework's committer
+ * state carries everything not yet loaded across restarts, and at job shutdown the final batch is
+ * committed during the final-checkpoint wait — records emitted to a post-commit topology at that
+ * point are not guaranteed to be processed before the tasks close.
+ *
+ * <p>The execution mode must be explicit: {@link RuntimeExecutionMode#AUTOMATIC} is rejected when
+ * the pre-commit topology is added, because were it to resolve to streaming with checkpointing
+ * disabled, files would stage forever without ever being loaded. Streaming additionally requires
+ * checkpointing (the checkpoint is the load trigger), {@link WriteDisposition#WRITE_APPEND} (other
+ * dispositions are meaningless per checkpoint), and a checkpoint interval that stays clear of
+ * BigQuery's 1,500 load jobs per table per day — below {@link
+ * FileLoadsOptions#getMinCheckpointInterval()} is an error, below {@link
+ * #QUOTA_WARN_CHECKPOINT_INTERVAL} a warning.
  *
  * @param <T> type of the records written by the sink
  */
@@ -56,9 +75,14 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStora
 public class BigQueryFileLoadsSink<T>
         implements Sink<T>,
                 SupportsCommitter<FileLoadsCommittable>,
-                SupportsPostCommitTopology<FileLoadsCommittable> {
+                SupportsPreCommitTopology<FileLoadsCommittable, FileLoadsCommittable> {
 
     private static final long serialVersionUID = 1L;
+
+    private static final Logger LOG = LoggerFactory.getLogger(BigQueryFileLoadsSink.class);
+
+    /** Streaming checkpoint intervals below this (but above the error threshold) log a warning. */
+    @VisibleForTesting static final Duration QUOTA_WARN_CHECKPOINT_INTERVAL = Duration.ofMinutes(5);
 
     private final BigQuerySinkConfig<T> config;
     private final FileLoadsOptions options;
@@ -96,7 +120,8 @@ public class BigQueryFileLoadsSink<T>
 
     @Override
     public Committer<FileLoadsCommittable> createCommitter(CommitterInitContext context) {
-        return new FileLoadsCommitter();
+        return new FileLoadsCommitter(
+                config, options, storage, context.getJobInfo().getJobId().toString());
     }
 
     @Override
@@ -105,30 +130,104 @@ public class BigQueryFileLoadsSink<T>
     }
 
     @Override
-    public void addPostCommitTopology(
+    public SimpleVersionedSerializer<FileLoadsCommittable> getWriteResultSerializer() {
+        return new FileLoadsCommittableSerializer();
+    }
+
+    @Override
+    public DataStream<CommittableMessage<FileLoadsCommittable>> addPreCommitTopology(
             DataStream<CommittableMessage<FileLoadsCommittable>> committables) {
         RuntimeExecutionMode mode =
                 committables
                         .getExecutionEnvironment()
                         .getConfiguration()
                         .get(ExecutionOptions.RUNTIME_MODE);
-        if (mode != RuntimeExecutionMode.BATCH) {
-            // AUTOMATIC is rejected too: were it to resolve to streaming, end of input would
-            // never come, and the pipeline would stage files forever without ever loading them.
+        boolean streaming;
+        switch (mode) {
+            case BATCH:
+                streaming = false;
+                break;
+            case STREAMING:
+                validateStreaming(committables.getExecutionEnvironment().getCheckpointConfig());
+                streaming = true;
+                break;
+            default:
+                // AUTOMATIC: were it to resolve to streaming with checkpointing disabled, no
+                // trigger would ever come and files would stage forever — and that resolution
+                // is invisible here, so an explicit mode is required.
+                throw new IllegalStateException(
+                        WriteMethod.FILE_LOADS
+                                + " requires an explicit execution mode, but the runtime mode is "
+                                + mode
+                                + ". Set RuntimeExecutionMode.BATCH or RuntimeExecutionMode"
+                                + ".STREAMING explicitly (streaming additionally requires"
+                                + " checkpointing).");
+        }
+        DataStream<CommittableMessage<FileLoadsCommittable>> prepared = committables;
+        if (streaming) {
+            prepared =
+                    prepared.transform(
+                            "Stamp checkpoint ids",
+                            CommittableMessageTypeInfo.of(this::getCommittableSerializer),
+                            new FileLoadsCheckpointStamper());
+        }
+        // The committer inherits the sink's parallelism; the trailing global exchange routes
+        // every subtask's committables to committer subtask 0, giving one committer instance
+        // the global per-table view the load jobs need (the other subtasks stay idle).
+        return prepared.global();
+    }
+
+    /**
+     * Rejects streaming setups that cannot work (no checkpointing — no load trigger; a non-append
+     * disposition) or that would exhaust BigQuery's per-table daily load-job quota at a sustained
+     * cadence.
+     */
+    private void validateStreaming(CheckpointConfig checkpointConfig) {
+        if (!checkpointConfig.isCheckpointingEnabled()) {
             throw new IllegalStateException(
                     WriteMethod.FILE_LOADS
-                            + " supports batch execution only, but the runtime mode is "
-                            + mode
-                            + ". Set RuntimeExecutionMode.BATCH explicitly.");
+                            + " in streaming execution requires checkpointing: load jobs are"
+                            + " triggered by checkpoints, so without checkpointing staged files"
+                            + " would never be loaded. Enable checkpointing"
+                            + " (execution.checkpointing.interval) or run in"
+                            + " RuntimeExecutionMode.BATCH.");
         }
-        committables
-                .global()
-                .transform(
-                        "BigQuery load jobs",
-                        Types.VOID,
-                        new FileLoadsPostCommitOperator(config, options, storage))
-                .setParallelism(1)
-                .setMaxParallelism(1);
+        if (options.getWriteDisposition() != WriteDisposition.WRITE_APPEND) {
+            throw new IllegalStateException(
+                    WriteMethod.FILE_LOADS
+                            + " in streaming execution supports WriteDisposition.WRITE_APPEND"
+                            + " only (each checkpoint appends its rows; WRITE_TRUNCATE and"
+                            + " WRITE_EMPTY would make every checkpoint replace or reject the"
+                            + " table), but the write disposition is "
+                            + options.getWriteDisposition()
+                            + ".");
+        }
+        long intervalMs = checkpointConfig.getCheckpointInterval();
+        long minIntervalMs = options.getMinCheckpointInterval().toMillis();
+        if (intervalMs < minIntervalMs) {
+            throw new IllegalStateException(
+                    "The checkpoint interval ("
+                            + intervalMs
+                            + " ms) is below the "
+                            + WriteMethod.FILE_LOADS
+                            + " minimum ("
+                            + minIntervalMs
+                            + " ms). BigQuery allows 1,500 load jobs per table per day and each"
+                            + " checkpoint issues at least one load job per destination table"
+                            + " (1 min = 1,440/day, 2 min = 720/day, 5 min = 288/day). Increase"
+                            + " the checkpoint interval, or lower"
+                            + " FileLoadsOptions.minCheckpointInterval(...) explicitly for a"
+                            + " short-lived job whose daily load count stays safe.");
+        }
+        if (intervalMs < QUOTA_WARN_CHECKPOINT_INTERVAL.toMillis()) {
+            LOG.warn(
+                    "The checkpoint interval ({} ms) is below {} minutes; each checkpoint issues"
+                            + " at least one load job per destination table and BigQuery allows"
+                            + " 1,500 load jobs per table per day (2 min = 720/day, 5 min ="
+                            + " 288/day). Consider a larger interval for sustained streaming.",
+                    intervalMs,
+                    QUOTA_WARN_CHECKPOINT_INTERVAL.toMinutes());
+        }
     }
 
     /** Returns the sink configuration. */

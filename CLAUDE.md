@@ -99,13 +99,28 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   `FailedRow` carries serialized protobuf bytes, not the original record (the writer is
   stateless). SDK in-stream retry settings are hardcoded in `StreamWriterRowAppenderFactory`;
   exposing them is deferred until a real-world need shows which knobs matter
-- **BigQuery FILE_LOADS** (#14): batch-only, exactly-once via deterministic BigQuery job ids
-  (hash of destination + sorted staged URIs) with get-then-submit re-attach — no committer-side
-  state. Avro-only staging in v0.1, written with the `google-cloud-storage` client directly (no
-  Flink filesystem plugin dependency). Load jobs run in a parallelism-1 post-commit topology
-  (`SupportsPostCommitTopology`), submitted all at once then awaited — no self-managed thread
-  pool. Cleanup is best-effort on success only; a staging bucket lifecycle rule is the
+- **BigQuery FILE_LOADS** (#14, load stage revised in #69): exactly-once via deterministic
+  BigQuery job ids (hash of destination + sorted staged URIs) with get-then-submit re-attach.
+  Avro-only staging in v0.1, written with the `google-cloud-storage` client directly (no Flink
+  filesystem plugin dependency). Load jobs run **in the committer** behind a pre-commit topology
+  (`SupportsPreCommitTopology`) whose trailing `.global()` routes every subtask's committables to
+  committer subtask 0 (the #14 post-commit-topology design was replaced in #69: records emitted
+  to a post-commit topology during job shutdown are not guaranteed to be processed — verified
+  empirically, the final streaming batch was lost — while committer commits ride the
+  final-checkpoint wait and the framework's committer state). Jobs are submitted all at once then
+  awaited. Cleanup is best-effort on success only; a staging bucket lifecycle rule is the
   documented mitigation for orphans
+- **BigQuery streaming FILE_LOADS** (#69): same `WriteMethod.FILE_LOADS` value, allowed under
+  explicit `STREAMING` + checkpointing (`AUTOMATIC` stays rejected); `WRITE_APPEND` only. The
+  checkpoint is the trigger: each completed checkpoint's committables are committed
+  synchronously (a slow load delays the next checkpoint = backpressure; async in-flight loads
+  were evaluated and rejected — `commit()` must mean durable, or a crash after the next
+  checkpoint strands submitted-but-unconfirmed loads). A `FileLoadsCheckpointStamper` pre-commit
+  operator stamps the checkpoint id onto committables (the `Committer` SPI cannot see it); job
+  ids gain a visible `-c<checkpointId>` segment (hash material unchanged); streaming overflow
+  submits multiple direct append jobs instead of temp-table+copy. Quota guard at graph
+  construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5 min warns (1,500
+  load jobs/table/day), plus a runtime cadence warning in the committer
 - **Per-write-method option scoping** (decided in #14, was deferred on PR #46): write-method-only
   options live in a nested immutable options object set on the builder (`FileLoadsOptions` via
   `fileLoadsOptions(...)`); `build()` requires it for its write method and rejects it for

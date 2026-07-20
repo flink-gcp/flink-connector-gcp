@@ -20,14 +20,20 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
+import javax.annotation.Nullable;
+
 import java.util.Objects;
 
 /**
- * One finalized staging file: its destination table, its Cloud Storage URI, and size counters used
- * for load-job partitioning.
+ * One finalized staging file: its destination table, its Cloud Storage URI, size counters used for
+ * load-job partitioning, and — in streaming execution — the checkpoint that triggered it.
  *
  * <p>Load jobs reference exactly the URIs collected from committables — never a bucket prefix — so
  * objects orphaned by failed attempts can never leak into a load.
+ *
+ * <p>The checkpoint id is stamped by the pre-commit gather operator (the writer does not know it);
+ * it stays {@code null} in batch execution and selects the streaming behavior of the load-job
+ * orchestrator (visible {@code -c<id>} job-id segment, direct loads on overflow).
  */
 @Internal
 public final class FileLoadsCommittable {
@@ -36,9 +42,10 @@ public final class FileLoadsCommittable {
     private final String uri;
     private final long byteCount;
     private final long rowCount;
+    @Nullable private final Long checkpointId;
 
     /**
-     * Creates a committable.
+     * Creates a committable without a checkpoint id (as emitted by the writer).
      *
      * @param destination the destination table
      * @param uri the staging object URI ({@code gs://bucket/name})
@@ -47,10 +54,35 @@ public final class FileLoadsCommittable {
      */
     public FileLoadsCommittable(
             TableDestination destination, String uri, long byteCount, long rowCount) {
+        this(destination, uri, byteCount, rowCount, null);
+    }
+
+    /**
+     * Creates a committable.
+     *
+     * @param destination the destination table
+     * @param uri the staging object URI ({@code gs://bucket/name})
+     * @param byteCount the object size in bytes
+     * @param rowCount the number of rows in the object
+     * @param checkpointId the checkpoint that triggered this file, or {@code null} in batch
+     *     execution
+     */
+    public FileLoadsCommittable(
+            TableDestination destination,
+            String uri,
+            long byteCount,
+            long rowCount,
+            @Nullable Long checkpointId) {
         this.destination = destination;
         this.uri = uri;
         this.byteCount = byteCount;
         this.rowCount = rowCount;
+        this.checkpointId = checkpointId;
+    }
+
+    /** Returns a copy of this committable stamped with the given checkpoint id. */
+    public FileLoadsCommittable withCheckpointId(long checkpointId) {
+        return new FileLoadsCommittable(destination, uri, byteCount, rowCount, checkpointId);
     }
 
     /** Returns the destination table. */
@@ -73,6 +105,15 @@ public final class FileLoadsCommittable {
         return rowCount;
     }
 
+    /**
+     * Returns the checkpoint that triggered this file, or {@code null} in batch execution (or
+     * before the gather operator stamped it).
+     */
+    @Nullable
+    public Long getCheckpointId() {
+        return checkpointId;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -85,12 +126,13 @@ public final class FileLoadsCommittable {
         return byteCount == that.byteCount
                 && rowCount == that.rowCount
                 && destination.equals(that.destination)
-                && uri.equals(that.uri);
+                && uri.equals(that.uri)
+                && Objects.equals(checkpointId, that.checkpointId);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(destination, uri, byteCount, rowCount);
+        return Objects.hash(destination, uri, byteCount, rowCount, checkpointId);
     }
 
     @Override
@@ -103,6 +145,8 @@ public final class FileLoadsCommittable {
                 + byteCount
                 + ", rowCount="
                 + rowCount
+                + ", checkpointId="
+                + checkpointId
                 + "}";
     }
 }

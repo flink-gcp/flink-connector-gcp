@@ -43,6 +43,8 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -55,9 +57,9 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * Turns the staged files of one batch run into BigQuery load jobs: groups files per destination
- * table, bin-packs each table's files against the per-load-job limits, and executes the resulting
- * jobs through a {@link LoadJobRunner}.
+ * Turns the staged files of one run — a whole batch job, or one checkpoint of a streaming job —
+ * into BigQuery load jobs: groups files per destination table, bin-packs each table's files against
+ * the per-load-job limits, and executes the resulting jobs through a {@link LoadJobRunner}.
  *
  * <p><b>Common case — one partition.</b> A table whose files fit one load job is loaded directly:
  * the load job carries the serializer's schema, the configured dispositions, the partitioning and
@@ -66,20 +68,28 @@ import java.util.TreeMap;
  * honors schema update options on {@code WRITE_APPEND} jobs; with other dispositions they are
  * omitted — {@code WRITE_TRUNCATE} replaces the schema wholesale anyway.)
  *
- * <p><b>Overflow — temporary tables plus one copy job.</b> A table exceeding the limits is loaded
- * partition-by-partition into temporary tables ({@code WRITE_TRUNCATE} + {@code CREATE_IF_NEEDED},
- * so a retried partition load is idempotent), then appended to the final table with a single atomic
- * copy job. Copy jobs support no schema update options, so the final table is reconciled
- * <em>before</em> the copy: created via {@link TableAdmin} when missing (with the configured
- * partitioning/clustering), or schema-unioned via {@link SchemaUnifier} when updates are enabled.
+ * <p><b>Overflow, batch — temporary tables plus one copy job.</b> A table exceeding the limits is
+ * loaded partition-by-partition into temporary tables ({@code WRITE_TRUNCATE} + {@code
+ * CREATE_IF_NEEDED}, so a retried partition load is idempotent), then appended to the final table
+ * with a single atomic copy job. Copy jobs support no schema update options, so the final table is
+ * reconciled <em>before</em> the copy: created via {@link TableAdmin} when missing (with the
+ * configured partitioning/clustering), or schema-unioned via {@link SchemaUnifier} when updates are
+ * enabled.
+ *
+ * <p><b>Overflow, streaming — multiple direct loads.</b> A streaming run (one with a checkpoint id)
+ * skips the temporary-table path and submits one direct append job per partition instead:
+ * deterministic ids keep the retries exactly-once, only the checkpoint's atomic visibility is lost
+ * — rows of a partition become visible as its job completes. Streaming is {@code WRITE_APPEND}
+ * only, enforced at graph construction.
  *
  * <p><b>Concurrency.</b> All jobs are submitted first and awaited second — BigQuery runs them
  * concurrently server-side, so no thread pool is needed.
  *
  * <p><b>Determinism and retries.</b> Files are sorted by URI before bin-packing, so a retried run
  * over the same committables produces identical partitions, temporary table names and job ids
- * (hashes over destination and source URIs), letting the {@link LoadJobRunner} re-attach instead of
- * double-loading. On success staged files are deleted best-effort; on failure everything is
+ * (hashes over destination and source URIs; streaming ids additionally carry a visible {@code
+ * -c<checkpointId>} segment for attribution), letting the {@link LoadJobRunner} re-attach instead
+ * of double-loading. On success staged files are deleted best-effort; on failure everything is
  * deliberately left in place for the retry (temporary tables rely on the temp dataset's expiration,
  * staging objects on the bucket's lifecycle rule).
  */
@@ -103,12 +113,13 @@ public final class LoadJobOrchestrator {
     private final TableAdmin tableAdmin;
     private final StagingStorage storage;
     private final String flinkJobId;
+    @Nullable private final Long checkpointId;
 
     /** Whether a destination table was missing when first checked; see {@link #mayCreate}. */
     private final Map<TableDestination, Boolean> missingTables = new HashMap<>();
 
     /**
-     * Creates an orchestrator.
+     * Creates an orchestrator for a batch run.
      *
      * @param config the sink configuration
      * @param options the FILE_LOADS options
@@ -124,12 +135,37 @@ public final class LoadJobOrchestrator {
             TableAdmin tableAdmin,
             StagingStorage storage,
             String flinkJobId) {
+        this(config, options, runner, tableAdmin, storage, flinkJobId, null);
+    }
+
+    /**
+     * Creates an orchestrator.
+     *
+     * @param config the sink configuration
+     * @param options the FILE_LOADS options
+     * @param runner the job runner
+     * @param tableAdmin the table admin (pre-copy table creation and schema reconciliation)
+     * @param storage the staging storage (post-load cleanup)
+     * @param flinkJobId the Flink job id (hex), scoping temporary table names and job ids
+     * @param checkpointId the checkpoint whose files this run loads, or {@code null} for a batch
+     *     run; a non-null id selects the streaming behavior (visible job-id segment, direct loads
+     *     on overflow)
+     */
+    public LoadJobOrchestrator(
+            BigQuerySinkConfig<?> config,
+            FileLoadsOptions options,
+            LoadJobRunner runner,
+            TableAdmin tableAdmin,
+            StagingStorage storage,
+            String flinkJobId,
+            @Nullable Long checkpointId) {
         this.config = config;
         this.options = options;
         this.runner = runner;
         this.tableAdmin = tableAdmin;
         this.storage = storage;
         this.flinkJobId = flinkJobId;
+        this.checkpointId = checkpointId;
     }
 
     /**
@@ -175,10 +211,11 @@ public final class LoadJobOrchestrator {
         }
         storage.deleteObjects(uris);
         LOG.info(
-                "Loaded {} rows from {} staged files into {} tables",
+                "Loaded {} rows from {} staged files into {} tables{}",
                 rows,
                 committables.size(),
-                loads.size());
+                loads.size(),
+                checkpointId != null ? " for checkpoint " + checkpointId : "");
     }
 
     /** Groups, sorts and bin-packs the committables into per-destination load plans. */
@@ -223,23 +260,16 @@ public final class LoadJobOrchestrator {
     private void submitLoads(DestinationLoad load) throws IOException {
         TableDestination destination = load.destination;
         if (load.partitions.size() == 1) {
-            Schema schema =
-                    StorageSchemaConverter.toBigQuerySchema(
-                            config.getSerializer().getTableSchema(destination));
-            List<String> uris = urisOf(load.partitions.get(0));
-            String jobId = jobId("flink-bq-load", destination, uris, null);
-            load.loadJobIds.add(jobId);
-            runner.submitLoad(
-                    jobId,
-                    new LoadJobSpec(
-                            destination,
-                            uris,
-                            schema,
-                            toCreateDisposition(config.getCreateDisposition()),
-                            toWriteDisposition(options.getWriteDisposition()),
-                            schemaUpdateOptions(),
-                            creationTimePartitioning(destination),
-                            creationClustering(destination)));
+            submitDirectLoad(load, load.partitions.get(0), null);
+            return;
+        }
+        if (checkpointId != null) {
+            // Streaming overflow: no temporary tables — one direct append job per partition.
+            // Only the checkpoint's atomic visibility is lost; deterministic per-partition ids
+            // keep retries exactly-once.
+            for (int i = 0; i < load.partitions.size(); i++) {
+                submitDirectLoad(load, load.partitions.get(i), "p" + i);
+            }
             return;
         }
         // Copy jobs require matching schemas, so temp tables are loaded with the final table's
@@ -265,6 +295,32 @@ public final class LoadJobOrchestrator {
                             null,
                             null));
         }
+    }
+
+    /**
+     * Submits one load job straight into the destination table with the configured dispositions.
+     */
+    private void submitDirectLoad(
+            DestinationLoad load, List<FileLoadsCommittable> partition, @Nullable String suffix)
+            throws IOException {
+        TableDestination destination = load.destination;
+        Schema schema =
+                StorageSchemaConverter.toBigQuerySchema(
+                        config.getSerializer().getTableSchema(destination));
+        List<String> uris = urisOf(partition);
+        String jobId = jobId("flink-bq-load", destination, uris, suffix);
+        load.loadJobIds.add(jobId);
+        runner.submitLoad(
+                jobId,
+                new LoadJobSpec(
+                        destination,
+                        uris,
+                        schema,
+                        toCreateDisposition(config.getCreateDisposition()),
+                        toWriteDisposition(options.getWriteDisposition()),
+                        schemaUpdateOptions(),
+                        creationTimePartitioning(destination),
+                        creationClustering(destination)));
     }
 
     /**
@@ -414,7 +470,12 @@ public final class LoadJobOrchestrator {
         return TableDestination.of(destination.getProject(), dataset, name);
     }
 
-    /** A deterministic job id: prefix, Flink job id, and a hash of the destination and sources. */
+    /**
+     * A deterministic job id: prefix, Flink job id, and a hash of the destination and sources. The
+     * hash alone is the idempotency key — source URI sets are unique per run by construction — and
+     * a streaming id additionally carries a visible {@code -c<checkpointId>} segment so a BigQuery
+     * job can be attributed to its checkpoint.
+     */
     private String jobId(
             String prefix, TableDestination destination, List<String> sources, String suffix) {
         StringBuilder material = new StringBuilder(destination.toTablePath());
@@ -424,6 +485,7 @@ public final class LoadJobOrchestrator {
         return prefix
                 + "-"
                 + flinkJobId
+                + (checkpointId != null ? "-c" + checkpointId : "")
                 + "-"
                 + sha256Hex(material.toString()).substring(0, 16)
                 + (suffix != null ? "-" + suffix : "");

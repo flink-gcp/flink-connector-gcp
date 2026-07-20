@@ -42,6 +42,21 @@ class FileLoadsCommittableSerializerTest {
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(committable));
 
         assertThat(copy).isEqualTo(committable);
+        assertThat(copy.getCheckpointId()).isNull();
+    }
+
+    @Test
+    void roundTripsTheCheckpointId() throws IOException {
+        FileLoadsCommittable committable =
+                new FileLoadsCommittable(
+                                TableDestination.of("p", "d", "t"), "gs://bucket/o.avro", 1L, 1L)
+                        .withCheckpointId(42L);
+
+        FileLoadsCommittable copy =
+                serializer.deserialize(serializer.getVersion(), serializer.serialize(committable));
+
+        assertThat(copy).isEqualTo(committable);
+        assertThat(copy.getCheckpointId()).isEqualTo(42L);
     }
 
     @Test

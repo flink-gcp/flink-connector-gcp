@@ -49,6 +49,11 @@ public final class FileLoadsCommittableSerializer
             out.writeUTF(committable.getUri());
             out.writeLong(committable.getByteCount());
             out.writeLong(committable.getRowCount());
+            Long checkpointId = committable.getCheckpointId();
+            out.writeBoolean(checkpointId != null);
+            if (checkpointId != null) {
+                out.writeLong(checkpointId);
+            }
         }
         return bytes.toByteArray();
     }
@@ -64,7 +69,8 @@ public final class FileLoadsCommittableSerializer
             String uri = in.readUTF();
             long byteCount = in.readLong();
             long rowCount = in.readLong();
-            return new FileLoadsCommittable(destination, uri, byteCount, rowCount);
+            Long checkpointId = in.readBoolean() ? in.readLong() : null;
+            return new FileLoadsCommittable(destination, uri, byteCount, rowCount, checkpointId);
         }
     }
 }

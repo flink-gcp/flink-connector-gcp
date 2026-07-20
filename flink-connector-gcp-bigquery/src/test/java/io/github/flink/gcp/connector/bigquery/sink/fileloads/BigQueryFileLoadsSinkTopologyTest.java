@@ -28,16 +28,20 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Graph-construction tests for the FILE_LOADS topology: the batch-only guard fires when the
- * pipeline is translated, and batch translation produces the parallelism-1 load-job operator.
+ * Graph-construction tests for the FILE_LOADS topology: the execution-mode/checkpointing/interval
+ * validation matrix fires when the pipeline is translated, and valid setups produce the
+ * parallelism-1 gather stage feeding a parallelism-1 committer.
  */
 class BigQueryFileLoadsSinkTopologyTest {
 
@@ -68,52 +72,125 @@ class BigQueryFileLoadsSinkTopologyTest {
     }
 
     private static Sink<String> sink() {
+        return sink(FileLoadsOptions.builder().stagingPath("gs://bucket").build());
+    }
+
+    private static Sink<String> sink(FileLoadsOptions options) {
         return BigQuerySink.<String>builder()
                 .writeMethod(WriteMethod.FILE_LOADS)
                 .destination(TableDestination.of("p", "d", "t"))
                 .serializer(new TestSerializer())
-                .fileLoadsOptions(FileLoadsOptions.builder().stagingPath("gs://bucket").build())
+                .fileLoadsOptions(options)
                 .build();
     }
 
+    private static void assertTopology(StreamGraph graph, boolean streaming) {
+        // The committer inherits the sink's parallelism; the pre-commit topology's trailing
+        // global exchange routes every committable to its subtask 0.
+        assertThat(graph.getStreamNodes())
+                .anySatisfy(node -> assertThat(node.getOperatorName()).contains("Committer"));
+        // Only streaming has a checkpoint-id stamping stage.
+        assertThat(
+                        graph.getStreamNodes().stream()
+                                .anyMatch(
+                                        node ->
+                                                node.getOperatorName()
+                                                        .contains("Stamp checkpoint ids")))
+                .isEqualTo(streaming);
+    }
+
     @Test
-    void streamingExecutionIsRejectedAtGraphConstruction() {
+    void batchExecutionBuildsTheCommitterTopology() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+        env.setParallelism(4);
+        env.fromData("a", "b").sinkTo(sink());
+
+        assertTopology(env.getStreamGraph(), false);
+    }
+
+    @Test
+    void streamingWithCheckpointingBuildsTheCommitterTopology() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+        env.enableCheckpointing(Duration.ofMinutes(5).toMillis());
+        env.fromData("a", "b").sinkTo(sink());
+
+        assertTopology(env.getStreamGraph(), true);
+    }
+
+    @Test
+    void streamingWithoutCheckpointingIsRejectedAtGraphConstruction() {
+        // Checkpoints are the load trigger; without them staged files would never be loaded.
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
         env.fromData("a", "b").sinkTo(sink());
 
         assertThatThrownBy(env::getStreamGraph)
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("batch execution only");
+                .hasMessageContaining("requires checkpointing");
+    }
+
+    @Test
+    void streamingRejectsNonAppendWriteDisposition() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+        env.enableCheckpointing(Duration.ofMinutes(5).toMillis());
+        env.fromData("a", "b")
+                .sinkTo(
+                        sink(
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket")
+                                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE)
+                                        .build()));
+
+        assertThatThrownBy(env::getStreamGraph)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("WRITE_APPEND");
     }
 
     @Test
     void automaticExecutionModeIsRejectedAtGraphConstruction() {
-        // AUTOMATIC could resolve to streaming, where end of input — and therefore the load
-        // jobs — would never come; explicit BATCH is required.
+        // AUTOMATIC could resolve to streaming with checkpointing disabled — undetectable here —
+        // so an explicit mode is required.
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setRuntimeMode(RuntimeExecutionMode.AUTOMATIC);
         env.fromData("a", "b").sinkTo(sink());
 
         assertThatThrownBy(env::getStreamGraph)
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("RuntimeExecutionMode.BATCH");
+                .hasMessageContaining("RuntimeExecutionMode.BATCH")
+                .hasMessageContaining("STREAMING");
     }
 
     @Test
-    void batchExecutionBuildsLoadJobOperator() {
+    void checkpointIntervalBelowMinimumIsRejected() {
+        // 30 s would mean 2,880 load jobs per table per day — above BigQuery's 1,500 limit.
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
-        env.setParallelism(4);
+        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+        env.enableCheckpointing(30_000);
         env.fromData("a", "b").sinkTo(sink());
 
-        StreamGraph graph = env.getStreamGraph();
+        assertThatThrownBy(env::getStreamGraph)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("checkpoint interval")
+                .hasMessageContaining("minCheckpointInterval");
+    }
 
-        assertThat(graph.getStreamNodes())
-                .anySatisfy(
-                        node -> {
-                            assertThat(node.getOperatorName()).contains("BigQuery load jobs");
-                            assertThat(node.getParallelism()).isEqualTo(1);
-                        });
+    @Test
+    void shortCheckpointIntervalIsAllowedWithExplicitOverride() {
+        // Short-lived jobs whose daily load count stays safe can opt in to fast checkpoints.
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+        env.enableCheckpointing(30_000);
+        env.fromData("a", "b")
+                .sinkTo(
+                        sink(
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket")
+                                        .minCheckpointInterval(Duration.ofSeconds(10))
+                                        .build()));
+
+        assertTopology(env.getStreamGraph(), true);
     }
 }

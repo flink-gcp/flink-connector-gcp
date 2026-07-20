@@ -42,7 +42,10 @@ public enum WriteMethod {
     /**
      * Stages records as files on Cloud Storage and imports them with BigQuery load jobs.
      *
-     * <p>Batch execution only; always exactly-once.
+     * <p>Always exactly-once. Batch execution loads everything at end of input; streaming execution
+     * loads each checkpoint's files (checkpointing required, {@link WriteDisposition#WRITE_APPEND}
+     * only, and mind BigQuery's 1,500 load jobs per table per day — checkpoint intervals of 2-5
+     * minutes or more).
      */
     FILE_LOADS
 }

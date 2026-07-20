@@ -8,7 +8,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 |---|---|---|
 | `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: #15) |
 | `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit | Not buildable yet — `build()` rejects (#30) |
-| `FILE_LOADS` | GCS-staged Avro files + BigQuery load jobs; batch only, exactly-once | Implemented (#14), see [File loads](#file-loads-batch-only) |
+| `FILE_LOADS` | GCS-staged Avro files + BigQuery load jobs; batch and streaming (checkpoint-triggered), exactly-once | Implemented (#14 batch, #69 streaming), see [File loads](#file-loads) |
 
 ```java
 Sink<MyEvent> sink =
@@ -131,11 +131,12 @@ time-based flush option for checkpoint-less jobs is tracked in #54). Batch execu
 by the end-of-input flush. End-to-end loss behavior additionally depends on the source's own
 state handling.
 
-## File loads (batch only)
+## File loads
 
 `WriteMethod.FILE_LOADS` writes each destination table's rows to Avro files on Cloud Storage and
-loads them with BigQuery load jobs — free of streaming-insert cost, always exactly-once, batch
-execution only:
+loads them with BigQuery load jobs — free of streaming-insert cost, always exactly-once. Batch
+execution loads everything at end of input; streaming execution loads each checkpoint's files
+(the checkpoint is the trigger, like Beam's streaming FILE_LOADS `triggeringFrequency` model):
 
 ```java
 Sink<MyEvent> sink =
@@ -151,44 +152,84 @@ Sink<MyEvent> sink =
                 .build();
 
 env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+// or: env.setRuntimeMode(RuntimeExecutionMode.STREAMING) with checkpointing enabled.
 ```
 
 FILE_LOADS-only settings live in `FileLoadsOptions` (required for this write method, rejected for
 the others): `stagingPath` (required), `writeDisposition` (`WRITE_APPEND` default,
-`WRITE_TRUNCATE` for atomic batch reloads, `WRITE_EMPTY`) and `tempDataset` (see below).
+`WRITE_TRUNCATE` for atomic batch reloads, `WRITE_EMPTY`), `tempDataset`, and the streaming guard
+`minCheckpointInterval` (all described below).
 
 **Topology.** Parallel writers encode records (serializer proto bytes → Avro `GenericRecord`) and
 stream them straight to per-destination GCS objects — rows never accumulate on the heap, so memory
-use is ~5 MiB per open destination regardless of data volume. Files roll at 1.5 GiB. At end of
-input a single parallelism-1 operator groups the staged files by destination table and runs **one
-load job per table** (all jobs submitted first, then awaited — BigQuery runs them concurrently
-server-side). Load jobs carry the serializer's schema explicitly (`useAvroLogicalTypes`), plus the
-partitioning/clustering from `tableCreateOptions(...)` for tables created under
-`CREATE_IF_NEEDED`.
+use is ~5 MiB per open destination regardless of data volume; in streaming the inter-checkpoint
+buffer *is* GCS. Files roll at 1.5 GiB. The pre-commit topology routes every subtask's
+committables to a single committer subtask (in streaming through a stage that stamps each
+committable with its checkpoint id), and that committer — the actual commit — groups the staged
+files by destination table and runs **one load job per table** (all jobs submitted first, then
+awaited — BigQuery runs them concurrently server-side): once at end of input in batch, once per
+completed checkpoint in streaming. Load jobs carry the serializer's schema explicitly
+(`useAvroLogicalTypes`), plus the partitioning/clustering from `tableCreateOptions(...)` for
+tables created under `CREATE_IF_NEEDED`. Loading in the committer (rather than a post-commit
+topology, where the #14 batch implementation originally ran it) is deliberate: committables ride
+in Flink's committer state until their loads succeed, and the final batch of a streaming job is
+committed during task shutdown's final-checkpoint wait — records emitted to a post-commit
+topology at that point are not guaranteed to be processed before the job terminates.
 
-**Batch only.** Anything but an explicit `RuntimeExecutionMode.BATCH` (including `AUTOMATIC`,
-which could resolve to streaming, where end of input — and therefore the load jobs — would never
-come) is rejected when the job graph is built; a runtime guard also rejects checkpoints as a
-backstop. This is deliberate: checkpoint-frequency load jobs would run into BigQuery's per-table
-load quota (1,500/table/day) — streaming pipelines belong on the Storage Write API methods.
+**Execution modes.** The mode must be explicit: `AUTOMATIC` is rejected when the job graph is
+built, because were it to resolve to streaming with checkpointing disabled, no trigger would ever
+come and files would stage forever. Streaming additionally requires, also checked at graph
+construction: checkpointing enabled (the checkpoint is the load trigger),
+`WriteDisposition.WRITE_APPEND` (truncating/rejecting per checkpoint is meaningless), and a
+checkpoint interval compatible with BigQuery's **1,500 load jobs per table per day** quota — each
+checkpoint issues at least one load job per destination table:
 
-**Exactly-once.** Load jobs reference exactly the file URIs emitted by the writers at end of input
-— never a bucket prefix — so files from failed/restarted attempts (which use unique names:
-Flink job id, subtask, attempt, random component) can never leak into a load. Job ids are
-deterministic hashes of the destination and its sorted file list: a retry after a failure
-re-attaches to the already-running/completed BigQuery job instead of loading twice. Known residual
-risk (shared with the Beam and Dataproc designs): if a failure destroys the persisted committables
-*and* re-runs the writer stage after load jobs were already submitted, the retried run produces
-new file names — and thus new job ids — while the first run's jobs keep running server-side,
-which can duplicate rows under `WRITE_APPEND`.
+| Checkpoint interval | Load jobs per table per day |
+|---|---|
+| 1 min | 1,440 — too close to the ceiling, not viable |
+| 2 min | 720 |
+| 5 min | 288 |
 
-**Per-load-job limits.** A table whose staged files exceed one load job's limits (10,000 source
-URIs / 11 TiB) is loaded partition-wise into temporary tables (`WRITE_TRUNCATE`, so retries are
-idempotent) and appended to the final table with one atomic copy job. Temporary tables go to the
-destination's dataset by default, or to `tempDataset(...)` — a dedicated dataset with a default
-table expiration is recommended so tables orphaned by hard failures are garbage-collected. Copy
-jobs support no schema update options, so on this path the final table is created/schema-unioned
-via the REST API before the copy (same union rules as [Schema evolution](#schema-evolution)).
+Intervals below `minCheckpointInterval` (default 2 minutes) are rejected; intervals below 5
+minutes log a warning. Lowering `minCheckpointInterval(...)` is the explicit opt-in for
+short-lived jobs whose daily load count stays safe (the integration tests do this). A runtime
+warning also fires when observed checkpoint cadence stays under 2 minutes, catching interval
+configuration the client-side guard cannot see. Streaming pipelines that need second-level
+latency belong on the Storage Write API methods; checkpoint-triggered file loads trade minutes of
+latency for free ingestion.
+
+**Streaming operation.** Each completed checkpoint's committables are committed — loaded — by the
+framework at that checkpoint's completion, in checkpoint order. Loads are synchronous: a slow
+load delays the next checkpoint's completion, which is the backpressure mechanism (loads of a few
+minutes of data typically finish in seconds to tens of seconds, well within the quota-mandated
+2-5 minute intervals). Everything not yet loaded rides in Flink's committer state: on recovery
+the committables are re-committed and the deterministic job ids re-attach to jobs a previous
+attempt already created. A load-job failure fails the ongoing checkpoint (and the job), which
+restarts from the last checkpoint with the staged files still in place. On stop-with-savepoint
+without `--drain`, the final checkpoint's rows land when the savepoint is resumed.
+
+**Exactly-once.** Load jobs reference exactly the file URIs emitted by the writers — never a
+bucket prefix — so files from failed/restarted attempts (which use unique names: Flink job id,
+subtask, attempt, random component) can never leak into a load. Job ids are deterministic hashes
+of the destination and its sorted file list (streaming ids additionally carry a visible
+`-c<checkpointId>` segment for attribution): a retry after a failure re-attaches to the
+already-running/completed BigQuery job instead of loading twice. Known residual risk (shared with
+the Beam and Dataproc designs): if a failure destroys the persisted committables *and* re-runs
+the writer stage after load jobs were already submitted — or a savepoint is resumed under a *new*
+Flink job id while a prior job id's loads are still running server-side — the retried run
+produces new job ids while the first run's jobs keep running, which can duplicate rows under
+`WRITE_APPEND`.
+
+**Per-load-job limits.** In batch, a table whose staged files exceed one load job's limits
+(10,000 source URIs / 11 TiB) is loaded partition-wise into temporary tables (`WRITE_TRUNCATE`,
+so retries are idempotent) and appended to the final table with one atomic copy job. Temporary
+tables go to the destination's dataset by default, or to `tempDataset(...)` — a dedicated dataset
+with a default table expiration is recommended so tables orphaned by hard failures are
+garbage-collected. Copy jobs support no schema update options, so on this path the final table is
+created/schema-unioned via the REST API before the copy (same union rules as
+[Schema evolution](#schema-evolution)). In streaming there is no temporary-table path: an
+oversized checkpoint × table submits multiple direct append jobs (deterministic per-partition
+ids keep exactly-once; only that checkpoint's atomic visibility is lost).
 
 **Schema evolution.** The same `schemaUpdateOptions(...)` flags map to the load jobs' native
 `ALLOW_FIELD_ADDITION`/`ALLOW_FIELD_RELAXATION` options. BigQuery honors them only for
@@ -208,10 +249,11 @@ canonical civil-time string, `NUMERIC`/`BIGNUMERIC` as Avro decimals (parameteri
 precision/scale respected), `JSON`/`GEOGRAPHY` as strings, `STRUCT`/`REPEATED` nest naturally.
 `INTERVAL` and `RANGE` columns are not supported by this write method.
 
-The integration test (`BigQueryFileLoadsITCase`) runs a real batch job against BigQuery and GCS
-and is gated on `BQ_IT_PROJECT`, `BQ_IT_DATASET` and `BQ_IT_GCS_BUCKET` (application-default
-credentials); it is skipped when they are unset, keeping `./mvnw verify` credential-free. For
-local runs, put the variables (plus `GOOGLE_APPLICATION_CREDENTIALS` if not using the default ADC
+The integration tests (`BigQueryFileLoadsITCase` for batch, `BigQueryFileLoadsStreamingITCase`
+for checkpoint-triggered streaming loads) run real jobs against BigQuery and GCS and are gated on
+`BQ_IT_PROJECT`, `BQ_IT_DATASET` and `BQ_IT_GCS_BUCKET` (application-default credentials); they
+are skipped when the variables are unset, keeping `./mvnw verify` credential-free. For local
+runs, put the variables (plus `GOOGLE_APPLICATION_CREDENTIALS` if not using the default ADC
 location) in an uncommitted `.env` at the repository root — mise loads it automatically.
 
 ## Error handling
@@ -288,7 +330,8 @@ credential-less CI:
   production `StreamWriterRowAppenderFactory`
 - load jobs: goccy/bigquery-emulator supports neither `gs://` load jobs nor a Cloud Storage
   endpoint, so the whole `FILE_LOADS` path runs against real services
-  (`BigQueryFileLoadsITCase`, env-gated as described [above](#file-loads-batch-only))
+  (`BigQueryFileLoadsITCase` and `BigQueryFileLoadsStreamingITCase`, env-gated as described
+  [above](#file-loads))
 
 The remaining real-GCP coverage (MiniCluster E2E on GitHub Actions via WIF) is tracked in #16
 and #28.
@@ -304,13 +347,16 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   `BatchLoads`/`WritePartition`/`WriteTables`/`WriteRename` design (per-destination bin-packing
   against load-job limits, temp-table + copy-job overflow path, updating the final table schema
   before the copy since copy jobs support no schema update options, and GC of staged files only
-  after load completion)
+  after load completion), and the streaming FILE_LOADS `triggeringFrequency` model (the Flink
+  checkpoint takes the trigger role)
 - [GoogleCloudDataproc/flink-bigquery-connector](https://github.com/GoogleCloudDataproc/flink-bigquery-connector)
   — reference for Storage Write API sink internals and the serializer contract
   (descriptor accessor + `ByteString` rows); for FILE_LOADS, the `BigQueryIndirectSink`/
   `BigQueryLoadJobOperator` design (SinkV2 post-commit topology on a single non-parallel
   operator, deterministic BigQuery job ids with get-then-submit re-attach for exactly-once
-  retries, 1.5 GiB size-based file rolling, best-effort cleanup)
+  retries, 1.5 GiB size-based file rolling, best-effort cleanup) and its `CheckpointState`
+  per-checkpoint completeness bookkeeping (the streaming operator's summary-count completeness
+  tracking is an independent implementation of the same idea over Flink's committable messages)
 - [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage)
   (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`, `BqToBqStorageSchemaConverter`) —
   reference for proto/schema conversion (`StorageSchemaConverter` and

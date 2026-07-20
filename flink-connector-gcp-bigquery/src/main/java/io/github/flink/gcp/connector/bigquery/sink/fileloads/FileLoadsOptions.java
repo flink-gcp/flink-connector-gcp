@@ -27,13 +27,14 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
 /**
  * Options specific to {@link WriteMethod#FILE_LOADS}: where staging files go on Cloud Storage, how
- * loaded rows land in tables that already hold data, and where oversized loads stage their
- * temporary tables.
+ * loaded rows land in tables that already hold data, where oversized loads stage their temporary
+ * tables, and how checkpoint-triggered loads are paced in streaming execution.
  *
  * <p>Set via {@link BigQuerySinkBuilder#fileLoadsOptions(FileLoadsOptions)}; required when building
  * a {@code FILE_LOADS} sink and rejected for every other write method.
@@ -58,14 +59,22 @@ public final class FileLoadsOptions implements Serializable {
      */
     private static final Pattern STAGING_PATH_PATTERN = Pattern.compile("gs://[^/]+(/.+)?");
 
+    /**
+     * Default for {@link Builder#minCheckpointInterval(Duration)}. Two minutes keeps a sustained
+     * streaming job at 720 load jobs per table per day, safely under BigQuery's 1,500 limit.
+     */
+    public static final Duration DEFAULT_MIN_CHECKPOINT_INTERVAL = Duration.ofMinutes(2);
+
     private final String stagingPath;
     @Nullable private final String tempDataset;
     private final WriteDisposition writeDisposition;
+    private final Duration minCheckpointInterval;
 
     private FileLoadsOptions(Builder builder) {
         this.stagingPath = builder.stagingPath;
         this.tempDataset = builder.tempDataset;
         this.writeDisposition = builder.writeDisposition;
+        this.minCheckpointInterval = builder.minCheckpointInterval;
     }
 
     /**
@@ -96,6 +105,14 @@ public final class FileLoadsOptions implements Serializable {
         return writeDisposition;
     }
 
+    /**
+     * Returns the smallest checkpoint interval accepted for streaming execution. Ignored in batch
+     * execution.
+     */
+    public Duration getMinCheckpointInterval() {
+        return minCheckpointInterval;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -107,12 +124,13 @@ public final class FileLoadsOptions implements Serializable {
         FileLoadsOptions that = (FileLoadsOptions) o;
         return stagingPath.equals(that.stagingPath)
                 && Objects.equals(tempDataset, that.tempDataset)
-                && writeDisposition == that.writeDisposition;
+                && writeDisposition == that.writeDisposition
+                && minCheckpointInterval.equals(that.minCheckpointInterval);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(stagingPath, tempDataset, writeDisposition);
+        return Objects.hash(stagingPath, tempDataset, writeDisposition, minCheckpointInterval);
     }
 
     @Override
@@ -123,6 +141,8 @@ public final class FileLoadsOptions implements Serializable {
                 + tempDataset
                 + ", writeDisposition="
                 + writeDisposition
+                + ", minCheckpointInterval="
+                + minCheckpointInterval
                 + "}";
     }
 
@@ -133,6 +153,7 @@ public final class FileLoadsOptions implements Serializable {
         private String stagingPath;
         @Nullable private String tempDataset;
         private WriteDisposition writeDisposition = WriteDisposition.WRITE_APPEND;
+        private Duration minCheckpointInterval = DEFAULT_MIN_CHECKPOINT_INTERVAL;
 
         private Builder() {}
 
@@ -186,6 +207,28 @@ public final class FileLoadsOptions implements Serializable {
             this.writeDisposition =
                     Preconditions.checkNotNull(
                             writeDisposition, "writeDisposition must not be null");
+            return this;
+        }
+
+        /**
+         * Sets the smallest checkpoint interval accepted for streaming execution; a configured
+         * interval below it is rejected when the job graph is built. Defaults to {@link
+         * FileLoadsOptions#DEFAULT_MIN_CHECKPOINT_INTERVAL}. Lowering it is an explicit opt-in for
+         * jobs whose daily load-job count stays safe despite fast checkpoints (e.g. short-lived
+         * streaming jobs): BigQuery allows 1,500 load jobs per table per day, and each checkpoint
+         * issues at least one load job per destination table. Ignored in batch execution.
+         *
+         * @param minCheckpointInterval the smallest accepted checkpoint interval
+         * @return this builder
+         */
+        public Builder minCheckpointInterval(Duration minCheckpointInterval) {
+            Preconditions.checkNotNull(
+                    minCheckpointInterval, "minCheckpointInterval must not be null");
+            Preconditions.checkArgument(
+                    !minCheckpointInterval.isNegative() && !minCheckpointInterval.isZero(),
+                    "minCheckpointInterval must be positive: %s",
+                    minCheckpointInterval);
+            this.minCheckpointInterval = minCheckpointInterval;
             return this;
         }
 

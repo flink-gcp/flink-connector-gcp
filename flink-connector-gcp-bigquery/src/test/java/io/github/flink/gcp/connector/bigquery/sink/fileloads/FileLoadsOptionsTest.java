@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -33,6 +35,32 @@ class FileLoadsOptionsTest {
         assertThat(options.getStagingPath()).isEqualTo("gs://bucket/prefix");
         assertThat(options.getTempDataset()).isNull();
         assertThat(options.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_APPEND);
+        assertThat(options.getMinCheckpointInterval()).isEqualTo(Duration.ofMinutes(2));
+    }
+
+    @Test
+    void minCheckpointIntervalOverrideIsKept() {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .minCheckpointInterval(Duration.ofSeconds(30))
+                        .build();
+
+        assertThat(options.getMinCheckpointInterval()).isEqualTo(Duration.ofSeconds(30));
+    }
+
+    @Test
+    void rejectsNonPositiveMinCheckpointInterval() {
+        assertThatThrownBy(() -> FileLoadsOptions.builder().minCheckpointInterval(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("minCheckpointInterval");
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .minCheckpointInterval(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> FileLoadsOptions.builder().minCheckpointInterval(null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test
@@ -103,8 +131,14 @@ class FileLoadsOptionsTest {
                         .stagingPath("gs://bucket")
                         .tempDataset("temp_dataset")
                         .build();
+        FileLoadsOptions d =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .minCheckpointInterval(Duration.ofMinutes(10))
+                        .build();
 
         assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
         assertThat(a).isNotEqualTo(c);
+        assertThat(a).isNotEqualTo(d);
     }
 }
