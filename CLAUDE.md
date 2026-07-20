@@ -116,11 +116,14 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   synchronously (a slow load delays the next checkpoint = backpressure; async in-flight loads
   were evaluated and rejected — `commit()` must mean durable, or a crash after the next
   checkpoint strands submitted-but-unconfirmed loads). A `FileLoadsCheckpointStamper` pre-commit
-  operator stamps the checkpoint id onto committables (the `Committer` SPI cannot see it); job
-  ids gain a visible `-c<checkpointId>` segment (hash material unchanged); streaming overflow
-  submits multiple direct append jobs instead of temp-table+copy. Quota guard at graph
-  construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5 min warns (1,500
-  load jobs/table/day), plus a runtime cadence warning in the committer
+  map stamps the checkpoint id onto committables (the `Committer` SPI cannot see it); job ids
+  gain a visible `-c<checkpointId>` segment (hash material unchanged) and derive their Flink-job
+  segment from the committable's originating job id (stamped by the writer) so re-commits after
+  a new-JobID restore still re-attach; streaming overflow submits direct append jobs
+  sequentially instead of temp-table+copy. Streaming also requires EXACTLY_ONCE checkpointing
+  and checkpoints-after-tasks-finish (the final batch rides the post-finish checkpoint). Quota
+  guard at graph construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5
+  min warns (1,500 load jobs/table/day), plus a runtime cadence warning in the committer
 - **Per-write-method option scoping** (decided in #14, was deferred on PR #46): write-method-only
   options live in a nested immutable options object set on the builder (`FileLoadsOptions` via
   `fileLoadsOptions(...)`); `build()` requires it for its write method and rejects it for

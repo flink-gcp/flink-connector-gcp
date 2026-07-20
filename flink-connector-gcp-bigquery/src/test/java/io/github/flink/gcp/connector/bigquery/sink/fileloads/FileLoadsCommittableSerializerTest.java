@@ -33,6 +33,7 @@ class FileLoadsCommittableSerializerTest {
     void roundTrips() throws IOException {
         FileLoadsCommittable committable =
                 new FileLoadsCommittable(
+                        "0123456789abcdef0123456789abcdef",
                         TableDestination.of("my-project", "my_dataset", "my_table"),
                         "gs://bucket/prefix/jobid/my-project.my_dataset.my_table/0-0-abc-0.avro",
                         123_456L,
@@ -49,7 +50,11 @@ class FileLoadsCommittableSerializerTest {
     void roundTripsTheCheckpointId() throws IOException {
         FileLoadsCommittable committable =
                 new FileLoadsCommittable(
-                                TableDestination.of("p", "d", "t"), "gs://bucket/o.avro", 1L, 1L)
+                                "0123456789abcdef0123456789abcdef",
+                                TableDestination.of("p", "d", "t"),
+                                "gs://bucket/o.avro",
+                                1L,
+                                1L)
                         .withCheckpointId(42L);
 
         FileLoadsCommittable copy =
@@ -63,7 +68,11 @@ class FileLoadsCommittableSerializerTest {
     void rejectsUnknownVersion() throws IOException {
         FileLoadsCommittable committable =
                 new FileLoadsCommittable(
-                        TableDestination.of("p", "d", "t"), "gs://bucket/o.avro", 1L, 1L);
+                        "0123456789abcdef0123456789abcdef",
+                        TableDestination.of("p", "d", "t"),
+                        "gs://bucket/o.avro",
+                        1L,
+                        1L);
         byte[] bytes = serializer.serialize(committable);
 
         assertThatThrownBy(() -> serializer.deserialize(99, bytes))

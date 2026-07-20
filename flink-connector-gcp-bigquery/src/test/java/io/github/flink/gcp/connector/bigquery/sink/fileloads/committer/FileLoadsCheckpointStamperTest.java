@@ -19,59 +19,44 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.committer;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.CommittableSummary;
 import org.apache.flink.streaming.api.connector.sink2.CommittableWithLineage;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import org.junit.jupiter.api.Test;
-
-import java.util.List;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link FileLoadsCheckpointStamper}. */
 class FileLoadsCheckpointStamperTest {
 
+    private static final String FLINK_JOB_ID = "0123456789abcdef0123456789abcdef";
     private static final TableDestination T1 = TableDestination.of("p", "d", "t1");
 
-    private static FileLoadsCommittable file(String name) {
-        return new FileLoadsCommittable(T1, "gs://bucket/prefix/" + name + ".avro", 10, 5);
-    }
+    private final FileLoadsCheckpointStamper stamper = new FileLoadsCheckpointStamper();
 
-    private static List<CommittableMessage<FileLoadsCommittable>> process(
-            List<CommittableMessage<FileLoadsCommittable>> messages) throws Exception {
-        try (OneInputStreamOperatorTestHarness<
-                        CommittableMessage<FileLoadsCommittable>,
-                        CommittableMessage<FileLoadsCommittable>>
-                harness =
-                        new OneInputStreamOperatorTestHarness<>(new FileLoadsCheckpointStamper())) {
-            harness.open();
-            for (CommittableMessage<FileLoadsCommittable> message : messages) {
-                harness.processElement(new StreamRecord<>(message));
-            }
-            return harness.extractOutputValues().stream()
-                    .map(value -> (CommittableMessage<FileLoadsCommittable>) value)
-                    .collect(Collectors.toList());
-        }
+    private static FileLoadsCommittable file(String name) {
+        return new FileLoadsCommittable(
+                FLINK_JOB_ID, T1, "gs://bucket/prefix/" + name + ".avro", 10, 5);
     }
 
     @Test
-    void stampsTheCheckpointIdOntoCommittables() throws Exception {
-        List<CommittableMessage<FileLoadsCommittable>> out =
-                process(
-                        List.of(
-                                new CommittableSummary<>(0, 2, 7L, 1, 0),
-                                new CommittableWithLineage<>(file("a"), 7L, 0)));
+    void stampsTheCheckpointIdOntoCommittables() {
+        CommittableMessage<FileLoadsCommittable> out =
+                stamper.map(new CommittableWithLineage<>(file("a"), 7L, 3));
 
-        assertThat(out).hasSize(2);
-        assertThat(out.get(0)).isInstanceOf(CommittableSummary.class);
         CommittableWithLineage<FileLoadsCommittable> lineage =
-                (CommittableWithLineage<FileLoadsCommittable>) out.get(1);
+                (CommittableWithLineage<FileLoadsCommittable>) out;
         assertThat(lineage.getCheckpointId()).isEqualTo(7L);
-        assertThat(lineage.getSubtaskId()).isZero();
+        assertThat(lineage.getSubtaskId()).isEqualTo(3);
         assertThat(lineage.getCommittable().getCheckpointId()).isEqualTo(7L);
         assertThat(lineage.getCommittable().getUri()).isEqualTo("gs://bucket/prefix/a.avro");
+        assertThat(lineage.getCommittable().getFlinkJobId()).isEqualTo(FLINK_JOB_ID);
+    }
+
+    @Test
+    void forwardsSummariesUntouched() {
+        CommittableSummary<FileLoadsCommittable> summary = new CommittableSummary<>(0, 2, 7L, 1, 0);
+
+        assertThat(stamper.map(summary)).isSameAs(summary);
     }
 }

@@ -86,6 +86,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
 
     private final BigQuerySinkConfig<T> config;
     private final StagingStorage storage;
+    private final String flinkJobId;
     private final String pathPrefix;
     private final String filePrefix;
     private final long maxFileBytes;
@@ -131,6 +132,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
             long maxFileBytes) {
         this.config = config;
         this.storage = storage;
+        this.flinkJobId = flinkJobId;
         this.pathPrefix = options.getStagingPath() + "/" + flinkJobId;
         this.filePrefix =
                 subtaskIndex
@@ -255,7 +257,8 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                         + "-"
                         + state.fileSequence++
                         + ".avro";
-        return new StagedFileWriter(destination, uri, state.avroSchema, storage.createObject(uri));
+        return new StagedFileWriter(
+                flinkJobId, destination, uri, state.avroSchema, storage.createObject(uri));
     }
 
     /** Per-destination conversion state and the currently open file, if any. */

@@ -25,7 +25,10 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.SupportsCommitter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
+import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ExecutionOptions;
+import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo;
@@ -82,7 +85,7 @@ public class BigQueryFileLoadsSink<T>
     private static final Logger LOG = LoggerFactory.getLogger(BigQueryFileLoadsSink.class);
 
     /** Streaming checkpoint intervals below this (but above the error threshold) log a warning. */
-    @VisibleForTesting static final Duration QUOTA_WARN_CHECKPOINT_INTERVAL = Duration.ofMinutes(5);
+    private static final Duration QUOTA_WARN_CHECKPOINT_INTERVAL = Duration.ofMinutes(5);
 
     private final BigQuerySinkConfig<T> config;
     private final FileLoadsOptions options;
@@ -120,8 +123,7 @@ public class BigQueryFileLoadsSink<T>
 
     @Override
     public Committer<FileLoadsCommittable> createCommitter(CommitterInitContext context) {
-        return new FileLoadsCommitter(
-                config, options, storage, context.getJobInfo().getJobId().toString());
+        return new FileLoadsCommitter(config, options, storage);
     }
 
     @Override
@@ -148,7 +150,9 @@ public class BigQueryFileLoadsSink<T>
                 streaming = false;
                 break;
             case STREAMING:
-                validateStreaming(committables.getExecutionEnvironment().getCheckpointConfig());
+                validateStreaming(
+                        committables.getExecutionEnvironment().getCheckpointConfig(),
+                        committables.getExecutionEnvironment().getConfiguration());
                 streaming = true;
                 break;
             default:
@@ -166,10 +170,10 @@ public class BigQueryFileLoadsSink<T>
         DataStream<CommittableMessage<FileLoadsCommittable>> prepared = committables;
         if (streaming) {
             prepared =
-                    prepared.transform(
-                            "Stamp checkpoint ids",
-                            CommittableMessageTypeInfo.of(this::getCommittableSerializer),
-                            new FileLoadsCheckpointStamper());
+                    prepared.map(
+                                    new FileLoadsCheckpointStamper(),
+                                    CommittableMessageTypeInfo.of(this::getCommittableSerializer))
+                            .name("Stamp checkpoint ids");
         }
         // The committer inherits the sink's parallelism; the trailing global exchange routes
         // every subtask's committables to committer subtask 0, giving one committer instance
@@ -182,7 +186,8 @@ public class BigQueryFileLoadsSink<T>
      * disposition) or that would exhaust BigQuery's per-table daily load-job quota at a sustained
      * cadence.
      */
-    private void validateStreaming(CheckpointConfig checkpointConfig) {
+    private void validateStreaming(
+            CheckpointConfig checkpointConfig, ReadableConfig configuration) {
         if (!checkpointConfig.isCheckpointingEnabled()) {
             throw new IllegalStateException(
                     WriteMethod.FILE_LOADS
@@ -191,6 +196,28 @@ public class BigQueryFileLoadsSink<T>
                             + " would never be loaded. Enable checkpointing"
                             + " (execution.checkpointing.interval) or run in"
                             + " RuntimeExecutionMode.BATCH.");
+        }
+        if (checkpointConfig.getCheckpointingConsistencyMode() != CheckpointingMode.EXACTLY_ONCE) {
+            // Under AT_LEAST_ONCE alignment, records processed after a barrier land in the
+            // barrier's files and are replayed after a failure — duplicate loads.
+            throw new IllegalStateException(
+                    WriteMethod.FILE_LOADS
+                            + " in streaming execution requires CheckpointingMode.EXACTLY_ONCE"
+                            + " (the write method is exactly-once), but the checkpointing"
+                            + " consistency mode is "
+                            + checkpointConfig.getCheckpointingConsistencyMode()
+                            + ".");
+        }
+        if (!configuration.get(CheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH)) {
+            // The final batch of a bounded streaming job is committed by the checkpoint taken
+            // after the tasks finished; without it the tail would stage but never load.
+            throw new IllegalStateException(
+                    WriteMethod.FILE_LOADS
+                            + " in streaming execution requires"
+                            + " execution.checkpointing.checkpoints-after-tasks-finish.enabled:"
+                            + " the final batch is loaded by the checkpoint taken after the tasks"
+                            + " finish, so disabling it would silently drop the tail of a bounded"
+                            + " job.");
         }
         if (options.getWriteDisposition() != WriteDisposition.WRITE_APPEND) {
             throw new IllegalStateException(

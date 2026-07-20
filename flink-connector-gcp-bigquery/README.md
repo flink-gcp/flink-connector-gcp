@@ -213,12 +213,13 @@ bucket prefix — so files from failed/restarted attempts (which use unique name
 subtask, attempt, random component) can never leak into a load. Job ids are deterministic hashes
 of the destination and its sorted file list (streaming ids additionally carry a visible
 `-c<checkpointId>` segment for attribution): a retry after a failure re-attaches to the
-already-running/completed BigQuery job instead of loading twice. Known residual risk (shared with
-the Beam and Dataproc designs): if a failure destroys the persisted committables *and* re-runs
-the writer stage after load jobs were already submitted — or a savepoint is resumed under a *new*
-Flink job id while a prior job id's loads are still running server-side — the retried run
-produces new job ids while the first run's jobs keep running, which can duplicate rows under
-`WRITE_APPEND`.
+already-running/completed BigQuery job instead of loading twice. Committables carry the Flink job
+id of the run that staged them, so even a restore under a *new* Flink job id (`flink run -s` on a
+savepoint or retained checkpoint) reproduces the original job ids and re-attaches. Known residual
+risk (shared with the Beam and Dataproc designs): if a failure destroys the persisted
+committables *and* re-runs the writer stage after load jobs were already submitted, the retried
+run produces new file names — and thus new job ids — while the first run's jobs keep running
+server-side, which can duplicate rows under `WRITE_APPEND`.
 
 **Per-load-job limits.** In batch, a table whose staged files exceed one load job's limits
 (10,000 source URIs / 11 TiB) is loaded partition-wise into temporary tables (`WRITE_TRUNCATE`,
@@ -238,7 +239,11 @@ ids keep exactly-once; only that checkpoint's atomic visibility is lost).
 **Staging cleanup.** Staged files are deleted after a successful load — best-effort; on failure
 they are deliberately kept so a Flink restart retries deterministically. Point `stagingPath` at a
 **dedicated bucket (separate from checkpoint/savepoint storage) with a lifecycle rule** (for
-example: delete objects after 1–7 days) so orphans from hard failures expire on their own.
+example: delete objects after 1–7 days) so orphans from hard failures expire on their own. Size
+the rule's age above the longest outage you intend to recover from: staged files referenced by a
+checkpoint *are* the data, and restoring a streaming job after the rule already expired them
+leaves the pending loads permanently failing (the poisoned committables can then only be dropped
+by starting without state).
 
 **Errors.** `FailedRowHandler` covers serialization/Avro-conversion failures (row-level, before
 staging). A load job itself is all-or-nothing: there is no per-row policy at load time, and a
@@ -349,14 +354,18 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   before the copy since copy jobs support no schema update options, and GC of staged files only
   after load completion), and the streaming FILE_LOADS `triggeringFrequency` model (the Flink
   checkpoint takes the trigger role)
+- [Apache Flink](https://github.com/apache/flink) sink runtime — design reference for the
+  committer-based load stage (#69): the SinkV2 committer/committable machinery
+  (`CommitterOperator`, `GlobalCommitterOperator`) and the `FileSink` pre-commit-topology
+  precedent were studied to establish that streaming commits must run in the committer (records
+  emitted to a post-commit topology during job shutdown are not guaranteed to be processed); the
+  stamper and committer here are independent implementations over the public SinkV2 API
 - [GoogleCloudDataproc/flink-bigquery-connector](https://github.com/GoogleCloudDataproc/flink-bigquery-connector)
   — reference for Storage Write API sink internals and the serializer contract
   (descriptor accessor + `ByteString` rows); for FILE_LOADS, the `BigQueryIndirectSink`/
   `BigQueryLoadJobOperator` design (SinkV2 post-commit topology on a single non-parallel
   operator, deterministic BigQuery job ids with get-then-submit re-attach for exactly-once
-  retries, 1.5 GiB size-based file rolling, best-effort cleanup) and its `CheckpointState`
-  per-checkpoint completeness bookkeeping (the streaming operator's summary-count completeness
-  tracking is an independent implementation of the same idea over Flink's committable messages)
+  retries, 1.5 GiB size-based file rolling, best-effort cleanup)
 - [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage)
   (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`, `BqToBqStorageSchemaConverter`) —
   reference for proto/schema conversion (`StorageSchemaConverter` and

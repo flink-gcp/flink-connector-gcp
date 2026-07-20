@@ -91,7 +91,7 @@ class LoadJobOrchestratorTest {
     private static FileLoadsCommittable file(
             TableDestination destination, String name, long bytes) {
         return new FileLoadsCommittable(
-                destination, "gs://bucket/prefix/" + name + ".avro", bytes, 10);
+                FLINK_JOB_ID, destination, "gs://bucket/prefix/" + name + ".avro", bytes, 10);
     }
 
     /** Everything one orchestration run touches. */

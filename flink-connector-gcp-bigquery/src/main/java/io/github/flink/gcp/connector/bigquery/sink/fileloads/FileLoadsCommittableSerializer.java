@@ -27,12 +27,16 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 
-/** Serializer for {@link FileLoadsCommittable}. */
+/**
+ * Serializer for {@link FileLoadsCommittable}. Version 2 added the originating Flink job id and the
+ * optional checkpoint id; version 1 (the pre-#69, batch-only layout) never survived a job, so it is
+ * rejected instead of migrated.
+ */
 @Internal
 public final class FileLoadsCommittableSerializer
         implements SimpleVersionedSerializer<FileLoadsCommittable> {
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     @Override
     public int getVersion() {
@@ -43,6 +47,7 @@ public final class FileLoadsCommittableSerializer
     public byte[] serialize(FileLoadsCommittable committable) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(bytes)) {
+            out.writeUTF(committable.getFlinkJobId());
             out.writeUTF(committable.getDestination().getProject());
             out.writeUTF(committable.getDestination().getDataset());
             out.writeUTF(committable.getDestination().getTable());
@@ -64,13 +69,15 @@ public final class FileLoadsCommittableSerializer
             throw new IOException("Unknown committable version: " + version);
         }
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(serialized))) {
+            String flinkJobId = in.readUTF();
             TableDestination destination =
                     TableDestination.of(in.readUTF(), in.readUTF(), in.readUTF());
             String uri = in.readUTF();
             long byteCount = in.readLong();
             long rowCount = in.readLong();
             Long checkpointId = in.readBoolean() ? in.readLong() : null;
-            return new FileLoadsCommittable(destination, uri, byteCount, rowCount, checkpointId);
+            return new FileLoadsCommittable(
+                    flinkJobId, destination, uri, byteCount, rowCount, checkpointId);
         }
     }
 }

@@ -25,19 +25,27 @@ import javax.annotation.Nullable;
 import java.util.Objects;
 
 /**
- * One finalized staging file: its destination table, its Cloud Storage URI, size counters used for
- * load-job partitioning, and — in streaming execution — the checkpoint that triggered it.
+ * One finalized staging file: the Flink job id of the run that staged it, its destination table,
+ * its Cloud Storage URI, size counters used for load-job partitioning, and — in streaming execution
+ * — the checkpoint that triggered it.
  *
  * <p>Load jobs reference exactly the URIs collected from committables — never a bucket prefix — so
  * objects orphaned by failed attempts can never leak into a load.
  *
- * <p>The checkpoint id is stamped by the pre-commit gather operator (the writer does not know it);
- * it stays {@code null} in batch execution and selects the streaming behavior of the load-job
- * orchestrator (visible {@code -c<id>} job-id segment, direct loads on overflow).
+ * <p>The originating Flink job id travels with the committable (rather than being read from the
+ * runtime at commit time) so that BigQuery job ids and temporary table names stay deterministic
+ * when committer state is restored under a <em>new</em> Flink job id (a savepoint or retained
+ * checkpoint resubmitted with {@code flink run -s}): the re-commit reproduces the original ids and
+ * re-attaches instead of double-loading.
+ *
+ * <p>The checkpoint id is stamped by the pre-commit stage (the writer does not know it); it stays
+ * {@code null} in batch execution and selects the streaming behavior of the load-job orchestrator
+ * (visible {@code -c<id>} job-id segment, direct loads on overflow).
  */
 @Internal
 public final class FileLoadsCommittable {
 
+    private final String flinkJobId;
     private final TableDestination destination;
     private final String uri;
     private final long byteCount;
@@ -47,19 +55,25 @@ public final class FileLoadsCommittable {
     /**
      * Creates a committable without a checkpoint id (as emitted by the writer).
      *
+     * @param flinkJobId the Flink job id (hex) of the run that staged the file
      * @param destination the destination table
      * @param uri the staging object URI ({@code gs://bucket/name})
      * @param byteCount the object size in bytes
      * @param rowCount the number of rows in the object
      */
     public FileLoadsCommittable(
-            TableDestination destination, String uri, long byteCount, long rowCount) {
-        this(destination, uri, byteCount, rowCount, null);
+            String flinkJobId,
+            TableDestination destination,
+            String uri,
+            long byteCount,
+            long rowCount) {
+        this(flinkJobId, destination, uri, byteCount, rowCount, null);
     }
 
     /**
      * Creates a committable.
      *
+     * @param flinkJobId the Flink job id (hex) of the run that staged the file
      * @param destination the destination table
      * @param uri the staging object URI ({@code gs://bucket/name})
      * @param byteCount the object size in bytes
@@ -68,11 +82,13 @@ public final class FileLoadsCommittable {
      *     execution
      */
     public FileLoadsCommittable(
+            String flinkJobId,
             TableDestination destination,
             String uri,
             long byteCount,
             long rowCount,
             @Nullable Long checkpointId) {
+        this.flinkJobId = flinkJobId;
         this.destination = destination;
         this.uri = uri;
         this.byteCount = byteCount;
@@ -82,7 +98,13 @@ public final class FileLoadsCommittable {
 
     /** Returns a copy of this committable stamped with the given checkpoint id. */
     public FileLoadsCommittable withCheckpointId(long checkpointId) {
-        return new FileLoadsCommittable(destination, uri, byteCount, rowCount, checkpointId);
+        return new FileLoadsCommittable(
+                flinkJobId, destination, uri, byteCount, rowCount, checkpointId);
+    }
+
+    /** Returns the Flink job id (hex) of the run that staged the file. */
+    public String getFlinkJobId() {
+        return flinkJobId;
     }
 
     /** Returns the destination table. */
@@ -107,7 +129,7 @@ public final class FileLoadsCommittable {
 
     /**
      * Returns the checkpoint that triggered this file, or {@code null} in batch execution (or
-     * before the gather operator stamped it).
+     * before the pre-commit stage stamped it).
      */
     @Nullable
     public Long getCheckpointId() {
@@ -125,6 +147,7 @@ public final class FileLoadsCommittable {
         FileLoadsCommittable that = (FileLoadsCommittable) o;
         return byteCount == that.byteCount
                 && rowCount == that.rowCount
+                && flinkJobId.equals(that.flinkJobId)
                 && destination.equals(that.destination)
                 && uri.equals(that.uri)
                 && Objects.equals(checkpointId, that.checkpointId);
@@ -132,12 +155,14 @@ public final class FileLoadsCommittable {
 
     @Override
     public int hashCode() {
-        return Objects.hash(destination, uri, byteCount, rowCount, checkpointId);
+        return Objects.hash(flinkJobId, destination, uri, byteCount, rowCount, checkpointId);
     }
 
     @Override
     public String toString() {
-        return "FileLoadsCommittable{destination="
+        return "FileLoadsCommittable{flinkJobId="
+                + flinkJobId
+                + ", destination="
                 + destination
                 + ", uri="
                 + uri

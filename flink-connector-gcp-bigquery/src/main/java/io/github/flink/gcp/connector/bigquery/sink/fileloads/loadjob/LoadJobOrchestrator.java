@@ -119,26 +119,6 @@ public final class LoadJobOrchestrator {
     private final Map<TableDestination, Boolean> missingTables = new HashMap<>();
 
     /**
-     * Creates an orchestrator for a batch run.
-     *
-     * @param config the sink configuration
-     * @param options the FILE_LOADS options
-     * @param runner the job runner
-     * @param tableAdmin the table admin (pre-copy table creation and schema reconciliation)
-     * @param storage the staging storage (post-load cleanup)
-     * @param flinkJobId the Flink job id (hex), scoping temporary table names and job ids
-     */
-    public LoadJobOrchestrator(
-            BigQuerySinkConfig<?> config,
-            FileLoadsOptions options,
-            LoadJobRunner runner,
-            TableAdmin tableAdmin,
-            StagingStorage storage,
-            String flinkJobId) {
-        this(config, options, runner, tableAdmin, storage, flinkJobId, null);
-    }
-
-    /**
      * Creates an orchestrator.
      *
      * @param config the sink configuration
@@ -260,15 +240,17 @@ public final class LoadJobOrchestrator {
     private void submitLoads(DestinationLoad load) throws IOException {
         TableDestination destination = load.destination;
         if (load.partitions.size() == 1) {
-            submitDirectLoad(load, load.partitions.get(0), null);
+            load.loadJobIds.add(submitDirectLoad(destination, load.partitions.get(0), null));
             return;
         }
         if (checkpointId != null) {
             // Streaming overflow: no temporary tables — one direct append job per partition.
             // Only the checkpoint's atomic visibility is lost; deterministic per-partition ids
-            // keep retries exactly-once.
+            // keep retries exactly-once. The partitions run sequentially (each awaited before
+            // the next is submitted) so schema-update options cannot race each other on the
+            // destination table the way concurrent ALLOW_FIELD_ADDITION jobs would.
             for (int i = 0; i < load.partitions.size(); i++) {
-                submitDirectLoad(load, load.partitions.get(i), "p" + i);
+                runner.awaitJob(submitDirectLoad(destination, load.partitions.get(i), "p" + i));
             }
             return;
         }
@@ -298,18 +280,19 @@ public final class LoadJobOrchestrator {
     }
 
     /**
-     * Submits one load job straight into the destination table with the configured dispositions.
+     * Submits one load job straight into the destination table with the configured dispositions and
+     * returns its job id (not yet awaited).
      */
-    private void submitDirectLoad(
-            DestinationLoad load, List<FileLoadsCommittable> partition, @Nullable String suffix)
+    private String submitDirectLoad(
+            TableDestination destination,
+            List<FileLoadsCommittable> partition,
+            @Nullable String suffix)
             throws IOException {
-        TableDestination destination = load.destination;
         Schema schema =
                 StorageSchemaConverter.toBigQuerySchema(
                         config.getSerializer().getTableSchema(destination));
         List<String> uris = urisOf(partition);
         String jobId = jobId("flink-bq-load", destination, uris, suffix);
-        load.loadJobIds.add(jobId);
         runner.submitLoad(
                 jobId,
                 new LoadJobSpec(
@@ -321,6 +304,7 @@ public final class LoadJobOrchestrator {
                         schemaUpdateOptions(),
                         creationTimePartitioning(destination),
                         creationClustering(destination)));
+        return jobId;
     }
 
     /**

@@ -17,11 +17,9 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.committer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
 import org.apache.flink.streaming.api.connector.sink2.CommittableWithLineage;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 
@@ -34,28 +32,21 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittabl
  */
 @Internal
 public final class FileLoadsCheckpointStamper
-        extends AbstractStreamOperator<CommittableMessage<FileLoadsCommittable>>
-        implements OneInputStreamOperator<
+        implements MapFunction<
                 CommittableMessage<FileLoadsCommittable>,
                 CommittableMessage<FileLoadsCommittable>> {
 
     private static final long serialVersionUID = 1L;
 
     @Override
-    public void processElement(StreamRecord<CommittableMessage<FileLoadsCommittable>> element) {
-        CommittableMessage<FileLoadsCommittable> message = element.getValue();
+    public CommittableMessage<FileLoadsCommittable> map(
+            CommittableMessage<FileLoadsCommittable> message) {
         if (message instanceof CommittableWithLineage) {
             CommittableWithLineage<FileLoadsCommittable> lineage =
                     (CommittableWithLineage<FileLoadsCommittable>) message;
-            output.collect(
-                    new StreamRecord<>(
-                            new CommittableWithLineage<>(
-                                    lineage.getCommittable()
-                                            .withCheckpointId(lineage.getCheckpointId()),
-                                    lineage.getCheckpointId(),
-                                    lineage.getSubtaskId())));
-            return;
+            return lineage.map(
+                    committable -> committable.withCheckpointId(lineage.getCheckpointId()));
         }
-        output.collect(element);
+        return message;
     }
 }

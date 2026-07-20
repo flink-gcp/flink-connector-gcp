@@ -37,14 +37,21 @@ import java.io.OutputStream;
 @Internal
 final class StagedFileWriter {
 
+    private final String flinkJobId;
     private final TableDestination destination;
     private final String uri;
     private final CountingOutputStream countingStream;
     private final DataFileWriter<GenericRecord> avroWriter;
     private long rowCount;
 
-    StagedFileWriter(TableDestination destination, String uri, Schema schema, OutputStream stream)
+    StagedFileWriter(
+            String flinkJobId,
+            TableDestination destination,
+            String uri,
+            Schema schema,
+            OutputStream stream)
             throws IOException {
+        this.flinkJobId = flinkJobId;
         this.destination = destination;
         this.uri = uri;
         this.countingStream = new CountingOutputStream(stream);
@@ -83,7 +90,8 @@ final class StagedFileWriter {
      */
     FileLoadsCommittable finish() throws IOException {
         avroWriter.close();
-        return new FileLoadsCommittable(destination, uri, countingStream.getCount(), rowCount);
+        return new FileLoadsCommittable(
+                flinkJobId, destination, uri, countingStream.getCount(), rowCount);
     }
 
     /** Closes the file discarding errors; the object (finalized or not) is never referenced. */

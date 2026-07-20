@@ -135,7 +135,7 @@ class FileLoadsCommitterTest {
                             .getConfig();
             this.committer =
                     new FileLoadsCommitter(
-                            config, options, storage, FLINK_JOB_ID, () -> runner, () -> tableAdmin);
+                            config, options, storage, () -> runner, () -> tableAdmin);
         }
 
         void commit(FileLoadsCommittable... committables) throws IOException {
@@ -147,7 +147,8 @@ class FileLoadsCommitterTest {
     }
 
     private static FileLoadsCommittable file(String name) {
-        return new FileLoadsCommittable(T1, "gs://bucket/prefix/" + name + ".avro", 10, 5);
+        return new FileLoadsCommittable(
+                FLINK_JOB_ID, T1, "gs://bucket/prefix/" + name + ".avro", 10, 5);
     }
 
     @Test
@@ -183,17 +184,37 @@ class FileLoadsCommitterTest {
     }
 
     @Test
-    void mixedCheckpointIdsAreLoadedPerCheckpoint() throws IOException {
-        // The framework commits one checkpoint at a time; the per-id grouping is a defensive
-        // boundary that keeps job ids and logs attributable even if batches were ever merged.
+    void mixedCommitBatchesAreRejected() {
+        // The framework commits one checkpoint at a time; a mixed batch would break the
+        // per-checkpoint job-id attribution, so the invariant fails loudly.
         Harness harness = new Harness();
 
-        harness.commit(file("a").withCheckpointId(1), file("b").withCheckpointId(2));
+        assertThatThrownBy(
+                        () ->
+                                harness.commit(
+                                        file("a").withCheckpointId(1),
+                                        file("b").withCheckpointId(2)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("mixes");
+        assertThat(harness.runner.loads).isEmpty();
+    }
+
+    @Test
+    void jobIdsFollowTheCommittablesOriginatingFlinkJobId() throws IOException {
+        // Committer state restored under a NEW Flink job id must reproduce the ORIGINAL job's
+        // deterministic BigQuery job ids so the runner re-attaches instead of double-loading;
+        // the id therefore comes from the committable, not from the runtime.
+        Harness harness = new Harness();
+        String originalJobId = "fedcba9876543210fedcba9876543210";
+
+        harness.commit(
+                new FileLoadsCommittable(originalJobId, T1, "gs://bucket/prefix/a.avro", 10, 5)
+                        .withCheckpointId(3));
 
         assertThat(harness.runner.loads.keySet())
-                .hasSize(2)
-                .anySatisfy(id -> assertThat(id).contains("-c1-"))
-                .anySatisfy(id -> assertThat(id).contains("-c2-"));
+                .singleElement()
+                .satisfies(
+                        id -> assertThat(id).startsWith("flink-bq-load-" + originalJobId + "-c3-"));
     }
 
     @Test
