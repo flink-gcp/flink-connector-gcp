@@ -54,6 +54,7 @@ class PubSubWriterTest {
             };
 
     private final FakePublisherFactory factory = new FakePublisherFactory();
+    private final FakeTopicAdmin admin = new FakeTopicAdmin();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
 
     /** Routes each record to the topic named by the record itself. */
@@ -75,7 +76,13 @@ class PubSubWriterTest {
                                         (element, context) -> TopicDestination.of(PROJECT, element))
                                 .serializer(serializer)
                                 .build();
-        return new PubSubWriter<>(sink.getConfig(), factory, mailbox, maxInFlightMessages);
+        return new PubSubWriter<>(
+                sink.getConfig(),
+                factory,
+                admin,
+                mailbox,
+                maxInFlightMessages,
+                PubSubWriter.DEFAULT_RECOVERY_SCHEDULE);
     }
 
     private static TopicDestination topic(String topic) {
@@ -252,6 +259,7 @@ class PubSubWriterTest {
             assertThat(publisher.closeCalls).isEqualTo(1);
             assertThat(publisher.flushCalls).isZero();
         }
+        assertThat(admin.closeCalls).isEqualTo(1);
     }
 
     @Test
@@ -267,5 +275,6 @@ class PubSubWriterTest {
         for (FakePublisherFactory.FakeTopicPublisher publisher : factory.publishers.values()) {
             assertThat(publisher.closeCalls).isEqualTo(1);
         }
+        assertThat(admin.closeCalls).isEqualTo(1);
     }
 }

@@ -88,9 +88,30 @@ class PubSubSinkBuilderTest {
     }
 
     @Test
+    void createDispositionDefaultsToCreateIfNeeded() {
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder().topic(TOPIC).serializer(serializer()).build();
+
+        assertThat(sink.getConfig().getCreateDisposition())
+                .isEqualTo(CreateDisposition.CREATE_IF_NEEDED);
+    }
+
+    @Test
+    void rejectsNullCreateDisposition() {
+        assertThatThrownBy(() -> PubSubSink.<String>builder().createDisposition(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("createDisposition must not be null");
+    }
+
+    @Test
     void builtSinkRoundTripsJavaSerialization() throws Exception {
         Sink<String> sink =
-                PubSubSink.<String>builder().topic(TOPIC).serializer(serializer()).build();
+                PubSubSink.<String>builder()
+                        .topic(TOPIC)
+                        .serializer(serializer())
+                        .createDisposition(CreateDisposition.CREATE_NEVER)
+                        .build();
 
         byte[] bytes = InstantiationUtil.serializeObject(sink);
         PubSubPublisherSink<String> copy =
@@ -101,5 +122,7 @@ class PubSubSinkBuilderTest {
                                 .getDestination())
                 .isEqualTo(TOPIC);
         assertThat(copy.getConfig().getSerializer()).isNotNull();
+        assertThat(copy.getConfig().getCreateDisposition())
+                .isEqualTo(CreateDisposition.CREATE_NEVER);
     }
 }
