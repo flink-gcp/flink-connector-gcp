@@ -17,14 +17,11 @@
 package io.github.flink.gcp.connector.bigquery.sink.writer;
 
 import com.google.cloud.bigquery.Field;
-import com.google.cloud.bigquery.FieldValueList;
-import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
-import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
@@ -148,34 +145,6 @@ class BigQuerySchemaEvolutionITCase extends AbstractBigQueryEmulatorITCase {
                 BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                 new RetrySchedule(100, 1_000, 30, 0),
                 new RetrySchedule(100, 1_000, 30, 0));
-    }
-
-    private static void createTable(String table, TableSchema schema) {
-        restClient.create(
-                TableInfo.newBuilder(
-                                TableId.of(PROJECT, DATASET, table),
-                                StandardTableDefinition.newBuilder()
-                                        .setSchema(StorageSchemaConverter.toBigQuerySchema(schema))
-                                        .build())
-                        .build());
-    }
-
-    private static List<String> queryNames(String table) throws InterruptedException {
-        List<String> names = new ArrayList<>();
-        restClient
-                .query(
-                        QueryJobConfiguration.newBuilder(
-                                        "SELECT name FROM `"
-                                                + PROJECT
-                                                + "."
-                                                + DATASET
-                                                + "."
-                                                + table
-                                                + "` ORDER BY name")
-                                .build())
-                .iterateAll()
-                .forEach((FieldValueList row) -> names.add(row.get(0).getStringValue()));
-        return names;
     }
 
     private static List<String> tableFieldNames(String table) {

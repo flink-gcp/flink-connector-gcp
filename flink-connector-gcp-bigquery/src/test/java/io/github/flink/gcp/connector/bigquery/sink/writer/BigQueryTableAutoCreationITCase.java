@@ -16,7 +16,6 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.writer;
 
-import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.TableId;
 import io.github.flink.gcp.connector.bigquery.sink.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
@@ -26,8 +25,6 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -71,19 +68,7 @@ class BigQueryTableAutoCreationITCase extends AbstractBigQueryEmulatorITCase {
         }
 
         assertThat(restClient.getTable(TableId.of(DATASET, "auto_created"))).isNotNull();
-        List<String> names = new ArrayList<>();
-        restClient
-                .query(
-                        QueryJobConfiguration.newBuilder(
-                                        "SELECT name FROM `"
-                                                + PROJECT
-                                                + "."
-                                                + DATASET
-                                                + ".auto_created` ORDER BY name")
-                                .build())
-                .iterateAll()
-                .forEach(row -> names.add(row.get(0).getStringValue()));
-        assertThat(names).containsExactly("alice", "bob");
+        assertThat(queryNames("auto_created")).containsExactly("alice", "bob");
     }
 
     @Test

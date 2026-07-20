@@ -18,76 +18,39 @@ package io.github.flink.gcp.connector.bigquery.sink.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import com.google.cloud.bigquery.Field;
-import com.google.cloud.bigquery.QueryJobConfiguration;
-import com.google.cloud.bigquery.Schema;
-import com.google.cloud.bigquery.StandardSQLTypeName;
-import com.google.cloud.bigquery.StandardTableDefinition;
-import com.google.cloud.bigquery.TableId;
-import com.google.cloud.bigquery.TableInfo;
 import io.github.flink.gcp.connector.bigquery.sink.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestMethodOrder;
-
-import java.util.ArrayList;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration tests for the plain at-least-once write path against the BigQuery emulator
- * (goccy/bigquery-emulator), driving writers created through the {@link BigQuerySink} facade: rows
- * appended to a pre-existing table across several checkpoint-style flushes, and per-record dynamic
- * destinations fanning out to multiple tables.
+ * Integration test for the plain at-least-once write path against the BigQuery emulator
+ * (goccy/bigquery-emulator), driving a writer created through the {@link BigQuerySink} facade: rows
+ * appended to a pre-existing table across several checkpoint-style flushes on the same writer,
+ * asserting each flush's rows are queryable once {@code flush()} returns.
  *
- * <p>Emulator deviation (0.8.1, same family as goccy/bigquery-emulator#342): once an earlier
- * Storage Write API connection to the emulator has been closed, a follow-up append on a later
- * connection can be acknowledged yet never become queryable. Real BigQuery makes acknowledged
- * default-stream appends immediately queryable. The multi-flush test is therefore ordered first,
- * before any test closes a connection.
+ * <p>Emulator deviation (0.8.1, same family as goccy/bigquery-emulator#342): on a Storage Write API
+ * connection opened <em>after an earlier connection to the emulator has closed</em>, only the first
+ * {@code AppendRows} request is durably applied — follow-up requests are acknowledged but their
+ * rows never become queryable. The very first connection applies all its requests, and later
+ * single-append connections are unaffected. This multi-flush scenario therefore lives in its own
+ * test class, so its connection is guaranteed to be the container's first (each {@code *ITCase}
+ * class runs in its own forked JVM with a fresh container). Real BigQuery applies every
+ * acknowledged default-stream append.
  */
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class BigQueryDefaultStreamWriterITCase extends AbstractBigQueryEmulatorITCase {
 
-    private static void createTable(String table) {
-        restClient.create(
-                TableInfo.of(
-                        TableId.of(DATASET, table),
-                        StandardTableDefinition.of(
-                                Schema.of(Field.of("name", StandardSQLTypeName.STRING)))));
-    }
-
-    private static List<String> queryNames(String table) throws InterruptedException {
-        List<String> names = new ArrayList<>();
-        restClient
-                .query(
-                        QueryJobConfiguration.newBuilder(
-                                        "SELECT name FROM `"
-                                                + PROJECT
-                                                + "."
-                                                + DATASET
-                                                + "."
-                                                + table
-                                                + "` ORDER BY name")
-                                .build())
-                .iterateAll()
-                .forEach(row -> names.add(row.get(0).getStringValue()));
-        return names;
-    }
-
     @Test
-    @Order(1)
     void facadeBuiltWriterAppendsAcrossCheckpointFlushes() throws Exception {
-        createTable("plain_writes");
+        NameColumnSerializer serializer = new NameColumnSerializer();
+        createTable("plain_writes", serializer.getTableSchema(null));
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .destination(TableDestination.of(PROJECT, DATASET, "plain_writes"))
-                                .serializer(new NameColumnSerializer())
+                                .serializer(serializer)
                                 .build();
         SinkWriter<String> writer =
                 sink.createWriter(
@@ -103,40 +66,6 @@ class BigQueryDefaultStreamWriterITCase extends AbstractBigQueryEmulatorITCase {
             writer.write("carol", CONTEXT);
             writer.flush(true);
             assertThat(queryNames("plain_writes")).containsExactly("alice", "bob", "carol");
-        } finally {
-            writer.close();
-        }
-    }
-
-    @Test
-    @Order(2)
-    void dynamicDestinationsFanOutToMultipleTables() throws Exception {
-        createTable("fanout_even");
-        createTable("fanout_odd");
-        BigQueryDefaultStreamSink<String> sink =
-                (BigQueryDefaultStreamSink<String>)
-                        BigQuerySink.<String>builder()
-                                .destinationResolver(
-                                        (element, context) ->
-                                                TableDestination.of(
-                                                        PROJECT,
-                                                        DATASET,
-                                                        element.length() % 2 == 0
-                                                                ? "fanout_even"
-                                                                : "fanout_odd"))
-                                .serializer(new NameColumnSerializer())
-                                .build();
-        SinkWriter<String> writer =
-                sink.createWriter(
-                        new EmulatorAppenderFactory(grpcEndpoint()),
-                        new BigQueryTableAdmin(restClient));
-        try {
-            writer.write("dave", CONTEXT);
-            writer.write("eve", CONTEXT);
-            writer.write("mallory", CONTEXT);
-            writer.flush(true);
-            assertThat(queryNames("fanout_even")).containsExactly("dave");
-            assertThat(queryNames("fanout_odd")).containsExactly("eve", "mallory");
         } finally {
             writer.close();
         }
