@@ -30,13 +30,17 @@ import com.google.cloud.pubsub.v1.TopicAdminSettings;
 import com.google.cloud.pubsub.v1.stub.GrpcSubscriberStub;
 import com.google.cloud.pubsub.v1.stub.SubscriberStub;
 import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
+import com.google.pubsub.v1.AcknowledgeRequest;
 import com.google.pubsub.v1.ProjectSubscriptionName;
 import com.google.pubsub.v1.PubsubMessage;
 import com.google.pubsub.v1.PullRequest;
 import com.google.pubsub.v1.PushConfig;
+import com.google.pubsub.v1.ReceivedMessage;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
+import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
@@ -52,13 +56,17 @@ import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
  * Shared harness for integration tests against the Pub/Sub emulator: the container, plaintext
- * admin/subscriber clients pointed at it, and a no-op {@link SinkWriter.Context}. Use together with
- * {@link EmulatorPublisherFactory}.
+ * admin/subscriber clients pointed at it, and a no-op {@link SinkWriter.Context}. Writers under
+ * test use the production {@code DefaultPublisherFactory} and {@code PubSubTopicAdmin} in their
+ * emulator-endpoint mode.
  */
 @Testcontainers
 @Timeout(180)
@@ -67,6 +75,9 @@ abstract class AbstractPubSubEmulatorITCase {
     static final String PROJECT = "it-project";
 
     static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
+
+    /** Fast auto-creation recovery backoff so repair paths converge quickly on the emulator. */
+    static final RetrySchedule EMULATOR_RECOVERY_SCHEDULE = new RetrySchedule(100, 1_000, 30, 0);
 
     @Container
     private static final PubSubEmulatorContainer EMULATOR =
@@ -86,8 +97,8 @@ abstract class AbstractPubSubEmulatorITCase {
                 ManagedChannelBuilder.forTarget(EMULATOR.getEmulatorEndpoint())
                         .usePlaintext()
                         .build();
-        // A fixed provider is not auto-closed by the clients, so all of them (including the
-        // per-writer admins handed out by newTopicAdmin()) can share this one channel.
+        // A fixed provider is not auto-closed by the clients, so all of them can share this
+        // one channel.
         channelProvider =
                 FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel));
         topicAdminClient = newTopicAdminClient();
@@ -127,10 +138,11 @@ abstract class AbstractPubSubEmulatorITCase {
 
     /**
      * Returns a fresh emulator-backed {@link TopicAdmin} for a writer under test (the writer closes
-     * its admin, so it must not receive the harness-owned client).
+     * its admin, so it must not receive the harness-owned client). Uses the production admin's
+     * emulator-endpoint mode, so the integration tests exercise its client construction.
      */
-    static TopicAdmin newTopicAdmin() throws IOException {
-        return new PubSubTopicAdmin(newTopicAdminClient());
+    static TopicAdmin newTopicAdmin() {
+        return new PubSubTopicAdmin(emulatorEndpoint());
     }
 
     private static TopicAdminClient newTopicAdminClient() throws IOException {
@@ -139,6 +151,27 @@ abstract class AbstractPubSubEmulatorITCase {
                         .setTransportChannelProvider(channelProvider)
                         .setCredentialsProvider(NoCredentialsProvider.create())
                         .build());
+    }
+
+    /**
+     * Creates a writer under test wired to the emulator through the production publisher factory
+     * and topic admin, with a fast auto-creation recovery schedule suited to the emulator.
+     */
+    static PubSubWriter<String> newWriter(
+            PubSubSinkConfig<String> config, FakeMailboxExecutor mailbox) {
+        return new PubSubWriter<>(
+                config,
+                new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint()),
+                newTopicAdmin(),
+                mailbox,
+                config.getPublisherOptions().getMaxInFlightMessages(),
+                EMULATOR_RECOVERY_SCHEDULE);
+    }
+
+    /** Creates the topic through the harness-owned admin client. */
+    static void createTopic(TopicDestination destination) {
+        topicAdminClient.createTopic(
+                TopicName.of(destination.getProject(), destination.getTopic()));
     }
 
     static boolean topicExists(TopicDestination destination) {
@@ -177,8 +210,49 @@ abstract class AbstractPubSubEmulatorITCase {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Pulls repeatedly until {@code expectedDistinct} distinct payloads have been seen or the
+     * deadline expires, and returns the accumulated set. A single pull is not guaranteed to return
+     * everything outstanding; pulled messages are acked so the next pull returns the remainder
+     * immediately instead of after the ack-deadline redelivery.
+     */
+    static Set<String> pullDistinctPayloadsUntil(
+            String subscriptionId, int expectedDistinct, Duration deadline)
+            throws InterruptedException {
+        Set<String> payloads = new LinkedHashSet<>();
+        long deadlineNanos = System.nanoTime() + deadline.toNanos();
+        while (payloads.size() < expectedDistinct && System.nanoTime() < deadlineNanos) {
+            List<ReceivedMessage> received = pull(subscriptionId, 1_000);
+            if (received.isEmpty()) {
+                Thread.sleep(100);
+                continue;
+            }
+            subscriberStub
+                    .acknowledgeCallable()
+                    .call(
+                            AcknowledgeRequest.newBuilder()
+                                    .setSubscription(
+                                            ProjectSubscriptionName.format(PROJECT, subscriptionId))
+                                    .addAllAckIds(
+                                            received.stream()
+                                                    .map(ReceivedMessage::getAckId)
+                                                    .collect(Collectors.toList()))
+                                    .build());
+            received.stream()
+                    .map(m -> m.getMessage().getData().toString(StandardCharsets.UTF_8))
+                    .forEach(payloads::add);
+        }
+        return payloads;
+    }
+
     /** Pulls up to {@code maxMessages} from the subscription and returns the full messages. */
     static List<PubsubMessage> pullMessages(String subscriptionId, int maxMessages) {
+        return pull(subscriptionId, maxMessages).stream()
+                .map(received -> received.getMessage())
+                .collect(Collectors.toList());
+    }
+
+    private static List<ReceivedMessage> pull(String subscriptionId, int maxMessages) {
         return subscriberStub
                 .pullCallable()
                 .call(
@@ -187,9 +261,6 @@ abstract class AbstractPubSubEmulatorITCase {
                                         ProjectSubscriptionName.format(PROJECT, subscriptionId))
                                 .setMaxMessages(maxMessages)
                                 .build())
-                .getReceivedMessagesList()
-                .stream()
-                .map(received -> received.getMessage())
-                .collect(Collectors.toList());
+                .getReceivedMessagesList();
     }
 }

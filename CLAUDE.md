@@ -145,7 +145,11 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   permits on paused keys), publish retries, `enableMessageOrdering`, the in-flight cap and the
   recovery backoff.
   Ordering×repair: cascade cancellations park behind the NOT_FOUND root (mailbox FIFO preserves
-  per-key order) and every repair attempt calls `resumePublish` before republishing. Per-record
-  failure policy and the fatal-exception classifier moved to #37. Decision record in the module
-  README
+  per-key order) and every repair attempt calls `resumePublish` before republishing. Emulator
+  support (#21) is a builder option `emulatorEndpoint(host:port)` — plaintext + no credentials
+  for publishers (each owning its channel) and the auto-creation admin, mirroring the Apache
+  connector's `withHostAndPortForEmulator`; the emulator ITs (including a MiniCluster streaming
+  test through the public builder) reuse the production factory/admin, no test-only factory.
+  Per-record failure policy and the fatal-exception classifier moved to #37. Decision record in
+  the module README
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)

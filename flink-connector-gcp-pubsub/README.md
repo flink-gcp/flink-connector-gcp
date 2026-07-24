@@ -8,7 +8,7 @@ Cloud Pub/Sub sink for Apache Flink with dynamic per-record topic destinations.
 | Topic auto-creation | Implemented (#19) |
 | Attributes/ordering-key conveniences; message ordering; batching/flow-control/retry options; recovery and in-flight knobs | Implemented (#20) |
 | Per-record failure policy; fatal-exception classifier | Planned (#37) |
-| Emulator integration tests | Planned (#21) |
+| Emulator integration tests | Implemented (#21) |
 | Pub/Sub source | Planned for v0.2.0 (#31) |
 
 ```java
@@ -45,6 +45,10 @@ API notes:
 - `TopicDestination` is pure topic identity (`equals`/`hashCode` over project/topic) and serves
   as the key of the writer's per-topic publisher map; publisher settings stay on the sink so
   identity remains stable.
+- `emulatorEndpoint(host:port)` points the sink at a Pub/Sub emulator: the per-topic publishers
+  and the topic auto-creation admin connect over a plaintext channel with no credentials, so it
+  must only ever be used against an emulator (for example a testcontainers
+  `PubSubEmulatorContainer`) — never against production Pub/Sub.
 
 ## Publisher options
 
@@ -181,10 +185,16 @@ SDK settings mapping with a drift guard pinned to the SDK's own retry defaults) 
 (fan-out to per-topic publishers, publisher reuse, checkpoint flush draining, async error
 capture, backpressure at the in-flight cap, close semantics, the topic auto-creation repair
 paths, and the ordering-cascade park/resume/republish paths) against in-memory fakes. Emulator
-integration tests (testcontainers `PubSubEmulatorContainer`) cover topic auto-creation
+integration tests (testcontainers `PubSubEmulatorContainer`) run the production publisher
+factory and topic admin in their emulator-endpoint mode and cover topic auto-creation
 end-to-end, attributes and per-key ordered delivery (including ordering across the auto-creation
-repair), and publishing under overridden batching settings; the broader emulator IT matrix is
-tracked in #21.
+repair), publishing under overridden batching settings, dynamic destinations fanning out to
+several topics (including auto-creating them), and the checkpoint flush (batching thresholds
+set so high that only `flush` can drive delivery, which must also drain the in-flight count —
+across repeated write/flush cycles on one writer). A MiniCluster streaming integration test
+drives the sink exclusively through the public builder with `emulatorEndpoint(...)`, dynamic
+destinations and topic auto-creation under real 1-second checkpoints, asserting complete
+delivery. All integration tests run in PR CI without cloud credentials.
 
 ## Provenance and attribution
 

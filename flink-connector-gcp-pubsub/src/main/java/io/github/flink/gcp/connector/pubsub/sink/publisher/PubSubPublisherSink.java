@@ -70,9 +70,10 @@ public class PubSubPublisherSink<T> implements Sink<T> {
         } catch (Exception e) {
             throw new IOException("Failed to open the Pub/Sub serialization schema.", e);
         }
+        String emulatorEndpoint = config.getEmulatorEndpoint();
         return createWriter(
-                new DefaultPublisherFactory(config.getPublisherOptions()),
-                new PubSubTopicAdmin(),
+                new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint),
+                new PubSubTopicAdmin(emulatorEndpoint),
                 context.getMailboxExecutor());
     }
 

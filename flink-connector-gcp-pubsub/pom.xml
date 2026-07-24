@@ -83,6 +83,12 @@ limitations under the License.
             <groupId>io.grpc</groupId>
             <artifactId>grpc-api</artifactId>
         </dependency>
+        <dependency>
+            <!-- Plaintext gRPC channel setup for the emulator endpoint mode of the publisher
+                 factory and the topic admin. Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax-grpc</artifactId>
+        </dependency>
 
         <!-- Test dependencies -->
         <dependency>
@@ -97,10 +103,21 @@ limitations under the License.
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- Plaintext gRPC channel setup against the emulator in integration tests.
-                 Version managed by the libraries BOM. -->
-            <groupId>com.google.api</groupId>
-            <artifactId>gax-grpc</artifactId>
+            <!-- MiniCluster-based streaming integration test. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-test-utils</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Local executor backing the MiniCluster integration test. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-clients</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Rate-limited source spanning checkpoints in the streaming integration test. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-datagen</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

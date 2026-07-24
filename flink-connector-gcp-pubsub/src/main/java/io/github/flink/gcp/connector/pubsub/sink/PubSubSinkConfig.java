@@ -20,6 +20,8 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 
 /**
@@ -36,16 +38,19 @@ public final class PubSubSinkConfig<T> implements Serializable {
     private final PubSubSerializationSchema<? super T> serializer;
     private final CreateDisposition createDisposition;
     private final PubSubPublisherOptions publisherOptions;
+    @Nullable private final String emulatorEndpoint;
 
     PubSubSinkConfig(
             DestinationResolver<? super T> destinationResolver,
             PubSubSerializationSchema<? super T> serializer,
             CreateDisposition createDisposition,
-            PubSubPublisherOptions publisherOptions) {
+            PubSubPublisherOptions publisherOptions,
+            @Nullable String emulatorEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.createDisposition = createDisposition;
         this.publisherOptions = publisherOptions;
+        this.emulatorEndpoint = emulatorEndpoint;
     }
 
     /** Returns the per-record destination resolver. */
@@ -66,5 +71,13 @@ public final class PubSubSinkConfig<T> implements Serializable {
     /** Returns the publisher and writer tuning options. */
     public PubSubPublisherOptions getPublisherOptions() {
         return publisherOptions;
+    }
+
+    /**
+     * Returns the emulator endpoint ({@code host:port}), or {@code null} for production Pub/Sub.
+     */
+    @Nullable
+    public String getEmulatorEndpoint() {
+        return emulatorEndpoint;
     }
 }

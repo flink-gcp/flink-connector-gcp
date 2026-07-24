@@ -23,6 +23,8 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 
+import javax.annotation.Nullable;
+
 /**
  * Builder for Pub/Sub sinks, obtained from {@link PubSubSink#builder()}.
  *
@@ -40,6 +42,7 @@ public class PubSubSinkBuilder<T> {
     private PubSubSerializationSchema<? super T> serializer;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
     private PubSubPublisherOptions publisherOptions = PubSubPublisherOptions.defaults();
+    @Nullable private String emulatorEndpoint;
 
     PubSubSinkBuilder() {}
 
@@ -111,6 +114,24 @@ public class PubSubSinkBuilder<T> {
     }
 
     /**
+     * Points the sink at a Pub/Sub emulator instead of the production service. Connections to the
+     * given {@code host:port} — the per-topic publishers and, when topic auto-creation triggers,
+     * the admin client — use a plaintext channel with no credentials, so this must only ever be
+     * used against an emulator (for example a testcontainers {@code PubSubEmulatorContainer}).
+     * Optional; when unset the sink connects to Pub/Sub with application-default credentials.
+     *
+     * @param emulatorEndpoint the emulator endpoint as {@code host:port}
+     * @return this builder
+     */
+    public PubSubSinkBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
+        Preconditions.checkNotNull(emulatorEndpoint, "emulatorEndpoint must not be null");
+        Preconditions.checkArgument(
+                !emulatorEndpoint.trim().isEmpty(), "emulatorEndpoint must not be blank");
+        this.emulatorEndpoint = emulatorEndpoint;
+        return this;
+    }
+
+    /**
      * Builds the sink.
      *
      * @return the sink
@@ -122,6 +143,10 @@ public class PubSubSinkBuilder<T> {
                 "A destination is required: set topic(...) or destinationResolver(...).");
         return new PubSubPublisherSink<>(
                 new PubSubSinkConfig<>(
-                        destinationResolver, serializer, createDisposition, publisherOptions));
+                        destinationResolver,
+                        serializer,
+                        createDisposition,
+                        publisherOptions,
+                        emulatorEndpoint));
     }
 }
