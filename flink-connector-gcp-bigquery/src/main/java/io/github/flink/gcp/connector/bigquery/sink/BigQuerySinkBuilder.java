@@ -24,7 +24,9 @@ import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storageapi.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.BufferedStreamOptions;
 
 /**
  * Builder for BigQuery sinks, obtained from {@link BigQuerySink#builder()}.
@@ -49,6 +51,7 @@ public class BigQuerySinkBuilder<T> {
     private FailedRowHandler failedRowHandler = FailedRowHandler.failJob();
     private String location;
     private FileLoadsOptions fileLoadsOptions;
+    private BufferedStreamOptions bufferedStreamOptions;
 
     BigQuerySinkBuilder() {}
 
@@ -207,6 +210,22 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
+     * Sets the options specific to {@link WriteMethod#STORAGE_API_EXACTLY_ONCE}. Required for that
+     * write method (all knobs are defaulted, so {@code BufferedStreamOptions.builder().build()} is
+     * a valid value) and rejected for every other one.
+     *
+     * @param bufferedStreamOptions the buffered-stream options
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> bufferedStreamOptions(
+            BufferedStreamOptions bufferedStreamOptions) {
+        this.bufferedStreamOptions =
+                Preconditions.checkNotNull(
+                        bufferedStreamOptions, "bufferedStreamOptions must not be null");
+        return this;
+    }
+
+    /**
      * Builds the sink for the configured {@link WriteMethod}.
      *
      * @return the sink
@@ -236,13 +255,28 @@ public class BigQuerySinkBuilder<T> {
         Preconditions.checkState(
                 writeMethod != WriteMethod.FILE_LOADS || fileLoadsOptions != null,
                 "fileLoadsOptions(...) is required for WriteMethod.FILE_LOADS.");
+        Preconditions.checkState(
+                writeMethod == WriteMethod.STORAGE_API_EXACTLY_ONCE
+                        || bufferedStreamOptions == null,
+                "bufferedStreamOptions(...) is only valid for"
+                        + " WriteMethod.STORAGE_API_EXACTLY_ONCE (write method is %s).",
+                writeMethod);
+        Preconditions.checkState(
+                writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
+                        || bufferedStreamOptions != null,
+                "bufferedStreamOptions(...) is required for"
+                        + " WriteMethod.STORAGE_API_EXACTLY_ONCE.");
+        Preconditions.checkState(
+                writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
+                        || destinationResolver instanceof FixedDestinationResolver,
+                "WriteMethod.STORAGE_API_EXACTLY_ONCE requires a fixed destination(...);"
+                        + " destinationResolver(...) (dynamic destinations) is not supported for"
+                        + " this write method yet.");
         switch (writeMethod) {
             case STORAGE_API_AT_LEAST_ONCE:
                 return new BigQueryDefaultStreamSink<>(config);
             case STORAGE_API_EXACTLY_ONCE:
-                throw new UnsupportedOperationException(
-                        "WriteMethod.STORAGE_API_EXACTLY_ONCE is not implemented yet"
-                                + " (tracked in issue #30).");
+                return new BigQueryBufferedStreamSink<>(config, bufferedStreamOptions);
             case FILE_LOADS:
                 return new BigQueryFileLoadsSink<>(config, fileLoadsOptions);
             default:
