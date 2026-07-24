@@ -23,11 +23,16 @@ import com.google.api.core.ApiFuture;
 import com.google.api.gax.batching.BatchingSettings;
 import com.google.api.gax.batching.FlowControlSettings;
 import com.google.api.gax.batching.FlowController;
+import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.retrying.RetrySettings;
+import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,8 +46,10 @@ import java.util.concurrent.TimeUnit;
  * {@link PublisherFactory} building {@code google-cloud-pubsub} {@link Publisher} instances
  * configured from {@link PubSubPublisherOptions}; every knob left unset keeps the SDK default
  * (options with no batching or retry overrides leave the publisher builder untouched, so the
- * default configuration is byte-identical to the SDK's). Emulator endpoint support is tracked in
- * issue #21.
+ * default configuration is byte-identical to the SDK's).
+ *
+ * <p>When an emulator endpoint is set, publishers connect to it over a plaintext channel with no
+ * credentials; each publisher owns its channel and shuts it down on close.
  */
 @Internal
 public final class DefaultPublisherFactory implements PublisherFactory {
@@ -72,21 +79,43 @@ public final class DefaultPublisherFactory implements PublisherFactory {
                     .build();
 
     private final PubSubPublisherOptions options;
+    @Nullable private final String emulatorEndpoint;
+
+    /**
+     * Creates a factory connecting to production Pub/Sub with application-default credentials.
+     *
+     * @param options the publisher tuning options
+     */
+    public DefaultPublisherFactory(PubSubPublisherOptions options) {
+        this(options, null);
+    }
 
     /**
      * Creates the factory.
      *
      * @param options the publisher tuning options
+     * @param emulatorEndpoint the emulator endpoint as {@code host:port} (plaintext, no
+     *     credentials), or {@code null} for production Pub/Sub
      */
-    public DefaultPublisherFactory(PubSubPublisherOptions options) {
+    public DefaultPublisherFactory(
+            PubSubPublisherOptions options, @Nullable String emulatorEndpoint) {
         this.options = options;
+        this.emulatorEndpoint = emulatorEndpoint;
     }
 
     @Override
     public TopicPublisher create(TopicDestination destination) throws IOException {
         Publisher.Builder builder = Publisher.newBuilder(destination.toTopicPath());
+        ManagedChannel ownedChannel = null;
+        if (emulatorEndpoint != null) {
+            ownedChannel = ManagedChannelBuilder.forTarget(emulatorEndpoint).usePlaintext().build();
+            builder.setChannelProvider(
+                            FixedTransportChannelProvider.create(
+                                    GrpcTransportChannel.create(ownedChannel)))
+                    .setCredentialsProvider(NoCredentialsProvider.create());
+        }
         configure(builder, options);
-        return new PublisherAdapter(builder.build(), destination);
+        return new PublisherAdapter(builder.build(), destination, ownedChannel);
     }
 
     /** Applies the options onto the publisher builder; unset knobs are left at SDK defaults. */
@@ -186,10 +215,15 @@ public final class DefaultPublisherFactory implements PublisherFactory {
 
         private final Publisher publisher;
         private final TopicDestination destination;
+        @Nullable private final ManagedChannel ownedChannel;
 
-        private PublisherAdapter(Publisher publisher, TopicDestination destination) {
+        private PublisherAdapter(
+                Publisher publisher,
+                TopicDestination destination,
+                @Nullable ManagedChannel ownedChannel) {
             this.publisher = publisher;
             this.destination = destination;
+            this.ownedChannel = ownedChannel;
         }
 
         @Override
@@ -209,13 +243,19 @@ public final class DefaultPublisherFactory implements PublisherFactory {
 
         @Override
         public void close() throws Exception {
-            publisher.shutdown();
-            if (!publisher.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                LOG.warn(
-                        "The Pub/Sub publisher for topic {} did not terminate within {} seconds;"
-                                + " its resources may leak until the JVM exits.",
-                        destination,
-                        SHUTDOWN_TIMEOUT_SECONDS);
+            try {
+                publisher.shutdown();
+                if (!publisher.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    LOG.warn(
+                            "The Pub/Sub publisher for topic {} did not terminate within {}"
+                                    + " seconds; its resources may leak until the JVM exits.",
+                            destination,
+                            SHUTDOWN_TIMEOUT_SECONDS);
+                }
+            } finally {
+                if (ownedChannel != null) {
+                    ownedChannel.shutdownNow();
+                }
             }
         }
     }

@@ -30,10 +30,12 @@ import com.google.cloud.pubsub.v1.TopicAdminSettings;
 import com.google.cloud.pubsub.v1.stub.GrpcSubscriberStub;
 import com.google.cloud.pubsub.v1.stub.SubscriberStub;
 import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
+import com.google.pubsub.v1.AcknowledgeRequest;
 import com.google.pubsub.v1.ProjectSubscriptionName;
 import com.google.pubsub.v1.PubsubMessage;
 import com.google.pubsub.v1.PullRequest;
 import com.google.pubsub.v1.PushConfig;
+import com.google.pubsub.v1.ReceivedMessage;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
@@ -52,13 +54,17 @@ import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
  * Shared harness for integration tests against the Pub/Sub emulator: the container, plaintext
- * admin/subscriber clients pointed at it, and a no-op {@link SinkWriter.Context}. Use together with
- * {@link EmulatorPublisherFactory}.
+ * admin/subscriber clients pointed at it, and a no-op {@link SinkWriter.Context}. Writers under
+ * test use the production {@code DefaultPublisherFactory} and {@code PubSubTopicAdmin} in their
+ * emulator-endpoint mode.
  */
 @Testcontainers
 @Timeout(180)
@@ -127,10 +133,11 @@ abstract class AbstractPubSubEmulatorITCase {
 
     /**
      * Returns a fresh emulator-backed {@link TopicAdmin} for a writer under test (the writer closes
-     * its admin, so it must not receive the harness-owned client).
+     * its admin, so it must not receive the harness-owned client). Uses the production admin's
+     * emulator-endpoint mode, so the integration tests exercise its client construction.
      */
-    static TopicAdmin newTopicAdmin() throws IOException {
-        return new PubSubTopicAdmin(newTopicAdminClient());
+    static TopicAdmin newTopicAdmin() {
+        return new PubSubTopicAdmin(emulatorEndpoint());
     }
 
     private static TopicAdminClient newTopicAdminClient() throws IOException {
@@ -139,6 +146,12 @@ abstract class AbstractPubSubEmulatorITCase {
                         .setTransportChannelProvider(channelProvider)
                         .setCredentialsProvider(NoCredentialsProvider.create())
                         .build());
+    }
+
+    /** Creates the topic through the harness-owned admin client. */
+    static void createTopic(TopicDestination destination) {
+        topicAdminClient.createTopic(
+                TopicName.of(destination.getProject(), destination.getTopic()));
     }
 
     static boolean topicExists(TopicDestination destination) {
@@ -175,6 +188,71 @@ abstract class AbstractPubSubEmulatorITCase {
         return pullMessages(subscriptionId, maxMessages).stream()
                 .map(message -> message.getData().toString(StandardCharsets.UTF_8))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Pulls whatever is immediately available and returns the payloads. Unlike {@link
+     * #pullPayloads}, an empty subscription returns an empty list right away instead of blocking
+     * server-side until messages arrive or the RPC times out — use this to assert non-delivery.
+     */
+    @SuppressWarnings("deprecation") // returnImmediately is the point of this helper
+    static List<String> pullAvailablePayloads(String subscriptionId, int maxMessages) {
+        return subscriberStub
+                .pullCallable()
+                .call(
+                        PullRequest.newBuilder()
+                                .setSubscription(
+                                        ProjectSubscriptionName.format(PROJECT, subscriptionId))
+                                .setMaxMessages(maxMessages)
+                                .setReturnImmediately(true)
+                                .build())
+                .getReceivedMessagesList()
+                .stream()
+                .map(received -> received.getMessage().getData().toString(StandardCharsets.UTF_8))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Pulls repeatedly until {@code expectedDistinct} distinct payloads have been seen or the
+     * deadline expires, and returns the accumulated set. A single pull is not guaranteed to return
+     * everything outstanding; pulled messages are acked so the next pull returns the remainder
+     * immediately instead of after the ack-deadline redelivery.
+     */
+    static Set<String> pullDistinctPayloadsUntil(
+            String subscriptionId, int expectedDistinct, Duration deadline)
+            throws InterruptedException {
+        String subscription = ProjectSubscriptionName.format(PROJECT, subscriptionId);
+        Set<String> payloads = new LinkedHashSet<>();
+        long deadlineNanos = System.nanoTime() + deadline.toNanos();
+        while (payloads.size() < expectedDistinct && System.nanoTime() < deadlineNanos) {
+            List<ReceivedMessage> received =
+                    subscriberStub
+                            .pullCallable()
+                            .call(
+                                    PullRequest.newBuilder()
+                                            .setSubscription(subscription)
+                                            .setMaxMessages(1_000)
+                                            .build())
+                            .getReceivedMessagesList();
+            if (!received.isEmpty()) {
+                subscriberStub
+                        .acknowledgeCallable()
+                        .call(
+                                AcknowledgeRequest.newBuilder()
+                                        .setSubscription(subscription)
+                                        .addAllAckIds(
+                                                received.stream()
+                                                        .map(ReceivedMessage::getAckId)
+                                                        .collect(Collectors.toList()))
+                                        .build());
+                received.stream()
+                        .map(m -> m.getMessage().getData().toString(StandardCharsets.UTF_8))
+                        .forEach(payloads::add);
+            } else if (payloads.size() < expectedDistinct) {
+                Thread.sleep(100);
+            }
+        }
+        return payloads;
     }
 
     /** Pulls up to {@code maxMessages} from the subscription and returns the full messages. */

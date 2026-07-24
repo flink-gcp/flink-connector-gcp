@@ -59,7 +59,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
         return new PubSubWriter<>(
                 TestSinkConfigs.forTopic(
                         destination, serializer, CreateDisposition.CREATE_IF_NEEDED, options),
-                new EmulatorPublisherFactory(emulatorEndpoint(), options),
+                new DefaultPublisherFactory(options, emulatorEndpoint()),
                 newTopicAdmin(),
                 mailbox,
                 options.getMaxInFlightMessages(),

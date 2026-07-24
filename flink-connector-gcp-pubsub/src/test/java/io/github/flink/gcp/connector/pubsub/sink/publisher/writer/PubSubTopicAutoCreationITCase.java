@@ -46,7 +46,7 @@ class PubSubTopicAutoCreationITCase extends AbstractPubSubEmulatorITCase {
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
                         disposition,
                         PubSubPublisherOptions.defaults()),
-                new EmulatorPublisherFactory(emulatorEndpoint()),
+                new DefaultPublisherFactory(PubSubPublisherOptions.defaults(), emulatorEndpoint()),
                 newTopicAdmin(),
                 new FakeMailboxExecutor(),
                 PubSubPublisherOptions.defaults().getMaxInFlightMessages(),

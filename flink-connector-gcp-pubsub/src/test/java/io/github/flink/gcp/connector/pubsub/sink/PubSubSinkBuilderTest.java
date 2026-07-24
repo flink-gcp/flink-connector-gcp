@@ -122,6 +122,42 @@ class PubSubSinkBuilderTest {
     }
 
     @Test
+    void emulatorEndpointDefaultsToNull() {
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder().topic(TOPIC).serializer(serializer()).build();
+
+        assertThat(sink.getConfig().getEmulatorEndpoint()).isNull();
+    }
+
+    @Test
+    void emulatorEndpointPropagatesToConfig() {
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder()
+                                .topic(TOPIC)
+                                .serializer(serializer())
+                                .emulatorEndpoint("localhost:8085")
+                                .build();
+
+        assertThat(sink.getConfig().getEmulatorEndpoint()).isEqualTo("localhost:8085");
+    }
+
+    @Test
+    void rejectsNullEmulatorEndpoint() {
+        assertThatThrownBy(() -> PubSubSink.<String>builder().emulatorEndpoint(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("emulatorEndpoint must not be null");
+    }
+
+    @Test
+    void rejectsBlankEmulatorEndpoint() {
+        assertThatThrownBy(() -> PubSubSink.<String>builder().emulatorEndpoint("  "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulatorEndpoint must not be blank");
+    }
+
+    @Test
     void builtSinkRoundTripsJavaSerialization() throws Exception {
         // Shared fully-populated fixture: a knob added there is automatically covered here.
         PubSubPublisherOptions options = PubSubPublisherOptionsTest.fullyPopulated();
@@ -131,6 +167,7 @@ class PubSubSinkBuilderTest {
                         .serializer(serializer())
                         .createDisposition(CreateDisposition.CREATE_NEVER)
                         .publisherOptions(options)
+                        .emulatorEndpoint("localhost:8085")
                         .build();
 
         byte[] bytes = InstantiationUtil.serializeObject(sink);
@@ -145,5 +182,6 @@ class PubSubSinkBuilderTest {
         assertThat(copy.getConfig().getCreateDisposition())
                 .isEqualTo(CreateDisposition.CREATE_NEVER);
         assertThat(copy.getConfig().getPublisherOptions()).isEqualTo(options);
+        assertThat(copy.getConfig().getEmulatorEndpoint()).isEqualTo("localhost:8085");
     }
 }
