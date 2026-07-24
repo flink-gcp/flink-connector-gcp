@@ -124,10 +124,32 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   and checkpoints-after-tasks-finish (the final batch rides the post-finish checkpoint). Quota
   guard at graph construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5
   min warns (1,500 load jobs/table/day), plus a runtime cadence warning in the committer
+- **BigQuery STORAGE_API_EXACTLY_ONCE** (#30): buffered streams + 2PC on checkpoints. **One
+  stream per writer subtask, reused across checkpoints and tracked in Flink writer state**
+  (Dataproc-connector style; stream-per-checkpoint explicitly rejected — GCP support told the
+  user frequent CreateWriteStream churn is not intended usage). Committable = (streamName,
+  inclusive flushOffset, subtaskId); committer calls `FlushRows` synchronously, `ALREADY_EXISTS`
+  = already flushed = success, everything else throws (restart + idempotent re-commit; no
+  deterministic-id machinery, no checkpoint stamper, no `.global()` — committer runs at sink
+  parallelism, the pre-commit topology is identity and exists only as the validation hook).
+  Restore: synchronous probe append at the restored offset; offset conflicts / dead stream /
+  reopen failure abandon the stream for a fresh one at offset 0 (rows past the restored offset
+  were never committable, so they stay invisible). **Streams are never finalized anywhere** —
+  real BigQuery rejects `FlushRows` on a finalized stream (verified; the batch IT caught it),
+  so finalizing races restored-but-uncommitted commits; open streams' unflushed tails are
+  invisible and cost nothing. Server-side row-level errors route to `FailedRowHandler` with
+  offset-recompute recovery (atomic request rejection → route failing rows, replay survivors +
+  trailing batches; `ALREADY_EXISTS` during an offset-shifting replay is terminal). v1 scope:
+  fixed destination only (builder rejects `destinationResolver`), no mid-stream schema
+  evolution (stream schema pinned at creation), BATCH supported (commit at end of input),
+  streaming requires EXACTLY_ONCE + checkpoints-after-tasks-finish; retry knobs are
+  builder-configurable via `BufferedStreamOptions` with defaults. The goccy emulator keeps no
+  flush cursor (re-flush duplicates), so exactly-once ITs run against real GCP; the emulator
+  gets a single-flush smoke test only
 - **Per-write-method option scoping** (decided in #14, was deferred on PR #46): write-method-only
   options live in a nested immutable options object set on the builder (`FileLoadsOptions` via
-  `fileLoadsOptions(...)`); `build()` requires it for its write method and rejects it for
-  others. Future write methods (#30) follow the same pattern
+  `fileLoadsOptions(...)`, `BufferedStreamOptions` via `bufferedStreamOptions(...)`); `build()`
+  requires it for its write method and rejects it for others
 - **Pub/Sub**: base implementation is vendored from `GoogleCloudPlatform/pubsub`
   `flink-connector/` (decision record: issues #17 and #31); the Apache connector is only a
   design reference (table-factory plumbing, emulator harness). All packages are normalized to

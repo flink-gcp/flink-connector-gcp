@@ -393,8 +393,13 @@ in a testcontainer and exercise the Storage Write API gRPC endpoint plus the RES
 table-metadata path end to end: plain at-least-once appends across checkpoint-style flushes
 through the `BigQuerySink` facade (`BigQueryDefaultStreamWriterITCase`), dynamic multi-table
 destinations (`BigQueryDynamicDestinationsITCase`), table auto-creation with create dispositions
-(`BigQueryTableAutoCreationITCase`), and schema evolution
-(`BigQuerySchemaEvolutionITCase`). The tests connect through a test-only plaintext appender
+(`BigQueryTableAutoCreationITCase`), schema evolution
+(`BigQuerySchemaEvolutionITCase`), and a buffered-stream smoke test of the production
+exactly-once client wiring (`BigQueryBufferedStreamSmokeITCase` — single flush only: the
+emulator keeps no flush cursor, every `FlushRows` re-inserts all rows up to the offset, and
+buffered appends neither honor the request offset nor raise `OFFSET_ALREADY_EXISTS`, so the
+exactly-once semantics are verified against real BigQuery instead). The at-least-once tests
+connect through a test-only plaintext appender
 factory (`EmulatorAppenderFactory`) that also papers over two emulator deviations tracked by
 goccy/bigquery-emulator#342 (default-stream naming, `UNKNOWN` instead of `NOT_FOUND` for missing
 tables); routing the *production* factory at the emulator via an injection seam is tracked in
@@ -415,6 +420,11 @@ credential-less CI:
   endpoint, so the whole `FILE_LOADS` path runs against real services
   (`BigQueryFileLoadsITCase` and `BigQueryFileLoadsStreamingITCase`, env-gated as described
   [above](#file-loads))
+- buffered-stream exactly-once semantics: idempotent re-flush, the restore probe, and the
+  issue-#30 acceptance criterion — a MiniCluster streaming job with an induced mid-run
+  restart showing no duplicates and no gaps — plus a clean streaming run and batch execution
+  (`BigQueryBufferedStreamExactlyOnceITCase`, gated on `BQ_IT_PROJECT`/`BQ_IT_DATASET` only;
+  no bucket needed)
 
 The remaining real-GCP coverage (MiniCluster E2E on GitHub Actions via WIF) is tracked in #16
 and #28.
@@ -431,7 +441,9 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   against load-job limits, temp-table + copy-job overflow path, updating the final table schema
   before the copy since copy jobs support no schema update options, and GC of staged files only
   after load completion), and the streaming FILE_LOADS `triggeringFrequency` model (the Flink
-  checkpoint takes the trigger role)
+  checkpoint takes the trigger role); for STORAGE_API_EXACTLY_ONCE, the
+  `StorageApiFlushAndFinalizeDoFn` flush semantics (`ALREADY_EXISTS` on `FlushRows` means the
+  offset was already flushed and is success — the idempotent-re-commit foundation)
 - [Apache Flink](https://github.com/apache/flink) sink runtime — design reference for the
   committer-based load stage (#69): the SinkV2 committer/committable machinery
   (`CommitterOperator`, `GlobalCommitterOperator`) and the `FileSink` pre-commit-topology
@@ -443,7 +455,15 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   (descriptor accessor + `ByteString` rows); for FILE_LOADS, the `BigQueryIndirectSink`/
   `BigQueryLoadJobOperator` design (SinkV2 post-commit topology on a single non-parallel
   operator, deterministic BigQuery job ids with get-then-submit re-attach for exactly-once
-  retries, 1.5 GiB size-based file rolling, best-effort cleanup)
+  retries, 1.5 GiB size-based file rolling, best-effort cleanup); for
+  STORAGE_API_EXACTLY_ONCE, the `BigQueryBufferedWriter`/`BigQueryCommitter` design (one
+  buffered stream per subtask reused across checkpoints and tracked in writer state, the
+  restore-time validation append that adopts or abandons the restored stream, inclusive flush
+  offsets in the committable) — `BigQueryBufferedStreamWriter` and `BufferedStreamCommitter`
+  are independent implementations of that protocol over Flink 2.x `SupportsWriterState`/
+  `SupportsCommitter`, deliberately diverging on finalization (streams are never finalized
+  here: real BigQuery rejects `FlushRows` on a finalized stream, which would break restored
+  pending commits)
 - [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage)
   (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`, `BqToBqStorageSchemaConverter`) —
   reference for proto/schema conversion (`StorageSchemaConverter` and
