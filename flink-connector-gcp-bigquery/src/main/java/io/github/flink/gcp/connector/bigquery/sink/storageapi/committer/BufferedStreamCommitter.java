@@ -19,7 +19,9 @@ package io.github.flink.gcp.connector.bigquery.sink.storageapi.committer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.Committer;
 
+import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.storageapi.BufferedStreamCommittable;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storageapi.writer.AppendErrorClassifier;
 import io.github.flink.gcp.connector.bigquery.sink.storageapi.writer.BufferedStreamService;
 import io.github.flink.gcp.connector.bigquery.sink.storageapi.writer.BufferedStreamServiceFactory;
@@ -38,12 +40,14 @@ import java.util.Collection;
  *
  * <p>Flushes run synchronously inside {@link #commit}: a slow flush delays the next checkpoint —
  * that is backpressure, and it keeps the committed contract honest ({@code commit()} returning
- * means the rows are visible). Failures deliberately use none of the {@link CommitRequest} retry
- * signals: any flush failure throws, the job restarts, and the framework re-commits the restored
- * requests — {@code FlushRows} is idempotent, a re-flush of an already-flushed offset answers
- * {@code ALREADY_EXISTS} and is treated as success. This is stricter than Beam's flush handler
- * (which also skips {@code NOT_FOUND} / {@code INVALID_ARGUMENT}): wrongly skipping would be silent
- * data loss, wrongly failing is a visible restart.
+ * means the rows are visible). Transient failures are retried in place within the configured budget
+ * — {@code FlushRows} is idempotent, so retrying is always safe and cheaper than a job restart.
+ * Everything else deliberately uses none of the {@link CommitRequest} retry signals: the failure
+ * throws, the job restarts, and the framework re-commits the restored requests (a re-flush of an
+ * already-flushed offset answers {@code ALREADY_EXISTS} and is treated as success). This is
+ * stricter than Beam's flush handler (which also skips {@code NOT_FOUND} / {@code
+ * INVALID_ARGUMENT}): wrongly skipping would be silent data loss, wrongly failing is a visible
+ * restart.
  *
  * <p>Runs at the sink's parallelism — flushes of distinct streams are independent, so no global
  * routing is needed (unlike FILE_LOADS, whose load jobs must see all files of a table at once).
@@ -55,6 +59,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
 
     private final BufferedStreamServiceFactory serviceFactory;
     @Nullable private final String location;
+    private final RetrySchedule retrySchedule;
 
     @Nullable private BufferedStreamService service;
 
@@ -63,11 +68,20 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
      *
      * @param serviceFactory the Storage Write API service factory
      * @param location the BigQuery location routing hint, or {@code null}
+     * @param options the buffered-stream options (retry schedule)
      */
     public BufferedStreamCommitter(
-            BufferedStreamServiceFactory serviceFactory, @Nullable String location) {
+            BufferedStreamServiceFactory serviceFactory,
+            @Nullable String location,
+            BufferedStreamOptions options) {
         this.serviceFactory = serviceFactory;
         this.location = location;
+        this.retrySchedule =
+                new RetrySchedule(
+                        options.getRetryInitialBackoff().toMillis(),
+                        options.getRetryMaxBackoff().toMillis(),
+                        options.getRetryMaxAttempts(),
+                        0);
     }
 
     @Override
@@ -82,28 +96,48 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
 
     private void flush(BufferedStreamCommittable committable) throws IOException {
         long flushed;
-        try {
-            flushed =
-                    service().flushRows(committable.getStreamName(), committable.getFlushOffset());
-        } catch (IOException | RuntimeException e) {
-            if (AppendErrorClassifier.isOffsetAlreadyExists(e)
-                    || AppendErrorClassifier.hasCode(e, Status.Code.ALREADY_EXISTS)) {
-                // A re-commit after a restore: the offset was flushed before the crash.
+        int attempt = 1;
+        while (true) {
+            try {
+                flushed =
+                        service()
+                                .flushRows(
+                                        committable.getStreamName(), committable.getFlushOffset());
+                break;
+            } catch (IOException | RuntimeException e) {
+                if (AppendErrorClassifier.isOffsetAlreadyExists(e)
+                        || AppendErrorClassifier.hasCode(e, Status.Code.ALREADY_EXISTS)) {
+                    // A re-commit after a restore: the offset was flushed before the crash.
+                    LOG.info(
+                            "Stream {} is already flushed up to offset {} (re-commit after"
+                                    + " restore)",
+                            committable.getStreamName(),
+                            committable.getFlushOffset());
+                    return;
+                }
+                // Retrying a flush in place is always safe (FlushRows is idempotent) and much
+                // cheaper than the restart the throw below causes.
+                boolean transientFailure = AppendErrorClassifier.isTransient(e);
+                if (!transientFailure || attempt >= retrySchedule.maxAttempts()) {
+                    throw new IOException(
+                            "Failed to flush BigQuery stream "
+                                    + committable.getStreamName()
+                                    + " up to offset "
+                                    + committable.getFlushOffset()
+                                    + " (subtask "
+                                    + committable.getSubtaskId()
+                                    + (transientFailure ? ", the retry budget is exhausted" : "")
+                                    + "); the commit will be retried after a restart",
+                            e);
+                }
                 LOG.info(
-                        "Stream {} is already flushed up to offset {} (re-commit after restore)",
+                        "Retrying the flush of stream {} up to offset {} after: {}",
                         committable.getStreamName(),
-                        committable.getFlushOffset());
-                return;
+                        committable.getFlushOffset(),
+                        e.toString());
+                sleep(retrySchedule.backoffMs(attempt));
+                attempt++;
             }
-            throw new IOException(
-                    "Failed to flush BigQuery stream "
-                            + committable.getStreamName()
-                            + " up to offset "
-                            + committable.getFlushOffset()
-                            + " (subtask "
-                            + committable.getSubtaskId()
-                            + "); the commit will be retried after a restart",
-                    e);
         }
         if (flushed != committable.getFlushOffset()) {
             throw new IOException(
@@ -135,5 +169,17 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
             service = serviceFactory.create(location);
         }
         return service;
+    }
+
+    private static void sleep(long millis) throws IOException {
+        if (millis <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting to retry a BigQuery flush", e);
+        }
     }
 }

@@ -107,6 +107,16 @@ public final class AppendErrorClassifier {
     }
 
     /**
+     * Returns whether the failure is transient (and not row-level): safe to retry in place.
+     *
+     * @param t the failure
+     * @return whether the failure is transient
+     */
+    public static boolean isTransient(Throwable t) {
+        return classify(t) == Kind.TRANSIENT;
+    }
+
+    /**
      * Finds a row-level append error (row indices to error messages) in the cause chain.
      *
      * <p>Matches the SDK's legacy-named {@link Exceptions.AppendSerializtionError} base class so
@@ -231,6 +241,20 @@ public final class AppendErrorClassifier {
         return ExceptionUtils.findThrowable(t, Exceptions.OffsetOutOfRange.class).isPresent()
                 || hasStorageErrorCode(
                         t, EnumSet.of(StorageError.StorageErrorCode.OFFSET_OUT_OF_RANGE));
+    }
+
+    /**
+     * Returns whether the failure is the SDK's client-side {@link
+     * Exceptions.StreamWriterClosedException}: the {@code StreamWriter} poisoned itself after a
+     * connection-level failure and every further append through it fails fast. The stream itself is
+     * unaffected — reopening a writer on it repairs the failure.
+     *
+     * @param t the failure
+     * @return whether the failure is a client-side closed stream writer
+     */
+    public static boolean isWriterClosed(Throwable t) {
+        return ExceptionUtils.findThrowable(t, Exceptions.StreamWriterClosedException.class)
+                .isPresent();
     }
 
     /**

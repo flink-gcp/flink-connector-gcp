@@ -337,16 +337,18 @@ public class BigQueryBufferedStreamWriter<T>
     }
 
     /**
-     * Recovers the failed head append. Transient failures — and {@code OFFSET_OUT_OF_RANGE}
-     * cascades from an earlier, since-repaired failure — are re-appended at the original offset.
-     * Row-level rejections escalate to {@link #recoverRowLevel}. Everything else is terminal.
+     * Recovers the failed head append. Transient failures — {@code OFFSET_OUT_OF_RANGE} cascades
+     * from an earlier, since-repaired failure, and a client-side closed stream writer — are
+     * re-appended at the original offset. Row-level rejections escalate to {@link
+     * #recoverRowLevel}. Everything else is terminal.
      */
     private void recover(InFlightAppend failed, Throwable failure) throws IOException {
         Exceptions.AppendSerializtionError rowLevel =
                 AppendErrorClassifier.findRowLevel(failure).orElse(null);
         if (rowLevel == null) {
             if (AppendErrorClassifier.classify(failure) != AppendErrorClassifier.Kind.TRANSIENT
-                    && !AppendErrorClassifier.isOffsetOutOfRange(failure)) {
+                    && !AppendErrorClassifier.isOffsetOutOfRange(failure)
+                    && !AppendErrorClassifier.isWriterClosed(failure)) {
                 throw wrapFailure(
                         "An append to BigQuery stream "
                                 + streamName
@@ -389,7 +391,8 @@ public class BigQueryBufferedStreamWriter<T>
             }
             boolean retriable =
                     AppendErrorClassifier.classify(failure) == AppendErrorClassifier.Kind.TRANSIENT
-                            || AppendErrorClassifier.isOffsetOutOfRange(failure);
+                            || AppendErrorClassifier.isOffsetOutOfRange(failure)
+                            || AppendErrorClassifier.isWriterClosed(failure);
             if (!retriable || attempt >= retrySchedule.maxAttempts()) {
                 throw wrapFailure(
                         "Re-appending to BigQuery stream "
@@ -402,6 +405,9 @@ public class BigQueryBufferedStreamWriter<T>
                                 + attempt
                                 + " attempt(s))",
                         failure);
+            }
+            if (AppendErrorClassifier.isWriterClosed(failure)) {
+                reopenAppender();
             }
             sleep(retrySchedule.backoffMs(attempt));
         }
@@ -476,7 +482,8 @@ public class BigQueryBufferedStreamWriter<T>
             }
             attempt++;
             boolean retriable =
-                    AppendErrorClassifier.classify(failure) == AppendErrorClassifier.Kind.TRANSIENT;
+                    AppendErrorClassifier.classify(failure) == AppendErrorClassifier.Kind.TRANSIENT
+                            || AppendErrorClassifier.isWriterClosed(failure);
             if (!retriable || attempt >= retrySchedule.maxAttempts()) {
                 throw wrapFailure(
                         "Replaying an append to BigQuery stream "
@@ -490,7 +497,29 @@ public class BigQueryBufferedStreamWriter<T>
                                 + " attempt(s))",
                         failure);
             }
+            if (AppendErrorClassifier.isWriterClosed(failure)) {
+                reopenAppender();
+            }
             sleep(retrySchedule.backoffMs(attempt));
+        }
+    }
+
+    /**
+     * Replaces a client-side-closed appender with a fresh one on the same stream — the SDK's {@code
+     * StreamWriter} poisons itself after a connection-level failure, but the stream is unaffected
+     * and re-appends at the same offsets stay valid ({@code OFFSET_ALREADY_EXISTS} still means the
+     * original landed).
+     */
+    private void reopenAppender() throws IOException {
+        LOG.info("Reopening the writer of stream {} after a client-side close", streamName);
+        if (appender != null) {
+            appender.close();
+            appender = null;
+        }
+        try {
+            appender = service.openAppender(streamName, descriptor());
+        } catch (IOException | RuntimeException e) {
+            throw wrapFailure("Failed to reopen BigQuery stream " + streamName, e);
         }
     }
 
@@ -776,10 +805,8 @@ public class BigQueryBufferedStreamWriter<T>
         return null;
     }
 
+    /** Wraps unconditionally: the call-site context (stream, offset, attempts) must survive. */
     private IOException wrapFailure(String message, Throwable cause) {
-        if (cause instanceof IOException && cause.getMessage() != null) {
-            return (IOException) cause;
-        }
         if (AppendErrorClassifier.isSchemaMismatch(cause)) {
             message +=
                     " because the rows carry fields the table does not have; schema evolution is"

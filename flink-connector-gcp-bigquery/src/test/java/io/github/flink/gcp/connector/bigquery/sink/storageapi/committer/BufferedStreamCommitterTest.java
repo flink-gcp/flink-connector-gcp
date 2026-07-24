@@ -24,11 +24,13 @@ import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.StorageError;
 import com.google.protobuf.Any;
 import io.github.flink.gcp.connector.bigquery.sink.storageapi.BufferedStreamCommittable;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storageapi.writer.FakeBufferedStreamService;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -86,7 +88,14 @@ class BufferedStreamCommitterTest {
     }
 
     private static BufferedStreamCommitter committer(FakeBufferedStreamService service) {
-        return new BufferedStreamCommitter(service.asFactory(), null);
+        return new BufferedStreamCommitter(
+                service.asFactory(),
+                null,
+                BufferedStreamOptions.builder()
+                        .retryInitialBackoff(Duration.ofMillis(1))
+                        .retryMaxBackoff(Duration.ofMillis(1))
+                        .retryMaxAttempts(3)
+                        .build());
     }
 
     @Test
@@ -155,6 +164,39 @@ class BufferedStreamCommitterTest {
         committer.commit(requests(new BufferedStreamCommittable(STREAM, 41, 0)));
 
         assertThat(service.flushes).hasSize(1);
+    }
+
+    @Test
+    void transientFlushFailureIsRetriedInPlace() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.flushResults.add(
+                ApiExceptionFactory.createException(
+                        null, GrpcStatusCode.of(Status.Code.UNAVAILABLE), true));
+        BufferedStreamCommitter committer = committer(service);
+
+        committer.commit(requests(new BufferedStreamCommittable(STREAM, 41, 0)));
+
+        assertThat(service.flushes).hasSize(2);
+        assertThat(service.flushes.get(1).offset).isEqualTo(41);
+    }
+
+    @Test
+    void exhaustedTransientRetryBudgetPropagatesAsIOException() {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        for (int i = 0; i < 5; i++) {
+            service.flushResults.add(
+                    ApiExceptionFactory.createException(
+                            null, GrpcStatusCode.of(Status.Code.UNAVAILABLE), true));
+        }
+        BufferedStreamCommitter committer = committer(service);
+
+        assertThatThrownBy(
+                        () ->
+                                committer.commit(
+                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("retry budget is exhausted");
+        assertThat(service.flushes).hasSize(3);
     }
 
     @Test
