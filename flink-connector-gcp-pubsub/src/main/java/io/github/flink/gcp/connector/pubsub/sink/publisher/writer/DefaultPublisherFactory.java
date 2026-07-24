@@ -107,15 +107,24 @@ public final class DefaultPublisherFactory implements PublisherFactory {
     public TopicPublisher create(TopicDestination destination) throws IOException {
         Publisher.Builder builder = Publisher.newBuilder(destination.toTopicPath());
         ManagedChannel ownedChannel = null;
-        if (emulatorEndpoint != null) {
-            ownedChannel = ManagedChannelBuilder.forTarget(emulatorEndpoint).usePlaintext().build();
-            builder.setChannelProvider(
-                            FixedTransportChannelProvider.create(
-                                    GrpcTransportChannel.create(ownedChannel)))
-                    .setCredentialsProvider(NoCredentialsProvider.create());
+        try {
+            if (emulatorEndpoint != null) {
+                ownedChannel =
+                        ManagedChannelBuilder.forTarget(emulatorEndpoint).usePlaintext().build();
+                builder.setChannelProvider(
+                                FixedTransportChannelProvider.create(
+                                        GrpcTransportChannel.create(ownedChannel)))
+                        .setCredentialsProvider(NoCredentialsProvider.create());
+            }
+            configure(builder, options);
+            return new PublisherAdapter(builder.build(), destination, ownedChannel);
+        } catch (IOException | RuntimeException e) {
+            // The channel is owned here until the adapter takes it over on success.
+            if (ownedChannel != null) {
+                ownedChannel.shutdownNow();
+            }
+            throw e;
         }
-        configure(builder, options);
-        return new PublisherAdapter(builder.build(), destination, ownedChannel);
     }
 
     /** Applies the options onto the publisher builder; unset knobs are left at SDK defaults. */

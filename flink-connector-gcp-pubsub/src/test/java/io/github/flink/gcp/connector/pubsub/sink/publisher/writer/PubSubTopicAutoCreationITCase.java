@@ -20,7 +20,6 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
-import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
@@ -39,18 +38,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PubSubTopicAutoCreationITCase extends AbstractPubSubEmulatorITCase {
 
     private static PubSubWriter<String> writer(
-            TopicDestination destination, CreateDisposition disposition) throws IOException {
-        return new PubSubWriter<>(
+            TopicDestination destination, CreateDisposition disposition) {
+        return newWriter(
                 TestSinkConfigs.forTopic(
                         destination,
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
                         disposition,
                         PubSubPublisherOptions.defaults()),
-                new DefaultPublisherFactory(PubSubPublisherOptions.defaults(), emulatorEndpoint()),
-                newTopicAdmin(),
-                new FakeMailboxExecutor(),
-                PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
-                new RetrySchedule(100, 1_000, 30, 0));
+                new FakeMailboxExecutor());
     }
 
     @Test

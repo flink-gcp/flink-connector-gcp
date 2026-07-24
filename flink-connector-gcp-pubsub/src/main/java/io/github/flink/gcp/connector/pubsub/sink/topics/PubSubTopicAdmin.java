@@ -37,70 +37,38 @@ import java.io.IOException;
  *
  * <p>Jobs whose destination topics all exist never construct a client (and never open its gRPC
  * channel). When auto-creation does trigger, the client is short-lived: opened for the creation
- * call and closed with it, so its channel and threads are not held for the writer's remaining
- * lifetime for what is typically a one-shot event. An injected client (tests) is used as-is and
- * closed with the admin instead; with an emulator endpoint the short-lived clients connect to it
- * over a plaintext channel with no credentials. Creation conflicts ({@code ALREADY_EXISTS}, the
- * topic was created concurrently — for example by a parallel subtask) are treated as success.
+ * call and closed with it — together with its channel — so its resources are not held for the
+ * writer's remaining lifetime for what is typically a one-shot event ({@link #close()} therefore
+ * has nothing to release). With an emulator endpoint the short-lived clients connect to it over a
+ * plaintext channel with no credentials. Creation conflicts ({@code ALREADY_EXISTS}, the topic was
+ * created concurrently — for example by a parallel subtask) are treated as success.
  */
 @Internal
 public class PubSubTopicAdmin implements TopicAdmin {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubTopicAdmin.class);
 
-    @Nullable private final TopicAdminClient injectedClient;
     @Nullable private final String emulatorEndpoint;
 
     /** Creates an admin using application-default credentials. */
     public PubSubTopicAdmin() {
-        this.injectedClient = null;
-        this.emulatorEndpoint = null;
+        this(null);
     }
 
     /**
-     * Creates an admin using the given client, closed with the admin.
+     * Creates the admin.
      *
-     * @param client the Pub/Sub admin client
+     * @param emulatorEndpoint the emulator endpoint as {@code host:port} (plaintext, no
+     *     credentials), or {@code null} for production Pub/Sub with application-default credentials
      */
-    public PubSubTopicAdmin(TopicAdminClient client) {
-        this.injectedClient = client;
-        this.emulatorEndpoint = null;
-    }
-
-    /**
-     * Creates an admin connecting to the Pub/Sub emulator at the given {@code host:port} over a
-     * plaintext channel with no credentials. Like the default-credentials admin, the client is
-     * short-lived: opened for a creation call and closed with it, together with its channel.
-     *
-     * @param emulatorEndpoint the emulator endpoint as {@code host:port}
-     */
-    public PubSubTopicAdmin(String emulatorEndpoint) {
-        this.injectedClient = null;
+    public PubSubTopicAdmin(@Nullable String emulatorEndpoint) {
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
     @Override
     public void createTopic(TopicDestination destination) throws IOException {
-        if (injectedClient != null) {
-            createTopic(injectedClient, destination);
-            return;
-        }
-        try (TopicAdminClient client = newClient()) {
-            createTopic(client, destination);
-        }
-    }
-
-    @Override
-    public void close() {
-        if (injectedClient != null) {
-            injectedClient.close();
-        }
-    }
-
-    private static void createTopic(TopicAdminClient client, TopicDestination destination)
-            throws IOException {
         TopicName topicName = TopicName.of(destination.getProject(), destination.getTopic());
-        try {
+        try (TopicAdminClient client = newClient()) {
             client.createTopic(topicName);
             LOG.info("Created Pub/Sub topic {}", destination);
         } catch (AlreadyExistsException e) {
@@ -108,6 +76,11 @@ public class PubSubTopicAdmin implements TopicAdmin {
         } catch (RuntimeException e) {
             throw new IOException("Failed to create Pub/Sub topic " + destination, e);
         }
+    }
+
+    @Override
+    public void close() {
+        // Clients are short-lived within createTopic; there is nothing to release here.
     }
 
     private TopicAdminClient newClient() throws IOException {

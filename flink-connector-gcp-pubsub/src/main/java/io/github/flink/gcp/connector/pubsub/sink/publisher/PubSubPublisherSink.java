@@ -73,9 +73,7 @@ public class PubSubPublisherSink<T> implements Sink<T> {
         String emulatorEndpoint = config.getEmulatorEndpoint();
         return createWriter(
                 new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint),
-                emulatorEndpoint == null
-                        ? new PubSubTopicAdmin()
-                        : new PubSubTopicAdmin(emulatorEndpoint),
+                new PubSubTopicAdmin(emulatorEndpoint),
                 context.getMailboxExecutor());
     }
 

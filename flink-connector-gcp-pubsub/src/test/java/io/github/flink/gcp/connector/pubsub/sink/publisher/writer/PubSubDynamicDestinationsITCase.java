@@ -20,7 +20,6 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
 import io.github.flink.gcp.connector.pubsub.sink.DestinationResolver;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
-import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
@@ -41,17 +40,12 @@ class PubSubDynamicDestinationsITCase extends AbstractPubSubEmulatorITCase {
             (element, context) -> TopicDestination.of(PROJECT, element.split(":")[0]);
 
     private static PubSubWriter<String> writer() {
-        PubSubPublisherOptions options = PubSubPublisherOptions.defaults();
-        return new PubSubWriter<>(
+        return newWriter(
                 TestSinkConfigs.forResolver(
                         BY_PREFIX,
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
-                        options),
-                new DefaultPublisherFactory(options, emulatorEndpoint()),
-                newTopicAdmin(),
-                new FakeMailboxExecutor(),
-                options.getMaxInFlightMessages(),
-                new RetrySchedule(100, 1_000, 30, 0));
+                        PubSubPublisherOptions.defaults()),
+                new FakeMailboxExecutor());
     }
 
     @Test
