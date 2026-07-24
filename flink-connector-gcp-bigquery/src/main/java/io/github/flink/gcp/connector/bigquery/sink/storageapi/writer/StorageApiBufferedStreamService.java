@@ -111,11 +111,6 @@ public final class StorageApiBufferedStreamService implements BufferedStreamServ
     }
 
     @Override
-    public void finalizeStream(String streamName) throws IOException {
-        client.finalizeWriteStream(streamName);
-    }
-
-    @Override
     public long flushRows(String streamName, long offset) throws IOException {
         return client.flushRows(
                         FlushRowsRequest.newBuilder()

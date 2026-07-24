@@ -81,7 +81,6 @@ class BigQueryBufferedStreamWriterRestoreTest {
         BufferedStreamCommittable committable = onlyCommittable(writer.prepareCommit());
         assertThat(committable.getStreamName()).isEqualTo(RESTORED_STREAM);
         assertThat(committable.getFlushOffset()).isEqualTo(6);
-        assertThat(service.finalizedStreams).isEmpty();
 
         // Later appends are pipelined on the adopted stream.
         writer.write("c", CONTEXT);
@@ -161,7 +160,9 @@ class BigQueryBufferedStreamWriterRestoreTest {
         writer.write("a", CONTEXT);
         writer.flush(false);
 
-        assertThat(service.finalizedStreams).containsExactly(RESTORED_STREAM);
+        // The abandoned stream is left open (never finalized): a restored-but-uncommitted
+        // committable may still have to flush it, and BigQuery rejects FlushRows on a
+        // finalized stream.
         assertThat(service.createdStreams).hasSize(1);
         String fresh = service.createdStreams.get(0);
         // The probe batch is replayed onto the fresh stream from offset zero.
@@ -191,7 +192,6 @@ class BigQueryBufferedStreamWriterRestoreTest {
         writer.write("a", CONTEXT);
         writer.flush(false);
 
-        assertThat(service.finalizedStreams).containsExactly(RESTORED_STREAM);
         assertThat(service.createdStreams).hasSize(1);
         assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
     }
@@ -216,7 +216,6 @@ class BigQueryBufferedStreamWriterRestoreTest {
         assertThat(service.appends.get(0).offset).isEqualTo(5);
         assertThat(service.appends.get(1).offset).isEqualTo(5);
         assertThat(service.createdStreams).isEmpty();
-        assertThat(service.finalizedStreams).isEmpty();
         assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(5);
     }
 
@@ -241,36 +240,10 @@ class BigQueryBufferedStreamWriterRestoreTest {
                         })
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Probing restored BigQuery stream");
-        assertThat(service.finalizedStreams).isEmpty();
     }
 
     @Test
-    void finalizeFailureDuringAbandonmentIsBestEffort() throws Exception {
-        FakeBufferedStreamService service = new FakeBufferedStreamService();
-        service.appendResults.add(
-                FakeBufferedStreamService.failure(
-                        storageError(
-                                StorageError.StorageErrorCode.STREAM_FINALIZED,
-                                Status.Code.INVALID_ARGUMENT)));
-        service.finalizeFailures.add(new IOException("finalize hiccup"));
-        BigQueryBufferedStreamWriter<String> writer =
-                writer(
-                        config(),
-                        fastOptions(3),
-                        service,
-                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
-                        new BufferedStreamWriterState(RESTORED_STREAM, 5, 3));
-
-        writer.write("a", CONTEXT);
-        writer.flush(false);
-
-        assertThat(service.finalizedStreams).isEmpty();
-        assertThat(service.createdStreams).hasSize(1);
-        assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
-    }
-
-    @Test
-    void scaleDownRestoreAdoptsTheLatestStateAndFinalizesTheRest() throws Exception {
+    void scaleDownRestoreAdoptsTheLatestState() throws Exception {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         String olderStream = "projects/p/datasets/d/tables/t/streams/older";
         BigQueryBufferedStreamWriter<String> writer =
@@ -285,7 +258,8 @@ class BigQueryBufferedStreamWriterRestoreTest {
         writer.write("a", CONTEXT);
         writer.flush(false);
 
-        assertThat(service.finalizedStreams).containsExactly(olderStream);
+        // The unadopted sibling's stream is dropped but left open — a restored pending
+        // committable of it must stay flushable.
         assertThat(service.appends.get(0).streamName).isEqualTo(RESTORED_STREAM);
         assertThat(service.appends.get(0).offset).isEqualTo(5);
     }

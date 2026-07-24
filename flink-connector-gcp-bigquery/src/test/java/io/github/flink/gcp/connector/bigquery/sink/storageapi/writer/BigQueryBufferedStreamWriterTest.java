@@ -180,7 +180,6 @@ class BigQueryBufferedStreamWriterTest {
                 .containsExactly(
                         new BufferedStreamWriterState(BufferedStreamWriterState.NO_STREAM, 0, 1));
         writer.close();
-        assertThat(service.finalizedStreams).isEmpty();
     }
 
     @Test
@@ -346,25 +345,9 @@ class BigQueryBufferedStreamWriterTest {
     }
 
     @Test
-    void closeFinalizesTheStreamWhenAppendsWereNeverSnapshotted() throws Exception {
-        FakeBufferedStreamService service = new FakeBufferedStreamService();
-        BigQueryBufferedStreamWriter<String> writer =
-                writer(
-                        config(),
-                        fastOptions(3),
-                        service,
-                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
-
-        writer.write("a", CONTEXT);
-        writer.flush(false);
-        writer.close();
-
-        assertThat(service.finalizedStreams).containsExactly(service.createdStreams.get(0));
-        assertThat(service.closed).isTrue();
-    }
-
-    @Test
-    void closeLeavesTheStreamOpenAfterACleanFinalSnapshot() throws Exception {
+    void closeNeverFinalizesTheStream() throws Exception {
+        // BigQuery rejects FlushRows on a finalized stream, and in batch execution (and after a
+        // crash) committables are committed after the writer closed — the stream must stay open.
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         BigQueryBufferedStreamWriter<String> writer =
                 writer(
@@ -376,11 +359,11 @@ class BigQueryBufferedStreamWriterTest {
         writer.write("a", CONTEXT);
         writer.flush(false);
         writer.prepareCommit();
-        writer.snapshotState(1);
         writer.close();
 
-        assertThat(service.finalizedStreams).isEmpty();
         assertThat(service.closed).isTrue();
+        // The committable emitted before close must still be flushable.
+        assertThat(service.flushRows(service.createdStreams.get(0), 0)).isEqualTo(0);
     }
 
     @Test

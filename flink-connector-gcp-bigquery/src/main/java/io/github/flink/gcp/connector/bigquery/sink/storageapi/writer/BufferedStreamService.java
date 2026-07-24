@@ -55,15 +55,6 @@ public interface BufferedStreamService extends AutoCloseable {
             throws IOException;
 
     /**
-     * Finalizes the given stream so no further rows can be appended. Rows already appended stay
-     * flushable: finalizing does not advance or limit the flush cursor.
-     *
-     * @param streamName the buffered write stream name
-     * @throws IOException if finalization fails
-     */
-    void finalizeStream(String streamName) throws IOException;
-
-    /**
      * Makes every row up to the given offset (inclusive) visible in the destination table.
      *
      * @param streamName the buffered write stream name

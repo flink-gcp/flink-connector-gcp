@@ -7,7 +7,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 | Write method | Semantics | Status |
 |---|---|---|
 | `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: #15) |
-| `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit | Not buildable yet — `build()` rejects (#30) |
+| `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit on checkpoints; single fixed destination | Implemented (#30), see [Exactly-once (buffered streams)](#exactly-once-buffered-streams) |
 | `FILE_LOADS` | GCS-staged Avro files + BigQuery load jobs; batch and streaming (checkpoint-triggered), exactly-once | Implemented (#14 batch, #69 streaming), see [File loads](#file-loads) |
 
 ```java
@@ -130,6 +130,84 @@ Flink never calls `flush()` mid-stream, so sub-threshold buffers are lost on fai
 time-based flush option for checkpoint-less jobs is tracked in #54). Batch execution is covered
 by the end-of-input flush. End-to-end loss behavior additionally depends on the source's own
 state handling.
+
+## Exactly-once (buffered streams)
+
+`WriteMethod.STORAGE_API_EXACTLY_ONCE` writes through application-created Storage Write API
+**BUFFERED** streams committed with a two-phase commit protocol on Flink checkpoints: writers
+append rows at explicit offsets (invisible while buffered), and when a checkpoint completes the
+committer makes exactly that checkpoint's rows visible with `FlushRows`.
+
+```java
+Sink<MyEvent> sink =
+        BigQuerySink.<MyEvent>builder()
+                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                .serializer(new MyEventProtoSerializer())
+                .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                .build();
+
+env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+env.enableCheckpointing(60_000); // EXACTLY_ONCE mode (the default)
+```
+
+Method-specific settings live in `BufferedStreamOptions` (required for this write method,
+rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default) and
+the connector-driven retry schedule (`retryInitialBackoff` 500 ms, `retryMaxBackoff` 10 s,
+`retryMaxAttempts` 10) governing stream creation, transient re-appends and the restore probe.
+
+**Stream lifecycle.** Each writer subtask owns **one buffered stream, created lazily on its first
+append and reused across checkpoints** — per GCP guidance, frequent `CreateWriteStream` churn
+(e.g. a new stream per checkpoint × parallelism) is not intended usage of the API; a clean run
+creates exactly one stream per subtask for its whole lifetime. The stream name and next append
+offset are Flink writer state. The SDK connection pool is default-stream-only, so each stream
+gets a dedicated `StreamWriter` connection; backpressure comes from the SDK's bounded in-flight
+window. `prepareCommit()` emits one committable per subtask naming the offset the completed
+checkpoint may flush up to; `FlushRows` is naturally idempotent (re-flushing an already-flushed
+offset answers `ALREADY_EXISTS` = success), so re-commits after restarts need no deterministic-id
+machinery, no checkpoint stamping, and no global committer routing — the committer runs at the
+sink's parallelism.
+
+**Restore.** A restored writer probes its stream with the first replayed batch at the restored
+offset, synchronously. Success reuses the stream; `OFFSET_ALREADY_EXISTS` (the pre-crash attempt
+appended past the restored offset), `OFFSET_OUT_OF_RANGE`, a finalized/unknown stream, or a
+failure to reopen it abandon the stream and a fresh one starts at offset zero. This cannot lose
+or duplicate data: rows appended past the restored offset were never named by any committable,
+so nothing ever flushes them. Abandoned streams (and streams of closing writers) are
+deliberately **never finalized** — BigQuery rejects `FlushRows` on a finalized stream (verified
+against the real service, and the reason batch commits happen after writer close), so finalizing
+could permanently break a restored-but-uncommitted committable; an open stream's unflushed tail
+stays invisible and costs nothing. Commit failures follow the FILE_LOADS model: the committer
+throws, the job restarts, and the framework re-commits the restored committables idempotently.
+
+**Execution modes.** The mode must be explicit (`AUTOMATIC` is rejected at graph construction —
+were it to resolve to streaming without checkpointing, buffered rows would never become visible).
+Streaming requires checkpointing with `CheckpointingMode.EXACTLY_ONCE` and
+checkpoints-after-tasks-finish enabled (the final batch of a bounded job rides the post-finish
+checkpoint); a slow flush delays the next checkpoint — that is the backpressure, and `commit()`
+returning means the rows are visible. `BATCH` execution is supported: the single end-of-input
+committable is committed when the job completes. There is no checkpoint-cadence quota guard:
+`FlushRows` once per subtask per checkpoint is far below its quota (unlike FILE_LOADS' per-table
+daily load-job limit).
+
+**Scope (v1).** One fixed `destination(...)` per sink — the builder rejects
+`destinationResolver(...)` for this write method (dynamic destinations are a planned follow-up).
+The table schema is pinned when the stream is created: **mid-stream schema evolution is not
+supported** (no fingerprint refresh, no connector-driven schema updates; a schema mismatch fails
+the job with a hint — update the table and restart). Table auto-creation under
+`CREATE_IF_NEEDED` works at stream-creation time, with retries while table metadata propagates.
+
+**Error handling.** Serialization failures and oversized rows go to the `FailedRowHandler` before
+any stream exists, as in the at-least-once method. Server-side **row-level rejections are also
+routed to the handler** — with more machinery than the at-least-once path needs: an append
+request is rejected atomically (the offset never advances), so the writer routes the failing rows
+to the handler and replays the surviving rows plus every batch appended behind the rejected one
+at recomputed offsets. Transient failures are re-appended at their original offset
+(`OFFSET_ALREADY_EXISTS` then means the original landed). Stream-state errors mid-run
+(`STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`) are terminal — the restart +
+restore protocol is the repair. Consistency guards (an acknowledged append behind a rejected one,
+an offset-echo mismatch, `OFFSET_ALREADY_EXISTS` during an offset-shifting replay) fail the job
+rather than risk silent divergence.
 
 ## File loads
 

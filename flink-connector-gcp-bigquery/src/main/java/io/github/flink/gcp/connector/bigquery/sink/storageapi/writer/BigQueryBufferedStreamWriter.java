@@ -47,7 +47,6 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -69,11 +68,13 @@ import java.util.concurrent.ExecutionException;
  * <p><b>Restore.</b> A restored writer probes its stream with the first replayed batch,
  * synchronously, at the restored offset: success adopts the stream; {@code OFFSET_ALREADY_EXISTS}
  * (the pre-crash attempt appended past the restored offset), {@code OFFSET_OUT_OF_RANGE}, a
- * finalized/unknown stream, or a failure to open the appender abandon it — the old stream is
- * best-effort finalized and a fresh one starts at offset zero. Nothing appended past the restored
- * offset was ever named by a committable, so it can never be flushed and never becomes visible; a
- * restored-but-uncommitted committable of the old stream still flushes fine, because finalizing
- * blocks appends only.
+ * finalized/unknown stream, or a failure to open the appender abandon it — a fresh stream starts at
+ * offset zero. Nothing appended past the restored offset was ever named by a committable, so it can
+ * never be flushed and never becomes visible. Abandoned streams are deliberately <em>never
+ * finalized</em> (neither here nor in {@link #close()}): BigQuery rejects {@code FlushRows} on a
+ * finalized stream (verified against the real service), so finalizing could permanently break a
+ * restored-but-uncommitted committable that still has to flush the old stream; leaving the stream
+ * open costs nothing — its unflushed tail stays invisible either way.
  *
  * <p><b>Error handling.</b> Serialization failures and oversized rows are routed to the {@link
  * FailedRowHandler} before any stream exists. Transient append failures surfacing past the SDK's
@@ -107,9 +108,6 @@ public class BigQueryBufferedStreamWriter<T>
     private final int subtaskId;
     private final long maxAppendRequestBytes;
     private final RetrySchedule retrySchedule;
-
-    /** Streams of unadopted restored states (scale-down), finalized best-effort on first use. */
-    private final List<String> abandonedRestoredStreams = new ArrayList<>();
 
     @Nullable private BufferedStreamService service;
     @Nullable private OffsetRowAppender appender;
@@ -172,12 +170,6 @@ public class BigQueryBufferedStreamWriter<T>
                 adopted = state;
             }
         }
-        for (BufferedStreamWriterState state : restoredStates) {
-            if (state != adopted
-                    && !state.getStreamName().equals(BufferedStreamWriterState.NO_STREAM)) {
-                abandonedRestoredStreams.add(state.getStreamName());
-            }
-        }
         this.streamName =
                 adopted == null ? BufferedStreamWriterState.NO_STREAM : adopted.getStreamName();
         this.nextOffset = adopted == null ? 0 : adopted.getNextOffset();
@@ -185,13 +177,16 @@ public class BigQueryBufferedStreamWriter<T>
         this.lastSnapshotOffset = nextOffset;
         this.probePending = !streamName.equals(BufferedStreamWriterState.NO_STREAM);
         if (adopted != null) {
+            // Unadopted sibling states (scale-down) are dropped: their streams are left open —
+            // pending committables restored into the committer may still have to flush them —
+            // and their unflushed tails stay invisible forever.
             LOG.info(
                     "Restored subtask {} with stream {} at offset {} ({} sibling state(s)"
-                            + " abandoned)",
+                            + " dropped)",
                     subtaskId,
                     streamName,
                     nextOffset,
-                    abandonedRestoredStreams.size());
+                    restoredStates.size() - 1);
         }
     }
 
@@ -264,28 +259,20 @@ public class BigQueryBufferedStreamWriter<T>
 
     @Override
     public void close() throws Exception {
-        try {
-            boolean uncommittedTail =
-                    !streamName.equals(BufferedStreamWriterState.NO_STREAM)
-                            && (!streamName.equals(lastSnapshotStreamName)
-                                    || nextOffset != lastSnapshotOffset);
-            if (uncommittedTail && service != null) {
-                // Rows appended past the last snapshot can never be flushed; finalizing marks the
-                // stream dead so a later restore abandons it immediately instead of probing into
-                // it. Best-effort: a failure here only costs the restore a probe round-trip.
-                finalizeBestEffort(streamName);
-            }
-        } finally {
-            if (appender != null) {
-                appender.close();
-                appender = null;
-            }
-            if (service != null) {
-                service.close();
-                service = null;
-            }
-            failedRowHandler.close();
+        // The stream is left open deliberately, whatever its state: committables emitted by
+        // prepareCommit() may still be uncommitted (batch execution commits after the writer
+        // closes; a crash leaves restored committables behind), and BigQuery rejects FlushRows
+        // on a finalized stream — finalizing here could make those commits permanently fail.
+        // An unflushable tail past the last snapshot stays invisible without any cleanup.
+        if (appender != null) {
+            appender.close();
+            appender = null;
         }
+        if (service != null) {
+            service.close();
+            service = null;
+        }
+        failedRowHandler.close();
     }
 
     // ------------------------------------------------------------------
@@ -597,16 +584,16 @@ public class BigQueryBufferedStreamWriter<T>
     }
 
     /**
-     * Abandons the restored stream — nothing past the restored offset was ever committable, so
-     * finalizing it (best-effort) loses nothing and keeps restored-but-uncommitted flushes of it
-     * working — and replays the probe batch onto a fresh stream from offset zero.
+     * Abandons the restored stream and replays the probe batch onto a fresh stream from offset
+     * zero. The old stream is left open: a restored-but-uncommitted committable may still have to
+     * flush it (BigQuery rejects {@code FlushRows} on a finalized stream), and its tail past the
+     * restored offset is never named by a committable, so it stays invisible without cleanup.
      */
     private void abandonRestoredStream(ProtoRows batch) throws IOException {
         if (appender != null) {
             appender.close();
             appender = null;
         }
-        finalizeBestEffort(streamName);
         streamName = BufferedStreamWriterState.NO_STREAM;
         nextOffset = 0;
         probePending = false;
@@ -684,25 +671,6 @@ public class BigQueryBufferedStreamWriter<T>
     private void ensureService() throws IOException {
         if (service == null) {
             service = serviceFactory.create(config.getLocation());
-        }
-        if (!abandonedRestoredStreams.isEmpty()) {
-            for (String abandoned : new ArrayList<>(abandonedRestoredStreams)) {
-                finalizeBestEffort(abandoned);
-            }
-            abandonedRestoredStreams.clear();
-        }
-    }
-
-    private void finalizeBestEffort(String stream) {
-        try {
-            service.finalizeStream(stream);
-            LOG.info("Finalized abandoned buffered stream {}", stream);
-        } catch (IOException | RuntimeException e) {
-            LOG.warn(
-                    "Failed to finalize abandoned buffered stream {} (its unflushed rows stay"
-                            + " invisible regardless)",
-                    stream,
-                    e);
         }
     }
 

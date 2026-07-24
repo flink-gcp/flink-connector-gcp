@@ -68,13 +68,11 @@ public class FakeBufferedStreamService implements BufferedStreamService {
 
     public final List<String> createdStreams = new ArrayList<>();
     public final List<String> openedAppenders = new ArrayList<>();
-    public final List<String> finalizedStreams = new ArrayList<>();
     public final List<AppendCall> appends = new ArrayList<>();
     public final List<FlushCall> flushes = new ArrayList<>();
 
     public final Deque<Exception> createFailures = new ArrayDeque<>();
     public final Deque<Exception> openAppenderFailures = new ArrayDeque<>();
-    public final Deque<Exception> finalizeFailures = new ArrayDeque<>();
     public final Deque<ApiFuture<AppendRowsResponse>> appendResults = new ArrayDeque<>();
     public final Deque<Object> flushResults = new ArrayDeque<>();
 
@@ -127,14 +125,6 @@ public class FakeBufferedStreamService implements BufferedStreamService {
             @Override
             public void close() {}
         };
-    }
-
-    @Override
-    public void finalizeStream(String streamName) throws IOException {
-        if (!finalizeFailures.isEmpty()) {
-            throwScripted(finalizeFailures.removeFirst());
-        }
-        finalizedStreams.add(streamName);
     }
 
     @Override
