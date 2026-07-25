@@ -355,11 +355,12 @@ sleeps, so backoff behaviour is asserted exactly instead of being waited out.
 Integration tests (#25) run against [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator)
 (MIT, published as `ghcr.io/aertje/cloud-tasks-emulator`) driven by testcontainers as a
 `GenericContainer` — testcontainers' GCloud module has no Cloud Tasks support, and Google publishes
-no official emulator. They need no cloud credentials and therefore run on every pull request. Each
-one goes through the builder's `emulatorEndpoint("host:port")` option — a plaintext channel with no
-credentials, mirroring the Pub/Sub sink's — and the production client factory, so what they exercise
-is the wiring that ships rather than a test seam. Queues are created by the tests, one per test,
-since the sink never creates one.
+no official emulator. They need no cloud credentials and therefore run on every pull request. They
+reach the emulator the way a user would — through the production client factory in the mode
+`emulatorEndpoint("host:port")` selects, a plaintext channel with no credentials mirroring the
+Pub/Sub sink's — rather than through a test seam; the job tests additionally build the sink through
+the public builder, so they are what covers the serializer's `open(...)` and the writer's
+construction by the runtime. Queues are created by the tests, since the sink never creates one.
 
 - **What the target receives.** The emulator dispatches over real HTTP, so tasks are asserted where
   they land: an HTTP server inside the test JVM, published to the container network with
@@ -371,30 +372,41 @@ since the sink never creates one.
 - **What the service stores.** Task creation is asserted against **paused** queues, which accept
   tasks without dispatching them; a running queue drops a task as soon as it completes, which would
   race every assertion about the task itself. Unnamed tasks are created one per record and a replay
-  creates a second; `taskIdExtractor(...)` names them with the SHA-256 digest of the key and a
-  replayed key creates the task once, with `ALREADY_EXISTS` classified as success by the gax client
-  the sink ships with rather than by a synthesized exception; per-record destinations split across
-  queues; and a returned `flush` means every task is already there.
-- **End to end.** A MiniCluster streaming job built through the public builder, fed by a
-  rate-limited source spanning several checkpoints so the checkpoint flush fires mid-stream and not
-  only at end of input.
+  creates a second; `taskIdExtractor(...)` names them with the SHA-256 digest of the key, and a key
+  replayed in a later flush cycle creates the task once — `ALREADY_EXISTS` classified as success by
+  the gax client the sink ships with rather than by a synthesized exception. The same key routed to
+  two queues stays two tasks, since the name is composed from the queue as well. A returned `flush`
+  means every task is already there, with nothing left in flight or parked.
+- **End to end.** MiniCluster jobs built through the public builder, fed by a rate-limited source:
+  streaming with checkpointing, so the checkpoint flush runs while records are still arriving, and
+  batch, where everything rides the end-of-input flush. Delivery is asserted at the target, so a
+  lost flush shows up as a missing record — though neither job can tell a mid-stream flush from the
+  final one, since the writer creates each task as it is written rather than buffering until the
+  flush.
 
 What the emulator leaves uncovered, for the real-GCP suite or for nothing at all:
 
 - It never garbage-collects task names — the dedup window cannot be exercised, only the
-  `ALREADY_EXISTS` response. (`--hard-reset-on-purge-queue` turned out to be unnecessary: names are
-  keyed by their full task path, so a queue per test is already a namespace per test.)
+  `ALREADY_EXISTS` response. (Its uniqueness check is also a non-atomic check-then-act, so a
+  deduplication test has to sequence its writes into separate flush cycles rather than rely on two
+  concurrent creations of one name colliding. Task names are keyed by their full path, so a queue
+  per test is already a namespace per test and no `--hard-reset-on-purge-queue` is needed.)
 - It does not implement `UpdateQueue`, so queue-level `httpTarget` routing — the override that can
   silently redirect per-record URLs — is not testable there. (Nor is it reachable through the v2
   client at all, as the targets section explains.)
 - It authenticates **OIDC only** — its task dispatch has a single `GetOidcToken` branch — so the
   OAuth path in the v1 scope has no emulator coverage and needs real GCP or a hand-written fake.
-- It offers no failure injection, so the retry and parking paths stay unit tests against the fake
+- It offers no failure injection, so the transient retry budget stays a unit test against the fake
   creator. `NOT_FOUND` is the exception — a queue that was never created produces it, so one
-  integration test spends that short budget end to end and checks the failure it fails the job with.
+  integration test spends that short budget end to end; it is also the only test that drives the
+  park-and-re-dispatch loop on the real clock rather than an injected time source.
 - Its `ListTasks` and `GetTask` ignore `response_view` and always return the full task, where Cloud
   Tasks omits the body and headers under the default `BASIC` view. The tests ask for `FULL`
   explicitly, so their assertions describe the service and not the emulator's leniency.
+- It enforces no task-size limit, so a test of the limits above would assert the emulator's
+  leniency rather than the service's behaviour. Scheduling semantics (`scheduleTime`,
+  `dispatchDeadline`, which a custom serialization schema may set) and App Engine targets are
+  likewise left to real GCP.
 
 ## Provenance and attribution
 

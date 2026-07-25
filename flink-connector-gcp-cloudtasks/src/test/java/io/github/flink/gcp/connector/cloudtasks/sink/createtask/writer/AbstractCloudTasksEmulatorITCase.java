@@ -31,7 +31,7 @@ import com.google.cloud.tasks.v2.RateLimits;
 import com.google.cloud.tasks.v2.Task;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -53,8 +53,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
+
+import static org.testcontainers.Testcontainers.exposeHostPorts;
 
 /**
  * Shared harness for integration tests against the Cloud Tasks emulator
@@ -64,7 +68,9 @@ import java.util.stream.Collectors;
  * and an HTTP server the emulator dispatches tasks to.
  *
  * <p>Writers under test are wired through the production {@code DefaultTaskCreatorFactory} in its
- * emulator-endpoint mode, so these tests exercise the client construction that ships.
+ * emulator-endpoint mode, so these tests exercise the client construction that ships. They
+ * construct {@link CloudTasksWriter} directly rather than through {@code CloudTasksCreateTaskSink},
+ * so the serializer's {@code open(...)} is only covered by the tests that run a job.
  *
  * <p>Queues are never created by the sink, so every test creates its own — which also isolates the
  * tests from one another: the emulator keys task names by their full path, so a queue of one's own
@@ -79,17 +85,27 @@ abstract class AbstractCloudTasksEmulatorITCase {
     /** Emulator locations are opaque path segments; no region has to exist. */
     static final String LOCATION = "us-central1";
 
-    static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private static final int EMULATOR_PORT = 8123;
 
+    /** How long a dispatch is waited for; generous, since a passing test does not spend it. */
+    private static final Duration DISPATCH_TIMEOUT = Duration.ofSeconds(60);
+
     /**
      * Dispatches recorded by {@link #RECEIVER}, written from its handler threads and read from test
-     * threads.
+     * threads. It is never cleared, so tests keep themselves apart by giving every one of them a
+     * target path of its own.
      */
     private static final List<RecordedRequest> REQUESTS = new CopyOnWriteArrayList<>();
 
-    /** The target the emulator dispatches tasks to; see {@link #startReceiver()}. */
+    /**
+     * The target the emulator dispatches tasks to; see {@link #startReceiver()}. It is deliberately
+     * never stopped: an {@link HttpServer} cannot be restarted, so stopping it when the first
+     * subclass finishes would silently starve the rest wherever they share a JVM — an IDE run, or a
+     * build without surefire's {@code reuseForks=false}. Surefire exits the fork regardless of the
+     * server's non-daemon dispatcher thread, so nothing is left running behind the build.
+     */
     private static final HttpServer RECEIVER = startReceiver();
 
     @Container
@@ -125,10 +141,6 @@ abstract class AbstractCloudTasksEmulatorITCase {
         if (channel != null) {
             channel.shutdownNow();
         }
-        // The receiver's dispatcher thread is not a daemon, so leaving it running would keep the
-        // fork alive. Stopping it here is safe because the build gives every integration-test class
-        // its own JVM (the Flink parent's surefire execution sets reuseForks=false).
-        RECEIVER.stop(0);
     }
 
     static String emulatorEndpoint() {
@@ -140,10 +152,30 @@ abstract class AbstractCloudTasksEmulatorITCase {
      * factory. The writer closes its creator, so every writer gets one of its own rather than a
      * shared client.
      */
-    static CloudTasksWriter<String> newWriter(
-            CloudTasksSinkConfig<String> config, FakeMailboxExecutor mailbox) throws IOException {
+    static CloudTasksWriter<String> newWriter(CloudTasksSinkBuilder<String> builder)
+            throws IOException {
         return new CloudTasksWriter<>(
-                config, new DefaultTaskCreatorFactory(emulatorEndpoint()).create(), mailbox);
+                TestSinkConfigs.config(builder),
+                new DefaultTaskCreatorFactory(emulatorEndpoint()).create(),
+                new FakeMailboxExecutor());
+    }
+
+    /**
+     * Writes the records through a writer of its own and flushes, as a checkpoint would. Closing in
+     * try-with-resources keeps a failing close from replacing the failure under test.
+     */
+    static void write(CloudTasksSinkBuilder<String> builder, String... elements) throws Exception {
+        try (CloudTasksWriter<String> writer = newWriter(builder)) {
+            write(writer, elements);
+        }
+    }
+
+    /** Writes the records through the given writer and flushes, as a checkpoint would. */
+    static void write(CloudTasksWriter<String> writer, String... elements) throws Exception {
+        for (String element : elements) {
+            writer.write(element, CONTEXT);
+        }
+        writer.flush(false);
     }
 
     /** Creates a queue that dispatches its tasks, and returns the destination naming it. */
@@ -203,19 +235,39 @@ abstract class AbstractCloudTasksEmulatorITCase {
      * expires, and returns them. Dispatch is asynchronous — a successful {@code CreateTask} only
      * means the queue holds the task — so there is nothing to wait on but the arrival itself.
      */
-    static List<RecordedRequest> awaitRequests(String path, int expected, Duration deadline)
+    static List<RecordedRequest> awaitRequests(String path, int expected)
             throws InterruptedException {
-        long deadlineNanos = System.nanoTime() + deadline.toNanos();
+        return await(path, expected, matches -> matches.size() >= expected);
+    }
+
+    /**
+     * Polls until {@code expected} distinct bodies have been dispatched to {@code path} or the
+     * deadline expires, and returns them. Counting distinct bodies is what an at-least-once sink
+     * allows: waiting for a raw count would return early on a duplicate and leave a record still in
+     * flight.
+     */
+    static Set<String> awaitDistinctBodies(String path, int expected) throws InterruptedException {
+        return distinctBodies(
+                await(path, expected, matches -> distinctBodies(matches).size() >= expected));
+    }
+
+    private static List<RecordedRequest> await(
+            String path, int expected, Predicate<List<RecordedRequest>> done)
+            throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + DISPATCH_TIMEOUT.toNanos();
         List<RecordedRequest> matches = requestsTo(path);
-        while (matches.size() < expected && System.nanoTime() < deadlineNanos) {
+        while (!done.test(matches) && System.nanoTime() < deadlineNanos) {
             Thread.sleep(100);
             matches = requestsTo(path);
         }
         return matches;
     }
 
-    /** Returns the dispatches recorded for {@code path} so far. */
-    static List<RecordedRequest> requestsTo(String path) {
+    private static Set<String> distinctBodies(List<RecordedRequest> requests) {
+        return requests.stream().map(request -> request.body).collect(Collectors.toSet());
+    }
+
+    private static List<RecordedRequest> requestsTo(String path) {
         return REQUESTS.stream()
                 .filter(request -> request.path.equals(path))
                 .collect(Collectors.toList());
@@ -238,7 +290,7 @@ abstract class AbstractCloudTasksEmulatorITCase {
         }
         server.createContext("/", AbstractCloudTasksEmulatorITCase::recordRequest);
         server.start();
-        org.testcontainers.Testcontainers.exposeHostPorts(server.getAddress().getPort());
+        exposeHostPorts(server.getAddress().getPort());
         return server;
     }
 
@@ -265,8 +317,9 @@ abstract class AbstractCloudTasksEmulatorITCase {
     static final class RecordedRequest {
 
         final String method;
-        final String path;
         final String body;
+
+        private final String path;
 
         /** Request headers, keyed by lowercase name. */
         private final Map<String, String> headers;

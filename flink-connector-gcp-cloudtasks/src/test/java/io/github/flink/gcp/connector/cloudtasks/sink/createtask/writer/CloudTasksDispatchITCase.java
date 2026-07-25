@@ -19,14 +19,12 @@ package io.github.flink.gcp.connector.cloudtasks.sink.createtask.writer;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
 import com.google.cloud.tasks.v2.HttpMethod;
-import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSink;
-import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -45,13 +43,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CloudTasksDispatchITCase extends AbstractCloudTasksEmulatorITCase {
 
-    private static final Duration DISPATCH_TIMEOUT = Duration.ofSeconds(60);
-
     @Test
     void postDispatchesTheRecordAsTheBodyWithItsHeaders() throws Exception {
         QueueDestination queue = createQueue("dispatch-post");
-        CloudTasksSinkConfig<String> config =
-                config(
+
+        write(
+                TestSinkConfigs.builder(
                         queue,
                         CloudTasksSerializationSchema.httpTarget(targetUrl("/post"))
                                 .withBody(new SimpleStringSchema())
@@ -61,59 +58,65 @@ class CloudTasksDispatchITCase extends AbstractCloudTasksEmulatorITCase {
                                             headers.put("Content-Type", "application/json");
                                             headers.put("X-Order", element);
                                             return headers;
-                                        }));
+                                        })),
+                "order-1");
 
-        write(config, "order-1");
-
-        List<RecordedRequest> requests = awaitRequests("/post", 1, DISPATCH_TIMEOUT);
+        List<RecordedRequest> requests = awaitRequests("/post", 1);
         assertThat(requests).hasSize(1);
         RecordedRequest request = requests.get(0);
         assertThat(request.method).isEqualTo("POST");
         assertThat(request.body).isEqualTo("order-1");
         assertThat(request.header("Content-Type")).isEqualTo("application/json");
         assertThat(request.header("X-Order")).isEqualTo("order-1");
-        // Cloud Tasks stamps its own headers onto every dispatch; their presence is what tells the
-        // handler the request came from a queue rather than from a client.
+        // Not a sink behaviour, but a cheap check that the request really came through a queue
+        // rather than straight from the harness: Cloud Tasks stamps its own headers onto dispatch.
         assertThat(request.header("X-CloudTasks-QueueName")).isEqualTo("dispatch-post");
     }
 
     @Test
-    void getDispatchesWithoutABody() throws Exception {
-        QueueDestination queue = createQueue("dispatch-get");
-        CloudTasksSinkConfig<String> config =
-                config(
-                        queue,
-                        CloudTasksSerializationSchema.httpTarget(targetUrl("/get"))
-                                .withBody(new SimpleStringSchema())
-                                .withMethod(HttpMethod.GET));
+    void theBodyIsSentOnlyUnderMethodsThatAllowOne() throws Exception {
+        QueueDestination queue = createQueue("dispatch-methods");
 
-        write(config, "order-2");
+        write(methodTarget(queue, HttpMethod.PUT, "/put"), "order-2");
+        write(methodTarget(queue, HttpMethod.GET, "/get"), "order-3");
 
-        List<RecordedRequest> requests = awaitRequests("/get", 1, DISPATCH_TIMEOUT);
-        assertThat(requests).hasSize(1);
         // The body schema is what binds the record type, so it cannot be left out; Cloud Tasks
-        // rejects a task carrying a body under a method that forbids one, so the sink drops it.
-        assertThat(requests.get(0).method).isEqualTo("GET");
-        assertThat(requests.get(0).body).isEmpty();
+        // rejects a task carrying a body under a method that forbids one, so the sink drops it
+        // there and keeps it everywhere it is allowed.
+        assertThat(awaitRequests("/put", 1))
+                .singleElement()
+                .satisfies(
+                        request -> {
+                            assertThat(request.method).isEqualTo("PUT");
+                            assertThat(request.body).isEqualTo("order-2");
+                        });
+        assertThat(awaitRequests("/get", 1))
+                .singleElement()
+                .satisfies(
+                        request -> {
+                            assertThat(request.method).isEqualTo("GET");
+                            assertThat(request.body).isEmpty();
+                        });
     }
 
     @Test
     void perRecordUrlsFanOutToDifferentPaths() throws Exception {
         QueueDestination queue = createQueue("dispatch-fanout");
         String prefix = targetUrl("/fanout/");
-        CloudTasksSinkConfig<String> config =
-                config(
+
+        write(
+                TestSinkConfigs.builder(
                         queue,
                         CloudTasksSerializationSchema.httpTarget(prefix)
                                 .withBody(new SimpleStringSchema())
-                                .withUrl(element -> prefix + element));
+                                .withUrl(element -> prefix + element)),
+                "a",
+                "b");
 
-        write(config, "a", "b");
-
-        assertThat(awaitRequests("/fanout/a", 1, DISPATCH_TIMEOUT))
+        assertThat(awaitRequests("/fanout/a", 1))
                 .singleElement()
                 .satisfies(request -> assertThat(request.body).isEqualTo("a"));
-        assertThat(awaitRequests("/fanout/b", 1, DISPATCH_TIMEOUT))
+        assertThat(awaitRequests("/fanout/b", 1))
                 .singleElement()
                 .satisfies(request -> assertThat(request.body).isEqualTo("b"));
     }
@@ -121,52 +124,49 @@ class CloudTasksDispatchITCase extends AbstractCloudTasksEmulatorITCase {
     @Test
     void oidcTokensArriveAsABearerJwtForTheConfiguredServiceAccount() throws Exception {
         QueueDestination queue = createQueue("dispatch-oidc");
-        CloudTasksSinkConfig<String> config =
-                config(
+        String serviceAccount = "dispatcher@it-project.iam.gserviceaccount.com";
+
+        write(
+                TestSinkConfigs.builder(
                         queue,
                         CloudTasksSerializationSchema.httpTarget(targetUrl("/oidc"))
                                 .withBody(new SimpleStringSchema())
-                                .withOidcToken(
-                                        "dispatcher@it-project.iam.gserviceaccount.com",
-                                        "https://api.example.com"));
+                                .withOidcToken(serviceAccount, "https://api.example.com")),
+                "order-4");
+        write(
+                TestSinkConfigs.builder(
+                        queue,
+                        CloudTasksSerializationSchema.httpTarget(targetUrl("/oidc-default"))
+                                .withBody(new SimpleStringSchema())
+                                .withOidcToken(serviceAccount)),
+                "order-5");
 
-        write(config, "order-3");
+        // The emulator signs its own tokens with a throwaway key, so the signature says nothing;
+        // the claims are what prove the service account and audience reached the token minter.
+        assertThat(claims(awaitRequests("/oidc", 1)))
+                .contains("\"email\":\"" + serviceAccount + "\"")
+                .contains("\"aud\":\"https://api.example.com\"");
+        // Left unset, the audience defaults to the target URL — a service behaviour, not the
+        // sink's, and the reason the builder can leave it out.
+        assertThat(claims(awaitRequests("/oidc-default", 1)))
+                .contains("\"aud\":\"" + targetUrl("/oidc-default") + "\"");
+    }
 
-        List<RecordedRequest> requests = awaitRequests("/oidc", 1, DISPATCH_TIMEOUT);
+    private static CloudTasksSinkBuilder<String> methodTarget(
+            QueueDestination queue, HttpMethod method, String path) {
+        return TestSinkConfigs.builder(
+                queue,
+                CloudTasksSerializationSchema.httpTarget(targetUrl(path))
+                        .withBody(new SimpleStringSchema())
+                        .withMethod(method));
+    }
+
+    /** Returns the decoded payload of the single dispatch's {@code Bearer <jwt>} header. */
+    private static String claims(List<RecordedRequest> requests) {
         assertThat(requests).hasSize(1);
         String authorization = requests.get(0).header("Authorization");
         assertThat(authorization).startsWith("Bearer ");
-        // The emulator signs its own tokens with a throwaway key, so the signature says nothing;
-        // the claims are what prove the service account and audience reached the token minter.
-        assertThat(claims(authorization))
-                .contains("\"email\":\"dispatcher@it-project.iam.gserviceaccount.com\"")
-                .contains("\"aud\":\"https://api.example.com\"");
-    }
-
-    /** Returns the decoded payload of the {@code Bearer <jwt>} authorization header. */
-    private static String claims(String authorization) {
-        String jwt = authorization.substring("Bearer ".length());
-        String payload = jwt.split("\\.")[1];
+        String payload = authorization.substring("Bearer ".length()).split("\\.")[1];
         return new String(Base64.getUrlDecoder().decode(payload), StandardCharsets.UTF_8);
-    }
-
-    private static CloudTasksSinkConfig<String> config(
-            QueueDestination queue, CloudTasksSerializationSchema<String> serializer) {
-        return TestSinkConfigs.config(
-                CloudTasksSink.<String>builder().queue(queue).serializer(serializer));
-    }
-
-    /** Writes the records through a writer of its own and flushes, as a checkpoint would. */
-    private static void write(CloudTasksSinkConfig<String> config, String... elements)
-            throws Exception {
-        CloudTasksWriter<String> writer = newWriter(config, new FakeMailboxExecutor());
-        try {
-            for (String element : elements) {
-                writer.write(element, CONTEXT);
-            }
-            writer.flush(false);
-        } finally {
-            writer.close();
-        }
     }
 }

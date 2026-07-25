@@ -32,39 +32,46 @@ import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 import org.junit.jupiter.api.Test;
 
-import java.time.Duration;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end streaming integration test against the Cloud Tasks emulator, driving the sink
- * exclusively through the public {@code CloudTasksSink.builder()...emulatorEndpoint(...)} path — no
- * test seams.
+ * End-to-end integration tests against the Cloud Tasks emulator, driving the sink exclusively
+ * through the public {@code CloudTasksSink.builder()...emulatorEndpoint(...)} path — no test seams.
+ * These are the only tests that build the sink through {@code CloudTasksCreateTaskSink}, so they
+ * are what covers the serializer's {@code open(...)} and the writer's construction by the runtime.
  *
- * <p>Runs a MiniCluster DataStream job in streaming mode with a rate-limited source that spans
- * several 1-second checkpoints, so the checkpoint flush — the sink's whole delivery guarantee —
- * fires mid-stream rather than only at end of input, and asserts the tasks were dispatched to the
- * target.
+ * <p>Both jobs run on the MiniCluster with a rate-limited source, so the streaming one checkpoints
+ * several times while records are still arriving and the batch one has nothing but the end-of-input
+ * flush. Delivery is asserted at the target the emulator dispatches to; a lost flush shows up as a
+ * missing record.
  */
-class CloudTasksSinkStreamingITCase extends AbstractCloudTasksEmulatorITCase {
+class CloudTasksSinkJobITCase extends AbstractCloudTasksEmulatorITCase {
 
     private static final long RECORD_COUNT = 40;
     private static final double RECORDS_PER_SECOND = 10;
 
-    private static final String PATH = "/streaming";
+    @Test
+    void streamingJobDispatchesEveryRecord() throws Exception {
+        runJob(RuntimeExecutionMode.STREAMING, "streaming", "/streaming");
+    }
 
     @Test
-    void streamingJobDispatchesEveryRecordAcrossCheckpoints() throws Exception {
-        QueueDestination queue = createQueue("streaming");
+    void batchJobDispatchesEveryRecord() throws Exception {
+        // Batch has no checkpoints, so everything rides the end-of-input flush.
+        runJob(RuntimeExecutionMode.BATCH, "batch", "/batch");
+    }
+
+    private static void runJob(RuntimeExecutionMode mode, String queueId, String path)
+            throws Exception {
+        QueueDestination queue = createQueue(queueId);
 
         // Both travel into the job graph as plain values (the container handle is not
         // serializable).
         String endpoint = emulatorEndpoint();
-        String url = targetUrl(PATH);
+        String url = targetUrl(path);
 
         // With checkpointing enabled Flink defaults to endless fixed-delay restarts; a permanently
         // failing creation would loop until the test times out instead of failing fast.
@@ -72,9 +79,13 @@ class CloudTasksSinkStreamingITCase extends AbstractCloudTasksEmulatorITCase {
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
         StreamExecutionEnvironment env =
                 StreamExecutionEnvironment.getExecutionEnvironment(configuration);
-        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-        env.enableCheckpointing(1_000);
+        env.setRuntimeMode(mode);
         env.setParallelism(2);
+        if (mode == RuntimeExecutionMode.STREAMING) {
+            // 40 records at 10/s outlive several of these, so the checkpoint flush runs while the
+            // source is still producing rather than only at the end.
+            env.enableCheckpointing(1_000);
+        }
 
         DataGeneratorSource<String> source =
                 new DataGeneratorSource<>(
@@ -93,7 +104,7 @@ class CloudTasksSinkStreamingITCase extends AbstractCloudTasksEmulatorITCase {
                                 .emulatorEndpoint(endpoint)
                                 .build());
 
-        env.execute("cloudtasks-sink-streaming-it");
+        env.execute("cloudtasks-sink-" + queueId + "-it");
 
         // Distinct-body equality dedupes at-least-once duplicates while proving every record was
         // dispatched and nothing foreign was.
@@ -101,9 +112,7 @@ class CloudTasksSinkStreamingITCase extends AbstractCloudTasksEmulatorITCase {
         for (long index = 0; index < RECORD_COUNT; index++) {
             expected.add("record-" + index);
         }
-        List<RecordedRequest> requests =
-                awaitRequests(PATH, (int) RECORD_COUNT, Duration.ofSeconds(60));
-        assertThat(requests.stream().map(request -> request.body).collect(Collectors.toSet()))
+        assertThat(awaitDistinctBodies(path, (int) RECORD_COUNT))
                 .containsExactlyInAnyOrderElementsOf(expected);
     }
 }
