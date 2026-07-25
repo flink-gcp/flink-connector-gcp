@@ -5,6 +5,16 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      # flink.version is the supported floor, decided together with the version
+      # matrix in .github/workflows/weekly.yaml — moving a minor changes what the
+      # project claims to support, so it is a deliberate edit rather than a PR to
+      # triage. Patch bumps (2.2.1 -> 2.2.2) still arrive: they stay inside the
+      # supported minor and are exactly what dependabot is useful for.
+      - dependency-name: org.apache.flink:*
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
   - package-ecosystem: github-actions
     directory: /
     schedule:

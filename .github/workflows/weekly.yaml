@@ -1,0 +1,151 @@
+name: Weekly
+
+# Verifies the supported Flink range, which the per-PR CI deliberately does not:
+# ci.yaml builds one version for fast feedback (the same split Flink's own
+# externalized connectors use between push_pr.yml and weekly.yml).
+#
+# Three things are checked here:
+#   * every supported minor still compiles and passes the suite
+#   * a jar built against the floor still runs on the newest supported minor
+#     without recompiling, which is what lets this project publish one artifact
+#     for the whole range instead of one per minor
+#   * the next unreleased Flink gets an early warning, so upstream changes are
+#     found before they are released rather than after
+on:
+  schedule:
+    # Sundays. Off the hour, because everything scheduled at :00 lands on the
+    # runner queue at the same instant.
+    - cron: '37 18 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Compile and test against each supported minor, plus the next unreleased one.
+  compile_and_test:
+    # Scheduled workflows are inherited by forks; this keeps them from running there.
+    if: github.repository_owner == 'laughingman7743'
+    name: ${{ matrix.label }} (Flink ${{ matrix.flink || 'floor' }}, JDK ${{ matrix.jdk }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      # One version failing must not hide the state of the others — that is the
+      # whole point of running a matrix.
+      fail-fast: false
+      matrix:
+        include:
+          # The floor passes no -Dflink.version, so what gets tested is whatever
+          # the pom pins. Naming the version here too would just be a second
+          # place to forget to update.
+          - label: floor
+            jdk: '17'
+          - label: ceiling
+            jdk: '17'
+            flink: '2.3.0'
+          # Flink 2.x declares Java 11/17/21, but flink-connector-parent compiles
+          # to target 17, so 11 cannot run this connector. 21 is checked on the
+          # ceiling only: widening both axes at once multiplies emulator-backed
+          # integration-test minutes for little added signal.
+          - label: ceiling
+            jdk: '21'
+            flink: '2.3.0'
+          # Early warning. Not marked continue-on-error on purpose: a break here
+          # is the signal this row exists to deliver, and a green-looking failed
+          # job would bury it.
+          - label: next-snapshot
+            jdk: '17'
+            flink: '2.4-SNAPSHOT'
+            profiles: '-Pflink-snapshots'
+    steps:
+      # Every job pins the same commit. Without this a merge landing mid-run
+      # makes one version look like it silently skipped tests — that false
+      # positive has already happened once on this repository.
+      #
+      # Only main is covered today. Flink 1.20 is the 1.x LTS and will live on
+      # its own branch (#32); covering it means adding rows carrying their own
+      # branch and checking that out here instead, the way
+      # apache/flink-connector-kafka's weekly matrix pairs a Flink version with
+      # a connector branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+          cache: maven
+
+      # Recorded so the log says which floor a green run actually attests to.
+      - name: Report the Flink version under test
+        run: |
+          echo "pom floor : $(./mvnw -q -DforceStdout help:evaluate -Dexpression=flink.version)"
+          echo "override  : ${{ matrix.flink || '(none)' }}"
+
+      - name: Build and verify
+        run: >-
+          ./mvnw -ntp ${{ matrix.profiles }}
+          ${{ matrix.flink && format('-Dflink.version={0}', matrix.flink) || '' }}
+          verify
+
+  # Does one artifact cover the whole supported range?
+  #
+  # Flink guarantees source compatibility across minors for @Public and nothing
+  # for @PublicEvolving or @Experimental, and only about half the Flink surface
+  # this connector touches is @Public — so "one jar runs on every supported
+  # minor" is a measurement, not something the annotations promise. This job is
+  # that measurement: build once against the floor, then re-run the suite with a
+  # newer Flink swapped onto the classpath and nothing recompiled.
+  binary_compat:
+    if: github.repository_owner == 'laughingman7743'
+    name: Binary compat (floor-built, run on Flink ${{ matrix.flink }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        flink: ['2.3.0']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build against the floor
+        run: ./mvnw -ntp verify
+
+      # Captured before the second run overwrites the reports. The fingerprint is
+      # per-class rather than a single total, so a class that stops running is
+      # caught instead of being masked by another that gained tests.
+      - name: Record which tests the floor build ran
+        run: .github/scripts/surefire-fingerprint.sh > /tmp/floor-tests.txt
+
+      # Plugin goals invoked directly, so no lifecycle phase runs and nothing is
+      # recompiled — only the resolved Flink on the classpath changes. The
+      # execution ids are required: the includes/excludes that separate unit
+      # tests from integration tests live in execution-level configuration in
+      # flink-connector-parent, and a bare `surefire:test` would ignore them and
+      # silently skip every ITCase.
+      - name: Re-run the floor-built classes on Flink ${{ matrix.flink }}
+        run: >-
+          ./mvnw -ntp -Dflink.version=${{ matrix.flink }}
+          surefire:test@default-test surefire:test@integration-tests
+
+      - name: Assert the same tests ran
+        run: |
+          .github/scripts/surefire-fingerprint.sh > /tmp/target-tests.txt
+          if ! diff -u /tmp/floor-tests.txt /tmp/target-tests.txt; then
+            echo "::error::A different set of tests ran on Flink ${{ matrix.flink }} than on the floor, so this run proves nothing about binary compatibility."
+            exit 1
+          fi
+          echo "Same tests ran on both: $(wc -l < /tmp/floor-tests.txt) classes."

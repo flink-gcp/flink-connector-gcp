@@ -76,9 +76,27 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   artifact publishing. Publishing to Maven Central happens once all connectors are implemented,
   as `v1.0.0` (Central namespace registration, signing and the Flink 1.x/2.x publishing strategy
   are decided then; see issues #29 and #39)
-- `main` targets **Flink 2.1.x** (planned artifact suffix `-2.1`). Do not bump `flink.version`
-  to a newer minor/major via dependabot — that is a deliberate, manual decision (see closed PR
-  #42). Flink 1.20 support will live on a dedicated `v1.20` branch
+- `main` supports **the current and previous Flink minor**, mirroring Flink's own support policy
+  (decided in #102). Today that is **2.2 and 2.3**, with `flink.version` pinned to the floor
+  (`2.2.1`) because compiling against the oldest and running on newer is the direction that
+  works. A new Flink minor moves both ends: that is a deliberate edit to `flink.version` plus
+  `.github/workflows/weekly.yaml`, never a dependabot minor bump — which is now enforced by an
+  `ignore` rule (patch bumps still arrive). Closed PRs #42 and #97 are the precedent for
+  rejecting minor bumps. Flink 1.20 (1.x LTS) will live on a dedicated `v1.20` branch (#32)
+- **One artifact covers the supported range**, so there is no per-minor artifact suffix (the
+  `-2.1` suffix assumption from before #102 is dropped; #29/#39 decide publishing). Only about
+  half the Flink API surface these connectors touch is `@Public` — and `@Public` guarantees
+  source, not binary, compatibility across minors — so the claim rests on the `binary_compat`
+  job in `weekly.yaml`: build against the floor, then re-run the whole suite with the newest
+  supported Flink swapped onto the classpath and nothing recompiled. If it ever goes red, the
+  fallback is per-minor artifacts as `apache/flink-connector-kafka` publishes them
+  (`5.0.0-2.1` / `5.0.0-2.2` from one branch), which is also what Paimon and Iceberg do
+- The version matrix lives in `weekly.yaml`, not `ci.yaml`: per-PR CI stays single-version for
+  latency, matching Flink's own `push_pr.yml` / `weekly.yml` split. Every matrix job checks out
+  `github.sha` rather than a branch — a merge landing mid-run once made one version look like it
+  had silently skipped 60 tests. The floor row passes no `-Dflink.version`
+  so the pom stays the single source of truth for it. The `2.4-SNAPSHOT` row is upstream
+  early-warning and is deliberately **not** `continue-on-error`
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
