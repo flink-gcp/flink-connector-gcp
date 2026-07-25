@@ -33,7 +33,9 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Assigns subscription splits to reader subtasks.
@@ -64,11 +66,19 @@ public class PubSubSplitEnumerator
 
     private SplitAssignmentPlan plan;
 
-    /** Splits handed out so far; grows to the plan's size as readers register. */
-    private int assignedSplits;
+    /**
+     * Subtasks currently holding splits, and subtasks currently registered with none.
+     *
+     * <p>Sets rather than counters, because {@code addReader} is not called once per subtask: after
+     * a failover the coordinator drops the subtask from its registered readers and calls it again,
+     * while {@code addSplitsBack} only returns the portion of the assignment no completed
+     * checkpoint covers — often nothing. Counting deltas would therefore drift upward on every
+     * failover and drive the derived unassigned-splits gauge negative. Re-registration is
+     * idempotent here.
+     */
+    private final Set<Integer> subtasksWithSplits = new HashSet<>();
 
-    /** Readers that registered and were told there is nothing for them. */
-    private int unassignedReaders;
+    private final Set<Integer> subtasksWithoutSplits = new HashSet<>();
 
     /**
      * Creates the enumerator.
@@ -117,25 +127,35 @@ public class PubSubSplitEnumerator
     }
 
     /**
-     * Registers the enumerator gauges. {@code assignedSplits} and {@code unassignedReaders} both
-     * settle once every reader has registered, so a value that stays below the plan's split count
-     * means a subtask never came back.
+     * Registers the enumerator gauges. Both are derived from which subtasks are registered rather
+     * than accumulated, so they settle once every reader has registered and stay settled across
+     * failovers; a value that stays below the plan's split count means a subtask never came back.
      */
     private void registerMetrics() {
         SplitEnumeratorMetricGroup metricGroup = context.metricGroup();
         if (metricGroup == null) {
             return;
         }
-        metricGroup.gauge(ASSIGNED_SPLITS, (Gauge<Integer>) () -> assignedSplits);
-        metricGroup.gauge(UNASSIGNED_READERS, (Gauge<Integer>) () -> unassignedReaders);
-        metricGroup.setUnassignedSplitsGauge(() -> (long) (plan.splitCount() - assignedSplits));
+        metricGroup.gauge(ASSIGNED_SPLITS, (Gauge<Integer>) this::assignedSplitCount);
+        metricGroup.gauge(UNASSIGNED_READERS, (Gauge<Integer>) subtasksWithoutSplits::size);
+        metricGroup.setUnassignedSplitsGauge(
+                () -> (long) (plan.splitCount() - assignedSplitCount()));
+    }
+
+    /** Counts the splits currently held by registered subtasks. */
+    private int assignedSplitCount() {
+        int assigned = 0;
+        for (int subtaskId : subtasksWithSplits) {
+            assigned += plan.splitsFor(subtaskId).size();
+        }
+        return assigned;
     }
 
     @Override
     public void addReader(int subtaskId) {
         List<SubscriptionSplit> splits = plan.splitsFor(subtaskId);
         if (splits.isEmpty()) {
-            unassignedReaders++;
+            subtasksWithoutSplits.add(subtaskId);
             // Nothing will ever arrive for this subtask, so let it finish instead of holding the
             // watermark back for the lifetime of the job.
             LOG.info(
@@ -145,13 +165,17 @@ public class PubSubSplitEnumerator
             return;
         }
         LOG.info("Assigning splits {} to source subtask {}.", splits, subtaskId);
-        assignedSplits += splits.size();
+        subtasksWithSplits.add(subtaskId);
         context.assignSplits(new SplitsAssignment<>(Collections.singletonMap(subtaskId, splits)));
     }
 
     @Override
     public void addSplitsBack(List<SubscriptionSplit> splits, int subtaskId) {
-        assignedSplits -= splits.size();
+        // The subtask is being reset; it re-registers through addReader and is handed the same
+        // splits again. Forget it either way — the returned list is only the uncheckpointed part
+        // of its assignment, so its size says nothing about what the subtask still holds.
+        subtasksWithSplits.remove(subtaskId);
+        subtasksWithoutSplits.remove(subtaskId);
         // Splits carry no progress state and the assignment is deterministic, so the returned
         // splits need no bookkeeping: the restarted subtask re-registers through addReader and is
         // handed exactly the same splits again.

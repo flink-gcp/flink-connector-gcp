@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
@@ -169,7 +170,13 @@ public class PubSubAckTracker implements AckTracker {
                 awaitAckConfirmation != null ? new ArrayList<>(toAck.size()) : null;
         for (TrackedAck ack : toAck) {
             ApiFuture<AckResponse> confirmation = ack.handle.ack();
-            if (confirmations != null && confirmation != null) {
+            if (confirmations != null) {
+                // Skipping the promised wait because a handle reports nothing would be exactly the
+                // silent failure this option exists to remove, so make the broken wiring loud.
+                Preconditions.checkState(
+                        confirmation != null,
+                        "awaitAckConfirmation is set but the subscriber was built without"
+                                + " acknowledgement responses.");
                 confirmations.add(confirmation);
             }
         }

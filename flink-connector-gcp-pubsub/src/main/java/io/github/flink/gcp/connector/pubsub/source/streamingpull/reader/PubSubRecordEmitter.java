@@ -29,6 +29,8 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSpl
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 
 /**
@@ -101,16 +103,42 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
         collector.bind(sourceOutput, message);
         try {
             deserializationSchema.deserialize(message, collector);
-        } catch (CollectFailure e) {
-            ackTracker.nackPendingImmediately(split.splitId(), message.getMessageId());
-            throw e.getCause();
         } catch (Exception e) {
-            handleDeserializationFailure(message, split, e);
-            return;
+            CollectFailure collectFailure = findCollectFailure(e);
+            if (collectFailure == null) {
+                handleDeserializationFailure(message, split, e);
+                return;
+            }
+            ackTracker.nackPendingImmediately(split.splitId(), message.getMessageId());
+            // Unwrap only our own marker; a schema that caught and re-wrapped it added context
+            // worth keeping.
+            throw e == collectFailure ? collectFailure.getCause() : e;
         } finally {
             collector.unbind();
         }
         ackTracker.stagePendingAck(split.splitId(), message.getMessageId());
+    }
+
+    /**
+     * Finds the output failure inside a thrown exception, or returns {@code null} when the schema
+     * itself failed.
+     *
+     * <p>The chain is walked rather than the top-level type checked: a schema that follows the
+     * common {@code ignore-parse-errors} shape catches everything it throws and re-wraps it, which
+     * would otherwise make a downstream failure look like a bad message — and under {@code DROP}
+     * that would acknowledge a perfectly good message and swallow the downstream exception.
+     */
+    @Nullable
+    private static CollectFailure findCollectFailure(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof CollectFailure) {
+                return (CollectFailure) current;
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+        }
+        return null;
     }
 
     private void handleDeserializationFailure(

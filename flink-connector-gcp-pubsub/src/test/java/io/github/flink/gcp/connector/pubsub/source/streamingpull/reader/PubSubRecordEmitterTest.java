@@ -170,6 +170,44 @@ class PubSubRecordEmitterTest {
         assertThat(output.records()).containsExactly("first");
     }
 
+    @Test
+    void anOutputFailureTheSchemaRewrapsIsStillTreatedAsAnOutputFailure() throws Exception {
+        // The ignore-parse-errors idiom catches everything it throws and re-wraps it. Classifying
+        // by the top-level type would call that a bad message and, under DROP, acknowledge a
+        // perfectly good one while swallowing the downstream exception.
+        RecordingAckHandle handle = receive("m1");
+        output.failOnCollect(new IllegalStateException("downstream exploded"));
+
+        assertThatThrownBy(
+                        () ->
+                                emitter(new RewrappingSchema(), DeserializationFailurePolicy.DROP)
+                                        .emitRecord(message("m1", "payload"), output, SPLIT))
+                .isInstanceOf(IOException.class)
+                .hasMessage("Corrupt record");
+
+        assertThat(handle.isNacked()).isTrue();
+        assertThat(handle.isAcked()).isFalse();
+        assertThat(testMetrics.counter("messagesDropped")).isZero();
+    }
+
+    /** A schema that emits and then re-wraps whatever comes back, including an output failure. */
+    private static final class RewrappingSchema implements PubSubDeserializationSchema<String> {
+
+        @Override
+        public void deserialize(PubsubMessage message, Collector<String> out) throws IOException {
+            try {
+                out.collect("record");
+            } catch (Throwable t) {
+                throw new IOException("Corrupt record", t);
+            }
+        }
+
+        @Override
+        public TypeInformation<String> getProducedType() {
+            return TypeInformation.of(String.class);
+        }
+    }
+
     /** A schema that never succeeds. */
     private static final class UndeserializableSchema
             implements PubSubDeserializationSchema<String> {
