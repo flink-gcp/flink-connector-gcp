@@ -94,10 +94,25 @@ dependencies managed through `com.google.cloud:libraries-bom`.
 - The version matrix lives in `weekly.yaml`, not `ci.yaml`: per-PR CI stays single-version for
   latency, matching Flink's own `push_pr.yml` / `weekly.yml` split. Every matrix job checks out
   `github.sha` rather than a branch — a merge landing mid-run once made one version look like it
-  had silently skipped 60 tests. The floor row passes no `-Dflink.version` at all, so the pom
-  stays the single source of truth for it, and it runs on JDK 21 because floor-on-17 is already
-  covered by `ci.yaml` and by `binary_compat`. The `2.4-SNAPSHOT` row is upstream early-warning
-  and is deliberately **not** `continue-on-error`
+  had silently skipped 60 tests. Matrix rows carry a **role** (`floor` / `ceiling` / `next`), not
+  a version, because GitHub does not expose the `env` context to `strategy` and a version
+  repeated across rows is how one of them gets missed; the version is resolved in a step from
+  `FLINK_CEILING` / `FLINK_NEXT_SNAPSHOT` at the top of the file. The `floor` row passes no
+  `-Dflink.version` at all, so the pom stays the single source of truth for it, and it runs on
+  JDK 21 because floor-on-17 is already covered by `ci.yaml` and by `binary_compat`. The `next`
+  row is upstream early-warning and is deliberately **not** `continue-on-error`
+- **Moving the supported range** (when Flink releases a new minor): `ci.yaml` needs no edit — it
+  names no Flink version and no ceiling, so bumping the pom moves it. The order is
+  (1) `pom.xml` `flink.version` → the old ceiling, (2) `weekly.yaml` `FLINK_CEILING` and
+  `FLINK_NEXT_SNAPSHOT`, (3) `docs/content/_index.md` table, (4) `README.md` under Build,
+  (5) this section. Then **re-run the binary-compatibility measurement against the new ceiling
+  before claiming the range** — the old measurement says nothing about the new pair. Do not
+  hand-maintain this list: `new_minor_check` in `weekly.yaml` prints it in its failure output,
+  which is the copy that gets read
+- `new_minor_check` exists because suppressing the dependabot minor PR removed the only thing
+  that announced a Flink release. It compares `FLINK_CEILING` against Maven Central weekly and
+  fails until the range is moved. It is deliberately **not** a dependency of the other jobs: a
+  new upstream release must not stop the current range from being verified
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual

@@ -4,13 +4,14 @@ name: Weekly
 # ci.yaml builds one version for fast feedback (the same split Flink's own
 # externalized connectors use between push_pr.yml and weekly.yml).
 #
-# Three things are checked here:
+# Four things are checked here:
 #   * every supported minor still compiles and passes the suite
 #   * a jar built against the floor still runs on the newest supported minor
 #     without recompiling, which is what lets this project publish one artifact
 #     for the whole range instead of one per minor
 #   * the next unreleased Flink gets an early warning, so upstream changes are
 #     found before they are released rather than after
+#   * a newly released Flink minor is noticed at all — see new_minor_check
 on:
   schedule:
     # Sundays. Off the hour, because everything scheduled at :00 lands on the
@@ -25,12 +26,27 @@ concurrency:
 permissions:
   contents: read
 
+# The two versions this workflow names. Everything else is derived: the floor is
+# whatever the pom pins, and ci.yaml names no version at all.
+#
+# They live here rather than in the matrix because GitHub does not expose the
+# env context to `strategy`, and repeating a version across matrix rows is how
+# one of them gets missed. So matrix rows carry a *role* — which end of the
+# supported range they are — and the version is resolved in a step.
+env:
+  # The newest supported Flink minor. Bumped when Flink releases a new minor,
+  # together with flink.version in the pom; new_minor_check fails until it is.
+  FLINK_CEILING: '2.3.0'
+  # Upstream early warning: the next Flink that does not exist yet.
+  FLINK_NEXT_SNAPSHOT: '2.4-SNAPSHOT'
+
 jobs:
-  # Compile and test against each supported minor, plus the next unreleased one.
+  # Compile and test against each end of the supported range, plus the next
+  # unreleased Flink.
   compile_and_test:
     # Scheduled workflows are inherited by forks; this keeps them from running there.
     if: github.repository_owner == 'laughingman7743'
-    name: ${{ matrix.label }} (Flink ${{ matrix.flink || 'floor' }}, JDK ${{ matrix.jdk }})
+    name: ${{ matrix.role }} (JDK ${{ matrix.jdk }})
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
@@ -39,33 +55,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The floor passes no -Dflink.version, so what gets tested is whatever
-          # the pom pins. Naming the version here too would just be a second
-          # place to forget to update.
+          # The floor is not named anywhere in this workflow: its row passes no
+          # -Dflink.version, so what gets tested is whatever the pom pins.
           #
           # On JDK 21 rather than 17, because floor-on-17 is what ci.yaml runs on
           # every push and what binary_compat rebuilds below — floor-on-21 is the
           # corner of the matrix nothing else reaches.
-          - label: floor
+          - role: floor
             jdk: '21'
-          - label: ceiling
+          - role: ceiling
             jdk: '17'
-            flink: '2.3.0'
           # Flink 2.x declares Java 11/17/21, but flink-connector-parent compiles
           # to target 17, so 11 cannot run this connector at all. 17 and 21 are
           # spread across the range rather than run as a full cross product:
           # doubling both axes multiplies emulator-backed integration-test
           # minutes for little added signal.
-          - label: ceiling
+          - role: ceiling
             jdk: '21'
-            flink: '2.3.0'
-          # Early warning. Not marked continue-on-error on purpose: a break here
-          # is the signal this row exists to deliver, and a green-looking failed
-          # job would bury it.
-          - label: next-snapshot
+          # Not marked continue-on-error on purpose: a break here is the signal
+          # this row exists to deliver, and a green-looking failed job would
+          # bury it.
+          - role: next
             jdk: '17'
-            flink: '2.4-SNAPSHOT'
-            profiles: '-Pflink-snapshots'
     steps:
       # Every job pins the same commit. Without this a merge landing mid-run
       # makes one version look like it silently skipped tests — that false
@@ -86,17 +97,23 @@ jobs:
           java-version: ${{ matrix.jdk }}
           cache: maven
 
-      # Recorded so the log says which floor a green run actually attests to.
-      - name: Report the Flink version under test
+      - name: Resolve the Flink version for this row
+        id: resolve
         run: |
-          echo "pom floor : $(./mvnw -q -DforceStdout help:evaluate -Dexpression=flink.version)"
-          echo "override  : ${{ matrix.flink || '(none)' }}"
+          case '${{ matrix.role }}' in
+              floor)   args='' ;;
+              ceiling) args="-Dflink.version=$FLINK_CEILING" ;;
+              next)    args="-Dflink.version=$FLINK_NEXT_SNAPSHOT -Pflink-snapshots" ;;
+              *)       echo "::error::unknown role '${{ matrix.role }}'"; exit 1 ;;
+          esac
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          # Recorded so the log says which versions a green run actually attests
+          # to, including for the floor row, which names none.
+          echo "pom floor  : $(./mvnw -q -DforceStdout help:evaluate -Dexpression=flink.version)"
+          echo "maven args : ${args:-(none)}"
 
       - name: Build and verify
-        run: >-
-          ./mvnw -ntp ${{ matrix.profiles }}
-          ${{ matrix.flink && format('-Dflink.version={0}', matrix.flink) || '' }}
-          verify
+        run: ./mvnw -ntp ${{ steps.resolve.outputs.args }} verify
 
   # Does one artifact cover the whole supported range?
   #
@@ -104,17 +121,16 @@ jobs:
   # for @PublicEvolving or @Experimental, and only about half the Flink surface
   # this connector touches is @Public — so "one jar runs on every supported
   # minor" is a measurement, not something the annotations promise. This job is
-  # that measurement: build once against the floor, then re-run the suite with a
-  # newer Flink swapped onto the classpath and nothing recompiled.
+  # that measurement: build once against the floor, then re-run the suite with
+  # the ceiling swapped onto the classpath and nothing recompiled.
+  #
+  # Floor and ceiling are the only two supported minors, so there is one pair to
+  # check and no matrix. Widening the policy past two would bring one back.
   binary_compat:
     if: github.repository_owner == 'laughingman7743'
-    name: Binary compat (floor-built, run on Flink ${{ matrix.flink }})
+    name: Binary compat (floor-built, run on the ceiling)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        flink: ['2.3.0']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -141,16 +157,81 @@ jobs:
       # tests from integration tests live in execution-level configuration in
       # flink-connector-parent, and a bare `surefire:test` would ignore them and
       # silently skip every ITCase.
-      - name: Re-run the floor-built classes on Flink ${{ matrix.flink }}
+      - name: Re-run the floor-built classes on Flink ${{ env.FLINK_CEILING }}
         run: >-
-          ./mvnw -ntp -Dflink.version=${{ matrix.flink }}
+          ./mvnw -ntp "-Dflink.version=$FLINK_CEILING"
           surefire:test@default-test surefire:test@integration-tests
 
       - name: Assert the same tests ran
         run: |
           scripts/surefire-fingerprint.sh > /tmp/target-tests.txt
           if ! diff -u /tmp/floor-tests.txt /tmp/target-tests.txt; then
-            echo "::error::A different set of tests ran on Flink ${{ matrix.flink }} than on the floor, so this run proves nothing about binary compatibility."
-            exit 1
+              echo "::error::A different set of tests ran on Flink $FLINK_CEILING than on the floor, so this run proves nothing about binary compatibility."
+              exit 1
           fi
           echo "Same tests ran on both: $(wc -l < /tmp/floor-tests.txt) classes."
+
+  # Nothing else would tell us a new Flink minor shipped.
+  #
+  # The supported range is "the current and the previous minor", so a Flink
+  # release silently makes this repository's claim wrong — and the dependabot PR
+  # that used to be the de-facto notification is now suppressed on purpose (see
+  # the ignore rule in dependabot.yml), because triaging it monthly was the
+  # problem. That trade only works if something else raises its hand.
+  #
+  # Deliberately independent of the jobs above rather than a dependency of them:
+  # a new upstream release must not stop the current range from being verified.
+  new_minor_check:
+    if: github.repository_owner == 'laughingman7743'
+    name: New Flink minor released?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compare the ceiling against Maven Central
+        run: |
+          set -euo pipefail
+
+          major=${FLINK_CEILING%%.*}
+          ceiling_minor=$(echo "$FLINK_CEILING" | cut -d. -f2)
+
+          # Only fully-numbered releases of the same major: this must not trip
+          # over 2.0-preview1, a 1.x LTS patch, or a SNAPSHOT.
+          latest=$(curl -sSf --max-time 30 \
+              https://repo1.maven.org/maven2/org/apache/flink/flink-core/maven-metadata.xml |
+              grep -oE "<version>${major}\.[0-9]+\.[0-9]+</version>" |
+              sed 's/<[^>]*>//g' | sort -V | tail -1)
+
+          if [ -z "$latest" ]; then
+              echo "::error::Could not read any ${major}.x release from Maven Central."
+              exit 1
+          fi
+          latest_minor=$(echo "$latest" | cut -d. -f2)
+          echo "ceiling $FLINK_CEILING, newest release on Central $latest"
+
+          if [ "$latest_minor" -le "$ceiling_minor" ]; then
+              echo "Supported range is current."
+              exit 0
+          fi
+
+          # The failure message is the runbook: a checklist in CLAUDE.md is only
+          # read by someone who already knows to look for it.
+          cat <<MSG
+          Flink $latest is released, so the supported range — the current and the
+          previous minor — is now ${major}.${ceiling_minor} and ${major}.${latest_minor},
+          and this repository still claims otherwise.
+
+          Moving the range means editing, in this order:
+            1. pom.xml            flink.version -> $FLINK_CEILING
+                                  the old ceiling becomes the new floor, and this
+                                  one edit moves ci.yaml, the floor row here and
+                                  binary_compat's base with it
+            2. this file          FLINK_CEILING -> $latest
+                                  FLINK_NEXT_SNAPSHOT -> the next unreleased minor
+            3. docs/content/_index.md   the Supported versions table
+            4. README.md          the supported-range sentence under Build
+            5. CLAUDE.md          the Version policy section
+
+          Then re-run the binary-compatibility measurement against the new
+          ceiling before claiming the range: see scripts/surefire-fingerprint.sh.
+          MSG
+          exit 1
