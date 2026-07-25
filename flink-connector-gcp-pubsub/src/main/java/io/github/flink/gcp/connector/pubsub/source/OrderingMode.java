@@ -28,9 +28,11 @@ import org.apache.flink.annotation.PublicEvolving;
 public enum OrderingMode {
 
     /**
-     * No ordering guarantee (default). A subscription may be consumed by several reader subtasks
-     * concurrently, which maximizes throughput but lets Pub/Sub move an ordering key between
-     * subtasks when streaming-pull affinity shifts.
+     * No ordering guarantee (default), tuned for throughput. A subscription may be consumed by
+     * several reader subtasks concurrently — the split plan opens one subscriber client per subtask
+     * even when that means several on the same subscription — and Pub/Sub balances messages across
+     * them. Nothing waits on anything, and an ordering key may move between subtasks whenever
+     * streaming-pull affinity shifts.
      */
     NONE,
 
@@ -39,10 +41,16 @@ public enum OrderingMode {
      * assigned to exactly one reader subtask and its subscriber uses a single streaming-pull
      * connection, so every message for a key is emitted by one subtask in delivery order.
      *
-     * <p>Two consequences: source parallelism is effectively capped at the number of subscriptions
-     * (surplus subtasks receive no splits), and because Pub/Sub keeps only one batch outstanding
-     * per ordering key while this source defers acknowledgements to checkpoint completion, per-key
-     * throughput is bounded by roughly one batch per checkpoint interval.
+     * <p>Ordering costs throughput, and most of that cost is Pub/Sub's rather than this source's:
+     * ordered delivery raises end-to-end latency, publish throughput is capped at 1 MB/s per
+     * ordering key, only one batch may be outstanding per key at a time, and unacknowledged
+     * messages for one key can delay delivery for other keys. Prefer the most granular ordering
+     * keys the data allows.
+     *
+     * <p>This source adds two costs of its own: parallelism is effectively capped at the number of
+     * subscriptions (surplus subtasks receive no splits), and because acknowledgement waits for a
+     * checkpoint while only one batch may be outstanding per key, per-key throughput is bounded by
+     * roughly one batch per checkpoint interval.
      *
      * <p>Order is preserved <em>up to the source's output</em>. Preserving it further requires
      * partitioning the stream by the ordering key, for example {@code keyBy(orderingKey)}.

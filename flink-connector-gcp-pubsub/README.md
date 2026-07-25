@@ -259,10 +259,15 @@ parallelism — so changing parallelism across a restore is safe.
 
 ### Message ordering
 
-`orderingMode(OrderingMode.PER_KEY)` preserves per-ordering-key delivery order, and is **off by
-default** because it is not free. It requires subscriptions created with `enableMessageOrdering`,
-and it constrains the source in two ways: each subscription is assigned to exactly one subtask, and
-its subscriber uses a single streaming-pull connection.
+**The default, `OrderingMode.NONE`, makes no ordering guarantee and is tuned for throughput.** The
+split plan gives every subtask at least one split — opening several subscriber clients on the same
+subscription when parallelism exceeds the subscription count — and Pub/Sub balances messages across
+them. Nothing constrains how many subtasks share a subscription, and no message waits on another.
+
+`orderingMode(OrderingMode.PER_KEY)` preserves per-ordering-key delivery order. It requires
+subscriptions created with `enableMessageOrdering`, and it constrains the source in two ways: each
+subscription is assigned to exactly one subtask, and its subscriber uses a single streaming-pull
+connection.
 
 Both constraints are load-bearing. A subscription consumed by two subtasks is two subscriber
 clients, and Pub/Sub's per-key client affinity shifts on reconnect or rebalance. Within one client,
@@ -272,16 +277,41 @@ delivered concurrently.
 
 What the source guarantees is **in-order emission per ordering key per subscription**. Preserving
 that across the rest of the job requires partitioning by the ordering key, for example
-`keyBy(orderingKey)`; a rebalancing shuffle discards it. Two costs to plan for: source parallelism
-is effectively capped at the subscription count (surplus subtasks receive no splits, are told there
-are no more, and finish, so they do not hold the watermark back), and because Pub/Sub keeps only one
-batch outstanding per ordering key while this source defers acknowledgement to checkpoint
-completion, per-key throughput is bounded by roughly one batch per checkpoint interval — ordered
-jobs want short checkpoint intervals.
+`keyBy(orderingKey)`; a rebalancing shuffle discards it.
 
-Acknowledgement is *not* what gates ordered dispatch: the client library runs the next callback for
-a key once the previous callback **returns**, and this source's callback only appends to an
-in-memory buffer, so deferring acknowledgements does not stall the key.
+#### The cost of ordering
+
+Ordering is off by default because it is expensive, and **most of the cost is Pub/Sub's rather than
+this connector's**. Google's [ordering
+documentation](https://cloud.google.com/pubsub/docs/ordering) states it directly:
+
+- *"Compared with unordered delivery, ordered delivery decreases publish availability and increases
+  end-to-end message delivery latency."*
+- Publish throughput is capped at **1 MB/s per ordering key** (a topic can still reach multiple
+  GB/s across many keys).
+- For pull subscriptions, *"only one batch of messages can be outstanding for an ordering key at a
+  time"* — so a key's next batch waits for the current one to be acknowledged.
+- *"Unacknowledged messages for a given ordering key can potentially delay delivery of messages for
+  other ordering keys"*, so the cost is not confined to the busy key.
+- A redelivery re-delivers every subsequent message for that key, acknowledged or not.
+
+Google's mitigation is to *"use the most granular keys that you can"* — throughput per key is
+bounded, throughput across keys is not.
+
+On top of that, this source adds two costs of its own:
+
+- **Parallelism is effectively capped at the subscription count.** Surplus subtasks receive no
+  splits, are told there are no more, and finish — so they do not hold the watermark back, but they
+  do no work either.
+- **Acknowledgement waits for a checkpoint.** Combined with one-batch-outstanding, per-key
+  throughput is bounded by roughly one batch per checkpoint interval. Ordered jobs therefore want
+  short checkpoint intervals — and because unacknowledged messages for one key can delay *other*
+  keys, a long interval slows the whole subscription rather than only its hottest key.
+
+Acknowledgement is *not* what gates ordered **dispatch**, though: the client library runs the next
+callback for a key once the previous callback **returns**, and this source's callback only appends
+to an in-memory buffer. Deferring acknowledgement costs throughput at the service, not a stall in
+the client.
 
 ## Testing
 

@@ -154,9 +154,12 @@ public class PubSubSourceBuilder<T> {
         Set<SubscriptionDestination> distinct = new HashSet<>(subscriptions);
         Preconditions.checkState(
                 distinct.size() == subscriptions.size(),
-                "Subscriptions must be distinct, but %s were given: %s. Consuming one subscription"
-                        + " through several splits does not increase throughput — Pub/Sub already"
-                        + " balances a subscription across its subscriber clients.",
+                "Subscriptions must be distinct, but %s were given: %s. The split plan already"
+                        + " opens several subscriber clients on a subscription when the parallelism"
+                        + " exceeds the subscription count, so a repeated entry buys nothing and"
+                        + " only skews the assignment — and under orderingMode(PER_KEY) it would"
+                        + " put one subscription on two subtasks, which is exactly what that mode"
+                        + " exists to prevent.",
                 subscriptions.size(),
                 subscriptions);
         return new PubSubStreamingPullSource<>(
