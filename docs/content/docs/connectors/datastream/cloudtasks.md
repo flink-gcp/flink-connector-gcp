@@ -352,24 +352,49 @@ the serialization schema and the writer itself against an in-memory fake `TaskCr
 the Pub/Sub module already uses. The retry paths run on an injected time source rather than real
 sleeps, so backoff behaviour is asserted exactly instead of being waited out.
 
-Integration tests are #25. They run against [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator)
+Integration tests (#25) run against [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator)
 (MIT, published as `ghcr.io/aertje/cloud-tasks-emulator`) driven by testcontainers as a
 `GenericContainer` — testcontainers' GCloud module has no Cloud Tasks support, and Google publishes
-no official emulator. The emulator implements the v2 API, real HTTP dispatch, retries, rate limits
-and named-task deduplication, so the interesting paths are reachable in CI without cloud
-credentials. The builder option they hook into — `emulatorEndpoint("host:port")`, a plaintext
-channel with no credentials, mirroring the Pub/Sub sink's — ships with #24 so that #25 is only
-tests.
+no official emulator. They need no cloud credentials and therefore run on every pull request. Each
+one goes through the builder's `emulatorEndpoint("host:port")` option — a plaintext channel with no
+credentials, mirroring the Pub/Sub sink's — and the production client factory, so what they exercise
+is the wiring that ships rather than a test seam. Queues are created by the tests, one per test,
+since the sink never creates one.
 
-Three gaps the emulator leaves, to be covered by the real-GCP suite or not at all:
+- **What the target receives.** The emulator dispatches over real HTTP, so tasks are asserted where
+  they land: an HTTP server inside the test JVM, published to the container network with
+  `Testcontainers.exposeHostPorts(...)` and addressed as `host.testcontainers.internal`. It records
+  the method, path, body and headers of every dispatch, which is what separates a task the service
+  accepted from a task that arrives as intended — the POST body and its headers, the empty body
+  under `GET`, per-record URLs, and an OIDC token arriving as a `Bearer` JWT whose claims carry the
+  configured service account and audience.
+- **What the service stores.** Task creation is asserted against **paused** queues, which accept
+  tasks without dispatching them; a running queue drops a task as soon as it completes, which would
+  race every assertion about the task itself. Unnamed tasks are created one per record and a replay
+  creates a second; `taskIdExtractor(...)` names them with the SHA-256 digest of the key and a
+  replayed key creates the task once, with `ALREADY_EXISTS` classified as success by the gax client
+  the sink ships with rather than by a synthesized exception; per-record destinations split across
+  queues; and a returned `flush` means every task is already there.
+- **End to end.** A MiniCluster streaming job built through the public builder, fed by a
+  rate-limited source spanning several checkpoints so the checkpoint flush fires mid-stream and not
+  only at end of input.
+
+What the emulator leaves uncovered, for the real-GCP suite or for nothing at all:
 
 - It never garbage-collects task names — the dedup window cannot be exercised, only the
-  `ALREADY_EXISTS` response. Tests reset with `--hard-reset-on-purge-queue` between scenarios.
+  `ALREADY_EXISTS` response. (`--hard-reset-on-purge-queue` turned out to be unnecessary: names are
+  keyed by their full task path, so a queue per test is already a namespace per test.)
 - It does not implement `UpdateQueue`, so queue-level `httpTarget` routing — the override that can
   silently redirect per-record URLs — is not testable there. (Nor is it reachable through the v2
   client at all, as the targets section explains.)
 - It authenticates **OIDC only** — its task dispatch has a single `GetOidcToken` branch — so the
   OAuth path in the v1 scope has no emulator coverage and needs real GCP or a hand-written fake.
+- It offers no failure injection, so the retry and parking paths stay unit tests against the fake
+  creator. `NOT_FOUND` is the exception — a queue that was never created produces it, so one
+  integration test spends that short budget end to end and checks the failure it fails the job with.
+- Its `ListTasks` and `GetTask` ignore `response_view` and always return the full task, where Cloud
+  Tasks omits the body and headers under the default `BASIC` view. The tests ask for `FULL`
+  explicitly, so their assertions describe the service and not the emulator's leniency.
 
 ## Provenance and attribution
 

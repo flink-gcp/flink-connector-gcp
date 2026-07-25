@@ -89,5 +89,37 @@ limitations under the License.
             <groupId>io.grpc</groupId>
             <artifactId>grpc-api</artifactId>
         </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <!-- Emulator-based integration tests. The Cloud Tasks emulator has no testcontainers
+                 module, so it runs as a plain GenericContainer. -->
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- MiniCluster-based streaming integration test. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-test-utils</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Local executor backing the MiniCluster integration test. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-clients</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Rate-limited source spanning checkpoints in the streaming integration test. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-datagen</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

@@ -8,7 +8,7 @@ later, paced by the queue's rate limit.
 | Sink design (targets, task naming/dedup, rate limits, checkpoint semantics) | Design settled (#23) |
 | SinkV2 at-least-once sink; HTTP targets; fixed and per-record queue destinations | Implemented (#24) |
 | Opt-in named-task deduplication | Implemented (#24) |
-| Emulator integration tests | Planned (#25) |
+| Emulator integration tests | Implemented (#25) |
 | Per-record failure policy | Planned (#37) |
 | Table API / SQL support | Planned (#99) |
 
