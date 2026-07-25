@@ -119,9 +119,16 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   red. `tools/` is not the place: it holds build tool *configuration*
   (`tools/maven/checkstyle.xml`), following Flink's layout. Two consequences: `scripts/` is
   outside the `.github/**` rat exclude, so each file carries the plain Apache-2.0 header, and
-  `ci.yaml` runs `shellcheck scripts/*.sh` — `actionlint` shellchecks inline `run:` blocks, so
-  extracting a script would otherwise drop it out of linting (shellcheck ships with the runner
-  image, so the step needs no action and no install)
+  `ci.yaml` has a `lint` job running `shellcheck scripts/*.sh` — `actionlint` shellchecks inline
+  `run:` blocks, so extracting a script would otherwise drop it out of linting
+- **shellcheck's version is pinned in `mise.toml`**, and the `lint` job installs it from there
+  via `jdx/mise-action` with `install_args: shellcheck` (that argument matters: `mise.toml` also
+  pins java, maven, hugo and go, which the job does not need). Not the runner image's copy: that
+  is 0.9.0 on ubuntu-24.04 and 0.11.0 on 26.04, so a `ubuntu-latest` migration would fail a pull
+  request that changed nothing. Declared once, identical locally and in CI — prefer this shape
+  over `docs.yaml`'s `HUGO_VERSION`-plus-"keep in sync with mise.toml" duplication, which
+  predates it. A separate job so lint results do not queue behind the integration tests and so
+  mise's shims never share a `PATH` with `setup-java`'s JDK
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
