@@ -14,5 +14,5 @@
  * limitations under the License.
  */
 
-/** Google Cloud Tasks connector for Apache Flink. Work in progress. */
+/** Google Cloud Tasks connector for Apache Flink. */
 package io.github.flink.gcp.connector.cloudtasks;

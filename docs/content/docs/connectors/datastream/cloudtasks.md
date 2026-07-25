@@ -24,10 +24,9 @@ limitations under the License.
 
 Cloud Tasks sink for Apache Flink, provided by the `flink-connector-gcp-cloudtasks` module.
 
-> **This page is a design note.** Nothing described here is implemented yet — the sink is built in
-> #24 and its integration tests in #25. It records the decisions those issues implement, so they
-> are settled once rather than re-argued per pull request. Statements in the present tense describe
-> the intended behaviour, not shipped behaviour.
+The sink ships in #24; its emulator integration tests are #25. This page doubles as the design
+record: it explains not only what the connector does but why each decision was taken, so the
+reasoning is settled once rather than re-argued per pull request.
 
 ## What this connector is for
 
@@ -68,10 +67,23 @@ Sink<OrderEvent> sink =
   expressible. Two bounds worth knowing when using them: `schedule_time` may be at most 30 days
   ahead, and an HTTP target's `dispatch_deadline` must be between 15 seconds and 30 minutes. The
   task **name** is the exception: it is composed by the sink (see task naming below), so the
-  returned `Task` carries none. The `httpTarget(...)` entry point plus the `with*` layering above is a convenience
-  over that contract, the same relationship `PubSubSerializationSchema.dataOnly(...)` has to a full
+  returned `Task` must carry none — the writer rejects a named one rather than letting it through.
+  The `httpTarget(...)` entry point plus the `with*` layering above is a convenience over that
+  contract, the same relationship `PubSubSerializationSchema.dataOnly(...)` has to a full
   `PubsubMessage`. Returning the proto rather than a narrow record type is also what keeps the
   Table API layer (#99) cheap: a `RowData` implementation slots in without reworking the sink.
+- `httpTarget(url)` returns a **non-generic stage** whose only method is
+  `withBody(SerializationSchema<T>)`. That is what binds the record type, so everything chained
+  after it — `withMethod`, `withUrl`, `withHeaders`, `withOidcToken`, `withOAuthToken` — infers `T`
+  from the body schema and needs no type witness. Each `with*` returns a new immutable schema and
+  the schema *is* what the builder takes, so there is no terminal `build()` call. `withUrl(...)`
+  resolves the target URL per record, which is the routing the queue-level `uriOverride` warning
+  below is about; the fixed URL the chain started from is the default.
+- Cloud Tasks accepts a request **body only on `POST`, `PUT` and `PATCH`** — "it is an error to set
+  body on a task with an incompatible `HttpMethod`". Since `withBody(...)` is what binds the record
+  type, it cannot be omitted, so under any other method the schema sends no body and leaves the
+  body schema unused. The alternative, rejecting those methods outright, would leave no way to
+  dispatch a `GET` task short of implementing the SPI by hand.
 - `QueueDestination` is pure queue identity (`equals`/`hashCode` over project, location and queue)
   and can be resolved per record through `destinationResolver(...)`, exactly as the BigQuery and
   Pub/Sub sinks resolve tables and topics. Unlike those two this costs nothing: Cloud Tasks has no
@@ -193,15 +205,15 @@ it.
 
 The sink is **at-least-once**, and its writer is **stateless by design**. Tasks are created
 asynchronously through `createTaskCallable().futureCall(...)`, and on every checkpoint Flink calls
-the writer's `flush()`, which waits for every in-flight create to complete. A successful checkpoint
-therefore means Cloud Tasks has durably accepted every record up to the barrier — the service
-returns `OK` only once the task "has been successfully written to Cloud Tasks storage" — and the
-writer keeps nothing in Flink state, so discarding operator state can never lose buffered records.
-This is the same model the Pub/Sub and BigQuery sinks use, and the reasoning against
-`AsyncSinkBase` recorded there applies unchanged.
+the writer's `flush()`, which waits for every outstanding create to complete — including those
+waiting out a retry backoff. A successful checkpoint therefore means Cloud Tasks has durably
+accepted every record up to the barrier — the service returns `OK` only once the task "has been
+successfully written to Cloud Tasks storage" — and the writer keeps nothing in Flink state, so
+discarding operator state can never lose buffered records. This is the same model the Pub/Sub and
+BigQuery sinks use, and the reasoning against `AsyncSinkBase` recorded there applies unchanged.
 
 Checkpointing must be enabled in streaming jobs; without it `flush()` is never called mid-stream
-and in-flight creates are lost on failure. Batch execution is covered by the end-of-input flush.
+and outstanding creates are lost on failure. Batch execution is covered by the end-of-input flush.
 
 **Retries are this sink's responsibility, unlike every other connector here.** The generated client
 gives `CreateTask` an *empty* set of retryable status codes and a 20-second total timeout — verified
@@ -223,6 +235,41 @@ over the codes worth retrying:
 | `ALREADY_EXISTS` | Success when the task carried a name, which is exactly when an extractor is configured. Terminal otherwise, since it should be unreachable |
 | Everything else | Terminal — fails the job |
 
+Mechanically, a retryable failure **parks** its `CreateTaskRequest` with a due time instead of
+blocking anything, and the next `write()` or `flush()` re-dispatches whatever has come due. The
+request is re-sent unchanged, so a named task keeps its id across attempts and a second attempt that
+the first one already completed comes back as `ALREADY_EXISTS`, which is success. Delegating this to
+the client's own `createTaskSettings` was considered and rejected: gax has one retryable-code set
+and one schedule per method, so the separate `NOT_FOUND` budget could not be expressed, and a
+sink-owned loop is testable against a fake client without simulating gax.
+
+Two consequences worth stating. Parked creates **count against the in-flight cap** — they are
+records Cloud Tasks has not accepted yet, so they have to bound memory the same way in-flight ones
+do — and a `write()` at the cap with everything parked waits out the earliest backoff rather than
+spinning. And parked creates are **dropped when the writer closes**: they are not covered by a
+completed checkpoint, so the restart replays their records.
+
+### Tuning
+
+`CloudTasksWriterOptions` (nested-options pattern, every knob defaulted, set through
+`writerOptions(...)`) is the whole surface. There are deliberately no rate knobs here — that is the
+queue's job:
+
+| Option | Default | What it does |
+|---|---|---|
+| `maxInFlightTasks` | 1000 | Caps outstanding creates, in flight plus parked. At the cap `write()` yields to the task mailbox until completions bring the count down |
+| `retryInitialBackoff` | 100 ms | First backoff for `UNAVAILABLE` / `DEADLINE_EXCEEDED` / `RESOURCE_EXHAUSTED` |
+| `retryMaxBackoff` | 10 s | Cap the backoff doubles up to |
+| `retryMaxAttempts` | 8 | Total attempts, the first create included; exhausting the budget fails the job |
+| `notFoundInitialBackoff` | 500 ms | First backoff of the `NOT_FOUND` budget |
+| `notFoundMaxBackoff` | 2 s | Cap of the `NOT_FOUND` backoff |
+| `notFoundMaxAttempts` | 3 | `NOT_FOUND` attempts. Short on purpose: long enough to ride out a blip, short enough that a mistyped queue fails quickly. A queue taking minutes to re-activate outlives this budget by design — recovering from that is the job's restart strategy, not the writer's |
+
+The transient backoff carries ±20% jitter, so parallel subtasks backing off against the same queue
+at the same instant do not retry in lockstep. It is not exposed: the value only has to be non-zero
+to do its job. The `NOT_FOUND` schedule has no jitter, its budget being short enough that spreading
+it out would mostly eat the budget.
+
 ## Queues, rate limits and sink concurrency
 
 **There is no batch create available to a JVM sink.** `BatchCreateTasks` is documented in v2beta3
@@ -234,7 +281,7 @@ configures no method with batching — there is no `BatchingSettings` in `CloudT
 are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright, and
 creation costs one RPC per record.
 
-What the sink provides is the same mailbox-based bound the Pub/Sub sink uses: a cap on unacknowledged
+What the sink provides is the same mailbox-based bound the Pub/Sub sink uses: a cap on outstanding
 creates (`maxInFlightTasks`, defaulting to 1,000 as the Pub/Sub sink's equivalent does), with
 completions re-dispatched onto the task mailbox so all writer state stays single-threaded, and a
 write at the cap yielding until completions bring the count down.
@@ -269,9 +316,15 @@ a `queue.yaml`/`queue.xml` that omits it.
 ## Error handling
 
 Terminal failures fail the job. Failures captured by completion callbacks are rethrown on the task
-thread from the next `write()`/`flush()`, and `flush()` awaits every in-flight create, so a failure
-cannot slip past a checkpoint barrier. A per-record failure policy — the `FailedRowHandler`
-analogue — is deferred to #37 along with the other connectors'.
+thread from the next `write()`/`flush()`, and `flush()` awaits every outstanding create, so a
+failure cannot slip past a checkpoint barrier. Only the first terminal failure is kept: once one is
+captured, later failures are not retried either, since the job is going to fail regardless. A
+per-record failure policy — the `FailedRowHandler` analogue — is deferred to #37 along with the
+other connectors'.
+
+A failure that carries no gRPC status at all — neither a gax `ApiException` nor a raw
+`StatusRuntimeException` — is treated as terminal rather than retried, on the grounds that an
+unclassifiable failure is not evidence that retrying would help.
 
 One limit is worth stating because the documentation contradicts itself: the maximum task size is
 given as **100 KB** by the `CreateTask` API reference and the proto, and as **1 MiB** by the quotas
@@ -294,16 +347,21 @@ Bodies should be sized against the smaller number until this is verified empiric
 
 ## Testing
 
-Planned in #25. Unit tests cover the builder, destination identity, the serialization adapters and
-the writer against an in-memory fake, in the shape the Pub/Sub module already uses. Integration
-tests run against [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator)
+Unit tests ship with the sink (#24) and cover the builder, destination identity, the writer options,
+the serialization schema and the writer itself against an in-memory fake `TaskCreator`, in the shape
+the Pub/Sub module already uses. The retry paths run on an injected time source rather than real
+sleeps, so backoff behaviour is asserted exactly instead of being waited out.
+
+Integration tests are #25. They run against [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator)
 (MIT, published as `ghcr.io/aertje/cloud-tasks-emulator`) driven by testcontainers as a
 `GenericContainer` — testcontainers' GCloud module has no Cloud Tasks support, and Google publishes
 no official emulator. The emulator implements the v2 API, real HTTP dispatch, retries, rate limits
 and named-task deduplication, so the interesting paths are reachable in CI without cloud
-credentials.
+credentials. The builder option they hook into — `emulatorEndpoint("host:port")`, a plaintext
+channel with no credentials, mirroring the Pub/Sub sink's — ships with #24 so that #25 is only
+tests.
 
-Two gaps the emulator leaves, to be covered by the real-GCP suite or not at all:
+Three gaps the emulator leaves, to be covered by the real-GCP suite or not at all:
 
 - It never garbage-collects task names — the dedup window cannot be exercised, only the
   `ALREADY_EXISTS` response. Tests reset with `--hard-reset-on-purge-queue` between scenarios.
