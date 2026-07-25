@@ -57,8 +57,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -224,17 +227,7 @@ abstract class AbstractPubSubEmulatorITCase {
                 Thread.sleep(100);
                 continue;
             }
-            subscriberStub
-                    .acknowledgeCallable()
-                    .call(
-                            AcknowledgeRequest.newBuilder()
-                                    .setSubscription(
-                                            ProjectSubscriptionName.format(PROJECT, subscriptionId))
-                                    .addAllAckIds(
-                                            received.stream()
-                                                    .map(ReceivedMessage::getAckId)
-                                                    .collect(Collectors.toList()))
-                                    .build());
+            acknowledge(subscriptionId, received);
             received.stream()
                     .map(m -> m.getMessage().getData().toString(StandardCharsets.UTF_8))
                     .forEach(payloads::add);
@@ -242,11 +235,58 @@ abstract class AbstractPubSubEmulatorITCase {
         return payloads;
     }
 
+    /**
+     * How long a retrying pull waits for the messages it expects. Generous: it is only ever fully
+     * spent by a test that is about to fail anyway.
+     */
+    static final Duration PULL_DEADLINE = Duration.ofSeconds(30);
+
+    /**
+     * Pulls repeatedly until {@code expectedCount} distinct messages have been seen or the deadline
+     * expires, and returns them in arrival order — the message-level counterpart of {@link
+     * #pullDistinctPayloadsUntil}, for assertions that need the ordering key or other metadata.
+     *
+     * <p>Deduplicated by message id, so neither a redelivery nor the sink's own at-least-once
+     * republish can break an ordering assertion made on the result.
+     */
+    static List<PubsubMessage> pullMessagesUntil(
+            String subscriptionId, int expectedCount, Duration deadline)
+            throws InterruptedException {
+        Map<String, PubsubMessage> byMessageId = new LinkedHashMap<>();
+        long deadlineNanos = System.nanoTime() + deadline.toNanos();
+        while (byMessageId.size() < expectedCount && System.nanoTime() < deadlineNanos) {
+            List<ReceivedMessage> received = pull(subscriptionId, 1_000);
+            if (received.isEmpty()) {
+                Thread.sleep(100);
+                continue;
+            }
+            acknowledge(subscriptionId, received);
+            received.forEach(
+                    m -> byMessageId.putIfAbsent(m.getMessage().getMessageId(), m.getMessage()));
+        }
+        return new ArrayList<>(byMessageId.values());
+    }
+
     /** Pulls up to {@code maxMessages} from the subscription and returns the full messages. */
     static List<PubsubMessage> pullMessages(String subscriptionId, int maxMessages) {
         return pull(subscriptionId, maxMessages).stream()
                 .map(received -> received.getMessage())
                 .collect(Collectors.toList());
+    }
+
+    /** Acks a pulled batch so the next pull returns the remainder rather than a redelivery. */
+    private static void acknowledge(String subscriptionId, List<ReceivedMessage> received) {
+        subscriberStub
+                .acknowledgeCallable()
+                .call(
+                        AcknowledgeRequest.newBuilder()
+                                .setSubscription(
+                                        ProjectSubscriptionName.format(PROJECT, subscriptionId))
+                                .addAllAckIds(
+                                        received.stream()
+                                                .map(ReceivedMessage::getAckId)
+                                                .collect(Collectors.toList()))
+                                .build());
     }
 
     private static List<ReceivedMessage> pull(String subscriptionId, int maxMessages) {

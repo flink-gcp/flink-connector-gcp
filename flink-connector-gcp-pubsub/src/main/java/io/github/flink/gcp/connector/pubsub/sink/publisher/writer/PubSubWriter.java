@@ -47,7 +47,9 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
 
 /**
@@ -101,11 +103,16 @@ import java.util.concurrent.CancellationException;
  * <p>Messages may carry ordering keys only when {@code
  * PubSubPublisherOptions.enableMessageOrdering} is set; {@link #write} rejects a keyed message
  * otherwise (the SDK would reject it with a less actionable error). After a failed publish the SDK
- * publisher pauses the message's ordering key and cancels the key's queued publishes, in order,
- * with a {@link java.util.concurrent.CancellationException}; under {@code CREATE_IF_NEEDED} those
- * cascade cancellations behind a parked {@code NOT_FOUND} are parked too — the failure mails arrive
- * in publish order, so the parked batch preserves per-key order — and the repair resumes each key
- * before republishing the batch. Cross-key and cross-topic ordering are unaffected.
+ * publisher pauses the message's ordering key and cancels the key's queued publishes with a {@link
+ * java.util.concurrent.CancellationException}; under {@code CREATE_IF_NEEDED} those cascade
+ * cancellations are parked alongside the {@code NOT_FOUND} that caused them, and the repair resumes
+ * each key before republishing the batch. Cross-key and cross-topic ordering are unaffected.
+ *
+ * <p>Per-key order is preserved by <b>sorting the parked batch on publish sequence</b>, not by the
+ * order the failures are observed in: the SDK cancels queued publishes from its own thread, so a
+ * cascade's failure mail can reach the mailbox before its root's. Anything deriving the batch from
+ * mail order — including deciding whether to park a cascade by whether something is parked already
+ * — is a race (see #78).
  *
  * @param <T> type of the records written by the sink
  */
@@ -127,6 +134,12 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /** Number of publishes not yet acknowledged; touched only on the task thread. */
     private int inFlightMessages;
+
+    /**
+     * Issue order of publishes, which is what a parked batch is sorted by. Assigned in {@link
+     * #publishTo} on the task thread, so it needs no synchronization.
+     */
+    private long nextPublishSequence;
 
     /**
      * First terminal publish failure; set and read only on the task thread (failure callbacks
@@ -287,7 +300,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                     "Failed to publish a record to Pub/Sub topic " + state.destination + ".", e);
         }
         inFlightMessages++;
-        ApiFutures.addCallback(future, new PublishCallback(state, message), Runnable::run);
+        ApiFutures.addCallback(
+                future, new PublishCallback(state, message, nextPublishSequence++), Runnable::run);
     }
 
     /**
@@ -312,23 +326,25 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /** Task-thread handler for a failed publish, run as a mailbox mail. */
     private void onPublishFailed(
-            DestinationState state, PubsubMessage message, Throwable throwable) {
+            DestinationState state, PubsubMessage message, long sequence, Throwable throwable) {
         inFlightMessages--;
         if (isRecoverableNotFound(throwable)) {
-            state.pendingRetries.add(message);
+            state.pendingRetries.put(sequence, message);
             state.lastNotFound = throwable;
             repairNeeded = true;
-        } else if (orderingEnabled
-                && !state.pendingRetries.isEmpty()
-                && isCancellation(throwable)) {
-            // A cancellation cascading from a failure already parked for this destination (with
-            // ordering enabled, the SDK cancels an ordering key's queued publishes after the
-            // key's first failure; a non-empty pending buffer implies CREATE_IF_NEEDED). Failure
-            // mails arrive in publish order — the root's mail runs before its cascades, and a
-            // fatal root reaches the asyncError branch below instead of parking — so parking
-            // here preserves per-key order behind the root. lastNotFound is deliberately
-            // untouched: the budget-exhaustion cause stays the real NOT_FOUND.
-            state.pendingRetries.add(message);
+        } else if (orderingEnabled && isCancellation(throwable)) {
+            // With ordering enabled the SDK cancels an ordering key's queued publishes after the
+            // key's first failure, so a cancellation is never a root cause — it always trails a
+            // failure of an earlier publish this writer issued for the same key. Park it for the
+            // repair unconditionally: whether the root was recoverable is not knowable here,
+            // because failure mails do not arrive in publish order (the SDK cancels queued work
+            // from its own thread, so a cascade's mail can be enqueued before its root's). It
+            // does not need to be knowable — repairPendingTopics drains the writer completely
+            // before repairing, and that drain surfaces a fatal root through checkAsyncError, so
+            // a cascade is only ever republished once the root is known to be recoverable.
+            // lastNotFound is deliberately untouched: the budget-exhaustion cause stays the real
+            // NOT_FOUND.
+            state.pendingRetries.put(sequence, message);
             repairNeeded = true;
         } else if (asyncError == null) {
             asyncError = wrapPublishFailure(state.destination, throwable);
@@ -340,9 +356,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         while (repairNeeded) {
             repairNeeded = false;
             // Drain before snapshotting the parked batches: a parked root's cascade-cancellation
-            // mails may still be queued (or still being enqueued by the SDK thread), and a repair
-            // started from a partial batch could republish a re-failing root behind its own
-            // cascades — breaking per-key order.
+            // mails may still be queued, or still being enqueued by the SDK thread, and a repair
+            // started from a partial batch would republish only part of a key's messages. The
+            // drain is also what makes parking a cascade safe in the first place — a fatal root
+            // reaches asyncError here, and awaitInFlightBelow rethrows it, so no cascade of a
+            // fatal root is ever republished.
             awaitInFlightBelow(1);
             // Iterate a snapshot: repairDestination yields to the mailbox, so hardening against
             // a mail ever reaching stateFor() keeps this loop safe from map mutation.
@@ -370,7 +388,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 state.destination);
         topicAdmin.createTopic(state.destination);
         for (int attempt = 1; ; attempt++) {
-            List<PubsubMessage> batch = new ArrayList<>(state.pendingRetries);
+            // Keyed by publish sequence, so the batch is in the order the messages were originally
+            // published however their failure mails interleaved.
+            List<PubsubMessage> batch = new ArrayList<>(state.pendingRetries.values());
             state.pendingRetries.clear();
             // Every attempt resumes the batch's ordering keys first: the failure that parked the
             // batch — and every failed republish attempt since — paused them in the publisher.
@@ -481,8 +501,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         private final TopicDestination destination;
         private final TopicPublisher publisher;
 
-        /** Messages whose publish failed with a recoverable NOT_FOUND, awaiting republish. */
-        private final List<PubsubMessage> pendingRetries = new ArrayList<>();
+        /**
+         * Messages awaiting republish after topic creation, keyed by publish sequence so the batch
+         * is republished in publish order. Sorting matters because the failure mails that park them
+         * do not arrive in publish order, and republishing a key's messages out of order would
+         * break the very guarantee the repair exists to preserve.
+         */
+        private final NavigableMap<Long, PubsubMessage> pendingRetries = new TreeMap<>();
 
         /** Retained as the cause of a budget-exhaustion failure. */
         private Throwable lastNotFound;
@@ -508,16 +533,20 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Re-dispatches publish completions onto the mailbox so state stays task-thread-only.
      *
      * <p>One instance per publish: the callback carries its message so a failed publish can be
-     * republished after topic auto-creation (the destination's success mail is still shared).
+     * republished after topic auto-creation, and its publish sequence so the parked batch can be
+     * ordered independently of the order the failures arrive in (the destination's success mail is
+     * still shared).
      */
     private final class PublishCallback implements ApiFutureCallback<String> {
 
         private final DestinationState state;
         private final PubsubMessage message;
+        private final long sequence;
 
-        private PublishCallback(DestinationState state, PubsubMessage message) {
+        private PublishCallback(DestinationState state, PubsubMessage message, long sequence) {
             this.state = state;
             this.message = message;
+            this.sequence = sequence;
         }
 
         @Override
@@ -528,7 +557,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         @Override
         public void onFailure(Throwable throwable) {
             mailboxExecutor.execute(
-                    () -> onPublishFailed(state, message, throwable), state.failureDescription);
+                    () -> onPublishFailed(state, message, sequence, throwable),
+                    state.failureDescription);
         }
     }
 }
