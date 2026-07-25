@@ -27,6 +27,8 @@ import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
+import org.apache.flink.configuration.CheckpointingOptions;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.MetricGroup;
@@ -34,16 +36,22 @@ import org.apache.flink.util.UserCodeClassLoader;
 
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.enumerator.PubSubSplitEnumerator;
-import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.AckTracker;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.DefaultSubscriberFactory;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.MissingCheckpointDetector;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubAckTracker;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubRecordEmitter;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSourceReader;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSplitReader;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.SubscriberFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
+import java.time.Duration;
 import java.util.function.Supplier;
 
 /**
@@ -63,12 +71,7 @@ public class PubSubStreamingPullSource<T>
 
     private static final long serialVersionUID = 1L;
 
-    /**
-     * Messages drained from one split per fetch. Bounds how much one fetch buffers while still
-     * amortizing the element-queue handoff; the client library's flow control is the real limit on
-     * in-flight messages. Becomes a tuning knob together with the other subscriber options (#80).
-     */
-    private static final int MAX_RECORDS_PER_FETCH = 1_000;
+    private static final Logger LOG = LoggerFactory.getLogger(PubSubStreamingPullSource.class);
 
     private final PubSubSourceConfig<T> config;
 
@@ -99,18 +102,68 @@ public class PubSubStreamingPullSource<T>
         PubSubDeserializationSchema<T> deserializationSchema = config.getDeserializationSchema();
         deserializationSchema.open(new ReaderInitializationContext(context));
 
-        AckTracker ackTracker = new PubSubAckTracker();
+        PubSubSubscriberOptions options = config.getSubscriberOptions();
+        String ackExtensionWarning =
+                ackExtensionHeadroomWarning(context.getConfiguration(), options);
+        if (ackExtensionWarning != null) {
+            LOG.warn(ackExtensionWarning);
+        }
+
+        PubSubAckTracker ackTracker = new PubSubAckTracker();
+        MissingCheckpointDetector checkpointDetector =
+                new MissingCheckpointDetector(
+                        options.getFirstCheckpointTimeout(), ackTracker::outstandingAckCount);
         SubscriberFactory subscriberFactory =
                 new DefaultSubscriberFactory(
-                        config.getOrderingMode(), config.getEmulatorEndpoint());
+                        options, config.getOrderingMode(), config.getEmulatorEndpoint());
         Supplier<SplitReader<PubsubMessage, SubscriptionSplit>> splitReaderSupplier =
-                () -> new PubSubSplitReader(subscriberFactory, ackTracker, MAX_RECORDS_PER_FETCH);
+                () ->
+                        new PubSubSplitReader(
+                                subscriberFactory, ackTracker, options, checkpointDetector);
         return new PubSubSourceReader<>(
                 splitReaderSupplier,
                 new PubSubRecordEmitter<>(deserializationSchema, ackTracker),
                 context.getConfiguration(),
                 context,
-                ackTracker);
+                ackTracker,
+                checkpointDetector);
+    }
+
+    /**
+     * Returns a warning when the checkpoint interval leaves too little headroom under the client
+     * library's acknowledgement-deadline extension budget, or {@code null} when it does not. A
+     * message is acknowledged one whole checkpoint after it is emitted, so an interval anywhere
+     * near that budget means leases expire and Pub/Sub redelivers everything.
+     *
+     * <p>Best-effort by construction: a reader is handed the TaskManager configuration, so the
+     * interval is visible only when it was set at cluster level. An interval configured with {@code
+     * env.enableCheckpointing(...)} lives in the job configuration and cannot be read from here,
+     * which is why its absence is not treated as a problem. The reader's first-checkpoint watchdog
+     * is what actually catches a job that never checkpoints.
+     */
+    @Nullable
+    @VisibleForTesting
+    static String ackExtensionHeadroomWarning(
+            Configuration configuration, PubSubSubscriberOptions options) {
+        Duration interval =
+                configuration.getOptional(CheckpointingOptions.CHECKPOINTING_INTERVAL).orElse(null);
+        if (interval == null || interval.isZero() || interval.isNegative()) {
+            return null;
+        }
+        Duration maxAckExtension =
+                options.getMaxAckExtensionPeriod() != null
+                        ? options.getMaxAckExtensionPeriod()
+                        : DefaultSubscriberFactory.DEFAULT_MAX_ACK_EXTENSION_PERIOD;
+        if (interval.multipliedBy(2).compareTo(maxAckExtension) <= 0) {
+            return null;
+        }
+        return "The checkpoint interval ("
+                + interval
+                + ") leaves little headroom under the acknowledgement-deadline extension budget ("
+                + maxAckExtension
+                + "). A message is acknowledged one whole checkpoint after it is emitted, so"
+                + " leases may expire and Pub/Sub redeliver everything. Shorten the checkpoint"
+                + " interval or raise PubSubSubscriberOptions.maxAckExtensionPeriod(...).";
     }
 
     @Override

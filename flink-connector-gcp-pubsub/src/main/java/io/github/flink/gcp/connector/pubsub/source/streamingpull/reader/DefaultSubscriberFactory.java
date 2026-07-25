@@ -17,13 +17,16 @@
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.batching.FlowControlSettings;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.pubsub.v1.MessageReceiver;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.cloud.pubsub.v1.SubscriberShutdownSettings;
 import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.grpc.ManagedChannelBuilder;
 
@@ -33,9 +36,11 @@ import java.io.IOException;
 import java.time.Duration;
 
 /**
- * {@link SubscriberFactory} building {@code google-cloud-pubsub} {@link Subscriber} instances.
+ * {@link SubscriberFactory} building {@code google-cloud-pubsub} {@link Subscriber} instances
+ * configured from {@link PubSubSubscriberOptions}; every knob left unset keeps the SDK default, so
+ * the default configuration differs from the SDK's only in the two settings the source owns.
  *
- * <p>Two settings are owned by the source rather than left at their SDK defaults:
+ * <p>Those two are:
  *
  * <ul>
  *   <li><b>Shutdown mode.</b> The SDK defaults to {@code WAIT_FOR_PROCESSING}, which waits for
@@ -43,10 +48,11 @@ import java.time.Duration;
  *       checkpoint completion, so shutdown would stall. {@code NACK_IMMEDIATELY} instead releases
  *       messages the client still holds, including any it buffered without ever handing them to the
  *       receiver, so Pub/Sub redelivers them at once instead of after the acknowledgement deadline.
- *   <li><b>Parallel pull count under {@link OrderingMode#PER_KEY}.</b> Each streaming-pull
- *       connection has its own message dispatcher, and per-ordering-key callback serialization is
- *       per dispatcher — so more than one connection would let two messages of the same key be
- *       delivered concurrently. Ordered subscriptions therefore use exactly one connection.
+ *       The mode is fixed for that reason; only its timeout is a knob.
+ *   <li><b>Parallel pull count under {@link OrderingMode#PER_KEY}.</b> Ordered subscriptions use
+ *       exactly one streaming-pull connection; {@code PubSubSourceBuilder.build()} rejects an
+ *       explicit count above one and explains why, so forcing it here only ever overrides the SDK
+ *       default — which is what keeps the ordering guarantee independent of that default.
  * </ul>
  *
  * <p>When an emulator endpoint is set, subscribers connect to it over a plaintext channel with no
@@ -57,25 +63,30 @@ import java.time.Duration;
 public final class DefaultSubscriberFactory implements SubscriberFactory {
 
     /**
-     * Bounds how long {@code close()} waits for one client to release outstanding messages. Kept
-     * well under Flink's {@code source.reader.close.timeout} (30 s by default) because a reader
-     * closes its splits' subscribers one after another: a split whose turn never comes within that
-     * budget is a split whose messages are not nacked, so they only return after their
-     * acknowledgement deadline instead of at once.
+     * Mirror of the SDK's default acknowledgement-deadline extension budget ({@code
+     * Subscriber.DEFAULT_MAX_ACK_EXTENSION_PERIOD} is package-private): the source compares the
+     * checkpoint interval against it when the options leave that knob unset. A drift-guard test
+     * pins this mirror to the SDK constant.
      */
-    static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
+    public static final Duration DEFAULT_MAX_ACK_EXTENSION_PERIOD = Duration.ofMinutes(60);
 
+    private final PubSubSubscriberOptions options;
     private final OrderingMode orderingMode;
     @Nullable private final String emulatorEndpoint;
 
     /**
      * Creates the factory.
      *
+     * @param options the subscriber tuning options
      * @param orderingMode the ordering mode, which decides the streaming-pull connection count
      * @param emulatorEndpoint the emulator endpoint as {@code host:port} (plaintext, no
      *     credentials), or {@code null} for production Pub/Sub
      */
-    public DefaultSubscriberFactory(OrderingMode orderingMode, @Nullable String emulatorEndpoint) {
+    public DefaultSubscriberFactory(
+            PubSubSubscriberOptions options,
+            OrderingMode orderingMode,
+            @Nullable String emulatorEndpoint) {
+        this.options = options;
         this.orderingMode = orderingMode;
         this.emulatorEndpoint = emulatorEndpoint;
     }
@@ -85,17 +96,8 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
             throws IOException {
         try {
             Subscriber.Builder builder =
-                    Subscriber.newBuilder(subscription.toSubscriptionPath(), receiver)
-                            .setSubscriberShutdownSettings(
-                                    SubscriberShutdownSettings.newBuilder()
-                                            .setMode(
-                                                    SubscriberShutdownSettings.ShutdownMode
-                                                            .NACK_IMMEDIATELY)
-                                            .setTimeout(SHUTDOWN_TIMEOUT)
-                                            .build());
-            if (orderingMode == OrderingMode.PER_KEY) {
-                builder.setParallelPullCount(1);
-            }
+                    Subscriber.newBuilder(subscription.toSubscriptionPath(), receiver);
+            configure(builder, options, orderingMode);
             if (emulatorEndpoint != null) {
                 builder.setChannelProvider(
                                 SubscriberStubSettings.defaultGrpcTransportProviderBuilder()
@@ -109,5 +111,58 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
             throw new IOException(
                     "Failed to create the Pub/Sub subscriber for subscription " + subscription, e);
         }
+    }
+
+    /** Applies the options onto the subscriber builder; unset knobs are left at SDK defaults. */
+    @VisibleForTesting
+    static void configure(
+            Subscriber.Builder builder,
+            PubSubSubscriberOptions options,
+            OrderingMode orderingMode) {
+        builder.setSubscriberShutdownSettings(
+                SubscriberShutdownSettings.newBuilder()
+                        .setMode(SubscriberShutdownSettings.ShutdownMode.NACK_IMMEDIATELY)
+                        .setTimeout(options.getShutdownTimeout())
+                        .build());
+        if (orderingMode == OrderingMode.PER_KEY) {
+            builder.setParallelPullCount(1);
+        } else if (options.getParallelPullCount() != null) {
+            builder.setParallelPullCount(options.getParallelPullCount());
+        }
+        if (options.getFlowControlMaxOutstandingElementCount() != null
+                || options.getFlowControlMaxOutstandingRequestBytes() != null) {
+            builder.setFlowControlSettings(flowControlSettings(options));
+        }
+        if (options.getMaxAckExtensionPeriod() != null) {
+            builder.setMaxAckExtensionPeriodDuration(options.getMaxAckExtensionPeriod());
+        }
+        if (options.getMinDurationPerAckExtension() != null) {
+            builder.setMinDurationPerAckExtensionDuration(options.getMinDurationPerAckExtension());
+        }
+        if (options.getMaxDurationPerAckExtension() != null) {
+            builder.setMaxDurationPerAckExtensionDuration(options.getMaxDurationPerAckExtension());
+        }
+    }
+
+    /**
+     * Builds the SDK flow-control settings: the SDK defaults overlaid with the set limits.
+     *
+     * <p>The limit behavior is deliberately not set. The subscriber's constructor overrides it to
+     * blocking whatever the settings say — which for a subscriber is not a blocked thread but a
+     * client that stops pulling, so there is nothing to choose.
+     */
+    @VisibleForTesting
+    static FlowControlSettings flowControlSettings(PubSubSubscriberOptions options) {
+        FlowControlSettings.Builder flowControl =
+                Subscriber.Builder.getDefaultFlowControlSettings().toBuilder();
+        if (options.getFlowControlMaxOutstandingElementCount() != null) {
+            flowControl.setMaxOutstandingElementCount(
+                    options.getFlowControlMaxOutstandingElementCount());
+        }
+        if (options.getFlowControlMaxOutstandingRequestBytes() != null) {
+            flowControl.setMaxOutstandingRequestBytes(
+                    options.getFlowControlMaxOutstandingRequestBytes());
+        }
+        return flowControl.build();
     }
 }

@@ -39,7 +39,8 @@ import java.util.function.Supplier;
  *
  * <p>The reader owns the two ends of the acknowledgement lifecycle that only it can see — binding
  * staged messages to the checkpoint being taken, and acknowledging them once that checkpoint
- * completes.
+ * completes. It is therefore also the only place that sees checkpoints happen at all, which it
+ * reports to the {@link MissingCheckpointDetector} it shares with the split reader.
  *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0),
@@ -54,28 +55,35 @@ public class PubSubSourceReader<T>
                 PubsubMessage, T, SubscriptionSplit, SubscriptionSplit> {
 
     private final AckTracker ackTracker;
+    private final MissingCheckpointDetector checkpointDetector;
 
     /**
      * Creates the reader.
      *
      * @param splitReaderSupplier supplies the split reader multiplexing the subscribers
      * @param recordEmitter deserializes and emits received messages
-     * @param config the job configuration, which carries the source reader options
+     * @param config the TaskManager configuration, which carries the source reader options
      * @param context the reader context
      * @param ackTracker tracks the acknowledgement lifecycle of received messages
+     * @param checkpointDetector the detector this reader feeds checkpoint signals to; the split
+     *     reader it shares with is what evaluates them
      */
     public PubSubSourceReader(
             Supplier<SplitReader<PubsubMessage, SubscriptionSplit>> splitReaderSupplier,
             RecordEmitter<PubsubMessage, T, SubscriptionSplit> recordEmitter,
             Configuration config,
             SourceReaderContext context,
-            AckTracker ackTracker) {
+            AckTracker ackTracker,
+            MissingCheckpointDetector checkpointDetector) {
         super(splitReaderSupplier, recordEmitter, config, context);
         this.ackTracker = ackTracker;
+        this.checkpointDetector = checkpointDetector;
     }
 
     @Override
     public List<SubscriptionSplit> snapshotState(long checkpointId) {
+        checkpointDetector.checkpointTaken();
+
         // Everything emitted before the barrier belongs to this checkpoint; anything emitted after
         // it belongs to the next one.
         ackTracker.addCheckpoint(checkpointId);

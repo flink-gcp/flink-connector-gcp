@@ -47,6 +47,7 @@ public class PubSubSourceBuilder<T> {
     private final List<SubscriptionDestination> subscriptions = new ArrayList<>();
     private PubSubDeserializationSchema<T> deserializationSchema;
     private OrderingMode orderingMode = OrderingMode.NONE;
+    private PubSubSubscriberOptions subscriberOptions = PubSubSubscriberOptions.defaults();
     @Nullable private String emulatorEndpoint;
 
     PubSubSourceBuilder() {}
@@ -122,6 +123,21 @@ public class PubSubSourceBuilder<T> {
     }
 
     /**
+     * Sets the subscriber tuning options: SDK flow control, the streaming-pull connection count and
+     * the acknowledgement-deadline extension settings, plus the source's drain size, subscriber
+     * shutdown budget and first-checkpoint watchdog. Optional; every knob left unset keeps the
+     * SDK's (or the source's) default.
+     *
+     * @param subscriberOptions the subscriber options
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> subscriberOptions(PubSubSubscriberOptions subscriberOptions) {
+        this.subscriberOptions =
+                Preconditions.checkNotNull(subscriberOptions, "subscriberOptions must not be null");
+        return this;
+    }
+
+    /**
      * Points the source at a Pub/Sub emulator instead of the production service. Subscribers
      * connect to the given {@code host:port} over a plaintext channel with no credentials, so this
      * must only ever be used against an emulator (for example a testcontainers {@code
@@ -162,11 +178,24 @@ public class PubSubSourceBuilder<T> {
                         + " exists to prevent.",
                 subscriptions.size(),
                 subscriptions);
+        Integer parallelPullCount = subscriberOptions.getParallelPullCount();
+        Preconditions.checkState(
+                orderingMode != OrderingMode.PER_KEY
+                        || parallelPullCount == null
+                        || parallelPullCount == 1,
+                "parallelPullCount(%s) cannot be combined with orderingMode(PER_KEY): each"
+                        + " streaming-pull connection has its own message dispatcher and"
+                        + " per-ordering-key callback serialization is per dispatcher, so a second"
+                        + " connection would deliver two messages of one key concurrently. Remove"
+                        + " parallelPullCount(...) — ordered subscriptions always use exactly one"
+                        + " connection — or use orderingMode(NONE).",
+                parallelPullCount);
         return new PubSubStreamingPullSource<>(
                 new PubSubSourceConfig<>(
                         Collections.unmodifiableList(new ArrayList<>(subscriptions)),
                         deserializationSchema,
                         orderingMode,
+                        subscriberOptions,
                         emulatorEndpoint));
     }
 }

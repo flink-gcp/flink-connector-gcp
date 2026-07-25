@@ -174,4 +174,26 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   test through the public builder) reuse the production factory/admin, no test-only factory.
   Per-record failure policy and the fatal-exception classifier moved to #37. Decision record in
   the module README
+- **Pub/Sub source** (#79, #80): FLIP-27 streaming-pull source; split = (subscription, uid), ack on
+  checkpoint completion, nack on close. Tuning lives in one `PubSubSubscriberOptions` object
+  (nested-options pattern, same shape as `PubSubPublisherOptions`). Two decisions deviate from the
+  #80 issue text and must not be silently re-litigated:
+  (a) the **subscriber shutdown mode is not exposed** — `NACK_IMMEDIATELY` is fixed because
+  `WAIT_FOR_PROCESSING` waits for acknowledgements that only arrive at checkpoint completion, which
+  never happens during close; only `shutdownTimeout` is a knob (an SDK enum on the public API would
+  also break the #47 SQL mapping);
+  (b) the "**fail when running without checkpointing**" guard **cannot read the configuration** —
+  `SourceReaderContext.getConfiguration()` is the TaskManager configuration
+  (`SourceOperatorFactory` passes `getTaskManagerInfo().getConfiguration()`), while
+  `env.enableCheckpointing(...)` writes into the job configuration, so absence proves nothing and
+  failing on it would break jobs that enable checkpointing programmatically while passing every
+  MiniCluster test. Replaced by `MissingCheckpointDetector` (no checkpoint taken + messages
+  outstanding + budget spent → fail), **evaluated from `PubSubSplitReader.fetch()`, not the record
+  path** — once flow control fills, the client stops delivering and `pollNext` is never called
+  again, so a record-driven check would go silent in exactly the state it exists to catch; the
+  detector bounds the fetch park only while armed, so a healthy reader parks indefinitely as
+  before. The config-derived ack-extension check is a best-effort warning only.
+  `parallelPullCount > 1` is rejected with `orderingMode(PER_KEY)` rather than silently forced to 1
+  (the factory still force-sets 1 so the guarantee does not rest on the SDK default). The `NACK` deserialization-failure policy is deferred to #81, where
+  the `GetSubscription` preflight can verify a dead-letter policy exists
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
