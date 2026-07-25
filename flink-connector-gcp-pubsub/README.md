@@ -15,7 +15,8 @@ sink and multi-subscription consumption on the source.
 |---|---|
 | FLIP-27 at-least-once source; multi-subscription splits; checkpoint-bound acknowledgement; nack on close | Implemented (#79) |
 | Ordering mode preserving per-ordering-key order | Implemented (#79) |
-| Subscriber tuning options; deserialization failure policy; metrics | Planned (#80) |
+| Subscriber tuning options (flow control, ack extension, parallel pull, shutdown); first-checkpoint watchdog | Implemented (#80) |
+| Deserialization failure policy; nack on collect failure; metrics | Planned (#80) |
 | Subscription auto-creation; start position (seek) | Planned (#81) |
 | Acceptance and real-GCP integration tests | Planned (#82) |
 
@@ -195,6 +196,11 @@ Source<String, ?, ?> source =
                         SubscriptionDestination.of("my-project", "returns"))
                 .deserializationSchema(
                         PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+                .subscriberOptions(
+                        PubSubSubscriberOptions.builder()
+                                .flowControlMaxOutstandingElementCount(5_000)
+                                .maxAckExtensionPeriod(Duration.ofMinutes(30))
+                                .build())
                 .build();
 
 env.fromSource(source, WatermarkStrategy.noWatermarks(), "pubsub");
@@ -214,6 +220,41 @@ API notes:
   `PUBSUB_EMULATOR_HOST` environment variable: a stray value on a task manager would silently
   redirect a production job.
 
+### Subscriber options
+
+`subscriberOptions(PubSubSubscriberOptions)` tunes the SDK subscribers and the reader. Every knob
+left unset keeps the SDK's (or the source's) current default — `PubSubSubscriberOptions.defaults()`
+is equivalent to not setting options at all.
+
+| Knob | Default when unset |
+|---|---|
+| `flowControlMaxOutstandingElementCount` / `flowControlMaxOutstandingRequestBytes` | SDK subscriber defaults (1000 messages / 100 MB) |
+| `parallelPullCount` | SDK default (one streaming-pull connection) |
+| `maxAckExtensionPeriod` | SDK default (1 hour) |
+| `minDurationPerAckExtension` / `maxDurationPerAckExtension` | SDK default (adaptive, derived from observed acknowledgement latencies) |
+| `shutdownTimeout` (source-owned) | 5 s |
+| `maxRecordsPerFetch` (source-owned) | 1000 |
+| `firstCheckpointTimeout` (source-owned) | 10 min; `Duration.ZERO` disables the watchdog |
+
+**Flow control is the real bound on in-flight messages.** Because the source acknowledges only on
+checkpoint completion, everything received since the last completed checkpoint counts against these
+limits, and the client stops pulling once they are reached. `maxRecordsPerFetch` only caps how much
+a single fetch drains from one split; it is not a memory bound. The limit behavior is not exposed
+because the SDK subscriber does not expose it either — it forces blocking regardless of the
+settings, which for a subscriber means it stops pulling rather than blocking a thread.
+
+**The subscriber shutdown mode is fixed at `NACK_IMMEDIATELY`** and deliberately not a knob. The
+SDK's `WAIT_FOR_PROCESSING` default waits for acknowledgements that only arrive at checkpoint
+completion — which never happens during shutdown — so it would stall every close. Only
+`shutdownTimeout` is configurable, and because a reader closes its splits' subscribers one after
+another it is paid per split: keep the total under Flink's `source.reader.close.timeout` (30 s by
+default), or a split whose turn never comes leaves its messages to expire instead of being nacked.
+
+**`parallelPullCount` cannot be combined with `orderingMode(PER_KEY)`** — the source builder
+rejects it. Each streaming-pull connection has its own message dispatcher and per-ordering-key
+callback serialization is per dispatcher, so a second connection would deliver two messages of one
+key concurrently. Ordered subscriptions always use exactly one connection.
+
 ### Delivery guarantees
 
 The source is **at-least-once**, and holds no message data in Flink state — delivery state lives on
@@ -227,9 +268,19 @@ message data, a restore needs no retained checkpoint.
 
 **Checkpointing must be enabled** in streaming jobs: without it `notifyCheckpointComplete` never
 fires, nothing is ever acknowledged, and the source stalls once the client library's flow control
-fills. The checkpoint interval must also stay well under the client library's maximum
-acknowledgement-deadline extension (1 hour by default), or leases expire and everything is
-redelivered.
+fills. The reader enforces this itself — if no checkpoint has been taken within
+`firstCheckpointTimeout` (10 min by default) while messages wait to be acknowledged, it fails the
+job with a message naming `execution.checkpointing.interval`. It has to observe the outcome rather
+than read the configuration: a reader is handed the *TaskManager* configuration, while
+`env.enableCheckpointing(...)` writes into the *job* configuration, so the interval is usually
+invisible from inside the source and its absence proves nothing. Raise
+`firstCheckpointTimeout(...)` for a job that legitimately checkpoints less often, or set it to
+`Duration.ZERO` to switch the watchdog off.
+
+The checkpoint interval must also stay well under the client library's maximum
+acknowledgement-deadline extension (`maxAckExtensionPeriod`, 1 hour by default), or leases expire
+and everything is redelivered. The source warns when twice the interval exceeds that budget — but
+only when the interval happens to be set at cluster level, for the same visibility reason.
 
 **Nack.** Messages that are pending, staged, or bound to an incomplete checkpoint are **nacked when
 the reader closes**, so Pub/Sub redelivers them immediately instead of after the acknowledgement
@@ -371,7 +422,10 @@ split per subscription under `PER_KEY`, determinism across invocations), the ack
 lifecycle (staging only after emission, the checkpoint sweep healing aborted checkpoints, per-split
 nack isolation, superseded redeliveries), the enumerator against a hand-written context, the split
 reader against a fake client (multi-split drain, per-fetch caps, split removal, pausing, wake-up,
-close aggregating failures) and the record emitter. Emulator integration tests run the production
+close aggregating failures), the record emitter, the subscriber options (defaults, validation, SDK
+settings mapping with a drift guard pinned to the SDK's own maximum ack-extension default, and the
+single-connection forcing that the ordering guarantee rests on) and the first-checkpoint watchdog
+against a hand-moved clock. Emulator integration tests run the production
 subscriber factory against the emulator and cover the acknowledgement round trip, nack-on-close
 producing immediate redelivery, and one reader consuming several subscriptions; a MiniCluster test
 drives the source through the public builder over two subscriptions under real checkpoints.

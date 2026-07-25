@@ -27,6 +27,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
 import org.apache.flink.util.IOUtils;
 
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -89,10 +90,13 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
      *
      * @param subscriberFactory creates the client backing each split
      * @param ackTracker tracks the acknowledgement lifecycle of received messages
-     * @param maxRecordsPerFetch the maximum number of messages drained per split per fetch
+     * @param options the subscriber tuning options, which carry the per-fetch drain size and the
+     *     per-subscriber shutdown budget
      */
     public PubSubSplitReader(
-            SubscriberFactory subscriberFactory, AckTracker ackTracker, int maxRecordsPerFetch) {
+            SubscriberFactory subscriberFactory,
+            AckTracker ackTracker,
+            PubSubSubscriberOptions options) {
         this(
                 (split, signal) ->
                         new PubSubNotifyingPullSubscriber(
@@ -100,8 +104,9 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
                                 split.getSubscription(),
                                 subscriberFactory,
                                 ackTracker,
-                                signal),
-                maxRecordsPerFetch);
+                                signal,
+                                options.getShutdownTimeout()),
+                options.getMaxRecordsPerFetch());
     }
 
     @VisibleForTesting

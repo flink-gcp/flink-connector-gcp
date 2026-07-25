@@ -30,6 +30,7 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -65,6 +66,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
     private final SubscriptionDestination subscription;
     private final AckTracker ackTracker;
     private final Runnable dataAvailableSignal;
+    private final Duration shutdownTimeout;
     private final Subscriber subscriber;
 
     @GuardedBy("this")
@@ -86,6 +88,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
      * @param ackTracker tracks the acknowledgement lifecycle of received messages
      * @param dataAvailableSignal invoked when messages become available or the subscriber fails, so
      *     a blocked fetch wakes up
+     * @param shutdownTimeout how long {@link #close()} waits for the client to release its messages
      * @throws IOException if the subscriber cannot be created or started
      */
     public PubSubNotifyingPullSubscriber(
@@ -93,12 +96,14 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
             SubscriptionDestination subscription,
             SubscriberFactory subscriberFactory,
             AckTracker ackTracker,
-            Runnable dataAvailableSignal)
+            Runnable dataAvailableSignal,
+            Duration shutdownTimeout)
             throws IOException {
         this.splitId = splitId;
         this.subscription = subscription;
         this.ackTracker = ackTracker;
         this.dataAvailableSignal = dataAvailableSignal;
+        this.shutdownTimeout = shutdownTimeout;
         this.subscriber = subscriberFactory.create(subscription, this::receiveMessage);
         try {
             this.subscriber.addListener(
@@ -188,9 +193,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
         try {
             subscriber
                     .stopAsync()
-                    .awaitTerminated(
-                            DefaultSubscriberFactory.SHUTDOWN_TIMEOUT.toMillis(),
-                            TimeUnit.MILLISECONDS);
+                    .awaitTerminated(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException | RuntimeException e) {
             LOG.warn(
                     "The Pub/Sub subscriber for subscription {} did not shut down cleanly.",

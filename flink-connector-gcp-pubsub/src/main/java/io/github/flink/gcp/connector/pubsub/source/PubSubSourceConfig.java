@@ -39,16 +39,19 @@ public final class PubSubSourceConfig<T> implements Serializable {
     private final List<SubscriptionDestination> subscriptions;
     private final PubSubDeserializationSchema<T> deserializationSchema;
     private final OrderingMode orderingMode;
+    private final PubSubSubscriberOptions subscriberOptions;
     @Nullable private final String emulatorEndpoint;
 
     PubSubSourceConfig(
             List<SubscriptionDestination> subscriptions,
             PubSubDeserializationSchema<T> deserializationSchema,
             OrderingMode orderingMode,
+            PubSubSubscriberOptions subscriberOptions,
             @Nullable String emulatorEndpoint) {
         this.subscriptions = subscriptions;
         this.deserializationSchema = deserializationSchema;
         this.orderingMode = orderingMode;
+        this.subscriberOptions = subscriberOptions;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -65,6 +68,11 @@ public final class PubSubSourceConfig<T> implements Serializable {
     /** Returns the ordering mode. */
     public OrderingMode getOrderingMode() {
         return orderingMode;
+    }
+
+    /** Returns the subscriber tuning options. */
+    public PubSubSubscriberOptions getSubscriberOptions() {
+        return subscriberOptions;
     }
 
     /** Returns the emulator endpoint, or {@code null} for production Pub/Sub. */

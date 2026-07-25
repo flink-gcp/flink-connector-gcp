@@ -59,6 +59,56 @@ class PubSubSourceBuilderTest {
     }
 
     @Test
+    void defaultsToDefaultSubscriberOptions() {
+        assertThat(config(builder().subscription(SUB_A).build()).getSubscriberOptions())
+                .isEqualTo(PubSubSubscriberOptions.defaults());
+    }
+
+    @Test
+    void carriesSubscriberOptionsIntoTheConfig() {
+        PubSubSubscriberOptions options =
+                PubSubSubscriberOptions.builder().maxRecordsPerFetch(42).build();
+
+        assertThat(
+                        config(builder().subscription(SUB_A).subscriberOptions(options).build())
+                                .getSubscriberOptions())
+                .isEqualTo(options);
+    }
+
+    @Test
+    void rejectsAnExplicitParallelPullCountUnderOrderedConsumption() {
+        PubSubSubscriberOptions options =
+                PubSubSubscriberOptions.builder().parallelPullCount(4).build();
+
+        assertThatThrownBy(
+                        () ->
+                                builder()
+                                        .subscription(SUB_A)
+                                        .orderingMode(OrderingMode.PER_KEY)
+                                        .subscriberOptions(options)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("parallelPullCount(4)")
+                .hasMessageContaining("orderingMode(PER_KEY)");
+    }
+
+    @Test
+    void acceptsAParallelPullCountOfOneUnderOrderedConsumption() {
+        PubSubSubscriberOptions options =
+                PubSubSubscriberOptions.builder().parallelPullCount(1).build();
+
+        assertThat(
+                        config(
+                                        builder()
+                                                .subscription(SUB_A)
+                                                .orderingMode(OrderingMode.PER_KEY)
+                                                .subscriberOptions(options)
+                                                .build())
+                                .getSubscriberOptions())
+                .isEqualTo(options);
+    }
+
+    @Test
     void collectsSubscriptionsAcrossEveryOverload() {
         Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
                 builder().subscription(SUB_A).subscriptions(Arrays.asList(SUB_B)).build();
@@ -113,6 +163,13 @@ class PubSubSourceBuilderTest {
     }
 
     @Test
+    void rejectsNullSubscriberOptions() {
+        assertThatThrownBy(() -> PubSubSource.<String>builder().subscriberOptions(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("subscriberOptions must not be null");
+    }
+
+    @Test
     void rejectsNullEmulatorEndpoint() {
         assertThatThrownBy(() -> PubSubSource.<String>builder().emulatorEndpoint(null))
                 .isInstanceOf(NullPointerException.class)
@@ -128,10 +185,12 @@ class PubSubSourceBuilderTest {
 
     @Test
     void builtSourceRoundTripsJavaSerialization() throws Exception {
+        PubSubSubscriberOptions options = PubSubSubscriberOptionsTest.fullyPopulated();
         Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
                 builder()
                         .subscriptions(SUB_A, SUB_B)
-                        .orderingMode(OrderingMode.PER_KEY)
+                        .orderingMode(OrderingMode.NONE)
+                        .subscriberOptions(options)
                         .emulatorEndpoint("localhost:8085")
                         .build();
 
@@ -143,7 +202,8 @@ class PubSubSourceBuilderTest {
         PubSubSourceConfig<String> restoredConfig =
                 ((PubSubStreamingPullSource<String>) restored).getConfig();
         assertThat(restoredConfig.getSubscriptions()).containsExactly(SUB_A, SUB_B);
-        assertThat(restoredConfig.getOrderingMode()).isEqualTo(OrderingMode.PER_KEY);
+        assertThat(restoredConfig.getOrderingMode()).isEqualTo(OrderingMode.NONE);
+        assertThat(restoredConfig.getSubscriberOptions()).isEqualTo(options);
         assertThat(restoredConfig.getEmulatorEndpoint()).isEqualTo("localhost:8085");
     }
 

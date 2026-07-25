@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.cloud.pubsub.v1.AckReplyConsumer;
 
@@ -134,9 +133,8 @@ public class PubSubAckTracker implements AckTracker {
         }
     }
 
-    /** Returns the number of messages received or emitted but not yet acknowledged. */
-    @VisibleForTesting
-    synchronized int outstandingAckCount() {
+    @Override
+    public synchronized int outstandingAckCount() {
         int outstanding = stagedAcks.size();
         for (Map<String, AckReplyConsumer> splitAcks : pendingAcks.values()) {
             outstanding += splitAcks.size();

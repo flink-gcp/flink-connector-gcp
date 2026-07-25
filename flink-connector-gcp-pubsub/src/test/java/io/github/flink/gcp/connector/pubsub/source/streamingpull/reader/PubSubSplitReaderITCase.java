@@ -22,6 +22,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.AbstractPubSubSourceEmulatorITCase;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.junit.jupiter.api.Test;
@@ -121,10 +122,12 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
     }
 
     private static PubSubSplitReader reader(PubSubAckTracker ackTracker) {
+        PubSubSubscriberOptions options =
+                PubSubSubscriberOptions.builder().maxRecordsPerFetch(MAX_RECORDS_PER_FETCH).build();
         return new PubSubSplitReader(
-                new DefaultSubscriberFactory(OrderingMode.NONE, emulatorEndpoint()),
+                new DefaultSubscriberFactory(options, OrderingMode.NONE, emulatorEndpoint()),
                 ackTracker,
-                MAX_RECORDS_PER_FETCH);
+                options);
     }
 
     private static List<PubsubMessage> receiveWithFreshReader(
