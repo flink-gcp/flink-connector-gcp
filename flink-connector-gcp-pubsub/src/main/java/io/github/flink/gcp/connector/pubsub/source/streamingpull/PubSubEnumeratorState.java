@@ -35,26 +35,47 @@ import java.util.Objects;
  *
  * <p>The subscription list is recorded so that a restore whose configured subscriptions differ from
  * the checkpointed ones can be reported rather than silently taking effect.
+ *
+ * <p>The one genuinely stateful bit is whether the configured start position has been applied. A
+ * seek rewrites shared subscription state, so it must happen once at the first start of a job and
+ * never again — without this flag every failover would rewind the subscription.
  */
 @Internal
 public final class PubSubEnumeratorState {
 
     private final List<SubscriptionDestination> subscriptions;
+    private final boolean startPositionApplied;
 
     /**
      * Creates the state.
      *
      * @param subscriptions the subscriptions the enumerator resolved
+     * @param startPositionApplied whether the configured start position has already been applied
      */
-    public PubSubEnumeratorState(List<SubscriptionDestination> subscriptions) {
+    public PubSubEnumeratorState(
+            List<SubscriptionDestination> subscriptions, boolean startPositionApplied) {
         this.subscriptions =
                 Collections.unmodifiableList(
                         Preconditions.checkNotNull(subscriptions, "subscriptions"));
+        this.startPositionApplied = startPositionApplied;
     }
 
     /** Returns the subscriptions the enumerator resolved, in assignment order. */
     public List<SubscriptionDestination> getSubscriptions() {
         return subscriptions;
+    }
+
+    /**
+     * Returns whether the configured start position has already been applied, in which case a
+     * restore must not seek again.
+     *
+     * <p>When this is {@code false}, no reader held a split at the time of the checkpoint: the
+     * enumerator assigns nothing until its startup check completes, and the flag is set in the same
+     * step. That is what makes re-applying the start position after such a restore safe — nothing
+     * had been emitted for it to replay or discard.
+     */
+    public boolean isStartPositionApplied() {
+        return startPositionApplied;
     }
 
     @Override
@@ -66,16 +87,21 @@ public final class PubSubEnumeratorState {
             return false;
         }
         PubSubEnumeratorState that = (PubSubEnumeratorState) o;
-        return subscriptions.equals(that.subscriptions);
+        return startPositionApplied == that.startPositionApplied
+                && subscriptions.equals(that.subscriptions);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(subscriptions);
+        return Objects.hash(subscriptions, startPositionApplied);
     }
 
     @Override
     public String toString() {
-        return "PubSubEnumeratorState{subscriptions=" + subscriptions + "}";
+        return "PubSubEnumeratorState{subscriptions="
+                + subscriptions
+                + ", startPositionApplied="
+                + startPositionApplied
+                + "}";
     }
 }

@@ -20,6 +20,7 @@ import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
+import com.google.api.gax.rpc.NotFoundException;
 import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.cloud.pubsub.v1.SubscriptionAdminClient;
@@ -28,11 +29,17 @@ import com.google.cloud.pubsub.v1.TopicAdminClient;
 import com.google.cloud.pubsub.v1.TopicAdminSettings;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
+import com.google.pubsub.v1.PullRequest;
+import com.google.pubsub.v1.PullResponse;
 import com.google.pubsub.v1.PushConfig;
+import com.google.pubsub.v1.ReceivedMessage;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
 import io.github.flink.gcp.connector.pubsub.PubSubEmulatorContainers;
+import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.pubsub.source.subscriptions.PubSubSubscriptionAdmin;
+import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import org.junit.jupiter.api.AfterAll;
@@ -44,8 +51,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
@@ -149,6 +159,83 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
                         .setEnableMessageOrdering(true)
                         .build());
         return SubscriptionDestination.of(PROJECT, name);
+    }
+
+    /** Creates a topic without any subscription on it. */
+    public static TopicDestination createTopic(String name) {
+        topicAdminClient.createTopic(TopicName.of(PROJECT, name));
+        return TopicDestination.of(PROJECT, name);
+    }
+
+    /**
+     * Returns the production admin, pointed at the emulator. The enumerator closes the admin it is
+     * given, so it must not receive a harness-owned client.
+     */
+    public static SubscriptionAdmin newSubscriptionAdmin() {
+        return new PubSubSubscriptionAdmin(emulatorEndpoint());
+    }
+
+    /** Returns whether the subscription exists. */
+    public static boolean subscriptionExists(SubscriptionDestination subscription) {
+        try {
+            subscriptionAdminClient.getSubscription(subscription.toSubscriptionPath());
+            return true;
+        } catch (NotFoundException e) {
+            return false;
+        }
+    }
+
+    /** Returns the subscription as the service reports it. */
+    public static Subscription describeSubscription(SubscriptionDestination subscription) {
+        return subscriptionAdminClient.getSubscription(subscription.toSubscriptionPath());
+    }
+
+    /**
+     * Pulls and acknowledges until {@code expected} distinct payloads have arrived or the deadline
+     * passes, returning what did arrive.
+     *
+     * <p>A single pull is not guaranteed to return everything outstanding even when more is
+     * available, so an exact-count assertion on one pull would be flaky.
+     */
+    public static Set<String> pullAndAckUntil(
+            SubscriptionDestination subscription, int expected, Duration timeout)
+            throws InterruptedException {
+        Set<String> payloads = new LinkedHashSet<>();
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (payloads.size() < expected && System.nanoTime() < deadline) {
+            List<String> pulled = pullAndAck(subscription, expected);
+            if (pulled.isEmpty()) {
+                Thread.sleep(100);
+            }
+            payloads.addAll(pulled);
+        }
+        return payloads;
+    }
+
+    /**
+     * Pulls up to {@code maxMessages} from the subscription and acknowledges them, returning their
+     * payloads. One pull only — use {@link #pullAndAckUntil} to assert on a known count.
+     */
+    public static List<String> pullAndAck(SubscriptionDestination subscription, int maxMessages) {
+        PullResponse response =
+                subscriptionAdminClient
+                        .getStub()
+                        .pullCallable()
+                        .call(
+                                PullRequest.newBuilder()
+                                        .setSubscription(subscription.toSubscriptionPath())
+                                        .setMaxMessages(maxMessages)
+                                        .build());
+        List<String> payloads = new ArrayList<>(response.getReceivedMessagesCount());
+        List<String> ackIds = new ArrayList<>(response.getReceivedMessagesCount());
+        for (ReceivedMessage received : response.getReceivedMessagesList()) {
+            payloads.add(received.getMessage().getData().toStringUtf8());
+            ackIds.add(received.getAckId());
+        }
+        if (!ackIds.isEmpty()) {
+            subscriptionAdminClient.acknowledge(subscription.toSubscriptionPath(), ackIds);
+        }
+        return payloads;
     }
 
     /**

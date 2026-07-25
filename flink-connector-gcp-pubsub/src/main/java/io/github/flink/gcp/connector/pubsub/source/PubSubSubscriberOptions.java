@@ -314,7 +314,7 @@ public final class PubSubSubscriberOptions implements Serializable {
          */
         public Builder maxAckExtensionPeriod(Duration maxAckExtensionPeriod) {
             this.maxAckExtensionPeriod =
-                    checkPositive(maxAckExtensionPeriod, "maxAckExtensionPeriod");
+                    OptionChecks.checkPositive(maxAckExtensionPeriod, "maxAckExtensionPeriod");
             return this;
         }
 
@@ -329,7 +329,8 @@ public final class PubSubSubscriberOptions implements Serializable {
          */
         public Builder minDurationPerAckExtension(Duration minDurationPerAckExtension) {
             this.minDurationPerAckExtension =
-                    checkPositive(minDurationPerAckExtension, "minDurationPerAckExtension");
+                    OptionChecks.checkPositive(
+                            minDurationPerAckExtension, "minDurationPerAckExtension");
             return this;
         }
 
@@ -343,7 +344,8 @@ public final class PubSubSubscriberOptions implements Serializable {
          */
         public Builder maxDurationPerAckExtension(Duration maxDurationPerAckExtension) {
             this.maxDurationPerAckExtension =
-                    checkPositive(maxDurationPerAckExtension, "maxDurationPerAckExtension");
+                    OptionChecks.checkPositive(
+                            maxDurationPerAckExtension, "maxDurationPerAckExtension");
             return this;
         }
 
@@ -371,7 +373,8 @@ public final class PubSubSubscriberOptions implements Serializable {
          * @return this builder
          */
         public Builder awaitAckConfirmation(Duration awaitAckConfirmation) {
-            this.awaitAckConfirmation = checkPositive(awaitAckConfirmation, "awaitAckConfirmation");
+            this.awaitAckConfirmation =
+                    OptionChecks.checkPositive(awaitAckConfirmation, "awaitAckConfirmation");
             return this;
         }
 
@@ -388,7 +391,7 @@ public final class PubSubSubscriberOptions implements Serializable {
          * @return this builder
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {
-            this.shutdownTimeout = checkPositive(shutdownTimeout, "shutdownTimeout");
+            this.shutdownTimeout = OptionChecks.checkPositive(shutdownTimeout, "shutdownTimeout");
             return this;
         }
 
@@ -444,15 +447,6 @@ public final class PubSubSubscriberOptions implements Serializable {
                             || minDurationPerAckExtension.compareTo(maxDurationPerAckExtension) < 0,
                     "minDurationPerAckExtension must be shorter than maxDurationPerAckExtension.");
             return new PubSubSubscriberOptions(this);
-        }
-
-        // Duplicated from PubSubPublisherOptions.Builder; extracting a shared option-validation
-        // helper is not worth a new public type for two call sites.
-        private static Duration checkPositive(Duration duration, String name) {
-            Preconditions.checkNotNull(duration, "%s must not be null", name);
-            Preconditions.checkArgument(
-                    !duration.isZero() && !duration.isNegative(), "%s must be positive", name);
-            return duration;
         }
     }
 }

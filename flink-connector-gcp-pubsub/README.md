@@ -17,7 +17,7 @@ sink and multi-subscription consumption on the source.
 | Ordering mode preserving per-ordering-key order | Implemented (#79) |
 | Subscriber tuning options (flow control, ack extension, parallel pull, shutdown); missing-checkpoint detection | Implemented (#80) |
 | Deserialization failure policy; nack on collect failure; metrics; acknowledgement confirmation | Implemented (#80) |
-| Subscription auto-creation; start position (seek) | Planned (#81) |
+| Startup check; subscription auto-creation; start position (seek); `NACK` failure policy | Implemented (#81) |
 | Acceptance and real-GCP integration tests | Planned (#82) |
 
 ```java

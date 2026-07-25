@@ -26,8 +26,10 @@ import org.apache.flink.runtime.metrics.groups.InternalSplitEnumeratorMetricGrou
 
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -43,6 +45,7 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
     private final Map<Integer, ReaderInfo> registeredReaders = new HashMap<>();
     private final Map<Integer, List<SubscriptionSplit>> assignments = new HashMap<>();
     private final Set<Integer> readersToldNoMoreSplits = new LinkedHashSet<>();
+    private final Deque<Runnable> asyncCalls = new ArrayDeque<>();
 
     /** Lets tests read back the gauges the enumerator registers. */
     private final MetricListener metricListener = new MetricListener();
@@ -57,6 +60,11 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
     /** Registers a reader, as the coordinator does before calling {@code addReader}. */
     void registerReader(int subtaskId) {
         registeredReaders.put(subtaskId, new ReaderInfo(subtaskId, "localhost"));
+    }
+
+    /** Drops a reader, as the coordinator does when its last attempt goes away. */
+    void unregisterReader(int subtaskId) {
+        registeredReaders.remove(subtaskId);
     }
 
     /**
@@ -95,29 +103,81 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
         return registeredReaders;
     }
 
+    /**
+     * Records the assignment. Rejects an unregistered subtask, as the real context does — assigning
+     * to one that has gone away throws there, so a fake that accepted it would hide the bug.
+     */
     @Override
     public void assignSplits(SplitsAssignment<SubscriptionSplit> newSplitAssignments) {
         newSplitAssignments
                 .assignment()
                 .forEach(
-                        (subtask, splits) ->
-                                assignments
-                                        .computeIfAbsent(subtask, key -> new ArrayList<>())
-                                        .addAll(splits));
+                        (subtask, splits) -> {
+                            checkRegistered(subtask, "assign splits to");
+                            assignments
+                                    .computeIfAbsent(subtask, key -> new ArrayList<>())
+                                    .addAll(splits);
+                        });
     }
 
+    /**
+     * Records the signal. Rejects an unregistered subtask, where the real context throws an NPE.
+     */
     @Override
     public void signalNoMoreSplits(int subtask) {
+        checkRegistered(subtask, "signal no more splits to");
         readersToldNoMoreSplits.add(subtask);
     }
 
-    // The enumerator is entirely synchronous today; these throw rather than silently accepting
-    // work, so the first asynchronous step added to it has to revisit this fake.
+    private void checkRegistered(int subtaskId, String action) {
+        if (!registeredReaders.containsKey(subtaskId)) {
+            throw new IllegalArgumentException(
+                    "Cannot "
+                            + action
+                            + " subtask "
+                            + subtaskId
+                            + " because it is not registered.");
+        }
+    }
 
+    /**
+     * Records the call instead of running it, so a test decides when the enumerator's startup check
+     * completes. Mirrors {@code ExecutorNotifier}: the callable runs off the coordinator thread and
+     * the handler then runs on it with exactly one of (result, error) set.
+     *
+     * <p>A handler that throws propagates out of {@link #runAsyncCalls()}; in production the same
+     * throw reaches the coordinator, which fails the job.
+     */
     @Override
     public <T> void callAsync(Callable<T> callable, BiConsumer<T, Throwable> handler) {
-        throw new UnsupportedOperationException("The Pub/Sub enumerator makes no async calls.");
+        asyncCalls.add(
+                () -> {
+                    T result = null;
+                    Throwable error = null;
+                    try {
+                        result = callable.call();
+                    } catch (Throwable t) {
+                        error = t;
+                    }
+                    handler.accept(result, error);
+                });
     }
+
+    /** Runs every async call recorded so far, including any a handler enqueues. */
+    void runAsyncCalls() {
+        while (!asyncCalls.isEmpty()) {
+            asyncCalls.poll().run();
+        }
+    }
+
+    /** Returns how many async calls are recorded but not yet run. */
+    int pendingAsyncCalls() {
+        return asyncCalls.size();
+    }
+
+    // The startup check is the enumerator's only asynchronous step, and it is one-shot; these throw
+    // rather than silently accepting work, so the next asynchronous step added has to revisit this
+    // fake.
 
     @Override
     public <T> void callAsync(
@@ -125,7 +185,8 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
             BiConsumer<T, Throwable> handler,
             long initialDelayMillis,
             long periodMillis) {
-        throw new UnsupportedOperationException("The Pub/Sub enumerator makes no async calls.");
+        throw new UnsupportedOperationException(
+                "The Pub/Sub enumerator makes no periodic async calls.");
     }
 
     @Override
