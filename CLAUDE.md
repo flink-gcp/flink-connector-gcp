@@ -234,4 +234,24 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   `parallelPullCount > 1` is rejected with `orderingMode(PER_KEY)` rather than silently forced to 1
   (the factory still force-sets 1 so the guarantee does not rest on the SDK default). The `NACK` deserialization-failure policy is deferred to #81, where
   the `GetSubscription` preflight can verify a dead-letter policy exists
+- **Cloud Tasks sink** (#23, design settled; implemented in #24): Cloud Tasks is an HTTP dispatch
+  queue whose **pacing lives on the queue** (`maxDispatchesPerSecond`, `maxConcurrentDispatches`,
+  retry config), so the sink has no rate knobs and there is **no queue auto-creation** — an
+  auto-created queue would carry default limits, discarding the throttling that is the reason to
+  use the service, and a deleted queue name cannot be reused for 3 days. HTTP targets only (App
+  Engine targets are region-locked, invert 429/503 overload behaviour and are "less common");
+  targets need an external IP; OIDC vs OAuth is chosen by the target, not by preference, so the
+  builder rejects setting both. Fixed **and** per-record queue destinations from v1 — unlike
+  Pub/Sub topics and BigQuery tables this costs nothing, since one `CloudTasksClient` serves every
+  queue with no per-destination stream. **Unnamed tasks by default**; `withTaskId(...)` opts into
+  deduplication (`ALREADY_EXISTS` = success, window ≤24 h) and the sink **hashes the extracted key
+  with SHA-256**, because Google documents that sequential ids raise latency *and* error rates —
+  the footgun is removed by construction rather than by a warning. **Retries are the sink's
+  responsibility**: the generated client gives `CreateTask` an empty retryable-code set and a 20 s
+  timeout (verified in `CloudTasksStubSettings` 2.94.0) precisely because an unnamed create is not
+  idempotent; the sink retries `UNAVAILABLE`/`DEADLINE_EXCEEDED`/`RESOURCE_EXHAUSTED` and treats
+  `NOT_FOUND` as briefly transient (a 30-day-idle queue re-activates slowly). No batch API in GA v2
+  and no client-side batching in the SDK, so one RPC per record with a mailbox-based in-flight cap.
+  At-least-once, stateless writer, flush on checkpoint. Decision record in the connector
+  documentation page
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
