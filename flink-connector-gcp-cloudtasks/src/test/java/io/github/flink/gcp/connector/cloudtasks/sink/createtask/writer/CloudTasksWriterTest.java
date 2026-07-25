@@ -34,10 +34,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link CloudTasksWriter}. */
 class CloudTasksWriterTest {
 
-    /** SHA-256 of {@code order-1}, the id the writer must derive rather than use the key itself. */
-    private static final String ORDER_1_DIGEST =
-            "0bafe22156d2698c143b86040446d366ead863ba600d5c924f3d15c786ef4057";
-
     private final FakeTaskCreator creator = new FakeTaskCreator();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
     private final ManualTimeSource time = new ManualTimeSource();
@@ -95,7 +91,7 @@ class CloudTasksWriterTest {
         // The key itself never reaches Cloud Tasks: sequential ids raise latency and error rates,
         // so the sink writes the digest, which is stable per key and 64 hex characters long.
         assertThat(creator.requests.get(0).getTask().getName())
-                .isEqualTo(TestSinkConfigs.QUEUE_PATH + "/tasks/" + ORDER_1_DIGEST);
+                .isEqualTo(TestSinkConfigs.QUEUE_PATH + "/tasks/" + TestSinkConfigs.ORDER_1_DIGEST);
         assertThat(creator.requests.get(1).getTask().getName())
                 .isEqualTo(creator.requests.get(0).getTask().getName());
         assertThat(creator.requests.get(2).getTask().getName())

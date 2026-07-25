@@ -37,6 +37,10 @@ final class TestSinkConfigs {
     static final String QUEUE_PATH =
             "projects/my-project/locations/asia-northeast1/queues/webhooks";
 
+    /** SHA-256 of {@code order-1}, the id the writer must derive rather than use the key itself. */
+    static final String ORDER_1_DIGEST =
+            "0bafe22156d2698c143b86040446d366ead863ba600d5c924f3d15c786ef4057";
+
     /** A serializer posting the record itself as the body of a fixed HTTP target. */
     static CloudTasksSerializationSchema<String> serializer() {
         return CloudTasksSerializationSchema.httpTarget("https://api.example.com/v1/orders")
@@ -45,7 +49,18 @@ final class TestSinkConfigs {
 
     /** A builder writing to {@link #QUEUE} with {@link #serializer()}, ready to be extended. */
     static CloudTasksSinkBuilder<String> builder() {
-        return CloudTasksSink.<String>builder().queue(QUEUE).serializer(serializer());
+        return builder(QUEUE);
+    }
+
+    /** A builder writing to the given queue with {@link #serializer()}. */
+    static CloudTasksSinkBuilder<String> builder(QueueDestination queue) {
+        return builder(queue, serializer());
+    }
+
+    /** A builder writing to the given queue with the given serializer. */
+    static CloudTasksSinkBuilder<String> builder(
+            QueueDestination queue, CloudTasksSerializationSchema<String> serializer) {
+        return CloudTasksSink.<String>builder().queue(queue).serializer(serializer);
     }
 
     static CloudTasksSinkConfig<String> config(CloudTasksSinkBuilder<String> builder) {
