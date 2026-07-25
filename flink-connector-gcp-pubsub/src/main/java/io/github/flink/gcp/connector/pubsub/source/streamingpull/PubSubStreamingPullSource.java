@@ -47,6 +47,8 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSo
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSourceReaderMetrics;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSplitReader;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.SubscriberFactory;
+import io.github.flink.gcp.connector.pubsub.source.subscriptions.PubSubSubscriptionAdmin;
+import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -177,15 +179,20 @@ public class PubSubStreamingPullSource<T>
     @Override
     public SplitEnumerator<SubscriptionSplit, PubSubEnumeratorState> createEnumerator(
             SplitEnumeratorContext<SubscriptionSplit> context) {
-        return new PubSubSplitEnumerator(
-                context, config.getSubscriptions(), config.getOrderingMode(), null);
+        return new PubSubSplitEnumerator(context, config, newSubscriptionAdmin(), null);
     }
 
     @Override
     public SplitEnumerator<SubscriptionSplit, PubSubEnumeratorState> restoreEnumerator(
             SplitEnumeratorContext<SubscriptionSplit> context, PubSubEnumeratorState checkpoint) {
-        return new PubSubSplitEnumerator(
-                context, config.getSubscriptions(), config.getOrderingMode(), checkpoint);
+        return new PubSubSplitEnumerator(context, config, newSubscriptionAdmin(), checkpoint);
+    }
+
+    /**
+     * The enumerator owns the admin and closes it; this is the only admin the job manager builds.
+     */
+    private SubscriptionAdmin newSubscriptionAdmin() {
+        return new PubSubSubscriptionAdmin(config.getEmulatorEndpoint());
     }
 
     @Override

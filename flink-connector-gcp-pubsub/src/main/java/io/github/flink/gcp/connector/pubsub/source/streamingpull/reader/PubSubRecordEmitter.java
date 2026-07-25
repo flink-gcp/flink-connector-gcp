@@ -44,8 +44,9 @@ import java.io.IOException;
  * <p>Two failures are distinguished, because they call for opposite handling:
  *
  * <ul>
- *   <li><b>The schema failed.</b> The message is bad and redelivering it changes nothing, so {@link
- *       DeserializationFailurePolicy} decides between failing the job and dropping the message.
+ *   <li><b>The schema failed.</b> The message is bad, so {@link DeserializationFailurePolicy}
+ *       decides between failing the job, dropping the message, and returning it to Pub/Sub for its
+ *       dead-letter policy to deal with.
  *   <li><b>The output failed.</b> The message is fine and the job is about to fail anyway, so it is
  *       nacked for immediate redelivery rather than left to its acknowledgement deadline.
  * </ul>
@@ -74,8 +75,10 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
     /** Reused across records; the emitter is confined to the task thread. */
     private final SourceOutputCollector<T> collector = new SourceOutputCollector<>();
 
-    /** Drives the decreasing log rate of dropped messages; task-thread confined. */
-    private long dropCount;
+    /**
+     * Drives the decreasing log rate of messages the failure policy handled; task-thread confined.
+     */
+    private long handledFailureCount;
 
     /**
      * Creates the emitter.
@@ -152,25 +155,38 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
                             + split.getSubscription()
                             + ". Set"
                             + " PubSubSource.builder().deserializationFailurePolicy(DROP) to"
-                            + " discard messages the schema cannot convert instead of failing the"
-                            + " job.",
+                            + " discard messages the schema cannot convert, or (NACK) to return"
+                            + " them to Pub/Sub for dead-lettering, instead of failing the job.",
                     failure);
+        }
+        if (failurePolicy == DeserializationFailurePolicy.NACK) {
+            // The tracker counts the nack itself; this records that a deserialization failure is
+            // what caused it, which is what numRecordsInErrors reports.
+            metrics.deserializationFailed();
+            ackTracker.nackPendingImmediately(split.splitId(), message.getMessageId());
+            logHandledFailure(message, split, failure, "Nacked");
+            return;
         }
         metrics.messageDropped();
         ackTracker.ackPendingImmediately(split.splitId(), message.getMessageId());
-        logDrop(message, split, failure);
+        logHandledFailure(message, split, failure, "Dropped");
     }
 
-    /** Logs the first few drops, then progressively fewer, so a bad batch cannot flood the log. */
-    private void logDrop(PubsubMessage message, SubscriptionSplit split, Exception failure) {
-        dropCount++;
-        if (dropCount <= 10 || Long.bitCount(dropCount) == 1) {
+    /**
+     * Logs the first few handled failures, then progressively fewer, so a bad batch cannot flood
+     * the log.
+     */
+    private void logHandledFailure(
+            PubsubMessage message, SubscriptionSplit split, Exception failure, String action) {
+        handledFailureCount++;
+        if (handledFailureCount <= 10 || Long.bitCount(handledFailureCount) == 1) {
             LOG.warn(
-                    "Dropped Pub/Sub message {} from {}: the deserialization schema could not"
-                            + " convert it ({} dropped so far on this reader).",
+                    "{} Pub/Sub message {} from {}: the deserialization schema could not convert it"
+                            + " ({} handled so far on this reader).",
+                    action,
                     message.getMessageId(),
                     split.getSubscription(),
-                    dropCount,
+                    handledFailureCount,
                     failure);
         }
     }

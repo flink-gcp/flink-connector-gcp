@@ -27,12 +27,21 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Serializer for {@link PubSubEnumeratorState}. */
+/**
+ * Serializer for {@link PubSubEnumeratorState}.
+ *
+ * <p>Version 2 appends the start-position flag after the subscription list. Version 1 predates the
+ * start position and is still read, mapping to "already applied": that state belongs to a job that
+ * has been running, and upgrading the connector must not rewind its subscriptions.
+ */
 @Internal
 public final class PubSubEnumeratorStateSerializer
         implements SimpleVersionedSerializer<PubSubEnumeratorState> {
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
+
+    /** The version that predates {@code startPositionApplied}. */
+    private static final int VERSION_WITHOUT_START_POSITION = 1;
 
     private static final int INITIAL_BUFFER_SIZE = 256;
 
@@ -49,16 +58,19 @@ public final class PubSubEnumeratorStateSerializer
             out.writeUTF(subscription.getProject());
             out.writeUTF(subscription.getSubscription());
         }
+        out.writeBoolean(state.isStartPositionApplied());
         return out.getCopyOfBuffer();
     }
 
     @Override
     public PubSubEnumeratorState deserialize(int version, byte[] serialized) throws IOException {
-        if (version != VERSION) {
+        if (version != VERSION && version != VERSION_WITHOUT_START_POSITION) {
             throw new IOException(
                     "Unsupported Pub/Sub enumerator state serialization version "
                             + version
-                            + "; this connector writes version "
+                            + "; this connector reads versions "
+                            + VERSION_WITHOUT_START_POSITION
+                            + " to "
                             + VERSION
                             + ".");
         }
@@ -70,6 +82,11 @@ public final class PubSubEnumeratorStateSerializer
             String subscription = in.readUTF();
             subscriptions.add(SubscriptionDestination.of(project, subscription));
         }
-        return new PubSubEnumeratorState(subscriptions);
+        // The short-circuit is what keeps the version-1 branch from reading a byte that is not
+        // there. Version 1 means the job predates the start position, so treat it as applied
+        // rather than seeking a running job's subscriptions on a connector upgrade.
+        boolean startPositionApplied =
+                version == VERSION_WITHOUT_START_POSITION || in.readBoolean();
+        return new PubSubEnumeratorState(subscriptions, startPositionApplied);
     }
 }

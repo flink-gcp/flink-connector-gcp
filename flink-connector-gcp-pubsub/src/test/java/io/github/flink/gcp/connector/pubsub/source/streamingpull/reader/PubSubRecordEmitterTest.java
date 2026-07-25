@@ -160,6 +160,22 @@ class PubSubRecordEmitterTest {
     }
 
     @Test
+    void theNackPolicyReturnsTheMessageForRedeliveryAndCountsIt() throws Exception {
+        RecordingAckHandle handle = receive("m1");
+
+        emitter(new UndeserializableSchema(), DeserializationFailurePolicy.NACK)
+                .emitRecord(message("m1", "payload"), output, SPLIT);
+
+        assertThat(output.records()).isEmpty();
+        // Returned rather than acknowledged, so redelivery raises the delivery attempt count until
+        // the subscription's dead-letter policy takes over.
+        assertThat(handle.isNacked()).isTrue();
+        assertThat(testMetrics.counter("messagesNacked")).isEqualTo(1);
+        assertThat(testMetrics.counter("messagesDropped")).isZero();
+        assertThat(testMetrics.numRecordsInErrors()).isEqualTo(1);
+    }
+
+    @Test
     void theDropPolicyKeepsRecordsTheSchemaEmittedBeforeFailing() throws Exception {
         receive("m1");
 

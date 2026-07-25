@@ -21,16 +21,20 @@ import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.util.InstantiationUtil;
 
+import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreamingPullSource;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /** Tests for {@link PubSubSourceBuilder} and {@link PubSubSource}. */
 class PubSubSourceBuilderTest {
@@ -39,6 +43,7 @@ class PubSubSourceBuilderTest {
             SubscriptionDestination.of("project", "sub-a");
     private static final SubscriptionDestination SUB_B =
             SubscriptionDestination.of("project", "sub-b");
+    private static final TopicDestination TOPIC = TopicDestination.of("project", "topic");
 
     @Test
     void buildsAnUnboundedSourceWithTheConfiguredSettings() {
@@ -212,11 +217,20 @@ class PubSubSourceBuilderTest {
     @Test
     void builtSourceRoundTripsJavaSerialization() throws Exception {
         PubSubSubscriberOptions options = PubSubSubscriberOptionsTest.fullyPopulated();
+        SubscriptionCreateOptions createOptions =
+                SubscriptionCreateOptions.builder()
+                        .topic(TOPIC)
+                        .enableMessageOrdering(true)
+                        .ackDeadline(Duration.ofSeconds(30))
+                        .build();
+        StartPosition startPosition = StartPosition.fromTimestamp(Instant.ofEpochMilli(1_000L));
         Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
                 builder()
-                        .subscriptions(SUB_A, SUB_B)
+                        .subscription(SUB_A, createOptions)
+                        .subscription(SUB_B)
                         .orderingMode(OrderingMode.PER_KEY)
                         .subscriberOptions(options)
+                        .startPosition(startPosition)
                         .emulatorEndpoint("localhost:8085")
                         .build();
 
@@ -230,7 +244,70 @@ class PubSubSourceBuilderTest {
         assertThat(restoredConfig.getSubscriptions()).containsExactly(SUB_A, SUB_B);
         assertThat(restoredConfig.getOrderingMode()).isEqualTo(OrderingMode.PER_KEY);
         assertThat(restoredConfig.getSubscriberOptions()).isEqualTo(options);
+        assertThat(restoredConfig.getCreateOptions()).containsExactly(entry(SUB_A, createOptions));
+        assertThat(restoredConfig.getStartPosition()).isEqualTo(startPosition);
         assertThat(restoredConfig.getEmulatorEndpoint()).isEqualTo("localhost:8085");
+    }
+
+    @Test
+    void defaultsToContinuingFromTheSubscription() {
+        assertThat(config(builder().subscription(SUB_A).build()).getStartPosition())
+                .isEqualTo(StartPosition.continueFromSubscription());
+    }
+
+    @Test
+    void subscriptionsAddedWithoutCreateOptionsCarryNone() {
+        assertThat(config(builder().subscriptions(SUB_A, SUB_B).build()).getCreateOptions())
+                .isEmpty();
+    }
+
+    @Test
+    void rejectsUnorderedCreateOptionsUnderOrderedConsumption() {
+        SubscriptionCreateOptions createOptions =
+                SubscriptionCreateOptions.builder().topic(TOPIC).build();
+
+        assertThatThrownBy(
+                        () ->
+                                builder()
+                                        .subscription(SUB_A, createOptions)
+                                        .orderingMode(OrderingMode.PER_KEY)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("orderingMode(PER_KEY)")
+                .hasMessageContaining("enableMessageOrdering(true)")
+                .hasMessageContaining(SUB_A.toString());
+    }
+
+    @Test
+    void acceptsOrderedCreateOptionsUnderOrderedConsumption() {
+        SubscriptionCreateOptions createOptions =
+                SubscriptionCreateOptions.builder()
+                        .topic(TOPIC)
+                        .enableMessageOrdering(true)
+                        .build();
+
+        assertThat(
+                        config(
+                                        builder()
+                                                .subscription(SUB_A, createOptions)
+                                                .orderingMode(OrderingMode.PER_KEY)
+                                                .build())
+                                .getCreateOptions())
+                .containsExactly(entry(SUB_A, createOptions));
+    }
+
+    @Test
+    void rejectsNullStartPosition() {
+        assertThatThrownBy(() -> PubSubSource.<String>builder().startPosition(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("startPosition must not be null");
+    }
+
+    @Test
+    void rejectsNullCreateOptions() {
+        assertThatThrownBy(() -> PubSubSource.<String>builder().subscription(SUB_A, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("createOptions must not be null");
     }
 
     private static PubSubSourceBuilder<String> builder() {

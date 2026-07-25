@@ -31,7 +31,9 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -45,11 +47,14 @@ import java.util.Set;
 public class PubSubSourceBuilder<T> {
 
     private final List<SubscriptionDestination> subscriptions = new ArrayList<>();
+    private final Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions =
+            new LinkedHashMap<>();
     private PubSubDeserializationSchema<T> deserializationSchema;
     private OrderingMode orderingMode = OrderingMode.NONE;
     private PubSubSubscriberOptions subscriberOptions = PubSubSubscriberOptions.defaults();
     private DeserializationFailurePolicy deserializationFailurePolicy =
             DeserializationFailurePolicy.FAIL;
+    private StartPosition startPosition = StartPosition.continueFromSubscription();
     @Nullable private String emulatorEndpoint;
 
     PubSubSourceBuilder() {}
@@ -58,12 +63,38 @@ public class PubSubSourceBuilder<T> {
      * Adds a subscription to consume. Calling this several times, or combining it with {@link
      * #subscriptions}, consumes every added subscription in one source.
      *
+     * <p>The subscription must already exist. Use {@link #subscription(SubscriptionDestination,
+     * SubscriptionCreateOptions)} to have the source create it when it does not.
+     *
      * @param subscription the subscription
      * @return this builder
      */
     public PubSubSourceBuilder<T> subscription(SubscriptionDestination subscription) {
         this.subscriptions.add(
                 Preconditions.checkNotNull(subscription, "subscription must not be null"));
+        return this;
+    }
+
+    /**
+     * Adds a subscription to consume, creating it with the given settings if it does not exist.
+     *
+     * <p>Passing options is what authorises creating this subscription; a subscription added
+     * without them must already exist. The options are per subscription because they carry the
+     * topic binding, and two subscriptions of one topic each receive a complete copy of its stream
+     * — so sharing one options object would silently duplicate every message.
+     *
+     * <p>An existing subscription is left exactly as it is: these settings are not applied to it.
+     *
+     * @param subscription the subscription
+     * @param createOptions the settings to create it with if it is absent
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> subscription(
+            SubscriptionDestination subscription, SubscriptionCreateOptions createOptions) {
+        Preconditions.checkNotNull(subscription, "subscription must not be null");
+        Preconditions.checkNotNull(createOptions, "createOptions must not be null");
+        this.subscriptions.add(subscription);
+        this.createOptions.put(subscription, createOptions);
         return this;
     }
 
@@ -156,6 +187,24 @@ public class PubSubSourceBuilder<T> {
     }
 
     /**
+     * Sets where the source starts consuming. Defaults to {@link
+     * StartPosition#continueFromSubscription()}, which starts wherever the subscriptions already
+     * are.
+     *
+     * <p>Every other position seeks, which rewrites state shared by every consumer of the
+     * subscription — including other jobs. The seek runs once, at the first start of a job, and
+     * never on a restore. See {@link StartPosition} for the full semantics.
+     *
+     * @param startPosition where to start consuming
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> startPosition(StartPosition startPosition) {
+        this.startPosition =
+                Preconditions.checkNotNull(startPosition, "startPosition must not be null");
+        return this;
+    }
+
+    /**
      * Points the source at a Pub/Sub emulator instead of the production service. Subscribers
      * connect to the given {@code host:port} over a plaintext channel with no credentials, so this
      * must only ever be used against an emulator (for example a testcontainers {@code
@@ -208,13 +257,28 @@ public class PubSubSourceBuilder<T> {
                         + " parallelPullCount(...) — ordered subscriptions always use exactly one"
                         + " connection — or use orderingMode(NONE).",
                 parallelPullCount);
+        if (orderingMode == OrderingMode.PER_KEY) {
+            for (Map.Entry<SubscriptionDestination, SubscriptionCreateOptions> entry :
+                    createOptions.entrySet()) {
+                Preconditions.checkState(
+                        entry.getValue().isEnableMessageOrdering(),
+                        "orderingMode(PER_KEY) requires every auto-created subscription to be"
+                                + " created with enableMessageOrdering(true), but the options for"
+                                + " %s leave it off. A subscription's ordering setting is fixed at"
+                                + " creation, so the source would create it and then have to reject"
+                                + " it at startup.",
+                        entry.getKey());
+            }
+        }
         return new PubSubStreamingPullSource<>(
                 new PubSubSourceConfig<>(
                         Collections.unmodifiableList(new ArrayList<>(subscriptions)),
+                        Collections.unmodifiableMap(new LinkedHashMap<>(createOptions)),
                         deserializationSchema,
                         orderingMode,
                         subscriberOptions,
                         deserializationFailurePolicy,
+                        startPosition,
                         emulatorEndpoint));
     }
 }

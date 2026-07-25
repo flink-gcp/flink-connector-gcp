@@ -296,6 +296,107 @@ byte limit should stay within the TaskManager's memory budget. `maxAckExtensionP
 half: it must exceed the checkpoint interval by a comfortable margin (see
 [Delivery guarantees](#delivery-guarantees)).
 
+### Startup check
+
+Before it assigns a single split, the enumerator describes every configured subscription and refuses
+to start on one the source cannot consume:
+
+- **`orderingMode(PER_KEY)` against a subscription without message ordering.** The setting is fixed
+  at creation, and Pub/Sub only preserves ordering-key order on ordering-enabled subscriptions —
+  without this check the job would run and quietly deliver unordered messages.
+- **Exactly-once delivery.** Its acknowledgement ids are invalidated on redelivery and expire with
+  the acknowledgement deadline, while this source holds them for a whole checkpoint interval.
+- **`deserializationFailurePolicy(NACK)` on a subscription with no dead-letter policy** (see
+  [Deserialization failures](#deserialization-failures)).
+
+Nothing is verified and then acted on in one pass: every subscription is resolved and checked before
+any of them is sought, so a rejection cannot leave an earlier subscription already rewound.
+
+The check runs asynchronously, so it never blocks the coordinator thread; readers that register while
+it is in flight wait for it to finish. That fence is also what keeps a subscriber from attaching to a
+subscription mid-seek. These are start-time snapshots, not invariants: flipping a subscription's
+settings under a running job is not noticed.
+
+The job manager's credentials need `pubsub.subscriptions.get` on every configured subscription
+(roles/pubsub.viewer), plus `create` when auto-creating and `update` when seeking —
+roles/pubsub.editor covers all three.
+
+### Subscription auto-creation
+
+Passing creation settings alongside a subscription is what authorises creating it; a subscription
+added without them must already exist, and the job fails at startup naming the option if it does not.
+There is no separate disposition enum because there is no meaningful "create with defaults": a
+subscription without a topic is not a subscription, and only you know which topic to bind.
+
+```java
+PubSubSource.<String>builder()
+        .subscription(
+                SubscriptionDestination.of("my-project", "orders"),
+                SubscriptionCreateOptions.builder()
+                        .topic(TopicDestination.of("my-project", "orders-topic"))
+                        .ackDeadline(Duration.ofSeconds(60))
+                        .retainAckedMessages(true)
+                        .build())
+        // No options: this one must already exist.
+        .subscription(SubscriptionDestination.of("my-project", "returns"))
+        .deserializationSchema(PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+        .build();
+```
+
+**Settings are per subscription because they carry the topic binding.** One options object shared by
+several subscriptions would bind them all to the same topic, and Pub/Sub delivers a complete copy of
+a topic's stream to every subscription of it — so the source would emit each message once per
+subscription, with nothing anywhere reporting an error.
+
+Knobs: `topic` (required), `ackDeadline`, `enableMessageOrdering`, `messageRetention`,
+`retainAckedMessages`, `expirationTtl` / `neverExpire`, `deadLetterPolicy` and `filter`. Every one
+but the topic is optional, and unset leaves Pub/Sub's own default. `enableExactlyOnceDelivery` is
+deliberately absent — the startup check rejects it, so offering it would only let you create a
+subscription the source then refuses. The builder likewise rejects, at graph construction, creation
+settings that the check would reject once used: ordering left off under `orderingMode(PER_KEY)`, and
+no dead-letter policy under `deserializationFailurePolicy(NACK)`. Both are fixed at creation, so
+catching them here is what stops the source creating a subscription it then refuses to consume.
+
+Creation is idempotent: `ALREADY_EXISTS` counts as success, so two jobs racing to create the same
+subscription need no coordination. It is **not** an update — an existing subscription keeps its own
+settings, and these are neither applied to it nor compared against it. Existing subscriptions cost
+one `GetSubscription` each at startup and nothing after.
+
+Caveat: a subscription only retains messages published **after** it exists, so a job that
+auto-creates one starts from an empty backlog no matter what was published before.
+
+### Start position
+
+`startPosition(...)` decides where the source begins:
+
+| Position | Behavior |
+|---|---|
+| `continueFromSubscription()` (default) | Starts wherever the subscription already is. The only position that issues no seek |
+| `earliestRetained()` | Replays the whole retained backlog |
+| `latest()` | Discards the existing backlog, starting from messages published after the job starts |
+| `fromTimestamp(Instant)` | Marks everything published before the instant acknowledged, everything after unacknowledged |
+
+How far back a backwards position reaches is a property of the subscription, not of this setting:
+already-acknowledged messages are replayable only if the subscription has `retainAckedMessages` or
+its topic retains messages. Against a subscription with neither, a backwards seek recovers only what
+was never acknowledged — the startup check warns when it sees that combination. Pub/Sub also applies
+a seek asynchronously; deliveries already in flight can take up to a minute to reflect it.
+
+**A seek rewrites state shared by every consumer of the subscription, including other jobs.** Any
+non-default start position wants a subscription the job owns.
+
+**The seek runs once, at the first start of a job, and never on a restore** — the enumerator records
+that it ran in its checkpointed state, so a failover resumes instead of rewinding. Two consequences
+worth planning around:
+
+- **A redeploy without a savepoint seeks again**, because the state that remembered it is gone. So
+  does a job that crash-loops before its first checkpoint completes.
+- **`latest()` is the one position that is not reproducible.** It resolves against the clock at the
+  moment the seek runs, so a failover before any split is assigned resolves it again, to a later
+  instant, discarding whatever was published in between. Nothing already emitted is affected — the
+  enumerator assigns no split until the check completes — but use `fromTimestamp(...)` when the
+  boundary has to be exact.
+
 ### Deserialization failures
 
 `deserializationFailurePolicy(...)` decides what happens to a message the schema cannot convert:
@@ -304,15 +405,27 @@ half: it must exceed the checkpoint interval by a comfortable margin (see
 |---|---|
 | `FAIL` (default) | Fails the job. The message stays unacknowledged, so it is redelivered — a permanently bad message fails the job again after every restart until it is removed or the schema is fixed |
 | `DROP` | Discards the message, acknowledging it immediately so it is not redelivered. Counted in `messagesDropped`, and logged at a decreasing rate so a bad batch cannot flood the log |
+| `NACK` | Returns the message for redelivery and carries on, leaving it to the subscription's dead-letter policy. Counted in `messagesNacked`, logged at the same decreasing rate |
 
-Either way the failure is counted in Flink's standard `numRecordsInErrors`. `DROP` **drops data**, and
-a schema that collected records before failing keeps those — the emitted prefix has already reached
-the output and cannot be recalled.
+Whichever is chosen, the failure is counted in Flink's standard `numRecordsInErrors`. `DROP` **drops
+data**, and a schema that collected records before failing keeps those under both `DROP` and `NACK` —
+the emitted prefix has already reached the output and cannot be recalled, so a `NACK`ed message is
+both partially emitted and redelivered in full.
 
-`NACK` (return the message so a subscription dead-letter policy eventually captures it) is
-deliberately **not** offered yet: without a dead-letter policy it is an infinite redelivery loop, and
-whether the subscription has one is only knowable from `GetSubscription`, which arrives with
-subscription auto-creation (#81).
+**`NACK` requires a dead-letter policy on every subscription**, which the startup check enforces:
+nacking does not fail the job, so without one a message the schema can never convert is redelivered
+forever, invisibly. Note that Pub/Sub dead-letters on **delivery count, not cause** — a redelivery
+after an unrelated job restart raises the same counter — so set the subscription's delivery-attempt
+limit high enough that ordinary failovers do not dead-letter healthy messages. Pub/Sub also needs its
+own service account granted publish on the dead-letter topic and subscribe on the subscription;
+without those grants it silently keeps redelivering.
+
+For anything richer than these three, deserialize permissively instead: the schema receives the whole
+`PubsubMessage` and writes to a `Collector`, so it can emit a bad-record variant rather than throwing
+(and emit nothing to drop). Splitting that downstream with a side output puts the dead-letter write
+inside the pipeline, where it is checkpointed and rescalable — which a handler doing its own I/O on
+the task thread would not be. A source-side failure-handler SPI was considered and rejected for that
+reason; cross-connector dead-lettering is #37.
 
 **Nack on emission failure.** If the failure comes from the output rather than from the schema, the
 message is fine and the job is about to fail anyway, so it is nacked at once for immediate
@@ -526,14 +639,26 @@ reader against a fake client (multi-split drain, per-fetch caps, split removal, 
 close aggregating failures), the record emitter, the subscriber options (defaults, validation, SDK
 settings mapping with a drift guard pinned to the SDK's own maximum ack-extension default, and the
 single-connection forcing that the ordering guarantee rests on) and the missing-checkpoint detector
-against a hand-moved clock, the deserialization failure policy (both values, including the records
-a partially failing schema already emitted), the nack-on-emission-failure path, the acknowledgement
-confirmation (confirmed, rejected and timed out) and the reader's checkpoint/acknowledgement wiring
-against a fake reader context, with the enumerator gauges asserted through Flink's own metric
-listener. Emulator integration tests run the production
-subscriber factory against the emulator and cover the acknowledgement round trip, nack-on-close
-producing immediate redelivery, and one reader consuming several subscriptions; a MiniCluster test
-drives the source through the public builder over two subscriptions under real checkpoints.
+against a hand-moved clock, the deserialization failure policy (all three values, including the
+records a partially failing schema already emitted), the nack-on-emission-failure path, the
+acknowledgement confirmation (confirmed, rejected and timed out) and the reader's
+checkpoint/acknowledgement wiring against a fake reader context, with the enumerator gauges asserted
+through Flink's own metric listener. The startup check is covered against a fake admin and a fake
+context that records the asynchronous call instead of running it, so the fence is exercised
+deterministically: readers parked before the check completes and assigned when it does, a reader that
+leaves or re-registers while parked, each rejection (ordering mismatch, exactly-once delivery, `NACK`
+without a dead-letter policy, a missing subscription with no creation settings), each subscription
+created with its own settings, no seek issued when a rejection is coming, and the start position
+running exactly once and never on a restore. The subscription-create options, the start position and
+the option-to-protobuf translation are unit-tested on their own. Emulator integration tests run the
+production subscriber factory against the emulator and cover the acknowledgement round trip,
+nack-on-close producing immediate redelivery, and one reader consuming several subscriptions; they
+also drive the production subscription admin (creation with settings read back, `ALREADY_EXISTS`
+leaving an existing subscription alone, and seek-to-timestamp replaying acknowledged messages).
+MiniCluster tests drive the source through the public builder over two subscriptions under real
+checkpoints, and through the startup check end-to-end: auto-creating a missing subscription and then
+consuming it, failing the job when creation is not authorised, rejecting an unordered subscription
+under ordered consumption, and replaying a backlog under `earliestRetained()`.
 
 **The emulator cannot verify ordered delivery.** Per-key callback serialization in the client
 library is gated on `subscriptionProperties.messageOrderingEnabled` in the streaming-pull response,
