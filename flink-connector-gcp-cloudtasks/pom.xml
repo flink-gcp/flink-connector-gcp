@@ -52,5 +52,42 @@ limitations under the License.
             <groupId>com.google.cloud</groupId>
             <artifactId>google-cloud-tasks</artifactId>
         </dependency>
+        <dependency>
+            <!-- Direct dependency: Task/HttpRequest/QueueName are part of this module's public
+                 API surface (serialization schema, queue destination). Version managed by the
+                 libraries BOM. -->
+            <groupId>com.google.api.grpc</groupId>
+            <artifactId>proto-google-cloud-tasks-v2</artifactId>
+        </dependency>
+        <dependency>
+            <!-- ByteString on the serialization schema's body path.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+        </dependency>
+        <dependency>
+            <!-- ApiFuture types used on the writer's internal surface and in tests.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>api-common</artifactId>
+        </dependency>
+        <dependency>
+            <!-- ApiException/StatusCode for the writer's status classification.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Plaintext gRPC channel setup for the emulator endpoint mode of the client
+                 factory. Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax-grpc</artifactId>
+        </dependency>
+        <dependency>
+            <!-- StatusRuntimeException on the writer's status classification path.
+                 Version managed by the libraries BOM. -->
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-api</artifactId>
+        </dependency>
     </dependencies>
 </project>

@@ -1,0 +1,160 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.cloudtasks.sink;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.util.Preconditions;
+
+import io.github.flink.gcp.connector.cloudtasks.sink.createtask.CloudTasksCreateTaskSink;
+import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
+
+import javax.annotation.Nullable;
+
+/**
+ * Builder for Cloud Tasks sinks, obtained from {@link CloudTasksSink#builder()}.
+ *
+ * <p>Required settings: a serialization schema and a destination. The destination is set through
+ * either {@link #queue(QueueDestination)} (fixed queue) or {@link
+ * #destinationResolver(DestinationResolver)} (per-record dynamic destinations); the two override
+ * each other and the last call wins.
+ *
+ * <p>The queue itself is never created by the sink and must exist: an auto-created queue would
+ * carry Cloud Tasks' default rate limits, silently discarding the pacing that is the reason to use
+ * the service, and a deleted queue name cannot be reused for 3 days.
+ *
+ * @param <T> type of the records written by the sink
+ */
+@PublicEvolving
+public class CloudTasksSinkBuilder<T> {
+
+    private DestinationResolver<? super T> destinationResolver;
+    private CloudTasksSerializationSchema<? super T> serializer;
+    @Nullable private TaskIdExtractor<? super T> taskIdExtractor;
+    private CloudTasksWriterOptions writerOptions = CloudTasksWriterOptions.defaults();
+    @Nullable private String emulatorEndpoint;
+
+    CloudTasksSinkBuilder() {}
+
+    /**
+     * Creates every task in the given fixed queue. Overrides any previously set queue or resolver.
+     *
+     * @param queue the destination queue
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> queue(QueueDestination queue) {
+        this.destinationResolver =
+                new FixedDestinationResolver(
+                        Preconditions.checkNotNull(queue, "queue must not be null"));
+        return this;
+    }
+
+    /**
+     * Resolves the destination queue per record (dynamic destinations). Overrides any previously
+     * set queue or resolver.
+     *
+     * @param destinationResolver the resolver
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> destinationResolver(
+            DestinationResolver<? super T> destinationResolver) {
+        this.destinationResolver =
+                Preconditions.checkNotNull(
+                        destinationResolver, "destinationResolver must not be null");
+        return this;
+    }
+
+    /**
+     * Sets the record serialization schema.
+     *
+     * @param serializer the serialization schema
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> serializer(
+            CloudTasksSerializationSchema<? super T> serializer) {
+        this.serializer = Preconditions.checkNotNull(serializer, "serializer must not be null");
+        return this;
+    }
+
+    /**
+     * Opts into named tasks, deduplicating records by the extracted key. Optional; without it the
+     * sink creates unnamed tasks and a record replayed after a failure calls the endpoint twice.
+     *
+     * <p>The sink hashes the key with SHA-256 before using it as the task id, and a repeated create
+     * for a key Cloud Tasks still remembers counts as success. Naming is off by default because
+     * Google documents the duplicate-name lookup as significantly increasing create latency, and
+     * because the window in which a key is remembered is bounded — its own documentation gives both
+     * "up to 24 hours" and "~1 hour" for it, so design against the shorter one.
+     *
+     * @param taskIdExtractor the deduplication-key extractor
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> taskIdExtractor(TaskIdExtractor<? super T> taskIdExtractor) {
+        this.taskIdExtractor =
+                Preconditions.checkNotNull(taskIdExtractor, "taskIdExtractor must not be null");
+        return this;
+    }
+
+    /**
+     * Sets the writer tuning options (the in-flight cap and the two retry budgets). Optional;
+     * defaults to {@link CloudTasksWriterOptions#defaults()}.
+     *
+     * @param writerOptions the options
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> writerOptions(CloudTasksWriterOptions writerOptions) {
+        this.writerOptions =
+                Preconditions.checkNotNull(writerOptions, "writerOptions must not be null");
+        return this;
+    }
+
+    /**
+     * Points the sink at a Cloud Tasks emulator instead of the production service. The connection
+     * to the given {@code host:port} uses a plaintext channel with no credentials, so this must
+     * only ever be used against an emulator. Optional; when unset the sink connects to Cloud Tasks
+     * with application-default credentials.
+     *
+     * @param emulatorEndpoint the emulator endpoint as {@code host:port}
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
+        Preconditions.checkNotNull(emulatorEndpoint, "emulatorEndpoint must not be null");
+        Preconditions.checkArgument(
+                !emulatorEndpoint.trim().isEmpty(), "emulatorEndpoint must not be blank");
+        this.emulatorEndpoint = emulatorEndpoint;
+        return this;
+    }
+
+    /**
+     * Builds the sink.
+     *
+     * @return the sink
+     */
+    public Sink<T> build() {
+        Preconditions.checkState(serializer != null, "A serializer is required.");
+        Preconditions.checkState(
+                destinationResolver != null,
+                "A destination is required: set queue(...) or destinationResolver(...).");
+        return new CloudTasksCreateTaskSink<>(
+                new CloudTasksSinkConfig<>(
+                        destinationResolver,
+                        serializer,
+                        taskIdExtractor,
+                        writerOptions,
+                        emulatorEndpoint));
+    }
+}

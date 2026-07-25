@@ -261,4 +261,15 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   in the v2 proto).
   At-least-once, stateless writer, flush on checkpoint. Decision record in the connector
   documentation page
+- **Cloud Tasks implementation** (#24, PR #107): retrying is **one sink-owned loop in the writer**,
+  not gax `createTaskSettings` retry — gax has a single retryable-code set and schedule per method,
+  which cannot express the separate short `NOT_FOUND` budget, and a sink-owned loop is testable
+  against a fake client. A failed create is **parked with a due time** and re-dispatched unchanged
+  from the next `write()`/`flush()`; parked creates count against `maxInFlightTasks` (they are
+  records the service has not accepted) and are dropped on close (not covered by a checkpoint, so
+  the restart replays them). The serialization schema is a **two-stage builder**:
+  `httpTarget(url)` returns a non-generic stage whose `withBody(SerializationSchema<T>)` binds the
+  record type, so the chain infers `T` without a witness; `withUrl(...)` gives per-record URLs. The
+  body is sent **only under POST/PUT/PATCH** — Cloud Tasks errors on a body under any other method,
+  and since `withBody` binds `T` it cannot be omitted
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
