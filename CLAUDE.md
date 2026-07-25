@@ -76,9 +76,69 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   artifact publishing. Publishing to Maven Central happens once all connectors are implemented,
   as `v1.0.0` (Central namespace registration, signing and the Flink 1.x/2.x publishing strategy
   are decided then; see issues #29 and #39)
-- `main` targets **Flink 2.1.x** (planned artifact suffix `-2.1`). Do not bump `flink.version`
-  to a newer minor/major via dependabot — that is a deliberate, manual decision (see closed PR
-  #42). Flink 1.20 support will live on a dedicated `v1.20` branch
+- `main` supports **the current and previous Flink minor**, mirroring Flink's own support policy
+  (decided in #102). Today that is **2.2 and 2.3**, with `flink.version` pinned to the floor
+  (`2.2.1`) because compiling against the oldest and running on newer is the direction that
+  works. A new Flink minor moves both ends: that is a deliberate edit to `flink.version` plus
+  `.github/workflows/weekly.yaml`, never a dependabot minor bump — which is now enforced by an
+  `ignore` rule (patch bumps still arrive). Closed PRs #42 and #97 are the precedent for
+  rejecting minor bumps. Flink 1.20 (1.x LTS) will live on a dedicated `v1.20` branch (#32)
+- **One artifact covers the supported range**, so there is no per-minor artifact suffix (the
+  `-2.1` suffix assumption from before #102 is dropped; #29/#39 decide publishing). Only about
+  half the Flink API surface these connectors touch is `@Public` — and `@Public` guarantees
+  source, not binary, compatibility across minors — so the claim rests on the `binary_compat`
+  job in `weekly.yaml`: build against the floor, then re-run the whole suite with the newest
+  supported Flink swapped onto the classpath and nothing recompiled. If it ever goes red, the
+  fallback is per-minor artifacts as `apache/flink-connector-kafka` publishes them
+  (`5.0.0-2.1` / `5.0.0-2.2` from one branch), which is also what Paimon and Iceberg do
+- The version matrix lives in `weekly.yaml`, not `ci.yaml`: per-PR CI stays single-version for
+  latency, matching Flink's own `push_pr.yml` / `weekly.yml` split. Every matrix job checks out
+  `github.sha` rather than a branch — a merge landing mid-run once made one version look like it
+  had silently skipped 60 tests. Matrix rows carry a **role** (`floor` / `ceiling` / `next`), not
+  a version, because GitHub does not expose the `env` context to `strategy` and a version
+  repeated across rows is how one of them gets missed; the version is resolved in a step from
+  `FLINK_CEILING` / `FLINK_NEXT_SNAPSHOT` at the top of the file. The `floor` row passes no
+  `-Dflink.version` at all, so the pom stays the single source of truth for it, and it runs on
+  JDK 21 because floor-on-17 is already covered by `ci.yaml` and by `binary_compat`. The `next`
+  row is upstream early-warning and is deliberately **not** `continue-on-error`
+- **Moving the supported range** (when Flink releases a new minor): `ci.yaml` needs no edit — it
+  names no Flink version and no ceiling, so bumping the pom moves it. The order is
+  (1) `pom.xml` `flink.version` → the old ceiling, (2) `weekly.yaml` `FLINK_CEILING` and
+  `FLINK_NEXT_SNAPSHOT`, (3) `docs/content/_index.md` table, (4) `README.md` under Build,
+  (5) this section. Then **re-run the binary-compatibility measurement against the new ceiling
+  before claiming the range** — the old measurement says nothing about the new pair. Do not
+  hand-maintain this list: `scripts/check-flink-release.sh` prints it in its failure output,
+  which is the copy that gets read
+- `scripts/check-flink-release.sh` (the `new_minor_check` job) exists because suppressing the
+  dependabot minor PR removed the only thing that announced a Flink release. It compares the
+  ceiling passed to it against Maven Central weekly and fails until the range is moved. It is
+  deliberately **not** a dependency of the other jobs: a new upstream release must not stop the
+  current range from being verified
+- CI helpers live in `scripts/` as files, not inline in workflow `run:` blocks, so they can be
+  run by hand — reproducing a red `binary_compat` locally is the first thing to do when it goes
+  red. `tools/` is not the place: it holds build tool *configuration*
+  (`tools/maven/checkstyle.xml`), following Flink's layout. Two consequences: `scripts/` is
+  outside the `.github/**` rat exclude, so each file carries the plain Apache-2.0 header, and
+  `lint.yaml` shellchecks them — `actionlint` shellchecks inline `run:` blocks, so extracting a
+  script would otherwise drop it out of linting
+- **`lint.yaml` is where linters Maven does not run live** (spotless and checkstyle cover the
+  Java sources inside `verify`). Today that is shellcheck; `tofu fmt`/`validate` belongs here
+  when the OpenTofu persistent layer lands (#5). Separate from `ci.yaml` so results arrive in
+  seconds rather than behind the integration tests, and so mise's shims never share a `PATH`
+  with `setup-java`'s JDK. Its `paths` filter must list **every input to a lint, not just the
+  linted files** — `mise.toml` is in it because that is where the shellcheck version is pinned,
+  and skipping the lint on a version bump would skip it in the one change that most needs it
+- **shellcheck's version is pinned in `mise.toml`** and installed from there by
+  `jdx/mise-action` with `install_args: shellcheck` (that argument matters: `mise.toml` also
+  pins java, maven, hugo and go, which the job does not need). Not the runner image's copy: that
+  is 0.9.0 on ubuntu-24.04 and 0.11.0 on 26.04, so a `ubuntu-latest` migration would fail a pull
+  request that changed nothing. Declared once, identical locally and in CI — prefer this shape
+  for any new tool over `docs.yaml`'s `HUGO_VERSION`-plus-"keep in sync with mise.toml"
+  duplication, which predates it (#111 covers moving `docs.yaml` onto it)
+- `docs.yaml` and `lint.yaml` both carry `paths` filters, so a pull request touching neither
+  never reports them. Fine while they are optional — but **a required check that never reports
+  blocks a pull request forever**, so making either one required means dropping its filter or
+  adding a job that reports success when the filter does not match
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
