@@ -189,7 +189,7 @@ class PubSubSourceBuilderTest {
         Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
                 builder()
                         .subscriptions(SUB_A, SUB_B)
-                        .orderingMode(OrderingMode.NONE)
+                        .orderingMode(OrderingMode.PER_KEY)
                         .subscriberOptions(options)
                         .emulatorEndpoint("localhost:8085")
                         .build();
@@ -202,7 +202,7 @@ class PubSubSourceBuilderTest {
         PubSubSourceConfig<String> restoredConfig =
                 ((PubSubStreamingPullSource<String>) restored).getConfig();
         assertThat(restoredConfig.getSubscriptions()).containsExactly(SUB_A, SUB_B);
-        assertThat(restoredConfig.getOrderingMode()).isEqualTo(OrderingMode.NONE);
+        assertThat(restoredConfig.getOrderingMode()).isEqualTo(OrderingMode.PER_KEY);
         assertThat(restoredConfig.getSubscriberOptions()).isEqualTo(options);
         assertThat(restoredConfig.getEmulatorEndpoint()).isEqualTo("localhost:8085");
     }

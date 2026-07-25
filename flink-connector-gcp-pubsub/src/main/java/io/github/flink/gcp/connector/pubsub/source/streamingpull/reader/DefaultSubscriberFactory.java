@@ -49,12 +49,10 @@ import java.time.Duration;
  *       messages the client still holds, including any it buffered without ever handing them to the
  *       receiver, so Pub/Sub redelivers them at once instead of after the acknowledgement deadline.
  *       The mode is fixed for that reason; only its timeout is a knob.
- *   <li><b>Parallel pull count under {@link OrderingMode#PER_KEY}.</b> Each streaming-pull
- *       connection has its own message dispatcher, and per-ordering-key callback serialization is
- *       per dispatcher — so more than one connection would let two messages of the same key be
- *       delivered concurrently. Ordered subscriptions therefore use exactly one connection. The
- *       source builder rejects an explicit count above one under that mode, so forcing it here only
- *       ever overrides the SDK default.
+ *   <li><b>Parallel pull count under {@link OrderingMode#PER_KEY}.</b> Ordered subscriptions use
+ *       exactly one streaming-pull connection; {@code PubSubSourceBuilder.build()} rejects an
+ *       explicit count above one and explains why, so forcing it here only ever overrides the SDK
+ *       default — which is what keeps the ordering guarantee independent of that default.
  * </ul>
  *
  * <p>When an emulator endpoint is set, subscribers connect to it over a plaintext channel with no
@@ -131,7 +129,8 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
         } else if (options.getParallelPullCount() != null) {
             builder.setParallelPullCount(options.getParallelPullCount());
         }
-        if (options.hasFlowControlOverrides()) {
+        if (options.getFlowControlMaxOutstandingElementCount() != null
+                || options.getFlowControlMaxOutstandingRequestBytes() != null) {
             builder.setFlowControlSettings(flowControlSettings(options));
         }
         if (options.getMaxAckExtensionPeriod() != null) {

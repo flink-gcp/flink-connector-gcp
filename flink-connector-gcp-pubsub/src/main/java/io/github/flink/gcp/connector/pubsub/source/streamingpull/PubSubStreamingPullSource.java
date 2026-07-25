@@ -39,8 +39,8 @@ import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.enumerator.PubSubSplitEnumerator;
-import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.AckTracker;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.DefaultSubscriberFactory;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.MissingCheckpointDetector;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubAckTracker;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubRecordEmitter;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSourceReader;
@@ -109,19 +109,24 @@ public class PubSubStreamingPullSource<T>
             LOG.warn(ackExtensionWarning);
         }
 
-        AckTracker ackTracker = new PubSubAckTracker();
+        PubSubAckTracker ackTracker = new PubSubAckTracker();
+        MissingCheckpointDetector checkpointDetector =
+                new MissingCheckpointDetector(
+                        options.getFirstCheckpointTimeout(), ackTracker::outstandingAckCount);
         SubscriberFactory subscriberFactory =
                 new DefaultSubscriberFactory(
                         options, config.getOrderingMode(), config.getEmulatorEndpoint());
         Supplier<SplitReader<PubsubMessage, SubscriptionSplit>> splitReaderSupplier =
-                () -> new PubSubSplitReader(subscriberFactory, ackTracker, options);
+                () ->
+                        new PubSubSplitReader(
+                                subscriberFactory, ackTracker, options, checkpointDetector);
         return new PubSubSourceReader<>(
                 splitReaderSupplier,
                 new PubSubRecordEmitter<>(deserializationSchema, ackTracker),
                 context.getConfiguration(),
                 context,
                 ackTracker,
-                options.getFirstCheckpointTimeout());
+                checkpointDetector);
     }
 
     /**

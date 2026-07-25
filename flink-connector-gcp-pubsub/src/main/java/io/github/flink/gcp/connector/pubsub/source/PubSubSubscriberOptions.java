@@ -155,12 +155,6 @@ public final class PubSubSubscriberOptions implements Serializable {
         return firstCheckpointTimeout;
     }
 
-    /** Returns whether either flow-control limit deviates from the SDK default. */
-    public boolean hasFlowControlOverrides() {
-        return flowControlMaxOutstandingElementCount != null
-                || flowControlMaxOutstandingRequestBytes != null;
-    }
-
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -278,10 +272,8 @@ public final class PubSubSubscriberOptions implements Serializable {
          * SDK's single connection. More connections raise a single split's throughput at the cost
          * of more gRPC streams.
          *
-         * <p>Cannot be combined with {@link PubSubSourceBuilder#orderingMode(OrderingMode)} set to
-         * {@link OrderingMode#PER_KEY}: each connection has its own message dispatcher and per-key
-         * callback serialization is per dispatcher, so a second connection would deliver two
-         * messages of one ordering key concurrently. The source builder rejects the combination.
+         * <p>Cannot be combined with {@link OrderingMode#PER_KEY}; {@link
+         * PubSubSourceBuilder#build()} rejects the combination and explains why.
          *
          * @param parallelPullCount the streaming-pull connection count, positive
          * @return this builder
@@ -373,16 +365,15 @@ public final class PubSubSubscriberOptions implements Serializable {
 
         /**
          * Sets how long a reader holding unacknowledged messages waits for its first checkpoint
-         * before failing the job. Defaults to 10 min; {@link Duration#ZERO} disables the watchdog.
+         * before failing the job. Defaults to 10 min; {@link Duration#ZERO} disables the detector.
          *
          * <p>The source acknowledges only on checkpoint completion, so a job running without
-         * checkpointing never acknowledges anything and stalls silently once flow control fills. A
-         * reader cannot read the job's checkpoint configuration — it is handed the TaskManager
-         * configuration — so it detects that state directly instead: no checkpoint taken, messages
-         * outstanding, budget spent. Raise this above the checkpoint interval for jobs that
-         * checkpoint less often than every 10 min.
+         * checkpointing never acknowledges anything and stalls silently once flow control fills.
+         * Raise this above the checkpoint interval for jobs that checkpoint less often than every
+         * 10 min. See {@code MissingCheckpointDetector} for why the guard measures elapsed time
+         * rather than reading the checkpoint configuration.
          *
-         * @param firstCheckpointTimeout the watchdog budget, non-negative; zero disables it
+         * @param firstCheckpointTimeout the detector budget, non-negative; zero disables it
          * @return this builder
          */
         public Builder firstCheckpointTimeout(Duration firstCheckpointTimeout) {
@@ -411,6 +402,8 @@ public final class PubSubSubscriberOptions implements Serializable {
             return new PubSubSubscriberOptions(this);
         }
 
+        // Duplicated from PubSubPublisherOptions.Builder; extracting a shared option-validation
+        // helper is not worth a new public type for two call sites.
         private static Duration checkPositive(Duration duration, String name) {
             Preconditions.checkNotNull(duration, "%s must not be null", name);
             Preconditions.checkArgument(

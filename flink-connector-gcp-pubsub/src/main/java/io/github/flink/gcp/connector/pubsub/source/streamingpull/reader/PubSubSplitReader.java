@@ -43,6 +43,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Multiplexes the streaming-pull subscribers of one reader subtask's splits.
@@ -70,6 +72,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
 
     private final SubscriberOpener subscriberOpener;
     private final int maxRecordsPerFetch;
+    private final MissingCheckpointDetector checkpointDetector;
 
     /** Subscribers by split id, in assignment order so drains visit splits fairly. */
     private final Map<String, NotifyingPullSubscriber> subscribers = new LinkedHashMap<>();
@@ -92,11 +95,14 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
      * @param ackTracker tracks the acknowledgement lifecycle of received messages
      * @param options the subscriber tuning options, which carry the per-fetch drain size and the
      *     per-subscriber shutdown budget
+     * @param checkpointDetector fails the reader if checkpoints never arrive; evaluated from {@link
+     *     #fetch()} because the state it detects is the state with no records
      */
     public PubSubSplitReader(
             SubscriberFactory subscriberFactory,
             AckTracker ackTracker,
-            PubSubSubscriberOptions options) {
+            PubSubSubscriberOptions options,
+            MissingCheckpointDetector checkpointDetector) {
         this(
                 (split, signal) ->
                         new PubSubNotifyingPullSubscriber(
@@ -106,13 +112,18 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
                                 ackTracker,
                                 signal,
                                 options.getShutdownTimeout()),
-                options.getMaxRecordsPerFetch());
+                options.getMaxRecordsPerFetch(),
+                checkpointDetector);
     }
 
     @VisibleForTesting
-    PubSubSplitReader(SubscriberOpener subscriberOpener, int maxRecordsPerFetch) {
+    PubSubSplitReader(
+            SubscriberOpener subscriberOpener,
+            int maxRecordsPerFetch,
+            MissingCheckpointDetector checkpointDetector) {
         this.subscriberOpener = subscriberOpener;
         this.maxRecordsPerFetch = maxRecordsPerFetch;
+        this.checkpointDetector = checkpointDetector;
     }
 
     /** Opens the subscriber backing one split; the seam that lets tests supply a fake client. */
@@ -142,6 +153,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             await(signal);
             drainInto(builder);
         }
+        checkpointDetector.check();
         return builder.build();
     }
 
@@ -267,7 +279,16 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
 
     private void await(CompletableFuture<Void> signal) throws IOException {
         try {
-            signal.get();
+            long parkTimeoutMillis = checkpointDetector.parkTimeoutMillis();
+            if (parkTimeoutMillis > 0) {
+                signal.get(parkTimeoutMillis, TimeUnit.MILLISECONDS);
+            } else {
+                signal.get();
+            }
+        } catch (TimeoutException e) {
+            // Woke only to re-evaluate the checkpoint detector; the caller drains nothing and
+            // returns an empty batch. Arming is level-triggered, so a signal that arrived while
+            // this wait was running is remembered by the next arm rather than lost.
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (ExecutionException e) {

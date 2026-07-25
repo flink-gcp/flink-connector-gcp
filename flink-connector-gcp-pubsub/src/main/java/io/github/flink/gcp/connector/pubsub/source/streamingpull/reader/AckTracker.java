@@ -93,13 +93,4 @@ public interface AckTracker {
      * @param splitId the split to release
      */
     void nackSplit(String splitId);
-
-    /**
-     * Returns how many messages are received or emitted but not yet acknowledged, across every
-     * split and state. The reader's first-checkpoint watchdog uses it to tell "nothing is being
-     * acknowledged" apart from "there is nothing to acknowledge".
-     *
-     * @return the outstanding message count
-     */
-    int outstandingAckCount();
 }

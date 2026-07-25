@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -223,7 +224,8 @@ class PubSubSplitReaderTest {
                     subscribers.put(split.splitId(), subscriber);
                     return subscriber;
                 },
-                maxRecordsPerFetch);
+                maxRecordsPerFetch,
+                new MissingCheckpointDetector(Duration.ZERO, () -> 0));
     }
 
     private FakeNotifyingPullSubscriber subscriberOf(SubscriptionSplit split) {

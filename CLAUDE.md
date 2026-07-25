@@ -187,9 +187,13 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   (`SourceOperatorFactory` passes `getTaskManagerInfo().getConfiguration()`), while
   `env.enableCheckpointing(...)` writes into the job configuration, so absence proves nothing and
   failing on it would break jobs that enable checkpointing programmatically while passing every
-  MiniCluster test. Replaced by a reader-side `FirstCheckpointWatchdog` (no checkpoint taken +
-  messages outstanding + budget spent → fail); the config-derived ack-extension check is a
-  best-effort warning only. `parallelPullCount > 1` is rejected with `orderingMode(PER_KEY)` rather
-  than silently forced to 1. The `NACK` deserialization-failure policy is deferred to #81, where
+  MiniCluster test. Replaced by `MissingCheckpointDetector` (no checkpoint taken + messages
+  outstanding + budget spent → fail), **evaluated from `PubSubSplitReader.fetch()`, not the record
+  path** — once flow control fills, the client stops delivering and `pollNext` is never called
+  again, so a record-driven check would go silent in exactly the state it exists to catch; the
+  detector bounds the fetch park only while armed, so a healthy reader parks indefinitely as
+  before. The config-derived ack-extension check is a best-effort warning only.
+  `parallelPullCount > 1` is rejected with `orderingMode(PER_KEY)` rather than silently forced to 1
+  (the factory still force-sets 1 so the guarantee does not rest on the SDK default). The `NACK` deserialization-failure policy is deferred to #81, where
   the `GetSubscription` preflight can verify a dead-letter policy exists
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)

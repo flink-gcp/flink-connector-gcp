@@ -15,7 +15,7 @@ sink and multi-subscription consumption on the source.
 |---|---|
 | FLIP-27 at-least-once source; multi-subscription splits; checkpoint-bound acknowledgement; nack on close | Implemented (#79) |
 | Ordering mode preserving per-ordering-key order | Implemented (#79) |
-| Subscriber tuning options (flow control, ack extension, parallel pull, shutdown); first-checkpoint watchdog | Implemented (#80) |
+| Subscriber tuning options (flow control, ack extension, parallel pull, shutdown); missing-checkpoint detection | Implemented (#80) |
 | Deserialization failure policy; nack on collect failure; metrics | Planned (#80) |
 | Subscription auto-creation; start position (seek) | Planned (#81) |
 | Acceptance and real-GCP integration tests | Planned (#82) |
@@ -234,7 +234,7 @@ is equivalent to not setting options at all.
 | `minDurationPerAckExtension` / `maxDurationPerAckExtension` | SDK default (adaptive, derived from observed acknowledgement latencies) |
 | `shutdownTimeout` (source-owned) | 5 s |
 | `maxRecordsPerFetch` (source-owned) | 1000 |
-| `firstCheckpointTimeout` (source-owned) | 10 min; `Duration.ZERO` disables the watchdog |
+| `firstCheckpointTimeout` (source-owned) | 10 min; `Duration.ZERO` disables the detector |
 
 **Flow control is the real bound on in-flight messages.** Because the source acknowledges only on
 checkpoint completion, everything received since the last completed checkpoint counts against these
@@ -251,9 +251,40 @@ another it is paid per split: keep the total under Flink's `source.reader.close.
 default), or a split whose turn never comes leaves its messages to expire instead of being nacked.
 
 **`parallelPullCount` cannot be combined with `orderingMode(PER_KEY)`** — the source builder
-rejects it. Each streaming-pull connection has its own message dispatcher and per-ordering-key
-callback serialization is per dispatcher, so a second connection would deliver two messages of one
-key concurrently. Ordered subscriptions always use exactly one connection.
+rejects it, for the reason given under [Message ordering](#message-ordering): callback
+serialization is per streaming-pull connection, so a second connection breaks per-key order.
+
+#### Tuning
+
+Google does not publish recommended flow-control values — the
+[flow control documentation](https://cloud.google.com/pubsub/docs/flow-control) says to size the
+limits "according to the throughput capacity of your client machines", and the defaults exist as a
+safety mechanism against out-of-memory on small subscribers rather than as a throughput setting.
+This connector therefore leaves every SDK knob at its SDK default and gives you the levers instead.
+Where Google *is* specific:
+
+- **One streaming-pull connection carries about 10 MB/s.** Raise `parallelPullCount` only if one
+  split needs more than that, or for resilience — a single stream is a single point of failure, and
+  the `subscription/open_streaming_pulls` metric shows how many are open. Note it multiplies the
+  parallelism you already have: this source opens one subscriber per split, and
+  `splitCount = max(|subscriptions|, parallelism)` under `NONE`, so total streams are
+  `splitCount × parallelPullCount`.
+- **Lower the flow-control limits if you see duplicate or expired deliveries** — that is Google's
+  documented remedy for a subscriber holding more than it can acknowledge in time.
+
+The connector-specific sizing rule is that **acknowledgement waits for a checkpoint**, so
+outstanding messages accumulate for a whole checkpoint interval:
+
+```
+flowControlMaxOutstandingElementCount ≳ peak messages/s × checkpoint interval
+```
+
+Below that, the client stops pulling before each checkpoint completes and throughput is capped by
+the checkpoint interval rather than by Pub/Sub. Above it, the limit stops bounding anything.
+Raising the limits also raises what a failure replays and what a reader holds in memory, so the
+byte limit should stay within the TaskManager's memory budget. `maxAckExtensionPeriod` is the other
+half: it must exceed the checkpoint interval by a comfortable margin (see
+[Delivery guarantees](#delivery-guarantees)).
 
 ### Delivery guarantees
 
@@ -273,9 +304,11 @@ fills. The reader enforces this itself — if no checkpoint has been taken withi
 job with a message naming `execution.checkpointing.interval`. It has to observe the outcome rather
 than read the configuration: a reader is handed the *TaskManager* configuration, while
 `env.enableCheckpointing(...)` writes into the *job* configuration, so the interval is usually
-invisible from inside the source and its absence proves nothing. Raise
+invisible from inside the source and its absence proves nothing. The check runs from the fetch
+loop, not the record path, because the stalled state is precisely the state with no records — once
+flow control fills the client stops delivering and nothing would poll again. Raise
 `firstCheckpointTimeout(...)` for a job that legitimately checkpoints less often, or set it to
-`Duration.ZERO` to switch the watchdog off.
+`Duration.ZERO` to switch the detector off.
 
 The checkpoint interval must also stay well under the client library's maximum
 acknowledgement-deadline extension (`maxAckExtensionPeriod`, 1 hour by default), or leases expire
@@ -424,7 +457,7 @@ nack isolation, superseded redeliveries), the enumerator against a hand-written 
 reader against a fake client (multi-split drain, per-fetch caps, split removal, pausing, wake-up,
 close aggregating failures), the record emitter, the subscriber options (defaults, validation, SDK
 settings mapping with a drift guard pinned to the SDK's own maximum ack-extension default, and the
-single-connection forcing that the ordering guarantee rests on) and the first-checkpoint watchdog
+single-connection forcing that the ordering guarantee rests on) and the missing-checkpoint detector
 against a hand-moved clock. Emulator integration tests run the production
 subscriber factory against the emulator and cover the acknowledgement round trip, nack-on-close
 producing immediate redelivery, and one reader consuming several subscriptions; a MiniCluster test

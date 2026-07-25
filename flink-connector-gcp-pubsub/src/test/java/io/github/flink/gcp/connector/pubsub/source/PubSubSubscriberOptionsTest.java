@@ -38,7 +38,6 @@ class PubSubSubscriberOptionsTest {
         assertThat(options.getMaxAckExtensionPeriod()).isNull();
         assertThat(options.getMinDurationPerAckExtension()).isNull();
         assertThat(options.getMaxDurationPerAckExtension()).isNull();
-        assertThat(options.hasFlowControlOverrides()).isFalse();
         assertThat(options.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(5));
         assertThat(options.getMaxRecordsPerFetch()).isEqualTo(1_000);
         assertThat(options.getFirstCheckpointTimeout()).isEqualTo(Duration.ofMinutes(10));
@@ -51,24 +50,13 @@ class PubSubSubscriberOptionsTest {
 
         assertThat(options.getFlowControlMaxOutstandingElementCount()).isEqualTo(500L);
         assertThat(options.getFlowControlMaxOutstandingRequestBytes()).isEqualTo(1_048_576L);
-        assertThat(options.getParallelPullCount()).isEqualTo(4);
+        assertThat(options.getParallelPullCount()).isNull();
         assertThat(options.getMaxAckExtensionPeriod()).isEqualTo(Duration.ofMinutes(30));
         assertThat(options.getMinDurationPerAckExtension()).isEqualTo(Duration.ofSeconds(15));
         assertThat(options.getMaxDurationPerAckExtension()).isEqualTo(Duration.ofSeconds(60));
-        assertThat(options.hasFlowControlOverrides()).isTrue();
         assertThat(options.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(3));
         assertThat(options.getMaxRecordsPerFetch()).isEqualTo(250);
         assertThat(options.getFirstCheckpointTimeout()).isEqualTo(Duration.ofMinutes(2));
-    }
-
-    @Test
-    void aSingleFlowControlLimitCountsAsAnOverride() {
-        assertThat(
-                        PubSubSubscriberOptions.builder()
-                                .flowControlMaxOutstandingRequestBytes(1_024)
-                                .build()
-                                .hasFlowControlOverrides())
-                .isTrue();
     }
 
     @Test
@@ -102,13 +90,10 @@ class PubSubSubscriberOptionsTest {
         assertThatThrownBy(() -> builder.firstCheckpointTimeout(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("firstCheckpointTimeout");
-    }
 
-    @Test
-    void aZeroFirstCheckpointTimeoutDisablesTheWatchdog() {
+        // Zero is the boundary the others reject and this one accepts: it disables the detector.
         assertThat(
-                        PubSubSubscriberOptions.builder()
-                                .firstCheckpointTimeout(Duration.ZERO)
+                        builder.firstCheckpointTimeout(Duration.ZERO)
                                 .build()
                                 .getFirstCheckpointTimeout())
                 .isEqualTo(Duration.ZERO);
@@ -157,12 +142,15 @@ class PubSubSubscriberOptionsTest {
                 .isEqualTo(options);
     }
 
-    /** Every knob set to a non-default value; reused by {@link PubSubSourceBuilderTest}. */
+    /**
+     * Every knob set to a non-default value except {@code parallelPullCount}, which is the one with
+     * a cross-option constraint (the source builder rejects it under ordered consumption), so the
+     * fixture stays combinable with any ordering mode. Reused by {@link PubSubSourceBuilderTest}.
+     */
     static PubSubSubscriberOptions fullyPopulated() {
         return PubSubSubscriberOptions.builder()
                 .flowControlMaxOutstandingElementCount(500)
                 .flowControlMaxOutstandingRequestBytes(1_048_576)
-                .parallelPullCount(4)
                 .maxAckExtensionPeriod(Duration.ofMinutes(30))
                 .minDurationPerAckExtension(Duration.ofSeconds(15))
                 .maxDurationPerAckExtension(Duration.ofSeconds(60))

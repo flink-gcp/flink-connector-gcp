@@ -127,7 +127,8 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
         return new PubSubSplitReader(
                 new DefaultSubscriberFactory(options, OrderingMode.NONE, emulatorEndpoint()),
                 ackTracker,
-                options);
+                options,
+                new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount));
     }
 
     private static List<PubsubMessage> receiveWithFreshReader(

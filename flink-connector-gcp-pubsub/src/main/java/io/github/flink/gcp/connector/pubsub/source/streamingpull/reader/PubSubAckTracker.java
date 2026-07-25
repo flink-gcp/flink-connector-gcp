@@ -133,7 +133,13 @@ public class PubSubAckTracker implements AckTracker {
         }
     }
 
-    @Override
+    /**
+     * Returns how many messages are received or emitted but not yet acknowledged, across every
+     * split and state. {@link MissingCheckpointDetector} uses it to tell "nothing is being
+     * acknowledged" apart from "there is nothing to acknowledge".
+     *
+     * @return the outstanding message count
+     */
     public synchronized int outstandingAckCount() {
         int outstanding = stagedAcks.size();
         for (Map<String, AckReplyConsumer> splitAcks : pendingAcks.values()) {
