@@ -51,15 +51,17 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
      * returning without waiting for it. Buffered messages are discarded — they were never emitted,
      * so Pub/Sub must redeliver them. Idempotent.
      *
-     * <p>Separate from {@link #close()} because the nack is what must not be skipped while the wait
-     * is what costs time: a reader owning several splits releases them all before waiting on any,
+     * <p>Named for {@link java.util.concurrent.ExecutorService#shutdown()}, which is the same
+     * shape: it starts the shutdown and returns, and a separate call waits for it to finish.
+     * Separate from {@link #close()} because the nack is what must not be skipped while the wait is
+     * what costs time — a reader owning several splits shuts them all down before waiting on any,
      * so the waits overlap instead of accumulating.
      */
-    void release();
+    void shutdown();
 
     /**
-     * Releases the subscriber if it has not been released, then waits for the client to shut down,
-     * up to the configured shutdown timeout.
+     * Shuts the subscriber down if it is not already shutting down, then waits for the client to
+     * finish, up to the configured shutdown timeout.
      *
      * @throws Exception if the client does not shut down cleanly
      */

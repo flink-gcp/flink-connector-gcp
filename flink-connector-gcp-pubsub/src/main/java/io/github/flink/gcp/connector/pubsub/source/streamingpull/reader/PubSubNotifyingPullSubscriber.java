@@ -170,7 +170,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     @Override
-    public void release() {
+    public void shutdown() {
         synchronized (this) {
             if (closed) {
                 return;
@@ -187,7 +187,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
 
     @Override
     public void close() throws Exception {
-        release();
+        shutdown();
         awaitTerminated();
     }
 

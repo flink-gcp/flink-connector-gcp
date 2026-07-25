@@ -220,8 +220,8 @@ class PubSubSplitReaderTest {
     }
 
     @Test
-    void closeReleasesEverySubscriberBeforeWaitingOnAny() throws Exception {
-        // Releasing nacks the split's messages and returns at once; close() then waits up to the
+    void closeStartsEverySubscriberShutdownBeforeWaitingOnAny() throws Exception {
+        // shutdown() nacks the split.s messages and returns at once; close() then waits up to the
         // shutdown timeout. Interleaving the two costs splits × timeout, and past roughly six
         // splits on one reader that exceeds Flink's source.reader.close.timeout — so the splits
         // whose turn never came would never be nacked, and their messages would sit until their
@@ -234,11 +234,11 @@ class PubSubSplitReaderTest {
         reader.close();
 
         // Order between the two subscribers is not specified; what matters is that no subscriber is
-        // waited on until every one of them has been released.
+        // waited on until every one of them has been asked to shut down.
         assertThat(calls).hasSize(4);
         assertThat(calls.subList(0, 2))
                 .containsExactlyInAnyOrder(
-                        "release:" + SPLIT_A.splitId(), "release:" + SPLIT_B.splitId());
+                        "shutdown:" + SPLIT_A.splitId(), "shutdown:" + SPLIT_B.splitId());
         assertThat(calls.subList(2, 4))
                 .containsExactlyInAnyOrder(
                         "close:" + SPLIT_A.splitId(), "close:" + SPLIT_B.splitId());

@@ -35,7 +35,7 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
 
     @Nullable private IOException failure;
     private boolean closed;
-    private boolean released;
+    private boolean shutdownRequested;
     private boolean closeThrows;
 
     /** Set by {@link #recordCallsInto}; shared across the subscribers of one test. */
@@ -73,12 +73,12 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
         return closed;
     }
 
-    boolean isReleased() {
-        return released;
+    boolean isShutdownRequested() {
+        return shutdownRequested;
     }
 
     /**
-     * Records the order releases and closes happened in, shared by every subscriber of one test.
+     * Records the order shutdowns and closes happened in, shared by every subscriber of one test.
      */
     void recordCallsInto(List<String> calls) {
         this.calls = calls;
@@ -97,17 +97,17 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     @Override
-    public void release() {
-        if (released) {
+    public void shutdown() {
+        if (shutdownRequested) {
             return;
         }
-        released = true;
-        record("release");
+        shutdownRequested = true;
+        record("shutdown");
     }
 
     @Override
     public void close() throws Exception {
-        release();
+        shutdown();
         closed = true;
         record("close");
         if (closeThrows) {
