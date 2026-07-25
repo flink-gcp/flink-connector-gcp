@@ -65,7 +65,10 @@ Sink<OrderEvent> sink =
 
 - `CloudTasksSerializationSchema.serialize` returns a full `Task`, so every per-record field of a
   task — URL, HTTP method, headers, body, schedule time, dispatch deadline, authorization — is
-  expressible. The `httpTarget(...)` entry point plus the `with*` layering above is a convenience
+  expressible. Two bounds worth knowing when using them: `schedule_time` may be at most 30 days
+  ahead, and an HTTP target's `dispatch_deadline` must be between 15 seconds and 30 minutes. The
+  task **name** is the exception: it is composed by the sink (see task naming below), so the
+  returned `Task` carries none. The `httpTarget(...)` entry point plus the `with*` layering above is a convenience
   over that contract, the same relationship `PubSubSerializationSchema.dataOnly(...)` has to a full
   `PubsubMessage`. Returning the proto rather than a narrow record type is also what keeps the
   Table API layer (#99) cheap: a `RowData` implementation slots in without reworking the sink.
@@ -82,56 +85,85 @@ Sink<OrderEvent> sink =
 
 **Only HTTP targets are supported.** A task carries a `oneof` of `http_request` or
 `app_engine_http_request`; the App Engine form is deliberately out of scope. Google itself
-describes explicit App Engine targets as "less common", they cannot be distributed across regions
-(a project has exactly one App Engine application, and its queues must live in that application's
-region), and they invert the HTTP target's overload behaviour — a `503` throttles the queue while a
-`429` does not. Supporting a second target type would double the serializer surface for a shrinking
-audience; it can be added later without breaking the HTTP path.
+describes explicit App Engine targets as "less common", and they cannot be distributed across
+regions — a queue targeting App Engine must live in the region of the project's App Engine
+application, which cannot be changed once set. Their overload signalling also differs: App Engine
+returns `503` when instances are overloaded, and Cloud Tasks reads that as *slow down* rather than
+as a plain failure, so `503` is unusable as an ordinary retry signal from an App Engine handler.
+(Both target types throttle on backoff errors — for external targets those are `429` and `5xx` —
+so this is a difference in which code carries the signal, not an inversion.) Supporting a second
+target type would double the serializer surface for a shrinking audience; it can be added later
+without breaking the HTTP path.
 
-The endpoint must be reachable from Cloud Tasks. Google's documentation is explicit: handlers "can
-be run on any HTTP endpoint with an **external IP address** such as GKE, Compute Engine, or even an
-on-premises web server". There is no VPC connector, Private Service Connect or serverless VPC
-access for HTTP targets, so an endpoint that only has an internal IP cannot be a target at all.
-Cloud Run and Cloud Run functions are ordinary HTTP targets — there is no special integration.
+The endpoint must be reachable from Cloud Tasks. Google's documentation opens with it: handlers
+"can be run on any HTTP endpoint with an **external IP address** such as GKE, Compute Engine, or
+even an on-premises web server". No Cloud Tasks page documents a VPC connector, Private Service
+Connect or serverless VPC access for HTTP targets, so plan for a publicly routable endpoint —
+though absence of documentation is not the same as a documented prohibition, and this is worth
+re-checking before it is relied on.
 
-Authorization is chosen by **what is being called**, not by preference:
+One case does have a first-class integration, and it is a useful one: a **Cloud Run service set to
+`Internal` ingress**, unreachable from the internet, still accepts Cloud Tasks requests. Cloud Run
+names Cloud Tasks explicitly among the products whose requests "stay within the Google network"
+when they are in the same project or VPC Service Controls perimeter and use the default `run.app`
+URL.
+
+Authorization follows what is being called:
 
 | Target | Token |
 |---|---|
-| Cloud Run, Cloud Run functions, anything else running on Google Cloud behind IAM | OIDC (`withOidcToken(serviceAccount[, audience])`) |
-| Google APIs on `*.googleapis.com` | OAuth access token (`withOauthToken(serviceAccount[, scope])`) |
-| A third-party endpoint with its own scheme | Neither — carry the credential in a header |
+| Cloud Run, Cloud Run functions, anything else on Google Cloud behind IAM | OIDC (`withOidcToken(serviceAccount[, audience])`) |
+| Google APIs on `*.googleapis.com` | OAuth access token (`withOAuthToken(serviceAccount[, scope])`) |
+| A third-party endpoint that validates the Google-issued token itself | OIDC — the proto sanctions "endpoints where you intend to validate the token yourself" |
+| Anything else | Neither — carry the credential in a header |
 
-The builder therefore does not present the two as interchangeable knobs; setting both is rejected,
-since the underlying field is a `oneof`.
+OAuth is the narrow one: Google documents it as "generally only" for `*.googleapis.com`. The
+builder does not present the two as interchangeable knobs; setting both is rejected, since the
+underlying field is a `oneof`.
 
-**Queue-level routing can silently override the task's URL.** A queue may carry an
-`httpTarget.uriOverride`, and its `uriOverrideEnforceMode` defaults to `ALWAYS`, which Google
-documents as "queue-level configuration overrides all task-level configuration". A pipeline that
-resolves URLs per record against such a queue will see every task go to the queue's URL instead,
-with no error anywhere. The sink cannot detect this without an extra `GetQueue` call and the
-permission to make it, so v1 documents the interaction rather than guarding it; a preflight warning
-is a candidate follow-up if it bites in practice.
+**Queue-level routing can silently override the task's URL — and v2 cannot see it.** A queue may
+carry an `httpTarget.uriOverride` whose `uriOverrideEnforceMode` defaults to `ALWAYS`, documented
+as "queue-level configuration overrides all task-level configuration". A pipeline resolving URLs
+per record against such a queue will see every task go to the queue's URL instead, with no error
+anywhere.
+
+Detecting it is harder than it looks: `httpTarget` exists in the **REST** `Queue` resource and in
+`v2beta3`, but **not in the v2 proto** — `com.google.cloud.tasks.v2.Queue` has no `getHttpTarget`,
+so a `GetQueue` through the client this sink uses returns an object that cannot carry the field at
+all. A preflight check would mean pulling in the v2beta3 client or calling REST directly. v1
+therefore documents the interaction rather than guarding it, and the cost of guarding it later is
+recorded here so it is not rediscovered as "just one extra call".
 
 ## Task naming and deduplication
 
 **The default is unnamed tasks.** Cloud Tasks assigns the name, task creation runs at full speed,
 and a task that Flink replays after a failure is created twice.
 
-Naming is opt-in through the serializer:
+Naming is opt-in through the **sink builder**, not the serializer:
 
 ```java
-CloudTasksSerializationSchema.httpTarget(url)
-        .withBody(schema)
-        .withTaskId(OrderEvent::orderId)   // opt in to deduplication
+CloudTasksSink.<OrderEvent>builder()
+        .queue(queue)
+        .serializer(serializer)
+        .taskIdExtractor(OrderEvent::orderId)   // opt in to deduplication
 ```
 
-With a task id supplied, a repeated create for an id Cloud Tasks has already seen fails with
+It belongs there because a `Task` has no task-id field — only `name`, the full
+`projects/P/locations/L/queues/Q/tasks/ID` path. Composing that name requires the resolved queue,
+which the destination resolver produces and the serializer never sees. Keeping the extractor on the
+builder also separates *what to send* (the serializer) from *how to deduplicate* (a sink policy),
+and means the serializer's `Task` is always returned without a name.
+
+With an extractor supplied, a repeated create for an id Cloud Tasks has already seen fails with
 `ALREADY_EXISTS`, **which the sink treats as success**. A replayed record therefore does not
 produce a second call to the endpoint, which is as close to exactly-once as this service reaches.
-The window is bounded: Google documents "up to 24 hours" for an id to be released after the task is
-created, deleted or executed (9 days for queues created from a `queue.yaml`). A replay later than
-that duplicates.
+
+The window is bounded, but by how much is **contradicted between Google's own sources**: the REST
+reference says an id takes "up to 24 hours" to be released, while the v2 proto comment for the same
+field says "~1 hour" (both agree on ~9 days for queues created from a `queue.yaml` or `queue.xml`).
+Design against the shorter one. The window also starts when the task is **deleted or executed**,
+not when it is created, so a task scheduled far ahead holds its id for its whole lifetime plus the
+window. A replay after that duplicates.
 
 This is off by default because it is expensive, and the cost is Google's rather than this
 connector's. From the `tasks.create` reference: *"Because there is an extra lookup cost to identify
@@ -144,11 +176,13 @@ id or for the prefix of the task id is recommended. Choosing task ids that are s
 sequential prefixes, for example using a timestamp, causes an increase in latency and error rates
 in all task commands. The infrastructure relies on an approximately uniform distribution of task
 ids to store and serve tasks efficiently."* Sequential ids are exactly what a user reaches for
-first — an event id, an offset, a timestamp — so `withTaskId(...)` takes any string and the sink
-derives the actual task id as its SHA-256 digest. The footgun is removed by construction rather
-than by a warning in a document nobody reads, deduplication is unaffected (the same key always
-hashes the same way), and the digest fits comfortably inside the 500-character limit for the
-`[A-Za-z0-9_-]` id.
+first — an event id, an offset, a timestamp — so `taskIdExtractor(...)` takes any string and the
+sink derives the actual task id as its SHA-256 digest. The footgun is closed off rather than
+warned about, deduplication is unaffected (the same key always hashes the same way), and the digest
+is 64 characters from `[0-9a-f]`, well inside the 500-character limit for the `[A-Za-z0-9_-]` id.
+
+Because the serializer never sets a name, there is no second path around the hashing — the
+extractor is the only way to name a task, and every name the sink writes is a digest.
 
 The consequence to know: task names are not human-meaningful, so a task cannot be located in the
 console from its business key. Passing a caller-chosen name through unhashed — the only thing that
@@ -172,31 +206,38 @@ and in-flight creates are lost on failure. Batch execution is covered by the end
 **Retries are this sink's responsibility, unlike every other connector here.** The generated client
 gives `CreateTask` an *empty* set of retryable status codes and a 20-second total timeout — verified
 in `CloudTasksStubSettings` for `google-cloud-tasks` 2.94.0, where `getTask`, `listTasks` and
-`deleteTask` all retry on `DEADLINE_EXCEEDED`/`UNAVAILABLE` and `createTask` alone does not. That is
-deliberate on Google's side: an unnamed create is not idempotent, so a blind retry duplicates the
-task. The sink therefore implements its own bounded retry with exponential backoff, configurable
-through `CloudTasksOptions` with defaults, over the codes worth retrying:
+`deleteTask` all retry on `DEADLINE_EXCEEDED`/`UNAVAILABLE` and `createTask` alone does not. The
+same empty-retry configuration covers every mutating method (`createQueue`, `updateQueue`,
+`purgeQueue`, `pauseQueue`, `resumeQueue`, `runTask`), so it reads as a blanket "do not retry
+mutations" rather than a judgement about `CreateTask` specifically — but the consequence is the
+same either way, and it is compounded by the fact that an unnamed create is not idempotent. The
+sink therefore implements its own bounded retry with exponential backoff, configurable through
+`CloudTasksWriterOptions` (the nested-options pattern the other modules use, every knob defaulted),
+over the codes worth retrying:
 
 | Status | Treatment |
 |---|---|
 | `UNAVAILABLE`, `DEADLINE_EXCEEDED` | Retry. Under unnamed tasks a `DEADLINE_EXCEEDED` is ambiguous — the task may already exist — so the retry may duplicate. At-least-once prefers that to loss; naming removes the ambiguity |
-| `RESOURCE_EXHAUSTED` | Retry with backoff. The queue is overloaded; Google's guidance is to throttle the caller adaptively |
-| `NOT_FOUND` | Retry, briefly. A queue idle for 30 days takes "a few minutes to re-activate" and "some method calls may return `NOT_FOUND`" meanwhile, so this is not proof of a misconfigured queue. It becomes terminal once the retry budget is spent |
-| `ALREADY_EXISTS` | Success, when a task id was supplied (see above). Terminal otherwise, since it should be unreachable |
+| `RESOURCE_EXHAUSTED` | Retry with backoff — the queue is over its limits and backing off is the only useful response |
+| `NOT_FOUND` | Retry on a **separate, short budget**. A queue idle for 30 days takes "a few minutes to re-activate" and "some method calls may return `NOT_FOUND`" meanwhile, so this is not proof of a misconfigured queue — but a mistyped queue name must not burn the full retry budget on every record before failing |
+| `ALREADY_EXISTS` | Success when the task carried a name, which is exactly when an extractor is configured. Terminal otherwise, since it should be unreachable |
 | Everything else | Terminal — fails the job |
 
 ## Queues, rate limits and sink concurrency
 
-**There is no batch create.** GA v2 offers `CreateTask` and nothing else: `BatchCreateTasks` exists
-only in v2beta3 preview (long-running, explicitly non-atomic, 100 tasks maximum) and `BufferTask` is
-REST-only and absent from the Java client. The Java client also has no client-side batching or flow
-control — every method is a plain `UnaryCallSettings`, with no `BatchingSettings` anywhere in
-`CloudTasksSettings`. So the sink owns batching, backpressure and concurrency outright, and creation
-costs one RPC per record.
+**There is no batch create available to a JVM sink.** `BatchCreateTasks` is documented in v2beta3
+(long-running, explicitly non-atomic, 100 tasks maximum) and `BufferTask` is a GA v2 method — but
+**neither exists in `google-cloud-tasks` 2.94.0**, not even on its v2beta3 surface: both are
+REST-only, so dropping to a beta client would not buy batching either. The Java client also
+configures no method with batching — there is no `BatchingSettings` in `CloudTasksSettings` or
+`CloudTasksStubSettings` (the `BatchingCallSettings` references in the generated callable factories
+are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright, and
+creation costs one RPC per record.
 
 What the sink provides is the same mailbox-based bound the Pub/Sub sink uses: a cap on unacknowledged
-creates (`maxInFlightTasks`), with completions re-dispatched onto the task mailbox so all writer
-state stays single-threaded, and a write at the cap yielding until completions bring the count down.
+creates (`maxInFlightTasks`, defaulting to 1,000 as the Pub/Sub sink's equivalent does), with
+completions re-dispatched onto the task mailbox so all writer state stays single-threaded, and a
+write at the cap yielding until completions bring the count down.
 Create throughput is then sink parallelism × the in-flight cap, against a per-RPC latency that
 naming increases.
 
@@ -220,8 +261,10 @@ queue name cannot be reused for 3 days, so a mistake is expensive to undo. The q
 infrastructure the pipeline points at, like a Kafka topic with a retention policy.
 
 Two queue states to be aware of, because neither produces an error at the sink: a **paused** queue
-still accepts task creation and simply stops dispatching, and a **disabled** queue does the same. A
-pipeline writing to either sees a healthy sink while the backlog grows.
+"will stop delivering tasks from it, but more tasks can still be added to it", and a **disabled**
+queue behaves the same way. A pipeline writing to either sees a healthy sink while the backlog
+grows. `DISABLED` is the rarer of the two — a queue cannot be disabled directly, only by uploading
+a `queue.yaml`/`queue.xml` that omits it.
 
 ## Error handling
 
@@ -265,7 +308,10 @@ Two gaps the emulator leaves, to be covered by the real-GCP suite or not at all:
 - It never garbage-collects task names — the dedup window cannot be exercised, only the
   `ALREADY_EXISTS` response. Tests reset with `--hard-reset-on-purge-queue` between scenarios.
 - It does not implement `UpdateQueue`, so queue-level `httpTarget` routing — the override that can
-  silently redirect per-record URLs — is not testable there.
+  silently redirect per-record URLs — is not testable there. (Nor is it reachable through the v2
+  client at all, as the targets section explains.)
+- It authenticates **OIDC only** — its task dispatch has a single `GetOidcToken` branch — so the
+  OAuth path in the v1 scope has no emulator coverage and needs real GCP or a hand-written fake.
 
 ## Provenance and attribution
 

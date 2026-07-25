@@ -243,15 +243,22 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   targets need an external IP; OIDC vs OAuth is chosen by the target, not by preference, so the
   builder rejects setting both. Fixed **and** per-record queue destinations from v1 — unlike
   Pub/Sub topics and BigQuery tables this costs nothing, since one `CloudTasksClient` serves every
-  queue with no per-destination stream. **Unnamed tasks by default**; `withTaskId(...)` opts into
-  deduplication (`ALREADY_EXISTS` = success, window ≤24 h) and the sink **hashes the extracted key
-  with SHA-256**, because Google documents that sequential ids raise latency *and* error rates —
-  the footgun is removed by construction rather than by a warning. **Retries are the sink's
+  queue with no per-destination stream. **Unnamed tasks by default**; `taskIdExtractor(...)` **on
+  the sink builder, not the serializer** (a `Task` has no id field — only the full `name` path,
+  which needs the resolved queue) opts into deduplication (`ALREADY_EXISTS` = success), and the
+  sink **hashes the extracted key with SHA-256**, because Google documents that sequential ids
+  raise latency *and* error rates. The serializer never sets a name, so there is no second path
+  around the hashing. The dedup window is **contradicted in Google's own sources — REST says up to
+  24 h, the v2 proto says ~1 h — so design against 1 h**. **Retries are the sink's
   responsibility**: the generated client gives `CreateTask` an empty retryable-code set and a 20 s
-  timeout (verified in `CloudTasksStubSettings` 2.94.0) precisely because an unnamed create is not
-  idempotent; the sink retries `UNAVAILABLE`/`DEADLINE_EXCEEDED`/`RESOURCE_EXHAUSTED` and treats
-  `NOT_FOUND` as briefly transient (a 30-day-idle queue re-activates slowly). No batch API in GA v2
-  and no client-side batching in the SDK, so one RPC per record with a mailbox-based in-flight cap.
+  timeout (verified in `CloudTasksStubSettings` 2.94.0), as it does for every mutating method; the
+  sink retries `UNAVAILABLE`/`DEADLINE_EXCEEDED`/`RESOURCE_EXHAUSTED` and gives `NOT_FOUND` a
+  separate short budget (a 30-day-idle queue re-activates slowly, but a mistyped queue must not
+  burn the full budget per record). `BatchCreateTasks` and `BufferTask` are **both REST-only and
+  absent from the Java client**, and no method is configured with batching, so one RPC per record
+  with a mailbox-based in-flight cap. Queue-level `httpTarget.uriOverride` can silently override
+  per-task URLs and **cannot be detected through the v2 client at all** (the field does not exist
+  in the v2 proto).
   At-least-once, stateless writer, flush on checkpoint. Decision record in the connector
   documentation page
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
