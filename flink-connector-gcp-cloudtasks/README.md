@@ -1,0 +1,43 @@
+# flink-connector-gcp-cloudtasks
+
+Cloud Tasks sink for Apache Flink — dispatching a stream as HTTP tasks that the service executes
+later, paced by the queue's rate limit.
+
+| Feature | Status |
+|---|---|
+| Sink design (targets, task naming/dedup, rate limits, checkpoint semantics) | Design settled (#23) |
+| SinkV2 at-least-once sink; HTTP targets; fixed and per-record queue destinations | Planned (#24) |
+| Opt-in named-task deduplication | Planned (#24) |
+| Emulator integration tests | Planned (#25) |
+| Per-record failure policy | Planned (#37) |
+| Table API / SQL support | Planned (#99) |
+
+```java
+Sink<OrderEvent> sink =
+        CloudTasksSink.<OrderEvent>builder()
+                .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
+                .serializer(
+                        CloudTasksSerializationSchema
+                                .httpTarget("https://api.example.com/v1/orders")
+                                .withBody(new MyEventJsonSerializationSchema())
+                                .withOidcToken("dispatcher@my-project.iam.gserviceaccount.com"))
+                .build();
+```
+
+## Documentation
+
+The design note — what the connector is for, targets and authorization, task naming and
+deduplication, delivery guarantees, why retries are the sink's responsibility here, and how queue
+rate limits relate to sink concurrency — is in
+[docs/content/docs/connectors/datastream/cloudtasks.md](../docs/content/docs/connectors/datastream/cloudtasks.md)
+(rendered on the documentation site once it is published).
+
+## Provenance and attribution
+
+This module is an original implementation. No Flink Cloud Tasks connector exists in Apache Flink,
+in [GoogleCloudPlatform/pubsub](https://github.com/GoogleCloudPlatform/pubsub) or elsewhere in open
+source, so nothing is vendored here. Its design references the Pub/Sub sink in this repository (the
+mailbox-based in-flight cap, the flush-on-checkpoint stateless writer, the serialization-schema
+shape) and Google's Cloud Tasks documentation.
+
+No source code has been copied into this module.
