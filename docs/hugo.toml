@@ -13,7 +13,7 @@
 # limitations under the License.
 
 baseURL = "https://laughingman7743.github.io/flink-connector-gcp/"
-languageCode = "en-us"
+locale = "en-us"
 title = "GCP Connectors for Apache Flink"
 
 # The content tree mirrors the layout of Flink's externalized connector
@@ -25,6 +25,11 @@ title = "GCP Connectors for Apache Flink"
   [markup.tableOfContents]
     startLevel = 1
     endLevel = 3
+  # Emit CSS classes instead of inlining one fixed colour scheme into every code
+  # block; the light/dark stylesheets are wired up in
+  # layouts/_partials/docs/inject/head.html so code follows the page theme.
+  [markup.highlight]
+    noClasses = false
 
 # hugo-book is pulled in as a Hugo module; the version is pinned in go.mod.
 [module]

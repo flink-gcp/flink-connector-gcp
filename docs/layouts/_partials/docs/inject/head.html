@@ -1,0 +1,28 @@
+{{/*
+Copyright 2026 laughingman7743
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+{{/*
+Syntax highlighting follows the reader's colour scheme, the way the rest of the
+theme does (BookTheme = "auto"). Hugo's default is to inline a single style into
+every code block, which leaves dark code sitting on a light page. Instead the
+highlighter emits CSS classes (markup.highlight.noClasses = false) and the two
+generated stylesheets below are selected by media query.
+*/}}
+{{- with resources.Get "chroma-light.css" | minify | fingerprint -}}
+<link rel="stylesheet" href="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" media="not all and (prefers-color-scheme: dark)">
+{{- end -}}
+{{- with resources.Get "chroma-dark.css" | minify | fingerprint -}}
+<link rel="stylesheet" href="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" media="(prefers-color-scheme: dark)">
+{{- end -}}

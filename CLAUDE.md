@@ -15,6 +15,28 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   apache-rat license-header check. Requires JDK 17 (`mise.toml` pins java/maven; `mise x maven java -- ./mvnw ...` works without global installs)
 - `./mvnw spotless:apply` — run before committing; CI fails on unformatted code
 - Single module: `./mvnw -pl flink-connector-gcp-bigquery verify`
+- Documentation site: `mise x -- hugo serve --source docs` to preview,
+  `mise x -- hugo --gc --minify --source docs --panicOnWarning` for the check CI runs (a
+  deprecation, a broken `relref` or a missing shortcode fails the build). `mise.toml` pins
+  hugo-extended and Go; hugo-book is a Hugo module pinned in `docs/go.mod`
+
+## Documentation (`docs/` vs module READMEs)
+
+- `docs/content/docs/connectors/datastream/<connector>.md` is **the design record**: API notes,
+  design decisions, delivery guarantees, error handling, tuning tables and the testing strategy.
+  Behavior or public API changed → update the docs page, not the README
+- The module `README.md` is an **overview only**: title, one-paragraph description, the
+  feature-status table (`Implemented (#N)` / `Planned (#N)`), a minimal code sample, a link to the
+  docs page, and the **provenance/attribution section** — provenance pairs with `NOTICE` and is a
+  licensing obligation, so it stays in the repository
+- Implementation status lives in the README table only; the docs page links to it instead of
+  repeating it. Keep the two from drifting by adding status nowhere else
+- Pages are plain markdown with front matter (`title`, `type: docs`, `weight`) and the plain
+  Apache-2.0 header as an HTML comment. **No Hugo shortcodes** — Flink's `artifact`/`tabs`/`hint`
+  shortcodes are not available here, and staying shortcode-free means no Flink layout code is
+  copied and `NOTICE` needs no entry
+- The site is built as a CI check only; GitHub Pages publishing waits until the repository is
+  public (#6)
 
 ## Workflow rules
 
@@ -173,7 +195,7 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   connector's `withHostAndPortForEmulator`; the emulator ITs (including a MiniCluster streaming
   test through the public builder) reuse the production factory/admin, no test-only factory.
   Per-record failure policy and the fatal-exception classifier moved to #37. Decision record in
-  the module README
+  the connector documentation page
 - **Pub/Sub source** (#79, #80): FLIP-27 streaming-pull source; split = (subscription, uid), ack on
   checkpoint completion, nack on close. Tuning lives in one `PubSubSubscriberOptions` object
   (nested-options pattern, same shape as `PubSubPublisherOptions`). Two decisions deviate from the

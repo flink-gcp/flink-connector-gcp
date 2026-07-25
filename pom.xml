@@ -248,6 +248,15 @@ limitations under the License.
                         <exclude>mise.toml</exclude>
                         <exclude>tools/japicmp-output/**</exclude>
                         <exclude>**/src/test/resources/**</exclude>
+                        <!-- Documentation site: Go module metadata has no comment
+                             syntax for a header, the chroma stylesheets are generated
+                             by `hugo gen chromastyles`, and public/resources are Hugo
+                             build output. -->
+                        <exclude>docs/go.mod</exclude>
+                        <exclude>docs/go.sum</exclude>
+                        <exclude>docs/assets/chroma-*.css</exclude>
+                        <exclude>docs/public/**</exclude>
+                        <exclude>docs/resources/**</exclude>
                     </excludes>
                 </configuration>
             </plugin>
