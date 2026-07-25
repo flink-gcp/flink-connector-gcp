@@ -79,9 +79,26 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
     public SubscriptionInfo describe(SubscriptionDestination subscription) throws IOException {
         SubscriptionAdminClient client = newClient();
         try {
-            return toInfo(client.getSubscription(subscription.toSubscriptionPath()));
+            return describeWith(client, subscription);
         } catch (NotFoundException e) {
             return null;
+        } finally {
+            closeQuietly(client);
+        }
+    }
+
+    /**
+     * Reads a subscription's settings through an already-open client, wrapping every failure but
+     * {@link NotFoundException} — which only {@link #describe} treats as an answer rather than an
+     * error.
+     */
+    private static SubscriptionInfo describeWith(
+            SubscriptionAdminClient client, SubscriptionDestination subscription)
+            throws IOException {
+        try {
+            return toInfo(client.getSubscription(subscription.toSubscriptionPath()));
+        } catch (NotFoundException e) {
+            throw e;
         } catch (PermissionDeniedException e) {
             throw new IOException(
                     "Not allowed to read the settings of Pub/Sub subscription "
@@ -93,8 +110,6 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
         } catch (RuntimeException e) {
             throw new IOException(
                     "Failed to read the settings of Pub/Sub subscription " + subscription, e);
-        } finally {
-            closeQuietly(client);
         }
     }
 
@@ -114,8 +129,10 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                             + " apply.",
                     subscription);
             // Whoever won the race decided the settings, so read them back rather than assume the
-            // requested options took effect.
-            return toInfo(client.getSubscription(subscription.toSubscriptionPath()));
+            // requested options took effect. Through the helper, because a failure here is in a
+            // sibling catch block and so would escape the wrap below unwrapped — plausible, since
+            // creating and describing are different permissions.
+            return describeWith(client, subscription);
         } catch (RuntimeException e) {
             throw new IOException("Failed to create Pub/Sub subscription " + subscription, e);
         } finally {

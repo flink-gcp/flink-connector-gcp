@@ -144,31 +144,68 @@ public final class SubscriptionInfo {
 
         private Builder() {}
 
+        /**
+         * Sets whether the subscription preserves ordering-key order.
+         *
+         * @param messageOrderingEnabled the subscription's {@code enableMessageOrdering}
+         * @return this builder
+         */
         public Builder messageOrderingEnabled(boolean messageOrderingEnabled) {
             this.messageOrderingEnabled = messageOrderingEnabled;
             return this;
         }
 
+        /**
+         * Sets whether the subscription has exactly-once delivery enabled.
+         *
+         * @param exactlyOnceDeliveryEnabled the subscription's {@code enableExactlyOnceDelivery}
+         * @return this builder
+         */
         public Builder exactlyOnceDeliveryEnabled(boolean exactlyOnceDeliveryEnabled) {
             this.exactlyOnceDeliveryEnabled = exactlyOnceDeliveryEnabled;
             return this;
         }
 
+        /**
+         * Sets whether the subscription retains acknowledged messages.
+         *
+         * @param retainAckedMessages the subscription's {@code retainAckedMessages}
+         * @return this builder
+         */
         public Builder retainAckedMessages(boolean retainAckedMessages) {
             this.retainAckedMessages = retainAckedMessages;
             return this;
         }
 
+        /**
+         * Sets whether the subscription has a dead-letter policy.
+         *
+         * @param deadLetterPolicyConfigured whether {@code deadLetterPolicy} is present
+         * @return this builder
+         */
         public Builder deadLetterPolicyConfigured(boolean deadLetterPolicyConfigured) {
             this.deadLetterPolicyConfigured = deadLetterPolicyConfigured;
             return this;
         }
 
+        /**
+         * Sets whether the subscription's topic retains messages. Output-only on {@code
+         * GetSubscription}: it reflects the topic's setting, not the subscription's.
+         *
+         * @param topicMessageRetentionConfigured whether {@code topicMessageRetentionDuration} is
+         *     present
+         * @return this builder
+         */
         public Builder topicMessageRetentionConfigured(boolean topicMessageRetentionConfigured) {
             this.topicMessageRetentionConfigured = topicMessageRetentionConfigured;
             return this;
         }
 
+        /**
+         * Builds the settings.
+         *
+         * @return the settings
+         */
         public SubscriptionInfo build() {
             return new SubscriptionInfo(this);
         }

@@ -333,6 +333,38 @@ class PubSubSplitEnumeratorTest {
     }
 
     @Test
+    void nothingIsCreatedWhenAnExistingSubscriptionIsRejected() {
+        // Creating one subscription and then refusing another leaves an orphan bound to its topic,
+        // accumulating a full copy of the stream, while the job crash-loops — the rejection is
+        // deterministic. Only this check can see it: whether the existing subscription has
+        // exactly-once delivery is what GetSubscription is for, and the builder cannot know.
+        FakeSubscriptionAdmin admin =
+                new FakeSubscriptionAdmin()
+                        .withSubscription(
+                                SUB_B,
+                                SubscriptionInfo.builder()
+                                        .exactlyOnceDeliveryEnabled(true)
+                                        .build());
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSourceConfig<?> config =
+                config(
+                        sourceBuilder()
+                                .subscription(
+                                        SUB_A,
+                                        SubscriptionCreateOptions.builder().topic(TOPIC).build())
+                                .subscription(SUB_B));
+        PubSubSplitEnumerator enumerator = new PubSubSplitEnumerator(context, config, admin, null);
+        enumerator.start();
+
+        assertThatThrownBy(context::runAsyncCalls)
+                .isInstanceOf(FlinkRuntimeException.class)
+                .rootCause()
+                .hasMessageContaining("exactly-once delivery");
+
+        assertThat(admin.created).isEmpty();
+    }
+
+    @Test
     void nothingIsSoughtWhenAnotherSubscriptionIsAboutToBeRejected() {
         // A seek rewrites state shared with every other consumer, so a deterministic rejection must
         // not leave the first subscription already rewound.

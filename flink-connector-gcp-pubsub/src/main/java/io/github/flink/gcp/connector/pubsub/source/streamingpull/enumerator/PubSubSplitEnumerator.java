@@ -179,9 +179,13 @@ public class PubSubSplitEnumerator
             LOG.warn(
                     "The restored checkpoint was taken before start position {} took effect, so it"
                             + " is applied again. No subtask held a split at that point, so nothing"
-                            + " already emitted is affected — but LATEST resolves against the clock"
-                            + " again, discarding whatever was published in the meantime.",
-                    startPosition);
+                            + " already emitted is affected{}",
+                    startPosition,
+                    startPosition.getMode() == StartPosition.Mode.LATEST
+                            // The only mode whose second application is not the first one repeated.
+                            ? ", but LATEST resolves against the clock again, discarding whatever"
+                                    + " was published in the meantime."
+                            : ", and this position resolves to the same instant as before.");
         }
         boolean backwardsSeek = seekTime != null && seekTime.isBefore(now);
 
@@ -203,16 +207,28 @@ public class PubSubSplitEnumerator
      */
     private Void runStartupCheck(@Nullable Instant seekTime, boolean backwardsSeek)
             throws IOException {
+        // Nothing is created or sought until every subscription that already exists has passed.
+        // The rejections are deterministic, so a rejection reached part-way through a
+        // describe-create-verify loop would leave the job crash-looping over an orphan
+        // subscription — one bound to its topic and accumulating a full copy of the stream — or
+        // over subscriptions it had already rewound. Which subscriptions those are is only knowable
+        // here: whether an existing one has exactly-once delivery, or the ordering the mode needs,
+        // is what `GetSubscription` is for, and the builder cannot see it.
+        Set<SubscriptionDestination> existing = new HashSet<>();
         for (SubscriptionDestination subscription : config.getSubscriptions()) {
             SubscriptionInfo info = admin.describe(subscription);
-            if (info == null) {
-                info = createSubscription(subscription);
+            if (info != null) {
+                verify(subscription, info, backwardsSeek);
+                existing.add(subscription);
             }
-            verify(subscription, info, backwardsSeek);
         }
-        // Seeking only once every subscription has passed. A seek rewrites state shared with every
-        // other consumer, and the rejections are deterministic — so a rejection reached mid-loop
-        // would leave earlier subscriptions rewound by a job that then crash-loops.
+        for (SubscriptionDestination subscription : config.getSubscriptions()) {
+            if (!existing.contains(subscription)) {
+                // Verified too, cheaply: the builder rejects settings the check would refuse, so
+                // this only fires when a concurrent creator won the race with different ones.
+                verify(subscription, createSubscription(subscription), backwardsSeek);
+            }
+        }
         if (seekTime != null) {
             for (SubscriptionDestination subscription : config.getSubscriptions()) {
                 admin.seek(subscription, seekTime);
