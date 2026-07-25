@@ -51,6 +51,9 @@ class PubSubSplitReaderTest {
 
     private final Map<String, FakeNotifyingPullSubscriber> subscribers = new HashMap<>();
 
+    /** Set by the ordering test so the fakes record their release/close calls in one list. */
+    private List<String> calls;
+
     @Test
     void drainsEveryAssignedSplitInOneFetch() throws Exception {
         PubSubSplitReader reader = reader(10);
@@ -216,11 +219,39 @@ class PubSubSplitReaderTest {
         assertThat(subscriberOf(SPLIT_B).isClosed()).isTrue();
     }
 
+    @Test
+    void closeReleasesEverySubscriberBeforeWaitingOnAny() throws Exception {
+        // Releasing nacks the split's messages and returns at once; close() then waits up to the
+        // shutdown timeout. Interleaving the two costs splits × timeout, and past roughly six
+        // splits on one reader that exceeds Flink's source.reader.close.timeout — so the splits
+        // whose turn never came would never be nacked, and their messages would sit until their
+        // acknowledgement deadline expired.
+        List<String> calls = new ArrayList<>();
+        this.calls = calls;
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+
+        reader.close();
+
+        // Order between the two subscribers is not specified; what matters is that no subscriber is
+        // waited on until every one of them has been released.
+        assertThat(calls).hasSize(4);
+        assertThat(calls.subList(0, 2))
+                .containsExactlyInAnyOrder(
+                        "release:" + SPLIT_A.splitId(), "release:" + SPLIT_B.splitId());
+        assertThat(calls.subList(2, 4))
+                .containsExactlyInAnyOrder(
+                        "close:" + SPLIT_A.splitId(), "close:" + SPLIT_B.splitId());
+    }
+
     private PubSubSplitReader reader(int maxRecordsPerFetch) {
         return new PubSubSplitReader(
                 (split, signal) -> {
                     FakeNotifyingPullSubscriber subscriber =
-                            new FakeNotifyingPullSubscriber(signal);
+                            new FakeNotifyingPullSubscriber(signal).named(split.splitId());
+                    if (calls != null) {
+                        subscriber.recordCallsInto(calls);
+                    }
                     subscribers.put(split.splitId(), subscriber);
                     return subscriber;
                 },

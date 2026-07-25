@@ -29,10 +29,12 @@ import java.util.Objects;
  * A fully-qualified Pub/Sub subscription reference: project and subscription.
  *
  * <p>Instances are pure subscription <em>identity</em>: {@link #equals(Object)} and {@link
- * #hashCode()} are defined over exactly (project, subscription), so the class can serve as the key
- * of a split and of the reader's per-subscription subscriber map. Subscriber settings are
- * intentionally not part of this class — they are configured on the source — keeping subscription
- * identity stable.
+ * #hashCode()} are defined over exactly (project, subscription), so a split carries one and the
+ * enumerator can key its per-subscription bookkeeping by it. The reader does <em>not</em> key its
+ * subscribers this way — it keys them by split id, because under {@code OrderingMode.NONE} several
+ * splits deliberately consume one subscription, each with its own subscriber. Subscriber settings
+ * are intentionally not part of this class — they are configured on the source — keeping
+ * subscription identity stable.
  *
  * <p>Instances are immutable; the resource path and hash are precomputed.
  *

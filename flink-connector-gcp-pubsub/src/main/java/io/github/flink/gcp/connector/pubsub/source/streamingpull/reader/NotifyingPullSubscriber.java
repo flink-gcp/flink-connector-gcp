@@ -47,8 +47,19 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
     List<PubsubMessage> pullMessages(int maxMessages) throws IOException;
 
     /**
-     * Nacks every message this subscriber's split still holds and shuts the client down. Buffered
-     * messages are discarded — they were never emitted, so Pub/Sub must redeliver them.
+     * Nacks every message this subscriber's split still holds and asks the client to shut down,
+     * returning without waiting for it. Buffered messages are discarded — they were never emitted,
+     * so Pub/Sub must redeliver them. Idempotent.
+     *
+     * <p>Separate from {@link #close()} because the nack is what must not be skipped while the wait
+     * is what costs time: a reader owning several splits releases them all before waiting on any,
+     * so the waits overlap instead of accumulating.
+     */
+    void release();
+
+    /**
+     * Releases the subscriber if it has not been released, then waits for the client to shut down,
+     * up to the configured shutdown timeout.
      *
      * @throws Exception if the client does not shut down cleanly
      */
