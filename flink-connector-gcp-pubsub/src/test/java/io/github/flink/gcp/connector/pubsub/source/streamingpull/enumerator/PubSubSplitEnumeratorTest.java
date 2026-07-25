@@ -159,4 +159,80 @@ class PubSubSplitEnumeratorTest {
     private static List<SubscriptionDestination> subscriptionsOf(List<SubscriptionSplit> splits) {
         return splits.stream().map(SubscriptionSplit::getSubscription).collect(Collectors.toList());
     }
+
+    @Test
+    void reportsHowManySplitsAreAssignedAndHowManyReadersGotNothing() {
+        // Two subscriptions under PER_KEY give two splits, so the third subtask gets nothing.
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(3);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(
+                        context, List.of(SUB_A, SUB_B), OrderingMode.PER_KEY, null);
+        enumerator.start();
+
+        assertThat(context.<Integer>gauge("assignedSplits")).isZero();
+        assertThat(context.<Long>gauge("unassignedSplits")).isEqualTo(2L);
+
+        context.registerReader(0);
+        enumerator.addReader(0);
+        context.registerReader(1);
+        enumerator.addReader(1);
+        context.registerReader(2);
+        enumerator.addReader(2);
+
+        assertThat(context.<Integer>gauge("assignedSplits")).isEqualTo(2);
+        assertThat(context.<Integer>gauge("unassignedReaders")).isEqualTo(1);
+        assertThat(context.<Long>gauge("unassignedSplits")).isZero();
+    }
+
+    @Test
+    void returnedSplitsAreCountedBackAsUnassigned() {
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, List.of(SUB_A), OrderingMode.NONE, null);
+        enumerator.start();
+        context.registerReader(0);
+        enumerator.addReader(0);
+
+        enumerator.addSplitsBack(context.assignedSplits(0), 0);
+
+        assertThat(context.<Integer>gauge("assignedSplits")).isZero();
+        assertThat(context.<Long>gauge("unassignedSplits")).isEqualTo(1L);
+    }
+
+    @Test
+    void reRegisteringASubtaskDoesNotInflateTheGauges() {
+        // A failover removes the subtask from the coordinator's registered readers and calls
+        // addReader again, while addSplitsBack returns only the part of the assignment no
+        // completed checkpoint covers — often nothing. Counting deltas would drift upward here and
+        // drive unassignedSplits negative.
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(
+                        context, List.of(SUB_A, SUB_B), OrderingMode.PER_KEY, null);
+        enumerator.start();
+        context.registerReader(0);
+        enumerator.addReader(0);
+        context.registerReader(1);
+        enumerator.addReader(1);
+
+        enumerator.addSplitsBack(Collections.emptyList(), 0);
+        enumerator.addReader(0);
+
+        assertThat(context.<Integer>gauge("assignedSplits")).isEqualTo(2);
+        assertThat(context.<Long>gauge("unassignedSplits")).isZero();
+    }
+
+    @Test
+    void reRegisteringAnIdleSubtaskDoesNotInflateTheIdleGauge() {
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, List.of(SUB_A), OrderingMode.PER_KEY, null);
+        enumerator.start();
+        context.registerReader(1);
+        enumerator.addReader(1);
+        enumerator.addReader(1);
+        enumerator.addReader(1);
+
+        assertThat(context.<Integer>gauge("unassignedReaders")).isEqualTo(1);
+    }
 }

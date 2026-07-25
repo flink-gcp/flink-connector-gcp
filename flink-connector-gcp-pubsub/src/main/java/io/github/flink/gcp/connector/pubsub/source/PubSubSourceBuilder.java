@@ -48,6 +48,8 @@ public class PubSubSourceBuilder<T> {
     private PubSubDeserializationSchema<T> deserializationSchema;
     private OrderingMode orderingMode = OrderingMode.NONE;
     private PubSubSubscriberOptions subscriberOptions = PubSubSubscriberOptions.defaults();
+    private DeserializationFailurePolicy deserializationFailurePolicy =
+            DeserializationFailurePolicy.FAIL;
     @Nullable private String emulatorEndpoint;
 
     PubSubSourceBuilder() {}
@@ -138,6 +140,22 @@ public class PubSubSourceBuilder<T> {
     }
 
     /**
+     * Sets what the source does with a message the deserialization schema cannot convert. Defaults
+     * to {@link DeserializationFailurePolicy#FAIL}.
+     *
+     * @param deserializationFailurePolicy the failure policy
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> deserializationFailurePolicy(
+            DeserializationFailurePolicy deserializationFailurePolicy) {
+        this.deserializationFailurePolicy =
+                Preconditions.checkNotNull(
+                        deserializationFailurePolicy,
+                        "deserializationFailurePolicy must not be null");
+        return this;
+    }
+
+    /**
      * Points the source at a Pub/Sub emulator instead of the production service. Subscribers
      * connect to the given {@code host:port} over a plaintext channel with no credentials, so this
      * must only ever be used against an emulator (for example a testcontainers {@code
@@ -196,6 +214,7 @@ public class PubSubSourceBuilder<T> {
                         deserializationSchema,
                         orderingMode,
                         subscriberOptions,
+                        deserializationFailurePolicy,
                         emulatorEndpoint));
     }
 }

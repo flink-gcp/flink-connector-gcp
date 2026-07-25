@@ -40,6 +40,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
     private final PubSubDeserializationSchema<T> deserializationSchema;
     private final OrderingMode orderingMode;
     private final PubSubSubscriberOptions subscriberOptions;
+    private final DeserializationFailurePolicy deserializationFailurePolicy;
     @Nullable private final String emulatorEndpoint;
 
     PubSubSourceConfig(
@@ -47,11 +48,13 @@ public final class PubSubSourceConfig<T> implements Serializable {
             PubSubDeserializationSchema<T> deserializationSchema,
             OrderingMode orderingMode,
             PubSubSubscriberOptions subscriberOptions,
+            DeserializationFailurePolicy deserializationFailurePolicy,
             @Nullable String emulatorEndpoint) {
         this.subscriptions = subscriptions;
         this.deserializationSchema = deserializationSchema;
         this.orderingMode = orderingMode;
         this.subscriberOptions = subscriberOptions;
+        this.deserializationFailurePolicy = deserializationFailurePolicy;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -73,6 +76,11 @@ public final class PubSubSourceConfig<T> implements Serializable {
     /** Returns the subscriber tuning options. */
     public PubSubSubscriberOptions getSubscriberOptions() {
         return subscriberOptions;
+    }
+
+    /** Returns what to do with a message the deserialization schema cannot convert. */
+    public DeserializationFailurePolicy getDeserializationFailurePolicy() {
+        return deserializationFailurePolicy;
     }
 
     /** Returns the emulator endpoint, or {@code null} for production Pub/Sub. */

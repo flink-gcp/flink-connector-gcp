@@ -62,6 +62,7 @@ public final class PubSubSubscriberOptions implements Serializable {
     @Nullable private final Duration maxAckExtensionPeriod;
     @Nullable private final Duration minDurationPerAckExtension;
     @Nullable private final Duration maxDurationPerAckExtension;
+    @Nullable private final Duration awaitAckConfirmation;
     private final Duration shutdownTimeout;
     private final int maxRecordsPerFetch;
     private final Duration firstCheckpointTimeout;
@@ -73,6 +74,7 @@ public final class PubSubSubscriberOptions implements Serializable {
         this.maxAckExtensionPeriod = builder.maxAckExtensionPeriod;
         this.minDurationPerAckExtension = builder.minDurationPerAckExtension;
         this.maxDurationPerAckExtension = builder.maxDurationPerAckExtension;
+        this.awaitAckConfirmation = builder.awaitAckConfirmation;
         this.shutdownTimeout = builder.shutdownTimeout;
         this.maxRecordsPerFetch = builder.maxRecordsPerFetch;
         this.firstCheckpointTimeout = builder.firstCheckpointTimeout;
@@ -137,6 +139,15 @@ public final class PubSubSubscriberOptions implements Serializable {
         return maxDurationPerAckExtension;
     }
 
+    /**
+     * Returns how long a completed checkpoint waits for its acknowledgements to be confirmed, or
+     * {@code null} when acknowledgement is fire-and-forget.
+     */
+    @Nullable
+    public Duration getAwaitAckConfirmation() {
+        return awaitAckConfirmation;
+    }
+
     /** Returns how long closing one subscriber waits for it to release its messages. */
     public Duration getShutdownTimeout() {
         return shutdownTimeout;
@@ -165,6 +176,7 @@ public final class PubSubSubscriberOptions implements Serializable {
         }
         PubSubSubscriberOptions that = (PubSubSubscriberOptions) o;
         return maxRecordsPerFetch == that.maxRecordsPerFetch
+                && Objects.equals(awaitAckConfirmation, that.awaitAckConfirmation)
                 && Objects.equals(
                         flowControlMaxOutstandingElementCount,
                         that.flowControlMaxOutstandingElementCount)
@@ -188,6 +200,7 @@ public final class PubSubSubscriberOptions implements Serializable {
                 maxAckExtensionPeriod,
                 minDurationPerAckExtension,
                 maxDurationPerAckExtension,
+                awaitAckConfirmation,
                 shutdownTimeout,
                 maxRecordsPerFetch,
                 firstCheckpointTimeout);
@@ -207,6 +220,8 @@ public final class PubSubSubscriberOptions implements Serializable {
                 + minDurationPerAckExtension
                 + ", maxDurationPerAckExtension="
                 + maxDurationPerAckExtension
+                + ", awaitAckConfirmation="
+                + awaitAckConfirmation
                 + ", shutdownTimeout="
                 + shutdownTimeout
                 + ", maxRecordsPerFetch="
@@ -226,6 +241,7 @@ public final class PubSubSubscriberOptions implements Serializable {
         @Nullable private Duration maxAckExtensionPeriod;
         @Nullable private Duration minDurationPerAckExtension;
         @Nullable private Duration maxDurationPerAckExtension;
+        @Nullable private Duration awaitAckConfirmation;
         private Duration shutdownTimeout = Duration.ofSeconds(5);
         private int maxRecordsPerFetch = 1_000;
         private Duration firstCheckpointTimeout = Duration.ofMinutes(10);
@@ -328,6 +344,34 @@ public final class PubSubSubscriberOptions implements Serializable {
         public Builder maxDurationPerAckExtension(Duration maxDurationPerAckExtension) {
             this.maxDurationPerAckExtension =
                     checkPositive(maxDurationPerAckExtension, "maxDurationPerAckExtension");
+            return this;
+        }
+
+        /**
+         * Makes each completed checkpoint wait for its acknowledgements to be confirmed by the
+         * server, failing the job if they are not confirmed within the given time. Optional;
+         * defaults to fire-and-forget acknowledgement, which adds no latency.
+         *
+         * <p>This exists because a failed acknowledgement is otherwise invisible. On an ordinary
+         * subscription the client library does not retry one — it logs a warning and stops. No data
+         * is lost, since an unacknowledged message has its lease expire and is redelivered, which
+         * is the at-least-once contract; but a <em>persistent</em> failure such as a revoked
+         * permission becomes a silent reprocessing loop.
+         *
+         * <p><b>The timeout is the only detector.</b> On a subscription without exactly-once
+         * delivery the acknowledgement future completes with {@code SUCCESSFUL} on success and
+         * <em>never completes at all</em> on failure, so there is no error to observe — only the
+         * absence of a confirmation. Choose a value comfortably above a normal acknowledgement
+         * round trip.
+         *
+         * <p>The wait happens on the task thread when the checkpoint completes, so it delays
+         * processing by up to this long. That is the price of the confirmation.
+         *
+         * @param awaitAckConfirmation how long to wait for confirmation, positive
+         * @return this builder
+         */
+        public Builder awaitAckConfirmation(Duration awaitAckConfirmation) {
+            this.awaitAckConfirmation = checkPositive(awaitAckConfirmation, "awaitAckConfirmation");
             return this;
         }
 

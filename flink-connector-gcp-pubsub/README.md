@@ -16,7 +16,7 @@ sink and multi-subscription consumption on the source.
 | FLIP-27 at-least-once source; multi-subscription splits; checkpoint-bound acknowledgement; nack on close | Implemented (#79) |
 | Ordering mode preserving per-ordering-key order | Implemented (#79) |
 | Subscriber tuning options (flow control, ack extension, parallel pull, shutdown); missing-checkpoint detection | Implemented (#80) |
-| Deserialization failure policy; nack on collect failure; metrics | Planned (#80) |
+| Deserialization failure policy; nack on collect failure; metrics; acknowledgement confirmation | Implemented (#80) |
 | Subscription auto-creation; start position (seek) | Planned (#81) |
 | Acceptance and real-GCP integration tests | Planned (#82) |
 
@@ -234,6 +234,7 @@ is equivalent to not setting options at all.
 | `minDurationPerAckExtension` / `maxDurationPerAckExtension` | SDK default (adaptive, derived from observed acknowledgement latencies) |
 | `shutdownTimeout` (source-owned) | 5 s |
 | `maxRecordsPerFetch` (source-owned) | 1000 |
+| `awaitAckConfirmation` | unset — acknowledgement is fire-and-forget |
 | `firstCheckpointTimeout` (source-owned) | 10 min; `Duration.ZERO` disables the detector |
 
 **Flow control is the real bound on in-flight messages.** Because the source acknowledges only on
@@ -285,6 +286,64 @@ Raising the limits also raises what a failure replays and what a reader holds in
 byte limit should stay within the TaskManager's memory budget. `maxAckExtensionPeriod` is the other
 half: it must exceed the checkpoint interval by a comfortable margin (see
 [Delivery guarantees](#delivery-guarantees)).
+
+### Deserialization failures
+
+`deserializationFailurePolicy(...)` decides what happens to a message the schema cannot convert:
+
+| Policy | Behavior |
+|---|---|
+| `FAIL` (default) | Fails the job. The message stays unacknowledged, so it is redelivered — a permanently bad message fails the job again after every restart until it is removed or the schema is fixed |
+| `DROP` | Discards the message, acknowledging it immediately so it is not redelivered. Counted in `messagesDropped`, and logged at a decreasing rate so a bad batch cannot flood the log |
+
+Either way the failure is counted in Flink's standard `numRecordsInErrors`. `DROP` **drops data**, and
+a schema that collected records before failing keeps those — the emitted prefix has already reached
+the output and cannot be recalled.
+
+`NACK` (return the message so a subscription dead-letter policy eventually captures it) is
+deliberately **not** offered yet: without a dead-letter policy it is an infinite redelivery loop, and
+whether the subscription has one is only knowable from `GetSubscription`, which arrives with
+subscription auto-creation (#81).
+
+**Nack on emission failure.** If the failure comes from the output rather than from the schema, the
+message is fine and the job is about to fail anyway, so it is nacked at once for immediate
+redelivery instead of waiting out its acknowledgement deadline. Only *inline* downstream failures
+are visible: `SourceOutput.collect` runs the chained operators synchronously, so their exceptions
+propagate back into the source — but a failure past a shuffle boundary happens on another task and
+cannot be seen. Those messages are covered by the nack the reader performs when it closes.
+
+### Metrics
+
+Registered on the reader and enumerator metric groups:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `messagesReceived` | counter | messages handed over by the client library |
+| `messagesAcked` | counter | acknowledgements **requested** (see below) |
+| `messagesNacked` | counter | messages returned for redelivery |
+| `messagesDropped` | counter | messages discarded by `DROP` |
+| `pendingAcks` | gauge | messages received or emitted but not yet acknowledged |
+| `checkpointsPendingAck` | gauge | checkpoints taken but not yet completed |
+| `assignedSplits` / `unassignedReaders` | gauge (enumerator) | splits handed out; readers that got none |
+| `numRecordsInErrors` | counter (Flink standard) | deserialization failures |
+
+**`messagesAcked` counts acknowledgements requested, not confirmed.** On an ordinary subscription
+the client library sends them asynchronously and does not retry a failure — it logs a warning and
+stops. No data is lost (the lease expires and Pub/Sub redelivers, which is the at-least-once
+contract), but a *persistent* failure such as a revoked permission becomes a silent reprocessing
+loop that this counter will not show. Two ways to see it: set
+`awaitAckConfirmation(Duration)` to make each completed checkpoint wait for the server's
+confirmation and fail the job on timeout, or watch Cloud Monitoring's
+`subscription/oldest_unacked_message_age`, which grows monotonically when acknowledgements stop
+landing.
+
+`awaitAckConfirmation` costs latency — the wait happens on the task thread at checkpoint completion
+— and **the timeout is the only detector**: on a subscription without exactly-once delivery the
+acknowledgement future completes with `SUCCESSFUL` on success and never completes at all on
+failure, so there is no error to observe, only the absence of a confirmation.
+
+`pendingRecordsGauge` is deliberately **not** set. Pub/Sub exposes no backlog through the data
+plane, and a wrong lag number is worse than none.
 
 ### Delivery guarantees
 
@@ -458,7 +517,11 @@ reader against a fake client (multi-split drain, per-fetch caps, split removal, 
 close aggregating failures), the record emitter, the subscriber options (defaults, validation, SDK
 settings mapping with a drift guard pinned to the SDK's own maximum ack-extension default, and the
 single-connection forcing that the ordering guarantee rests on) and the missing-checkpoint detector
-against a hand-moved clock. Emulator integration tests run the production
+against a hand-moved clock, the deserialization failure policy (both values, including the records
+a partially failing schema already emitted), the nack-on-emission-failure path, the acknowledgement
+confirmation (confirmed, rejected and timed out) and the reader's checkpoint/acknowledgement wiring
+against a fake reader context, with the enumerator gauges asserted through Flink's own metric
+listener. Emulator integration tests run the production
 subscriber factory against the emulator and cover the acknowledgement round trip, nack-on-close
 producing immediate redelivery, and one reader consuming several subscriptions; a MiniCluster test
 drives the source through the public builder over two subscriptions under real checkpoints.

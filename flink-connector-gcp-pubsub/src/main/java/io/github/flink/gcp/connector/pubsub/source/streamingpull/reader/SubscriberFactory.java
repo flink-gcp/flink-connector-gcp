@@ -18,8 +18,8 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.pubsub.v1.MessageReceiver;
 import com.google.cloud.pubsub.v1.Subscriber;
+import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 import java.io.IOException;
@@ -36,13 +36,33 @@ import java.io.IOException;
 public interface SubscriberFactory {
 
     /**
-     * Creates a subscriber delivering the given subscription's messages to the receiver.
+     * Creates a subscriber delivering the given subscription's messages to the consumer.
      *
      * @param subscription the subscription to consume
-     * @param receiver invoked for every received message
+     * @param consumer invoked for every received message
      * @return the created, not yet started subscriber
      * @throws IOException if the subscriber cannot be created
      */
-    Subscriber create(SubscriptionDestination subscription, MessageReceiver receiver)
+    Subscriber create(SubscriptionDestination subscription, MessageConsumer consumer)
             throws IOException;
+
+    /**
+     * Receives a message together with the handle that settles it.
+     *
+     * <p>This stands in for the client library's two receiver interfaces, which differ only in
+     * whether settling returns a future. Which one backs a given subscriber follows from the
+     * subscriber options and is decided by the factory, so callers never see the difference.
+     */
+    @FunctionalInterface
+    @Internal
+    interface MessageConsumer {
+
+        /**
+         * Receives a message on one of the client library's callback threads.
+         *
+         * @param message the received message
+         * @param ackHandle settles the message
+         */
+        void receive(PubsubMessage message, AckHandle ackHandle);
+    }
 }

@@ -21,6 +21,8 @@ import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
+import org.apache.flink.metrics.testutils.MetricListener;
+import org.apache.flink.runtime.metrics.groups.InternalSplitEnumeratorMetricGroup;
 
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 
@@ -41,6 +43,12 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
     private final Map<Integer, ReaderInfo> registeredReaders = new HashMap<>();
     private final Map<Integer, List<SubscriptionSplit>> assignments = new HashMap<>();
     private final Set<Integer> readersToldNoMoreSplits = new LinkedHashSet<>();
+
+    /** Lets tests read back the gauges the enumerator registers. */
+    private final MetricListener metricListener = new MetricListener();
+
+    private final SplitEnumeratorMetricGroup metricGroup =
+            new InternalSplitEnumeratorMetricGroup(metricListener.getMetricGroup());
 
     FakeSplitEnumeratorContext(int parallelism) {
         this.parallelism = parallelism;
@@ -69,7 +77,7 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
 
     @Override
     public SplitEnumeratorMetricGroup metricGroup() {
-        return null;
+        return metricGroup;
     }
 
     @Override
@@ -124,5 +132,17 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
     public void runInCoordinatorThread(Runnable runnable) {
         throw new UnsupportedOperationException(
                 "The Pub/Sub enumerator runs on the coordinator thread already.");
+    }
+
+    /**
+     * Returns the current value of a gauge the enumerator registered. The extra path element is
+     * Flink's own: {@link InternalSplitEnumeratorMetricGroup} registers under an {@code
+     * "enumerator"} subgroup of whatever group it is given.
+     */
+    <T> T gauge(String name) {
+        return metricListener
+                .<T>getGauge("enumerator", name)
+                .orElseThrow(() -> new AssertionError("No gauge named " + name + " registered."))
+                .getValue();
     }
 }

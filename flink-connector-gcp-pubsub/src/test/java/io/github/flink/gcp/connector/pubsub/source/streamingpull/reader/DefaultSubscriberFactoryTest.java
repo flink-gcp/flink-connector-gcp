@@ -46,7 +46,8 @@ class DefaultSubscriberFactoryTest {
     private static final SubscriptionDestination SUBSCRIPTION =
             SubscriptionDestination.of("test-project", "test-subscription");
 
-    private static final MessageReceiver NO_OP_RECEIVER = (message, consumer) -> {};
+    private static final SubscriberFactory.MessageConsumer NO_OP_CONSUMER =
+            (message, ackHandle) -> {};
 
     @Test
     void flowControlOverlaysOnlySetLimitsOverSdkDefaults() {
@@ -157,11 +158,36 @@ class DefaultSubscriberFactoryTest {
 
         Subscriber subscriber =
                 new DefaultSubscriberFactory(options, OrderingMode.NONE, "localhost:1")
-                        .create(SUBSCRIPTION, NO_OP_RECEIVER);
+                        .create(SUBSCRIPTION, NO_OP_CONSUMER);
 
         assertThat(subscriber.getFlowControlSettings().getMaxOutstandingElementCount())
                 .isEqualTo(50);
         assertThat(field(subscriber, "numPullers")).isEqualTo(2);
+    }
+
+    @Test
+    void theReceiverFlavorFollowsAwaitAckConfirmation() throws Exception {
+        // The two SDK receiver interfaces are chosen when the subscriber is built and cannot be
+        // swapped afterwards, so this is what decides whether an acknowledgement can be confirmed.
+        Subscriber fireAndForget =
+                new DefaultSubscriberFactory(
+                                PubSubSubscriberOptions.defaults(),
+                                OrderingMode.NONE,
+                                "localhost:1")
+                        .create(SUBSCRIPTION, NO_OP_CONSUMER);
+        Subscriber confirming =
+                new DefaultSubscriberFactory(
+                                PubSubSubscriberOptions.builder()
+                                        .awaitAckConfirmation(Duration.ofSeconds(30))
+                                        .build(),
+                                OrderingMode.NONE,
+                                "localhost:1")
+                        .create(SUBSCRIPTION, NO_OP_CONSUMER);
+
+        assertThat(field(fireAndForget, "receiver")).isNotNull();
+        assertThat(field(fireAndForget, "receiverWithAckResponse")).isNull();
+        assertThat(field(confirming, "receiver")).isNull();
+        assertThat(field(confirming, "receiverWithAckResponse")).isNotNull();
     }
 
     @Test
@@ -175,8 +201,11 @@ class DefaultSubscriberFactoryTest {
 
     private static Subscriber.Builder configured(
             PubSubSubscriberOptions options, OrderingMode orderingMode) {
+        // Any receiver flavor will do here: configure() only writes settings, and which flavor a
+        // real subscriber gets is covered by receiverFlavorFollowsAwaitAckConfirmation.
         Subscriber.Builder builder =
-                Subscriber.newBuilder(SUBSCRIPTION.toSubscriptionPath(), NO_OP_RECEIVER);
+                Subscriber.newBuilder(
+                        SUBSCRIPTION.toSubscriptionPath(), (MessageReceiver) (m, reply) -> {});
         DefaultSubscriberFactory.configure(builder, options, orderingMode);
         return builder;
     }

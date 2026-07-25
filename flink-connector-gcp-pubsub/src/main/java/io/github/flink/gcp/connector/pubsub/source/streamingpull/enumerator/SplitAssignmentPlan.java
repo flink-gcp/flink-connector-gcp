@@ -114,6 +114,11 @@ public final class SplitAssignmentPlan {
         return splits;
     }
 
+    /** Returns how many splits the plan contains. */
+    public int splitCount() {
+        return splits.size();
+    }
+
     /**
      * Returns how many subtasks own no split. Splits are handed out round-robin from index 0, so
      * these are exactly the subtasks at or above the split count.
