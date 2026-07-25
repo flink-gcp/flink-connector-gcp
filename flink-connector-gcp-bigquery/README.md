@@ -241,9 +241,13 @@ daily load-job limit).
 **Scope (v1).** One fixed `destination(...)` per sink — the builder rejects
 `destinationResolver(...)` for this write method (dynamic destinations are a planned follow-up).
 The table schema is pinned when the stream is created: **mid-stream schema evolution is not
-supported** (no fingerprint refresh, no connector-driven schema updates; a schema mismatch fails
-the job with a hint — update the table and restart). Table auto-creation under
-`CREATE_IF_NEEDED` works at stream-creation time, with retries while table metadata propagates.
+supported** — no fingerprint refresh and no connector-driven schema updates, so the builder
+rejects an enabled `schemaUpdateOptions(...)` rather than accepting a setting this write method
+would silently ignore, and a schema mismatch fails the job with a hint (update the table out of
+band and restart). Table auto-creation under `CREATE_IF_NEEDED` *is* supported: it runs at
+stream-creation time — schema from the serializer, partitioning and clustering from
+`tableCreateOptions(...)` — with retries while table metadata propagates, and `CREATE_NEVER`
+fails immediately.
 
 **Error handling.** Serialization failures and oversized rows go to the `FailedRowHandler` before
 any stream exists, as in the at-least-once method. Server-side **row-level rejections are also

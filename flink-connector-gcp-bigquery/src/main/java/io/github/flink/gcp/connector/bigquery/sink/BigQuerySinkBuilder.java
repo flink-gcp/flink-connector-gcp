@@ -272,6 +272,14 @@ public class BigQuerySinkBuilder<T> {
                 "WriteMethod.STORAGE_API_EXACTLY_ONCE requires a fixed destination(...);"
                         + " destinationResolver(...) (dynamic destinations) is not supported for"
                         + " this write method yet.");
+        Preconditions.checkState(
+                writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
+                        || !schemaUpdateOptions.isEnabled(),
+                "schemaUpdateOptions(...) is not supported for"
+                        + " WriteMethod.STORAGE_API_EXACTLY_ONCE: a buffered stream's schema is"
+                        + " pinned when the stream is created, so the sink cannot evolve the"
+                        + " table schema mid-run. Update the table schema out of band and"
+                        + " restart the job, or use another write method.");
         switch (writeMethod) {
             case STORAGE_API_AT_LEAST_ONCE:
                 return new BigQueryDefaultStreamSink<>(config);
