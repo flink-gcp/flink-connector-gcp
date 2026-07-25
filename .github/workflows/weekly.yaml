@@ -42,15 +42,20 @@ jobs:
           # The floor passes no -Dflink.version, so what gets tested is whatever
           # the pom pins. Naming the version here too would just be a second
           # place to forget to update.
+          #
+          # On JDK 21 rather than 17, because floor-on-17 is what ci.yaml runs on
+          # every push and what binary_compat rebuilds below — floor-on-21 is the
+          # corner of the matrix nothing else reaches.
           - label: floor
-            jdk: '17'
+            jdk: '21'
           - label: ceiling
             jdk: '17'
             flink: '2.3.0'
           # Flink 2.x declares Java 11/17/21, but flink-connector-parent compiles
-          # to target 17, so 11 cannot run this connector. 21 is checked on the
-          # ceiling only: widening both axes at once multiplies emulator-backed
-          # integration-test minutes for little added signal.
+          # to target 17, so 11 cannot run this connector at all. 17 and 21 are
+          # spread across the range rather than run as a full cross product:
+          # doubling both axes multiplies emulator-backed integration-test
+          # minutes for little added signal.
           - label: ceiling
             jdk: '21'
             flink: '2.3.0'

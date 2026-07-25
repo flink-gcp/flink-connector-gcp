@@ -94,9 +94,10 @@ dependencies managed through `com.google.cloud:libraries-bom`.
 - The version matrix lives in `weekly.yaml`, not `ci.yaml`: per-PR CI stays single-version for
   latency, matching Flink's own `push_pr.yml` / `weekly.yml` split. Every matrix job checks out
   `github.sha` rather than a branch — a merge landing mid-run once made one version look like it
-  had silently skipped 60 tests. The floor row passes no `-Dflink.version`
-  so the pom stays the single source of truth for it. The `2.4-SNAPSHOT` row is upstream
-  early-warning and is deliberately **not** `continue-on-error`
+  had silently skipped 60 tests. The floor row passes no `-Dflink.version` at all, so the pom
+  stays the single source of truth for it, and it runs on JDK 21 because floor-on-17 is already
+  covered by `ci.yaml` and by `binary_compat`. The `2.4-SNAPSHOT` row is upstream early-warning
+  and is deliberately **not** `continue-on-error`
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual

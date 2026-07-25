@@ -14,7 +14,17 @@ set -euo pipefail
 find . -path '*/target/surefire-reports/TEST-*.xml' -print |
     sort |
     while IFS= read -r report; do
-        # The tests= attribute lives on the root <testsuite> element.
-        count=$(grep -m1 -o 'tests="[0-9]*"' "$report" | tr -dc '0-9')
-        printf '%s\t%s\n' "${report#./}" "${count:-0}"
+        # The tests= attribute lives on the root <testsuite> element. `|| true`
+        # so a report without it reaches the check below instead of dying here
+        # with set -e and no explanation.
+        count=$(grep -m1 -o 'tests="[0-9]*"' "$report" | tr -dc '0-9' || true)
+        if [ -z "$count" ]; then
+            # Deliberately fatal rather than defaulting to 0: a report truncated
+            # by a crashed fork would produce 0 on both sides of the comparison
+            # and so compare equal, turning the very failure this fingerprint
+            # exists to catch into a pass.
+            echo "$report has no tests= attribute; refusing to fingerprint a truncated report" >&2
+            exit 1
+        fi
+        printf '%s\t%s\n' "${report#./}" "$count"
     done
