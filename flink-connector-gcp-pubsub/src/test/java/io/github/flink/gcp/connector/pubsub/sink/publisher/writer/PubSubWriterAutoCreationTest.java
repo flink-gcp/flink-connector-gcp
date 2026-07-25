@@ -280,7 +280,13 @@ class PubSubWriterAutoCreationTest {
     }
 
     @Test
-    void aCascadeArrivingBeforeItsRootIsParkedNotFatal() throws Exception {
+    void theRepairedBatchIsRepublishedInPublishOrderWhateverOrderTheFailuresArriveIn()
+            throws Exception {
+        // Both halves of #78 in one test. Parking must not depend on something being parked
+        // already — the cascade's mail arrives first here, so that guard fails the job — and the
+        // batch must be sorted on publish sequence rather than appended in mail order, which would
+        // republish k1:second ahead of k1:first: a silent per-key ordering violation, and the
+        // reason parking a cascade cannot simply be made unconditional on its own.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
         SettableApiFuture<String> root = SettableApiFuture.create();
         SettableApiFuture<String> cascade = SettableApiFuture.create();
@@ -299,58 +305,47 @@ class PubSubWriterAutoCreationTest {
         writer.flush(false);
 
         assertThat(admin.created).containsExactly(TOPIC);
+        assertThat(publishedPayloads())
+                .containsExactly("k1:first", "k1:second", "k1:first", "k1:second");
     }
 
     @Test
-    void theRepairedBatchIsRepublishedInPublishOrderWhateverOrderTheFailuresArriveIn()
-            throws Exception {
-        // The batch is sorted on publish sequence, not on the order the failures were observed.
-        // Deriving it from mail order republishes k1:second ahead of k1:first — a silent per-key
-        // ordering violation, and the reason parking a cascade cannot simply be made unconditional.
+    void aRepairWaitsForACascadeThatIsStillInFlight() throws Exception {
+        // #78 names a second window — a cascade arriving after the repair emptied the buffer — but
+        // the in-flight accounting already closes it. repairPendingTopics opens with
+        // awaitInFlightBelow(1), which waits for inFlightMessages to reach zero, and the count
+        // drops only inside a failure or completion mail. So every publish's mail has run before a
+        // batch is snapshotted. Here the cascade's mail is deliberately left queued when the
+        // repair is triggered: without that drain the root is repaired alone and the cascade
+        // re-parks, forcing a second attempt — which is what resumedKeys counts.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
-        SettableApiFuture<String> root = SettableApiFuture.create();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
         SettableApiFuture<String> cascade = SettableApiFuture.create();
-        factory.enqueueFuture(root);
         factory.enqueueFuture(cascade);
         writer.write("k1:first", CONTEXT);
         writer.write("k1:second", CONTEXT);
-
-        cascade.setException(cascade());
-        root.setException(notFound());
         mailbox.drain();
 
+        cascade.setException(cascade());
+        writer.write("k1:third", CONTEXT);
         writer.flush(false);
 
-        assertThat(publishedPayloads())
-                .containsExactly("k1:first", "k1:second", "k1:first", "k1:second");
+        assertThat(publisher().resumedKeys).containsExactly("k1");
     }
 
     @Test
-    void aRepairCannotStartWhileACascadeIsStillInFlight() throws Exception {
-        // #78 names a second window — a cascade arriving after the repair emptied the buffer — but
-        // the in-flight accounting already closes it, and this pins that. repairPendingTopics
-        // opens with awaitInFlightBelow(1), which waits for inFlightMessages to reach zero, and
-        // the count drops only inside a failure or completion mail. So every publish's mail has
-        // run before a batch is snapshotted, and no mail can straggle in behind it. Here the
-        // second publish is left outstanding: the repair must wait for it rather than repairing
-        // the root alone.
-        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
-        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
-        SettableApiFuture<String> outstanding = SettableApiFuture.create();
-        factory.enqueueFuture(outstanding);
-        writer.write("k1:first", CONTEXT);
-        writer.write("k1:second", CONTEXT);
+    void aCascadeIsNotParkedUnderCreateNever() throws Exception {
+        // Parking is what leads to createTopic, so every parking branch — not only the NOT_FOUND
+        // one — has to honour the disposition, or CREATE_NEVER creates a topic.
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_NEVER);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        writer.write("k1:a", CONTEXT);
         mailbox.drain();
 
-        // Nothing is repaired while the second publish is unresolved.
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("ordering key");
         assertThat(admin.created).isEmpty();
-
-        outstanding.setException(cascade());
-        mailbox.drain();
-        writer.flush(false);
-
-        assertThat(publishedPayloads())
-                .containsExactly("k1:first", "k1:second", "k1:first", "k1:second");
     }
 
     @Test
@@ -449,6 +444,10 @@ class PubSubWriterAutoCreationTest {
 
         assertThat(publishedPayloads()).containsExactly("k1:a", "k1:a");
         assertThat(publisher().resumedKeys).containsExactly("k1");
+        // The surprising consequence, worth stating outright: it provokes a topic-creation RPC
+        // even though no NOT_FOUND was ever observed. Harmless — createTopic is idempotent, and
+        // CREATE_NEVER is excluded — but not something to discover by accident.
+        assertThat(admin.created).containsExactly(TOPIC);
     }
 
     @Test

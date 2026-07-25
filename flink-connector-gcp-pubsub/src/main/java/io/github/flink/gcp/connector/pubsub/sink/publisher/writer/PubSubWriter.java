@@ -47,8 +47,8 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.NavigableMap;
 import java.util.Set;
+import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
 
@@ -330,21 +330,24 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         inFlightMessages--;
         if (isRecoverableNotFound(throwable)) {
             state.pendingRetries.put(sequence, message);
-            state.lastNotFound = throwable;
+            state.repairCause = throwable;
             repairNeeded = true;
-        } else if (orderingEnabled && isCancellation(throwable)) {
+        } else if (repairsTopics() && orderingEnabled && isCancellation(throwable)) {
             // With ordering enabled the SDK cancels an ordering key's queued publishes after the
             // key's first failure, so a cancellation is never a root cause — it always trails a
             // failure of an earlier publish this writer issued for the same key. Park it for the
-            // repair unconditionally: whether the root was recoverable is not knowable here,
-            // because failure mails do not arrive in publish order (the SDK cancels queued work
-            // from its own thread, so a cascade's mail can be enqueued before its root's). It
-            // does not need to be knowable — repairPendingTopics drains the writer completely
-            // before repairing, and that drain surfaces a fatal root through checkAsyncError, so
-            // a cascade is only ever republished once the root is known to be recoverable.
-            // lastNotFound is deliberately untouched: the budget-exhaustion cause stays the real
-            // NOT_FOUND.
+            // repair without asking whether the root was recoverable, because that is not knowable
+            // here: failure mails do not arrive in publish order (the SDK cancels queued work from
+            // its own thread, so a cascade's mail can be enqueued before its root's). It does not
+            // need to be knowable — repairPendingTopics drains the writer completely before
+            // repairing, and that drain surfaces a fatal root through checkAsyncError, so a
+            // cascade is only ever republished once the root is known to be recoverable.
             state.pendingRetries.put(sequence, message);
+            // Only as a fallback: a real NOT_FOUND is the better budget-exhaustion cause, and it
+            // wins whether it is observed before or after its cascades.
+            if (state.repairCause == null) {
+                state.repairCause = throwable;
+            }
             repairNeeded = true;
         } else if (asyncError == null) {
             asyncError = wrapPublishFailure(state.destination, throwable);
@@ -407,10 +410,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 throw new IOException(
                         "Republishing to Pub/Sub topic "
                                 + state.destination
-                                + " kept failing with NOT_FOUND after creating the topic ("
+                                + " kept failing after creating the topic ("
                                 + attempt
                                 + " attempt(s)).",
-                        state.lastNotFound);
+                        state.repairCause);
             }
             long backoffMs = recoverySchedule.backoffMs(attempt);
             LOG.info(
@@ -441,8 +444,17 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     }
 
     private boolean isRecoverableNotFound(Throwable throwable) {
-        return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED
-                && isNotFound(throwable);
+        return repairsTopics() && isNotFound(throwable);
+    }
+
+    /**
+     * Whether a failed publish may be parked for a topic-creation repair at all. Under {@code
+     * CREATE_NEVER} nothing is ever parked, so nothing reaches {@link #repairDestination} and no
+     * topic is created — a guarantee that has to be checked on every parking branch, not only the
+     * {@code NOT_FOUND} one.
+     */
+    private boolean repairsTopics() {
+        return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED;
     }
 
     private IOException wrapPublishFailure(TopicDestination destination, Throwable throwable) {
@@ -507,10 +519,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
          * do not arrive in publish order, and republishing a key's messages out of order would
          * break the very guarantee the repair exists to preserve.
          */
-        private final NavigableMap<Long, PubsubMessage> pendingRetries = new TreeMap<>();
+        private final SortedMap<Long, PubsubMessage> pendingRetries = new TreeMap<>();
 
-        /** Retained as the cause of a budget-exhaustion failure. */
-        private Throwable lastNotFound;
+        /**
+         * Retained as the cause of a budget-exhaustion failure: the destination's {@code
+         * NOT_FOUND}, or a cascade cancellation when no {@code NOT_FOUND} was ever observed.
+         */
+        private Throwable repairCause;
 
         /**
          * Success mail shared by every publish to this destination, so the success path enqueues no

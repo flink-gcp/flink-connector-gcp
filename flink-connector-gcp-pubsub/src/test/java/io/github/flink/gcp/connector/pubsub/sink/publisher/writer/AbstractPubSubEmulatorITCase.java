@@ -79,6 +79,12 @@ abstract class AbstractPubSubEmulatorITCase {
 
     static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
+    /**
+     * How long a retrying pull waits for the messages it expects. Generous: it is only ever fully
+     * spent by a test that is about to fail anyway.
+     */
+    static final Duration PULL_DEADLINE = Duration.ofSeconds(30);
+
     /** Fast auto-creation recovery backoff so repair paths converge quickly on the emulator. */
     static final RetrySchedule EMULATOR_RECOVERY_SCHEDULE = new RetrySchedule(100, 1_000, 30, 0);
 
@@ -234,12 +240,6 @@ abstract class AbstractPubSubEmulatorITCase {
         }
         return payloads;
     }
-
-    /**
-     * How long a retrying pull waits for the messages it expects. Generous: it is only ever fully
-     * spent by a test that is about to fail anyway.
-     */
-    static final Duration PULL_DEADLINE = Duration.ofSeconds(30);
 
     /**
      * Pulls repeatedly until {@code expectedCount} distinct messages have been seen or the deadline
