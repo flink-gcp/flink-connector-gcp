@@ -16,33 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  # Spotless and checkstyle cover the Java sources, but nothing covered scripts/.
-  # actionlint shellchecks a workflow's inline `run:` blocks, so extracting a
-  # script into a file of its own would otherwise quietly drop it out of linting.
-  #
-  # A separate job so the result arrives in seconds instead of behind the
-  # integration tests, and so mise's shims never share a PATH with setup-java's
-  # JDK in the build job.
-  lint:
-    name: Lint shell scripts
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # install_args limits this to shellcheck — mise.toml also pins java, maven,
-      # hugo and go, none of which this job needs. The version comes from
-      # mise.toml, so it is declared once and is the same locally and here. The
-      # action caches the install by default, keyed partly on install_args.
-      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
-        with:
-          install_args: shellcheck
-
-      - name: Run shellcheck
-        run: |
-          shellcheck --version
-          shellcheck scripts/*.sh
-
+  # Java sources only: spotless and checkstyle run inside `verify`. scripts/ and
+  # anything else Maven does not see are linted by lint.yaml.
   build:
     name: Build and test
     runs-on: ubuntu-latest

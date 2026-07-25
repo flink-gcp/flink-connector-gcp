@@ -119,16 +119,26 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   red. `tools/` is not the place: it holds build tool *configuration*
   (`tools/maven/checkstyle.xml`), following Flink's layout. Two consequences: `scripts/` is
   outside the `.github/**` rat exclude, so each file carries the plain Apache-2.0 header, and
-  `ci.yaml` has a `lint` job running `shellcheck scripts/*.sh` — `actionlint` shellchecks inline
-  `run:` blocks, so extracting a script would otherwise drop it out of linting
-- **shellcheck's version is pinned in `mise.toml`**, and the `lint` job installs it from there
-  via `jdx/mise-action` with `install_args: shellcheck` (that argument matters: `mise.toml` also
+  `lint.yaml` shellchecks them — `actionlint` shellchecks inline `run:` blocks, so extracting a
+  script would otherwise drop it out of linting
+- **`lint.yaml` is where linters Maven does not run live** (spotless and checkstyle cover the
+  Java sources inside `verify`). Today that is shellcheck; `tofu fmt`/`validate` belongs here
+  when the OpenTofu persistent layer lands (#5). Separate from `ci.yaml` so results arrive in
+  seconds rather than behind the integration tests, and so mise's shims never share a `PATH`
+  with `setup-java`'s JDK. Its `paths` filter must list **every input to a lint, not just the
+  linted files** — `mise.toml` is in it because that is where the shellcheck version is pinned,
+  and skipping the lint on a version bump would skip it in the one change that most needs it
+- **shellcheck's version is pinned in `mise.toml`** and installed from there by
+  `jdx/mise-action` with `install_args: shellcheck` (that argument matters: `mise.toml` also
   pins java, maven, hugo and go, which the job does not need). Not the runner image's copy: that
   is 0.9.0 on ubuntu-24.04 and 0.11.0 on 26.04, so a `ubuntu-latest` migration would fail a pull
   request that changed nothing. Declared once, identical locally and in CI — prefer this shape
-  over `docs.yaml`'s `HUGO_VERSION`-plus-"keep in sync with mise.toml" duplication, which
-  predates it. A separate job so lint results do not queue behind the integration tests and so
-  mise's shims never share a `PATH` with `setup-java`'s JDK
+  for any new tool over `docs.yaml`'s `HUGO_VERSION`-plus-"keep in sync with mise.toml"
+  duplication, which predates it (#111 covers moving `docs.yaml` onto it)
+- `docs.yaml` and `lint.yaml` both carry `paths` filters, so a pull request touching neither
+  never reports them. Fine while they are optional — but **a required check that never reports
+  blocks a pull request forever**, so making either one required means dropping its filter or
+  adding a job that reports success when the filter does not match
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
