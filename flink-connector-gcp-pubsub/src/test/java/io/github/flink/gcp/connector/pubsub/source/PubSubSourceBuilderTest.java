@@ -163,6 +163,32 @@ class PubSubSourceBuilderTest {
     }
 
     @Test
+    void defaultsToFailingOnADeserializationFailure() {
+        assertThat(config(builder().subscription(SUB_A).build()).getDeserializationFailurePolicy())
+                .isEqualTo(DeserializationFailurePolicy.FAIL);
+    }
+
+    @Test
+    void carriesTheDeserializationFailurePolicyIntoTheConfig() {
+        assertThat(
+                        config(
+                                        builder()
+                                                .subscription(SUB_A)
+                                                .deserializationFailurePolicy(
+                                                        DeserializationFailurePolicy.DROP)
+                                                .build())
+                                .getDeserializationFailurePolicy())
+                .isEqualTo(DeserializationFailurePolicy.DROP);
+    }
+
+    @Test
+    void rejectsNullDeserializationFailurePolicy() {
+        assertThatThrownBy(() -> PubSubSource.<String>builder().deserializationFailurePolicy(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("deserializationFailurePolicy must not be null");
+    }
+
+    @Test
     void rejectsNullSubscriberOptions() {
         assertThatThrownBy(() -> PubSubSource.<String>builder().subscriberOptions(null))
                 .isInstanceOf(NullPointerException.class)

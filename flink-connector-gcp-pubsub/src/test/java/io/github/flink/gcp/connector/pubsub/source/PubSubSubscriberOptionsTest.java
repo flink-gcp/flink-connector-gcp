@@ -38,6 +38,7 @@ class PubSubSubscriberOptionsTest {
         assertThat(options.getMaxAckExtensionPeriod()).isNull();
         assertThat(options.getMinDurationPerAckExtension()).isNull();
         assertThat(options.getMaxDurationPerAckExtension()).isNull();
+        assertThat(options.getAwaitAckConfirmation()).isNull();
         assertThat(options.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(5));
         assertThat(options.getMaxRecordsPerFetch()).isEqualTo(1_000);
         assertThat(options.getFirstCheckpointTimeout()).isEqualTo(Duration.ofMinutes(10));
@@ -54,6 +55,7 @@ class PubSubSubscriberOptionsTest {
         assertThat(options.getMaxAckExtensionPeriod()).isEqualTo(Duration.ofMinutes(30));
         assertThat(options.getMinDurationPerAckExtension()).isEqualTo(Duration.ofSeconds(15));
         assertThat(options.getMaxDurationPerAckExtension()).isEqualTo(Duration.ofSeconds(60));
+        assertThat(options.getAwaitAckConfirmation()).isEqualTo(Duration.ofSeconds(20));
         assertThat(options.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(3));
         assertThat(options.getMaxRecordsPerFetch()).isEqualTo(250);
         assertThat(options.getFirstCheckpointTimeout()).isEqualTo(Duration.ofMinutes(2));
@@ -81,6 +83,9 @@ class PubSubSubscriberOptionsTest {
         assertThatThrownBy(() -> builder.maxDurationPerAckExtension(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("maxDurationPerAckExtension");
+        assertThatThrownBy(() -> builder.awaitAckConfirmation(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("awaitAckConfirmation");
         assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("shutdownTimeout");
@@ -154,6 +159,7 @@ class PubSubSubscriberOptionsTest {
                 .maxAckExtensionPeriod(Duration.ofMinutes(30))
                 .minDurationPerAckExtension(Duration.ofSeconds(15))
                 .maxDurationPerAckExtension(Duration.ofSeconds(60))
+                .awaitAckConfirmation(Duration.ofSeconds(20))
                 .shutdownTimeout(Duration.ofSeconds(3))
                 .maxRecordsPerFetch(250)
                 .firstCheckpointTimeout(Duration.ofMinutes(2))

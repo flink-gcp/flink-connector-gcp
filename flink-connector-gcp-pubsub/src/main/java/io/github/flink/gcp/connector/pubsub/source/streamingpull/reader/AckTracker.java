@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.pubsub.v1.AckReplyConsumer;
-
 /**
  * Tracks the acknowledgement lifecycle of received Pub/Sub messages, which is what makes the source
  * at-least-once.
@@ -36,6 +34,10 @@ import com.google.cloud.pubsub.v1.AckReplyConsumer;
  * <p>Only step 4 tells Pub/Sub the message is done, so a failure at any earlier point leaves the
  * message unacknowledged and Pub/Sub redelivers it. Messages still pending or staged when the
  * reader closes are nacked instead of left to expire, so redelivery is immediate.
+ *
+ * <p>Two paths settle a pending message at once instead: a message the deserialization failure
+ * policy drops, and a message whose emission failed downstream. Neither produced records any
+ * checkpoint could cover.
  *
  * <p>Every operation is keyed by split. Two subscriptions of the same topic deliver the same
  * message id to the same reader, so a reader-wide message-id map would silently drop one of the two
@@ -56,9 +58,9 @@ public interface AckTracker {
      *
      * @param splitId the split the message was received on
      * @param messageId the Pub/Sub message id
-     * @param ackReplyConsumer the acknowledgement handle for this delivery
+     * @param ackHandle the handle settling this delivery
      */
-    void addPendingAck(String splitId, String messageId, AckReplyConsumer ackReplyConsumer);
+    void addPendingAck(String splitId, String messageId, AckHandle ackHandle);
 
     /**
      * Marks a pending message as emitted downstream, making it eligible for the next checkpoint.
@@ -68,6 +70,26 @@ public interface AckTracker {
      * @param messageId the Pub/Sub message id
      */
     void stagePendingAck(String splitId, String messageId);
+
+    /**
+     * Acknowledges a pending message immediately, without waiting for a checkpoint. Used for
+     * messages the deserialization failure policy drops: they produced no records, so no checkpoint
+     * covers them and withholding the acknowledgement would only delay redelivery of a message that
+     * is meant to be gone. Does nothing if the message is not pending.
+     *
+     * @param splitId the split the message was received on
+     * @param messageId the Pub/Sub message id
+     */
+    void ackPendingImmediately(String splitId, String messageId);
+
+    /**
+     * Nacks a pending message immediately, so Pub/Sub redelivers it. Used when emitting the
+     * message's records failed downstream. Does nothing if the message is not pending.
+     *
+     * @param splitId the split the message was received on
+     * @param messageId the Pub/Sub message id
+     */
+    void nackPendingImmediately(String splitId, String messageId);
 
     /**
      * Binds everything staged so far to the given checkpoint. Called while the checkpoint is taken,
@@ -83,8 +105,9 @@ public interface AckTracker {
      * notification is lost is acknowledged by the next successful one.
      *
      * @param checkpointId the completed checkpoint
+     * @throws Exception if acknowledgement confirmation was requested and did not arrive in time
      */
-    void notifyCheckpointComplete(long checkpointId);
+    void notifyCheckpointComplete(long checkpointId) throws Exception;
 
     /**
      * Nacks and forgets every message of the given split, in all states. Pub/Sub redelivers them

@@ -57,7 +57,7 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
                 createTopicAndSubscription("reader-ack", ACK_DEADLINE_SECONDS);
         publish("reader-ack", "m1", "m2", "m3");
         SubscriptionSplit split = new SubscriptionSplit(subscription, "0");
-        PubSubAckTracker ackTracker = new PubSubAckTracker();
+        PubSubAckTracker ackTracker = newTracker();
 
         try (PubSubSplitReader reader = reader(ackTracker)) {
             reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split)));
@@ -83,7 +83,7 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
                 createTopicAndSubscription("reader-nack", ACK_DEADLINE_SECONDS);
         publish("reader-nack", "m1", "m2");
         SubscriptionSplit split = new SubscriptionSplit(subscription, "0");
-        PubSubAckTracker ackTracker = new PubSubAckTracker();
+        PubSubAckTracker ackTracker = newTracker();
 
         try (PubSubSplitReader reader = reader(ackTracker)) {
             reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split)));
@@ -109,7 +109,7 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
         publish("reader-multi-a", "a1", "a2");
         publish("reader-multi-b", "b1");
 
-        try (PubSubSplitReader reader = reader(new PubSubAckTracker())) {
+        try (PubSubSplitReader reader = reader(newTracker())) {
             reader.handleSplitsChanges(
                     new SplitsAddition<>(
                             List.of(
@@ -133,7 +133,7 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
 
     private static List<PubsubMessage> receiveWithFreshReader(
             SubscriptionSplit split, Duration timeout) throws Exception {
-        try (PubSubSplitReader reader = reader(new PubSubAckTracker())) {
+        try (PubSubSplitReader reader = reader(newTracker())) {
             reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split)));
             return fetchUntil(reader, Integer.MAX_VALUE, timeout);
         }
@@ -175,5 +175,9 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
         return messages.stream()
                 .map(message -> message.getData().toString(StandardCharsets.UTF_8))
                 .collect(Collectors.toList());
+    }
+
+    private static PubSubAckTracker newTracker() {
+        return new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
     }
 }

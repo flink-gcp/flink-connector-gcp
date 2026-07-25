@@ -44,6 +44,7 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.MissingC
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubAckTracker;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubRecordEmitter;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSourceReader;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSourceReaderMetrics;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSplitReader;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.SubscriberFactory;
 import org.slf4j.Logger;
@@ -109,7 +110,10 @@ public class PubSubStreamingPullSource<T>
             LOG.warn(ackExtensionWarning);
         }
 
-        PubSubAckTracker ackTracker = new PubSubAckTracker();
+        PubSubSourceReaderMetrics metrics = new PubSubSourceReaderMetrics(context.metricGroup());
+        PubSubAckTracker ackTracker =
+                new PubSubAckTracker(metrics, options.getAwaitAckConfirmation());
+        metrics.bindAckTracker(ackTracker);
         MissingCheckpointDetector checkpointDetector =
                 new MissingCheckpointDetector(
                         options.getFirstCheckpointTimeout(), ackTracker::outstandingAckCount);
@@ -122,7 +126,11 @@ public class PubSubStreamingPullSource<T>
                                 subscriberFactory, ackTracker, options, checkpointDetector);
         return new PubSubSourceReader<>(
                 splitReaderSupplier,
-                new PubSubRecordEmitter<>(deserializationSchema, ackTracker),
+                new PubSubRecordEmitter<>(
+                        deserializationSchema,
+                        ackTracker,
+                        config.getDeserializationFailurePolicy(),
+                        metrics),
                 context.getConfiguration(),
                 context,
                 ackTracker,

@@ -159,4 +159,43 @@ class PubSubSplitEnumeratorTest {
     private static List<SubscriptionDestination> subscriptionsOf(List<SubscriptionSplit> splits) {
         return splits.stream().map(SubscriptionSplit::getSubscription).collect(Collectors.toList());
     }
+
+    @Test
+    void reportsHowManySplitsAreAssignedAndHowManyReadersGotNothing() {
+        // Two subscriptions under PER_KEY give two splits, so the third subtask gets nothing.
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(3);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(
+                        context, List.of(SUB_A, SUB_B), OrderingMode.PER_KEY, null);
+        enumerator.start();
+
+        assertThat(context.<Integer>gauge("assignedSplits")).isZero();
+        assertThat(context.<Long>gauge("unassignedSplits")).isEqualTo(2L);
+
+        context.registerReader(0);
+        enumerator.addReader(0);
+        context.registerReader(1);
+        enumerator.addReader(1);
+        context.registerReader(2);
+        enumerator.addReader(2);
+
+        assertThat(context.<Integer>gauge("assignedSplits")).isEqualTo(2);
+        assertThat(context.<Integer>gauge("unassignedReaders")).isEqualTo(1);
+        assertThat(context.<Long>gauge("unassignedSplits")).isZero();
+    }
+
+    @Test
+    void returnedSplitsAreCountedBackAsUnassigned() {
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, List.of(SUB_A), OrderingMode.NONE, null);
+        enumerator.start();
+        context.registerReader(0);
+        enumerator.addReader(0);
+
+        enumerator.addSplitsBack(context.assignedSplits(0), 0);
+
+        assertThat(context.<Integer>gauge("assignedSplits")).isZero();
+        assertThat(context.<Long>gauge("unassignedSplits")).isEqualTo(1L);
+    }
 }

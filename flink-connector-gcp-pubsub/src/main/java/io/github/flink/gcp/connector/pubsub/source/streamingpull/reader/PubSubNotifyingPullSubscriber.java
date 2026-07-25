@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import org.apache.flink.annotation.Internal;
 
 import com.google.api.core.ApiService;
-import com.google.cloud.pubsub.v1.AckReplyConsumer;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
@@ -129,14 +128,14 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     /** Receives a message from the client library, on one of its callback threads. */
-    private void receiveMessage(PubsubMessage message, AckReplyConsumer ackReplyConsumer) {
+    private void receiveMessage(PubsubMessage message, AckHandle ackHandle) {
         synchronized (this) {
             if (closed || permanentError != null) {
                 // Nack rather than drop: the message must go back for redelivery immediately.
-                ackReplyConsumer.nack();
+                ackHandle.nack();
                 return;
             }
-            ackTracker.addPendingAck(splitId, message.getMessageId(), ackReplyConsumer);
+            ackTracker.addPendingAck(splitId, message.getMessageId(), ackHandle);
             messages.addLast(message);
         }
         dataAvailableSignal.run();

@@ -16,9 +16,15 @@
 
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
+import com.google.cloud.pubsub.v1.AckResponse;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link PubSubAckTracker}, which defines the source's at-least-once guarantee. */
 class PubSubAckTrackerTest {
@@ -26,11 +32,11 @@ class PubSubAckTrackerTest {
     private static final String SPLIT_A = "split-a";
     private static final String SPLIT_B = "split-b";
 
-    private final PubSubAckTracker tracker = new PubSubAckTracker();
+    private final PubSubAckTracker tracker = newTracker();
 
     @Test
-    void messageIsAcknowledgedOnlyWhenTheCheckpointCoveringItsEmissionCompletes() {
-        RecordingAckReplyConsumer message = new RecordingAckReplyConsumer("m1");
+    void messageIsAcknowledgedOnlyWhenTheCheckpointCoveringItsEmissionCompletes() throws Exception {
+        RecordingAckHandle message = new RecordingAckHandle("m1");
         tracker.addPendingAck(SPLIT_A, "m1", message);
 
         // Received but not emitted: a checkpoint must not acknowledge it.
@@ -47,8 +53,8 @@ class PubSubAckTrackerTest {
     }
 
     @Test
-    void emittedMessageIsNotAcknowledgedUntilItsCheckpointIsTaken() {
-        RecordingAckReplyConsumer message = new RecordingAckReplyConsumer("m1");
+    void emittedMessageIsNotAcknowledgedUntilItsCheckpointIsTaken() throws Exception {
+        RecordingAckHandle message = new RecordingAckHandle("m1");
         tracker.addPendingAck(SPLIT_A, "m1", message);
         tracker.stagePendingAck(SPLIT_A, "m1");
 
@@ -59,9 +65,9 @@ class PubSubAckTrackerTest {
     }
 
     @Test
-    void completingACheckpointSweepsEveryEarlierOneSoAbortedCheckpointsHeal() {
-        RecordingAckReplyConsumer first = new RecordingAckReplyConsumer("m1");
-        RecordingAckReplyConsumer second = new RecordingAckReplyConsumer("m2");
+    void completingACheckpointSweepsEveryEarlierOneSoAbortedCheckpointsHeal() throws Exception {
+        RecordingAckHandle first = new RecordingAckHandle("m1");
+        RecordingAckHandle second = new RecordingAckHandle("m2");
         stageOn(SPLIT_A, "m1", first);
         tracker.addCheckpoint(1L);
         stageOn(SPLIT_A, "m2", second);
@@ -77,8 +83,8 @@ class PubSubAckTrackerTest {
     }
 
     @Test
-    void repeatingACheckpointCompletionIsHarmless() {
-        RecordingAckReplyConsumer message = new RecordingAckReplyConsumer("m1");
+    void repeatingACheckpointCompletionIsHarmless() throws Exception {
+        RecordingAckHandle message = new RecordingAckHandle("m1");
         stageOn(SPLIT_A, "m1", message);
         tracker.addCheckpoint(1L);
 
@@ -90,10 +96,10 @@ class PubSubAckTrackerTest {
     }
 
     @Test
-    void nackingASplitReleasesItsMessagesInEveryState() {
-        RecordingAckReplyConsumer pending = new RecordingAckReplyConsumer("pending");
-        RecordingAckReplyConsumer staged = new RecordingAckReplyConsumer("staged");
-        RecordingAckReplyConsumer checkpointed = new RecordingAckReplyConsumer("checkpointed");
+    void nackingASplitReleasesItsMessagesInEveryState() throws Exception {
+        RecordingAckHandle pending = new RecordingAckHandle("pending");
+        RecordingAckHandle staged = new RecordingAckHandle("staged");
+        RecordingAckHandle checkpointed = new RecordingAckHandle("checkpointed");
         stageOn(SPLIT_A, "checkpointed", checkpointed);
         tracker.addCheckpoint(1L);
         stageOn(SPLIT_A, "staged", staged);
@@ -108,9 +114,9 @@ class PubSubAckTrackerTest {
     }
 
     @Test
-    void nackingOneSplitLeavesTheOtherSplitsUntouched() {
-        RecordingAckReplyConsumer onA = new RecordingAckReplyConsumer("a");
-        RecordingAckReplyConsumer onB = new RecordingAckReplyConsumer("b");
+    void nackingOneSplitLeavesTheOtherSplitsUntouched() throws Exception {
+        RecordingAckHandle onA = new RecordingAckHandle("a");
+        RecordingAckHandle onB = new RecordingAckHandle("b");
         stageOn(SPLIT_A, "m", onA);
         stageOn(SPLIT_B, "m", onB);
         tracker.addCheckpoint(1L);
@@ -125,10 +131,10 @@ class PubSubAckTrackerTest {
     }
 
     @Test
-    void sameMessageIdOnDifferentSplitsIsTrackedSeparately() {
+    void sameMessageIdOnDifferentSplitsIsTrackedSeparately() throws Exception {
         // Two subscriptions of one topic deliver the same message id to the same reader.
-        RecordingAckReplyConsumer onA = new RecordingAckReplyConsumer("a");
-        RecordingAckReplyConsumer onB = new RecordingAckReplyConsumer("b");
+        RecordingAckHandle onA = new RecordingAckHandle("a");
+        RecordingAckHandle onB = new RecordingAckHandle("b");
         tracker.addPendingAck(SPLIT_A, "shared-id", onA);
         tracker.addPendingAck(SPLIT_B, "shared-id", onB);
 
@@ -145,9 +151,9 @@ class PubSubAckTrackerTest {
     }
 
     @Test
-    void redeliveryOfAnUnsettledMessageNacksTheSupersededHandle() {
-        RecordingAckReplyConsumer firstDelivery = new RecordingAckReplyConsumer("first");
-        RecordingAckReplyConsumer redelivery = new RecordingAckReplyConsumer("redelivery");
+    void redeliveryOfAnUnsettledMessageNacksTheSupersededHandle() throws Exception {
+        RecordingAckHandle firstDelivery = new RecordingAckHandle("first");
+        RecordingAckHandle redelivery = new RecordingAckHandle("redelivery");
         tracker.addPendingAck(SPLIT_A, "m1", firstDelivery);
 
         tracker.addPendingAck(SPLIT_A, "m1", redelivery);
@@ -160,7 +166,7 @@ class PubSubAckTrackerTest {
     }
 
     @Test
-    void stagingAnUnknownMessageIsIgnored() {
+    void stagingAnUnknownMessageIsIgnored() throws Exception {
         tracker.stagePendingAck(SPLIT_A, "never-received");
         tracker.addCheckpoint(1L);
         tracker.notifyCheckpointComplete(1L);
@@ -168,8 +174,104 @@ class PubSubAckTrackerTest {
         assertThat(tracker.outstandingAckCount()).isZero();
     }
 
-    private void stageOn(String splitId, String messageId, RecordingAckReplyConsumer consumer) {
+    private void stageOn(String splitId, String messageId, RecordingAckHandle consumer) {
         tracker.addPendingAck(splitId, messageId, consumer);
         tracker.stagePendingAck(splitId, messageId);
+    }
+
+    private static PubSubAckTracker newTracker() {
+        return new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
+    }
+
+    @Test
+    void awaitingConfirmationSucceedsWhenTheServerConfirms() throws Exception {
+        TestReaderMetrics testMetrics = new TestReaderMetrics();
+        PubSubAckTracker awaiting =
+                new PubSubAckTracker(testMetrics.metrics(), Duration.ofSeconds(30));
+        RecordingAckHandle handle = RecordingAckHandle.withConfirmation("m1");
+        awaiting.addPendingAck(SPLIT_A, "m1", handle);
+        awaiting.stagePendingAck(SPLIT_A, "m1");
+        awaiting.addCheckpoint(1L);
+        handle.confirm(AckResponse.SUCCESSFUL);
+
+        awaiting.notifyCheckpointComplete(1L);
+
+        assertThat(handle.isAcked()).isTrue();
+        assertThat(testMetrics.counter("messagesAcked")).isEqualTo(1);
+    }
+
+    @Test
+    void awaitingConfirmationFailsTheCheckpointOnTimeout() {
+        // On a subscription without exactly-once delivery a failed acknowledgement never completes
+        // its future, so the timeout is the only signal there is.
+        PubSubAckTracker awaiting =
+                new PubSubAckTracker(new TestReaderMetrics().metrics(), Duration.ofMillis(50));
+        RecordingAckHandle handle = RecordingAckHandle.withConfirmation("m1");
+        awaiting.addPendingAck(SPLIT_A, "m1", handle);
+        awaiting.stagePendingAck(SPLIT_A, "m1");
+        awaiting.addCheckpoint(1L);
+
+        assertThatThrownBy(() -> awaiting.notifyCheckpointComplete(1L))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("did not confirm the acknowledgements of checkpoint 1")
+                .hasMessageContaining("never completes its future");
+    }
+
+    @Test
+    void awaitingConfirmationFailsOnARejectedAcknowledgement() {
+        PubSubAckTracker awaiting =
+                new PubSubAckTracker(new TestReaderMetrics().metrics(), Duration.ofSeconds(30));
+        RecordingAckHandle handle = RecordingAckHandle.withConfirmation("m1");
+        awaiting.addPendingAck(SPLIT_A, "m1", handle);
+        awaiting.stagePendingAck(SPLIT_A, "m1");
+        awaiting.addCheckpoint(1L);
+        handle.confirm(AckResponse.PERMISSION_DENIED);
+
+        assertThatThrownBy(() -> awaiting.notifyCheckpointComplete(1L))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("PERMISSION_DENIED");
+    }
+
+    @Test
+    void immediateSettlementRemovesTheMessageFromTheLifecycle() throws Exception {
+        RecordingAckHandle dropped = new RecordingAckHandle("dropped");
+        RecordingAckHandle failed = new RecordingAckHandle("failed");
+        tracker.addPendingAck(SPLIT_A, "dropped", dropped);
+        tracker.addPendingAck(SPLIT_A, "failed", failed);
+
+        tracker.ackPendingImmediately(SPLIT_A, "dropped");
+        tracker.nackPendingImmediately(SPLIT_A, "failed");
+
+        assertThat(dropped.isAcked()).isTrue();
+        assertThat(failed.isNacked()).isTrue();
+        assertThat(tracker.outstandingAckCount()).isZero();
+
+        // Gone from the tracker, so nackSplit cannot settle them a second time.
+        tracker.nackSplit(SPLIT_A);
+        assertThat(dropped.isNacked()).isFalse();
+    }
+
+    @Test
+    void immediateSettlementIgnoresAnUnknownMessage() {
+        assertThatCode(() -> tracker.ackPendingImmediately(SPLIT_A, "absent"))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> tracker.nackPendingImmediately(SPLIT_A, "absent"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void tracksHowManyCheckpointsAreWaitingToBeAcknowledged() throws Exception {
+        tracker.addPendingAck(SPLIT_A, "m1", new RecordingAckHandle("m1"));
+        tracker.stagePendingAck(SPLIT_A, "m1");
+        tracker.addCheckpoint(1L);
+        tracker.addPendingAck(SPLIT_A, "m2", new RecordingAckHandle("m2"));
+        tracker.stagePendingAck(SPLIT_A, "m2");
+        tracker.addCheckpoint(2L);
+
+        assertThat(tracker.checkpointsPendingAckCount()).isEqualTo(2);
+
+        tracker.notifyCheckpointComplete(2L);
+
+        assertThat(tracker.checkpointsPendingAckCount()).isZero();
     }
 }

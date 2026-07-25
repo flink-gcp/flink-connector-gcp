@@ -20,6 +20,8 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
+import org.apache.flink.metrics.Gauge;
+import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
@@ -52,12 +54,21 @@ public class PubSubSplitEnumerator
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubSplitEnumerator.class);
 
+    static final String ASSIGNED_SPLITS = "assignedSplits";
+    static final String UNASSIGNED_READERS = "unassignedReaders";
+
     private final SplitEnumeratorContext<SubscriptionSplit> context;
     private final List<SubscriptionDestination> subscriptions;
     private final OrderingMode orderingMode;
     @Nullable private final PubSubEnumeratorState restoredState;
 
     private SplitAssignmentPlan plan;
+
+    /** Splits handed out so far; grows to the plan's size as readers register. */
+    private int assignedSplits;
+
+    /** Readers that registered and were told there is nothing for them. */
+    private int unassignedReaders;
 
     /**
      * Creates the enumerator.
@@ -91,6 +102,7 @@ public class PubSubSplitEnumerator
         plan =
                 SplitAssignmentPlan.create(
                         subscriptions, orderingMode, context.currentParallelism());
+        registerMetrics();
         if (plan.idleSubtaskCount() > 0) {
             LOG.warn(
                     "Ordering mode {} assigns one split per subscription, so {} of the {} source"
@@ -104,10 +116,26 @@ public class PubSubSplitEnumerator
         }
     }
 
+    /**
+     * Registers the enumerator gauges. {@code assignedSplits} and {@code unassignedReaders} both
+     * settle once every reader has registered, so a value that stays below the plan's split count
+     * means a subtask never came back.
+     */
+    private void registerMetrics() {
+        SplitEnumeratorMetricGroup metricGroup = context.metricGroup();
+        if (metricGroup == null) {
+            return;
+        }
+        metricGroup.gauge(ASSIGNED_SPLITS, (Gauge<Integer>) () -> assignedSplits);
+        metricGroup.gauge(UNASSIGNED_READERS, (Gauge<Integer>) () -> unassignedReaders);
+        metricGroup.setUnassignedSplitsGauge(() -> (long) (plan.splitCount() - assignedSplits));
+    }
+
     @Override
     public void addReader(int subtaskId) {
         List<SubscriptionSplit> splits = plan.splitsFor(subtaskId);
         if (splits.isEmpty()) {
+            unassignedReaders++;
             // Nothing will ever arrive for this subtask, so let it finish instead of holding the
             // watermark back for the lifetime of the job.
             LOG.info(
@@ -117,11 +145,13 @@ public class PubSubSplitEnumerator
             return;
         }
         LOG.info("Assigning splits {} to source subtask {}.", splits, subtaskId);
+        assignedSplits += splits.size();
         context.assignSplits(new SplitsAssignment<>(Collections.singletonMap(subtaskId, splits)));
     }
 
     @Override
     public void addSplitsBack(List<SubscriptionSplit> splits, int subtaskId) {
+        assignedSplits -= splits.size();
         // Splits carry no progress state and the assignment is deterministic, so the returned
         // splits need no bookkeeping: the restarted subtask re-registers through addReader and is
         // handed exactly the same splits again.

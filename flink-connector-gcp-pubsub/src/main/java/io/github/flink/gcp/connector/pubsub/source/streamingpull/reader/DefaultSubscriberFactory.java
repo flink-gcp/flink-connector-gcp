@@ -22,6 +22,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import com.google.api.gax.batching.FlowControlSettings;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.pubsub.v1.MessageReceiver;
+import com.google.cloud.pubsub.v1.MessageReceiverWithAckResponse;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.cloud.pubsub.v1.SubscriberShutdownSettings;
 import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
@@ -92,11 +93,10 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
     }
 
     @Override
-    public Subscriber create(SubscriptionDestination subscription, MessageReceiver receiver)
+    public Subscriber create(SubscriptionDestination subscription, MessageConsumer consumer)
             throws IOException {
         try {
-            Subscriber.Builder builder =
-                    Subscriber.newBuilder(subscription.toSubscriptionPath(), receiver);
+            Subscriber.Builder builder = newBuilder(subscription, consumer);
             configure(builder, options, orderingMode);
             if (emulatorEndpoint != null) {
                 builder.setChannelProvider(
@@ -111,6 +111,26 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
             throw new IOException(
                     "Failed to create the Pub/Sub subscriber for subscription " + subscription, e);
         }
+    }
+
+    /**
+     * Starts a builder on the receiver flavor the options call for. The two flavors are separate
+     * SDK interfaces, selected here and nowhere else — which is why everything above this class
+     * settles messages through {@link AckHandle}.
+     */
+    private Subscriber.Builder newBuilder(
+            SubscriptionDestination subscription, MessageConsumer consumer) {
+        String path = subscription.toSubscriptionPath();
+        if (options.getAwaitAckConfirmation() != null) {
+            return Subscriber.newBuilder(
+                    path,
+                    (MessageReceiverWithAckResponse)
+                            (message, reply) -> consumer.receive(message, AckHandle.of(reply)));
+        }
+        return Subscriber.newBuilder(
+                path,
+                (MessageReceiver)
+                        (message, reply) -> consumer.receive(message, AckHandle.of(reply)));
     }
 
     /** Applies the options onto the subscriber builder; unset knobs are left at SDK defaults. */
