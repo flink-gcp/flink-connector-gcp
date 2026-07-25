@@ -412,13 +412,15 @@ public final class PubSubSubscriberOptions implements Serializable {
 
         /**
          * Sets how long a reader holding unacknowledged messages waits for its first checkpoint
-         * before failing the job. Defaults to 10 min; {@link Duration#ZERO} disables the detector.
+         * before failing the job, measured from the reader's first split assignment. Defaults to 10
+         * min; {@link Duration#ZERO} disables the detector.
          *
          * <p>The source acknowledges only on checkpoint completion, so a job running without
          * checkpointing never acknowledges anything and stalls silently once flow control fills.
          * Raise this above the checkpoint interval for jobs that checkpoint less often than every
          * 10 min. See {@code MissingCheckpointDetector} for why the guard measures elapsed time
-         * rather than reading the checkpoint configuration.
+         * rather than reading the checkpoint configuration, and why it measures it from the first
+         * assignment rather than from the reader's creation.
          *
          * @param firstCheckpointTimeout the detector budget, non-negative; zero disables it
          * @return this builder

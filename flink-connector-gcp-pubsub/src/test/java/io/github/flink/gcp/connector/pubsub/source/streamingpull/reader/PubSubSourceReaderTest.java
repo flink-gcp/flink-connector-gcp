@@ -112,6 +112,8 @@ class PubSubSourceReaderTest {
     void takingACheckpointRetiresTheMissingCheckpointDetector() throws Exception {
         MissingCheckpointDetector detector =
                 new MissingCheckpointDetector(Duration.ofMinutes(10), () -> 1);
+        // The split reader would do this on its first assignment; nothing is armed until it does.
+        detector.startBudget();
         try (PubSubSourceReader<String> reader = reader(detector)) {
             assertThat(detector.parkTimeoutMillis()).isPositive();
 

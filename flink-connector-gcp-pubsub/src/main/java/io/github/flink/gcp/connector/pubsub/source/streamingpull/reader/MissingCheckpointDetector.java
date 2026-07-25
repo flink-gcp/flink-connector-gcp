@@ -46,8 +46,19 @@ import java.util.function.LongSupplier;
  * bounds that park while the detector is armed, and returns zero once a checkpoint has been taken —
  * so a healthy reader parks indefinitely, exactly as it did before this class existed.
  *
- * <p>{@link #checkpointTaken()} runs on the reader's task thread and everything else on the fetcher
- * thread, which is what the one volatile field is for.
+ * <p>The budget starts at {@link #startBudget()} rather than at construction, because "waited too
+ * long for a first checkpoint" is only meaningful over an interval in which there was something to
+ * checkpoint. A reader is created before the enumerator assigns it anything, so a budget started in
+ * the constructor is partly spent before the reader can do any work. An unstarted detector is
+ * therefore never armed: a reader that is assigned no split at all never fires and parks
+ * indefinitely.
+ *
+ * <p>{@link #checkpointTaken()} runs on the reader's task thread, which is what the one volatile
+ * field is for. Everything else — including the {@link #startBudget()} call the split reader makes
+ * from {@code handleSplitsChanges} — runs on the fetcher thread: {@code SplitFetcher} enqueues
+ * split changes as tasks and runs them in the same loop as {@code fetch()}, and every {@code
+ * SplitReader} method but {@code wakeUp()} is documented not to run in parallel with another. The
+ * two fields backing the budget are therefore confined to that thread and need no synchronization.
  */
 @Internal
 public final class MissingCheckpointDetector {
@@ -63,12 +74,16 @@ public final class MissingCheckpointDetector {
     private final long parkTimeoutMillis;
     private final IntSupplier outstandingAckCount;
     private final LongSupplier nanoTime;
-    private final long startNanos;
+
+    private boolean started;
+
+    /** Meaningful only once {@link #started}. */
+    private long startNanos;
 
     private volatile boolean sawCheckpoint;
 
     /**
-     * Creates the detector and starts its budget.
+     * Creates the detector. Its budget starts at the first {@link #startBudget()}.
      *
      * @param budget how long to wait for the first checkpoint; {@link Duration#ZERO} disables the
      *     detector
@@ -88,11 +103,26 @@ public final class MissingCheckpointDetector {
                 Math.max(1, Math.min(budget.toMillis() / 4, MAX_PARK_TIMEOUT_MILLIS));
         this.outstandingAckCount = outstandingAckCount;
         this.nanoTime = nanoTime;
-        this.startNanos = nanoTime.getAsLong();
+    }
+
+    /**
+     * Starts the budget, which arms the detector. Called when the reader is given work; the first
+     * call wins, so a later split assignment does not push the deadline out.
+     */
+    public void startBudget() {
+        if (!started) {
+            startNanos = nanoTime.getAsLong();
+            started = true;
+        }
     }
 
     /**
      * Records that a checkpoint was taken, which retires the detector for the reader's lifetime.
+     *
+     * <p>The reader reports this from {@code snapshotState}, which {@code SourceOperator} calls on
+     * every barrier — one carrying no data, or reaching a reader that owns no split, counts. So the
+     * detector retires at the first barrier to reach the reader, and what it is left measuring is
+     * only the interval before a job's first checkpoint.
      */
     public void checkpointTaken() {
         sawCheckpoint = true;
@@ -136,6 +166,6 @@ public final class MissingCheckpointDetector {
     }
 
     private boolean isArmed() {
-        return budgetNanos > 0 && !sawCheckpoint;
+        return budgetNanos > 0 && started && !sawCheckpoint;
     }
 }
