@@ -131,6 +131,40 @@ time-based flush option for checkpoint-less jobs is tracked in #54). Batch execu
 by the end-of-input flush. End-to-end loss behavior additionally depends on the source's own
 state handling.
 
+**Discarded operator state.** The two Storage Write API methods differ in *when* rows become
+durable relative to when the source advances its position, and that difference decides what a
+state-less restart costs:
+
+| | Rows become visible in BigQuery | Source commits offsets / acks |
+|---|---|---|
+| `STORAGE_API_AT_LEAST_ONCE` | Before the checkpoint barrier (in `flush()`) | After the checkpoint completes |
+| `STORAGE_API_EXACTLY_ONCE` | After the checkpoint completes (`FlushRows` in the committer) | After the checkpoint completes |
+
+At-least-once keeps the sink strictly ahead of the source: whatever the source has acked is
+already visible in BigQuery, so discarding state can duplicate rows but cannot lose them.
+Exactly-once puts both side effects in the same phase with no atomicity between them, so
+discarding state opens a loss window of at most one checkpoint — rows appended but not yet
+flushed, and committables checkpointed but not yet committed, stay invisible forever while the
+source may already have acked past them. This is inherent to two-phase commit (a Kafka
+exactly-once producer behaves the same way), not specific to this connector.
+
+**The sink cannot detect this situation** — a writer restored with no state is indistinguishable
+from a brand-new job — so the guard belongs in deployment tooling. Redeploy through savepoints
+(`stop-with-savepoint`, then `flink run -s`); with the Flink Kubernetes Operator use
+`upgradeMode: savepoint` (or `last-state`) and never `stateless`. When state has to be dropped,
+rewind the source behind the last completed checkpoint so a potential loss becomes a duplicate,
+and make duplicates harmless downstream (an idempotent key plus `MERGE` or
+`QUALIFY ROW_NUMBER()`).
+
+Neither method is uniformly safer — their loss paths are disjoint:
+
+| Loss path | `STORAGE_API_AT_LEAST_ONCE` | `STORAGE_API_EXACTLY_ONCE` |
+|---|---|---|
+| Discarded operator state | none (duplicates only) | up to one checkpoint |
+| Checkpointing disabled | buffered rows lost (#54) | impossible — rejected at graph construction |
+| Committable outliving its write stream | none (holds no committer state) | possible — see [Exactly-once](#exactly-once-buffered-streams) |
+| `FailedRowHandler` drop policies | by configuration | by configuration |
+
 ## Exactly-once (buffered streams)
 
 `WriteMethod.STORAGE_API_EXACTLY_ONCE` writes through application-created Storage Write API
@@ -177,8 +211,22 @@ so nothing ever flushes them. Abandoned streams (and streams of closing writers)
 deliberately **never finalized** — BigQuery rejects `FlushRows` on a finalized stream (verified
 against the real service, and the reason batch commits happen after writer close), so finalizing
 could permanently break a restored-but-uncommitted committable; an open stream's unflushed tail
-stays invisible and costs nothing. Commit failures follow the FILE_LOADS model: the committer
-throws, the job restarts, and the framework re-commits the restored committables idempotently.
+stays invisible either way. Commit failures follow the FILE_LOADS model: the committer throws,
+the job restarts, and the framework re-commits the restored committables idempotently.
+
+**Stream lifetime.** BigQuery gives a buffered write stream a default TTL of
+[seven days with no traffic on the stream](https://docs.cloud.google.com/bigquery/docs/write-api-streaming),
+and streams cannot be deleted explicitly — they age out on that TTL, so the streams this write
+method abandons need no cleanup. A running writer's own appends keep its stream alive, so the
+TTL matters across downtime: a job stopped for longer than the TTL and then restored with
+committables still pending references a stream that may no longer exist, and those flushes may
+fail permanently. The only escape from a permanently failing commit is to start without state,
+which drops those rows — the same class of hazard as an expired FILE_LOADS staging object. A
+subtask that received rows and then went idle past the TTL while the job is still running hits
+the same expiry; a missing stream is terminal mid-run, so the job restarts and the restore probe
+starts a fresh stream. **What exactly happens at expiry — whether the flush fails, with which
+error, whether the seven days is configurable, and whether unflushed buffered rows are billed as
+storage — is not stated in the documentation and has not been verified here.**
 
 **Execution modes.** The mode must be explicit (`AUTOMATIC` is rejected at graph construction —
 were it to resolve to streaming without checkpointing, buffered rows would never become visible).
