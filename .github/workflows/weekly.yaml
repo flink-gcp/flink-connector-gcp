@@ -187,51 +187,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
       - name: Compare the ceiling against Maven Central
-        run: |
-          set -euo pipefail
-
-          major=${FLINK_CEILING%%.*}
-          ceiling_minor=$(echo "$FLINK_CEILING" | cut -d. -f2)
-
-          # Only fully-numbered releases of the same major: this must not trip
-          # over 2.0-preview1, a 1.x LTS patch, or a SNAPSHOT.
-          latest=$(curl -sSf --max-time 30 \
-              https://repo1.maven.org/maven2/org/apache/flink/flink-core/maven-metadata.xml |
-              grep -oE "<version>${major}\.[0-9]+\.[0-9]+</version>" |
-              sed 's/<[^>]*>//g' | sort -V | tail -1)
-
-          if [ -z "$latest" ]; then
-              echo "::error::Could not read any ${major}.x release from Maven Central."
-              exit 1
-          fi
-          latest_minor=$(echo "$latest" | cut -d. -f2)
-          echo "ceiling $FLINK_CEILING, newest release on Central $latest"
-
-          if [ "$latest_minor" -le "$ceiling_minor" ]; then
-              echo "Supported range is current."
-              exit 0
-          fi
-
-          # The failure message is the runbook: a checklist in CLAUDE.md is only
-          # read by someone who already knows to look for it.
-          cat <<MSG
-          Flink $latest is released, so the supported range — the current and the
-          previous minor — is now ${major}.${ceiling_minor} and ${major}.${latest_minor},
-          and this repository still claims otherwise.
-
-          Moving the range means editing, in this order:
-            1. pom.xml            flink.version -> $FLINK_CEILING
-                                  the old ceiling becomes the new floor, and this
-                                  one edit moves ci.yaml, the floor row here and
-                                  binary_compat's base with it
-            2. this file          FLINK_CEILING -> $latest
-                                  FLINK_NEXT_SNAPSHOT -> the next unreleased minor
-            3. docs/content/_index.md   the Supported versions table
-            4. README.md          the supported-range sentence under Build
-            5. CLAUDE.md          the Version policy section
-
-          Then re-run the binary-compatibility measurement against the new
-          ceiling before claiming the range: see scripts/surefire-fingerprint.sh.
-          MSG
-          exit 1
+        run: scripts/check-flink-release.sh "$FLINK_CEILING"

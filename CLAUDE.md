@@ -107,12 +107,21 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   `FLINK_NEXT_SNAPSHOT`, (3) `docs/content/_index.md` table, (4) `README.md` under Build,
   (5) this section. Then **re-run the binary-compatibility measurement against the new ceiling
   before claiming the range** — the old measurement says nothing about the new pair. Do not
-  hand-maintain this list: `new_minor_check` in `weekly.yaml` prints it in its failure output,
+  hand-maintain this list: `scripts/check-flink-release.sh` prints it in its failure output,
   which is the copy that gets read
-- `new_minor_check` exists because suppressing the dependabot minor PR removed the only thing
-  that announced a Flink release. It compares `FLINK_CEILING` against Maven Central weekly and
-  fails until the range is moved. It is deliberately **not** a dependency of the other jobs: a
-  new upstream release must not stop the current range from being verified
+- `scripts/check-flink-release.sh` (the `new_minor_check` job) exists because suppressing the
+  dependabot minor PR removed the only thing that announced a Flink release. It compares the
+  ceiling passed to it against Maven Central weekly and fails until the range is moved. It is
+  deliberately **not** a dependency of the other jobs: a new upstream release must not stop the
+  current range from being verified
+- CI helpers live in `scripts/` as files, not inline in workflow `run:` blocks, so they can be
+  run by hand — reproducing a red `binary_compat` locally is the first thing to do when it goes
+  red. `tools/` is not the place: it holds build tool *configuration*
+  (`tools/maven/checkstyle.xml`), following Flink's layout. Two consequences: `scripts/` is
+  outside the `.github/**` rat exclude, so each file carries the plain Apache-2.0 header, and
+  `ci.yaml` runs `shellcheck scripts/*.sh` — `actionlint` shellchecks inline `run:` blocks, so
+  extracting a script would otherwise drop it out of linting (shellcheck ships with the runner
+  image, so the step needs no action and no install)
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
