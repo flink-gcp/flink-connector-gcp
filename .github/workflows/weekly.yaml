@@ -133,7 +133,7 @@ jobs:
       # per-class rather than a single total, so a class that stops running is
       # caught instead of being masked by another that gained tests.
       - name: Record which tests the floor build ran
-        run: .github/scripts/surefire-fingerprint.sh > /tmp/floor-tests.txt
+        run: scripts/surefire-fingerprint.sh > /tmp/floor-tests.txt
 
       # Plugin goals invoked directly, so no lifecycle phase runs and nothing is
       # recompiled — only the resolved Flink on the classpath changes. The
@@ -148,7 +148,7 @@ jobs:
 
       - name: Assert the same tests ran
         run: |
-          .github/scripts/surefire-fingerprint.sh > /tmp/target-tests.txt
+          scripts/surefire-fingerprint.sh > /tmp/target-tests.txt
           if ! diff -u /tmp/floor-tests.txt /tmp/target-tests.txt; then
             echo "::error::A different set of tests ran on Flink ${{ matrix.flink }} than on the floor, so this run proves nothing about binary compatibility."
             exit 1
