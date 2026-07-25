@@ -30,7 +30,7 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.LinkedHashSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -151,7 +151,7 @@ public class PubSubSourceBuilder<T> {
                 !subscriptions.isEmpty(),
                 "At least one subscription is required: set subscription(...) or"
                         + " subscriptions(...).");
-        Set<SubscriptionDestination> distinct = new LinkedHashSet<>(subscriptions);
+        Set<SubscriptionDestination> distinct = new HashSet<>(subscriptions);
         Preconditions.checkState(
                 distinct.size() == subscriptions.size(),
                 "Subscriptions must be distinct, but %s were given: %s. Consuming one subscription"

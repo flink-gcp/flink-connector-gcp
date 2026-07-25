@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.enumerator;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
@@ -25,9 +26,7 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSpl
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * The split universe of a job and its subtask ownership, computed deterministically from the
@@ -109,17 +108,17 @@ public final class SplitAssignmentPlan {
         return owned;
     }
 
-    /** Returns every split in the plan. */
+    /** Returns every split in the plan, in assignment order. */
+    @VisibleForTesting
     public List<SubscriptionSplit> splits() {
         return splits;
     }
 
-    /** Returns the subtask indices that own no split. */
-    public Set<Integer> subtasksWithoutSplits() {
-        Set<Integer> idle = new LinkedHashSet<>();
-        for (int subtask = splits.size(); subtask < parallelism; subtask++) {
-            idle.add(subtask);
-        }
-        return idle;
+    /**
+     * Returns how many subtasks own no split. Splits are handed out round-robin from index 0, so
+     * these are exactly the subtasks at or above the split count.
+     */
+    public int idleSubtaskCount() {
+        return Math.max(0, parallelism - splits.size());
     }
 }

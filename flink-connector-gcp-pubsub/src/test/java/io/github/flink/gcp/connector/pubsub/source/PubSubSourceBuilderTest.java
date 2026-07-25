@@ -92,16 +92,38 @@ class PubSubSourceBuilderTest {
     }
 
     @Test
-    void rejectsNullAndBlankSettings() {
+    void rejectsNullSubscription() {
         assertThatThrownBy(() -> PubSubSource.<String>builder().subscription(null))
-                .isInstanceOf(NullPointerException.class);
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("subscription must not be null");
+    }
+
+    @Test
+    void rejectsNullDeserializationSchema() {
         assertThatThrownBy(() -> PubSubSource.<String>builder().deserializationSchema(null))
-                .isInstanceOf(NullPointerException.class);
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("deserializationSchema must not be null");
+    }
+
+    @Test
+    void rejectsNullOrderingMode() {
         assertThatThrownBy(() -> PubSubSource.<String>builder().orderingMode(null))
-                .isInstanceOf(NullPointerException.class);
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("orderingMode must not be null");
+    }
+
+    @Test
+    void rejectsNullEmulatorEndpoint() {
+        assertThatThrownBy(() -> PubSubSource.<String>builder().emulatorEndpoint(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("emulatorEndpoint must not be null");
+    }
+
+    @Test
+    void rejectsBlankEmulatorEndpoint() {
         assertThatThrownBy(() -> PubSubSource.<String>builder().emulatorEndpoint("  "))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("emulatorEndpoint must not be blank");
+                .hasMessage("emulatorEndpoint must not be blank");
     }
 
     @Test

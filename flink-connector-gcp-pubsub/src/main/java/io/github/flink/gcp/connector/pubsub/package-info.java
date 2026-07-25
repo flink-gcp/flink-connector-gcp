@@ -16,6 +16,6 @@
 
 /**
  * Google Cloud Pub/Sub connector for Apache Flink: an at-least-once sink with dynamic per-record
- * topic destinations.
+ * topic destinations, and an at-least-once source consuming one or more subscriptions.
  */
 package io.github.flink.gcp.connector.pubsub;

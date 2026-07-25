@@ -28,6 +28,8 @@ import java.util.List;
 final class CollectingSourceOutput<T> implements SourceOutput<T> {
 
     private final List<T> records = new ArrayList<>();
+
+    /** One entry per record; {@code null} means {@code collect(record)} was called without one. */
     private final List<Long> timestamps = new ArrayList<>();
 
     @Nullable private RuntimeException failure;
@@ -47,11 +49,15 @@ final class CollectingSourceOutput<T> implements SourceOutput<T> {
 
     @Override
     public void collect(T record) {
-        collect(record, Long.MIN_VALUE);
+        add(record, null);
     }
 
     @Override
     public void collect(T record, long timestamp) {
+        add(record, timestamp);
+    }
+
+    private void add(T record, @Nullable Long timestamp) {
         if (failure != null) {
             throw failure;
         }

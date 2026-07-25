@@ -24,6 +24,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
+import org.apache.flink.util.IOUtils;
 
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
@@ -48,9 +49,11 @@ import java.util.concurrent.ExecutionException;
  * <p>Every method except {@link #wakeUp()} runs on the fetcher thread, so the subscriber map needs
  * no synchronization; only the data-available signal crosses threads.
  *
- * <p>The signal is armed <em>before</em> draining, so a message that arrives while the drain is in
- * progress completes the armed future and the following wait returns at once instead of missing the
- * notification.
+ * <p>The data-available signal is armed <em>before</em> draining, so a message arriving mid-drain
+ * completes the armed future rather than being missed, and it is level-triggered, so a signal that
+ * arrives while no wait is armed is remembered instead of dropped. Both matter: a fetch that parks
+ * on a lost signal is never woken again on the shutdown path, which would leave the subscribers
+ * open and their messages unnacked.
  *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0).
@@ -76,6 +79,10 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
 
     @GuardedBy("signalLock")
     private CompletableFuture<Void> dataAvailable = new CompletableFuture<>();
+
+    /** Remembers a signal that arrived while no wait was armed, so it cannot be lost. */
+    @GuardedBy("signalLock")
+    private boolean signalled;
 
     /**
      * Creates the split reader.
@@ -196,21 +203,14 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
 
     @Override
     public void close() throws Exception {
-        Exception failure = null;
-        for (Map.Entry<String, NotifyingPullSubscriber> entry : subscribers.entrySet()) {
-            try {
-                entry.getValue().close();
-            } catch (Exception e) {
-                // Keep closing the rest: every subscriber left open holds messages that Pub/Sub
-                // would only redeliver after their acknowledgement deadline expires.
-                LOG.warn("Failed to close the Pub/Sub subscriber for split {}.", entry.getKey(), e);
-                failure = e;
-            }
-        }
-        subscribers.clear();
-        pausedSplits.clear();
-        if (failure != null) {
-            throw failure;
+        try {
+            // closeAll keeps closing after a failure and reports the rest as suppressed: every
+            // subscriber left open holds messages Pub/Sub would only redeliver once their
+            // acknowledgement deadline expires.
+            IOUtils.closeAll(subscribers.values());
+        } finally {
+            subscribers.clear();
+            pausedSplits.clear();
         }
     }
 
@@ -229,8 +229,23 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
         return total;
     }
 
+    /**
+     * Returns the future the next wait parks on, which is already complete when a signal arrived
+     * while no wait was in progress.
+     *
+     * <p>The remembered flag is what makes the signal level-triggered, and it is load-bearing:
+     * {@code SplitFetcher} checks its own wake-up flag <em>before</em> entering {@link #fetch()}
+     * and calls {@link #wakeUp()} exactly once per event, so an edge-triggered signal delivered in
+     * the window between that check and the arming below would be lost. On the shutdown path that
+     * is unrecoverable — nothing else would ever wake the fetcher, so the reader would never be
+     * closed and its messages never nacked.
+     */
     private CompletableFuture<Void> armSignal() {
         synchronized (signalLock) {
+            if (signalled) {
+                signalled = false;
+                return CompletableFuture.completedFuture(null);
+            }
             dataAvailable = new CompletableFuture<>();
             return dataAvailable;
         }
@@ -239,6 +254,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
     private void signalDataAvailable() {
         CompletableFuture<Void> current;
         synchronized (signalLock) {
+            signalled = true;
             current = dataAvailable;
         }
         current.complete(null);

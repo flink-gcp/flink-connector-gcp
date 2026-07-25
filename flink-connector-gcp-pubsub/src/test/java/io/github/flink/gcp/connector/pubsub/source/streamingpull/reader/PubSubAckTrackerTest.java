@@ -135,8 +135,8 @@ class PubSubAckTrackerTest {
         assertThat(onA.isUnsettled()).isTrue();
         assertThat(onB.isUnsettled()).isTrue();
 
-        stage(SPLIT_A, "shared-id");
-        stage(SPLIT_B, "shared-id");
+        tracker.stagePendingAck(SPLIT_A, "shared-id");
+        tracker.stagePendingAck(SPLIT_B, "shared-id");
         tracker.addCheckpoint(1L);
         tracker.notifyCheckpointComplete(1L);
 
@@ -170,10 +170,6 @@ class PubSubAckTrackerTest {
 
     private void stageOn(String splitId, String messageId, RecordingAckReplyConsumer consumer) {
         tracker.addPendingAck(splitId, messageId, consumer);
-        tracker.stagePendingAck(splitId, messageId);
-    }
-
-    private void stage(String splitId, String messageId) {
         tracker.stagePendingAck(splitId, messageId);
     }
 }

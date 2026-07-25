@@ -167,7 +167,7 @@ class PubSubSplitReaderTest {
     }
 
     @Test
-    void wakeUpUnblocksAFetchWithNoData() throws Exception {
+    void wakeUpUnblocksAParkedFetch() throws Exception {
         PubSubSplitReader reader = reader(10);
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
 
@@ -181,14 +181,25 @@ class PubSubSplitReaderTest {
                             }
                         });
 
-        // Repeat until it takes effect: a wake-up issued before the fetch armed its signal is
-        // simply not observed, and the test must not depend on winning that race.
-        while (!fetch.isDone()) {
-            reader.wakeUp();
-            Thread.sleep(10);
-        }
+        reader.wakeUp();
 
         assertThat(payloadsBySplit(fetch.get())).isEmpty();
+        reader.close();
+    }
+
+    @Test
+    void aWakeUpArrivingBeforeTheFetchIsNotLost() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+
+        // The fetcher checks its own wake-up flag *before* entering fetch(), so this is the window
+        // a wake-up genuinely lands in, and it is delivered exactly once. Dropping it would park
+        // the fetch forever: on the shutdown path nothing else ever wakes the fetcher, so the
+        // reader would never be closed and its messages never nacked. Without a level-triggered
+        // signal this test hangs until the class timeout.
+        reader.wakeUp();
+
+        assertThat(payloadsBySplit(reader.fetch())).isEmpty();
         reader.close();
     }
 

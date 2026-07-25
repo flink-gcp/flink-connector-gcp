@@ -23,17 +23,17 @@ import com.google.cloud.pubsub.v1.Subscriber;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 import java.io.IOException;
-import java.io.Serializable;
 
 /**
  * Creates the {@code google-cloud-pubsub} {@link Subscriber} backing one split.
  *
- * <p>Serializable because the factory travels in the job graph; all client state is created on the
- * task manager inside {@link #create}. Returned subscribers are not started — the caller starts
- * them once it has registered its failure listener.
+ * <p>Instances are created on the task manager inside {@code createReader} and hold no client state
+ * of their own, so nothing here is shipped in the job graph. Returned subscribers are not started —
+ * the caller starts each one only after registering its failure listener, so a startup failure is
+ * not missed.
  */
 @Internal
-public interface SubscriberFactory extends Serializable {
+public interface SubscriberFactory {
 
     /**
      * Creates a subscriber delivering the given subscription's messages to the receiver.

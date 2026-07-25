@@ -56,10 +56,14 @@ import java.time.Duration;
 @Internal
 public final class DefaultSubscriberFactory implements SubscriberFactory {
 
-    private static final long serialVersionUID = 1L;
-
-    /** Bounds how long {@code close()} waits for the client to release outstanding messages. */
-    static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
+    /**
+     * Bounds how long {@code close()} waits for one client to release outstanding messages. Kept
+     * well under Flink's {@code source.reader.close.timeout} (30 s by default) because a reader
+     * closes its splits' subscribers one after another: a split whose turn never comes within that
+     * budget is a split whose messages are not nacked, so they only return after their
+     * acknowledgement deadline instead of at once.
+     */
+    static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
 
     private final OrderingMode orderingMode;
     @Nullable private final String emulatorEndpoint;

@@ -35,6 +35,11 @@ import java.util.Objects;
  * identity stable.
  *
  * <p>Instances are immutable; the resource path and hash are precomputed.
+ *
+ * <p>Deliberately mirrors {@code sink.TopicDestination} (and the BigQuery module's {@code
+ * TableDestination}) rather than sharing a base type: the three name different resources and only
+ * coincide in shape. Extracting a shared destination-identity type is tracked with the other
+ * cross-connector extractions in issue #61.
  */
 @PublicEvolving
 public final class SubscriptionDestination implements Serializable {

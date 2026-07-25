@@ -91,13 +91,13 @@ public class PubSubSplitEnumerator
         plan =
                 SplitAssignmentPlan.create(
                         subscriptions, orderingMode, context.currentParallelism());
-        if (!plan.subtasksWithoutSplits().isEmpty()) {
+        if (plan.idleSubtaskCount() > 0) {
             LOG.warn(
                     "Ordering mode {} assigns one split per subscription, so {} of the {} source"
                             + " subtasks receive no work ({} subscriptions). Lower the source"
                             + " parallelism to {} or consume more subscriptions.",
                     orderingMode,
-                    plan.subtasksWithoutSplits().size(),
+                    plan.idleSubtaskCount(),
                     context.currentParallelism(),
                     subscriptions.size(),
                     subscriptions.size());

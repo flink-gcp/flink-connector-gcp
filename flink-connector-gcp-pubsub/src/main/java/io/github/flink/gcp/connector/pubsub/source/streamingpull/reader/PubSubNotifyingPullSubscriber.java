@@ -100,18 +100,24 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
         this.ackTracker = ackTracker;
         this.dataAvailableSignal = dataAvailableSignal;
         this.subscriber = subscriberFactory.create(subscription, this::receiveMessage);
-        this.subscriber.addListener(
-                new ApiService.Listener() {
-                    @Override
-                    public void failed(ApiService.State from, Throwable failure) {
-                        fail(failure);
-                    }
-                },
-                // A direct executor: recording the failure and waking the fetcher are both cheap.
-                Runnable::run);
         try {
+            this.subscriber.addListener(
+                    new ApiService.Listener() {
+                        @Override
+                        public void failed(ApiService.State from, Throwable failure) {
+                            fail(failure);
+                        }
+                    },
+                    // A direct executor: recording the failure and waking the fetcher are both
+                    // cheap.
+                    Runnable::run);
             this.subscriber.startAsync().awaitRunning();
         } catch (RuntimeException e) {
+            // The client opened its gRPC channel and background executors before failing, and the
+            // SDK only releases them from its own shutdown path — so a startup failure must stop
+            // the subscriber explicitly or every restart attempt of a crash-looping job leaks a
+            // channel and its threads.
+            stopQuietly();
             throw new IOException(
                     "Failed to start the Pub/Sub subscriber for subscription " + subscription, e);
         }
@@ -170,6 +176,15 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
             messages.clear();
         }
         ackTracker.nackSplit(splitId);
+        stopQuietly();
+    }
+
+    /**
+     * Stops the client, tolerating a failure. Shutdown is best-effort: everything this split owned
+     * has already been nacked by the time this runs, so a client that lingers costs resources until
+     * the JVM exits but loses nothing.
+     */
+    private void stopQuietly() {
         try {
             subscriber
                     .stopAsync()
@@ -177,8 +192,6 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
                             DefaultSubscriberFactory.SHUTDOWN_TIMEOUT.toMillis(),
                             TimeUnit.MILLISECONDS);
         } catch (TimeoutException | RuntimeException e) {
-            // Shutdown is best-effort: everything this reader owned has already been nacked, so a
-            // client that lingers costs resources until the JVM exits but loses nothing.
             LOG.warn(
                     "The Pub/Sub subscriber for subscription {} did not shut down cleanly.",
                     subscription,

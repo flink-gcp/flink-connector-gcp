@@ -26,6 +26,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -78,7 +79,16 @@ public class PubSubSourceReader<T>
         // Everything emitted before the barrier belongs to this checkpoint; anything emitted after
         // it belongs to the next one.
         ackTracker.addCheckpoint(checkpointId);
-        return super.snapshotState(checkpointId);
+
+        // Deliberately checkpoint no splits. SourceOperator restores the reader's splits from
+        // operator state and hands them to addSplits, and the enumerator separately assigns the
+        // recomputed plan on addReader — the two are unioned, never reconciled. Since splits carry
+        // no progress state and the plan is deterministic, reporting none makes the enumerator the
+        // only source of split ownership. Reporting them instead would let a rescale or an edited
+        // subscription list leave a subscription consumed by two subtasks at once, which is exactly
+        // what PER_KEY exists to prevent, or keep consuming a subscription that was removed from
+        // the configuration.
+        return Collections.emptyList();
     }
 
     @Override

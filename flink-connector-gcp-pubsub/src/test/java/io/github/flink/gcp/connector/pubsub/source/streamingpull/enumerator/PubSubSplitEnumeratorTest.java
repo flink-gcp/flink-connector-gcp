@@ -22,7 +22,6 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumerato
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -94,10 +93,11 @@ class PubSubSplitEnumeratorTest {
         registerAll(context, enumerator, 2);
         List<SubscriptionSplit> beforeFailure = List.copyOf(context.assignedSplits(1));
 
+        context.forgetAssignments();
         enumerator.addSplitsBack(beforeFailure, 1);
         enumerator.addReader(1);
 
-        assertThat(context.assignedSplits(1)).containsExactlyElementsOf(concat(beforeFailure));
+        assertThat(context.assignedSplits(1)).containsExactlyElementsOf(beforeFailure);
     }
 
     @Test
@@ -158,12 +158,5 @@ class PubSubSplitEnumeratorTest {
 
     private static List<SubscriptionDestination> subscriptionsOf(List<SubscriptionSplit> splits) {
         return splits.stream().map(SubscriptionSplit::getSubscription).collect(Collectors.toList());
-    }
-
-    /** The fake accumulates assignments, so a reassignment appends to the earlier one. */
-    private static List<SubscriptionSplit> concat(List<SubscriptionSplit> splits) {
-        List<SubscriptionSplit> both = new ArrayList<>(splits);
-        both.addAll(splits);
-        return both;
     }
 }

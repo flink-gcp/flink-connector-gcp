@@ -66,7 +66,7 @@ public class PubSubStreamingPullSource<T>
     /**
      * Messages drained from one split per fetch. Bounds how much one fetch buffers while still
      * amortizing the element-queue handoff; the client library's flow control is the real limit on
-     * in-flight messages. Becomes a tuning knob together with the other subscriber options.
+     * in-flight messages. Becomes a tuning knob together with the other subscriber options (#80).
      */
     private static final int MAX_RECORDS_PER_FETCH = 1_000;
 

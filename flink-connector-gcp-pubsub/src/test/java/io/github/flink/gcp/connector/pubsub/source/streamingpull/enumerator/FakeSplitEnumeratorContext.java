@@ -25,6 +25,7 @@ import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -33,10 +34,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.function.BiConsumer;
 
-/**
- * In-memory {@link SplitEnumeratorContext} recording assignments, for enumerator tests. Async calls
- * run inline so tests stay deterministic.
- */
+/** In-memory {@link SplitEnumeratorContext} recording assignments, for enumerator tests. */
 final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<SubscriptionSplit> {
 
     private final int parallelism;
@@ -53,9 +51,16 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
         registeredReaders.put(subtaskId, new ReaderInfo(subtaskId, "localhost"));
     }
 
-    /** Returns the splits assigned to the given subtask so far, across all assignment calls. */
+    /**
+     * Returns the splits assigned to the given subtask since the last {@link #forgetAssignments}.
+     */
     List<SubscriptionSplit> assignedSplits(int subtaskId) {
-        return assignments.getOrDefault(subtaskId, new ArrayList<>());
+        return assignments.getOrDefault(subtaskId, Collections.emptyList());
+    }
+
+    /** Drops the recorded assignments, so a later one can be asserted on its own. */
+    void forgetAssignments() {
+        assignments.clear();
     }
 
     Set<Integer> readersToldNoMoreSplits() {
@@ -98,9 +103,12 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
         readersToldNoMoreSplits.add(subtask);
     }
 
+    // The enumerator is entirely synchronous today; these throw rather than silently accepting
+    // work, so the first asynchronous step added to it has to revisit this fake.
+
     @Override
     public <T> void callAsync(Callable<T> callable, BiConsumer<T, Throwable> handler) {
-        runInline(callable, handler);
+        throw new UnsupportedOperationException("The Pub/Sub enumerator makes no async calls.");
     }
 
     @Override
@@ -109,19 +117,12 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
             BiConsumer<T, Throwable> handler,
             long initialDelayMillis,
             long periodMillis) {
-        runInline(callable, handler);
+        throw new UnsupportedOperationException("The Pub/Sub enumerator makes no async calls.");
     }
 
     @Override
     public void runInCoordinatorThread(Runnable runnable) {
-        runnable.run();
-    }
-
-    private static <T> void runInline(Callable<T> callable, BiConsumer<T, Throwable> handler) {
-        try {
-            handler.accept(callable.call(), null);
-        } catch (Throwable t) {
-            handler.accept(null, t);
-        }
+        throw new UnsupportedOperationException(
+                "The Pub/Sub enumerator runs on the coordinator thread already.");
     }
 }

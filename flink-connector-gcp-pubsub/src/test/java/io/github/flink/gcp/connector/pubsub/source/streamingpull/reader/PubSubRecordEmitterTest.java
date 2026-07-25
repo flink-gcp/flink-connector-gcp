@@ -74,7 +74,7 @@ class PubSubRecordEmitterTest {
                 .emitRecord(message("m1", "payload"), output, SPLIT);
 
         assertThat(output.records()).containsExactly("payload");
-        assertThat(output.timestamps()).containsExactly(Long.MIN_VALUE);
+        assertThat(output.timestamps()).containsExactly((Long) null);
     }
 
     @Test

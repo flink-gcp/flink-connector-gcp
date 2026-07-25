@@ -82,7 +82,7 @@ class SplitAssignmentPlanTest {
                 SplitAssignmentPlan.create(
                         subscriptions(subscriptionCount), OrderingMode.NONE, parallelism);
 
-        assertThat(plan.subtasksWithoutSplits()).isEmpty();
+        assertThat(plan.idleSubtaskCount()).isZero();
         IntStream.range(0, parallelism)
                 .forEach(subtask -> assertThat(plan.splitsFor(subtask)).isNotEmpty());
     }
@@ -106,7 +106,7 @@ class SplitAssignmentPlanTest {
         SplitAssignmentPlan plan =
                 SplitAssignmentPlan.create(subscriptions(2), OrderingMode.PER_KEY, 5);
 
-        assertThat(plan.subtasksWithoutSplits()).containsExactly(2, 3, 4);
+        assertThat(plan.idleSubtaskCount()).isEqualTo(3);
         assertThat(plan.splitsFor(0)).hasSize(1);
         assertThat(plan.splitsFor(1)).hasSize(1);
         assertThat(plan.splitsFor(4)).isEmpty();
