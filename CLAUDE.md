@@ -51,9 +51,18 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   in the main checkout. Remove the worktree and local branch after merge
 - All changes go through **draft PRs**; nothing is pushed directly to `main` after the initial
   skeleton
-- **After creating a draft PR, always self-review it** (`/code-review`, applying
-  simplification/efficiency findings as well) and push the fixes before asking for review.
-  Record the findings and deferrals as a PR comment
+- **After creating a draft PR, always self-review it** — applying simplification and efficiency
+  findings, not only correctness ones — and push the fixes before asking for review. Record the
+  findings *and the deferrals, with their reasons* as a PR comment. Which command to use:
+  - `/review <pr>` reviews a pull request and **Claude can start it itself**, so this is the one
+    to reach for once the draft PR exists
+  - `/code-review` reviews the working diff and is **user-invocable only** — Claude gets
+    `disable-model-invocation` if it tries, so ask the user to run it rather than assuming it will
+    happen
+  - With neither, fall back to review subagents given *distinct* lenses (correctness and
+    concurrency, public API and simplification, test quality and flakiness). One agent asked for
+    "a review" returns much less than three asked for different things — and verify each finding
+    against the code before acting on it
 - Pin GitHub Actions to commit SHAs with pinact (`mise x pinact -- pinact run`) whenever a
   workflow is added or an action version changes
 - Commit messages, PR titles/descriptions, code comments, javadoc and issues are written in
