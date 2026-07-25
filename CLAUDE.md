@@ -29,6 +29,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in `docs/go.mod`
 - Recipe bodies stay one command per line — no embedded `#!/usr/bin/env bash` blocks. Shell logic
   belongs in `scripts/` where `just lint` reaches it; an embedded block is invisible to shellcheck
+- **Inside a recipe, always name the tool: `mise x <tool> -- …`, never bare `mise x -- …`.** The
+  bare form activates every tool in `mise.toml` and installs what is missing, so the lint job
+  downloads a JDK, Maven and Hugo it has no use for — silently undoing the `install_args` meant to
+  limit it. Caught in CI on #113, where `mise x -- shellcheck` did exactly that
 - A top-level justfile variable assigned from a shell command runs on **every** `just` invocation,
   whichever recipe was asked for; a default *parameter* value runs only when its own recipe does.
   That is why `check-flink-release`'s ceiling is a parameter default rather than a variable

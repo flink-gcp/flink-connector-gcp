@@ -17,10 +17,18 @@
 #
 # Tools come from mise.toml. In a shell without mise activated, run
 # `mise x -- just <recipe>`; recipes that need a mise-managed tool other than
-# java and maven invoke it through `mise x --` themselves, so they behave the
-# same either way. Nothing here loads .env: mise.toml already does, with
-# redact = true for the BQ_IT_* credentials, and a second loader would create a
-# path where that redaction does not apply.
+# java and maven reach it through `mise x <tool> -- …` themselves, so they
+# behave the same either way.
+#
+# Naming the tool is required, not style. Bare `mise x -- cmd` activates *every*
+# tool in mise.toml and installs whatever is missing — in CI that means the lint
+# job downloading a JDK, Maven and Hugo it has no use for, silently undoing the
+# `install_args` that is supposed to limit it. `mise x shellcheck -- …` installs
+# shellcheck and nothing else (measured, not assumed).
+#
+# Nothing here loads .env: mise.toml already does, with redact = true for the
+# BQ_IT_* credentials, and a second loader would create a path where that
+# redaction does not apply.
 #
 # The comment line directly above a recipe is what `just --list` prints, so it
 # is kept to one line and the reasoning goes in the block above it.
@@ -102,8 +110,8 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 #
 # Lint the shell scripts and the justfile.
 lint:
-    mise x -- shellcheck --version
-    mise x -- shellcheck scripts/*.sh
+    mise x shellcheck -- shellcheck --version
+    mise x shellcheck -- shellcheck scripts/*.sh
     just --fmt --check --unstable
 
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
@@ -111,16 +119,16 @@ lint:
 #
 # Build the documentation site, as the docs workflow does.
 docs:
-    mise x -- hugo --gc --minify --source docs --panicOnWarning
+    mise x hugo-extended go -- hugo --gc --minify --source docs --panicOnWarning
 
 # Preview the documentation site at http://localhost:1313.
 docs-serve:
-    mise x -- hugo serve --source docs
+    mise x hugo-extended go -- hugo serve --source docs
 
 # Regenerate the syntax-highlighting palettes (verbatim generator output).
 docs-chroma:
-    cd docs && mise x -- hugo gen chromastyles --style=github > assets/_chroma-light.scss
-    cd docs && mise x -- hugo gen chromastyles --style=github-dark > assets/_chroma-dark.scss
+    cd docs && mise x hugo-extended -- hugo gen chromastyles --style=github > assets/_chroma-light.scss
+    cd docs && mise x hugo-extended -- hugo gen chromastyles --style=github-dark > assets/_chroma-dark.scss
 
 # Pin every GitHub Actions reference to a commit SHA.
 pin-actions:
