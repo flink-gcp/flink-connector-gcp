@@ -4,11 +4,11 @@ BigQuery sink for Apache Flink with a unified, `BigQueryIO`-style write API.
 
 One builder dispatches to a write-method implementation at job-graph construction time:
 
-| Write method | Semantics | Status |
-|---|---|---|
-| `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: #15) |
-| `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit on checkpoints; single fixed destination | Implemented (#30), see [Exactly-once (buffered streams)](../docs/content/docs/connectors/datastream/bigquery.md#exactly-once-buffered-streams) |
-| `FILE_LOADS` | GCS-staged Avro files + BigQuery load jobs; batch and streaming (checkpoint-triggered), exactly-once | Implemented (#14 batch, #69 streaming), see [File loads](../docs/content/docs/connectors/datastream/bigquery.md#file-loads) |
+| Write method | Status |
+|---|---|
+| `STORAGE_API_AT_LEAST_ONCE` | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: #15) |
+| `STORAGE_API_EXACTLY_ONCE` | Implemented (#30) |
+| `FILE_LOADS` | Implemented (#14 batch, #69 streaming) |
 
 ```java
 Sink<MyEvent> sink =

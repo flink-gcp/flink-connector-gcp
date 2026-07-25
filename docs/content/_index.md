@@ -1,5 +1,4 @@
 ---
-title: GCP Connectors for Apache Flink
 type: docs
 bookToc: false
 ---
@@ -22,35 +21,25 @@ limitations under the License.
 
 # GCP Connectors for Apache Flink
 
-Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/):
-BigQuery, Cloud Pub/Sub and Cloud Tasks, with Bigtable and Spanner planned.
+Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/).
 
 > **Status: early development.** Nothing is released yet; APIs and coordinates will change.
+> Building from source is described in the
+> [repository README]({{< param BookRepo >}}#build).
 
 ## Connectors
 
-| Module | Documentation |
+| Connector | Documentation |
 |---|---|
-| `flink-connector-gcp-bigquery` | [BigQuery]({{< relref "docs/connectors/datastream/bigquery" >}}) — unified write API: Storage Write API (at-least-once / exactly-once) and GCS-staged load jobs, with dynamic per-record table destinations and native protobuf serialization |
-| `flink-connector-gcp-pubsub` | [Cloud Pub/Sub]({{< relref "docs/connectors/datastream/pubsub" >}}) — sink with dynamic topic destinations, and a FLIP-27 source with multi-subscription splits |
-| `flink-connector-gcp-cloudtasks` | Cloud Tasks — in design |
+| BigQuery | [Sink]({{< relref "docs/connectors/datastream/bigquery" >}}) — unified write API over the Storage Write API (at-least-once and exactly-once) and GCS-staged load jobs, with dynamic per-record table destinations |
+| Cloud Pub/Sub | [Sink and source]({{< relref "docs/connectors/datastream/pubsub" >}}) — dynamic per-record topic destinations, and a FLIP-27 source with multi-subscription splits |
+| Cloud Tasks | In design |
 
-## Build
-
-Requires JDK 17 and Maven (or use the included wrapper):
-
-```
-./mvnw verify
-```
-
-`main` targets Flink 2.x. Flink 1.20 support is planned on a dedicated branch.
-
-## License
-
-[Apache License 2.0](https://github.com/laughingman7743/flink-connector-gcp/blob/main/LICENSE)
+Bigtable and Spanner connectors are planned.
 
 ## Disclaimer
 
-This is an independent open-source project. It is not affiliated with, endorsed by, or
-supported by the Apache Software Foundation or Google. Apache Flink, Flink, and the
-Flink logo are trademarks of the Apache Software Foundation.
+This is an independent open-source project, licensed under the
+[Apache License 2.0]({{< param BookRepo >}}/blob/main/LICENSE). It is not affiliated with,
+endorsed by, or supported by the Apache Software Foundation or Google. Apache Flink, Flink, and
+the Flink logo are trademarks of the Apache Software Foundation.

@@ -1,7 +1,7 @@
 ---
 title: BigQuery
 type: docs
-weight: 1
+weight: 10
 ---
 
 <!--
@@ -34,7 +34,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 | `FILE_LOADS` | GCS-staged Avro files + BigQuery load jobs; batch and streaming (checkpoint-triggered), exactly-once |
 
 Per-feature implementation status is tracked in the
-[module README](https://github.com/laughingman7743/flink-connector-gcp/blob/main/flink-connector-gcp-bigquery/README.md).
+[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md).
 
 ```java
 Sink<MyEvent> sink =

@@ -31,12 +31,19 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   licensing obligation, so it stays in the repository
 - Implementation status lives in the README table only; the docs page links to it instead of
   repeating it. Keep the two from drifting by adding status nowhere else
-- Pages are plain markdown with front matter (`title`, `type: docs`, `weight`) and the plain
-  Apache-2.0 header as an HTML comment. **No Hugo shortcodes** — Flink's `artifact`/`tabs`/`hint`
-  shortcodes are not available here, and staying shortcode-free means no Flink layout code is
-  copied and `NOTICE` needs no entry
+- Pages are plain markdown with front matter (`title`, `type: docs`, `weight` — spaced by 10 so a
+  new connector slots in without renumbering) and the plain Apache-2.0 header as an HTML comment.
+  **No Flink shortcodes and no vendored Flink layout code** — `artifact`/`tabs`/`hint` do not
+  exist here, and staying clear of them is why `NOTICE` needs no entry. Hugo's own built-ins
+  (`relref`, `param`) are fine; prefer `{{< param BookRepo >}}` over hardcoding the repository URL
+- Syntax highlighting is class-based (`markup.highlight.noClasses = false`) with the palettes
+  selected by `prefers-color-scheme` in `docs/assets/_custom.scss`, which hugo-book bundles into
+  its own stylesheet. Regenerate the palettes with, from `docs/`:
+  `hugo gen chromastyles --style=github > assets/_chroma-light.scss` and
+  `--style=github-dark > assets/_chroma-dark.scss` (verbatim output; apache-rat excludes them)
 - The site is built as a CI check only; GitHub Pages publishing waits until the repository is
-  public (#6)
+  public (#6). Each module README links to its docs page by in-repo relative path — those links
+  become site URLs when Pages goes live, which is a checklist item on #6
 
 ## Workflow rules
 

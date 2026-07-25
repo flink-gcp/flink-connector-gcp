@@ -20,14 +20,9 @@ title = "GCP Connectors for Apache Flink"
 # repositories (docs/content/docs/connectors/datastream/<connector>.md) so the
 # pages stay portable if this project is ever donated to the ASF.
 [markup]
-  [markup.goldmark.renderer]
-    unsafe = true
-  [markup.tableOfContents]
-    startLevel = 1
-    endLevel = 3
   # Emit CSS classes instead of inlining one fixed colour scheme into every code
-  # block; the light/dark stylesheets are wired up in
-  # layouts/_partials/docs/inject/head.html so code follows the page theme.
+  # block; the light/dark palettes are selected in assets/_custom.scss so code
+  # follows the page theme.
   [markup.highlight]
     noClasses = false
 
@@ -37,9 +32,9 @@ title = "GCP Connectors for Apache Flink"
     path = "github.com/alex-shpak/hugo-book"
 
 [params]
-  BookSection = "docs"
+  # Everything hugo-book already defaults to (BookSection, BookToC, BookSearch)
+  # is left unset; only genuine departures are listed. The theme's own default
+  # is a light theme, so "auto" is a real choice.
   BookTheme = "auto"
-  BookToC = true
   BookRepo = "https://github.com/laughingman7743/flink-connector-gcp"
-  BookEditPath = "edit/main/docs"
-  BookSearch = true
+  BookEditLink = '{{ .Site.Params.BookRepo }}/edit/main/docs/{{ .Path }}'
