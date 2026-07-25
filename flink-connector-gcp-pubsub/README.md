@@ -241,6 +241,39 @@ split, so a split that goes away releases only its own messages. A redelivery ar
 predecessor was settled nacks the superseded handle, which is what releases that delivery's
 flow-control permit inside the client library.
 
+### Why streaming pull rather than synchronous pull
+
+The source consumes through the client library's high-level `Subscriber`, which uses
+StreamingPull. The Apache `flink-connector-gcp-pubsub` instead drives `SubscriberGrpc`'s blocking
+stub and issues unary `Pull` calls — a deliberate choice made during its review
+([FLINK-9311](https://github.com/apache/flink/pull/6594)), where an earlier `Subscriber`-based
+implementation was replaced. The reasons given were that `sourceContext.collect()` blocking under
+backpressure naturally stops the pull loop, that users then need not tune flow-control parameters,
+and that dropping the intermediate queue lowers both memory footprint and latency.
+
+Two of those reasons are specific to the `SourceFunction` model that connector is built on, where
+`run()` is a pull loop and an asynchronous client has to be bridged into it with a hand-built queue
+and lock coordination. Under FLIP-27 that bridge is the framework's job: `SplitReader.fetch()` is
+already a pull loop, and `SourceReaderBase` already owns the element queue and the backpressure
+between the fetcher and the task thread. The remaining reason — that flow control becomes a knob the
+user can get wrong, and that it rather than Flink bounds how much is buffered — does apply here, and
+is why the subscriber's flow-control settings are exposed rather than hidden.
+
+Two things decided it the other way:
+
+- **Lease extension.** Unary `Pull` hands back acknowledgement ids and nothing else; the Apache
+  connector never calls `ModifyAckDeadline`, so every message must be acknowledged within the
+  subscription's acknowledgement deadline (600 s at most) and its documentation accordingly
+  requires a checkpoint interval well below that deadline. The client library extends leases
+  automatically, up to an hour by default, which suits a source that acknowledges on checkpoint
+  completion far better.
+- **Ordering.** Per-ordering-key sequential dispatch exists only in the high-level client. Building
+  `PER_KEY` on unary pull would mean reimplementing it.
+
+The trade-off is real in the other direction too: StreamingPull costs more CPU in gRPC, and the
+review thread above measured the synchronous design as checkpoint-frequency bound (3,000 msg/s at a
+1 s checkpoint interval, 20,000 msg/s at 50 ms).
+
 ### Subscriptions, splits and parallelism
 
 A split is one streaming-pull connection to one subscription, and carries no progress state —
@@ -393,5 +426,6 @@ removal, not overriding `pauseOrResumeSplits` (breaking watermark alignment), a 
 the wake-up branch, and `shutdown()` mutating lock-guarded state without holding the lock.
 
 [apache/flink-connector-gcp-pubsub](https://github.com/apache/flink-connector-gcp-pubsub) is a
-**design reference only** — the mailbox-based backpressure model and the idea of a
-fatal-exception classifier (#37) — no code has been copied from it.
+**design reference only** — the mailbox-based backpressure model, the idea of a fatal-exception
+classifier (#37), and its synchronous-pull decision record, which the source weighs and departs
+from above — no code has been copied from it.
