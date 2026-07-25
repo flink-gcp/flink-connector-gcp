@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.pubsub.source.streamingpull;
 
+import org.apache.flink.core.memory.DataOutputSerializer;
+
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import org.junit.jupiter.api.Test;
 
@@ -38,7 +40,8 @@ class PubSubEnumeratorStateSerializerTest {
                 new PubSubEnumeratorState(
                         Arrays.asList(
                                 SubscriptionDestination.of("project", "a"),
-                                SubscriptionDestination.of("other-project", "b")));
+                                SubscriptionDestination.of("other-project", "b")),
+                        false);
 
         PubSubEnumeratorState restored =
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(state));
@@ -47,11 +50,46 @@ class PubSubEnumeratorStateSerializerTest {
     }
 
     @Test
-    void roundTripsAnEmptySubscriptionList() throws IOException {
-        PubSubEnumeratorState state = new PubSubEnumeratorState(Collections.emptyList());
+    void roundTripsAnAppliedStartPosition() throws IOException {
+        PubSubEnumeratorState state =
+                new PubSubEnumeratorState(
+                        Collections.singletonList(SubscriptionDestination.of("project", "a")),
+                        true);
 
         assertThat(serializer.deserialize(serializer.getVersion(), serializer.serialize(state)))
                 .isEqualTo(state);
+    }
+
+    @Test
+    void roundTripsAnEmptySubscriptionList() throws IOException {
+        PubSubEnumeratorState state = new PubSubEnumeratorState(Collections.emptyList(), false);
+
+        assertThat(serializer.deserialize(serializer.getVersion(), serializer.serialize(state)))
+                .isEqualTo(state);
+    }
+
+    @Test
+    void readsVersionOneStateAsHavingAppliedItsStartPosition() throws IOException {
+        // Hand-built rather than produced by serialize(), which now writes version 2.
+        DataOutputSerializer out = new DataOutputSerializer(64);
+        out.writeInt(1);
+        out.writeUTF("project");
+        out.writeUTF("a");
+
+        PubSubEnumeratorState restored = serializer.deserialize(1, out.getCopyOfBuffer());
+
+        assertThat(restored.getSubscriptions())
+                .containsExactly(SubscriptionDestination.of("project", "a"));
+        // A job checkpointed before the start position existed is already consuming; seeking it
+        // because the connector was upgraded would rewind its subscriptions.
+        assertThat(restored.isStartPositionApplied()).isTrue();
+    }
+
+    @Test
+    void writesVersionTwo() {
+        // Pinned, so changing the format without bumping the version cannot pass unnoticed: the
+        // version is what tells a restore which of the two layouts the bytes are in.
+        assertThat(serializer.getVersion()).isEqualTo(2);
     }
 
     @Test

@@ -24,6 +24,7 @@ import javax.annotation.Nullable;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Immutable configuration of a Pub/Sub source, assembled by {@link PubSubSourceBuilder} and shipped
@@ -37,30 +38,49 @@ public final class PubSubSourceConfig<T> implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private final List<SubscriptionDestination> subscriptions;
+    private final Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions;
     private final PubSubDeserializationSchema<T> deserializationSchema;
     private final OrderingMode orderingMode;
     private final PubSubSubscriberOptions subscriberOptions;
     private final DeserializationFailurePolicy deserializationFailurePolicy;
+    private final StartPosition startPosition;
     @Nullable private final String emulatorEndpoint;
 
     PubSubSourceConfig(
             List<SubscriptionDestination> subscriptions,
+            Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions,
             PubSubDeserializationSchema<T> deserializationSchema,
             OrderingMode orderingMode,
             PubSubSubscriberOptions subscriberOptions,
             DeserializationFailurePolicy deserializationFailurePolicy,
+            StartPosition startPosition,
             @Nullable String emulatorEndpoint) {
         this.subscriptions = subscriptions;
+        this.createOptions = createOptions;
         this.deserializationSchema = deserializationSchema;
         this.orderingMode = orderingMode;
         this.subscriberOptions = subscriberOptions;
         this.deserializationFailurePolicy = deserializationFailurePolicy;
+        this.startPosition = startPosition;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
     /** Returns the subscriptions to consume, in assignment order. */
     public List<SubscriptionDestination> getSubscriptions() {
         return subscriptions;
+    }
+
+    /**
+     * Returns the settings each subscription is created with if it is absent, keyed by
+     * subscription. A subscription missing from this map must already exist.
+     */
+    public Map<SubscriptionDestination, SubscriptionCreateOptions> getCreateOptions() {
+        return createOptions;
+    }
+
+    /** Returns where the source starts consuming. */
+    public StartPosition getStartPosition() {
+        return startPosition;
     }
 
     /** Returns the deserialization schema. */

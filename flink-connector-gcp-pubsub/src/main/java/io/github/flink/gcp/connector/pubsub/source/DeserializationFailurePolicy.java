@@ -22,8 +22,8 @@ import org.apache.flink.annotation.PublicEvolving;
  * What the source does with a message its deserialization schema cannot convert.
  *
  * <p>Set via {@link
- * PubSubSourceBuilder#deserializationFailurePolicy(DeserializationFailurePolicy)}. Either way the
- * failure is counted in Flink's standard {@code numRecordsInErrors} metric.
+ * PubSubSourceBuilder#deserializationFailurePolicy(DeserializationFailurePolicy)}. Whichever is
+ * chosen, the failure is counted in Flink's standard {@code numRecordsInErrors} metric.
  */
 @PublicEvolving
 public enum DeserializationFailurePolicy {
@@ -45,5 +45,48 @@ public enum DeserializationFailurePolicy {
      * emitted prefix has already reached the output and cannot be recalled — so a partial message
      * is discarded partially.
      */
-    DROP
+    DROP,
+
+    /**
+     * Returns the message to Pub/Sub for redelivery and carries on, leaving what to do with it to
+     * the subscription's dead-letter policy: each redelivery raises the message's delivery attempt
+     * count until Pub/Sub forwards it to the dead-letter topic.
+     *
+     * <p><b>Requires a dead-letter policy on every subscription</b>, which the source checks at
+     * startup and refuses to run without. Nacking does not fail the job, so without one a message
+     * the schema can never convert is redelivered forever, invisibly.
+     *
+     * <p>Dead-lettering counts deliveries rather than causes, so an unrelated job restart raises
+     * the same counter: set the subscription's delivery-attempt limit high enough that ordinary
+     * failovers do not dead-letter healthy messages.
+     *
+     * <p>Like {@link #DROP}, a schema that emitted records before failing keeps those, so the
+     * message is both partially emitted and redelivered in full.
+     */
+    NACK(true);
+
+    private final boolean requiresDeadLetterPolicy;
+
+    DeserializationFailurePolicy() {
+        this(false);
+    }
+
+    DeserializationFailurePolicy(boolean requiresDeadLetterPolicy) {
+        this.requiresDeadLetterPolicy = requiresDeadLetterPolicy;
+    }
+
+    /**
+     * Returns whether this policy needs a dead-letter policy on the subscription, which the source
+     * checks at startup.
+     *
+     * <p>A property of the policy rather than a comparison at the call site, because the constraint
+     * belongs next to the constant that creates it: a future policy that nacks has to answer this,
+     * and the check two packages away would otherwise silently let it through. What makes a nack
+     * need one is not the nack but the job surviving it — the message comes back and fails again
+     * forever. The reader also nacks when emitting a message downstream fails, and that one needs
+     * nothing behind it because it rethrows and the job fails visibly.
+     */
+    public boolean requiresDeadLetterPolicy() {
+        return requiresDeadLetterPolicy;
+    }
 }
