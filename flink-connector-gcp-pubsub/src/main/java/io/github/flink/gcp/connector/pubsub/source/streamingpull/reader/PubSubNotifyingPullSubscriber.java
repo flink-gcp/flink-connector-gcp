@@ -170,7 +170,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     @Override
-    public void close() throws Exception {
+    public void shutdown() {
         synchronized (this) {
             if (closed) {
                 return;
@@ -180,7 +180,15 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
             messages.clear();
         }
         ackTracker.nackSplit(splitId);
-        stopQuietly();
+        // Asked to stop but not waited for, so a reader owning several splits can start every
+        // shutdown before it waits on any.
+        subscriber.stopAsync();
+    }
+
+    @Override
+    public void close() throws Exception {
+        shutdown();
+        awaitTerminated();
     }
 
     /**
@@ -189,10 +197,13 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
      * the JVM exits but loses nothing.
      */
     private void stopQuietly() {
+        subscriber.stopAsync();
+        awaitTerminated();
+    }
+
+    private void awaitTerminated() {
         try {
-            subscriber
-                    .stopAsync()
-                    .awaitTerminated(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            subscriber.awaitTerminated(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException | RuntimeException e) {
             LOG.warn(
                     "The Pub/Sub subscriber for subscription {} did not shut down cleanly.",

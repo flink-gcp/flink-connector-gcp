@@ -35,10 +35,22 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
 
     @Nullable private IOException failure;
     private boolean closed;
+    private boolean shutdownRequested;
     private boolean closeThrows;
+
+    /** Set by {@link #recordCallsInto}; shared across the subscribers of one test. */
+    @Nullable private List<String> calls;
+
+    private String name = "";
 
     FakeNotifyingPullSubscriber(Runnable dataAvailableSignal) {
         this.dataAvailableSignal = dataAvailableSignal;
+    }
+
+    /** Names this subscriber in the recorded call order. */
+    FakeNotifyingPullSubscriber named(String name) {
+        this.name = name;
+        return this;
     }
 
     /** Buffers a message as the client library would, and wakes a blocked fetch. */
@@ -61,6 +73,17 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
         return closed;
     }
 
+    boolean isShutdownRequested() {
+        return shutdownRequested;
+    }
+
+    /**
+     * Records the order shutdowns and closes happened in, shared by every subscriber of one test.
+     */
+    void recordCallsInto(List<String> calls) {
+        this.calls = calls;
+    }
+
     @Override
     public List<PubsubMessage> pullMessages(int maxMessages) throws IOException {
         if (failure != null) {
@@ -74,10 +97,27 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     @Override
+    public void shutdown() {
+        if (shutdownRequested) {
+            return;
+        }
+        shutdownRequested = true;
+        record("shutdown");
+    }
+
+    @Override
     public void close() throws Exception {
+        shutdown();
         closed = true;
+        record("close");
         if (closeThrows) {
             throw new IOException("close failed");
+        }
+    }
+
+    private void record(String call) {
+        if (calls != null) {
+            calls.add(call + ":" + name);
         }
     }
 }

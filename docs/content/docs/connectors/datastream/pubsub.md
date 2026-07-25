@@ -256,9 +256,10 @@ settings, which for a subscriber means it stops pulling rather than blocking a t
 **The subscriber shutdown mode is fixed at `NACK_IMMEDIATELY`** and deliberately not a knob. The
 SDK's `WAIT_FOR_PROCESSING` default waits for acknowledgements that only arrive at checkpoint
 completion — which never happens during shutdown — so it would stall every close. Only
-`shutdownTimeout` is configurable, and because a reader closes its splits' subscribers one after
-another it is paid per split: keep the total under Flink's `source.reader.close.timeout` (30 s by
-default), or a split whose turn never comes leaves its messages to expire instead of being nacked.
+`shutdownTimeout` is configurable, and it bounds a reader's whole close rather than each split's:
+the reader nacks every split's messages and asks every client to stop before it waits on any, so
+the waits overlap however many splits it owns. Keep it under Flink's `source.reader.close.timeout`
+(30 s by default).
 
 **`parallelPullCount` cannot be combined with `orderingMode(PER_KEY)`** — the source builder
 rejects it, for the reason given under [Message ordering](#message-ordering): callback

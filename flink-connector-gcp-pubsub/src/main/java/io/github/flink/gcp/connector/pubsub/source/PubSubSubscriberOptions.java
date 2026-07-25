@@ -379,15 +379,15 @@ public final class PubSubSubscriberOptions implements Serializable {
         }
 
         /**
-         * Sets how long closing one subscriber waits for it to release its messages. Defaults to 5
-         * s.
+         * Sets how long closing a subscriber waits for it to release its messages. Defaults to 5 s.
          *
-         * <p>A reader closes its splits' subscribers one after another, so this budget is paid per
-         * split and the total must stay under Flink's {@code source.reader.close.timeout} (30 s by
-         * default): a split whose turn never comes is a split whose messages are not nacked, so
-         * they only return after their acknowledgement deadline instead of at once.
+         * <p>It bounds a reader's whole close, not each split's: the reader nacks every split and
+         * asks every client to stop before it waits on any, so the waits overlap however many
+         * splits it owns. Keep it under Flink's {@code source.reader.close.timeout} (30 s by
+         * default), past which a reader is abandoned mid-close and the messages it had not yet
+         * released only return after their acknowledgement deadline.
          *
-         * @param shutdownTimeout the per-subscriber shutdown budget, positive
+         * @param shutdownTimeout the shutdown budget, positive
          * @return this builder
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {

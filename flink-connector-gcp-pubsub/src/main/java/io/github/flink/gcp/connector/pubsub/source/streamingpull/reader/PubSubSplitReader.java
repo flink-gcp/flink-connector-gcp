@@ -221,6 +221,16 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
     @Override
     public void close() throws Exception {
         try {
+            // Start every shutdown before waiting on any. shutdown() nacks the split's messages and
+            // returns at once, while the wait inside close() costs up to shutdownTimeout each.
+            // Waiting one subscriber at a time costs splits × timeout — past roughly six splits on
+            // one reader that exceeds Flink's source.reader.close.timeout (30 s by default), and
+            // the splits whose turn never came would not have been nacked at all, leaving their
+            // messages to expire instead. Starting them all first overlaps the waits, so the total
+            // is one timeout however many splits the reader owns.
+            for (NotifyingPullSubscriber subscriber : subscribers.values()) {
+                subscriber.shutdown();
+            }
             // closeAll keeps closing after a failure and reports the rest as suppressed: every
             // subscriber left open holds messages Pub/Sub would only redeliver once their
             // acknowledgement deadline expires.
