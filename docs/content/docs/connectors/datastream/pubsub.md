@@ -169,10 +169,18 @@ auto-creation may trigger.
 publish fails the job immediately with a message naming the disposition.
 
 With message ordering enabled, the repair preserves per-key order: after a per-key failure the
-SDK publisher pauses the key and cancels its queued publishes in order; those cascade
-cancellations are parked behind the parked `NOT_FOUND`, each repair attempt calls
-`resumePublish` for the batch's keys before republishing, and the batch is republished in
-original arrival order. Cross-key and cross-topic order are unaffected.
+SDK publisher pauses the key and cancels its queued publishes; those cascade cancellations are
+parked alongside the `NOT_FOUND` that caused them, each repair attempt calls `resumePublish` for
+the batch's keys before republishing, and the batch is republished in **publish order**.
+Cross-key and cross-topic order are unaffected.
+
+Publish order is recovered by sorting the parked batch on a per-writer publish sequence, not by
+the order the failures are observed in. The SDK cancels queued publishes from its own thread, so a
+cascade can be reported *before* the failure that caused it — anything derived from that
+observation order, including deciding whether to park a cascade based on whether something is
+parked already, is a race (#78). One consequence is worth knowing: since a cancellation is never
+itself a root cause, one is always parked for repair under `CREATE_IF_NEEDED` rather than failing
+the job. Under `CREATE_NEVER` nothing is parked at all, so no topic is ever created.
 
 Caveats: without ordering keys, repaired messages are republished after later writes may have
 published (no guarantee regression — the sink is at-least-once); a repair inside `flush()`

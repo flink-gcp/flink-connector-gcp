@@ -108,7 +108,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
             writer.close();
         }
 
-        List<PubsubMessage> messages = pullMessages("attributes-sub", 10);
+        List<PubsubMessage> messages = pullMessagesUntil("attributes-sub", 1, PULL_DEADLINE);
         assertThat(messages).hasSize(1);
         assertThat(messages.get(0).getData().toString(StandardCharsets.UTF_8)).isEqualTo("hello");
         assertThat(messages.get(0).getAttributesMap()).containsExactly(Map.entry("length", "5"));
@@ -137,7 +137,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
             writer.close();
         }
 
-        List<PubsubMessage> messages = pullMessages("ordering-sub", 10);
+        List<PubsubMessage> messages = pullMessagesUntil("ordering-sub", 5, PULL_DEADLINE);
         assertThat(perKeyPayloads(messages, "k1")).containsExactly("k1:1", "k1:2", "k1:3");
         assertThat(perKeyPayloads(messages, "k2")).containsExactly("k2:1", "k2:2");
     }
@@ -171,7 +171,10 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
             writer.close();
         }
 
-        List<PubsubMessage> messages = pullMessages("ordering-auto-created-sub", 10);
+        // Retry the pull rather than assuming one returns both: a single pull is not guaranteed to
+        // return everything outstanding, which is a flake independent of what this test asserts.
+        List<PubsubMessage> messages =
+                pullMessagesUntil("ordering-auto-created-sub", 2, PULL_DEADLINE);
         assertThat(perKeyPayloads(messages, "k1")).containsExactly("k1:4", "k1:5");
     }
 
