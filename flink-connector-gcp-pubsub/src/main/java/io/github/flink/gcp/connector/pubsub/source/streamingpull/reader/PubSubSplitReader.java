@@ -95,8 +95,9 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
      * @param ackTracker tracks the acknowledgement lifecycle of received messages
      * @param options the subscriber tuning options, which carry the per-fetch drain size and the
      *     per-subscriber shutdown budget
-     * @param checkpointDetector fails the reader if checkpoints never arrive; evaluated from {@link
-     *     #fetch()} because the state it detects is the state with no records
+     * @param checkpointDetector fails the reader if checkpoints never arrive; armed by the first
+     *     split assignment and evaluated from {@link #fetch()}, because the state it detects is the
+     *     state with no records
      */
     public PubSubSplitReader(
             SubscriberFactory subscriberFactory,
@@ -162,6 +163,12 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
         if (splitsChange instanceof SplitsAddition) {
             for (SubscriptionSplit split : splitsChange.splits()) {
                 addSplit(split);
+            }
+            if (!splitsChange.splits().isEmpty()) {
+                // The detector's budget measures an interval in which there is something to
+                // checkpoint, so it starts when the reader is first given work rather than when it
+                // is created — the enumerator assigns splits some time after that.
+                checkpointDetector.startBudget();
             }
         } else if (splitsChange instanceof SplitsRemoval) {
             for (SubscriptionSplit split : splitsChange.splits()) {

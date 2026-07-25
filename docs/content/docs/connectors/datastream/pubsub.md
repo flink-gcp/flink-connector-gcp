@@ -488,7 +488,10 @@ than read the configuration: a reader is handed the *TaskManager* configuration,
 `env.enableCheckpointing(...)` writes into the *job* configuration, so the interval is usually
 invisible from inside the source and its absence proves nothing. The check runs from the fetch
 loop, not the record path, because the stalled state is precisely the state with no records — once
-flow control fills the client stops delivering and nothing would poll again. Raise
+flow control fills the client stops delivering and nothing would poll again. The budget is measured
+from the reader's first split assignment, not from when the reader is created: a reader that has
+been given no subscription yet has nothing to checkpoint, so counting that time against it would
+report a missing checkpoint on a job that is checkpointing normally. Raise
 `firstCheckpointTimeout(...)` for a job that legitimately checkpoints less often, or set it to
 `Duration.ZERO` to switch the detector off.
 

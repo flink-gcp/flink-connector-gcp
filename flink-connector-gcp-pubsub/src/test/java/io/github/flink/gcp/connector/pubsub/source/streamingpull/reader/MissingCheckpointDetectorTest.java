@@ -108,7 +108,47 @@ class MissingCheckpointDetectorTest {
         assertThat(detector(Duration.ZERO, 0).parkTimeoutMillis()).isZero();
     }
 
+    @Test
+    void staysQuietWhileTheBudgetHasNotBeenStarted() {
+        // The reader is created before the enumerator assigns it anything, so time spent with no
+        // split is time in which there was nothing to checkpoint.
+        MissingCheckpointDetector detector = unstartedDetector(BUDGET, 3);
+
+        clock.advanceTime(BUDGET.multipliedBy(10));
+
+        assertThatCode(detector::check).doesNotThrowAnyException();
+
+        // And a checkpoint arriving promptly after the work does keeps it quiet.
+        detector.startBudget();
+        clock.advanceTime(BUDGET.dividedBy(2));
+
+        assertThatCode(detector::check).doesNotThrowAnyException();
+    }
+
+    @Test
+    void anUnstartedDetectorLetsTheFetchParkIndefinitely() {
+        assertThat(unstartedDetector(BUDGET, 0).parkTimeoutMillis()).isZero();
+    }
+
+    @Test
+    void restartingTheBudgetDoesNotPushTheDeadlineOut() {
+        // A reader is assigned splits more than once; only the first assignment starts the clock.
+        MissingCheckpointDetector detector = detector(BUDGET, 3);
+
+        clock.advanceTime(BUDGET.dividedBy(2));
+        detector.startBudget();
+        clock.advanceTime(BUDGET.dividedBy(2));
+
+        assertThatThrownBy(detector::check).isInstanceOf(IllegalStateException.class);
+    }
+
     private MissingCheckpointDetector detector(Duration budget, int outstanding) {
+        MissingCheckpointDetector detector = unstartedDetector(budget, outstanding);
+        detector.startBudget();
+        return detector;
+    }
+
+    private MissingCheckpointDetector unstartedDetector(Duration budget, int outstanding) {
         return new MissingCheckpointDetector(budget, () -> outstanding, clock::relativeTimeNanos);
     }
 }

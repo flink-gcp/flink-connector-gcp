@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
+import org.apache.flink.util.clock.ManualClock;
 
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
@@ -48,6 +49,7 @@ class PubSubSplitReaderTest {
             new SubscriptionSplit(SubscriptionDestination.of("project", "sub-a"), "0");
     private static final SubscriptionSplit SPLIT_B =
             new SubscriptionSplit(SubscriptionDestination.of("project", "sub-b"), "1");
+    private static final Duration BUDGET = Duration.ofMinutes(10);
 
     private final Map<String, FakeNotifyingPullSubscriber> subscribers = new HashMap<>();
 
@@ -244,7 +246,47 @@ class PubSubSplitReaderTest {
                         "close:" + SPLIT_A.splitId(), "close:" + SPLIT_B.splitId());
     }
 
+    @Test
+    void theMissingCheckpointBudgetOnlyStartsOnceTheReaderHasASplit() throws Exception {
+        // A reader is created before the enumerator assigns it anything, so a budget started at
+        // construction can be spent before there is anything to checkpoint. Failing then reports
+        // "enable checkpointing" against a job that checkpoints perfectly well.
+        ManualClock clock = new ManualClock();
+        PubSubSplitReader reader = reader(10, detector(clock));
+        clock.advanceTime(BUDGET.multipliedBy(10));
+
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        subscriberOf(SPLIT_A).deliver(message("a"));
+
+        assertThat(payloadsBySplit(reader.fetch()).get(SPLIT_A.splitId())).containsExactly("a");
+        reader.close();
+    }
+
+    @Test
+    void aSplitAssignmentArmsTheMissingCheckpointDetector() throws Exception {
+        ManualClock clock = new ManualClock();
+        PubSubSplitReader reader = reader(10, detector(clock));
+
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        clock.advanceTime(BUDGET);
+        subscriberOf(SPLIT_A).deliver(message("a"));
+
+        assertThatThrownBy(reader::fetch)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("No checkpoint has been taken");
+        reader.close();
+    }
+
+    private static MissingCheckpointDetector detector(ManualClock clock) {
+        return new MissingCheckpointDetector(BUDGET, () -> 1, clock::relativeTimeNanos);
+    }
+
     private PubSubSplitReader reader(int maxRecordsPerFetch) {
+        return reader(maxRecordsPerFetch, new MissingCheckpointDetector(Duration.ZERO, () -> 0));
+    }
+
+    private PubSubSplitReader reader(
+            int maxRecordsPerFetch, MissingCheckpointDetector checkpointDetector) {
         return new PubSubSplitReader(
                 (split, signal) -> {
                     FakeNotifyingPullSubscriber subscriber =
@@ -256,7 +298,7 @@ class PubSubSplitReaderTest {
                     return subscriber;
                 },
                 maxRecordsPerFetch,
-                new MissingCheckpointDetector(Duration.ZERO, () -> 0));
+                checkpointDetector);
     }
 
     private FakeNotifyingPullSubscriber subscriberOf(SubscriptionSplit split) {
