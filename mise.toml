@@ -5,6 +5,12 @@ maven = "latest"
 # Hugo needs Go to resolve the theme as a Hugo module.
 hugo-extended = "0.164.0"
 go = "1.26"
+# Lints scripts/. Pinned rather than taken from the runner image, which carries
+# 0.9.0 on ubuntu-24.04 and 0.11.0 on 26.04 — when ubuntu-latest migrates, the
+# newer release's added checks would fail a pull request that changed nothing.
+# CI installs this exact version from here (.github/workflows/ci.yaml), so there
+# is no second place to update.
+shellcheck = "0.11.0"
 
 [env]
 # Local, uncommitted settings — e.g. credentials and BQ_IT_* variables for the

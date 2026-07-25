@@ -15,13 +15,16 @@ BigQuery, Cloud Pub/Sub and Cloud Tasks, with Bigtable and Spanner planned.
 
 ## Build
 
-Requires JDK 17 and Maven (or use the included wrapper):
+Requires JDK 17 or 21 and Maven (or use the included wrapper):
 
 ```
 ./mvnw verify
 ```
 
-`main` targets Flink 2.x. Flink 1.20 support is planned on a dedicated branch.
+`main` supports **Flink 2.2 and 2.3**, mirroring Flink's own policy of supporting the current and
+the previous minor release. Flink 1.20, the 1.x LTS release, is planned on a dedicated branch.
+See [Supported versions](docs/content/_index.md#supported-versions) for how the range is verified
+and why a single artifact covers it.
 
 ## License
 

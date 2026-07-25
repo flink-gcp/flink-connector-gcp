@@ -27,6 +27,33 @@ Connectors for using Google Cloud services with [Apache Flink](https://flink.apa
 > Building from source is described in the
 > [repository README]({{< param BookRepo >}}#build).
 
+## Supported versions
+
+| | Supported |
+|---|---|
+| Apache Flink | 2.2, 2.3 |
+| Java | 17, 21 |
+
+The Flink range mirrors [Flink's own support policy](https://flink.apache.org/downloads/): the
+current and the previous minor release. A new Flink minor therefore moves both ends of the
+range, which is a deliberate change here rather than an automatic one — a weekly build covers
+every supported version, so widening or moving the range is backed by a green matrix instead of
+an assumption.
+
+One artifact covers the whole range. The connectors are compiled against the oldest supported
+minor, because compiling against the oldest and running on a newer one is the direction that
+works. That this actually holds is measured, not assumed: Flink promises source compatibility
+across minors for `@Public` API and nothing for `@PublicEvolving` or `@Experimental`, and only
+about half the Flink API these connectors touch is `@Public`. The weekly build rebuilds against
+the oldest supported minor and re-runs the entire test suite with the newest one on the
+classpath without recompiling, and also builds against the next unreleased Flink so that
+upstream changes surface before they ship.
+
+Java 11 is not supported even though Flink 2.x declares it, because the build targets bytecode
+17.
+
+Flink 1.20, the 1.x LTS release, will be supported on a dedicated branch.
+
 ## Connectors
 
 | Connector | Documentation |

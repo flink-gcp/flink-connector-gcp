@@ -16,6 +16,8 @@ permissions:
   contents: read
 
 jobs:
+  # Java sources only: spotless and checkstyle run inside `verify`. scripts/ and
+  # anything else Maven does not see are linted by lint.yaml.
   build:
     name: Build and test
     runs-on: ubuntu-latest

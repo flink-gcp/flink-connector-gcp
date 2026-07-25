@@ -1,0 +1,62 @@
+name: Lint
+
+# Linters for the parts of the repository Maven does not cover. Spotless and
+# checkstyle handle the Java sources inside `./mvnw verify` (ci.yaml); this is
+# where everything else goes — shellcheck today, and `tofu fmt`/`validate` once
+# the OpenTofu persistent layer lands (#5).
+#
+# Split out of ci.yaml so it reports in seconds instead of behind the
+# integration tests, and so mise's shims never share a PATH with setup-java's
+# JDK in the build job.
+on:
+  push:
+    branches:
+      - main
+      - v1.20
+    paths: &lint_paths
+      - 'scripts/**'
+      # A shellcheck version bump must run shellcheck. mise.toml is where that
+      # version is declared, so leaving it out would skip the lint in exactly
+      # the change that most needs it.
+      - 'mise.toml'
+      - '.github/workflows/lint.yaml'
+  pull_request:
+    paths: *lint_paths
+  workflow_dispatch:
+
+# NOTE: the paths filter means pull requests that touch none of the above never
+# report this workflow at all. That is fine while it is optional, but a required
+# check that never reports blocks a pull request forever — so making this one
+# required means either dropping the filter or adding a job that reports success
+# when the filter does not match. Same exposure as docs.yaml.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # install_args limits this to shellcheck — mise.toml also pins java, maven,
+      # hugo and go, none of which this job needs. The version comes from
+      # mise.toml, so it is declared once and is the same locally and here, and
+      # not the runner image's copy: that is 0.9.0 on ubuntu-24.04 and 0.11.0 on
+      # 26.04, so an ubuntu-latest migration would fail a pull request that
+      # changed nothing. The action caches the install by default, keyed partly
+      # on install_args.
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          install_args: shellcheck
+
+      - name: Run shellcheck
+        run: |
+          shellcheck --version
+          shellcheck scripts/*.sh
