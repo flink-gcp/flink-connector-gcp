@@ -6,8 +6,8 @@ later, paced by the queue's rate limit.
 | Feature | Status |
 |---|---|
 | Sink design (targets, task naming/dedup, rate limits, checkpoint semantics) | Design settled (#23) |
-| SinkV2 at-least-once sink; HTTP targets; fixed and per-record queue destinations | Planned (#24) |
-| Opt-in named-task deduplication | Planned (#24) |
+| SinkV2 at-least-once sink; HTTP targets; fixed and per-record queue destinations | Implemented (#24) |
+| Opt-in named-task deduplication | Implemented (#24) |
 | Emulator integration tests | Planned (#25) |
 | Per-record failure policy | Planned (#37) |
 | Table API / SQL support | Planned (#99) |
@@ -26,9 +26,9 @@ Sink<OrderEvent> sink =
 
 ## Documentation
 
-The design note — what the connector is for, targets and authorization, task naming and
-deduplication, delivery guarantees, why retries are the sink's responsibility here, and how queue
-rate limits relate to sink concurrency — is in
+The connector documentation — what the connector is for, targets and authorization, task naming and
+deduplication, delivery guarantees, why retries are the sink's responsibility here and how they are
+tuned, and how queue rate limits relate to sink concurrency — is in
 [docs/content/docs/connectors/datastream/cloudtasks.md](../docs/content/docs/connectors/datastream/cloudtasks.md)
 (rendered on the documentation site once it is published).
 
