@@ -1,0 +1,169 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.pubsub.source;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.util.Preconditions;
+
+import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreamingPullSource;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
+
+import javax.annotation.Nullable;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * Builder for Pub/Sub sources, obtained from {@link PubSubSource#builder()}.
+ *
+ * <p>Required settings: at least one subscription and a deserialization schema.
+ *
+ * @param <T> type of the records produced by the source
+ */
+@PublicEvolving
+public class PubSubSourceBuilder<T> {
+
+    private final List<SubscriptionDestination> subscriptions = new ArrayList<>();
+    private PubSubDeserializationSchema<T> deserializationSchema;
+    private OrderingMode orderingMode = OrderingMode.NONE;
+    @Nullable private String emulatorEndpoint;
+
+    PubSubSourceBuilder() {}
+
+    /**
+     * Adds a subscription to consume. Calling this several times, or combining it with {@link
+     * #subscriptions}, consumes every added subscription in one source.
+     *
+     * @param subscription the subscription
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> subscription(SubscriptionDestination subscription) {
+        this.subscriptions.add(
+                Preconditions.checkNotNull(subscription, "subscription must not be null"));
+        return this;
+    }
+
+    /**
+     * Adds subscriptions to consume.
+     *
+     * @param subscriptions the subscriptions
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> subscriptions(SubscriptionDestination... subscriptions) {
+        Preconditions.checkNotNull(subscriptions, "subscriptions must not be null");
+        for (SubscriptionDestination subscription : subscriptions) {
+            subscription(subscription);
+        }
+        return this;
+    }
+
+    /**
+     * Adds subscriptions to consume.
+     *
+     * @param subscriptions the subscriptions
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> subscriptions(Collection<SubscriptionDestination> subscriptions) {
+        Preconditions.checkNotNull(subscriptions, "subscriptions must not be null");
+        subscriptions.forEach(this::subscription);
+        return this;
+    }
+
+    /**
+     * Sets the record deserialization schema.
+     *
+     * @param deserializationSchema the deserialization schema
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> deserializationSchema(
+            PubSubDeserializationSchema<T> deserializationSchema) {
+        this.deserializationSchema =
+                Preconditions.checkNotNull(
+                        deserializationSchema, "deserializationSchema must not be null");
+        return this;
+    }
+
+    /**
+     * Sets whether the source preserves ordering-key delivery order. Defaults to {@link
+     * OrderingMode#NONE}.
+     *
+     * <p>{@link OrderingMode#PER_KEY} assigns each subscription to exactly one reader subtask, so
+     * source parallelism beyond the subscription count leaves subtasks idle. See the enum for the
+     * full guarantee and its cost.
+     *
+     * @param orderingMode the ordering mode
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> orderingMode(OrderingMode orderingMode) {
+        this.orderingMode =
+                Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
+        return this;
+    }
+
+    /**
+     * Points the source at a Pub/Sub emulator instead of the production service. Subscribers
+     * connect to the given {@code host:port} over a plaintext channel with no credentials, so this
+     * must only ever be used against an emulator (for example a testcontainers {@code
+     * PubSubEmulatorContainer}). Optional; when unset the source connects to Pub/Sub with
+     * application-default credentials.
+     *
+     * @param emulatorEndpoint the emulator endpoint as {@code host:port}
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
+        Preconditions.checkNotNull(emulatorEndpoint, "emulatorEndpoint must not be null");
+        Preconditions.checkArgument(
+                !emulatorEndpoint.trim().isEmpty(), "emulatorEndpoint must not be blank");
+        this.emulatorEndpoint = emulatorEndpoint;
+        return this;
+    }
+
+    /**
+     * Builds the source.
+     *
+     * @return the source
+     */
+    public Source<T, SubscriptionSplit, PubSubEnumeratorState> build() {
+        Preconditions.checkState(
+                deserializationSchema != null, "A deserialization schema is required.");
+        Preconditions.checkState(
+                !subscriptions.isEmpty(),
+                "At least one subscription is required: set subscription(...) or"
+                        + " subscriptions(...).");
+        Set<SubscriptionDestination> distinct = new LinkedHashSet<>(subscriptions);
+        Preconditions.checkState(
+                distinct.size() == subscriptions.size(),
+                "Subscriptions must be distinct, but %s were given: %s. Consuming one subscription"
+                        + " through several splits does not increase throughput — Pub/Sub already"
+                        + " balances a subscription across its subscriber clients.",
+                subscriptions.size(),
+                subscriptions);
+        return new PubSubStreamingPullSource<>(
+                new PubSubSourceConfig<>(
+                        Collections.unmodifiableList(new ArrayList<>(subscriptions)),
+                        deserializationSchema,
+                        orderingMode,
+                        emulatorEndpoint));
+    }
+}

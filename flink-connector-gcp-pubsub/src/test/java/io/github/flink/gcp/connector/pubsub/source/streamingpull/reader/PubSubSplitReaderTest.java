@@ -1,0 +1,243 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
+
+import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
+import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
+import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
+
+import com.google.protobuf.ByteString;
+import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/** Tests for {@link PubSubSplitReader}. */
+@Timeout(30)
+class PubSubSplitReaderTest {
+
+    private static final SubscriptionSplit SPLIT_A =
+            new SubscriptionSplit(SubscriptionDestination.of("project", "sub-a"), "0");
+    private static final SubscriptionSplit SPLIT_B =
+            new SubscriptionSplit(SubscriptionDestination.of("project", "sub-b"), "1");
+
+    private final Map<String, FakeNotifyingPullSubscriber> subscribers = new HashMap<>();
+
+    @Test
+    void drainsEveryAssignedSplitInOneFetch() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        subscriberOf(SPLIT_A).deliver(message("a1"), message("a2"));
+        subscriberOf(SPLIT_B).deliver(message("b1"));
+
+        RecordsWithSplitIds<PubsubMessage> records = reader.fetch();
+
+        assertThat(payloadsBySplit(records))
+                .containsExactlyInAnyOrderEntriesOf(
+                        Map.of(
+                                SPLIT_A.splitId(), List.of("a1", "a2"),
+                                SPLIT_B.splitId(), List.of("b1")));
+        reader.close();
+    }
+
+    @Test
+    void drainsInDeliveryOrderWhichIsWhatPreservesOrderingKeyOrder() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        subscriberOf(SPLIT_A).deliver(message("1"), message("2"), message("3"));
+
+        assertThat(payloadsBySplit(reader.fetch()).get(SPLIT_A.splitId()))
+                .containsExactly("1", "2", "3");
+        reader.close();
+    }
+
+    @Test
+    void capsEachSplitsDrainAtTheConfiguredMaximum() throws Exception {
+        PubSubSplitReader reader = reader(2);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        subscriberOf(SPLIT_A).deliver(message("1"), message("2"), message("3"));
+
+        assertThat(payloadsBySplit(reader.fetch()).get(SPLIT_A.splitId()))
+                .containsExactly("1", "2");
+        assertThat(payloadsBySplit(reader.fetch()).get(SPLIT_A.splitId())).containsExactly("3");
+        reader.close();
+    }
+
+    @Test
+    void assigningTheSameSplitTwiceOpensOneSubscriber() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        FakeNotifyingPullSubscriber first = subscriberOf(SPLIT_A);
+
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+
+        assertThat(subscriberOf(SPLIT_A)).isSameAs(first);
+        reader.close();
+    }
+
+    @Test
+    void removingASplitClosesItsSubscriberAndStopsDrainingIt() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        FakeNotifyingPullSubscriber removed = subscriberOf(SPLIT_A);
+        removed.deliver(message("dropped"));
+
+        reader.handleSplitsChanges(new SplitsRemoval<>(List.of(SPLIT_A)));
+        subscriberOf(SPLIT_B).deliver(message("kept"));
+
+        assertThat(removed.isClosed()).isTrue();
+        assertThat(payloadsBySplit(reader.fetch())).containsOnlyKeys(SPLIT_B.splitId());
+        reader.close();
+    }
+
+    @Test
+    void pausedSplitsAreNotDrained() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        subscriberOf(SPLIT_A).deliver(message("a"));
+        subscriberOf(SPLIT_B).deliver(message("b"));
+
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        assertThat(payloadsBySplit(reader.fetch())).containsOnlyKeys(SPLIT_B.splitId());
+
+        reader.pauseOrResumeSplits(Collections.emptyList(), List.of(SPLIT_A));
+        assertThat(payloadsBySplit(reader.fetch())).containsOnlyKeys(SPLIT_A.splitId());
+        reader.close();
+    }
+
+    @Test
+    void subscriberFailureSurfacesFromFetch() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        subscriberOf(SPLIT_A).failWith(new IOException("stream broke"));
+
+        assertThatThrownBy(reader::fetch)
+                .isInstanceOf(IOException.class)
+                .hasMessage("stream broke");
+        reader.close();
+    }
+
+    @Test
+    void fetchBlocksUntilAMessageArrives() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+
+        CompletableFuture<RecordsWithSplitIds<PubsubMessage>> fetch =
+                CompletableFuture.supplyAsync(
+                        () -> {
+                            try {
+                                return reader.fetch();
+                            } catch (IOException e) {
+                                throw new IllegalStateException(e);
+                            }
+                        });
+        assertThat(fetch).isNotDone();
+
+        subscriberOf(SPLIT_A).deliver(message("late"));
+
+        assertThat(payloadsBySplit(fetch.get()).get(SPLIT_A.splitId())).containsExactly("late");
+        reader.close();
+    }
+
+    @Test
+    void wakeUpUnblocksAFetchWithNoData() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+
+        CompletableFuture<RecordsWithSplitIds<PubsubMessage>> fetch =
+                CompletableFuture.supplyAsync(
+                        () -> {
+                            try {
+                                return reader.fetch();
+                            } catch (IOException e) {
+                                throw new IllegalStateException(e);
+                            }
+                        });
+
+        // Repeat until it takes effect: a wake-up issued before the fetch armed its signal is
+        // simply not observed, and the test must not depend on winning that race.
+        while (!fetch.isDone()) {
+            reader.wakeUp();
+            Thread.sleep(10);
+        }
+
+        assertThat(payloadsBySplit(fetch.get())).isEmpty();
+        reader.close();
+    }
+
+    @Test
+    void closeShutsDownEverySubscriberEvenWhenOneFails() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        subscriberOf(SPLIT_A).failOnClose();
+
+        assertThatThrownBy(reader::close).isInstanceOf(IOException.class);
+
+        assertThat(subscriberOf(SPLIT_A).isClosed()).isTrue();
+        assertThat(subscriberOf(SPLIT_B).isClosed()).isTrue();
+    }
+
+    private PubSubSplitReader reader(int maxRecordsPerFetch) {
+        return new PubSubSplitReader(
+                (split, signal) -> {
+                    FakeNotifyingPullSubscriber subscriber =
+                            new FakeNotifyingPullSubscriber(signal);
+                    subscribers.put(split.splitId(), subscriber);
+                    return subscriber;
+                },
+                maxRecordsPerFetch);
+    }
+
+    private FakeNotifyingPullSubscriber subscriberOf(SubscriptionSplit split) {
+        return subscribers.get(split.splitId());
+    }
+
+    private static PubsubMessage message(String payload) {
+        return PubsubMessage.newBuilder()
+                .setMessageId(payload)
+                .setData(ByteString.copyFromUtf8(payload))
+                .build();
+    }
+
+    private static Map<String, List<String>> payloadsBySplit(
+            RecordsWithSplitIds<PubsubMessage> records) {
+        Map<String, List<String>> bySplit = new HashMap<>();
+        String splitId;
+        while ((splitId = records.nextSplit()) != null) {
+            List<String> payloads = new ArrayList<>();
+            PubsubMessage message;
+            while ((message = records.nextRecordFromSplit()) != null) {
+                payloads.add(message.getData().toString(StandardCharsets.UTF_8));
+            }
+            bySplit.put(splitId, payloads);
+        }
+        return bySplit;
+    }
+}
