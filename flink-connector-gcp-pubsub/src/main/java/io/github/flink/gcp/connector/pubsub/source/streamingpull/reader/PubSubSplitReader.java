@@ -165,9 +165,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
                 addSplit(split);
             }
             if (!splitsChange.splits().isEmpty()) {
-                // The detector's budget measures an interval in which there is something to
-                // checkpoint, so it starts when the reader is first given work rather than when it
-                // is created — the enumerator assigns splits some time after that.
+                // Not on an empty addition: the budget must not start before there is work.
                 checkpointDetector.startBudget();
             }
         } else if (splitsChange instanceof SplitsRemoval) {

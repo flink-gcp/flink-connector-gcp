@@ -277,6 +277,22 @@ class PubSubSplitReaderTest {
         reader.close();
     }
 
+    @Test
+    void anEmptyAdditionDoesNotStartTheMissingCheckpointBudget() throws Exception {
+        // Nothing was assigned, so there is still nothing to checkpoint.
+        ManualClock clock = new ManualClock();
+        PubSubSplitReader reader = reader(10, detector(clock));
+
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of()));
+        clock.advanceTime(BUDGET.multipliedBy(10));
+
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        subscriberOf(SPLIT_A).deliver(message("a"));
+
+        assertThat(payloadsBySplit(reader.fetch()).get(SPLIT_A.splitId())).containsExactly("a");
+        reader.close();
+    }
+
     private static MissingCheckpointDetector detector(ManualClock clock) {
         return new MissingCheckpointDetector(BUDGET, () -> 1, clock::relativeTimeNanos);
     }

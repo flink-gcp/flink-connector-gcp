@@ -117,8 +117,16 @@ class MissingCheckpointDetectorTest {
         clock.advanceTime(BUDGET.multipliedBy(10));
 
         assertThatCode(detector::check).doesNotThrowAnyException();
+    }
 
-        // And a checkpoint arriving promptly after the work does keeps it quiet.
+    @Test
+    void theDeadlineIsMeasuredFromTheStartCallAndNotFromTheEpoch() {
+        // The one case that catches a startBudget() which arms the detector but forgets to rebase
+        // the clock: every other test starts the budget at time zero, where a stale baseline and a
+        // fresh one are the same number.
+        MissingCheckpointDetector detector = unstartedDetector(BUDGET, 3);
+        clock.advanceTime(BUDGET.multipliedBy(10));
+
         detector.startBudget();
         clock.advanceTime(BUDGET.dividedBy(2));
 

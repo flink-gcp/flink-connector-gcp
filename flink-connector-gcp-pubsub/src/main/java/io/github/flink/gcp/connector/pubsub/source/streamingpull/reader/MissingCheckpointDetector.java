@@ -55,9 +55,10 @@ import java.util.function.LongSupplier;
  *
  * <p>{@link #checkpointTaken()} runs on the reader's task thread, which is what the one volatile
  * field is for. Everything else — including the {@link #startBudget()} call the split reader makes
- * from {@code handleSplitsChanges} — runs on the fetcher thread, which {@code SplitFetcher} runs
- * every {@code SplitReader} method on ("no other methods can be called in parallel"); the two
- * fields backing the budget are confined to it and need no synchronization.
+ * from {@code handleSplitsChanges} — runs on the fetcher thread: {@code SplitFetcher} enqueues
+ * split changes as tasks and runs them in the same loop as {@code fetch()}, and every {@code
+ * SplitReader} method but {@code wakeUp()} is documented not to run in parallel with another. The
+ * two fields backing the budget are therefore confined to that thread and need no synchronization.
  */
 @Internal
 public final class MissingCheckpointDetector {
@@ -74,10 +75,9 @@ public final class MissingCheckpointDetector {
     private final IntSupplier outstandingAckCount;
     private final LongSupplier nanoTime;
 
-    /** Confined to the fetcher thread; see the class javadoc. */
     private boolean started;
 
-    /** Confined to the fetcher thread; meaningful only once {@link #started}. */
+    /** Meaningful only once {@link #started}. */
     private long startNanos;
 
     private volatile boolean sawCheckpoint;
