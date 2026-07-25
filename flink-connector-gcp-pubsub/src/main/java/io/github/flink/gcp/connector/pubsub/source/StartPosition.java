@@ -181,33 +181,6 @@ public final class StartPosition implements Serializable {
         return mode != Mode.CONTINUE_FROM_SUBSCRIPTION;
     }
 
-    /**
-     * Resolves the instant to seek to.
-     *
-     * <p>{@link Mode#EARLIEST_RETAINED} resolves to the epoch: Pub/Sub documents a seek target
-     * older than the retention window as marking every <em>retained</em> message unacknowledged,
-     * which is exactly "as far back as this subscription goes" without having to ask how far that
-     * is.
-     *
-     * @param now the moment the seek is being issued, which {@link Mode#LATEST} resolves against
-     * @return the instant to seek to
-     * @throws IllegalStateException if this position needs no seek
-     */
-    public Instant resolveSeekTime(Instant now) {
-        Preconditions.checkNotNull(now, "now must not be null");
-        switch (mode) {
-            case EARLIEST_RETAINED:
-                return Instant.EPOCH;
-            case LATEST:
-                return now;
-            case TIMESTAMP:
-                return timestamp;
-            default:
-                throw new IllegalStateException(
-                        "Start position mode " + mode + " requires no seek.");
-        }
-    }
-
     @Override
     public boolean equals(Object o) {
         if (this == o) {

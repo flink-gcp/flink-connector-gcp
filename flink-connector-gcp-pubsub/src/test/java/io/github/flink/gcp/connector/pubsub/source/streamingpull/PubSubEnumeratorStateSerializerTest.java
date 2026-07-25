@@ -86,6 +86,13 @@ class PubSubEnumeratorStateSerializerTest {
     }
 
     @Test
+    void writesVersionTwo() {
+        // Pinned, so changing the format without bumping the version cannot pass unnoticed: the
+        // version is what tells a restore which of the two layouts the bytes are in.
+        assertThat(serializer.getVersion()).isEqualTo(2);
+    }
+
+    @Test
     void rejectsAnUnknownVersion() {
         assertThatThrownBy(() -> serializer.deserialize(42, new byte[0]))
                 .isInstanceOf(IOException.class)

@@ -24,12 +24,13 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Drives the production {@link SubscriptionAdmin} against the Pub/Sub emulator. */
 class PubSubSubscriptionAdminITCase extends AbstractPubSubSourceEmulatorITCase {
+
+    private static final Duration PULL_TIMEOUT = Duration.ofSeconds(30);
 
     @Test
     void describingAnAbsentSubscriptionReturnsNothing() throws Exception {
@@ -126,14 +127,14 @@ class PubSubSubscriptionAdminITCase extends AbstractPubSubSourceEmulatorITCase {
                             .build());
 
             publish("admin-seek-topic", "one", "two", "three");
-            assertThat(pullAndAck(subscription, 10))
+            assertThat(pullAndAckUntil(subscription, 3, PULL_TIMEOUT))
                     .containsExactlyInAnyOrder("one", "two", "three");
             assertThat(pullAndAck(subscription, 10)).isEmpty();
 
             admin.seek(subscription, Instant.EPOCH);
 
-            List<String> replayed = pullAndAck(subscription, 10);
-            assertThat(replayed).containsExactlyInAnyOrder("one", "two", "three");
+            assertThat(pullAndAckUntil(subscription, 3, PULL_TIMEOUT))
+                    .containsExactlyInAnyOrder("one", "two", "three");
         }
     }
 }

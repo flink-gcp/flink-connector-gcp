@@ -56,7 +56,7 @@ class SubscriptionCreateOptionsTest {
         assertThat(options.getMessageRetention()).isNull();
         assertThat(options.isRetainAckedMessages()).isFalse();
         assertThat(options.getExpirationTtl()).isNull();
-        assertThat(options.isExpirationDisabled()).isFalse();
+        assertThat(options.isNeverExpire()).isFalse();
         assertThat(options.getDeadLetterTopic()).isNull();
         assertThat(options.getDeadLetterMaxDeliveryAttempts()).isZero();
         assertThat(options.getFilter()).isNull();
@@ -91,7 +91,7 @@ class SubscriptionCreateOptionsTest {
                         .expirationTtl(Duration.ofDays(2))
                         .neverExpire()
                         .build();
-        assertThat(never.isExpirationDisabled()).isTrue();
+        assertThat(never.isNeverExpire()).isTrue();
         assertThat(never.getExpirationTtl()).isNull();
 
         SubscriptionCreateOptions ttl =
@@ -100,7 +100,7 @@ class SubscriptionCreateOptionsTest {
                         .neverExpire()
                         .expirationTtl(Duration.ofDays(2))
                         .build();
-        assertThat(ttl.isExpirationDisabled()).isFalse();
+        assertThat(ttl.isNeverExpire()).isFalse();
         assertThat(ttl.getExpirationTtl()).isEqualTo(Duration.ofDays(2));
     }
 

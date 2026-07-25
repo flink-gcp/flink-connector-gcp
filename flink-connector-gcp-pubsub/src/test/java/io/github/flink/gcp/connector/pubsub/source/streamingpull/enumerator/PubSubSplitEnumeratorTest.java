@@ -45,7 +45,9 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /** Tests for {@link PubSubSplitEnumerator}. */
 class PubSubSplitEnumeratorTest {
@@ -282,6 +284,115 @@ class PubSubSplitEnumeratorTest {
     }
 
     @Test
+    void eachSubscriptionIsCreatedWithItsOwnSettings() {
+        // The trap this guards: one options object shared by both would bind them to the same
+        // topic, and Pub/Sub gives each subscription a complete copy of that topic's stream.
+        SubscriptionCreateOptions optionsA =
+                SubscriptionCreateOptions.builder()
+                        .topic(TopicDestination.of(PROJECT, "topic-a"))
+                        .build();
+        SubscriptionCreateOptions optionsB =
+                SubscriptionCreateOptions.builder()
+                        .topic(TopicDestination.of(PROJECT, "topic-b"))
+                        .retainAckedMessages(true)
+                        .build();
+        FakeSubscriptionAdmin admin = new FakeSubscriptionAdmin();
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSourceConfig<?> config =
+                config(sourceBuilder().subscription(SUB_A, optionsA).subscription(SUB_B, optionsB));
+
+        start(context, config, admin, null);
+
+        assertThat(admin.createdWith)
+                .containsExactly(entry(SUB_A, optionsA), entry(SUB_B, optionsB));
+    }
+
+    @Test
+    void aSubscriptionCreatedConcurrentlyIsVerifiedByItsOwnSettings() {
+        // The race the read-back exists for: someone else created it first, with ordering off.
+        FakeSubscriptionAdmin admin = new FakeSubscriptionAdmin();
+        admin.createReturns = SubscriptionInfo.builder().messageOrderingEnabled(false).build();
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSourceConfig<?> config =
+                config(
+                        sourceBuilder()
+                                .subscription(
+                                        SUB_A,
+                                        SubscriptionCreateOptions.builder()
+                                                .topic(TOPIC)
+                                                .enableMessageOrdering(true)
+                                                .build())
+                                .orderingMode(OrderingMode.PER_KEY));
+        PubSubSplitEnumerator enumerator = new PubSubSplitEnumerator(context, config, admin, null);
+        enumerator.start();
+
+        assertThatThrownBy(context::runAsyncCalls)
+                .isInstanceOf(FlinkRuntimeException.class)
+                .rootCause()
+                .hasMessageContaining("orderingMode(PER_KEY)");
+    }
+
+    @Test
+    void nothingIsSoughtWhenAnotherSubscriptionIsAboutToBeRejected() {
+        // A seek rewrites state shared with every other consumer, so a deterministic rejection must
+        // not leave the first subscription already rewound.
+        FakeSubscriptionAdmin admin =
+                new FakeSubscriptionAdmin()
+                        .withSubscription(
+                                SUB_A,
+                                SubscriptionInfo.builder().messageOrderingEnabled(true).build())
+                        .withSubscription(SUB_B);
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSourceConfig<?> config =
+                config(
+                        sourceBuilder()
+                                .subscriptions(SUB_A, SUB_B)
+                                .orderingMode(OrderingMode.PER_KEY)
+                                .startPosition(StartPosition.earliestRetained()));
+        PubSubSplitEnumerator enumerator = new PubSubSplitEnumerator(context, config, admin, null);
+        enumerator.start();
+
+        assertThatThrownBy(context::runAsyncCalls).isInstanceOf(FlinkRuntimeException.class);
+
+        assertThat(admin.seekedSubscriptions).isEmpty();
+    }
+
+    @Test
+    void aFailingCreateFailsTheJob() {
+        FakeSubscriptionAdmin admin = new FakeSubscriptionAdmin();
+        admin.createFailure = new IOException("no pubsub.subscriptions.create permission");
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSourceConfig<?> config =
+                config(
+                        sourceBuilder()
+                                .subscription(
+                                        SUB_A,
+                                        SubscriptionCreateOptions.builder().topic(TOPIC).build()));
+        PubSubSplitEnumerator enumerator = new PubSubSplitEnumerator(context, config, admin, null);
+        enumerator.start();
+
+        assertThatThrownBy(context::runAsyncCalls)
+                .isInstanceOf(FlinkRuntimeException.class)
+                .rootCause()
+                .hasMessage("no pubsub.subscriptions.create permission");
+    }
+
+    @Test
+    void aFailingSeekFailsTheJob() {
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        admin.seekFailure = new IOException("no pubsub.subscriptions.update permission");
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, earliestRetained(SUB_A), admin, null);
+        enumerator.start();
+
+        assertThatThrownBy(context::runAsyncCalls)
+                .isInstanceOf(FlinkRuntimeException.class)
+                .rootCause()
+                .hasMessage("no pubsub.subscriptions.update permission");
+    }
+
+    @Test
     void anUnorderedSubscriptionIsRejectedUnderOrderedConsumption() {
         FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
         PubSubSplitEnumerator enumerator =
@@ -427,6 +538,43 @@ class PubSubSplitEnumeratorTest {
     }
 
     @Test
+    void eachStartPositionResolvesToItsSeekTime() {
+        Instant now = Instant.parse("2026-07-25T12:00:00Z");
+        Instant earlier = Instant.parse("2026-07-20T09:30:00Z");
+
+        // Pub/Sub treats a target older than the retention window as "everything still retained",
+        // so the epoch reaches as far back as the subscription goes.
+        assertThat(PubSubSplitEnumerator.seekTimeFor(StartPosition.earliestRetained(), now))
+                .isEqualTo(Instant.EPOCH);
+        assertThat(PubSubSplitEnumerator.seekTimeFor(StartPosition.latest(), now)).isEqualTo(now);
+        assertThat(PubSubSplitEnumerator.seekTimeFor(StartPosition.fromTimestamp(earlier), now))
+                .isEqualTo(earlier);
+        assertThatThrownBy(
+                        () ->
+                                PubSubSplitEnumerator.seekTimeFor(
+                                        StartPosition.continueFromSubscription(), now))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("requires no seek");
+    }
+
+    @Test
+    void theLatestStartPositionIsPinnedWhenTheCheckStarts() {
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSourceConfig<?> config =
+                config(sourceBuilder().subscription(SUB_A).startPosition(StartPosition.latest()));
+
+        Instant before = Instant.now();
+        start(context, config, admin, null);
+        Instant after = Instant.now();
+
+        // Resolved on the coordinator thread before the check runs, not while it is running, so it
+        // cannot drift with however long the admin calls take.
+        assertThat(admin.seekTimes).hasSize(1);
+        assertThat(admin.seekTimes.get(0)).isBetween(before, after);
+    }
+
+    @Test
     void aSnapshotTakenBeforeTheCheckCompletesRecordsThatTheSeekHasNotHappened() {
         FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
         PubSubSplitEnumerator enumerator =
@@ -456,6 +604,27 @@ class PubSubSplitEnumeratorTest {
 
         assertThat(admin.closeCalls).isEqualTo(1);
         assertThat(context.assignedSplits(0)).isEmpty();
+        // close() does not abort a check already running, so the seek it was issuing still lands.
+        assertThat(admin.seekedSubscriptions).containsExactly(SUB_A);
+    }
+
+    @Test
+    void aCheckThatFailsAfterClosingDoesNotFailTheJob() {
+        // Tearing the job down closes the admin under the check, so its failure is our own doing —
+        // reporting it would turn a clean cancellation into a failure blaming Pub/Sub.
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        admin.describeFailure = new IOException("client is shut down");
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, config(OrderingMode.NONE, SUB_A), admin, null);
+        enumerator.start();
+
+        assertThatCode(
+                        () -> {
+                            enumerator.close();
+                            context.runAsyncCalls();
+                        })
+                .doesNotThrowAnyException();
     }
 
     // -- Metrics ---------------------------------------------------------------------------

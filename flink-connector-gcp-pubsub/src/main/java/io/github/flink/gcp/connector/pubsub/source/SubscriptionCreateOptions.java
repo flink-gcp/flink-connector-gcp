@@ -63,7 +63,7 @@ public final class SubscriptionCreateOptions implements Serializable {
     @Nullable private final Duration messageRetention;
     private final boolean retainAckedMessages;
     @Nullable private final Duration expirationTtl;
-    private final boolean expirationDisabled;
+    private final boolean neverExpire;
     @Nullable private final TopicDestination deadLetterTopic;
     private final int deadLetterMaxDeliveryAttempts;
     @Nullable private final String filter;
@@ -75,7 +75,7 @@ public final class SubscriptionCreateOptions implements Serializable {
         this.messageRetention = builder.messageRetention;
         this.retainAckedMessages = builder.retainAckedMessages;
         this.expirationTtl = builder.expirationTtl;
-        this.expirationDisabled = builder.expirationDisabled;
+        this.neverExpire = builder.neverExpire;
         this.deadLetterTopic = builder.deadLetterTopic;
         this.deadLetterMaxDeliveryAttempts = builder.deadLetterMaxDeliveryAttempts;
         this.filter = builder.filter;
@@ -116,7 +116,7 @@ public final class SubscriptionCreateOptions implements Serializable {
     /**
      * Returns how long the subscription may sit inactive before Pub/Sub deletes it, or {@code null}
      * when the default (31 days) applies or when expiration is disabled — see {@link
-     * #isExpirationDisabled()}.
+     * #isNeverExpire()}.
      */
     @Nullable
     public Duration getExpirationTtl() {
@@ -124,8 +124,8 @@ public final class SubscriptionCreateOptions implements Serializable {
     }
 
     /** Returns whether the subscription is created never to expire. */
-    public boolean isExpirationDisabled() {
-        return expirationDisabled;
+    public boolean isNeverExpire() {
+        return neverExpire;
     }
 
     /**
@@ -162,7 +162,7 @@ public final class SubscriptionCreateOptions implements Serializable {
         SubscriptionCreateOptions that = (SubscriptionCreateOptions) o;
         return enableMessageOrdering == that.enableMessageOrdering
                 && retainAckedMessages == that.retainAckedMessages
-                && expirationDisabled == that.expirationDisabled
+                && neverExpire == that.neverExpire
                 && deadLetterMaxDeliveryAttempts == that.deadLetterMaxDeliveryAttempts
                 && topic.equals(that.topic)
                 && Objects.equals(ackDeadline, that.ackDeadline)
@@ -181,7 +181,7 @@ public final class SubscriptionCreateOptions implements Serializable {
                 messageRetention,
                 retainAckedMessages,
                 expirationTtl,
-                expirationDisabled,
+                neverExpire,
                 deadLetterTopic,
                 deadLetterMaxDeliveryAttempts,
                 filter);
@@ -201,8 +201,8 @@ public final class SubscriptionCreateOptions implements Serializable {
                 + retainAckedMessages
                 + ", expirationTtl="
                 + expirationTtl
-                + ", expirationDisabled="
-                + expirationDisabled
+                + ", neverExpire="
+                + neverExpire
                 + ", deadLetterTopic="
                 + deadLetterTopic
                 + ", deadLetterMaxDeliveryAttempts="
@@ -222,7 +222,7 @@ public final class SubscriptionCreateOptions implements Serializable {
         @Nullable private Duration messageRetention;
         private boolean retainAckedMessages;
         @Nullable private Duration expirationTtl;
-        private boolean expirationDisabled;
+        private boolean neverExpire;
         @Nullable private TopicDestination deadLetterTopic;
         private int deadLetterMaxDeliveryAttempts;
         @Nullable private String filter;
@@ -254,7 +254,7 @@ public final class SubscriptionCreateOptions implements Serializable {
          * @return this builder
          */
         public Builder ackDeadline(Duration ackDeadline) {
-            checkPositive(ackDeadline, "ackDeadline");
+            OptionChecks.checkPositive(ackDeadline, "ackDeadline");
             Preconditions.checkArgument(
                     ackDeadline.getNano() == 0,
                     "ackDeadline must be a whole number of seconds, but was %s; Pub/Sub stores it"
@@ -286,7 +286,7 @@ public final class SubscriptionCreateOptions implements Serializable {
          * @return this builder
          */
         public Builder messageRetention(Duration messageRetention) {
-            checkPositive(messageRetention, "messageRetention");
+            OptionChecks.checkPositive(messageRetention, "messageRetention");
             this.messageRetention = messageRetention;
             return this;
         }
@@ -313,9 +313,9 @@ public final class SubscriptionCreateOptions implements Serializable {
          * @return this builder
          */
         public Builder expirationTtl(Duration expirationTtl) {
-            checkPositive(expirationTtl, "expirationTtl");
+            OptionChecks.checkPositive(expirationTtl, "expirationTtl");
             this.expirationTtl = expirationTtl;
-            this.expirationDisabled = false;
+            this.neverExpire = false;
             return this;
         }
 
@@ -326,7 +326,7 @@ public final class SubscriptionCreateOptions implements Serializable {
          * @return this builder
          */
         public Builder neverExpire() {
-            this.expirationDisabled = true;
+            this.neverExpire = true;
             this.expirationTtl = null;
             return this;
         }
@@ -384,16 +384,6 @@ public final class SubscriptionCreateOptions implements Serializable {
                     "topic(...) is required: a subscription cannot be created without a topic to"
                             + " bind it to.");
             return new SubscriptionCreateOptions(this);
-        }
-
-        /**
-         * Duplicated from {@code PubSubSubscriberOptions.Builder}; extracting a shared
-         * option-validation helper is not worth a new public type for these call sites.
-         */
-        private static void checkPositive(Duration duration, String name) {
-            Preconditions.checkNotNull(duration, "%s must not be null", name);
-            Preconditions.checkArgument(
-                    !duration.isZero() && !duration.isNegative(), "%s must be positive", name);
         }
     }
 }

@@ -77,7 +77,8 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
     @Override
     @Nullable
     public SubscriptionInfo describe(SubscriptionDestination subscription) throws IOException {
-        try (SubscriptionAdminClient client = newClient()) {
+        SubscriptionAdminClient client = newClient();
+        try {
             return toInfo(client.getSubscription(subscription.toSubscriptionPath()));
         } catch (NotFoundException e) {
             return null;
@@ -92,22 +93,33 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
         } catch (RuntimeException e) {
             throw new IOException(
                     "Failed to read the settings of Pub/Sub subscription " + subscription, e);
+        } finally {
+            closeQuietly(client);
         }
     }
 
     @Override
-    public void create(SubscriptionDestination subscription, SubscriptionCreateOptions options)
+    public SubscriptionInfo create(
+            SubscriptionDestination subscription, SubscriptionCreateOptions options)
             throws IOException {
-        try (SubscriptionAdminClient client = newClient()) {
-            client.createSubscription(toSubscription(subscription, options));
+        SubscriptionAdminClient client = newClient();
+        try {
+            SubscriptionInfo created =
+                    toInfo(client.createSubscription(toSubscription(subscription, options)));
             LOG.info("Created Pub/Sub subscription {} with options {}", subscription, options);
+            return created;
         } catch (AlreadyExistsException e) {
             LOG.info(
                     "Pub/Sub subscription {} already exists, not creating it; its existing settings"
                             + " apply.",
                     subscription);
+            // Whoever won the race decided the settings, so read them back rather than assume the
+            // requested options took effect.
+            return toInfo(client.getSubscription(subscription.toSubscriptionPath()));
         } catch (RuntimeException e) {
             throw new IOException("Failed to create Pub/Sub subscription " + subscription, e);
+        } finally {
+            closeQuietly(client);
         }
     }
 
@@ -118,7 +130,8 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                         .setSubscription(subscription.toSubscriptionPath())
                         .setTime(toTimestamp(timestamp))
                         .build();
-        try (SubscriptionAdminClient client = newClient()) {
+        SubscriptionAdminClient client = newClient();
+        try {
             client.seek(request);
             LOG.info("Sought Pub/Sub subscription {} to {}", subscription, timestamp);
         } catch (RuntimeException e) {
@@ -130,12 +143,30 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                             + ". Seeking needs the pubsub.subscriptions.update permission"
                             + " (roles/pubsub.editor).",
                     e);
+        } finally {
+            closeQuietly(client);
         }
     }
 
     @Override
     public void close() {
         // Clients are short-lived within each call; there is nothing to release here.
+    }
+
+    /**
+     * Shuts the per-call client down, logging rather than propagating a failure.
+     *
+     * <p>Not try-with-resources, which would close before the catch clauses run and so report a
+     * channel that would not shut down cleanly as a failed call. That matters most for {@link
+     * #seek}: the restarted job re-seeks a subscription whose seek is wrongly reported as failed,
+     * and under a start position resolved against the clock that discards more messages each time.
+     */
+    private static void closeQuietly(SubscriptionAdminClient client) {
+        try {
+            client.close();
+        } catch (RuntimeException e) {
+            LOG.warn("Failed to close a Pub/Sub subscription admin client.", e);
+        }
     }
 
     /** Translates the options into the subscription to create. */
@@ -164,7 +195,7 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
         if (expirationTtl != null) {
             builder.setExpirationPolicy(
                     ExpirationPolicy.newBuilder().setTtl(toProtoDuration(expirationTtl)));
-        } else if (options.isExpirationDisabled()) {
+        } else if (options.isNeverExpire()) {
             // An expiration policy with no TTL is how Pub/Sub spells "never expires"; leaving the
             // policy unset would instead take the 31-day default.
             builder.setExpirationPolicy(ExpirationPolicy.getDefaultInstance());

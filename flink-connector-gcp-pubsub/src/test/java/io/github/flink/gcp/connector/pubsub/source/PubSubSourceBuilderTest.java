@@ -297,6 +297,41 @@ class PubSubSourceBuilderTest {
     }
 
     @Test
+    void rejectsCreateSettingsWithoutADeadLetterPolicyUnderANackingPolicy() {
+        // Caught here rather than at startup: otherwise the source creates the subscription, then
+        // refuses it, and crash-loops with an orphan accumulating a copy of the topic's stream.
+        SubscriptionCreateOptions createOptions =
+                SubscriptionCreateOptions.builder().topic(TOPIC).build();
+
+        assertThatThrownBy(
+                        () ->
+                                builder()
+                                        .subscription(SUB_A, createOptions)
+                                        .deserializationFailurePolicy(
+                                                DeserializationFailurePolicy.NACK)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("deserializationFailurePolicy(NACK)")
+                .hasMessageContaining("deadLetterPolicy(...)")
+                .hasMessageContaining(SUB_A.toString());
+    }
+
+    @Test
+    void acceptsANackingPolicyForASubscriptionItDoesNotCreate() {
+        // Only auto-created subscriptions are checkable here; an existing one is checked at
+        // startup.
+        assertThat(
+                        config(
+                                        builder()
+                                                .subscription(SUB_A)
+                                                .deserializationFailurePolicy(
+                                                        DeserializationFailurePolicy.NACK)
+                                                .build())
+                                .getDeserializationFailurePolicy())
+                .isEqualTo(DeserializationFailurePolicy.NACK);
+    }
+
+    @Test
     void rejectsNullStartPosition() {
         assertThatThrownBy(() -> PubSubSource.<String>builder().startPosition(null))
                 .isInstanceOf(NullPointerException.class)

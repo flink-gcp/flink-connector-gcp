@@ -51,8 +51,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
@@ -188,8 +191,30 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
     }
 
     /**
+     * Pulls and acknowledges until {@code expected} distinct payloads have arrived or the deadline
+     * passes, returning what did arrive.
+     *
+     * <p>A single pull is not guaranteed to return everything outstanding even when more is
+     * available, so an exact-count assertion on one pull would be flaky.
+     */
+    public static Set<String> pullAndAckUntil(
+            SubscriptionDestination subscription, int expected, Duration timeout)
+            throws InterruptedException {
+        Set<String> payloads = new LinkedHashSet<>();
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (payloads.size() < expected && System.nanoTime() < deadline) {
+            List<String> pulled = pullAndAck(subscription, expected);
+            if (pulled.isEmpty()) {
+                Thread.sleep(100);
+            }
+            payloads.addAll(pulled);
+        }
+        return payloads;
+    }
+
+    /**
      * Pulls up to {@code maxMessages} from the subscription and acknowledges them, returning their
-     * payloads.
+     * payloads. One pull only — use {@link #pullAndAckUntil} to assert on a known count.
      */
     public static List<String> pullAndAck(SubscriptionDestination subscription, int maxMessages) {
         PullResponse response =

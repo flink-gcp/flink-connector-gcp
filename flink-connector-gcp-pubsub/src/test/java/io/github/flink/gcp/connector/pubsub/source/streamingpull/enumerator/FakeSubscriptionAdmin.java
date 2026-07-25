@@ -39,8 +39,22 @@ final class FakeSubscriptionAdmin implements SubscriptionAdmin {
     private final Map<SubscriptionDestination, SubscriptionInfo> existing = new LinkedHashMap<>();
 
     final List<SubscriptionDestination> created = new ArrayList<>();
+
+    /**
+     * What each subscription was actually created with, so per-subscription settings are pinned.
+     */
+    final Map<SubscriptionDestination, SubscriptionCreateOptions> createdWith =
+            new LinkedHashMap<>();
+
     final List<SubscriptionDestination> seekedSubscriptions = new ArrayList<>();
     final List<Instant> seekTimes = new ArrayList<>();
+
+    /**
+     * Settings {@code create} reports back regardless of what it was asked for, standing in for a
+     * concurrent creator that won the race. {@code null} derives them from the options, as a real
+     * uncontended creation would.
+     */
+    @Nullable SubscriptionInfo createReturns;
 
     IOException describeFailure;
     IOException createFailure;
@@ -69,19 +83,24 @@ final class FakeSubscriptionAdmin implements SubscriptionAdmin {
     }
 
     @Override
-    public void create(SubscriptionDestination subscription, SubscriptionCreateOptions options)
+    public SubscriptionInfo create(
+            SubscriptionDestination subscription, SubscriptionCreateOptions options)
             throws IOException {
         if (createFailure != null) {
             throw createFailure;
         }
         created.add(subscription);
-        existing.put(
-                subscription,
-                SubscriptionInfo.builder()
-                        .messageOrderingEnabled(options.isEnableMessageOrdering())
-                        .retainAckedMessages(options.isRetainAckedMessages())
-                        .deadLetterPolicyConfigured(options.getDeadLetterTopic() != null)
-                        .build());
+        createdWith.put(subscription, options);
+        SubscriptionInfo info =
+                createReturns != null
+                        ? createReturns
+                        : SubscriptionInfo.builder()
+                                .messageOrderingEnabled(options.isEnableMessageOrdering())
+                                .retainAckedMessages(options.isRetainAckedMessages())
+                                .deadLetterPolicyConfigured(options.getDeadLetterTopic() != null)
+                                .build();
+        existing.put(subscription, info);
+        return info;
     }
 
     @Override

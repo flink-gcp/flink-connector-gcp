@@ -82,9 +82,8 @@ public final class PubSubEnumeratorStateSerializer
             String subscription = in.readUTF();
             subscriptions.add(SubscriptionDestination.of(project, subscription));
         }
-        // The short-circuit is what keeps the version-1 branch from reading a byte that is not
-        // there. Version 1 means the job predates the start position, so treat it as applied
-        // rather than seeking a running job's subscriptions on a connector upgrade.
+        // Version 1 predates the start position, so treat it as applied rather than seeking the
+        // subscriptions of a running job just because the connector was upgraded.
         boolean startPositionApplied =
                 version == VERSION_WITHOUT_START_POSITION || in.readBoolean();
         return new PubSubEnumeratorState(subscriptions, startPositionApplied);

@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.enumerator;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
@@ -24,7 +25,6 @@ import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 
-import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
 import io.github.flink.gcp.connector.pubsub.source.StartPosition;
@@ -113,7 +113,7 @@ public class PubSubSplitEnumerator
      */
     private final Set<Integer> pendingReaders = new LinkedHashSet<>();
 
-    private boolean preflightComplete;
+    private boolean startupCheckComplete;
 
     private boolean startPositionApplied;
 
@@ -173,7 +173,7 @@ public class PubSubSplitEnumerator
         Instant now = Instant.now();
         Instant seekTime =
                 !startPositionApplied && startPosition.requiresSeek()
-                        ? startPosition.resolveSeekTime(now)
+                        ? seekTimeFor(startPosition, now)
                         : null;
         if (seekTime != null && restoredState != null) {
             LOG.warn(
@@ -190,7 +190,8 @@ public class PubSubSplitEnumerator
                         + " register meanwhile wait for the check to finish.",
                 subscriptions.size(),
                 seekTime == null ? "" : ", seeking them to " + seekTime);
-        context.callAsync(() -> preflight(seekTime, backwardsSeek), this::onPreflightComplete);
+        context.callAsync(
+                () -> runStartupCheck(seekTime, backwardsSeek), this::onStartupCheckComplete);
     }
 
     /**
@@ -200,23 +201,27 @@ public class PubSubSplitEnumerator
      * arrive as arguments and the immutable configuration, and its only effect on the enumerator is
      * whether it throws.
      */
-    private Void preflight(@Nullable Instant seekTime, boolean backwardsSeek) throws IOException {
+    private Void runStartupCheck(@Nullable Instant seekTime, boolean backwardsSeek)
+            throws IOException {
         for (SubscriptionDestination subscription : config.getSubscriptions()) {
             SubscriptionInfo info = admin.describe(subscription);
             if (info == null) {
                 info = createSubscription(subscription);
             }
             verify(subscription, info, backwardsSeek);
-            if (seekTime != null) {
+        }
+        // Seeking only once every subscription has passed. A seek rewrites state shared with every
+        // other consumer, and the rejections are deterministic — so a rejection reached mid-loop
+        // would leave earlier subscriptions rewound by a job that then crash-loops.
+        if (seekTime != null) {
+            for (SubscriptionDestination subscription : config.getSubscriptions()) {
                 admin.seek(subscription, seekTime);
             }
         }
         return null;
     }
 
-    /**
-     * Creates a missing subscription, if these options authorise it, and reads back its settings.
-     */
+    /** Creates a missing subscription, if settings were supplied authorising that. */
     private SubscriptionInfo createSubscription(SubscriptionDestination subscription)
             throws IOException {
         SubscriptionCreateOptions options = config.getCreateOptions().get(subscription);
@@ -228,17 +233,7 @@ public class PubSubSplitEnumerator
                             + " subscription(destination, SubscriptionCreateOptions) on the source"
                             + " builder to have the source create it.");
         }
-        admin.create(subscription, options);
-        // Read back rather than deriving the settings from the options: a concurrent creator may
-        // have won the race, in which case its settings are the ones that apply.
-        SubscriptionInfo info = admin.describe(subscription);
-        if (info == null) {
-            throw new IOException(
-                    "Pub/Sub subscription "
-                            + subscription
-                            + " is still reported as absent immediately after creating it.");
-        }
-        return info;
+        return admin.create(subscription, options);
     }
 
     /** Rejects the subscription settings the source cannot work with. */
@@ -266,7 +261,8 @@ public class PubSubSplitEnumerator
                             + " exactly-once delivery on the subscription; the source is"
                             + " at-least-once by design.");
         }
-        if (nacksWithoutFailingTheJob() && !info.isDeadLetterPolicyConfigured()) {
+        if (config.getDeserializationFailurePolicy().requiresDeadLetterPolicy()
+                && !info.isDeadLetterPolicyConfigured()) {
             throw new IOException(
                     "deserializationFailurePolicy("
                             + config.getDeserializationFailurePolicy()
@@ -292,23 +288,37 @@ public class PubSubSplitEnumerator
     }
 
     /**
-     * Returns whether the configured failure policy nacks a message and lets the job carry on.
+     * Resolves the instant a start position seeks to.
      *
-     * <p>Deliberately a property, not an enum comparison spelled out at the call site: what makes a
-     * nack dangerous is not the nack, it is the job surviving it, so the message comes back and
-     * fails again forever. The reader also nacks when emitting a message downstream fails, and that
-     * one needs no dead-letter policy behind it because it rethrows and the job fails visibly. Any
-     * future policy that nacks and continues belongs here.
+     * <p>{@link StartPosition.Mode#EARLIEST_RETAINED} resolves to the epoch: Pub/Sub documents a
+     * seek target older than the retention window as marking every <em>retained</em> message
+     * unacknowledged, which is exactly "as far back as this subscription goes" without having to
+     * ask how far that is.
+     *
+     * @param startPosition a position that requires a seek
+     * @param now the moment the check started, which {@link StartPosition.Mode#LATEST} resolves
+     *     against
      */
-    private boolean nacksWithoutFailingTheJob() {
-        return config.getDeserializationFailurePolicy() == DeserializationFailurePolicy.NACK;
+    @VisibleForTesting
+    static Instant seekTimeFor(StartPosition startPosition, Instant now) {
+        switch (startPosition.getMode()) {
+            case EARLIEST_RETAINED:
+                return Instant.EPOCH;
+            case LATEST:
+                return now;
+            case TIMESTAMP:
+                return startPosition.getTimestamp();
+            default:
+                throw new IllegalStateException(
+                        "Start position " + startPosition + " requires no seek.");
+        }
     }
 
     /**
      * Runs on the coordinator thread once the check finishes, so it needs no synchronization.
      * Throwing is how a split enumerator fails the job from an asynchronous call.
      */
-    private void onPreflightComplete(@Nullable Void ignored, @Nullable Throwable error) {
+    private void onStartupCheckComplete(@Nullable Void ignored, @Nullable Throwable error) {
         if (closed) {
             // The job is being torn down; failing it now would turn a clean cancellation into a
             // failure whose cause is our own shutdown.
@@ -316,13 +326,13 @@ public class PubSubSplitEnumerator
         }
         if (error != null) {
             throw new FlinkRuntimeException(
-                    "Failed to prepare the Pub/Sub subscriptions "
+                    "Failed to verify the Pub/Sub subscriptions "
                             + config.getSubscriptions()
                             + " for consumption; the source cannot start.",
                     error);
         }
         startPositionApplied = true;
-        preflightComplete = true;
+        startupCheckComplete = true;
         LOG.info(
                 "Pub/Sub subscriptions verified; assigning splits to {} waiting subtask(s).",
                 pendingReaders.size());
@@ -359,7 +369,7 @@ public class PubSubSplitEnumerator
 
     @Override
     public void addReader(int subtaskId) {
-        if (!preflightComplete) {
+        if (!startupCheckComplete) {
             LOG.info(
                     "Source subtask {} registered before the Pub/Sub subscriptions were verified;"
                             + " it waits for the check to finish.",

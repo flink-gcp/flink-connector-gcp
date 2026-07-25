@@ -257,18 +257,27 @@ public class PubSubSourceBuilder<T> {
                         + " parallelPullCount(...) — ordered subscriptions always use exactly one"
                         + " connection — or use orderingMode(NONE).",
                 parallelPullCount);
-        if (orderingMode == OrderingMode.PER_KEY) {
-            for (Map.Entry<SubscriptionDestination, SubscriptionCreateOptions> entry :
-                    createOptions.entrySet()) {
-                Preconditions.checkState(
-                        entry.getValue().isEnableMessageOrdering(),
-                        "orderingMode(PER_KEY) requires every auto-created subscription to be"
-                                + " created with enableMessageOrdering(true), but the options for"
-                                + " %s leave it off. A subscription's ordering setting is fixed at"
-                                + " creation, so the source would create it and then have to reject"
-                                + " it at startup.",
-                        entry.getKey());
-            }
+        // Both settings are fixed at a subscription's creation and both are checked at startup, so
+        // catching them here is what stops the source creating a subscription it then refuses to
+        // consume — leaving an orphan behind and crash-looping.
+        for (Map.Entry<SubscriptionDestination, SubscriptionCreateOptions> entry :
+                createOptions.entrySet()) {
+            Preconditions.checkState(
+                    orderingMode != OrderingMode.PER_KEY
+                            || entry.getValue().isEnableMessageOrdering(),
+                    "orderingMode(PER_KEY) requires every auto-created subscription to be created"
+                            + " with enableMessageOrdering(true), but the settings for %s leave it"
+                            + " off.",
+                    entry.getKey());
+            Preconditions.checkState(
+                    !deserializationFailurePolicy.requiresDeadLetterPolicy()
+                            || entry.getValue().getDeadLetterTopic() != null,
+                    "deserializationFailurePolicy(%s) requires every auto-created subscription to be"
+                            + " created with deadLetterPolicy(...), but the settings for %s have"
+                            + " none. Nacking does not fail the job, so without one a message the"
+                            + " schema can never convert is redelivered forever.",
+                    deserializationFailurePolicy,
+                    entry.getKey());
         }
         return new PubSubStreamingPullSource<>(
                 new PubSubSourceConfig<>(

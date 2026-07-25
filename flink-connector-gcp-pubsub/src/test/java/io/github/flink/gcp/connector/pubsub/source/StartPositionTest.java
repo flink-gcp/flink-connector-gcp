@@ -46,30 +46,6 @@ class StartPositionTest {
     }
 
     @Test
-    void theEarliestRetainedPositionSeeksToTheEpoch() {
-        // Pub/Sub treats a target older than the retention window as "everything still retained",
-        // so this reaches as far back as the subscription goes without having to ask how far.
-        assertThat(StartPosition.earliestRetained().resolveSeekTime(NOW)).isEqualTo(Instant.EPOCH);
-    }
-
-    @Test
-    void theLatestPositionSeeksToTheMomentItIsApplied() {
-        assertThat(StartPosition.latest().resolveSeekTime(NOW)).isEqualTo(NOW);
-    }
-
-    @Test
-    void aTimestampPositionSeeksToItsTimestamp() {
-        assertThat(StartPosition.fromTimestamp(EARLIER).resolveSeekTime(NOW)).isEqualTo(EARLIER);
-    }
-
-    @Test
-    void resolvingASeekTimeForAPositionThatNeedsNoneFails() {
-        assertThatThrownBy(() -> StartPosition.continueFromSubscription().resolveSeekTime(NOW))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("requires no seek");
-    }
-
-    @Test
     void theModeAndTimestampPairBuildsTheSamePositionsAsTheFactories() {
         assertThat(StartPosition.of(StartPosition.Mode.CONTINUE_FROM_SUBSCRIPTION, null))
                 .isEqualTo(StartPosition.continueFromSubscription());

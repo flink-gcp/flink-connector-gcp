@@ -63,5 +63,30 @@ public enum DeserializationFailurePolicy {
      * <p>Like {@link #DROP}, a schema that emitted records before failing keeps those, so the
      * message is both partially emitted and redelivered in full.
      */
-    NACK
+    NACK(true);
+
+    private final boolean requiresDeadLetterPolicy;
+
+    DeserializationFailurePolicy() {
+        this(false);
+    }
+
+    DeserializationFailurePolicy(boolean requiresDeadLetterPolicy) {
+        this.requiresDeadLetterPolicy = requiresDeadLetterPolicy;
+    }
+
+    /**
+     * Returns whether this policy needs a dead-letter policy on the subscription, which the source
+     * checks at startup.
+     *
+     * <p>A property of the policy rather than a comparison at the call site, because the constraint
+     * belongs next to the constant that creates it: a future policy that nacks has to answer this,
+     * and the check two packages away would otherwise silently let it through. What makes a nack
+     * need one is not the nack but the job surviving it — the message comes back and fails again
+     * forever. The reader also nacks when emitting a message downstream fails, and that one needs
+     * nothing behind it because it rethrows and the job fails visibly.
+     */
+    public boolean requiresDeadLetterPolicy() {
+        return requiresDeadLetterPolicy;
+    }
 }

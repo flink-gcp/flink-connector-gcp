@@ -83,10 +83,26 @@ class PubSubSourceStartupITCase extends AbstractPubSubSourceEmulatorITCase {
                 sourceBuilder().subscription(subscription).build();
 
         assertThatThrownBy(() -> collect(source, 1))
-                .rootCause()
-                .hasMessageContaining("does not exist")
-                .hasMessageContaining("subscription(destination, SubscriptionCreateOptions)");
+                .hasStackTraceContaining("does not exist")
+                .hasStackTraceContaining("subscription(destination, SubscriptionCreateOptions)");
         assertThat(subscriptionExists(subscription)).isFalse();
+    }
+
+    @Test
+    void anUnorderedSubscriptionFailsTheJobUnderOrderedConsumption() throws Exception {
+        // The guard users are most likely to hit, and the one whose absence would be silent: the
+        // job would run and quietly deliver unordered messages.
+        SubscriptionDestination subscription = createTopicAndSubscription("startup-unordered", 10);
+
+        Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
+                sourceBuilder()
+                        .subscription(subscription)
+                        .orderingMode(OrderingMode.PER_KEY)
+                        .build();
+
+        assertThatThrownBy(() -> collect(source, 1))
+                .hasStackTraceContaining("orderingMode(PER_KEY)")
+                .hasStackTraceContaining("message ordering");
     }
 
     @Test
@@ -105,7 +121,7 @@ class PubSubSourceStartupITCase extends AbstractPubSubSourceEmulatorITCase {
         }
         publish("startup-seek-topic", "one", "two", "three");
         // Consumed and acknowledged by someone else, so the subscription's backlog is empty.
-        assertThat(pullAndAck(subscription, 10)).hasSize(3);
+        assertThat(pullAndAckUntil(subscription, 3, Duration.ofSeconds(30))).hasSize(3);
         assertThat(pullAndAck(subscription, 10)).isEmpty();
 
         Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
