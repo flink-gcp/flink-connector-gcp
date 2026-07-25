@@ -79,7 +79,8 @@ Moving the range means editing, in this order:
   5. CLAUDE.md                       the Version policy section
 
 Then re-run the binary-compatibility measurement against the new ceiling before
-claiming the range — the old measurement says nothing about the new pair. See
-the header of scripts/surefire-fingerprint.sh for the commands.
+claiming the range — the old measurement says nothing about the new pair:
+
+  just binary-compat $latest
 MSG
 exit 1

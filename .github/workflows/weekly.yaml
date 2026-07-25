@@ -97,6 +97,12 @@ jobs:
           java-version: ${{ matrix.jdk }}
           cache: maven
 
+      # Unpinned, and install-action rather than mise: see the note on the same
+      # step in ci.yaml.
+      - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
+        with:
+          tool: just
+
       - name: Resolve the Flink version for this row
         id: resolve
         run: |
@@ -112,8 +118,11 @@ jobs:
           echo "pom floor  : $(./mvnw -q -DforceStdout help:evaluate -Dexpression=flink.version)"
           echo "maven args : ${args:-(none)}"
 
+      # The floor row passes no arguments at all, so what it tests is whatever
+      # the pom pins — that is the point, and `just verify` takes the rest
+      # through to Maven unchanged.
       - name: Build and verify
-        run: ./mvnw -ntp ${{ steps.resolve.outputs.args }} verify
+        run: just verify ${{ steps.resolve.outputs.args }}
 
   # Does one artifact cover the whole supported range?
   #
@@ -142,34 +151,21 @@ jobs:
           java-version: '17'
           cache: maven
 
-      - name: Build against the floor
-        run: ./mvnw -ntp verify
+      # Unpinned, and install-action rather than mise: see the note on the same
+      # step in ci.yaml.
+      - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
+        with:
+          tool: just
 
-      # Captured before the second run overwrites the reports. The fingerprint is
-      # per-class rather than a single total, so a class that stops running is
-      # caught instead of being masked by another that gained tests.
-      - name: Record which tests the floor build ran
-        run: scripts/surefire-fingerprint.sh > /tmp/floor-tests.txt
-
-      # Plugin goals invoked directly, so no lifecycle phase runs and nothing is
-      # recompiled — only the resolved Flink on the classpath changes. The
-      # execution ids are required: the includes/excludes that separate unit
-      # tests from integration tests live in execution-level configuration in
-      # flink-connector-parent, and a bare `surefire:test` would ignore them and
-      # silently skip every ITCase.
-      - name: Re-run the floor-built classes on Flink ${{ env.FLINK_CEILING }}
-        run: >-
-          ./mvnw -ntp "-Dflink.version=$FLINK_CEILING"
-          surefire:test@default-test surefire:test@integration-tests
-
-      - name: Assert the same tests ran
-        run: |
-          scripts/surefire-fingerprint.sh > /tmp/target-tests.txt
-          if ! diff -u /tmp/floor-tests.txt /tmp/target-tests.txt; then
-              echo "::error::A different set of tests ran on Flink $FLINK_CEILING than on the floor, so this run proves nothing about binary compatibility."
-              exit 1
-          fi
-          echo "Same tests ran on both: $(wc -l < /tmp/floor-tests.txt) classes."
+      # One step rather than four, because the four are a sequence whose order
+      # is load-bearing — the fingerprint has to be captured between the two
+      # runs, and the surefire execution ids decide whether the ITCases run at
+      # all — and it is a sequence somebody reruns by hand the moment this job
+      # goes red. It has one definition, in the justfile, which is where those
+      # constraints are written down. The cost is that a failure here says which
+      # `==>` phase failed rather than which step.
+      - name: Build on the floor, re-run on Flink ${{ env.FLINK_CEILING }}
+        run: just binary-compat "$FLINK_CEILING"
 
   # Nothing else would tell us a new Flink minor shipped.
   #
@@ -191,5 +187,13 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      # Unpinned, and install-action rather than mise: see the note on the same
+      # step in ci.yaml.
+      - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
+        with:
+          tool: just
+
+      # The ceiling is passed explicitly. Run by hand the recipe derives it from
+      # this file, so either way FLINK_CEILING above stays its only home.
       - name: Compare the ceiling against Maven Central
-        run: scripts/check-flink-release.sh "$FLINK_CEILING"
+        run: just check-flink-release "$FLINK_CEILING"

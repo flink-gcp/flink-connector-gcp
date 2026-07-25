@@ -8,9 +8,17 @@ go = "1.26"
 # Lints scripts/. Pinned rather than taken from the runner image, which carries
 # 0.9.0 on ubuntu-24.04 and 0.11.0 on 26.04 — when ubuntu-latest migrates, the
 # newer release's added checks would fail a pull request that changed nothing.
-# CI installs this exact version from here (.github/workflows/ci.yaml), so there
-# is no second place to update.
+# CI installs this exact version from here (.github/workflows/lint.yaml), so
+# there is no second place to update.
 shellcheck = "0.11.0"
+# Task runner (justfile). A major-version specifier rather than an exact pin,
+# unlike shellcheck above: just guarantees that no 1.x release breaks an
+# existing justfile or a working command line, and that there will never be a
+# 2.0 — so a newer release cannot fail a pull request that changed nothing,
+# which is the whole reason shellcheck is pinned. CI installs it with
+# taiki-e/install-action, which takes no version file, and "any 1.x" is what
+# both sides then mean.
+just = "1"
 
 [env]
 # Local, uncommitted settings — e.g. credentials and BQ_IT_* variables for the
