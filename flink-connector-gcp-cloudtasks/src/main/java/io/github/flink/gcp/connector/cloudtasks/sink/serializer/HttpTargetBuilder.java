@@ -40,6 +40,10 @@ public final class HttpTargetBuilder {
      * Sets the schema serializing a record into the task's HTTP body, and binds the record type of
      * the chain.
      *
+     * <p>The body is sent under {@code POST} (the default), {@code PUT} and {@code PATCH}, the only
+     * methods Cloud Tasks accepts one on; under any other method the schema is left unused and the
+     * task carries no body.
+     *
      * @param body the body schema
      * @param <T> type of the records written by the sink
      * @return the serialization schema, ready to use or to layer further options onto

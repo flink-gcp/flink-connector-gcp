@@ -66,6 +66,32 @@ class HttpTargetSerializationSchemaTest {
     }
 
     @Test
+    void sendsNoBodyUnderAMethodThatForbidsOne() throws Exception {
+        // Cloud Tasks allows a body only on POST, PUT and PATCH, and rejects a task that carries
+        // one under any other method — so the body schema goes unused rather than failing every
+        // task at the service.
+        assertThat(
+                        schema().withMethod(HttpMethod.GET)
+                                .serialize("order-1")
+                                .getHttpRequest()
+                                .getBody())
+                .isEmpty();
+        assertThat(
+                        schema().withMethod(HttpMethod.DELETE)
+                                .serialize("order-1")
+                                .getHttpRequest()
+                                .getBody())
+                .isEmpty();
+        assertThat(
+                        schema().withMethod(HttpMethod.PATCH)
+                                .serialize("order-1")
+                                .getHttpRequest()
+                                .getBody()
+                                .toStringUtf8())
+                .isEqualTo("order-1");
+    }
+
+    @Test
     void toleratesAnEmptyOrAbsentHeaderExtraction() throws Exception {
         assertThat(
                         schema().withHeaders(element -> null)

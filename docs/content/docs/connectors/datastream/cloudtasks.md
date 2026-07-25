@@ -79,6 +79,11 @@ Sink<OrderEvent> sink =
   the schema *is* what the builder takes, so there is no terminal `build()` call. `withUrl(...)`
   resolves the target URL per record, which is the routing the queue-level `uriOverride` warning
   below is about; the fixed URL the chain started from is the default.
+- Cloud Tasks accepts a request **body only on `POST`, `PUT` and `PATCH`** — "it is an error to set
+  body on a task with an incompatible `HttpMethod`". Since `withBody(...)` is what binds the record
+  type, it cannot be omitted, so under any other method the schema sends no body and leaves the
+  body schema unused. The alternative, rejecting those methods outright, would leave no way to
+  dispatch a `GET` task short of implementing the SPI by hand.
 - `QueueDestination` is pure queue identity (`equals`/`hashCode` over project, location and queue)
   and can be resolved per record through `destinationResolver(...)`, exactly as the BigQuery and
   Pub/Sub sinks resolve tables and topics. Unlike those two this costs nothing: Cloud Tasks has no

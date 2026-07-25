@@ -78,6 +78,12 @@ public final class HttpTargetSerializationSchema<T> implements CloudTasksSeriali
     @Nullable private final String oauthScope;
 
     /**
+     * Whether the method allows a request body. Cloud Tasks accepts one only on {@code POST},
+     * {@code PUT} and {@code PATCH}, and rejects a task that carries one under any other method.
+     */
+    private final boolean carriesBody;
+
+    /**
      * The invariant part of every request this schema produces (URL, method, authorization token),
      * built once per task and copied per record. Transient because it is derived state: the schema
      * travels in the job graph as its plain fields.
@@ -103,6 +109,8 @@ public final class HttpTargetSerializationSchema<T> implements CloudTasksSeriali
         this.oidcAudience = oidcAudience;
         this.oauthServiceAccount = oauthServiceAccount;
         this.oauthScope = oauthScope;
+        this.carriesBody =
+                method == HttpMethod.POST || method == HttpMethod.PUT || method == HttpMethod.PATCH;
     }
 
     static <T> HttpTargetSerializationSchema<T> of(String url, SerializationSchema<T> body) {
@@ -114,6 +122,11 @@ public final class HttpTargetSerializationSchema<T> implements CloudTasksSeriali
     /**
      * Returns a schema sending its requests with the given HTTP method. Defaults to {@link
      * HttpMethod#POST}.
+     *
+     * <p>Cloud Tasks allows a request body only on {@code POST}, {@code PUT} and {@code PATCH} —
+     * setting one on any other method is an error the service rejects. Under a method that forbids
+     * a body the schema therefore sends none, and the body schema goes unused rather than failing
+     * every task at the service.
      *
      * @param method the HTTP method
      * @return the new schema
@@ -266,7 +279,9 @@ public final class HttpTargetSerializationSchema<T> implements CloudTasksSeriali
         if (urlExtractor != null) {
             request.setUrl(checkUrl(urlExtractor.extractUrl(element), "extracted url"));
         }
-        request.setBody(ByteString.copyFrom(body.serialize(element)));
+        if (carriesBody) {
+            request.setBody(ByteString.copyFrom(body.serialize(element)));
+        }
         if (headersExtractor != null) {
             Map<String, String> headers = headersExtractor.extractHeaders(element);
             if (headers != null && !headers.isEmpty()) {

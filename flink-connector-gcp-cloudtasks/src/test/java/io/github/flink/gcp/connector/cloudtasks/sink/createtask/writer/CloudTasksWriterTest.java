@@ -150,9 +150,27 @@ class CloudTasksWriterTest {
 
         // The same request is re-sent unchanged, and the backoff is waited out rather than spun on.
         assertThat(creator.requests).hasSize(3);
-        assertThat(creator.requests)
-                .allSatisfy(request -> assertThat(request).isEqualTo(creator.requests.get(0)));
+        assertThat(creator.requests.get(1)).isEqualTo(creator.requests.get(0));
+        assertThat(creator.requests.get(2)).isEqualTo(creator.requests.get(0));
         assertThat(time.getSleptMillis()).isPositive();
+    }
+
+    @Test
+    void aRetryOfANamedTaskTheServiceAlreadyCreatedSucceeds() throws Exception {
+        // The ambiguity naming exists to remove: a DEADLINE_EXCEEDED may mean the task was created
+        // anyway, and the retry then comes back ALREADY_EXISTS — which is the task being there,
+        // not a failure. Under unnamed tasks the same retry would silently duplicate.
+        CloudTasksWriter<String> writer =
+                writer(retrying(3, Duration.ofMillis(100)).taskIdExtractor(element -> element));
+        creator.enqueueFailure(StatusCode.Code.DEADLINE_EXCEEDED);
+        creator.enqueueFailure(StatusCode.Code.ALREADY_EXISTS);
+
+        writer.write("order-1", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(creator.requests).hasSize(2);
+        assertThat(creator.requests.get(1).getTask().getName())
+                .isEqualTo(creator.requests.get(0).getTask().getName());
     }
 
     @Test
