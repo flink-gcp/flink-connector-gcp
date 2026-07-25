@@ -58,7 +58,13 @@ limitations under the License.
         <flink.parent.artifactId>flink-connector-gcp-parent</flink.parent.artifactId>
 
         <!-- Main dependencies -->
-        <flink.version>2.1.2</flink.version>
+        <!-- The supported floor. Flink supports the current and the previous minor
+             release, so this project supports the same two and compiles against the
+             older of them: compiling against the floor and running on a newer minor
+             is the direction that works. Moving this is a deliberate change to the
+             version matrix in .github/workflows/weekly.yaml, never a dependabot
+             minor bump (see the ignore rule in .github/dependabot.yml). -->
+        <flink.version>2.2.1</flink.version>
         <google-cloud-libraries-bom.version>26.85.1</google-cloud-libraries-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.1</avro.version>
@@ -246,6 +252,11 @@ limitations under the License.
                         <exclude>mvnw</exclude>
                         <exclude>mvnw.cmd</exclude>
                         <exclude>mise.toml</exclude>
+                        <!-- Untracked personal mise override. rat scans the working
+                             tree, so without this a local mise.local.toml fails the
+                             license check at the parent module and aborts the build
+                             before any test runs, while CI stays green. -->
+                        <exclude>mise.local.toml</exclude>
                         <exclude>tools/japicmp-output/**</exclude>
                         <exclude>**/src/test/resources/**</exclude>
                         <!-- Documentation site: the Go module files are rewritten by
@@ -264,4 +275,28 @@ limitations under the License.
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Resolves Flink SNAPSHOT builds, for the early-warning row of the version
+             matrix (`-Pflink-snapshots -Dflink.version=2.4-SNAPSHOT`). The connector
+             parent declares a <pluginRepositories> entry only, so snapshot artifacts
+             are not otherwise resolvable. Activated explicitly rather than always on:
+             an unconditional snapshot repository slows every build down with update
+             checks and widens the set of hosts a release build trusts. -->
+        <profile>
+            <id>flink-snapshots</id>
+            <repositories>
+                <repository>
+                    <id>apache-snapshots</id>
+                    <url>https://repository.apache.org/content/repositories/snapshots/</url>
+                    <releases>
+                        <enabled>false</enabled>
+                    </releases>
+                    <snapshots>
+                        <enabled>true</enabled>
+                    </snapshots>
+                </repository>
+            </repositories>
+        </profile>
+    </profiles>
 </project>
