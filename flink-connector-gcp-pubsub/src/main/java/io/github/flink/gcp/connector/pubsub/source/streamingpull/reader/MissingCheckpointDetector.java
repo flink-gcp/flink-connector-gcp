@@ -118,6 +118,11 @@ public final class MissingCheckpointDetector {
 
     /**
      * Records that a checkpoint was taken, which retires the detector for the reader's lifetime.
+     *
+     * <p>The reader reports this from {@code snapshotState}, which {@code SourceOperator} calls on
+     * every barrier — one carrying no data, or reaching a reader that owns no split, counts. So the
+     * detector retires at the first barrier to reach the reader, and what it is left measuring is
+     * only the interval before a job's first checkpoint.
      */
     public void checkpointTaken() {
         sawCheckpoint = true;

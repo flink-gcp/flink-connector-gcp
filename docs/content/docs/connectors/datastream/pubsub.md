@@ -495,6 +495,13 @@ report a missing checkpoint on a job that is checkpointing normally. Raise
 `firstCheckpointTimeout(...)` for a job that legitimately checkpoints less often, or set it to
 `Duration.ZERO` to switch the detector off.
 
+The budget is spent only once, and only against a job's *first* checkpoint. The reader reports every
+checkpoint barrier — one that carries no data, or that reaches a reader owning no subscription,
+counts just as much — so a job that checkpoints at all retires the detector on its first barrier and
+is never measured again. Combined with the outstanding-message condition, that leaves two ways to
+see this failure: checkpointing really is off, or the first checkpoint takes longer than the budget
+while messages are already in flight.
+
 The checkpoint interval must also stay well under the client library's maximum
 acknowledgement-deadline extension (`maxAckExtensionPeriod`, 1 hour by default), or leases expire
 and everything is redelivered. The source warns when twice the interval exceeds that budget — but
