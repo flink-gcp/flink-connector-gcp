@@ -1,15 +1,23 @@
 # flink-connector-gcp-pubsub
 
-Cloud Pub/Sub sink for Apache Flink with dynamic per-record topic destinations.
+Cloud Pub/Sub sink and source for Apache Flink, with dynamic per-record topic destinations on the
+sink and multi-subscription consumption on the source.
 
-| Feature | Status |
+| Sink feature | Status |
 |---|---|
 | SinkV2 at-least-once sink; per-record topic resolution; per-topic publishers; checkpoint flush | Implemented (#18) |
 | Topic auto-creation | Implemented (#19) |
 | Attributes/ordering-key conveniences; message ordering; batching/flow-control/retry options; recovery and in-flight knobs | Implemented (#20) |
 | Per-record failure policy; fatal-exception classifier | Planned (#37) |
 | Emulator integration tests | Implemented (#21) |
-| Pub/Sub source | Planned for v0.2.0 (#31) |
+
+| Source feature | Status |
+|---|---|
+| FLIP-27 at-least-once source; multi-subscription splits; checkpoint-bound acknowledgement; nack on close | Implemented (#79) |
+| Ordering mode preserving per-ordering-key order | Implemented (#79) |
+| Subscriber tuning options; deserialization failure policy; metrics | Planned (#80) |
+| Subscription auto-creation; start position (seek) | Planned (#81) |
+| Acceptance and real-GCP integration tests | Planned (#82) |
 
 ```java
 Sink<MyEvent> sink =
@@ -177,6 +185,167 @@ mail. Publish retries within the SDK default to its settings and are tunable thr
 publisher options. A per-record failure policy (the `FailedRowHandler` analog of the BigQuery
 module) and a fatal-exception classifier are deferred to #37.
 
+## Source
+
+```java
+Source<String, ?, ?> source =
+        PubSubSource.<String>builder()
+                .subscriptions(
+                        SubscriptionDestination.of("my-project", "orders"),
+                        SubscriptionDestination.of("my-project", "returns"))
+                .deserializationSchema(
+                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+                .build();
+
+env.fromSource(source, WatermarkStrategy.noWatermarks(), "pubsub");
+```
+
+API notes:
+
+- `PubSubDeserializationSchema.deserialize` receives the full `PubsubMessage` — payload,
+  attributes, ordering key, message id and publish time are all available — and writes to a
+  `Collector`, so one message may produce any number of records. Emitting none drops the message
+  (it is still acknowledged). `dataOnly(...)` wraps a plain Flink `DeserializationSchema` for
+  payload-only messages.
+- The Pub/Sub publish time becomes the record's event timestamp.
+- `emulatorEndpoint(host:port)` points the source at a Pub/Sub emulator over a plaintext channel
+  with no credentials, so it must only ever be used against an emulator — never against production
+  Pub/Sub. Unlike the vendored upstream, the source deliberately does **not** honor the
+  `PUBSUB_EMULATOR_HOST` environment variable: a stray value on a task manager would silently
+  redirect a production job.
+
+### Delivery guarantees
+
+The source is **at-least-once**, and holds no message data in Flink state — delivery state lives on
+the Pub/Sub server. A received message passes through four states: *pending* (received, not yet
+emitted), *staged* (emitted downstream), *bound to a checkpoint* (that checkpoint is being taken),
+and *acknowledged* (that checkpoint completed). Only the last step tells Pub/Sub the message is
+done, so a failure at any earlier point leaves it unacknowledged and Pub/Sub redelivers it.
+Acknowledging sweeps every checkpoint at or below the completed id, so an aborted checkpoint or a
+lost completion notification is healed by the next successful one. Because checkpoints carry no
+message data, a restore needs no retained checkpoint.
+
+**Checkpointing must be enabled** in streaming jobs: without it `notifyCheckpointComplete` never
+fires, nothing is ever acknowledged, and the source stalls once the client library's flow control
+fills. The checkpoint interval must also stay well under the client library's maximum
+acknowledgement-deadline extension (1 hour by default), or leases expire and everything is
+redelivered.
+
+**Nack.** Messages that are pending, staged, or bound to an incomplete checkpoint are **nacked when
+the reader closes**, so Pub/Sub redelivers them immediately instead of after the acknowledgement
+deadline expires — this is what makes failover recover quickly. The SDK subscriber is additionally
+configured with `NACK_IMMEDIATELY` shutdown, which releases messages the client buffered but never
+handed to the source; the SDK's `WAIT_FOR_PROCESSING` default would instead wait for
+acknowledgements that only arrive at checkpoint completion. Acknowledgement state is scoped per
+split, so a split that goes away releases only its own messages. A redelivery arriving before its
+predecessor was settled nacks the superseded handle, which is what releases that delivery's
+flow-control permit inside the client library.
+
+### Why streaming pull rather than synchronous pull
+
+The source consumes through the client library's high-level `Subscriber`, which uses
+StreamingPull. The Apache `flink-connector-gcp-pubsub` instead drives `SubscriberGrpc`'s blocking
+stub and issues unary `Pull` calls — a deliberate choice made during its review
+([FLINK-9311](https://github.com/apache/flink/pull/6594)), where an earlier `Subscriber`-based
+implementation was replaced. The reasons given were that `sourceContext.collect()` blocking under
+backpressure naturally stops the pull loop, that users then need not tune flow-control parameters,
+and that dropping the intermediate queue lowers both memory footprint and latency.
+
+Two of those reasons are specific to the `SourceFunction` model that connector is built on, where
+`run()` is a pull loop and an asynchronous client has to be bridged into it with a hand-built queue
+and lock coordination. Under FLIP-27 that bridge is the framework's job: `SplitReader.fetch()` is
+already a pull loop, and `SourceReaderBase` already owns the element queue and the backpressure
+between the fetcher and the task thread. The remaining reason — that flow control becomes a knob the
+user can get wrong, and that it rather than Flink bounds how much is buffered — does apply here, and
+is why the subscriber's flow-control settings are exposed rather than hidden.
+
+Two things decided it the other way:
+
+- **Lease extension.** Unary `Pull` hands back acknowledgement ids and nothing else; the Apache
+  connector never calls `ModifyAckDeadline`, so every message must be acknowledged within the
+  subscription's acknowledgement deadline (600 s at most) and its documentation accordingly
+  requires a checkpoint interval well below that deadline. The client library extends leases
+  automatically, up to an hour by default, which suits a source that acknowledges on checkpoint
+  completion far better.
+- **Ordering.** Per-ordering-key sequential dispatch exists only in the high-level client. Building
+  `PER_KEY` on unary pull would mean reimplementing it.
+
+The trade-off is real in the other direction too: StreamingPull costs more CPU in gRPC, and the
+review thread above measured the synchronous design as checkpoint-frequency bound (3,000 msg/s at a
+1 s checkpoint interval, 20,000 msg/s at 50 ms).
+
+### Subscriptions, splits and parallelism
+
+A split is one streaming-pull connection to one subscription, and carries no progress state —
+Pub/Sub has no offset to resume from. The split universe is a pure function of the subscription
+list, the ordering mode and the source parallelism:
+
+```
+splitCount = (orderingMode == PER_KEY) ? |subscriptions| : max(|subscriptions|, parallelism)
+split i    -> subscription[i % |subscriptions|],  owner(i) -> i % parallelism
+```
+
+Every subscription is therefore consumed by someone, and under `NONE` no subtask sits idle. Because
+the assignment is deterministic, a returned split needs no bookkeeping (the restarted subtask is
+handed exactly the same splits again) and a restore recomputes the plan from the current
+parallelism — so changing parallelism across a restore is safe.
+
+### Message ordering
+
+**The default, `OrderingMode.NONE`, makes no ordering guarantee and is tuned for throughput.** The
+split plan gives every subtask at least one split — opening several subscriber clients on the same
+subscription when parallelism exceeds the subscription count — and Pub/Sub balances messages across
+them. Nothing constrains how many subtasks share a subscription, and no message waits on another.
+
+`orderingMode(OrderingMode.PER_KEY)` preserves per-ordering-key delivery order. It requires
+subscriptions created with `enableMessageOrdering`, and it constrains the source in two ways: each
+subscription is assigned to exactly one subtask, and its subscriber uses a single streaming-pull
+connection.
+
+Both constraints are load-bearing. A subscription consumed by two subtasks is two subscriber
+clients, and Pub/Sub's per-key client affinity shifts on reconnect or rebalance. Within one client,
+each streaming-pull connection has its **own** message dispatcher, and per-key callback
+serialization is per dispatcher — so a second connection would let two messages of one key be
+delivered concurrently.
+
+What the source guarantees is **in-order emission per ordering key per subscription**. Preserving
+that across the rest of the job requires partitioning by the ordering key, for example
+`keyBy(orderingKey)`; a rebalancing shuffle discards it.
+
+#### The cost of ordering
+
+Ordering is off by default because it is expensive, and **most of the cost is Pub/Sub's rather than
+this connector's**. Google's [ordering
+documentation](https://cloud.google.com/pubsub/docs/ordering) states it directly:
+
+- *"Compared with unordered delivery, ordered delivery decreases publish availability and increases
+  end-to-end message delivery latency."*
+- Publish throughput is capped at **1 MB/s per ordering key** (a topic can still reach multiple
+  GB/s across many keys).
+- For pull subscriptions, *"only one batch of messages can be outstanding for an ordering key at a
+  time"* — so a key's next batch waits for the current one to be acknowledged.
+- *"Unacknowledged messages for a given ordering key can potentially delay delivery of messages for
+  other ordering keys"*, so the cost is not confined to the busy key.
+- A redelivery re-delivers every subsequent message for that key, acknowledged or not.
+
+Google's mitigation is to *"use the most granular keys that you can"* — throughput per key is
+bounded, throughput across keys is not.
+
+On top of that, this source adds two costs of its own:
+
+- **Parallelism is effectively capped at the subscription count.** Surplus subtasks receive no
+  splits, are told there are no more, and finish — so they do not hold the watermark back, but they
+  do no work either.
+- **Acknowledgement waits for a checkpoint.** Combined with one-batch-outstanding, per-key
+  throughput is bounded by roughly one batch per checkpoint interval. Ordered jobs therefore want
+  short checkpoint intervals — and because unacknowledged messages for one key can delay *other*
+  keys, a long interval slows the whole subscription rather than only its hottest key.
+
+Acknowledgement is *not* what gates ordered **dispatch**, though: the client library runs the next
+callback for a key once the previous callback **returns**, and this source's callback only appends
+to an in-memory buffer. Deferring acknowledgement costs throughput at the service, not a stall in
+the client.
+
 ## Testing
 
 Unit tests cover the builder/facade, destination identity, the serialization adapters
@@ -196,6 +365,24 @@ drives the sink exclusively through the public builder with `emulatorEndpoint(..
 destinations and topic auto-creation under real 1-second checkpoints, asserting complete
 delivery. All integration tests run in PR CI without cloud credentials.
 
+On the source side, unit tests cover the split-assignment plan (table-driven over subscription ×
+parallelism combinations: every subscription covered, every subtask busy under `NONE`, exactly one
+split per subscription under `PER_KEY`, determinism across invocations), the acknowledgement
+lifecycle (staging only after emission, the checkpoint sweep healing aborted checkpoints, per-split
+nack isolation, superseded redeliveries), the enumerator against a hand-written context, the split
+reader against a fake client (multi-split drain, per-fetch caps, split removal, pausing, wake-up,
+close aggregating failures) and the record emitter. Emulator integration tests run the production
+subscriber factory against the emulator and cover the acknowledgement round trip, nack-on-close
+producing immediate redelivery, and one reader consuming several subscriptions; a MiniCluster test
+drives the source through the public builder over two subscriptions under real checkpoints.
+
+**The emulator cannot verify ordered delivery.** Per-key callback serialization in the client
+library is gated on `subscriptionProperties.messageOrderingEnabled` in the streaming-pull response,
+which the emulator does not set — probing the client library directly against it shows callbacks
+arriving out of order with no Flink involved. The emulator test therefore asserts only that ordered
+mode consumes the subscription from a single subtask without stalling on idle ones; end-to-end
+per-key order is covered by the real-GCP suite (#82).
+
 ## Provenance and attribution
 
 This module contains code adapted from the Flink connector in
@@ -209,13 +396,36 @@ upstream license header:
   data-only adapter, from upstream `PubSubSerializationSchema`
 - `PubSubWriter` — the publish/flush core (async publish, `publishAllOutstanding`-then-await
   checkpoint flush), from upstream `PubSubSinkWriter` and `PubSubFlushablePublisher`
+- `PubSubDeserializationSchema` / `DataOnlyDeserializationSchema` — the deserialization contract
+  and its payload-only adapter
+- `AckTracker` / `PubSubAckTracker` — the pending → staged → checkpoint-bound → acknowledged
+  lifecycle
+- `NotifyingPullSubscriber` / `PubSubNotifyingPullSubscriber` — the streaming-pull-to-buffer bridge
+- `PubSubSplitReader`, `PubSubRecordEmitter`, `PubSubSourceReader`, `SubscriptionSplit` — the reader
+  stack and the split type
 
-Deviations from upstream: dynamic per-record topic destinations with a writer-owned per-topic
-publisher map (upstream: single fixed topic with a JVM-wide static publisher cache),
+Deviations from upstream, sink side: dynamic per-record topic destinations with a writer-owned
+per-topic publisher map (upstream: single fixed topic with a JVM-wide static publisher cache),
 mailbox-based backpressure with an in-flight cap and async error capture (upstream: unbounded
 future list), and a hand-written builder following this repository's conventions (upstream:
 AutoValue).
 
+Deviations from upstream, source side: multi-subscription enumeration with a deterministic split
+plan (upstream: one hard-coded subscription, one split per registered subtask — which supports
+neither several subscriptions nor ordering, since every subtask then opens its own streaming pull
+against the same subscription); an ordering mode; per-split acknowledgement scoping (upstream's
+tracker is reader-wide, so closing one subscriber nacks every split's messages); a `Collector`-based
+deserialization contract (upstream returns one nullable record and then collects it without a null
+check); hand-written serializers (upstream: protobuf code generation); an explicit emulator endpoint
+(upstream: `PUBSUB_EMULATOR_HOST` sniffing plus an `emulator:///` URI prefix, where the environment
+variable silently overrides an explicitly configured endpoint); and a hand-written builder. The
+vendored reader stack also fixes several upstream defects: a `null` user-code class loader passed to
+the deserialization schema, a fresh `Configuration` in place of the job's (which made the source
+reader options unreachable), draining at most one message per split per fetch, rejecting split
+removal, not overriding `pauseOrResumeSplits` (breaking watermark alignment), a missing `return` in
+the wake-up branch, and `shutdown()` mutating lock-guarded state without holding the lock.
+
 [apache/flink-connector-gcp-pubsub](https://github.com/apache/flink-connector-gcp-pubsub) is a
-**design reference only** — the mailbox-based backpressure model and the idea of a
-fatal-exception classifier (#37) — no code has been copied from it.
+**design reference only** — the mailbox-based backpressure model, the idea of a fatal-exception
+classifier (#37), and its synchronous-pull decision record, which the source weighs and departs
+from above — no code has been copied from it.

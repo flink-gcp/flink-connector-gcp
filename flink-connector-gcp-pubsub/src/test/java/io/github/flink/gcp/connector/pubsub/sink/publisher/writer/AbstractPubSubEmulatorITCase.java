@@ -39,6 +39,7 @@ import com.google.pubsub.v1.ReceivedMessage;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
+import io.github.flink.gcp.connector.pubsub.PubSubEmulatorContainers;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
 import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -52,7 +53,6 @@ import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.PubSubEmulatorContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -80,10 +80,7 @@ abstract class AbstractPubSubEmulatorITCase {
     static final RetrySchedule EMULATOR_RECOVERY_SCHEDULE = new RetrySchedule(100, 1_000, 30, 0);
 
     @Container
-    private static final PubSubEmulatorContainer EMULATOR =
-            new PubSubEmulatorContainer(
-                    DockerImageName.parse(
-                            "gcr.io/google.com/cloudsdktool/google-cloud-cli:441.0.0-emulators"));
+    private static final PubSubEmulatorContainer EMULATOR = PubSubEmulatorContainers.newContainer();
 
     private static ManagedChannel channel;
     private static TransportChannelProvider channelProvider;
