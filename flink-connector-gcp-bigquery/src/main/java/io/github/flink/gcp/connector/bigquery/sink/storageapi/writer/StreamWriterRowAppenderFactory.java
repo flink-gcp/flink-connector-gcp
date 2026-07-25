@@ -44,8 +44,11 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
 
     private static final long serialVersionUID = 1L;
 
-    /** The SDK requires the "A:B" trace-id format (an interior colon is mandatory). */
-    private static final String TRACE_ID = "flink-gcp:flink-connector-gcp-bigquery";
+    /**
+     * The SDK requires the "A:B" trace-id format (an interior colon is mandatory). Shared with the
+     * buffered-stream write path ({@link StorageApiBufferedStreamService}).
+     */
+    static final String TRACE_ID = "flink-gcp:flink-connector-gcp-bigquery";
 
     /**
      * Enables the SDK's in-stream retry of retriable append failures on default streams (for
@@ -59,8 +62,12 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
      * retry settings of whichever writer creates it first. This factory always passes the same
      * constant, but a different BigQuery client in the same JVM sharing the pool key could have
      * created the pool with other settings; the writer's own retry budget still applies either way.
+     *
+     * <p>Shared with the buffered-stream write path ({@link StorageApiBufferedStreamService}),
+     * where the same in-stream retries apply to offset appends (a retry of an append that already
+     * landed answers {@code ALREADY_EXISTS}, which that writer treats as success).
      */
-    private static final RetrySettings RETRY_SETTINGS =
+    static final RetrySettings RETRY_SETTINGS =
             RetrySettings.newBuilder()
                     .setInitialRetryDelayDuration(Duration.ofMillis(500))
                     .setRetryDelayMultiplier(2.0)

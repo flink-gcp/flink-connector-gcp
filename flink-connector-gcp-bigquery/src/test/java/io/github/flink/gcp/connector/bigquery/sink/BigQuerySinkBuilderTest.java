@@ -29,7 +29,9 @@ import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storageapi.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storageapi.BufferedStreamOptions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,7 +95,41 @@ class BigQuerySinkBuilderTest {
     }
 
     @Test
-    void rejectsUnimplementedWriteMethods() {
+    void buildsBufferedStreamSink() {
+        BigQueryBufferedStreamSink<String> sink =
+                (BigQueryBufferedStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                                .build();
+
+        assertThat(sink.getOptions()).isEqualTo(BufferedStreamOptions.builder().build());
+        assertThat(sink.getConfig().getDestinationResolver().resolve("any", CONTEXT))
+                .isEqualTo(DESTINATION);
+    }
+
+    @Test
+    void bufferedStreamSinkIsJavaSerializable() throws Exception {
+        BigQueryBufferedStreamSink<String> sink =
+                (BigQueryBufferedStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                                .build();
+
+        BigQueryBufferedStreamSink<String> copy = InstantiationUtil.clone(sink);
+
+        assertThat(copy.getOptions()).isEqualTo(sink.getOptions());
+        assertThat(copy.getConfig().getDestinationResolver().resolve("any", CONTEXT))
+                .isEqualTo(DESTINATION);
+    }
+
+    @Test
+    void exactlyOnceRequiresBufferedStreamOptions() {
         assertThatThrownBy(
                         () ->
                                 BigQuerySink.<String>builder()
@@ -101,8 +137,73 @@ class BigQuerySinkBuilderTest {
                                         .destination(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .build())
-                .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("#30");
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("bufferedStreamOptions");
+    }
+
+    @Test
+    void rejectsBufferedStreamOptionsForOtherWriteMethods() {
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .bufferedStreamOptions(
+                                                BufferedStreamOptions.builder().build())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("only valid for WriteMethod.STORAGE_API_EXACTLY_ONCE");
+    }
+
+    @Test
+    void exactlyOnceRejectsEnabledSchemaUpdateOptions() {
+        // The buffered stream's schema is pinned at creation, so the writer never consults
+        // schemaUpdateOptions — accepting them silently would promise evolution that never runs.
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .schemaUpdateOptions(
+                                                SchemaUpdateOptions.builder()
+                                                        .allowNewFields()
+                                                        .build())
+                                        .bufferedStreamOptions(
+                                                BufferedStreamOptions.builder().build())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("schemaUpdateOptions");
+    }
+
+    @Test
+    void exactlyOnceAcceptsDisabledSchemaUpdateOptions() {
+        // The default is disabled, so an explicitly-passed default must not break the build.
+        Sink<String> sink =
+                BigQuerySink.<String>builder()
+                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                        .destination(DESTINATION)
+                        .serializer(new TestSerializer())
+                        .schemaUpdateOptions(SchemaUpdateOptions.defaults())
+                        .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                        .build();
+
+        assertThat(sink).isInstanceOf(BigQueryBufferedStreamSink.class);
+    }
+
+    @Test
+    void exactlyOnceRequiresAFixedDestination() {
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                        .destinationResolver((element, context) -> DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .bufferedStreamOptions(
+                                                BufferedStreamOptions.builder().build())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("fixed destination");
     }
 
     @Test

@@ -59,7 +59,7 @@ import java.util.Set;
  * destination's writer).
  */
 @Internal
-final class AppendErrorClassifier {
+public final class AppendErrorClassifier {
 
     /** The error classes appends can fail with. */
     enum Kind {
@@ -104,6 +104,16 @@ final class AppendErrorClassifier {
                         .map(AppendErrorClassifier::codeOf)
                         .orElse(null);
         return code != null && TRANSIENT_CODES.contains(code) ? Kind.TRANSIENT : Kind.TERMINAL;
+    }
+
+    /**
+     * Returns whether the failure is transient (and not row-level): safe to retry in place.
+     *
+     * @param t the failure
+     * @return whether the failure is transient
+     */
+    public static boolean isTransient(Throwable t) {
+        return classify(t) == Kind.TRANSIENT;
     }
 
     /**
@@ -199,8 +209,52 @@ final class AppendErrorClassifier {
      * @param code the status code to look for
      * @return whether the code is present in the chain
      */
-    static boolean hasCode(Throwable t, Status.Code code) {
+    public static boolean hasCode(Throwable t, Status.Code code) {
         return ExceptionUtils.findThrowable(t, cause -> codeOf(cause) == code).isPresent();
+    }
+
+    /**
+     * Returns whether the failure reports an append at an offset that already holds rows ({@link
+     * Exceptions.OffsetAlreadyExists} or storage error {@code OFFSET_ALREADY_EXISTS}).
+     *
+     * <p>In the buffered-stream write path this is a success signal on retries (the original append
+     * landed) and an abandon signal on the restore probe (the pre-crash attempt appended past the
+     * restored offset).
+     *
+     * @param t the failure
+     * @return whether the failure is an offset-already-exists error
+     */
+    public static boolean isOffsetAlreadyExists(Throwable t) {
+        return ExceptionUtils.findThrowable(t, Exceptions.OffsetAlreadyExists.class).isPresent()
+                || hasStorageErrorCode(
+                        t, EnumSet.of(StorageError.StorageErrorCode.OFFSET_ALREADY_EXISTS));
+    }
+
+    /**
+     * Returns whether the failure reports an append beyond the stream's current end ({@link
+     * Exceptions.OffsetOutOfRange} or storage error {@code OFFSET_OUT_OF_RANGE}).
+     *
+     * @param t the failure
+     * @return whether the failure is an offset-out-of-range error
+     */
+    public static boolean isOffsetOutOfRange(Throwable t) {
+        return ExceptionUtils.findThrowable(t, Exceptions.OffsetOutOfRange.class).isPresent()
+                || hasStorageErrorCode(
+                        t, EnumSet.of(StorageError.StorageErrorCode.OFFSET_OUT_OF_RANGE));
+    }
+
+    /**
+     * Returns whether the failure is the SDK's client-side {@link
+     * Exceptions.StreamWriterClosedException}: the {@code StreamWriter} poisoned itself after a
+     * connection-level failure and every further append through it fails fast. The stream itself is
+     * unaffected — reopening a writer on it repairs the failure.
+     *
+     * @param t the failure
+     * @return whether the failure is a client-side closed stream writer
+     */
+    public static boolean isWriterClosed(Throwable t) {
+        return ExceptionUtils.findThrowable(t, Exceptions.StreamWriterClosedException.class)
+                .isPresent();
     }
 
     /**

@@ -251,6 +251,60 @@ class AppendErrorClassifierTest {
     }
 
     @Test
+    void offsetAlreadyExistsIsDetectedFromTypedExceptionAndStatusDetails() {
+        Throwable typed =
+                Exceptions.toStorageException(
+                        statusWithStorageError(
+                                Status.Code.ALREADY_EXISTS,
+                                StorageError.StorageErrorCode.OFFSET_ALREADY_EXISTS),
+                        null);
+        assertThat(typed).isInstanceOf(Exceptions.OffsetAlreadyExists.class);
+        assertThat(AppendErrorClassifier.isOffsetAlreadyExists(typed)).isTrue();
+        assertThat(AppendErrorClassifier.isOffsetAlreadyExists(new IOException("wrapper", typed)))
+                .isTrue();
+
+        StatusRuntimeException raw =
+                StatusProto.toStatusRuntimeException(
+                        statusWithStorageError(
+                                Status.Code.ALREADY_EXISTS,
+                                StorageError.StorageErrorCode.OFFSET_ALREADY_EXISTS));
+        assertThat(AppendErrorClassifier.isOffsetAlreadyExists(raw)).isTrue();
+
+        assertThat(
+                        AppendErrorClassifier.isOffsetAlreadyExists(
+                                new StatusRuntimeException(Status.ALREADY_EXISTS)))
+                .isFalse();
+        assertThat(AppendErrorClassifier.isOffsetAlreadyExists(new RuntimeException("boom")))
+                .isFalse();
+    }
+
+    @Test
+    void offsetOutOfRangeIsDetectedFromTypedExceptionAndStatusDetails() {
+        Throwable typed =
+                Exceptions.toStorageException(
+                        statusWithStorageError(
+                                Status.Code.OUT_OF_RANGE,
+                                StorageError.StorageErrorCode.OFFSET_OUT_OF_RANGE),
+                        null);
+        assertThat(typed).isInstanceOf(Exceptions.OffsetOutOfRange.class);
+        assertThat(AppendErrorClassifier.isOffsetOutOfRange(typed)).isTrue();
+        assertThat(AppendErrorClassifier.isOffsetOutOfRange(new IOException("wrapper", typed)))
+                .isTrue();
+
+        StatusRuntimeException raw =
+                StatusProto.toStatusRuntimeException(
+                        statusWithStorageError(
+                                Status.Code.OUT_OF_RANGE,
+                                StorageError.StorageErrorCode.OFFSET_OUT_OF_RANGE));
+        assertThat(AppendErrorClassifier.isOffsetOutOfRange(raw)).isTrue();
+
+        assertThat(
+                        AppendErrorClassifier.isOffsetOutOfRange(
+                                new StatusRuntimeException(Status.OUT_OF_RANGE)))
+                .isFalse();
+    }
+
+    @Test
     void responseErrorsWithoutStorageDetailsYieldNoTypedException() {
         assertThat(
                         AppendErrorClassifier.toStorageException(
