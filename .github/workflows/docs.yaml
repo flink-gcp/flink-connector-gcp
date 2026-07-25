@@ -38,7 +38,7 @@ jobs:
       # Hugo shells out to the go command to resolve the hugo-book module.
       # setup-go's own module cache is useless here (Hugo does not use
       # GOMODCACHE), so it is switched off in favour of the Hugo cache below.
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: docs/go.mod
           cache: false
