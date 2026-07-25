@@ -1,8 +1,13 @@
 [tools]
 java = "temurin-17"
 maven = "latest"
+# Documentation site (docs/). hugo-book requires Hugo extended >= 0.158.0, and
+# Hugo needs Go to resolve the theme as a Hugo module.
+hugo-extended = "0.164.0"
+go = "1.26"
 
 [env]
 # Local, uncommitted settings — e.g. credentials and BQ_IT_* variables for the
-# real-GCP integration tests (see flink-connector-gcp-bigquery/README.md).
+# real-GCP integration tests (see the BigQuery connector documentation under
+# docs/content/docs/connectors/datastream/bigquery.md).
 _.file = { path = ".env", redact = true }
