@@ -43,7 +43,8 @@ import java.util.Objects;
  * flow-control element limit above it never triggers. {@link Builder#build()} rejects combining
  * flow-control limits with {@link Builder#enableMessageOrdering(boolean)}: the SDK publisher
  * (1.152.0) leaks a flow-control permit for every publish rejected or cancelled on a paused
- * ordering key, which under {@code Block} can eventually hang publishing (see the module README).
+ * ordering key, which under {@code Block} can eventually hang publishing (see the connector
+ * documentation).
  *
  * <p>Instances are immutable and serializable.
  */

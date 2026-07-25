@@ -22,7 +22,8 @@ import org.apache.flink.annotation.PublicEvolving;
  * Whether the source preserves Pub/Sub ordering-key delivery order.
  *
  * <p>Ordered delivery is only meaningful for subscriptions created with {@code
- * enableMessageOrdering}; see the module README for the end-to-end guarantee and its cost.
+ * enableMessageOrdering}; see the connector documentation for the end-to-end guarantee and its
+ * cost.
  */
 @PublicEvolving
 public enum OrderingMode {

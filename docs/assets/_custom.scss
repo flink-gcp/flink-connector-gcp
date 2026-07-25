@@ -1,0 +1,37 @@
+// Copyright 2026 laughingman7743
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Site-level styles. hugo-book imports this file from its own book.scss, so it
+// is bundled into the single stylesheet the theme already ships.
+
+// Syntax highlighting follows the reader's colour scheme the way the rest of
+// the theme does under BookTheme = "auto". Hugo's default inlines one fixed
+// palette into every code block, which leaves dark code sitting on a light
+// page; instead the highlighter emits CSS classes
+// (markup.highlight.noClasses = false) and the two palettes below are selected
+// by the same media query the theme uses for its own colours.
+//
+// Both files are verbatim output of:
+//   hugo gen chromastyles --style=github      > assets/_chroma-light.scss
+//   hugo gen chromastyles --style=github-dark > assets/_chroma-dark.scss
+// Both imports are scoped: the light palette carries a few selectors the dark
+// one does not (`.chroma .p`, `.chroma .na`), which would otherwise leak
+// near-black punctuation onto the dark background.
+@media not all and (prefers-color-scheme: dark) {
+  @import "chroma-light";
+}
+
+@media (prefers-color-scheme: dark) {
+  @import "chroma-dark";
+}

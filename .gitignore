@@ -8,3 +8,8 @@ target/
 .DS_Store
 *.log
 tools/japicmp-output/
+
+# Hugo documentation site build output
+docs/public/
+docs/resources/
+docs/.hugo_build.lock
