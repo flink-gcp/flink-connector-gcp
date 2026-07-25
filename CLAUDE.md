@@ -264,8 +264,19 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   flow control (Block-only; the builder rejects combining with ordering — SDK 1.152.0 leaks
   permits on paused keys), publish retries, `enableMessageOrdering`, the in-flight cap and the
   recovery backoff.
-  Ordering×repair: cascade cancellations park behind the NOT_FOUND root (mailbox FIFO preserves
-  per-key order) and every repair attempt calls `resumePublish` before republishing. Emulator
+  Ordering×repair (revised in #78): cascade cancellations are parked alongside their NOT_FOUND
+  root and every repair attempt calls `resumePublish` before republishing, but **per-key order is
+  restored by sorting the parked batch on a publish sequence, never by observation order** — the
+  "mailbox FIFO preserves per-key order" premise this was first built on is false, because the SDK
+  cancels an ordering key's queued publishes from its own thread, so a cascade can be observed
+  before the failure that caused it. Anything derived from that order is a race, including
+  deciding whether to park a cascade by whether something is parked already: that was the #78
+  flake, and it was *also* the only thing hiding a silent ordering violation, since the parked
+  list was appended in observation order too. Consequences to keep: a cancellation is never a root
+  cause, so under `CREATE_IF_NEEDED` one is parked unconditionally and a fatal root is caught by
+  the pre-repair drain (`awaitInFlightBelow(1)` → `checkAsyncError`) rather than by classifying
+  the cascade; under `CREATE_NEVER` nothing is parked at all, which every parking branch must
+  check, since parking is what leads to `createTopic`. Emulator
   support (#21) is a builder option `emulatorEndpoint(host:port)` — plaintext + no credentials
   for publishers (each owning its channel) and the auto-creation admin, mirroring the Apache
   connector's `withHostAndPortForEmulator`; the emulator ITs (including a MiniCluster streaming
