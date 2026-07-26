@@ -18,7 +18,10 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import com.google.protobuf.Descriptors;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.Map;
 import java.util.function.Function;
@@ -103,13 +106,48 @@ class ProtoToTableSchemaConverterTest {
     }
 
     @Test
-    void rejectsJsonMappingOnNonMessageFields() {
+    void mapsConfiguredStringFieldsToJson() {
         ProtoSchemaOptions options = ProtoSchemaOptions.builder().jsonFieldPath("f_string").build();
+        TableSchema schema = ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options);
+
+        TableFieldSchema json = byName(schema).get("f_string");
+        assertThat(json.getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(json.getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+    }
+
+    @Test
+    void mapsConfiguredNestedFieldsToJson() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().jsonFieldPath("f_nested.s").build();
+        TableSchema schema = ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options);
+
+        TableFieldSchema nested = byName(schema).get("f_nested");
+        assertThat(nested.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(nested.getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getType)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("s", TableFieldSchema.Type.JSON),
+                        org.assertj.core.groups.Tuple.tuple("n", TableFieldSchema.Type.INT64));
+    }
+
+    @Test
+    void rejectsJsonMappingOnFieldsThatAreNeitherMessageNorString() {
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().jsonFieldPath("f_int32").build();
 
         assertThatThrownBy(
                         () -> ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("f_string");
+                .hasMessageContaining("f_int32");
+    }
+
+    @Test
+    void rejectsJsonMappingOnMapFields() {
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().jsonFieldPath("f_map").build();
+
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("f_map");
     }
 
     @Test
@@ -140,6 +178,158 @@ class ProtoToTableSchemaConverterTest {
                                         TestProtos.recursive(), ProtoSchemaOptions.defaults()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Recursive");
+    }
+
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void mapsOptionMarkedFieldsToJson(boolean throughBytes) {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+        TableSchema schema = ProtoToTableSchemaConverter.convert(annotated(throughBytes), options);
+        Map<String, TableFieldSchema> fields = byName(schema);
+
+        assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_string").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("a_message").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_message").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("a_message").getFieldsList()).isEmpty();
+
+        assertThat(fields.get("a_plain").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(fields.get("a_false").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(fields.get("a_other").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+
+        for (String repeated : new String[] {"a_rep_string", "a_rep_message"}) {
+            assertThat(fields.get(repeated).getType())
+                    .as(repeated)
+                    .isEqualTo(TableFieldSchema.Type.JSON);
+            assertThat(fields.get(repeated).getMode())
+                    .as(repeated)
+                    .isEqualTo(TableFieldSchema.Mode.REPEATED);
+        }
+    }
+
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void findsOptionMarkedFieldsAtAnyDepth(boolean throughBytes) {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+        TableSchema schema = ProtoToTableSchemaConverter.convert(annotated(throughBytes), options);
+
+        TableFieldSchema nested = byName(schema).get("a_nested");
+        assertThat(nested.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(nested.getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getType)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("n_json", TableFieldSchema.Type.JSON),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "n_plain", TableFieldSchema.Type.STRING));
+    }
+
+    @Test
+    void aRivalAnnotationAtTheSameNumberDoesNotProduceAJsonColumn() {
+        // The whole point of passing the generated extension: `colliding.proto` is annotated by a
+        // different annotations proto that also claims number 50000, and the resulting column must
+        // stay STRING. Configured by number alone the same field would become JSON.
+        ProtoSchemaOptions byExtension =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOption(TestProtos.jsonOptionExtension())
+                        .build();
+        ProtoSchemaOptions byNumber =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+
+        assertThat(
+                        byName(
+                                        ProtoToTableSchemaConverter.convert(
+                                                TestProtos.collidingAnnotated(), byExtension))
+                                .get("c_string")
+                                .getType())
+                .isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(
+                        byName(
+                                        ProtoToTableSchemaConverter.convert(
+                                                TestProtos.collidingAnnotated(), byNumber))
+                                .get("c_string")
+                                .getType())
+                .as("by number alone there is nothing to tell the two options apart")
+                .isEqualTo(TableFieldSchema.Type.JSON);
+    }
+
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void unionsSeveralFieldOptions(boolean throughBytes) {
+        // Two annotation vocabularies in one job: a_string carries the JSON option, a_other carries
+        // the second one, and configuring both must map both. With a single-valued option the
+        // second registration would have replaced the first and a_string would stay STRING.
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOption(TestProtos.jsonOptionExtension())
+                        .jsonFieldOptionNumber(TestProtos.OTHER_OPTION_NUMBER)
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(annotated(throughBytes), options));
+
+        assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_other").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_plain").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+    }
+
+    @Test
+    void unionsFieldPathsAndFieldOptions() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .jsonFieldPath("a_plain")
+                        // Also naming a field the option already marks must not double-count it in
+                        // the matched-path bookkeeping, nor make it any less of a JSON column.
+                        .jsonFieldPath("a_string")
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(TestProtos.annotated(), options));
+
+        assertThat(fields.get("a_plain").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+    }
+
+    @Test
+    void acceptsAFieldOptionNumberMatchingNoField() {
+        // Unlike a path, a number matching nothing is legitimate: a message need not have JSON
+        // columns. The cost is that a mistyped number is silent, which the javadoc calls out.
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+        TableSchema schema = ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options);
+
+        assertThat(schema.getFieldsList())
+                .noneMatch(field -> field.getType() == TableFieldSchema.Type.JSON);
+    }
+
+    @Test
+    void rejectsOptionMarkedFieldsThatAreNeitherMessageNorString() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                ProtoToTableSchemaConverter.convert(
+                                        TestProtos.annotatedBadType(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("b_int")
+                // Not just "it threw": the message must name why, or a change reporting every
+                // rejection as a map field would go unnoticed.
+                .hasMessageContaining("LONG");
+    }
+
+    private static Descriptors.Descriptor annotated(boolean throughBytes) {
+        return throughBytes ? TestProtos.annotatedFromBytes() : TestProtos.annotated();
     }
 
     private static Map<String, TableFieldSchema> byName(TableSchema schema) {

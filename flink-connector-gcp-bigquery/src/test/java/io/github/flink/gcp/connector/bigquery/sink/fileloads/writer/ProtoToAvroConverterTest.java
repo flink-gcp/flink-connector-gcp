@@ -118,6 +118,30 @@ class ProtoToAvroConverterTest {
     }
 
     @Test
+    void convertsJsonColumnsAsStrings() throws Exception {
+        // FILE_LOADS sees the row descriptor, in which a JSON column is already a proto string —
+        // whether the serializer printed a message into it or passed a JSON string through
+        // untouched. This is why JSON-mapped string fields need no handling of their own here.
+        Setup setup =
+                new Setup(
+                        schemaOf(
+                                field(
+                                        "j",
+                                        TableFieldSchema.Type.JSON,
+                                        TableFieldSchema.Mode.REQUIRED)));
+        assertThat(setup.field("j").getJavaType())
+                .isEqualTo(Descriptors.FieldDescriptor.JavaType.STRING);
+
+        GenericRecord record =
+                setup.converter.convert(
+                        DynamicMessage.newBuilder(setup.descriptor)
+                                .setField(setup.field("j"), "{\"a\":1}")
+                                .build());
+
+        assertThat(record.get("j")).isEqualTo("{\"a\":1}");
+    }
+
+    @Test
     void convertsTemporalValues() throws Exception {
         Setup setup =
                 new Setup(

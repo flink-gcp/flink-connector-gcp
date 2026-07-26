@@ -20,6 +20,7 @@ import org.apache.flink.util.InstantiationUtil;
 
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;
@@ -74,6 +75,32 @@ class ProtoMessageSerializerTest {
         Descriptors.Descriptor descriptor = row.getDescriptorForType();
         assertThat(row.getField(descriptor.findFieldByName("seconds"))).isEqualTo(123L);
         assertThat(row.getField(descriptor.findFieldByName("nanos"))).isEqualTo(456L);
+    }
+
+    @Test
+    void carriesSchemaOptionsThroughToBothConversionSides() throws Exception {
+        // StringValue's single string field stands in for a column holding JSON text: the schema
+        // must say JSON while the value is still written through as a string.
+        ProtoMessageSerializer<StringValue> serializer =
+                ProtoMessageSerializer.of(
+                        StringValue.class,
+                        ProtoSchemaOptions.builder().jsonFieldPath("value").build());
+
+        assertThat(serializer.getTableSchema(DESTINATION).getFieldsList())
+                .extracting(
+                        com.google.cloud.bigquery.storage.v1.TableFieldSchema::getName,
+                        com.google.cloud.bigquery.storage.v1.TableFieldSchema::getType)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(
+                                "value",
+                                com.google.cloud.bigquery.storage.v1.TableFieldSchema.Type.JSON));
+
+        DynamicMessage row =
+                DynamicMessage.parseFrom(
+                        serializer.getDescriptor(DESTINATION),
+                        serializer.serialize(StringValue.of("{\"a\":1}")));
+        assertThat(row.getField(row.getDescriptorForType().findFieldByName("value")))
+                .isEqualTo("{\"a\":1}");
     }
 
     @Test

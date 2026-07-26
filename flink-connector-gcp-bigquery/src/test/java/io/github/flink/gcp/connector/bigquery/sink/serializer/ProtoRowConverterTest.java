@@ -159,6 +159,76 @@ class ProtoRowConverterTest {
         assertThat(get(row, "f_string")).isEqualTo("only");
     }
 
+    @Test
+    void writesJsonMappedStringsThroughVerbatim() throws Exception {
+        Descriptors.Descriptor source = TestProtos.annotated();
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+        ProtoRowConverter converter = converter(source, options);
+
+        Descriptors.Descriptor payloadType = source.getFile().findMessageTypeByName("APayload");
+        DynamicMessage.Builder builder = DynamicMessage.newBuilder(source);
+        set(builder, source, "a_string", "{\"k\":1}");
+        set(
+                builder,
+                source,
+                "a_message",
+                DynamicMessage.newBuilder(payloadType)
+                        .setField(payloadType.findFieldByName("s"), "printed")
+                        .build());
+        builder.addRepeatedField(source.findFieldByName("a_rep_string"), "[1,2]");
+        builder.addRepeatedField(source.findFieldByName("a_rep_string"), "{}");
+        // An element is explicit even when empty, so unlike a no-presence singular field it is not
+        // dropped — the other half of the empty-string rule.
+        builder.addRepeatedField(source.findFieldByName("a_rep_string"), "");
+        // Malformed JSON is BigQuery's to reject as a row-level error; validating every record
+        // client-side would defeat the point of a passthrough, so it must survive unchanged.
+        builder.addRepeatedField(source.findFieldByName("a_rep_string"), "not json at all");
+        builder.addRepeatedField(
+                source.findFieldByName("a_rep_message"),
+                DynamicMessage.newBuilder(payloadType)
+                        .setField(payloadType.findFieldByName("s"), "element")
+                        .build());
+
+        DynamicMessage row = converter.convert(builder.build());
+
+        // A JSON column travels as a string, so a JSON-mapped string needs no conversion at all:
+        // byte-for-byte what the record carried, not a re-serialized form.
+        assertThat(get(row, "a_string")).isEqualTo("{\"k\":1}");
+        assertThat(get(row, "a_rep_string"))
+                .isEqualTo(Arrays.asList("[1,2]", "{}", "", "not json at all"));
+        // A JSON-mapped message is still printed as canonical protobuf JSON, singular or repeated.
+        assertThat((String) get(row, "a_message")).contains("\"s\":\"printed\"");
+        assertThat((List<?>) get(row, "a_rep_message"))
+                .singleElement(org.assertj.core.api.InstanceOfAssertFactories.STRING)
+                .contains("\"s\":\"element\"");
+    }
+
+    @Test
+    void leavesUnsetJsonMappedStringsUnsetRatherThanWritingAnEmptyString() throws Exception {
+        // a_string is a plain proto3 scalar, so an unset value arrives as "" — which is not valid
+        // JSON. Writing it would fail every record that legitimately omits the field, since the
+        // row descriptor's JSON field does have presence and would carry the empty string.
+        Descriptors.Descriptor source = TestProtos.annotated();
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+        ProtoRowConverter converter = converter(source, options);
+
+        DynamicMessage row = converter.convert(DynamicMessage.newBuilder(source).build());
+
+        Descriptors.Descriptor rowType = row.getDescriptorForType();
+        assertThat(rowType.findFieldByName("a_string").hasPresence()).isTrue();
+        assertThat(row.hasField(rowType.findFieldByName("a_string"))).isFalse();
+        // A plain string column is unaffected: "" stays a legitimate value there. Asserted through
+        // hasField, since getField returns "" for a set and an unset field alike.
+        assertThat(row.hasField(rowType.findFieldByName("a_plain"))).isTrue();
+        assertThat(row.getField(rowType.findFieldByName("a_plain"))).isEqualTo("");
+    }
+
     private static ProtoRowConverter converter(
             Descriptors.Descriptor source, ProtoSchemaOptions options) throws Exception {
         Descriptors.Descriptor target =

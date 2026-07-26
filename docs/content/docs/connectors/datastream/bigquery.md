@@ -60,10 +60,129 @@ API notes:
   already are protobuf messages: the BigQuery schema is derived from the message descriptor
   (integers → INT64, float/double → DOUBLE, enum → STRING, `google.protobuf.Timestamp` →
   TIMESTAMP in microseconds, nested messages → STRUCT, maps → REPEATED STRUCT<key, value>), and
-  `ProtoSchemaOptions` can map selected message fields to JSON columns.
+  `ProtoSchemaOptions` can map selected fields to [JSON columns](#json-columns).
 - `TableDestination` is pure table identity (`equals`/`hashCode` over project/dataset/table);
   per-destination creation metadata (partitioning, clustering) is supplied through
   `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
+
+## JSON columns
+
+The Storage Write API carries a `JSON` column as a string, so nothing in the *value* path
+distinguishes it from a `STRING` column. What a JSON column needs is a **marker at schema-derivation
+time**, so that the schema the connector derives — used for table auto-creation, the write stream
+and load jobs — says `JSON` rather than `STRING` or `STRUCT`. `ProtoSchemaOptions` carries that
+marker. Two field types can be marked:
+
+| Source field | Written as | Note |
+|---|---|---|
+| message (not a map) | canonical protobuf JSON | the message is *not* expanded into a `STRUCT` |
+| string | the string itself, verbatim | the value is taken to be JSON text already |
+
+There are two ways to designate the fields, and they are unioned — a field marked either way is a
+JSON column.
+
+**By dotted field path**, when the mapping is a property of the pipeline:
+
+```java
+ProtoSchemaOptions.builder()
+        .jsonFieldPath("payload")
+        .jsonFieldPath("event.details")
+        .build();
+```
+
+Paths are the proto declared field names (snake_case, not the JSON names), joined from the root
+message. A path matching no field is rejected when the schema is derived, so a typo fails the job
+rather than silently producing the wrong column type.
+
+**By protobuf field option**, when the mapping is a property of the schema — the better fit for a
+large proto corpus, since it is one line of configuration regardless of how many messages and
+fields are involved, it survives fields being renamed or moved deeper, and it stays correct when one
+job writes several message types to different destinations:
+
+```proto
+// your existing annotations proto — nothing here has to change
+extend google.protobuf.FieldOptions {
+  optional bool json = 50000;
+}
+
+message Event {
+  string payload = 1 [(json) = true];
+}
+```
+
+When the generated extension class is on your classpath, pass it directly:
+
+```java
+ProtoSchemaOptions.builder().jsonFieldOption(MyAnnotations.json).build();
+```
+
+Otherwise — a schema registry hands you descriptors but not the annotations artifact — the extension
+number alone works:
+
+```java
+ProtoSchemaOptions.builder().jsonFieldOptionNumber(50000).build();
+```
+
+Both are additive, like `jsonFieldPath`, so a job whose messages come from several sources can name
+each annotation vocabulary it has to understand. Only one entry is kept per extension number:
+registering the same number both ways keeps the one that carries a name — an unnamed entry would
+match anything at that number and defeat the check the named one is there for — and if two
+extensions claim one number, the last one registered wins.
+
+Either way the option is found whether the descriptor knows it as a registered extension
+(descriptors from generated code) or carries it as an unknown field (descriptors built from a
+serialized `FileDescriptorSet` — protobuf-java does not resolve custom options against the
+descriptor pool, not even for a declared dependency). An existing private extension number can
+therefore be adopted as-is: no change to the protobuf sources, and no annotations proto to publish
+or register.
+
+**Prefer the extension over the bare number.** Protobuf's private extension range has no registry,
+so an unrelated annotation can occupy the same number — and a job that writes several message types
+is exactly where protos from different sources meet. The extension supplies the option's full name
+as well, so a declaration found under a different name is treated as an unrelated option and the
+field is left alone. It also makes the compiler check that the option really is a `bool`.
+
+How much the connector can verify depends on what reaches it, in three steps:
+
+| What is available | Name checked | Type checked |
+|---|---|---|
+| The generated extension class (option is a resolved extension) | yes | exactly, from the descriptor |
+| The annotations proto among the descriptor's transitive dependencies | yes | exactly, from the declaration |
+| Neither — the number is all there is | no | from the wire encoding only |
+
+The name rules out a declaration that is *not* yours. It cannot arbitrate between two rival
+declarations that are both in the pool: an unresolved option records only its number, so nothing
+says which of them it was written against. Passing the generated extension is the only form where
+the value itself carries that identity.
+
+The third row is a real case: a `FileDescriptorSet` assembled without the annotations import leaves
+nothing to identify the option but its bytes. There the connector requires the encoding of a
+singular `bool` — one varint of `0` or `1` — so a string, a repeated, or an integer option outside
+that range is rejected with *"is not encoded as a singular bool"* rather than silently marking a
+column. An integer option that happens to hold `0` or `1` is indistinguishable from a `bool` and is
+accepted; that is why passing the extension, or shipping the annotations proto with the schema, is
+worth doing.
+
+Three consequences worth knowing:
+
+- **A field option number that matches nothing is not an error**, unlike a path — a message
+  legitimately need not have JSON columns, and the same configuration is meant to serve many message
+  types. A mistyped number therefore yields `STRING`/`STRUCT` columns silently, and under
+  `CreateDisposition.CREATE_IF_NEEDED` that mistake becomes durable in the auto-created table.
+  Check the derived schema with `serializer.getTableSchema(destination)` when adopting a number.
+- **JSON-mapped strings are not validated by the connector.** Parsing every record to pre-empt a
+  malformed value would defeat the point of a passthrough, so an invalid JSON string is rejected by
+  BigQuery as a row-level error and routed through the configured `FailedRowHandler`
+  (see [Error handling](#error-handling)).
+- **An unset plain proto3 string leaves the column NULL**, rather than writing `""`. A plain proto3
+  scalar has no presence, so an unset value reaches the sink as the empty string — which is not
+  valid JSON, and would fail every record that legitimately omits the field. This applies only to
+  fields *without* presence: where the proto can say "unset" (`optional string`, or proto2), an
+  explicit `""` is your own statement and is passed through as-is. Repeated elements are likewise
+  explicit and passed through.
+
+Marking a field that is neither a message nor a string — including a proto map, whose BigQuery shape
+is `REPEATED STRUCT<key, value>` — is rejected when the schema is derived, through either mechanism.
 
 ## Table auto-creation
 
