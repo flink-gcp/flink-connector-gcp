@@ -230,13 +230,14 @@ public final class PubSubConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "The topic to bind a missing subscription to, resolved against"
+                            "The existing topic to bind a missing subscription to, resolved against"
                                     + " 'project'. Setting it is what authorizes creating the"
                                     + " subscription; without it the subscription must already"
-                                    + " exist. It requires 'subscription' to name exactly one,"
-                                    + " because settings carry the topic binding and every"
-                                    + " subscription of a topic receives a complete copy of its"
-                                    + " stream.");
+                                    + " exist. Only the subscription is created — a source never"
+                                    + " creates a topic, unlike 'sink.create-disposition'. It"
+                                    + " requires 'subscription' to name exactly one, because"
+                                    + " settings carry the topic binding and every subscription of"
+                                    + " a topic receives a complete copy of its stream.");
 
     public static final ConfigOption<Duration> SCAN_AUTO_CREATE_ACK_DEADLINE =
             ConfigOptions.key("scan.auto-create.ack-deadline")
@@ -295,8 +296,8 @@ public final class PubSubConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "The topic a created subscription forwards undeliverable messages to,"
-                                    + " resolved against 'project'. Required together with"
+                            "The existing topic a created subscription forwards undeliverable"
+                                    + " messages to, resolved against 'project'. Required with"
                                     + " 'scan.auto-create.dead-letter.max-delivery-attempts'."
                                     + " Pub/Sub also needs its own service account granted publish"
                                     + " on that topic and subscribe on this subscription, or it"

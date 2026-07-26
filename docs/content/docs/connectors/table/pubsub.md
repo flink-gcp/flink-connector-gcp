@@ -274,6 +274,13 @@ already exist and the job fails at startup if one does not. An existing subscrip
 as it is configured: these settings apply to creation only, and are neither applied to it nor
 compared against it.
 
+**Only the subscription is created. The topic must already exist** — `scan.auto-create.topic` names
+the topic to bind to, not one to create, and neither it nor
+`scan.auto-create.dead-letter.topic` is created on your behalf. This is the opposite of
+`sink.create-disposition`, which does create a missing topic, so the two halves of one DDL do not
+mean the same thing by "create": a source cannot invent a topic, because which topic to consume is
+the whole question.
+
 ```sql
 CREATE TABLE orders (
   id STRING
