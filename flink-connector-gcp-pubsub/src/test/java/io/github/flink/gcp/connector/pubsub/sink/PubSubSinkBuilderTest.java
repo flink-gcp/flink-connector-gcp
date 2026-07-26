@@ -20,7 +20,6 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.util.InstantiationUtil;
 
-import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
 

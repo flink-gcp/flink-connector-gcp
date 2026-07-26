@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.pubsub.sink.publisher.writer;
+package io.github.flink.gcp.connector.pubsub.sink.writer;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;

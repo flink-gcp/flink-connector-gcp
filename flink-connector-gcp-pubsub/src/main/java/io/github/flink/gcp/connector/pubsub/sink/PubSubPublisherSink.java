@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.pubsub.sink.publisher;
+package io.github.flink.gcp.connector.pubsub.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
@@ -23,12 +23,11 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
-import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.writer.DefaultPublisherFactory;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.writer.PubSubWriter;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.writer.PublisherFactory;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
+import io.github.flink.gcp.connector.pubsub.sink.writer.DefaultPublisherFactory;
+import io.github.flink.gcp.connector.pubsub.sink.writer.PubSubWriter;
+import io.github.flink.gcp.connector.pubsub.sink.writer.PublisherFactory;
 
 import java.io.IOException;
 
@@ -46,8 +45,7 @@ public class PubSubPublisherSink<T> implements Sink<T> {
     private final PubSubSinkConfig<T> config;
 
     /**
-     * Creates the sink; called by {@link
-     * io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder}.
+     * Creates the sink; called by {@link PubSubSinkBuilder}.
      *
      * @param config the sink configuration
      */

@@ -14,16 +14,16 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.pubsub.sink.publisher.writer;
+package io.github.flink.gcp.connector.pubsub.sink.writer;
 
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.DestinationResolver;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.github.flink.gcp.connector.pubsub.sink.publisher.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 
 /**
