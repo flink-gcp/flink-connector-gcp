@@ -1,0 +1,57 @@
+// Copyright 2026 laughingman7743
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package presence;
+
+option java_package = "io.github.flink.gcp.connector.bigquery.testproto";
+option java_multiple_files = true;
+
+// Every shape a proto3 field can take with respect to presence, which is what
+// decides a derived BigQuery column's mode.
+//
+// Writing this by hand as a FileDescriptorProto is what motivated the codegen:
+// a proto3 `optional` field is only valid as the sole member of a synthetic
+// one-field oneof named `_<field>`, declared after every real oneof, with
+// proto3_optional set — protoc gets that right, and protobuf-java enforces only
+// the ordering half of it, so a hand-built fixture can be wrong in ways nothing
+// catches.
+message Presence {
+  // No presence: an unset value is indistinguishable from the type default and
+  // reaches the column as 0 / "" / the first enum value, never as NULL.
+  string p_implicit = 1;
+  int64 p_implicit_int = 2;
+
+  // Presence, from the containing oneof.
+  oneof choice {
+    string p_choice_a = 3;
+    int64 p_choice_b = 4;
+  }
+
+  // Presence, explicitly restored by the optional keyword.
+  optional string p_optional = 5;
+
+  // A singular message field has presence in either syntax.
+  PresenceChild p_nested = 6;
+
+  // Repeated fields have no presence either, so the mode decision has to test
+  // repeated first.
+  repeated string p_rep = 7;
+}
+
+message PresenceChild {
+  string c_implicit = 1;
+  optional string c_optional = 2;
+}
