@@ -70,6 +70,35 @@ API notes:
   per-destination creation metadata (partitioning, clustering) is supplied through
   `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
 
+## Column modes
+
+**Every column a serializer derives is `NULLABLE` by default. Constraints are opt-in.** `REPEATED` is
+the one mode derived without being asked for, because a repeated field has no nullable form — a
+BigQuery `REPEATED` column is empty, never NULL.
+
+| Serializer | Default | To constrain |
+|---|---|---|
+| [Protobuf messages](#protobuf-messages) | every column `NULLABLE` | `ProtoSchemaOptions.builder().deriveRequiredColumns()` derives `REQUIRED` from field presence |
+| [Avro records](#avro-records) | **the outlier today**: `REQUIRED` unless the field is a `["null", T]` union | `AvroSchemaOptions.builder().allFieldsNullable()` opts *out*, the inverse polarity. Being aligned on the above in [#145]({{< param BookRepo >}}/issues/145) |
+| [JSON records](#json-records) | taken from the schema you supply | write the mode you want in that schema; an omitted mode is `NULLABLE` |
+
+Two reasons the default is the unconstrained one:
+
+- **`REQUIRED` is the mode BigQuery cannot walk back.** It cannot be added to an existing table, so a
+  `REQUIRED` column only ever appears at creation time and relaxing it afterwards is a schema update
+  rather than an edit — needing `allowFieldRelaxation`, which is off by default. Defaulting to the
+  irreversible choice is the wrong way round.
+- **A source schema's "mandatory" is often not a statement about mandatoriness.** A plain proto3
+  scalar simply has no way to say "unset"; that is a property of the syntax, not a decision the schema
+  author made. Deriving `REQUIRED` from it would make nearly every scalar column of an auto-created
+  table `REQUIRED` on the strength of a default nobody chose.
+
+**The protobuf mapping is the normative one**, and the others are expected to match it, because every
+write path ends in a protobuf row: `STORAGE_API_*` writes protobuf directly, the Avro and JSON
+serializers convert into one, and File loads stages Avro only incidentally — that is a staging format,
+not a contract. So where a front end disagrees with the protobuf mapping, it is the front end that
+moves.
+
 ## Protobuf messages
 
 `ProtoMessageSerializer` derives the BigQuery schema from the message descriptor and rewrites each
@@ -129,20 +158,8 @@ presence test alone would map the one unambiguous case to `NULLABLE`. A map entr
 `value` have no presence either, so they become `REQUIRED`, which is what the Avro path already
 does for a map key.
 
-**Why `NULLABLE` is the default.** A proto3 field without presence is the spelling you get by *not*
-thinking about nullability — `optional` has to be added deliberately, and a large share of real
-proto3 schemas contain none at all — so deriving `REQUIRED` from it by default would make nearly
-every scalar column of an auto-created table `REQUIRED` on the strength of a syntax default. And
-that is the mode you cannot walk back: BigQuery cannot add a `REQUIRED` column to an existing table,
-and relaxing one needs `allowFieldRelaxation`. There is deliberately no inverse switch — with a
-`NULLABLE` default, "all fields nullable" is just *not* calling the opt-in.
-
-**This mapping is the normative one for every write path**, because every path ends in a protobuf
-row: `STORAGE_API_*` writes protobuf directly, the Avro and JSON serializers convert to a protobuf
-row too, and FILE_LOADS stages Avro only incidentally — it is a staging format, not a contract.
-[Avro records](#avro-records) still defaults to `REQUIRED` and opts out with `allFieldsNullable()`;
-aligning it on this option, name included, is tracked in
-[#145]({{< param BookRepo >}}/issues/145).
+Why `NULLABLE` is the default, and why there is deliberately no inverse switch — with this default,
+"all fields nullable" is just *not* calling the opt-in — is in [Column modes](#column-modes).
 
 **A `JSON` column is never `REQUIRED`.** An unset plain proto3 string is left unset rather than
 written as `""` (see [JSON columns](#json-columns)), and "no presence" is precisely the condition
@@ -344,10 +361,9 @@ The one thing it changes in the value path is what happens to a record that omit
 schema declares mandatory: by default that is a row-level failure, and under `allFieldsNullable()`
 the column is simply left unset. Records that do carry the value convert identically either way.
 
-Note that the protobuf switch currently has the **opposite polarity**: `NULLABLE` by default, with
-[`deriveRequiredColumns()`](#nullability) opting in. That is the direction both will settle on —
-the protobuf mapping is normative, since every write path ends in a protobuf row and Avro is a front
-end — so this default and this method name are the ones due to change, tracked in
+**This default is the outlier and is due to change.** Every other serializer derives `NULLABLE` and
+takes a constraint as an opt-in; see [Column modes](#column-modes) for the policy and the reasoning.
+Aligning this side on it — default, polarity and method name — is tracked in
 [#145]({{< param BookRepo >}}/issues/145).
 
 **JSON columns.** `AvroSchemaOptions.builder().jsonFieldPath("event.payload")` derives a `string`
@@ -482,9 +498,8 @@ parallel subtasks (HTTP 409 is treated as success); the credentials need
 existing tables are never modified.
 
 Creation is also the **only** moment a `REQUIRED` column can appear: BigQuery cannot add one to an
-existing table. So whichever serializer option decides nullability
-([Avro](#avro-records), [protobuf](#nullability)) is decided here, durably, and relaxing a column
-afterwards is a schema update rather than an edit.
+existing table. So the serializer's [column modes](#column-modes) are decided here, durably, and
+relaxing a column afterwards is a schema update rather than an edit.
 
 With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
 

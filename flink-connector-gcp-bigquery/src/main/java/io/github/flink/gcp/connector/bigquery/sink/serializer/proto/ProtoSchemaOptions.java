@@ -52,15 +52,18 @@ import java.util.Set;
  *       REQUIRED} where protobuf cannot express absence.
  * </ul>
  *
- * <p>The nullability switch has the <em>opposite polarity</em> to its Avro counterpart: {@link
- * io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions AvroSchemaOptions}
- * defaults to {@code REQUIRED} and opts out with {@code allFieldsNullable()}, while this class
- * defaults to {@code NULLABLE} and opts in. An Avro {@code ["null", T]} union is the schema
- * author's own statement about nullability, so honoring it by default is faithful. A proto3 field
- * without presence is the spelling you get by <em>not</em> thinking about nullability — {@code
- * optional} has to be added deliberately — so deriving {@code REQUIRED} from it by default would
- * make nearly every scalar column of an auto-created table {@code REQUIRED} on the strength of a
- * syntax default.
+ * <p>Two reasons {@code NULLABLE} is the default. A proto3 field without presence is the spelling
+ * you get by <em>not</em> thinking about nullability — {@code optional} has to be added
+ * deliberately — so deriving {@code REQUIRED} from it by default would make nearly every scalar
+ * column of an auto-created table {@code REQUIRED} on the strength of a syntax default. And {@code
+ * REQUIRED} is the mode that cannot be walked back: BigQuery cannot add a {@code REQUIRED} column
+ * to an existing table, and relaxing one is a schema update rather than an edit.
+ *
+ * <p>This is the normative mapping for every serializer, because every write path ends in a
+ * protobuf row — the Storage Write API takes protobuf, and the Avro and JSON serializers convert
+ * into one. {@link io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions
+ * AvroSchemaOptions} still has the opposite polarity ({@code REQUIRED} by default, opting out with
+ * {@code allFieldsNullable()}); it is the side due to move onto this default and this method name.
  */
 @PublicEvolving
 public final class ProtoSchemaOptions implements Serializable {
