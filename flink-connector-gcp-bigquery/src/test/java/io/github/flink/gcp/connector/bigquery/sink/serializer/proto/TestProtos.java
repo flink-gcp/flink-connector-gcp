@@ -20,17 +20,29 @@ import com.google.protobuf.DescriptorProtos;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.GeneratedMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
-import com.google.protobuf.TimestampProto;
 import com.google.protobuf.UnknownFieldSet;
+import io.github.flink.gcp.connector.bigquery.testproto.AllTypes;
+import io.github.flink.gcp.connector.bigquery.testproto.Presence;
+import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
+import io.github.flink.gcp.connector.bigquery.testproto.Recursive;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Programmatically built test descriptors (no protoc code generation needed): a proto3 file with an
- * {@code AllTypes} message covering the whole type-mapping matrix, plus a recursive message and an
- * {@code Annotated} message whose fields carry custom {@code google.protobuf.FieldOptions}
- * extensions.
+ * Test descriptors, from two sources.
+ *
+ * <p>Ordinary shapes come from real {@code .proto} sources under {@code src/test/protobuf},
+ * compiled by protoc at build time: the {@code AllTypes} type-mapping matrix, a recursive message,
+ * and the presence fixtures whose {@code oneof} and proto3 {@code optional} spellings are what
+ * motivated the codegen (#132).
+ *
+ * <p>What remains here is hand-built because protoc <em>cannot produce it</em>, not as a leftover.
+ * The annotation fixtures need custom options left as unknown fields, an annotations proto missing
+ * from the descriptor pool, two extensions claiming one number, and one option repeated on the wire
+ * where its declaration is singular — the descriptor and wire states that #50's decisions are
+ * about, and that protoc resolves away by construction. {@code CaseCollision} needs two fields
+ * differing only by case, which protoc accepts but whose generated Java does not compile.
  */
 final class TestProtos {
 
@@ -77,16 +89,41 @@ final class TestProtos {
 
     private TestProtos() {}
 
+    /** The whole type-mapping matrix, from {@code src/test/protobuf/test.proto}. */
     static Descriptors.Descriptor allTypes() {
-        return file().findMessageTypeByName("AllTypes");
+        return AllTypes.getDescriptor();
     }
 
+    /** A self-referencing message, which BigQuery cannot represent. */
     static Descriptors.Descriptor recursive() {
-        return file().findMessageTypeByName("Recursive");
+        return Recursive.getDescriptor();
     }
 
+    /** Every proto3 presence shape, from {@code src/test/protobuf/presence.proto}. */
+    static Descriptors.Descriptor presence() {
+        return Presence.getDescriptor();
+    }
+
+    /**
+     * proto2, where a {@code required} field has presence and is mandatory all the same — the case
+     * a presence test alone gets wrong. From {@code src/test/protobuf/presence2.proto}.
+     */
+    static Descriptors.Descriptor proto2Presence() {
+        return Proto2Presence.getDescriptor();
+    }
+
+    /**
+     * Two fields differing only by case, which the Storage Write API cannot tell apart because it
+     * lowercases descriptor field names.
+     *
+     * <p>Hand-built, and necessarily so: protoc accepts the collision but the Java it generates
+     * does not compile, since {@code ID} and {@code id} both yield {@code ID_FIELD_NUMBER}. That is
+     * not a reason to drop the case — a descriptor that can carry the collision is one built at
+     * runtime or read from a {@code FileDescriptorSet}, which is exactly the input a hand-built
+     * fixture models.
+     */
     static Descriptors.Descriptor caseCollision() {
-        return file().findMessageTypeByName("CaseCollision");
+        return caseCollisionFile().findMessageTypeByName("CaseCollision");
     }
 
     /**
@@ -230,131 +267,11 @@ final class TestProtos {
     /** The full name the JSON option is declared under in the synthetic annotations proto. */
     static final String JSON_OPTION_FULL_NAME = "annot.json";
 
-    private static Descriptors.FileDescriptor file() {
-        try {
-            return Descriptors.FileDescriptor.buildFrom(
-                    fileProto(), new Descriptors.FileDescriptor[] {TimestampProto.getDescriptor()});
-        } catch (Descriptors.DescriptorValidationException e) {
-            throw new AssertionError(e);
-        }
-    }
-
-    private static DescriptorProtos.FileDescriptorProto fileProto() {
-        DescriptorProtos.EnumDescriptorProto color =
-                DescriptorProtos.EnumDescriptorProto.newBuilder()
-                        .setName("Color")
-                        .addValue(enumValue("COLOR_UNSPECIFIED", 0))
-                        .addValue(enumValue("RED", 1))
-                        .addValue(enumValue("BLUE", 2))
-                        .build();
-
-        DescriptorProtos.DescriptorProto nested =
-                DescriptorProtos.DescriptorProto.newBuilder()
-                        .setName("Nested")
-                        .addField(
-                                scalar(
-                                        "s",
-                                        1,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_STRING))
-                        .addField(
-                                scalar(
-                                        "n",
-                                        2,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_INT64))
-                        .build();
-
-        DescriptorProtos.DescriptorProto mapEntry =
-                DescriptorProtos.DescriptorProto.newBuilder()
-                        .setName("FMapEntry")
-                        .setOptions(
-                                DescriptorProtos.MessageOptions.newBuilder()
-                                        .setMapEntry(true)
-                                        .build())
-                        .addField(
-                                scalar(
-                                        "key",
-                                        1,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_STRING))
-                        .addField(
-                                scalar(
-                                        "value",
-                                        2,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_INT64))
-                        .build();
-
-        DescriptorProtos.DescriptorProto allTypes =
-                DescriptorProtos.DescriptorProto.newBuilder()
-                        .setName("AllTypes")
-                        .addNestedType(mapEntry)
-                        .addField(
-                                scalar(
-                                        "f_int32",
-                                        1,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_INT32))
-                        .addField(
-                                scalar(
-                                        "f_int64",
-                                        2,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_INT64))
-                        .addField(
-                                scalar(
-                                        "f_uint32",
-                                        3,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_UINT32))
-                        .addField(
-                                scalar(
-                                        "f_uint64",
-                                        4,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_UINT64))
-                        .addField(
-                                scalar(
-                                        "f_float",
-                                        5,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_FLOAT))
-                        .addField(
-                                scalar(
-                                        "f_double",
-                                        6,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_DOUBLE))
-                        .addField(
-                                scalar(
-                                        "f_bool",
-                                        7,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_BOOL))
-                        .addField(
-                                scalar(
-                                        "f_string",
-                                        8,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_STRING))
-                        .addField(
-                                scalar(
-                                        "f_bytes",
-                                        9,
-                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_BYTES))
-                        .addField(
-                                message("f_enum", 10, ".test.Color", false).toBuilder()
-                                        .setType(
-                                                DescriptorProtos.FieldDescriptorProto.Type
-                                                        .TYPE_ENUM)
-                                        .build())
-                        .addField(message("f_ts", 11, ".google.protobuf.Timestamp", false))
-                        .addField(message("f_nested", 12, ".test.Nested", false))
-                        .addField(
-                                scalar(
-                                                "f_rep_string",
-                                                13,
-                                                DescriptorProtos.FieldDescriptorProto.Type
-                                                        .TYPE_STRING)
-                                        .toBuilder()
-                                        .setLabel(
-                                                DescriptorProtos.FieldDescriptorProto.Label
-                                                        .LABEL_REPEATED)
-                                        .build())
-                        .addField(message("f_map", 14, ".test.AllTypes.FMapEntry", true))
-                        .addField(message("f_json", 15, ".test.Nested", false))
-                        .addField(message("f_rep_ts", 16, ".google.protobuf.Timestamp", true))
-                        .build();
-
+    /**
+     * The one hand-built message left outside the annotation fixtures: two fields differing only by
+     * case, which protoc accepts but whose generated Java does not compile.
+     */
+    private static Descriptors.FileDescriptor caseCollisionFile() {
         DescriptorProtos.DescriptorProto caseCollision =
                 DescriptorProtos.DescriptorProto.newBuilder()
                         .setName("CaseCollision")
@@ -369,24 +286,18 @@ final class TestProtos {
                                         2,
                                         DescriptorProtos.FieldDescriptorProto.Type.TYPE_STRING))
                         .build();
-
-        DescriptorProtos.DescriptorProto recursive =
-                DescriptorProtos.DescriptorProto.newBuilder()
-                        .setName("Recursive")
-                        .addField(message("child", 1, ".test.Recursive", false))
+        DescriptorProtos.FileDescriptorProto proto =
+                DescriptorProtos.FileDescriptorProto.newBuilder()
+                        .setName("case_collision.proto")
+                        .setPackage("test")
+                        .setSyntax("proto3")
+                        .addMessageType(caseCollision)
                         .build();
-
-        return DescriptorProtos.FileDescriptorProto.newBuilder()
-                .setName("test.proto")
-                .setPackage("test")
-                .setSyntax("proto3")
-                .addDependency("google/protobuf/timestamp.proto")
-                .addEnumType(color)
-                .addMessageType(nested)
-                .addMessageType(allTypes)
-                .addMessageType(caseCollision)
-                .addMessageType(recursive)
-                .build();
+        try {
+            return Descriptors.FileDescriptor.buildFrom(proto, new Descriptors.FileDescriptor[0]);
+        } catch (Descriptors.DescriptorValidationException e) {
+            throw new AssertionError(e);
+        }
     }
 
     private static Descriptors.FileDescriptor annotatedFile(boolean throughBytes) {
@@ -774,13 +685,6 @@ final class TestProtos {
                         repeated
                                 ? DescriptorProtos.FieldDescriptorProto.Label.LABEL_REPEATED
                                 : DescriptorProtos.FieldDescriptorProto.Label.LABEL_OPTIONAL)
-                .build();
-    }
-
-    private static DescriptorProtos.EnumValueDescriptorProto enumValue(String name, int number) {
-        return DescriptorProtos.EnumValueDescriptorProto.newBuilder()
-                .setName(name)
-                .setNumber(number)
                 .build();
     }
 }

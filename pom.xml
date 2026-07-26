@@ -82,6 +82,23 @@ limitations under the License.
         <assertj.version>3.27.7</assertj.version>
         <junit5.version>5.13.3</junit5.version>
         <testcontainers.version>1.21.4</testcontainers.version>
+        <!-- protoc, for the test-only .proto sources of the BigQuery module. Not an
+             exception to "Google Cloud library versions come only from libraries-bom":
+             com.google.protobuf:protoc is not a google-cloud artifact and that BOM does
+             not manage it (checked), so there is nothing to inherit. The plugin resolves
+             it as an ordinary Maven artifact, so protoc need not be on PATH and CI needs
+             no extra tool.
+
+             The constraint on this value runs one way only. protobuf's cross-version
+             guarantee is "new gencode + old runtime = never allowed", enforced at runtime
+             by a poison pill, while gencode older than the runtime is supported across two
+             majors. So this must never be raised above the protobuf-java that libraries-bom
+             resolves (4.33.2 today) — but a BOM bump that raises the runtime and leaves this
+             behind is the safe direction and needs no action. Getting it wrong fails loudly
+             on the first test that touches a generated class, which is why no enforcer rule
+             guards it. -->
+        <protoc.version>4.33.2</protoc.version>
+        <protobuf-maven-plugin.version>5.1.7</protobuf-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
