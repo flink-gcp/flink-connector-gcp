@@ -56,8 +56,10 @@ import java.util.Set;
  *       STRUCT<key, value>}, matching the shape proto maps already get
  *   <li>{@code string} fields selected by {@link AvroSchemaOptions#isJsonField} → {@code JSON} (the
  *       value is taken to be JSON text already and is not validated)
- *   <li>{@code ["null", T]} → {@code NULLABLE}, {@code array<T>} → {@code REPEATED}, everything
- *       else → {@code REQUIRED} unless {@link AvroSchemaOptions#isAllFieldsNullable} relaxes it
+ *   <li>modes: arrays and maps → {@code REPEATED}; everything else → {@code NULLABLE}, unless
+ *       {@link AvroSchemaOptions#isDeriveRequiredColumns} is set, and then a field that is not a
+ *       {@code ["null", T]} union → {@code REQUIRED}. A {@code JSON} column stays {@code NULLABLE}
+ *       either way, as does the synthesized map {@code key} column unless the option is set
  * </ul>
  *
  * <p>Rejected as configuration errors, because writing something plausible instead would be worse
@@ -170,14 +172,41 @@ public final class AvroToTableSchemaConverter {
                 applyMapEntry(builder, base, path, options, ancestors, matchedJsonPaths);
                 break;
             default:
-                builder.setMode(
-                        nullable || options.isAllFieldsNullable()
-                                ? TableFieldSchema.Mode.NULLABLE
-                                : TableFieldSchema.Mode.REQUIRED);
+                builder.setMode(modeOf(nullable, options, options.isJsonField(path)));
                 applyType(builder, base, path, options, ancestors, matchedJsonPaths);
                 break;
         }
         return builder.build();
+    }
+
+    /**
+     * Returns the mode of a non-collection column: {@code NULLABLE} unless {@link
+     * AvroSchemaOptions.Builder#deriveRequiredColumns()} is set, and then {@code REQUIRED} for a
+     * field the Avro schema does not admit null for.
+     *
+     * <p>Shared by the field path and the map-key path so the two cannot drift. Collections do not
+     * come here at all — a BigQuery {@code REPEATED} column cannot be {@code NULLABLE}, so {@code
+     * ARRAY} and {@code MAP} are {@code REPEATED} whatever the option says.
+     *
+     * <p>A singular {@code JSON} column is never {@code REQUIRED}, matching {@link
+     * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoToTableSchemaConverter
+     * ProtoToTableSchemaConverter} — the two options share a name, so they must not diverge on
+     * which columns they constrain. That side needs the rule to avoid poisoning every record which
+     * omits the field; here it is a plainer matter of not making a column mandatory that BigQuery
+     * cannot relax afterwards, when an empty string is a row-level error in a {@code JSON} column
+     * either way.
+     *
+     * @param nullable whether the Avro schema admits null for this field
+     * @param options the schema mapping options
+     * @param jsonColumn whether this column is mapped to {@code JSON}
+     * @return the BigQuery mode
+     */
+    private static TableFieldSchema.Mode modeOf(
+            boolean nullable, AvroSchemaOptions options, boolean jsonColumn) {
+        if (!options.isDeriveRequiredColumns() || nullable || jsonColumn) {
+            return TableFieldSchema.Mode.NULLABLE;
+        }
+        return TableFieldSchema.Mode.REQUIRED;
     }
 
     /** Returns the element type of an array, rejecting the shapes BigQuery cannot repeat. */
@@ -203,9 +232,10 @@ public final class AvroToTableSchemaConverter {
      * proto map already gets from {@link
      * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoToTableSchemaConverter
      * ProtoToTableSchemaConverter}, so both serializers produce one table shape for the same
-     * logical data. Avro map keys are always strings, and an entry always has one, so the key
-     * column is {@code REQUIRED} — unless {@link AvroSchemaOptions#isAllFieldsNullable} is set,
-     * which means every column without exception.
+     * logical data. Avro map keys are always strings and an entry always has one, so the key column
+     * is where {@link AvroSchemaOptions#isDeriveRequiredColumns} has the most obvious effect:
+     * {@code REQUIRED} under it, {@code NULLABLE} by default like every other column. The proto
+     * path converges here — a proto3 map entry's key has no presence either.
      */
     private static void applyMapEntry(
             TableFieldSchema.Builder builder,
@@ -219,10 +249,9 @@ public final class AvroToTableSchemaConverter {
                         TableFieldSchema.newBuilder()
                                 .setName("key")
                                 .setType(TableFieldSchema.Type.STRING)
-                                .setMode(
-                                        options.isAllFieldsNullable()
-                                                ? TableFieldSchema.Mode.NULLABLE
-                                                : TableFieldSchema.Mode.REQUIRED)
+                                // An Avro map key is never a union and never a JSON column, so it
+                                // is never nullable of its own accord — the option alone decides.
+                                .setMode(modeOf(false, options, false))
                                 .build())
                 .addFields(
                         convertValue(

@@ -29,11 +29,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AvroSchemaOptionsTest {
 
     @Test
-    void defaultsMapNothingAndKeepSchemaNullability() {
+    void defaultsMapNothingAndConstrainNothing() {
         AvroSchemaOptions options = AvroSchemaOptions.defaults();
 
         assertThat(options.getJsonFieldPaths()).isEmpty();
-        assertThat(options.isAllFieldsNullable()).isFalse();
+        assertThat(options.isDeriveRequiredColumns()).isFalse();
         assertThat(options.isJsonField("anything")).isFalse();
     }
 
@@ -52,9 +52,13 @@ class AvroSchemaOptionsTest {
     }
 
     @Test
-    void allFieldsNullableIsOptIn() {
-        assertThat(AvroSchemaOptions.builder().build().isAllFieldsNullable()).isFalse();
-        assertThat(AvroSchemaOptions.builder().allFieldsNullable().build().isAllFieldsNullable())
+    void deriveRequiredColumnsIsOptIn() {
+        assertThat(AvroSchemaOptions.builder().build().isDeriveRequiredColumns()).isFalse();
+        assertThat(
+                        AvroSchemaOptions.builder()
+                                .deriveRequiredColumns()
+                                .build()
+                                .isDeriveRequiredColumns())
                 .isTrue();
     }
 
@@ -87,11 +91,11 @@ class AvroSchemaOptionsTest {
     @Test
     void survivesJavaSerialization() throws Exception {
         AvroSchemaOptions options =
-                AvroSchemaOptions.builder().jsonFieldPath("a.b").allFieldsNullable().build();
+                AvroSchemaOptions.builder().jsonFieldPath("a.b").deriveRequiredColumns().build();
 
         AvroSchemaOptions copy = InstantiationUtil.clone(options);
 
         assertThat(copy.getJsonFieldPaths()).containsExactly("a.b");
-        assertThat(copy.isAllFieldsNullable()).isTrue();
+        assertThat(copy.isDeriveRequiredColumns()).isTrue();
     }
 }

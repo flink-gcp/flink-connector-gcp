@@ -62,8 +62,8 @@ import java.util.Set;
  * <p>This is the normative mapping for every serializer, because every write path ends in a
  * protobuf row — the Storage Write API takes protobuf, and the Avro and JSON serializers convert
  * into one. {@link io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions
- * AvroSchemaOptions} still has the opposite polarity ({@code REQUIRED} by default, opting out with
- * {@code allFieldsNullable()}); it is the side due to move onto this default and this method name.
+ * AvroSchemaOptions} carries the same default and the same {@code deriveRequiredColumns()} name;
+ * only the signal differs — a {@code ["null", T]} union there, field presence here.
  */
 @PublicEvolving
 public final class ProtoSchemaOptions implements Serializable {
@@ -169,9 +169,10 @@ public final class ProtoSchemaOptions implements Serializable {
 
         /**
          * Derives each column's mode from its field's presence, instead of deriving every
-         * non-repeated column as {@code NULLABLE}. Nested message fields are covered too; repeated
-         * fields are unaffected, since a BigQuery {@code REPEATED} column cannot be {@code
-         * NULLABLE}.
+         * non-repeated column as {@code NULLABLE}. Nested message fields are covered too, and so
+         * are map entry columns — a proto3 entry's {@code key} and {@code value} have implicit
+         * presence, so both become {@code REQUIRED}. Repeated fields are unaffected, since a
+         * BigQuery {@code REPEATED} column cannot be {@code NULLABLE}.
          *
          * <p>The resulting map:
          *

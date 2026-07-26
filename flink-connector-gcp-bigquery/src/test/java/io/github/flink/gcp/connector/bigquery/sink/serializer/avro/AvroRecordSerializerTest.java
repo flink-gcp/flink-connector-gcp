@@ -38,7 +38,10 @@ class AvroRecordSerializerTest {
     private static final String SCHEMA_JSON =
             "{\"type\":\"record\",\"name\":\"Event\",\"namespace\":\"it\",\"fields\":["
                     + "{\"name\":\"name\",\"type\":\"string\"},"
-                    + "{\"name\":\"count\",\"type\":[\"null\",\"long\"]}]}";
+                    + "{\"name\":\"count\",\"type\":[\"null\",\"long\"]},"
+                    // A third field so a test can read a *tightened* mode off something that is
+                    // neither a union nor a JSON column, both of which stay NULLABLE.
+                    + "{\"name\":\"note\",\"type\":\"string\"}]}";
 
     private static Schema schema() {
         return new Schema.Parser().parse(SCHEMA_JSON);
@@ -48,6 +51,7 @@ class AvroRecordSerializerTest {
         GenericRecord record = new GenericData.Record(schema());
         record.put("name", name);
         record.put("count", count);
+        record.put("note", "n");
         return record;
     }
 
@@ -64,10 +68,14 @@ class AvroRecordSerializerTest {
                         org.assertj.core.groups.Tuple.tuple(
                                 "name",
                                 TableFieldSchema.Type.STRING,
-                                TableFieldSchema.Mode.REQUIRED),
+                                TableFieldSchema.Mode.NULLABLE),
                         org.assertj.core.groups.Tuple.tuple(
                                 "count",
                                 TableFieldSchema.Type.INT64,
+                                TableFieldSchema.Mode.NULLABLE),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "note",
+                                TableFieldSchema.Type.STRING,
                                 TableFieldSchema.Mode.NULLABLE));
     }
 
@@ -79,12 +87,14 @@ class AvroRecordSerializerTest {
 
     @Test
     void optionsReachSchemaDerivation() {
+        // Asserted through the opt-in, not the default: NULLABLE is now what a *lost* options
+        // object would produce too, so only the tightening direction distinguishes the two.
         AvroRecordSerializer serializer =
                 AvroRecordSerializer.of(
-                        schema(), AvroSchemaOptions.builder().allFieldsNullable().build());
+                        schema(), AvroSchemaOptions.builder().deriveRequiredColumns().build());
 
         assertThat(serializer.getTableSchema(DESTINATION).getFields(0).getMode())
-                .isEqualTo(TableFieldSchema.Mode.NULLABLE);
+                .isEqualTo(TableFieldSchema.Mode.REQUIRED);
     }
 
     @Test
@@ -120,7 +130,7 @@ class AvroRecordSerializerTest {
                         schema(),
                         AvroSchemaOptions.builder()
                                 .jsonFieldPath("name")
-                                .allFieldsNullable()
+                                .deriveRequiredColumns()
                                 .build());
         // Use it first, so the transient conversion state exists and has to be rebuilt.
         original.serialize(record("a", 1L));
@@ -129,10 +139,17 @@ class AvroRecordSerializerTest {
 
         assertThat(copy.getTableSchema(DESTINATION))
                 .isEqualTo(original.getTableSchema(DESTINATION));
+        // The JSON path survived (field 0 is JSON rather than STRING) and so did the mode option
+        // (field 2 is tightened). The mode has to be read off a *different* field than the JSON
+        // one:
+        // a JSON column is never REQUIRED, and NULLABLE is what a copy that lost its options would
+        // derive anyway, so field 0's mode could not discriminate.
         assertThat(copy.getTableSchema(DESTINATION).getFields(0).getType())
                 .isEqualTo(TableFieldSchema.Type.JSON);
         assertThat(copy.getTableSchema(DESTINATION).getFields(0).getMode())
                 .isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(copy.getTableSchema(DESTINATION).getFields(2).getMode())
+                .isEqualTo(TableFieldSchema.Mode.REQUIRED);
         assertThat(copy.serialize(record("b", 2L))).isEqualTo(original.serialize(record("b", 2L)));
     }
 

@@ -18,9 +18,11 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
+import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.TableId;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializer;
@@ -41,11 +43,17 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 /**
  * Integration test for {@link AvroRecordSerializer} against the BigQuery emulator
  * (goccy/bigquery-emulator): Avro records written through the {@link BigQuerySink} facade into a
  * table created from the serializer's own derived schema.
+ *
+ * <p>Runs under {@link AvroSchemaOptions.Builder#deriveRequiredColumns()} so that a {@code
+ * REQUIRED} column is still exercised end to end now that {@code NULLABLE} is the default — and
+ * asserts the created table's modes, not only the values, since the value path is the same either
+ * way and would otherwise leave the option unverified.
  *
  * <p>Covers the column types the emulator round-trips faithfully — {@code REQUIRED}/{@code
  * NULLABLE} scalars, {@code TIMESTAMP}, {@code DATE}, {@code BYTES}, an Avro enum as {@code
@@ -106,8 +114,39 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
         Schema schema = new Schema.Parser().parse(SCHEMA_JSON);
         AvroRecordSerializer serializer =
                 AvroRecordSerializer.of(
-                        schema, AvroSchemaOptions.builder().jsonFieldPath("payload").build());
+                        schema,
+                        AvroSchemaOptions.builder()
+                                .jsonFieldPath("payload")
+                                .deriveRequiredColumns()
+                                .build());
         createTable("avro_writes", serializer.getTableSchema(null));
+
+        // The modes are the half the rows below cannot show: the value path does not consult the
+        // option, so without this the test would pass identically with it turned off.
+        // Fully qualified: Schema is org.apache.avro.Schema in this file.
+        com.google.cloud.bigquery.Schema created =
+                restClient
+                        .getTable(TableId.of(PROJECT, DATASET, "avro_writes"))
+                        .getDefinition()
+                        .getSchema();
+        assertThat(created).isNotNull();
+        assertThat(created.getFields())
+                .extracting(Field::getName, Field::getMode)
+                .contains(
+                        // A bare Avro type is a constraint under the option...
+                        tuple("name", Field.Mode.REQUIRED),
+                        // ...and a ["null", T] union is not.
+                        tuple("count", Field.Mode.NULLABLE),
+                        tuple("tags", Field.Mode.REPEATED),
+                        tuple("labels", Field.Mode.REPEATED));
+        // It recurses, into a struct and into map entry columns alike.
+        assertThat(created.getFields().get("origin").getSubFields())
+                .extracting(Field::getName, Field::getMode)
+                .containsExactly(tuple("host", Field.Mode.REQUIRED));
+        assertThat(created.getFields().get("labels").getSubFields())
+                .extracting(Field::getName, Field::getMode)
+                .containsExactly(
+                        tuple("key", Field.Mode.REQUIRED), tuple("value", Field.Mode.REQUIRED));
 
         BigQueryDefaultStreamSink<GenericRecord> sink =
                 (BigQueryDefaultStreamSink<GenericRecord>)
@@ -127,7 +166,67 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
             writer.close();
         }
 
-        assertThat(rows())
+        assertThat(rows("avro_writes"))
+                .containsExactly(
+                        "alice|3|"
+                                + SEEN_AT
+                                + "|2026-07-26|alice|WARN|{\"k\":1}|a,b|env=prod|host-a",
+                        "bob|null|"
+                                + SEEN_AT
+                                + "|2026-07-26|bob|WARN|{\"k\":1}|a,b|env=prod|host-b");
+    }
+
+    /**
+     * The same records under the <em>default</em> options, which is the shape an ordinary job now
+     * gets. Worth its own run rather than only asserting the derived schema in a unit test: the
+     * point of the flip is that an all-{@code NULLABLE} table is writable end to end, and the
+     * emulator is where that is shown.
+     */
+    @Test
+    void writesAvroRecordsUnderTheAllNullableDefault() throws Exception {
+        Schema schema = new Schema.Parser().parse(SCHEMA_JSON);
+        AvroRecordSerializer serializer =
+                AvroRecordSerializer.of(
+                        schema, AvroSchemaOptions.builder().jsonFieldPath("payload").build());
+        createTable("avro_default", serializer.getTableSchema(null));
+
+        com.google.cloud.bigquery.Schema created =
+                restClient
+                        .getTable(TableId.of(PROJECT, DATASET, "avro_default"))
+                        .getDefinition()
+                        .getSchema();
+        assertThat(created).isNotNull();
+        assertThat(created.getFields())
+                .allSatisfy(
+                        f ->
+                                assertThat(f.getMode())
+                                        .isIn(Field.Mode.NULLABLE, Field.Mode.REPEATED));
+        assertThat(created.getFields())
+                .extracting(Field::getName, Field::getMode)
+                .contains(tuple("name", Field.Mode.NULLABLE), tuple("tags", Field.Mode.REPEATED));
+        assertThat(created.getFields().get("labels").getSubFields())
+                .extracting(Field::getMode)
+                .containsOnly(Field.Mode.NULLABLE);
+
+        BigQueryDefaultStreamSink<GenericRecord> sink =
+                (BigQueryDefaultStreamSink<GenericRecord>)
+                        BigQuerySink.<GenericRecord>builder()
+                                .destination(TableDestination.of(PROJECT, DATASET, "avro_default"))
+                                .serializer(serializer)
+                                .build();
+        SinkWriter<GenericRecord> writer =
+                sink.createWriter(
+                        new EmulatorAppenderFactory(grpcEndpoint()),
+                        new BigQueryTableAdmin(restClient));
+        try {
+            writer.write(event(schema, "alice", 3L, "host-a"), CONTEXT);
+            writer.write(event(schema, "bob", null, "host-b"), CONTEXT);
+            writer.flush(true);
+        } finally {
+            writer.close();
+        }
+
+        assertThat(rows("avro_default"))
                 .containsExactly(
                         "alice|3|"
                                 + SEEN_AT
@@ -138,7 +237,7 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
     }
 
     /** Returns one line per row, joining every column so a wrong conversion shows up. */
-    private static List<String> rows() throws InterruptedException {
+    private static List<String> rows(String table) throws InterruptedException {
         List<String> rows = new ArrayList<>();
         restClient
                 .query(
@@ -151,7 +250,9 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
                                                 + PROJECT
                                                 + "."
                                                 + DATASET
-                                                + ".avro_writes` ORDER BY name")
+                                                + "."
+                                                + table
+                                                + "` ORDER BY name")
                                 .build())
                 .iterateAll()
                 .forEach((FieldValueList row) -> rows.add(join(row)));

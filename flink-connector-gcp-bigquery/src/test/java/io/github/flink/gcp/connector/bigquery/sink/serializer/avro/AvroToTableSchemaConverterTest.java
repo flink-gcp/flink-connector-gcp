@@ -27,6 +27,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link AvroToTableSchemaConverter}. */
 class AvroToTableSchemaConverterTest {
 
+    private static final AvroSchemaOptions DERIVE_REQUIRED =
+            AvroSchemaOptions.builder().deriveRequiredColumns().build();
+
     private static Schema record(String fieldsJson) {
         return new Schema.Parser()
                 .parse("{\"type\":\"record\",\"name\":\"Row\",\"fields\":[" + fieldsJson + "]}");
@@ -46,6 +49,13 @@ class AvroToTableSchemaConverterTest {
 
     private static TableFieldSchema.Type typeOf(String fieldTypeJson) {
         return fieldOf(fieldTypeJson).getType();
+    }
+
+    /** The mode a field gets under {@link AvroSchemaOptions.Builder#deriveRequiredColumns()}. */
+    private static TableFieldSchema.Mode modeOf(String fieldTypeJson) {
+        return AvroToTableSchemaConverter.convert(recordOf(fieldTypeJson), DERIVE_REQUIRED)
+                .getFields(0)
+                .getMode();
     }
 
     private static Schema logical(String baseType, String logicalType) {
@@ -155,14 +165,28 @@ class AvroToTableSchemaConverterTest {
                 .hasMessageContaining("exceeds BigQuery BIGNUMERIC");
     }
 
+    /**
+     * By default the converter looks at no union shape at all — a field is REPEATED, or it is
+     * NULLABLE. The Avro schema's own nullability only becomes a mode under {@link
+     * AvroSchemaOptions.Builder#deriveRequiredColumns()}, pinned below.
+     */
     @Test
-    void nonUnionFieldIsRequiredAndNullableUnionIsNullable() {
-        assertThat(fieldOf("\"string\"").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+    void everyNonRepeatedFieldIsNullableByDefault() {
+        assertThat(fieldOf("\"string\"").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
         assertThat(fieldOf("[\"null\",\"string\"]").getMode())
                 .isEqualTo(TableFieldSchema.Mode.NULLABLE);
         assertThat(fieldOf("[\"string\",\"null\"]").getMode())
                 .isEqualTo(TableFieldSchema.Mode.NULLABLE);
-        assertThat(fieldOf("[\"string\"]").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(fieldOf("[\"string\"]").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+    }
+
+    @Test
+    void deriveRequiredColumnsMakesANonUnionFieldRequired() {
+        assertThat(modeOf("\"string\"")).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(modeOf("[\"null\",\"string\"]")).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(modeOf("[\"string\",\"null\"]")).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        // A degenerate one-branch union admits no null, so it is a constraint like a bare type.
+        assertThat(modeOf("[\"string\"]")).isEqualTo(TableFieldSchema.Mode.REQUIRED);
     }
 
     @Test
@@ -179,29 +203,32 @@ class AvroToTableSchemaConverterTest {
     }
 
     @Test
-    void allFieldsNullableRelaxesRequiredButLeavesRepeated() {
+    void deriveRequiredColumnsTightensButLeavesRepeatedAlone() {
         Schema schema =
                 record(
                         "{\"name\":\"a\",\"type\":\"string\"},"
                                 + "{\"name\":\"b\",\"type\":{\"type\":\"array\",\"items\":\"long\"}}");
-        TableSchema converted =
-                AvroToTableSchemaConverter.convert(
-                        schema, AvroSchemaOptions.builder().allFieldsNullable().build());
-        assertThat(converted.getFields(0).getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        TableSchema converted = AvroToTableSchemaConverter.convert(schema, DERIVE_REQUIRED);
+        assertThat(converted.getFields(0).getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        // A BigQuery REPEATED column cannot be NULLABLE, so the option cannot reach it either way.
         assertThat(converted.getFields(1).getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
     }
 
     @Test
-    void allFieldsNullableRelaxesNestedRecordFields() {
+    void deriveRequiredColumnsReachesNestedRecordFields() {
         Schema schema =
                 recordOf(
                         "{\"type\":\"record\",\"name\":\"Inner\",\"fields\":"
-                                + "[{\"name\":\"n\",\"type\":\"long\"}]}");
-        TableSchema converted =
-                AvroToTableSchemaConverter.convert(
-                        schema, AvroSchemaOptions.builder().allFieldsNullable().build());
-        assertThat(converted.getFields(0).getFields(0).getMode())
-                .isEqualTo(TableFieldSchema.Mode.NULLABLE);
+                                + "[{\"name\":\"n\",\"type\":\"long\"},"
+                                + "{\"name\":\"m\",\"type\":[\"null\",\"long\"]}]}");
+        TableSchema converted = AvroToTableSchemaConverter.convert(schema, DERIVE_REQUIRED);
+        assertThat(converted.getFields(0).getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getMode)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("n", TableFieldSchema.Mode.REQUIRED),
+                        org.assertj.core.groups.Tuple.tuple("m", TableFieldSchema.Mode.NULLABLE));
+        // And the struct holding them is REQUIRED itself, the field not being a union either.
+        assertThat(converted.getFields(0).getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
     }
 
     @Test
@@ -215,7 +242,7 @@ class AvroToTableSchemaConverterTest {
         assertThat(field.getFieldsList())
                 .extracting(TableFieldSchema::getName, TableFieldSchema::getMode)
                 .containsExactly(
-                        org.assertj.core.groups.Tuple.tuple("n", TableFieldSchema.Mode.REQUIRED),
+                        org.assertj.core.groups.Tuple.tuple("n", TableFieldSchema.Mode.NULLABLE),
                         org.assertj.core.groups.Tuple.tuple("s", TableFieldSchema.Mode.NULLABLE));
     }
 
@@ -233,11 +260,11 @@ class AvroToTableSchemaConverterTest {
                         org.assertj.core.groups.Tuple.tuple(
                                 "key",
                                 TableFieldSchema.Type.STRING,
-                                TableFieldSchema.Mode.REQUIRED),
+                                TableFieldSchema.Mode.NULLABLE),
                         org.assertj.core.groups.Tuple.tuple(
                                 "value",
                                 TableFieldSchema.Type.INT64,
-                                TableFieldSchema.Mode.REQUIRED));
+                                TableFieldSchema.Mode.NULLABLE));
     }
 
     @Test
@@ -476,20 +503,82 @@ class AvroToTableSchemaConverterTest {
                 .hasMessageContaining("(at f)");
     }
 
+    /**
+     * A singular {@code JSON} column is never {@code REQUIRED}, matching the protobuf side. The two
+     * options share a name, so they must not diverge on which columns they constrain — and a JSON
+     * column is a poor thing to make mandatory, an empty string being a row-level error in one
+     * either way.
+     */
     @Test
-    void allFieldsNullableRelaxesMapKeyAndValue() {
+    void deriveRequiredColumnsLeavesJsonColumnsNullable() {
         TableSchema converted =
                 AvroToTableSchemaConverter.convert(
-                        recordOf("{\"type\":\"map\",\"values\":\"long\"}"),
-                        AvroSchemaOptions.builder().allFieldsNullable().build());
+                        record(
+                                "{\"name\":\"a\",\"type\":\"string\"},"
+                                        + "{\"name\":\"b\",\"type\":\"string\"}"),
+                        AvroSchemaOptions.builder()
+                                .jsonFieldPath("a")
+                                .deriveRequiredColumns()
+                                .build());
+
+        assertThat(converted.getFieldsList())
+                .extracting(
+                        TableFieldSchema::getName,
+                        TableFieldSchema::getType,
+                        TableFieldSchema::getMode)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(
+                                "a", TableFieldSchema.Type.JSON, TableFieldSchema.Mode.NULLABLE),
+                        // The identically shaped field beside it shows the option is otherwise on.
+                        org.assertj.core.groups.Tuple.tuple(
+                                "b", TableFieldSchema.Type.STRING, TableFieldSchema.Mode.REQUIRED));
+    }
+
+    /**
+     * A {@code REQUIRED} column inside a {@code NULLABLE} struct — the one opt-in shape that only
+     * arises when the outer record is a {@code ["null", record]} union, so the recursion has to
+     * keep deriving after relaxing the parent.
+     */
+    @Test
+    void deriveRequiredColumnsReachesInsideANullableStruct() {
+        TableSchema converted =
+                AvroToTableSchemaConverter.convert(
+                        recordOf(
+                                "[\"null\",{\"type\":\"record\",\"name\":\"Inner\","
+                                        + "\"fields\":[{\"name\":\"n\",\"type\":\"long\"}]}]"),
+                        DERIVE_REQUIRED);
+
+        assertThat(converted.getFields(0).getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(converted.getFields(0).getFields(0).getMode())
+                .isEqualTo(TableFieldSchema.Mode.REQUIRED);
+    }
+
+    @Test
+    void deriveRequiredColumnsReachesMapKeyAndValue() {
+        TableSchema converted =
+                AvroToTableSchemaConverter.convert(
+                        recordOf("{\"type\":\"map\",\"values\":\"long\"}"), DERIVE_REQUIRED);
 
         assertThat(converted.getFields(0).getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+        // An Avro map key is never a union and an entry always has one, so it is REQUIRED under the
+        // option — the proto path converges here, a proto3 map entry's key having no presence.
         assertThat(converted.getFields(0).getFieldsList())
                 .extracting(TableFieldSchema::getName, TableFieldSchema::getMode)
                 .containsExactly(
-                        org.assertj.core.groups.Tuple.tuple("key", TableFieldSchema.Mode.NULLABLE),
+                        org.assertj.core.groups.Tuple.tuple("key", TableFieldSchema.Mode.REQUIRED),
                         org.assertj.core.groups.Tuple.tuple(
-                                "value", TableFieldSchema.Mode.NULLABLE));
+                                "value", TableFieldSchema.Mode.REQUIRED));
+        // A nullable map value stays NULLABLE even under the option.
+        assertThat(
+                        AvroToTableSchemaConverter.convert(
+                                        recordOf(
+                                                "{\"type\":\"map\",\"values\":[\"null\","
+                                                        + "\"long\"]}"),
+                                        DERIVE_REQUIRED)
+                                .getFields(0)
+                                .getFields(1)
+                                .getMode())
+                .isEqualTo(TableFieldSchema.Mode.NULLABLE);
     }
 
     @Test

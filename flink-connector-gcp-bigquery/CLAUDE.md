@@ -104,10 +104,16 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `ClassCastException`. `AvroToTableSchemaConverter` is the inverse of the FILE_LOADS
   `TableSchemaToAvroConverter`, which is why `AvroSchemaRoundTripTest` pins the two against each
   other: an Avro serializer feeding FILE_LOADS goes Avro → `TableSchema` → Avro, so drift corrupts
-  staged files instead of failing a build. Decisions not to re-litigate: a non-union field is
-  **`REQUIRED`** (the faithful inverse), with `AvroSchemaOptions.allFieldsNullable()` as the
-  escape hatch — it touches **schema derivation only**, leaves `REPEATED` alone (a BigQuery
-  `REPEATED` column cannot be `NULLABLE`) and recurses into nested structs; Avro `map<string,V>` →
+  staged files instead of failing a build — but note the round-trip **identity** it pins holds only
+  under `deriveRequiredColumns()`, since `REQUIRED` is the only mode `TableSchemaToAvroConverter` maps
+  back to a bare type. The default's `["null", T]` shape is pinned separately, but that half is a
+  weaker guard — there is no identity to compare against — so the *values* on the union path are
+  covered by `ProtoToAvroConverterTest` instead, which is where a nullable decimal or a nullable
+  struct would break. Decisions not to re-litigate: nullability is **`NULLABLE` by default with
+  `AvroSchemaOptions.deriveRequiredColumns()` as the opt-in** — see the protobuf nullability entry
+  below for the reasoning, which is shared and was settled in #145; it touches **schema derivation
+  only**, leaves `REPEATED` alone (a BigQuery `REPEATED` column cannot be `NULLABLE`) and recurses
+  into nested structs and map entry columns; Avro `map<string,V>` →
   `REPEATED STRUCT<key,value>` rather than rejected as the Dataproc connector does, because the
   proto path already gives proto maps that shape; JSON columns are marked by **dotted path only**
   (Avro has no standard JSON logical type to key off, so `ProtoSchemaOptions`' field-option
@@ -126,9 +132,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   **by position**, because `BQTableSchemaToProtoDescriptor` lowercases with the *default* locale —
   under `tr_TR` a column named `ID` becomes the proto field `ıd`, which no `Locale.ROOT` key
   matches. Position is exact here precisely because the descriptor is always derived from the table
-  schema this connector just produced. **The `REQUIRED`-by-default decision recorded above is being
-  reversed in #145** — the protobuf mapping is normative and Avro moves to match it; read the
-  **BigQuery protobuf nullability** entry below and #145 before touching Avro nullability
+  schema this connector just produced
 - **BigQuery protobuf nullability** (#124 Part 1, with Part 3's `oneof` pin; Part 2 — well-known
   types — still open): `ProtoToTableSchemaConverter` derives the mode from presence only under
   `ProtoSchemaOptions.Builder.deriveRequiredColumns()`, and the default stays **`NULLABLE`**.
@@ -138,12 +142,16 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   BigQuery cannot walk back. **This mapping is normative for every serializer** — every write path
   ends in a protobuf row (`STORAGE_API_*` directly; the Avro and JSON serializers via
   `BQTableSchemaToProtoDescriptor`; FILE_LOADS stages Avro only incidentally, and could stage
-  Parquet) — so **#145 moves Avro onto this default and this method name**, rather than the reverse.
+  Parquet) — so **#145 moved Avro onto this default and this method name**, rather than the reverse,
+  and both serializers now take `deriveRequiredColumns()` with only the signal differing (a
+  `["null", T]` union there, presence here). **Neither default is to be flipped per format again**:
+  that is the whole point of the two agreeing.
   That supersedes the "not symmetric on purpose" reasoning first recorded on #124, which weighed
   Avro-schema faithfulness in isolation, before the protobuf mapping was settled and before #142 was
-  measured. There is **no `allFieldsNullable()`** here (the issue title notwithstanding): with a
-  `NULLABLE` default it would mean exactly "don't call the opt-in", and two inverse switches need a
-  documented meaning per combination. **The name went through two rejected candidates**, so don't
+  measured. There is **no inverse switch on either side** — `allFieldsNullable()` was removed from
+  Avro by #145 and never added here (the #124 title notwithstanding): with a `NULLABLE` default it
+  would mean exactly "don't call the opt-in", and two inverse switches need a documented meaning per
+  combination. **The name went through two rejected candidates**, so don't
   re-open it: `deriveRequiredFromPresence()` names a protobuf mechanism and so cannot be shared with
   Avro, and `deriveRequiredFromSchema()` was worse — *everything* here is derived from the schema
   (types, JSON columns, the whole `TableSchema`), so the qualifier distinguished nothing.

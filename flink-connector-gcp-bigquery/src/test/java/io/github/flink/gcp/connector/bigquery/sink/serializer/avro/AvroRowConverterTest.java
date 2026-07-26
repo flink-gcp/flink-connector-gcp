@@ -318,13 +318,30 @@ class AvroRowConverterTest {
                 .hasMessageContaining("cannot be represented in the destination column");
     }
 
+    /**
+     * The one behaviour {@link AvroSchemaOptions.Builder#deriveRequiredColumns()} changes in the
+     * value path. It is what a caller trades for a constrained table: by default the column is left
+     * unset (below), and under the option the record is rejected instead.
+     */
     @Test
-    void missingRequiredValueIsRowLevelFailure() {
-        Setup setup = setupOf("\"string\"");
+    void deriveRequiredColumnsMakesAMissingMandatoryValueARowLevelFailure() {
+        Setup setup =
+                new Setup(
+                        record("{\"name\":\"f\",\"type\":\"string\"}"),
+                        AvroSchemaOptions.builder().deriveRequiredColumns().build());
 
         assertThatThrownBy(() -> setup.convert(setup.record()))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("REQUIRED");
+    }
+
+    @Test
+    void byDefaultAMissingMandatoryValueIsLeftUnset() throws Exception {
+        // "Mandatory" per the Avro schema — a bare "string" rather than ["null","string"] — is not
+        // carried into the column mode by default, so there is nothing for the record to violate.
+        Setup setup = setupOf("\"string\"");
+
+        assertThat(setup.isSet(setup.convert(setup.record()), "f")).isFalse();
     }
 
     @Test
@@ -626,17 +643,5 @@ class AvroRowConverterTest {
         assertThatThrownBy(() -> struct.convert(structRecord))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Field f expects a record");
-    }
-
-    @Test
-    void allFieldsNullableTurnsAMissingMandatoryValueIntoAnUnsetColumn() throws Exception {
-        // The switch is a schema-derivation setting, but this is the one behaviour it changes in
-        // the value path: without it the same record is a row-level failure.
-        Setup setup =
-                new Setup(
-                        record("{\"name\":\"f\",\"type\":\"string\"}"),
-                        AvroSchemaOptions.builder().allFieldsNullable().build());
-
-        assertThat(setup.isSet(setup.convert(setup.record()), "f")).isFalse();
     }
 }
