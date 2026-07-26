@@ -22,6 +22,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.util.Collector;
 
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 import java.io.IOException;
 
@@ -51,7 +52,9 @@ final class DataOnlyDeserializationSchema<T> implements PubSubDeserializationSch
     }
 
     @Override
-    public void deserialize(PubsubMessage message, Collector<T> out) throws IOException {
+    public void deserialize(
+            PubsubMessage message, SubscriptionDestination subscription, Collector<T> out)
+            throws IOException {
         // The Collector overload of DeserializationSchema drops a null deserialization result
         // instead of emitting it.
         schema.deserialize(message.getData().toByteArray(), out);

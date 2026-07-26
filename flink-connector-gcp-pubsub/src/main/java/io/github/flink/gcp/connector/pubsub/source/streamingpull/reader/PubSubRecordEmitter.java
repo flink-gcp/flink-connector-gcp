@@ -105,7 +105,7 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
             throws Exception {
         collector.bind(sourceOutput, message);
         try {
-            deserializationSchema.deserialize(message, collector);
+            deserializationSchema.deserialize(message, split.getSubscription(), collector);
         } catch (Exception e) {
             CollectFailure collectFailure = findCollectFailure(e);
             if (collectFailure == null) {

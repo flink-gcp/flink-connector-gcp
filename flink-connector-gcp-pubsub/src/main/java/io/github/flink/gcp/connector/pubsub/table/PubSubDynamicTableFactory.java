@@ -17,35 +17,46 @@
 package io.github.flink.gcp.connector.pubsub.table;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.connector.format.DecodingFormat;
 import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.factories.DeserializationFormatFactory;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.SerializationFormatFactory;
 
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
 import io.github.flink.gcp.connector.pubsub.table.sink.PublisherOptionsMapper;
+import io.github.flink.gcp.connector.pubsub.table.source.PubSubDynamicSource;
+import io.github.flink.gcp.connector.pubsub.table.source.SubscriberOptionsMapper;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
  * The {@code pubsub} table connector factory.
  *
  * <p>Only {@code project} and {@code format} are required. The destination of each direction —
- * {@code topic} for a sink — is checked in the {@code create...} method that needs it rather than
- * declared required, because one factory serves both reading and writing and a table used for only
- * one of them must not be forced to configure the other.
+ * {@code topic} for a sink, {@code subscription} for a source — is checked in the {@code create...}
+ * method that needs it rather than declared required, because one factory serves both reading and
+ * writing and a table used for only one of them must not be forced to configure the other.
  */
 @Internal
-public class PubSubDynamicTableFactory implements DynamicTableSinkFactory {
+public class PubSubDynamicTableFactory
+        implements DynamicTableSinkFactory, DynamicTableSourceFactory {
 
     /** The value of {@code 'connector'} that selects this factory. */
     public static final String IDENTIFIER = "pubsub";
@@ -65,6 +76,20 @@ public class PubSubDynamicTableFactory implements DynamicTableSinkFactory {
         return new HashSet<>(
                 Arrays.asList(
                         PubSubConnectorOptions.EMULATOR_ENDPOINT,
+                        PubSubConnectorOptions.SUBSCRIPTION,
+                        PubSubConnectorOptions.SCAN_ORDERING_MODE,
+                        PubSubConnectorOptions.SCAN_DESERIALIZATION_FAILURE_POLICY,
+                        PubSubConnectorOptions.SCAN_FLOW_CONTROL_MAX_OUTSTANDING_ELEMENT_COUNT,
+                        PubSubConnectorOptions.SCAN_FLOW_CONTROL_MAX_OUTSTANDING_REQUEST_BYTES,
+                        PubSubConnectorOptions.SCAN_PARALLEL_PULL_COUNT,
+                        PubSubConnectorOptions.SCAN_ACK_MAX_EXTENSION_PERIOD,
+                        PubSubConnectorOptions.SCAN_ACK_MIN_DURATION_PER_EXTENSION,
+                        PubSubConnectorOptions.SCAN_ACK_MAX_DURATION_PER_EXTENSION,
+                        PubSubConnectorOptions.SCAN_ACK_AWAIT_CONFIRMATION,
+                        PubSubConnectorOptions.SCAN_SHUTDOWN_TIMEOUT,
+                        PubSubConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH,
+                        PubSubConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT,
+                        FactoryUtil.SOURCE_PARALLELISM,
                         PubSubConnectorOptions.TOPIC,
                         PubSubConnectorOptions.SINK_CREATE_DISPOSITION,
                         PubSubConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
@@ -113,5 +138,41 @@ public class PubSubDynamicTableFactory implements DynamicTableSinkFactory {
                 PublisherOptionsMapper.map(config),
                 config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null));
+    }
+
+    @Override
+    public DynamicTableSource createDynamicTableSource(Context context) {
+        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        DecodingFormat<DeserializationSchema<RowData>> decodingFormat =
+                helper.discoverDecodingFormat(
+                        DeserializationFormatFactory.class, FactoryUtil.FORMAT);
+        helper.validate();
+
+        ReadableConfig config = helper.getOptions();
+        List<String> subscriptionNames =
+                config.getOptional(PubSubConnectorOptions.SUBSCRIPTION)
+                        .orElseThrow(
+                                () ->
+                                        new ValidationException(
+                                                String.format(
+                                                        "Option '%s' is required to read from a"
+                                                                + " '%s' table.",
+                                                        PubSubConnectorOptions.SUBSCRIPTION.key(),
+                                                        IDENTIFIER)));
+        String project = config.get(PubSubConnectorOptions.PROJECT);
+        List<SubscriptionDestination> subscriptions = new ArrayList<>(subscriptionNames.size());
+        for (String name : subscriptionNames) {
+            subscriptions.add(SubscriptionDestination.of(project, name));
+        }
+        return new PubSubDynamicSource(
+                context.getPhysicalRowDataType(),
+                decodingFormat,
+                subscriptions,
+                config.getOptional(PubSubConnectorOptions.SCAN_ORDERING_MODE).orElse(null),
+                config.getOptional(PubSubConnectorOptions.SCAN_DESERIALIZATION_FAILURE_POLICY)
+                        .orElse(null),
+                SubscriberOptionsMapper.map(config),
+                config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
+                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
     }
 }

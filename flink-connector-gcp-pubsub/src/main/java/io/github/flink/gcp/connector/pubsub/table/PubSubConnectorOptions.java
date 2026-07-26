@@ -22,16 +22,21 @@ import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.MemorySize;
 
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
+import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
+import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * The {@code WITH} options of the {@code pubsub} table connector.
  *
  * <p>Each option corresponds to exactly one setter on {@link
- * io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder} or {@link
- * io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions.Builder}: the DataStream API is
- * the source of truth and this layer only maps onto it. There is deliberately no {@code
+ * io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder}, {@link
+ * io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions.Builder}, {@link
+ * io.github.flink.gcp.connector.pubsub.source.PubSubSourceBuilder} or {@link
+ * io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions.Builder}: the DataStream API
+ * is the source of truth and this layer only maps onto it. There is deliberately no {@code
  * properties.*} passthrough — the connector's option objects take plain values rather than SDK
  * types, so a typed option exists for every knob and an untyped escape hatch would only reintroduce
  * the SDK surface the programmatic API keeps out.
@@ -69,6 +74,118 @@ public final class PubSubConnectorOptions {
                             "Host and port of a Pub/Sub emulator to use instead of the service."
                                     + " Setting it switches the connector to a plaintext channel"
                                     + " with no credentials. For tests only.");
+
+    // ------------------------------------------------------------------------
+    //  Source — subscriptions
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<List<String>> SUBSCRIPTION =
+            ConfigOptions.key("subscription")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The subscriptions to consume, resolved against 'project' and separated"
+                                    + " by ';'. Required when the table is read from. A subscription"
+                                    + " in another project cannot be named here.");
+
+    public static final ConfigOption<OrderingMode> SCAN_ORDERING_MODE =
+            ConfigOptions.key("scan.ordering-mode")
+                    .enumType(OrderingMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the source preserves per-ordering-key delivery order. 'per-key'"
+                                    + " pins each subscription to one subtask, so it caps the"
+                                    + " effective source parallelism at the subscription count.");
+
+    public static final ConfigOption<DeserializationFailurePolicy>
+            SCAN_DESERIALIZATION_FAILURE_POLICY =
+                    ConfigOptions.key("scan.deserialization-failure-policy")
+                            .enumType(DeserializationFailurePolicy.class)
+                            .noDefaultValue()
+                            .withDescription(
+                                    "What to do with a message the format cannot decode: 'fail' the"
+                                            + " job, 'drop' the message, or 'nack' it for the"
+                                            + " subscription's dead-letter policy to deal with.");
+
+    // ------------------------------------------------------------------------
+    //  Source — subscriber tuning
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<Long> SCAN_FLOW_CONTROL_MAX_OUTSTANDING_ELEMENT_COUNT =
+            ConfigOptions.key("scan.flow-control.max-outstanding-element-count")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How many messages the subscriber keeps outstanding before pausing the"
+                                    + " stream.");
+
+    public static final ConfigOption<MemorySize> SCAN_FLOW_CONTROL_MAX_OUTSTANDING_REQUEST_BYTES =
+            ConfigOptions.key("scan.flow-control.max-outstanding-request-bytes")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How many bytes of messages the subscriber keeps outstanding before"
+                                    + " pausing the stream.");
+
+    public static final ConfigOption<Integer> SCAN_PARALLEL_PULL_COUNT =
+            ConfigOptions.key("scan.parallel-pull-count")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How many streaming-pull connections each subscriber opens. Rejected"
+                                    + " above 1 with 'scan.ordering-mode' = 'per-key', which needs"
+                                    + " a single connection to preserve order.");
+
+    public static final ConfigOption<Duration> SCAN_ACK_MAX_EXTENSION_PERIOD =
+            ConfigOptions.key("scan.ack.max-extension-period")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long the subscriber keeps extending a message's acknowledgement"
+                                    + " deadline. It has to outlast the checkpoint interval, since"
+                                    + " a completing checkpoint is what acknowledges.");
+
+    public static final ConfigOption<Duration> SCAN_ACK_MIN_DURATION_PER_EXTENSION =
+            ConfigOptions.key("scan.ack.min-duration-per-extension")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("The shortest acknowledgement deadline extension to request.");
+
+    public static final ConfigOption<Duration> SCAN_ACK_MAX_DURATION_PER_EXTENSION =
+            ConfigOptions.key("scan.ack.max-duration-per-extension")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("The longest acknowledgement deadline extension to request.");
+
+    public static final ConfigOption<Duration> SCAN_ACK_AWAIT_CONFIRMATION =
+            ConfigOptions.key("scan.ack.await-confirmation")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a completing checkpoint waits for the service to confirm its"
+                                    + " acknowledgements. Unset means it does not wait.");
+
+    public static final ConfigOption<Duration> SCAN_SHUTDOWN_TIMEOUT =
+            ConfigOptions.key("scan.shutdown-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("How long closing a reader waits for its subscriber to stop.");
+
+    public static final ConfigOption<Integer> SCAN_MAX_RECORDS_PER_FETCH =
+            ConfigOptions.key("scan.max-records-per-fetch")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription("How many messages one fetch drains from a split's buffer.");
+
+    public static final ConfigOption<Duration> SCAN_FIRST_CHECKPOINT_TIMEOUT =
+            ConfigOptions.key("scan.first-checkpoint-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a reader holding unacknowledged messages waits for its first"
+                                    + " checkpoint before failing, which is how a job running"
+                                    + " without checkpointing is caught. Zero disables the check.");
 
     // ------------------------------------------------------------------------
     //  Sink — destination

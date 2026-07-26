@@ -29,7 +29,7 @@ sink and multi-subscription consumption on the source.
 | Table API / SQL feature | Status |
 |---|---|
 | `pubsub` table connector; `DynamicTableSink` with `attributes`/`ordering-key` metadata columns | Implemented ([#135](https://github.com/laughingman7743/flink-connector-gcp/issues/135)) |
-| `DynamicTableSource` (scan) with `message-id`/`publish-time`/`attributes`/`ordering-key` metadata columns | Planned ([#136](https://github.com/laughingman7743/flink-connector-gcp/issues/136)) |
+| `DynamicTableSource` (scan) with `message-id`/`publish-time`/`attributes`/`ordering-key`/`subscription` metadata columns | Implemented ([#136](https://github.com/laughingman7743/flink-connector-gcp/issues/136)) |
 | Subscription auto-creation and start position as table options | Planned ([#137](https://github.com/laughingman7743/flink-connector-gcp/issues/137)) |
 | `flink-sql-connector-gcp-pubsub` shaded uber-jar | Planned ([#138](https://github.com/laughingman7743/flink-connector-gcp/issues/138)) |
 
@@ -62,6 +62,16 @@ CREATE TABLE orders (
   'topic'     = 'orders',
   'format'    = 'json',
   'sink.message-ordering.enabled' = 'true'
+);
+
+CREATE TABLE incoming_orders (
+  order_id     STRING,
+  publish_time TIMESTAMP_LTZ(3) METADATA FROM 'publish-time' VIRTUAL
+) WITH (
+  'connector'    = 'pubsub',
+  'project'      = 'my-project',
+  'subscription' = 'orders-sub',
+  'format'       = 'json'
 );
 ```
 

@@ -24,6 +24,7 @@ import org.apache.flink.util.Collector;
 
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -76,6 +77,7 @@ class DataOnlyDeserializationSchemaTest {
         List<String> collected = new ArrayList<>();
         schema.deserialize(
                 message,
+                SubscriptionDestination.of("p", "s"),
                 new Collector<String>() {
                     @Override
                     public void collect(String record) {
