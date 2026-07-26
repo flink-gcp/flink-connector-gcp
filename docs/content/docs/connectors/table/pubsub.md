@@ -199,6 +199,18 @@ under the same "absent means default" rule as the sink.
 | `scan.shutdown-timeout` | Duration | `shutdownTimeout` |
 | `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch` |
 | `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout` |
+| `scan.startup.mode` | `continue-from-subscription` \| `earliest-retained` \| `latest` \| `timestamp` | `StartPosition.of(mode, ...)` |
+| `scan.startup.timestamp-millis` | Long, required by and only by `timestamp` | the instant of `StartPosition.of(...)` |
+| `scan.auto-create.topic` | String | `topic(...)` — and setting it is what authorizes creating the subscription |
+| `scan.auto-create.ack-deadline` | Duration | `ackDeadline` |
+| `scan.auto-create.message-ordering.enabled` | Boolean | `enableMessageOrdering` |
+| `scan.auto-create.message-retention` | Duration | `messageRetention` |
+| `scan.auto-create.retain-acked-messages` | Boolean | `retainAckedMessages` |
+| `scan.auto-create.expiration-ttl` | Duration | `expirationTtl` |
+| `scan.auto-create.never-expire` | Boolean | `neverExpire()` |
+| `scan.auto-create.dead-letter.topic` | String | `deadLetterPolicy(...)`, first argument |
+| `scan.auto-create.dead-letter.max-delivery-attempts` | Integer | `deadLetterPolicy(...)`, second argument |
+| `scan.auto-create.filter` | String | `filter` |
 | `scan.parallelism` | Integer | the source operator's parallelism |
 
 `scan.parallel-pull-count` and `scan.parallelism` are unrelated despite the names: the first is how
@@ -216,6 +228,91 @@ with `scan.parallel-pull-count` above 1, or a repeated subscription, both fail w
 DataStream builder already produces.
 
 Byte-valued options are written the Flink way — `'sink.in-flight.max-bytes' = '64 mb'`.
+
+### A start position seeks, and a seek is not local to your job
+
+`scan.startup.mode` decides where the source begins. Only the default,
+`continue-from-subscription`, leaves the subscription alone; every other value **seeks**.
+
+```sql
+CREATE TABLE orders (
+  id STRING,
+  amount INT
+) WITH (
+  'connector' = 'pubsub',
+  'project' = 'my-project',
+  'subscription' = 'orders-sub',
+  'format' = 'json',
+  'scan.startup.mode' = 'timestamp',
+  'scan.startup.timestamp-millis' = '1735689600000'
+);
+```
+
+A Pub/Sub subscription has no offset a reader resumes from: its position *is* server state, shared
+by every consumer.
+
+- **A seek rewrites state shared by every consumer of the subscription, including other jobs.** Use
+  a non-default start position only on a subscription your job owns.
+- **The seek runs once, at the first start of a job, and never on a restore.** The enumerator
+  records that it ran in its checkpointed state, so a failover resumes rather than rewinding.
+- **A redeploy without a savepoint seeks again**, because the state that remembered it is gone. So
+  does a job that crash-loops before its first checkpoint completes.
+- **`latest` is the one position that is not reproducible.** It resolves against the clock at the
+  moment the seek runs, and it *drops* the existing backlog. Use `timestamp` when the boundary has
+  to be exact.
+
+How far back `earliest-retained` and a past `timestamp` reach is a property of the subscription, not
+of this option: already-acknowledged messages are replayable only if the subscription sets
+`retain-acked-messages` or its topic retains messages. Against a subscription with neither, a
+backwards seek recovers only what was never acknowledged.
+
+### Subscription auto-creation covers one subscription
+
+Setting `scan.auto-create.topic` is what authorizes creating a missing subscription, and it binds
+that subscription to the named topic. Without it, every subscription named by `subscription` must
+already exist and the job fails at startup if one does not. An existing subscription is used exactly
+as it is configured: these settings apply to creation only, and are neither applied to it nor
+compared against it.
+
+```sql
+CREATE TABLE orders (
+  id STRING
+) WITH (
+  'connector' = 'pubsub',
+  'project' = 'my-project',
+  'subscription' = 'orders-sub',
+  'format' = 'json',
+  'scan.auto-create.topic' = 'orders',
+  'scan.auto-create.ack-deadline' = '60 s',
+  'scan.auto-create.retain-acked-messages' = 'true'
+);
+```
+
+**`scan.auto-create.topic` requires `subscription` to name exactly one subscription**, and a table
+naming several is rejected. The settings carry the topic binding, so one set of them would bind
+every subscription to the same topic — and Pub/Sub delivers a complete copy of a topic's stream to
+each of its subscriptions, so such a table would emit every message once per subscription with
+nothing reporting an error. Several auto-created subscriptions therefore mean several tables. A
+`scan.auto-create.topics` map option is recorded and deferred: the DDL for several subscriptions
+with distinct topics is a configuration file rather than SQL.
+
+Three further rules, each because the option shape and the setter shape differ:
+
+- `scan.auto-create.expiration-ttl` and `scan.auto-create.never-expire` = `true` are **rejected
+  together**. They are alternatives, and a `WITH` clause has no ordering that could resolve the
+  contradiction.
+- `scan.auto-create.dead-letter.topic` and `scan.auto-create.dead-letter.max-delivery-attempts` are
+  **required together**. Defaulting the attempt count would be a redelivery limit nobody chose.
+- A `scan.auto-create.*` option set without `scan.auto-create.topic` is **rejected rather than
+  ignored**, since nothing would read it.
+
+Both topic names are bare names resolved against `project`, like `topic` on the sink side.
+
+Creation is idempotent — `ALREADY_EXISTS` counts as success, so two jobs racing to create the same
+subscription need no coordination. `enableExactlyOnceDelivery` is deliberately not offered: the
+startup check rejects such a subscription, so the option would only let you create one the source
+then refuses. Note that a subscription retains nothing published **before** it existed, so a table
+that auto-creates one starts from an empty backlog whatever the topic already held.
 
 ## Delivery guarantees
 
@@ -285,16 +382,36 @@ holds the row's `MapData` and writes from it.
 offers a `topic` metadata column, but the table sink writes to the one topic its DDL names; see
 [#140]({{< param BookRepo >}}/issues/140).
 
+**Three setters do not fit one option each, and the DDL bends rather than the DataStream API.**
+`startPosition(...)` takes a mode and, for one mode, an instant; `neverExpire()` takes no argument
+and contradicts `expirationTtl(...)`; `deadLetterPolicy(...)` takes two. They become, respectively,
+a mode-plus-timestamp pair, a boolean beside a duration with both-set rejected, and two options
+required together. The alternatives were a `0` or `-1` sentinel on the duration and a string option
+accepting the literal `never` — both invent a magic value, and the string one loses duration
+parsing as well. Inventing a `max-delivery-attempts` default would likewise put back the third
+state, between "configured" and "default", that this option design exists to remove.
+
+**Auto-creation covers one subscription rather than resolving the ambiguity.** The DataStream API
+keys creation settings by subscription because they carry the topic binding, and a flat DDL
+namespace cannot express one object per subscription. Rather than pick a rule for sharing them,
+`scan.auto-create.topic` requires `subscription` to name exactly one — one precondition makes the
+duplication hazard inexpressible. N>1 is deferred to a map option
+([#137]({{< param BookRepo >}}/issues/137)); the DDL it would need is a configuration file rather
+than SQL.
+
 ## Testing
 
 Unit tests cover the factory in both directions (identifier, required options, format discovery,
 parallelism, and the destination mistakes each direction invites), the option-to-setter mapping —
-including reflective checks that every `PubSubPublisherOptions.Builder` and every
-`PubSubSubscriberOptions.Builder` setter has an option and vice versa, and that every declared
-option is one the factory accepts — the enum spellings and their round trip through a
-`ConfigOption`, the row-to-message conversion and the message-to-rows conversion.
+including reflective checks that every `PubSubPublisherOptions.Builder`, `PubSubSubscriberOptions
+.Builder` and `SubscriptionCreateOptions.Builder` setter has an option and vice versa, and that
+every declared option is one the factory accepts — the enum spellings and their round trip through a
+`ConfigOption`, the row-to-message conversion and the message-to-rows conversion. The creation
+mapper's check maps a setter to a *set* of options, since two of its setters are not one option
+each; every rejection it owns has a test of its own, because none of them has a DataStream backstop
+to fall through to.
 
-Three integration tests run SQL against the Pub/Sub emulator in a MiniCluster through the
+Four integration tests run SQL against the Pub/Sub emulator in a MiniCluster through the
 production factory, with the endpoint passed as the `emulator-endpoint` option rather than through
 a test-only factory. No cloud credentials are needed.
 
@@ -307,6 +424,14 @@ a test-only factory. No cloud credentials are needed.
   callbacks otherwise arrive out of order and the test would pass under `fail` too.
 - `PubSubTableRoundTripITCase` — what SQL writes is what SQL reads back, over the same topic and
   subscription, with every metadata column asserted.
+- `PubSubTableAutoCreateITCase` — the two features whose effects exist only on the service: a
+  subscription the table created and then consumed, with its settings read back off the service;
+  `earliest-retained` replaying a backlog that was already acknowledged elsewhere; and `timestamp`
+  starting past the messages published before it. The last one takes its cutoff from the publish
+  time the service assigned, read through a second subscription of the same topic, rather than from
+  this JVM's clock — the two clocks are not the same one. It also drains past the two rows it
+  expects, so a message the seek should have skipped fails the assertion by arriving late rather
+  than passing unnoticed.
 
 A source test's `TableEnvironment` enables checkpointing and disables restarts, and rows are drained
 by **distinct** count with a deadline: the transport is at-least-once, so counting total rows would

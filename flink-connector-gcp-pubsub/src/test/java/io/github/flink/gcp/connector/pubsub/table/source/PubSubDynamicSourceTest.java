@@ -34,12 +34,16 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 
+import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
+import io.github.flink.gcp.connector.pubsub.source.StartPosition;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -130,6 +134,11 @@ class PubSubDynamicSourceTest {
     private static final List<SubscriptionDestination> SUBSCRIPTIONS =
             Collections.singletonList(SubscriptionDestination.of("my-project", "my-sub"));
 
+    private static final SubscriptionCreateOptions CREATE_OPTIONS =
+            SubscriptionCreateOptions.builder()
+                    .topic(TopicDestination.of("my-project", "my-topic"))
+                    .build();
+
     private static PubSubDynamicSource source() {
         return source(TestDecodingFormat.plain());
     }
@@ -139,6 +148,8 @@ class PubSubDynamicSourceTest {
                 PHYSICAL_DATA_TYPE,
                 fmt,
                 SUBSCRIPTIONS,
+                null,
+                null,
                 null,
                 null,
                 PubSubSubscriberOptions.defaults(),
@@ -244,6 +255,8 @@ class PubSubDynamicSourceTest {
                                 SUBSCRIPTIONS,
                                 null,
                                 null,
+                                null,
+                                null,
                                 defaults,
                                 null,
                                 null))
@@ -261,6 +274,8 @@ class PubSubDynamicSourceTest {
                                         SubscriptionDestination.of("my-project", "other-sub")),
                                 null,
                                 null,
+                                null,
+                                null,
                                 defaults,
                                 null,
                                 null))
@@ -269,6 +284,32 @@ class PubSubDynamicSourceTest {
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
+                                CREATE_OPTIONS,
+                                null,
+                                null,
+                                null,
+                                defaults,
+                                null,
+                                null))
+                .isNotEqualTo(
+                        new PubSubDynamicSource(
+                                PHYSICAL_DATA_TYPE,
+                                TestDecodingFormat.plain(),
+                                SUBSCRIPTIONS,
+                                null,
+                                StartPosition.latest(),
+                                null,
+                                null,
+                                defaults,
+                                null,
+                                null))
+                .isNotEqualTo(
+                        new PubSubDynamicSource(
+                                PHYSICAL_DATA_TYPE,
+                                TestDecodingFormat.plain(),
+                                SUBSCRIPTIONS,
+                                null,
+                                null,
                                 OrderingMode.PER_KEY,
                                 null,
                                 defaults,
@@ -279,6 +320,8 @@ class PubSubDynamicSourceTest {
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
+                                null,
+                                null,
                                 null,
                                 DeserializationFailurePolicy.DROP,
                                 defaults,
@@ -291,6 +334,8 @@ class PubSubDynamicSourceTest {
                                 SUBSCRIPTIONS,
                                 null,
                                 null,
+                                null,
+                                null,
                                 PubSubSubscriberOptions.builder().parallelPullCount(3).build(),
                                 null,
                                 null))
@@ -299,6 +344,8 @@ class PubSubDynamicSourceTest {
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
+                                null,
+                                null,
                                 null,
                                 null,
                                 defaults,
@@ -311,9 +358,60 @@ class PubSubDynamicSourceTest {
                                 SUBSCRIPTIONS,
                                 null,
                                 null,
+                                null,
+                                null,
                                 defaults,
                                 null,
                                 4));
+    }
+
+    @Test
+    void twoStartPositionsOfTheSameModeButDifferentInstantsDiffer() {
+        // StartPosition's identity is (mode, timestamp), and only this pair reaches the timestamp
+        // half: every other assertion above varies the mode.
+        assertThat(sourceStartingAt(StartPosition.fromTimestamp(Instant.ofEpochMilli(1_000))))
+                .isNotEqualTo(
+                        sourceStartingAt(StartPosition.fromTimestamp(Instant.ofEpochMilli(2_000))))
+                .isEqualTo(
+                        sourceStartingAt(StartPosition.fromTimestamp(Instant.ofEpochMilli(1_000))));
+    }
+
+    private static PubSubDynamicSource sourceStartingAt(StartPosition startPosition) {
+        return new PubSubDynamicSource(
+                PHYSICAL_DATA_TYPE,
+                TestDecodingFormat.plain(),
+                SUBSCRIPTIONS,
+                null,
+                startPosition,
+                null,
+                null,
+                PubSubSubscriberOptions.defaults(),
+                null,
+                null);
+    }
+
+    @Test
+    void rejectsCreationSettingsForMoreThanOneSubscription() {
+        // The settings carry a topic binding, so they belong to one subscription. The factory's
+        // mapper rejects this first; the constructor is what makes the invariant local, since it is
+        // the one that indexes the list.
+        assertThatThrownBy(
+                        () ->
+                                new PubSubDynamicSource(
+                                        PHYSICAL_DATA_TYPE,
+                                        TestDecodingFormat.plain(),
+                                        Arrays.asList(
+                                                SubscriptionDestination.of("my-project", "a"),
+                                                SubscriptionDestination.of("my-project", "b")),
+                                        CREATE_OPTIONS,
+                                        null,
+                                        null,
+                                        null,
+                                        PubSubSubscriberOptions.defaults(),
+                                        null,
+                                        null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("one subscription");
     }
 
     @Test
@@ -333,6 +431,8 @@ class PubSubDynamicSourceTest {
                         PHYSICAL_DATA_TYPE,
                         new DecodingTestFormat(),
                         SUBSCRIPTIONS,
+                        null,
+                        null,
                         OrderingMode.PER_KEY,
                         DeserializationFailurePolicy.DROP,
                         PubSubSubscriberOptions.defaults(),
@@ -357,12 +457,57 @@ class PubSubDynamicSourceTest {
     }
 
     @Test
+    void buildsASourceFromCreationSettingsAndAStartPosition() {
+        PubSubDynamicSource source =
+                new PubSubDynamicSource(
+                        PHYSICAL_DATA_TYPE,
+                        new DecodingTestFormat(),
+                        SUBSCRIPTIONS,
+                        CREATE_OPTIONS,
+                        StartPosition.earliestRetained(),
+                        null,
+                        null,
+                        PubSubSubscriberOptions.defaults(),
+                        null,
+                        null);
+
+        assertThat(source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(SourceProvider.class);
+    }
+
+    @Test
+    void theCreationSettingsReachTheBuildersOwnCrossCheck() {
+        // The builder refuses to create a subscription it would then refuse to consume. Reaching
+        // that message is what proves the settings were passed through the two-argument
+        // subscription(...) form rather than dropped: with subscriptions(...) there would be no
+        // creation settings for it to check, and the source would build cleanly.
+        PubSubDynamicSource source =
+                new PubSubDynamicSource(
+                        PHYSICAL_DATA_TYPE,
+                        new DecodingTestFormat(),
+                        SUBSCRIPTIONS,
+                        CREATE_OPTIONS,
+                        null,
+                        OrderingMode.PER_KEY,
+                        null,
+                        PubSubSubscriberOptions.defaults(),
+                        null,
+                        null);
+
+        assertThatThrownBy(() -> source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("enableMessageOrdering(true)");
+    }
+
+    @Test
     void leavesTheSourceParallelismUnsetWhenItWasNotGiven() {
         PubSubDynamicSource source =
                 new PubSubDynamicSource(
                         PHYSICAL_DATA_TYPE,
                         new DecodingTestFormat(),
                         SUBSCRIPTIONS,
+                        null,
+                        null,
                         null,
                         null,
                         PubSubSubscriberOptions.defaults(),

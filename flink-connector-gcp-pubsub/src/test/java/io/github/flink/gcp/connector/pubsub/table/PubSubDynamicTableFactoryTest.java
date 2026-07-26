@@ -319,6 +319,74 @@ class PubSubDynamicTableFactoryTest {
     }
 
     @Test
+    void buildsASourceFromAFullAutoCreationBlock() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.auto-create.topic", "my-topic");
+        options.put("scan.auto-create.ack-deadline", "60 s");
+        options.put("scan.auto-create.message-ordering.enabled", "true");
+        options.put("scan.auto-create.message-retention", "3 d");
+        options.put("scan.auto-create.retain-acked-messages", "true");
+        options.put("scan.auto-create.never-expire", "true");
+        options.put("scan.auto-create.dead-letter.topic", "my-dlq");
+        options.put("scan.auto-create.dead-letter.max-delivery-attempts", "5");
+        options.put("scan.auto-create.filter", "attributes.kind = \"order\"");
+
+        // Every key parses and is accepted rather than rejected as unknown, and the resulting
+        // source builds. What each one becomes is SubscriptionCreateOptionsMapperTest's job.
+        assertThat(
+                        ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(SourceProvider.class);
+    }
+
+    @Test
+    void buildsASourceFromAStartPosition() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.startup.mode", "timestamp");
+        options.put("scan.startup.timestamp-millis", "1735689600000");
+
+        assertThat(
+                        ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(SourceProvider.class);
+    }
+
+    @Test
+    void rejectsAutoCreationAcrossSeveralSubscriptions() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("subscription", "orders;returns");
+        options.put("scan.auto-create.topic", "my-topic");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("once per subscription");
+    }
+
+    @Test
+    void rejectsAStartupTimestampWithNoMode() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.startup.timestamp-millis", "1735689600000");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("scan.startup.mode");
+    }
+
+    @Test
+    void theAutoCreationBlockDoesNotDisturbASinkThatSharesTheOptionMap() {
+        // The sink direction never reads scan.* — but the options are declared on one factory, so
+        // they must still be accepted as known keys rather than failing an INSERT into a table
+        // whose DDL configures its scan half.
+        Map<String, String> options = minimalSinkOptions();
+        options.putAll(minimalSourceOptions());
+        options.put("scan.auto-create.topic", "my-topic");
+        options.put("scan.startup.mode", "earliest-retained");
+
+        assertThat(FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(PubSubDynamicSink.class);
+    }
+
+    @Test
     void acceptsTheHyphenatedCreateDisposition() {
         Map<String, String> options = minimalSinkOptions();
         options.put("sink.create-disposition", "create-never");

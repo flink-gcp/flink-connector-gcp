@@ -24,6 +24,7 @@ import org.apache.flink.configuration.MemorySize;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
+import io.github.flink.gcp.connector.pubsub.source.StartPosition;
 
 import java.time.Duration;
 import java.util.List;
@@ -34,12 +35,21 @@ import java.util.List;
  * <p>Each option corresponds to exactly one setter on {@link
  * io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder}, {@link
  * io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions.Builder}, {@link
- * io.github.flink.gcp.connector.pubsub.source.PubSubSourceBuilder} or {@link
- * io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions.Builder}: the DataStream API
- * is the source of truth and this layer only maps onto it. There is deliberately no {@code
+ * io.github.flink.gcp.connector.pubsub.source.PubSubSourceBuilder}, {@link
+ * io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions.Builder} or {@link
+ * io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions.Builder}: the DataStream
+ * API is the source of truth and this layer only maps onto it. There is deliberately no {@code
  * properties.*} passthrough — the connector's option objects take plain values rather than SDK
  * types, so a typed option exists for every knob and an untyped escape hatch would only reintroduce
  * the SDK surface the programmatic API keeps out.
+ *
+ * <p>Three setters are not one option each, because a {@code ConfigOption} cannot take their shape.
+ * {@code startPosition(...)} takes a mode and, for one mode, an instant, so it is the {@code
+ * scan.startup.mode} and {@code scan.startup.timestamp-millis} pair Kafka also uses. {@code
+ * neverExpire()} takes no argument and contradicts {@code expirationTtl(...)}, so it is a boolean
+ * beside the duration and setting both is rejected. {@code deadLetterPolicy(...)} takes two
+ * arguments, so it is two options that are required together. The mappers under {@code
+ * table.source} hold those rules; nothing else invents a value.
  *
  * <p>Every option is declared without a default, and the factory applies it with {@code
  * getOptional(...).ifPresent(...)}. "Absent from the DDL" then means "left at the connector's or
@@ -186,6 +196,130 @@ public final class PubSubConnectorOptions {
                             "How long a reader holding unacknowledged messages waits for its first"
                                     + " checkpoint before failing, which is how a job running"
                                     + " without checkpointing is caught. Zero disables the check.");
+
+    // ------------------------------------------------------------------------
+    //  Source — start position
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<StartPosition.Mode> SCAN_STARTUP_MODE =
+            ConfigOptions.key("scan.startup.mode")
+                    .enumType(StartPosition.Mode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Where the source starts consuming. Everything but"
+                                    + " 'continue-from-subscription' seeks, which rewrites"
+                                    + " subscription state shared by every consumer including other"
+                                    + " jobs, and which runs once at a job's first start and never"
+                                    + " on a restore. Use it only on a subscription the job owns.");
+
+    public static final ConfigOption<Long> SCAN_STARTUP_TIMESTAMP_MILLIS =
+            ConfigOptions.key("scan.startup.timestamp-millis")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The publish time to start from, in milliseconds since the epoch."
+                                    + " Required by 'scan.startup.mode' = 'timestamp' and rejected"
+                                    + " with every other mode.");
+
+    // ------------------------------------------------------------------------
+    //  Source — subscription auto-creation
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<String> SCAN_AUTO_CREATE_TOPIC =
+            ConfigOptions.key("scan.auto-create.topic")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The topic to bind a missing subscription to, resolved against"
+                                    + " 'project'. Setting it is what authorizes creating the"
+                                    + " subscription; without it the subscription must already"
+                                    + " exist. It requires 'subscription' to name exactly one,"
+                                    + " because settings carry the topic binding and every"
+                                    + " subscription of a topic receives a complete copy of its"
+                                    + " stream.");
+
+    public static final ConfigOption<Duration> SCAN_AUTO_CREATE_ACK_DEADLINE =
+            ConfigOptions.key("scan.auto-create.ack-deadline")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a created subscription waits for a message to be"
+                                    + " acknowledged before redelivering it. A whole number of"
+                                    + " seconds.");
+
+    public static final ConfigOption<Boolean> SCAN_AUTO_CREATE_MESSAGE_ORDERING_ENABLED =
+            ConfigOptions.key("scan.auto-create.message-ordering.enabled")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether a created subscription delivers messages of one ordering key"
+                                    + " in order. Required by 'scan.ordering-mode' = 'per-key', and"
+                                    + " fixed at creation.");
+
+    public static final ConfigOption<Duration> SCAN_AUTO_CREATE_MESSAGE_RETENTION =
+            ConfigOptions.key("scan.auto-create.message-retention")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a created subscription retains an unacknowledged message.");
+
+    public static final ConfigOption<Boolean> SCAN_AUTO_CREATE_RETAIN_ACKED_MESSAGES =
+            ConfigOptions.key("scan.auto-create.retain-acked-messages")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether a created subscription keeps acknowledged messages within its"
+                                    + " retention window, which is what makes a backwards seek"
+                                    + " replay them.");
+
+    public static final ConfigOption<Duration> SCAN_AUTO_CREATE_EXPIRATION_TTL =
+            ConfigOptions.key("scan.auto-create.expiration-ttl")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a created subscription may sit inactive before Pub/Sub"
+                                    + " deletes it. Cannot be combined with"
+                                    + " 'scan.auto-create.never-expire'.");
+
+    public static final ConfigOption<Boolean> SCAN_AUTO_CREATE_NEVER_EXPIRE =
+            ConfigOptions.key("scan.auto-create.never-expire")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether a created subscription never expires, however long it sits"
+                                    + " inactive. Cannot be combined with"
+                                    + " 'scan.auto-create.expiration-ttl'.");
+
+    public static final ConfigOption<String> SCAN_AUTO_CREATE_DEAD_LETTER_TOPIC =
+            ConfigOptions.key("scan.auto-create.dead-letter.topic")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The topic a created subscription forwards undeliverable messages to,"
+                                    + " resolved against 'project'. Required together with"
+                                    + " 'scan.auto-create.dead-letter.max-delivery-attempts'."
+                                    + " Pub/Sub also needs its own service account granted publish"
+                                    + " on that topic and subscribe on this subscription, or it"
+                                    + " silently keeps redelivering.");
+
+    public static final ConfigOption<Integer> SCAN_AUTO_CREATE_DEAD_LETTER_MAX_DELIVERY_ATTEMPTS =
+            ConfigOptions.key("scan.auto-create.dead-letter.max-delivery-attempts")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How many times a created subscription delivers a message before"
+                                    + " forwarding it to the dead-letter topic. Required together"
+                                    + " with 'scan.auto-create.dead-letter.topic'. Deliveries are"
+                                    + " counted, not causes, so a redelivery after a job restart"
+                                    + " raises the same counter a nack does.");
+
+    public static final ConfigOption<String> SCAN_AUTO_CREATE_FILTER =
+            ConfigOptions.key("scan.auto-create.filter")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The expression a created subscription filters its topic's messages"
+                                    + " with. Fixed at creation.");
 
     // ------------------------------------------------------------------------
     //  Sink — destination

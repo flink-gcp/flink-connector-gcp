@@ -38,7 +38,9 @@ import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
 import io.github.flink.gcp.connector.pubsub.table.sink.PublisherOptionsMapper;
 import io.github.flink.gcp.connector.pubsub.table.source.PubSubDynamicSource;
+import io.github.flink.gcp.connector.pubsub.table.source.StartPositionMapper;
 import io.github.flink.gcp.connector.pubsub.table.source.SubscriberOptionsMapper;
+import io.github.flink.gcp.connector.pubsub.table.source.SubscriptionCreateOptionsMapper;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -89,6 +91,18 @@ public class PubSubDynamicTableFactory
                         PubSubConnectorOptions.SCAN_SHUTDOWN_TIMEOUT,
                         PubSubConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH,
                         PubSubConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT,
+                        PubSubConnectorOptions.SCAN_STARTUP_MODE,
+                        PubSubConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPIC,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_ACK_DEADLINE,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_ORDERING_ENABLED,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_RETENTION,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_RETAIN_ACKED_MESSAGES,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_EXPIRATION_TTL,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_NEVER_EXPIRE,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_DEAD_LETTER_TOPIC,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_DEAD_LETTER_MAX_DELIVERY_ATTEMPTS,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_FILTER,
                         FactoryUtil.SOURCE_PARALLELISM,
                         PubSubConnectorOptions.TOPIC,
                         PubSubConnectorOptions.SINK_CREATE_DISPOSITION,
@@ -168,6 +182,8 @@ public class PubSubDynamicTableFactory
                 context.getPhysicalRowDataType(),
                 decodingFormat,
                 subscriptions,
+                SubscriptionCreateOptionsMapper.map(config),
+                StartPositionMapper.map(config),
                 config.getOptional(PubSubConnectorOptions.SCAN_ORDERING_MODE).orElse(null),
                 config.getOptional(PubSubConnectorOptions.SCAN_DESERIALIZATION_FAILURE_POLICY)
                         .orElse(null),
