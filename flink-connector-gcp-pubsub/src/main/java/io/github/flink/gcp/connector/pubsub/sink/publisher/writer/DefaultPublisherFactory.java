@@ -21,8 +21,6 @@ import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.batching.BatchingSettings;
-import com.google.api.gax.batching.FlowControlSettings;
-import com.google.api.gax.batching.FlowController;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.retrying.RetrySettings;
@@ -140,9 +138,12 @@ public final class DefaultPublisherFactory implements PublisherFactory {
     }
 
     /**
-     * Builds the SDK batching settings: the SDK defaults overlaid with the set thresholds, and —
-     * when a flow-control limit is set — a blocking flow controller (blocking the task thread is
-     * plain backpressure; failing the job or ignoring the limit are not useful sink behaviors).
+     * Builds the SDK batching settings: the SDK defaults overlaid with the set thresholds. The
+     * publisher's flow controller is left at the SDK default — {@code
+     * LimitExceededBehavior.Ignore}, for which {@code Publisher} constructs no controller at all —
+     * because in-flight publishes are bounded by the writer instead, which yields to the task
+     * mailbox rather than blocking the task thread and stays effective with message ordering
+     * enabled.
      */
     @VisibleForTesting
     static BatchingSettings batchingSettings(PubSubPublisherOptions options) {
@@ -159,30 +160,9 @@ public final class DefaultPublisherFactory implements PublisherFactory {
         if (options.getBatchDelayThreshold() != null) {
             batching.setDelayThresholdDuration(options.getBatchDelayThreshold());
         }
-        if (options.getFlowControlMaxOutstandingElementCount() != null
-                || options.getFlowControlMaxOutstandingRequestBytes() != null) {
-            // The SDK publisher requires both limits when flow control is enforced; an unset
-            // limit becomes effectively unlimited. The publisher does not cap its batch
-            // thresholds to the limits, so a batch that could never fill under them would stall
-            // publishing until the delay alarm while holding permits — cap the thresholds here.
-            long elementLimit = orUnlimited(options.getFlowControlMaxOutstandingElementCount());
-            long byteLimit = orUnlimited(options.getFlowControlMaxOutstandingRequestBytes());
-            elementCountThreshold = Math.min(elementCountThreshold, elementLimit);
-            requestByteThreshold = Math.min(requestByteThreshold, byteLimit);
-            batching.setFlowControlSettings(
-                    FlowControlSettings.newBuilder()
-                            .setMaxOutstandingElementCount(elementLimit)
-                            .setMaxOutstandingRequestBytes(byteLimit)
-                            .setLimitExceededBehavior(FlowController.LimitExceededBehavior.Block)
-                            .build());
-        }
         return batching.setElementCountThreshold(elementCountThreshold)
                 .setRequestByteThreshold(requestByteThreshold)
                 .build();
-    }
-
-    private static long orUnlimited(@Nullable Long limit) {
-        return limit != null ? limit : Long.MAX_VALUE;
     }
 
     /**

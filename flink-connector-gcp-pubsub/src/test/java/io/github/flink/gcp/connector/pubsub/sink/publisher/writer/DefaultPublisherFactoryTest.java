@@ -73,37 +73,25 @@ class DefaultPublisherFactoryTest {
     }
 
     @Test
-    void flowControlLimitsUseBlockingBehavior() {
-        PubSubPublisherOptions options =
-                PubSubPublisherOptions.builder().flowControlMaxOutstandingElementCount(10).build();
-
-        BatchingSettings batching = DefaultPublisherFactory.batchingSettings(options);
-
-        assertThat(batching.getFlowControlSettings().getMaxOutstandingElementCount()).isEqualTo(10);
-        // The SDK requires both limits when flow control is enforced; unset = unlimited.
-        assertThat(batching.getFlowControlSettings().getMaxOutstandingRequestBytes())
-                .isEqualTo(Long.MAX_VALUE);
-        assertThat(batching.getFlowControlSettings().getLimitExceededBehavior())
-                .isEqualTo(FlowController.LimitExceededBehavior.Block);
-    }
-
-    @Test
-    void batchThresholdsAreCappedToFlowControlLimits() {
-        // The SDK publisher does not cap its batch thresholds to the flow-control limits, so a
-        // batch that could never fill under them would stall until the delay alarm while holding
-        // permits; the factory caps the thresholds itself.
+    void batchingSettingsNeverEnableTheSdkFlowController() {
+        // In-flight publishes are bounded by the writer, not by the SDK: it blocks the task thread
+        // instead of yielding to the mailbox, and it leaks a permit per publish cancelled on a
+        // paused ordering key. Leaving the settings at the SDK default of Ignore is what keeps
+        // Publisher from constructing a controller at all.
         PubSubPublisherOptions options =
                 PubSubPublisherOptions.builder()
                         .batchRequestByteThreshold(4_096)
-                        .flowControlMaxOutstandingElementCount(10)
-                        .flowControlMaxOutstandingRequestBytes(1_024)
+                        .maxInFlightBytes(1_024)
                         .build();
 
         BatchingSettings batching = DefaultPublisherFactory.batchingSettings(options);
 
-        assertThat(batching.getElementCountThreshold())
-                .isEqualTo(Math.min(10, SDK_BATCHING_DEFAULTS.getElementCountThreshold()));
-        assertThat(batching.getRequestByteThreshold()).isEqualTo(1_024);
+        assertThat(batching.getFlowControlSettings())
+                .isEqualTo(SDK_BATCHING_DEFAULTS.getFlowControlSettings());
+        assertThat(batching.getFlowControlSettings().getLimitExceededBehavior())
+                .isEqualTo(FlowController.LimitExceededBehavior.Ignore);
+        // The writer cap is not an SDK knob, so it does not shrink the batch thresholds.
+        assertThat(batching.getRequestByteThreshold()).isEqualTo(4_096);
     }
 
     @Test
@@ -164,7 +152,7 @@ class DefaultPublisherFactoryTest {
         PubSubPublisherOptions options =
                 PubSubPublisherOptions.builder()
                         .batchElementCountThreshold(5)
-                        .flowControlMaxOutstandingElementCount(10)
+                        .batchDelayThreshold(Duration.ofMillis(20))
                         .build();
         ManagedChannel channel =
                 ManagedChannelBuilder.forTarget("localhost:1").usePlaintext().build();
@@ -180,12 +168,8 @@ class DefaultPublisherFactoryTest {
             publisher = builder.build();
 
             assertThat(publisher.getBatchingSettings().getElementCountThreshold()).isEqualTo(5);
-            assertThat(
-                            publisher
-                                    .getBatchingSettings()
-                                    .getFlowControlSettings()
-                                    .getLimitExceededBehavior())
-                    .isEqualTo(FlowController.LimitExceededBehavior.Block);
+            assertThat(publisher.getBatchingSettings().getDelayThresholdDuration())
+                    .isEqualTo(Duration.ofMillis(20));
         } finally {
             if (publisher != null) {
                 publisher.shutdown();

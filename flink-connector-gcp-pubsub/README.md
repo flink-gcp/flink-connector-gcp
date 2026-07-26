@@ -7,7 +7,7 @@ sink and multi-subscription consumption on the source.
 |---|---|
 | SinkV2 at-least-once sink; per-record topic resolution; per-topic publishers; checkpoint flush | Implemented (#18) |
 | Topic auto-creation | Implemented (#19) |
-| Attributes/ordering-key conveniences; message ordering; batching/flow-control/retry options; recovery and in-flight knobs | Implemented (#20) |
+| Attributes/ordering-key conveniences; message ordering; batching/retry options; recovery knobs; in-flight message and byte caps | Implemented (#20, byte cap #85) |
 | Per-record failure policy; fatal-exception classifier | Planned (#37) |
 | Emulator integration tests | Implemented (#21) |
 

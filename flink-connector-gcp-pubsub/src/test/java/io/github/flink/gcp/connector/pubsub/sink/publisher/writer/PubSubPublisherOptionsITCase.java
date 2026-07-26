@@ -188,7 +188,6 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
                 PubSubPublisherOptions.builder()
                         .batchElementCountThreshold(1)
                         .batchDelayThreshold(java.time.Duration.ofHours(1))
-                        .flowControlMaxOutstandingElementCount(100)
                         .build();
         FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
         PubSubWriter<String> writer = writer(destination, dataOnly(), options, mailbox);

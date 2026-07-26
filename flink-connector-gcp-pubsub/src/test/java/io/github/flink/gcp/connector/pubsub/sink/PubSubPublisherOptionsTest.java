@@ -30,16 +30,17 @@ class PubSubPublisherOptionsTest {
 
     /**
      * An options instance with every knob set, shared by the override and round-trip tests (also
-     * reused by the builder round trip in {@code PubSubSinkBuilderTest}). Ordering stays disabled
-     * because {@code build()} rejects combining it with the flow-control limits.
+     * reused by the builder round trip in {@code PubSubSinkBuilderTest}). Ordering is enabled here:
+     * with the flow-control limits gone, no knob is mutually exclusive with it any more, so "every
+     * knob" can be literal.
      */
     static PubSubPublisherOptions fullyPopulated() {
         return PubSubPublisherOptions.builder()
                 .batchElementCountThreshold(5)
                 .batchRequestByteThreshold(1_000)
                 .batchDelayThreshold(Duration.ofMillis(20))
-                .flowControlMaxOutstandingElementCount(500)
-                .flowControlMaxOutstandingRequestBytes(1_000_000)
+                .enableMessageOrdering(true)
+                .maxInFlightBytes(1_048_576)
                 .retryTotalTimeout(Duration.ofSeconds(120))
                 .retryInitialDelay(Duration.ofMillis(50))
                 .retryDelayMultiplier(2.0)
@@ -62,8 +63,6 @@ class PubSubPublisherOptionsTest {
         assertThat(defaults.getBatchElementCountThreshold()).isNull();
         assertThat(defaults.getBatchRequestByteThreshold()).isNull();
         assertThat(defaults.getBatchDelayThreshold()).isNull();
-        assertThat(defaults.getFlowControlMaxOutstandingElementCount()).isNull();
-        assertThat(defaults.getFlowControlMaxOutstandingRequestBytes()).isNull();
         assertThat(defaults.getRetryTotalTimeout()).isNull();
         assertThat(defaults.getRetryInitialDelay()).isNull();
         assertThat(defaults.getRetryDelayMultiplier()).isNull();
@@ -74,6 +73,7 @@ class PubSubPublisherOptionsTest {
         assertThat(defaults.getRetryMaxAttempts()).isNull();
         assertThat(defaults.isEnableMessageOrdering()).isFalse();
         assertThat(defaults.getMaxInFlightMessages()).isEqualTo(1000);
+        assertThat(defaults.getMaxInFlightBytes()).isEqualTo(64L * 1024 * 1024);
         assertThat(defaults.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(500));
         assertThat(defaults.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(10));
         assertThat(defaults.getRecoveryMaxAttempts()).isEqualTo(10);
@@ -89,8 +89,6 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getBatchElementCountThreshold()).isEqualTo(5);
         assertThat(options.getBatchRequestByteThreshold()).isEqualTo(1_000);
         assertThat(options.getBatchDelayThreshold()).isEqualTo(Duration.ofMillis(20));
-        assertThat(options.getFlowControlMaxOutstandingElementCount()).isEqualTo(500);
-        assertThat(options.getFlowControlMaxOutstandingRequestBytes()).isEqualTo(1_000_000);
         assertThat(options.getRetryTotalTimeout()).isEqualTo(Duration.ofSeconds(120));
         assertThat(options.getRetryInitialDelay()).isEqualTo(Duration.ofMillis(50));
         assertThat(options.getRetryDelayMultiplier()).isEqualTo(2.0);
@@ -99,13 +97,9 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getRetryRpcTimeoutMultiplier()).isEqualTo(1.5);
         assertThat(options.getRetryMaxRpcTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(options.getRetryMaxAttempts()).isEqualTo(7);
-        assertThat(
-                        PubSubPublisherOptions.builder()
-                                .enableMessageOrdering(true)
-                                .build()
-                                .isEnableMessageOrdering())
-                .isTrue();
+        assertThat(options.isEnableMessageOrdering()).isTrue();
         assertThat(options.getMaxInFlightMessages()).isEqualTo(42);
+        assertThat(options.getMaxInFlightBytes()).isEqualTo(1_048_576);
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
         assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(1));
         assertThat(options.getRecoveryMaxAttempts()).isEqualTo(3);
@@ -129,12 +123,6 @@ class PubSubPublisherOptionsTest {
         assertThatThrownBy(() -> builder.batchDelayThreshold(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("batchDelayThreshold");
-        assertThatThrownBy(() -> builder.flowControlMaxOutstandingElementCount(0))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("flowControlMaxOutstandingElementCount");
-        assertThatThrownBy(() -> builder.flowControlMaxOutstandingRequestBytes(0))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("flowControlMaxOutstandingRequestBytes");
         assertThatThrownBy(() -> builder.retryTotalTimeout(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryTotalTimeout");
@@ -162,6 +150,14 @@ class PubSubPublisherOptionsTest {
         assertThatThrownBy(() -> builder.maxInFlightMessages(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("maxInFlightMessages");
+        // Zero would make the write admission predicate hold with nothing in flight, and yield()
+        // blocks until a mail arrives — a task hang rather than backpressure.
+        assertThatThrownBy(() -> builder.maxInFlightBytes(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxInFlightBytes");
+        assertThatThrownBy(() -> builder.maxInFlightBytes(-1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxInFlightBytes");
         assertThatThrownBy(() -> builder.recoveryInitialBackoff(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("recoveryInitialBackoff");
@@ -174,23 +170,19 @@ class PubSubPublisherOptionsTest {
     }
 
     @Test
-    void rejectsFlowControlLimitsWithMessageOrdering() {
-        assertThatThrownBy(
-                        () ->
-                                PubSubPublisherOptions.builder()
-                                        .enableMessageOrdering(true)
-                                        .flowControlMaxOutstandingElementCount(10)
-                                        .build())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("enableMessageOrdering");
-        assertThatThrownBy(
-                        () ->
-                                PubSubPublisherOptions.builder()
-                                        .enableMessageOrdering(true)
-                                        .flowControlMaxOutstandingRequestBytes(1_000)
-                                        .build())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("enableMessageOrdering");
+    void aByteBoundIsAvailableWithMessageOrdering() {
+        // The point of #85: the SDK flow-control byte limit that used to be the only byte bound
+        // could not be combined with ordering (it leaks a permit per publish cancelled on a paused
+        // key), leaving ordered sinks — where a paused key holds its whole cascade — with no byte
+        // bound at all. The writer-owned cap has no such restriction.
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .enableMessageOrdering(true)
+                        .maxInFlightBytes(1_000)
+                        .build();
+
+        assertThat(options.isEnableMessageOrdering()).isTrue();
+        assertThat(options.getMaxInFlightBytes()).isEqualTo(1_000);
     }
 
     @Test

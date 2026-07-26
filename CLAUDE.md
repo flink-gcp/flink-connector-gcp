@@ -261,9 +261,24 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   `TopicAdmin` SPI (`sink.topics`, ALREADY_EXISTS = success), gated by `CreateDisposition`.
   Tuning (#20) lives in one `PubSubPublisherOptions` object (nested-options pattern; plain
   serializable values, no gax types on the public API; unset = SDK/sink default): batching,
-  flow control (Block-only; the builder rejects combining with ordering — SDK 1.152.0 leaks
-  permits on paused keys), publish retries, `enableMessageOrdering`, the in-flight cap and the
-  recovery backoff.
+  publish retries, `enableMessageOrdering`, the in-flight caps and the recovery backoff.
+  In-flight bounds (#85, revising #20): the writer owns **both** caps — `maxInFlightMessages`
+  (1000) and `maxInFlightBytes` (64 MiB per subtask) — and the two SDK `flowControl*` knobs #20
+  exposed are **removed**, not deprecated. gax flow control could never be the byte bound an
+  ordered sink needs: SDK 1.152.0 leaks a permit per publish cancelled on a paused key (so the
+  builder rejected combining it with ordering — exactly where cascades pile up), and it blocks the
+  task thread instead of yielding to the mailbox. Message count alone bounds no memory, since
+  Pub/Sub allows 10 MiB per message. Three constraints not to re-litigate: the byte bound is an
+  *additional* condition on `write`'s admission only, because the three drains (now
+  `drainInFlight()`, named apart from `awaitCapacity()` for exactly this reason) must keep meaning
+  "empty, and `checkAsyncError`" — #78/#110 made that load-bearing; admission is "below the cap",
+  never "does this message fit", since `yield()` blocks until a mail arrives and no mail can
+  arrive at zero in flight, so a fits-predicate would hang the task on an oversized message
+  instead of backpressuring it; and the topic-creation repair republishes its parked batch
+  **exempt from both caps**, because yielding between a key's republishes reorders it. Parked
+  messages are counted by neither cap (their failure mail released them). The two writer test
+  classes carry `@Timeout(30)`: the fake mailbox blocks like the real one, so a broken predicate
+  hangs rather than fails.
   Ordering×repair (revised in #78): cascade cancellations are parked alongside their NOT_FOUND
   root and every repair attempt calls `resumePublish` before republishing, but **per-key order is
   restored by sorting the parked batch on a publish sequence, never by observation order** — the

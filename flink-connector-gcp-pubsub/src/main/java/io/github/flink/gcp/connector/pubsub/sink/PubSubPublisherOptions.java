@@ -26,25 +26,22 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Tuning options for the sink's Pub/Sub publishers and its writer: SDK batching, flow control and
- * publish-retry settings, message ordering, the writer's in-flight cap, and the backoff budget of
- * the topic auto-creation recovery.
+ * Tuning options for the sink's Pub/Sub publishers and its writer: SDK batching and publish-retry
+ * settings, message ordering, the writer's in-flight caps, and the backoff budget of the topic
+ * auto-creation recovery.
  *
  * <p>Set via {@link PubSubSinkBuilder#publisherOptions(PubSubPublisherOptions)}; optional — every
  * knob left unset keeps the SDK's (or the sink's) default behavior, so {@link #defaults()} is
  * equivalent to not setting options at all.
  *
- * <p>Flow-control limits use the SDK's {@code LimitExceededBehavior.Block}: a publish exceeding a
- * limit blocks the task thread until in-flight publishes complete (permits are released on SDK
- * threads, so this is plain backpressure with no deadlock). The behavior itself is deliberately not
- * exposed: failing the job on transient pressure ({@code ThrowException}) or configuring limits
- * that are not enforced ({@code Ignore}) are not useful sink behaviors. Note the writer's own
- * {@link Builder#maxInFlightMessages(int)} cap is the mailbox-friendly primary bound; a
- * flow-control element limit above it never triggers. {@link Builder#build()} rejects combining
- * flow-control limits with {@link Builder#enableMessageOrdering(boolean)}: the SDK publisher
- * (1.152.0) leaks a flow-control permit for every publish rejected or cancelled on a paused
- * ordering key, which under {@code Block} can eventually hang publishing (see the connector
- * documentation).
+ * <p>In-flight publishes are bounded by the writer itself, along both dimensions that matter:
+ * {@link Builder#maxInFlightMessages(int)} and {@link Builder#maxInFlightBytes(long)}. Both yield
+ * to the task mailbox rather than blocking the task thread, and both apply with message ordering
+ * enabled. The SDK publisher's own flow controller is deliberately <b>not</b> exposed: it blocks
+ * the task thread instead of yielding, and google-cloud-pubsub (1.152.0) leaks a flow-control
+ * permit for every publish rejected or cancelled on a paused ordering key, which can eventually
+ * hang publishing — so it could never have been the byte bound an ordered sink needs (see the
+ * connector documentation).
  *
  * <p>Instances are immutable and serializable.
  */
@@ -58,8 +55,6 @@ public final class PubSubPublisherOptions implements Serializable {
     @Nullable private final Long batchElementCountThreshold;
     @Nullable private final Long batchRequestByteThreshold;
     @Nullable private final Duration batchDelayThreshold;
-    @Nullable private final Long flowControlMaxOutstandingElementCount;
-    @Nullable private final Long flowControlMaxOutstandingRequestBytes;
     @Nullable private final Duration retryTotalTimeout;
     @Nullable private final Duration retryInitialDelay;
     @Nullable private final Double retryDelayMultiplier;
@@ -70,6 +65,7 @@ public final class PubSubPublisherOptions implements Serializable {
     @Nullable private final Integer retryMaxAttempts;
     private final boolean enableMessageOrdering;
     private final int maxInFlightMessages;
+    private final long maxInFlightBytes;
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
@@ -78,8 +74,6 @@ public final class PubSubPublisherOptions implements Serializable {
         this.batchElementCountThreshold = builder.batchElementCountThreshold;
         this.batchRequestByteThreshold = builder.batchRequestByteThreshold;
         this.batchDelayThreshold = builder.batchDelayThreshold;
-        this.flowControlMaxOutstandingElementCount = builder.flowControlMaxOutstandingElementCount;
-        this.flowControlMaxOutstandingRequestBytes = builder.flowControlMaxOutstandingRequestBytes;
         this.retryTotalTimeout = builder.retryTotalTimeout;
         this.retryInitialDelay = builder.retryInitialDelay;
         this.retryDelayMultiplier = builder.retryDelayMultiplier;
@@ -90,6 +84,7 @@ public final class PubSubPublisherOptions implements Serializable {
         this.retryMaxAttempts = builder.retryMaxAttempts;
         this.enableMessageOrdering = builder.enableMessageOrdering;
         this.maxInFlightMessages = builder.maxInFlightMessages;
+        this.maxInFlightBytes = builder.maxInFlightBytes;
         this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
@@ -105,8 +100,8 @@ public final class PubSubPublisherOptions implements Serializable {
     }
 
     /**
-     * Returns the default options: SDK-default batching, flow control and retries, ordering
-     * disabled, an in-flight cap of 1000, and a topic auto-creation recovery budget of 500 ms
+     * Returns the default options: SDK-default batching and retries, ordering disabled, in-flight
+     * caps of 1000 messages and 64 MiB, and a topic auto-creation recovery budget of 500 ms
      * doubling to 10 s over 10 attempts.
      *
      * @return the default options
@@ -131,18 +126,6 @@ public final class PubSubPublisherOptions implements Serializable {
     @Nullable
     public Duration getBatchDelayThreshold() {
         return batchDelayThreshold;
-    }
-
-    /** Returns the flow-control outstanding-element limit, or {@code null} for no limit. */
-    @Nullable
-    public Long getFlowControlMaxOutstandingElementCount() {
-        return flowControlMaxOutstandingElementCount;
-    }
-
-    /** Returns the flow-control outstanding-byte limit, or {@code null} for no limit. */
-    @Nullable
-    public Long getFlowControlMaxOutstandingRequestBytes() {
-        return flowControlMaxOutstandingRequestBytes;
     }
 
     /** Returns the publish-retry total timeout, or {@code null} for the SDK default. */
@@ -206,6 +189,11 @@ public final class PubSubPublisherOptions implements Serializable {
         return maxInFlightMessages;
     }
 
+    /** Returns the writer's cap on the serialized bytes of unacknowledged publishes. */
+    public long getMaxInFlightBytes() {
+        return maxInFlightBytes;
+    }
+
     /** Returns the first backoff of the topic auto-creation recovery. */
     public Duration getRecoveryInitialBackoff() {
         return recoveryInitialBackoff;
@@ -221,13 +209,11 @@ public final class PubSubPublisherOptions implements Serializable {
         return recoveryMaxAttempts;
     }
 
-    /** Returns whether any batching or flow-control knob deviates from the SDK default. */
+    /** Returns whether any batching knob deviates from the SDK default. */
     public boolean hasBatchingOverrides() {
         return batchElementCountThreshold != null
                 || batchRequestByteThreshold != null
-                || batchDelayThreshold != null
-                || flowControlMaxOutstandingElementCount != null
-                || flowControlMaxOutstandingRequestBytes != null;
+                || batchDelayThreshold != null;
     }
 
     /** Returns whether any publish-retry knob deviates from the SDK default. */
@@ -253,16 +239,11 @@ public final class PubSubPublisherOptions implements Serializable {
         PubSubPublisherOptions that = (PubSubPublisherOptions) o;
         return enableMessageOrdering == that.enableMessageOrdering
                 && maxInFlightMessages == that.maxInFlightMessages
+                && maxInFlightBytes == that.maxInFlightBytes
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && Objects.equals(batchElementCountThreshold, that.batchElementCountThreshold)
                 && Objects.equals(batchRequestByteThreshold, that.batchRequestByteThreshold)
                 && Objects.equals(batchDelayThreshold, that.batchDelayThreshold)
-                && Objects.equals(
-                        flowControlMaxOutstandingElementCount,
-                        that.flowControlMaxOutstandingElementCount)
-                && Objects.equals(
-                        flowControlMaxOutstandingRequestBytes,
-                        that.flowControlMaxOutstandingRequestBytes)
                 && Objects.equals(retryTotalTimeout, that.retryTotalTimeout)
                 && Objects.equals(retryInitialDelay, that.retryInitialDelay)
                 && Objects.equals(retryDelayMultiplier, that.retryDelayMultiplier)
@@ -281,8 +262,6 @@ public final class PubSubPublisherOptions implements Serializable {
                 batchElementCountThreshold,
                 batchRequestByteThreshold,
                 batchDelayThreshold,
-                flowControlMaxOutstandingElementCount,
-                flowControlMaxOutstandingRequestBytes,
                 retryTotalTimeout,
                 retryInitialDelay,
                 retryDelayMultiplier,
@@ -293,6 +272,7 @@ public final class PubSubPublisherOptions implements Serializable {
                 retryMaxAttempts,
                 enableMessageOrdering,
                 maxInFlightMessages,
+                maxInFlightBytes,
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
                 recoveryMaxAttempts);
@@ -306,10 +286,6 @@ public final class PubSubPublisherOptions implements Serializable {
                 + batchRequestByteThreshold
                 + ", batchDelayThreshold="
                 + batchDelayThreshold
-                + ", flowControlMaxOutstandingElementCount="
-                + flowControlMaxOutstandingElementCount
-                + ", flowControlMaxOutstandingRequestBytes="
-                + flowControlMaxOutstandingRequestBytes
                 + ", retryTotalTimeout="
                 + retryTotalTimeout
                 + ", retryInitialDelay="
@@ -330,6 +306,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 + enableMessageOrdering
                 + ", maxInFlightMessages="
                 + maxInFlightMessages
+                + ", maxInFlightBytes="
+                + maxInFlightBytes
                 + ", recoveryInitialBackoff="
                 + recoveryInitialBackoff
                 + ", recoveryMaxBackoff="
@@ -346,8 +324,6 @@ public final class PubSubPublisherOptions implements Serializable {
         @Nullable private Long batchElementCountThreshold;
         @Nullable private Long batchRequestByteThreshold;
         @Nullable private Duration batchDelayThreshold;
-        @Nullable private Long flowControlMaxOutstandingElementCount;
-        @Nullable private Long flowControlMaxOutstandingRequestBytes;
         @Nullable private Duration retryTotalTimeout;
         @Nullable private Duration retryInitialDelay;
         @Nullable private Double retryDelayMultiplier;
@@ -358,6 +334,7 @@ public final class PubSubPublisherOptions implements Serializable {
         @Nullable private Integer retryMaxAttempts;
         private boolean enableMessageOrdering;
         private int maxInFlightMessages = 1000;
+        private long maxInFlightBytes = 64L * 1024 * 1024;
         private Duration recoveryInitialBackoff = Duration.ofMillis(500);
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
         private int recoveryMaxAttempts = 10;
@@ -401,41 +378,6 @@ public final class PubSubPublisherOptions implements Serializable {
          */
         public Builder batchDelayThreshold(Duration batchDelayThreshold) {
             this.batchDelayThreshold = checkPositive(batchDelayThreshold, "batchDelayThreshold");
-            return this;
-        }
-
-        /**
-         * Caps the messages a publisher may hold unacknowledged; a publish beyond the cap blocks
-         * the task thread until in-flight publishes complete. Optional; defaults to no limit. Note
-         * the writer's own {@link #maxInFlightMessages(int)} is the primary cap — a higher
-         * flow-control limit never triggers.
-         *
-         * @param flowControlMaxOutstandingElementCount the outstanding-element limit, positive
-         * @return this builder
-         */
-        public Builder flowControlMaxOutstandingElementCount(
-                long flowControlMaxOutstandingElementCount) {
-            Preconditions.checkArgument(
-                    flowControlMaxOutstandingElementCount > 0,
-                    "flowControlMaxOutstandingElementCount must be positive");
-            this.flowControlMaxOutstandingElementCount = flowControlMaxOutstandingElementCount;
-            return this;
-        }
-
-        /**
-         * Caps the bytes a publisher may hold unacknowledged; a publish beyond the cap blocks the
-         * task thread until in-flight publishes complete. Optional; defaults to no limit. This is
-         * the byte-level bound the writer's element-count cap cannot provide.
-         *
-         * @param flowControlMaxOutstandingRequestBytes the outstanding-byte limit, positive
-         * @return this builder
-         */
-        public Builder flowControlMaxOutstandingRequestBytes(
-                long flowControlMaxOutstandingRequestBytes) {
-            Preconditions.checkArgument(
-                    flowControlMaxOutstandingRequestBytes > 0,
-                    "flowControlMaxOutstandingRequestBytes must be positive");
-            this.flowControlMaxOutstandingRequestBytes = flowControlMaxOutstandingRequestBytes;
             return this;
         }
 
@@ -567,6 +509,30 @@ public final class PubSubPublisherOptions implements Serializable {
         }
 
         /**
+         * Caps the serialized bytes of the writer's unacknowledged publishes, bounding sink memory
+         * where the message count cannot: Pub/Sub allows 10 MiB per message, so {@link
+         * #maxInFlightMessages(int)} alone leaves the retained payload unbounded. Defaults to 64
+         * MiB per writer subtask — with the default message cap of 1000 that binds only above ~64
+         * KiB per message, so small-message pipelines keep today's behavior. Size the value so that
+         * it, times the sink subtasks sharing a TaskManager, fits the heap budget.
+         *
+         * <p>Like the message cap, a write at the cap yields to the task mailbox rather than
+         * blocking the task thread, and it applies with {@link #enableMessageOrdering(boolean)}
+         * enabled. Admission is checked <em>before</em> a publish rather than against the message's
+         * own size, so a message larger than the cap is still published when the writer is empty
+         * and the cap is exceeded until it completes; that is what keeps an oversized message from
+         * deadlocking the writer. Pass {@link Long#MAX_VALUE} to bound by message count only.
+         *
+         * @param maxInFlightBytes the in-flight byte cap, positive
+         * @return this builder
+         */
+        public Builder maxInFlightBytes(long maxInFlightBytes) {
+            Preconditions.checkArgument(maxInFlightBytes > 0, "maxInFlightBytes must be positive");
+            this.maxInFlightBytes = maxInFlightBytes;
+            return this;
+        }
+
+        /**
          * Sets the first backoff of the topic auto-creation recovery (republishing after creating a
          * missing topic). Defaults to 500 ms.
          *
@@ -613,15 +579,6 @@ public final class PubSubPublisherOptions implements Serializable {
             Preconditions.checkState(
                     recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
                     "recoveryMaxBackoff must be at least recoveryInitialBackoff.");
-            Preconditions.checkState(
-                    !enableMessageOrdering
-                            || (flowControlMaxOutstandingElementCount == null
-                                    && flowControlMaxOutstandingRequestBytes == null),
-                    "Flow-control limits cannot be combined with enableMessageOrdering:"
-                            + " google-cloud-pubsub (1.152.0) leaks a flow-control permit for"
-                            + " every publish rejected or cancelled on a paused ordering key,"
-                            + " which can eventually hang publishing. Remove the flow-control"
-                            + " limits or disable message ordering.");
             return new PubSubPublisherOptions(this);
         }
 
