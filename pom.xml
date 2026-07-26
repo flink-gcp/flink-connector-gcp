@@ -68,6 +68,15 @@ limitations under the License.
         <google-cloud-libraries-bom.version>26.85.1</google-cloud-libraries-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.1</avro.version>
+        <!-- JSONObject is the parameter type of the Storage Write API client's
+             JsonToProtoMessage, so this has to stay compatible with whatever
+             google-cloud-bigquerystorage itself depends on (org.json is in no BOM).
+             Note this entry *overrides* that transitive version rather than agreeing
+             with it, so a bump there is a silent downgrade here — and our own
+             `dependency:tree` cannot show it, since it prints this pin and drops the
+             bigquerystorage edge entirely. Check google-cloud-bigquerystorage's own pom
+             when the libraries BOM moves. -->
+        <org-json.version>20250517</org-json.version>
 
         <!-- Test dependencies -->
         <assertj.version>3.27.7</assertj.version>
@@ -120,6 +129,12 @@ limitations under the License.
                 <groupId>org.apache.avro</groupId>
                 <artifactId>avro</artifactId>
                 <version>${avro.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.json</groupId>
+                <artifactId>json</artifactId>
+                <version>${org-json.version}</version>
             </dependency>
 
             <dependency>
