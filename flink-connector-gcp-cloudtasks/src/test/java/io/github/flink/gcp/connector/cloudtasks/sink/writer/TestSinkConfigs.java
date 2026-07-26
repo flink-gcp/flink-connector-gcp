@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.cloudtasks.sink.createtask.writer;
+package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
-import io.github.flink.gcp.connector.cloudtasks.sink.createtask.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 
 /**

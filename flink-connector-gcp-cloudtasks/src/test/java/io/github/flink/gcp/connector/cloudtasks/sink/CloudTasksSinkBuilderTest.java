@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.cloudtasks.sink;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.connector.sink2.Sink;
 
-import io.github.flink.gcp.connector.cloudtasks.sink.createtask.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 import org.junit.jupiter.api.Test;
 

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.cloudtasks.sink.createtask.writer;
+package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
 import org.apache.flink.util.InstantiationUtil;
 

@@ -223,7 +223,15 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
   the Sink classes, the family's public options objects and committable contracts; internal
   stages follow the Flink FileSink precedent with `.writer`, `.committer` and
   post-commit-topology subpackages (`.loadjob` here, FileSink's `.compactor`) as the topology
-  requires — a family without 2PC simply has no `.committer` package
+  requires — a family without 2PC simply has no `.committer` package.
+  **This layer only appears when a module has more than one family.** With one family it names
+  nothing and the module goes straight to `sink` + `sink.writer` (`sink.committer`, … as the
+  topology requires) — decided in #119, where Cloud Tasks' `sink.createtask` was named after the
+  `CreateTask` RPC rather than after a design, and no sibling can arrive because
+  `BatchCreateTasks` and `BufferTask` are REST-only and absent from the Java client. Pub/Sub's
+  `sink.publisher` was flattened with it so the two single-family modules stay alike. Adding the
+  layer back is what a *second* family costs, and it is a mechanical move: nothing public lives
+  in it
 - `sink.tables` — shared table-metadata layer consumed by every write method: the `TableAdmin`
   SPI and its REST implementation, schema snapshot/unifier, REST↔Storage schema converters
 - `sink.serializer` — record-conversion SPI and its implementations
@@ -233,7 +241,10 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
   same philosophy: public API at the package root, implementation subpackages beneath
 
 A new top-level class in a module's `sink` root needs a reason to be public API; implementation
-types belong in the subpackages. Test sources mirror the main-tree packages.
+types belong in the subpackages. The one standing exception is a single-family module's
+`@Internal` `Sink` class (`CloudTasksCreateTaskSink`, `PubSubPublisherSink`), which sits beside
+its facade because there is no family package left to hold it. Test sources mirror the main-tree
+packages.
 
 ## Design decisions (do not silently revisit)
 

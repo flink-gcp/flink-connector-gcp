@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.cloudtasks.sink.createtask;
+package io.github.flink.gcp.connector.cloudtasks.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
@@ -23,11 +23,10 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
-import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
-import io.github.flink.gcp.connector.cloudtasks.sink.createtask.writer.CloudTasksWriter;
-import io.github.flink.gcp.connector.cloudtasks.sink.createtask.writer.DefaultTaskCreatorFactory;
-import io.github.flink.gcp.connector.cloudtasks.sink.createtask.writer.TaskCreator;
-import io.github.flink.gcp.connector.cloudtasks.sink.createtask.writer.TaskCreatorFactory;
+import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksWriter;
+import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
+import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
+import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreatorFactory;
 
 import java.io.IOException;
 
@@ -45,8 +44,7 @@ public class CloudTasksCreateTaskSink<T> implements Sink<T> {
     private final CloudTasksSinkConfig<T> config;
 
     /**
-     * Creates the sink; called by {@link
-     * io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder}.
+     * Creates the sink; called by {@link CloudTasksSinkBuilder}.
      *
      * @param config the sink configuration
      */

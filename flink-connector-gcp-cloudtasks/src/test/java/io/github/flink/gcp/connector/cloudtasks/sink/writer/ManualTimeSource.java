@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.cloudtasks.sink.createtask.writer;
+package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
 /**
  * A {@link TimeSource} whose clock only moves when the writer waits out a backoff, so retry tests
