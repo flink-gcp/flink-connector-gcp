@@ -132,4 +132,45 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   DataStream answer is a `keyBy` before the sink, and SQL has no equivalent — `DISTRIBUTED BY` needs
   `SupportsBucketing`, which this sink does not implement. `sink.parallelism = 1` is the only correct
   configuration today; it is documented rather than enforced, because a distribution the user
-  arranged upstream is legitimate and the sink cannot tell the difference
+  arranged upstream is legitimate and the sink cannot tell the difference.
+  **Auto-creation and start position** (#137): three setters do not take a `ConfigOption`'s shape,
+  and each resolution lives in a mapper under `table.source` rather than in the factory —
+  `StartPositionMapper` and `SubscriptionCreateOptionsMapper`, joining `SubscriberOptionsMapper`.
+  Start position is `scan.startup.mode` + `scan.startup.timestamp-millis`, **Kafka's spelling rather
+  than the connector's own** ("start position") — weighed, and settled on what a migrating SQL user
+  types without reading anything; the docs table's "Maps to" column carries the connection to
+  `StartPosition`. It has no declared default, like every other option here: `PubSubSourceBuilder`
+  already initialises `continueFromSubscription()`, so absent means default and the issue's "default
+  `continue-from-subscription`" describes behaviour rather than a `ConfigOption` default.
+  `StartPosition.of(Mode, Instant)` raises both pairing errors, so the mapper delegates; the one rule
+  it owns is a **timestamp with no mode**, where `of` is never reached and the option would otherwise
+  be read by nothing. Same reasoning gives "a `scan.auto-create.*` knob without
+  `scan.auto-create.topic` is rejected, not ignored".
+  **`expirationTtl` versus `neverExpire` has no builder backstop** — the issue assumed one, and the
+  builder is in fact last-writer-wins, each setter clearing the other, which is right for a call
+  sequence and meaningless for a `WITH` clause. So the table layer rejects the pair *only* here, and
+  that check is load-bearing rather than a nicer message; the builder was deliberately left as it is.
+  `never-expire = false` calls nothing, since the setter takes no argument and `false` is already the
+  state.
+  **Auto-creation requires exactly one subscription**, because settings are per destination and carry
+  the topic binding: N options objects are inexpressible in a flat DDL namespace, and sharing one
+  would duplicate every message with nothing reporting an error. The precondition is checked in the
+  mapper and again in `PubSubDynamicSource`'s constructor, which is the code that indexes the list.
+  A `scan.auto-create.topics` `mapType()` extension for N>1 is recorded and deferred. The builder's
+  own cross-checks (ordering under `PER_KEY`, a dead-letter policy under a policy that needs one)
+  then reach SQL users unchanged, which `carriesTheCreationSettingsAndTheStartPositionIntoTheBuiltSource`
+  and its sibling are what prove — the create options and the start position are otherwise invisible
+  from outside the built `Source`, and a mutant that dropped the start position on the way to the
+  builder survived every unit test until they read it back through
+  `PubSubStreamingPullSource.getConfig()`.
+  **The two directions spell resource creation differently on purpose, and this is where that was
+  settled** (the question #136 left open, having counted `sink.create-disposition`, `sink.recovery.*`
+  and `scan.auto-create.*` as three spellings of one feature). They are not one feature. A topic
+  needs no configuration to exist, so the sink can gate creation with a `CreateDisposition` enum and
+  a "create with defaults" is meaningful; a subscription without a topic binding is not a
+  subscription, so the source has no disposition enum at all and **the presence of settings is the
+  authorization**. `scan.create.*` was weighed and declined: sharing the word would put a uniform
+  vocabulary over a difference the DataStream API makes deliberately, and this layer maps rather
+  than invents. `scan.` itself is not a choice — it is Flink's read-side prefix, carried by every
+  source option here and by `FactoryUtil.SOURCE_PARALLELISM` (`scan.parallelism`) — and with one
+  factory serving both directions it is what tells a reader which half an option belongs to

@@ -36,6 +36,8 @@ import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSource;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceBuilder;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
+import io.github.flink.gcp.connector.pubsub.source.StartPosition;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 import javax.annotation.Nullable;
@@ -64,6 +66,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
     private final DataType physicalDataType;
     private final DecodingFormat<DeserializationSchema<RowData>> decodingFormat;
     private final List<SubscriptionDestination> subscriptions;
+    @Nullable private final SubscriptionCreateOptions createOptions;
+    @Nullable private final StartPosition startPosition;
     @Nullable private final OrderingMode orderingMode;
     @Nullable private final DeserializationFailurePolicy deserializationFailurePolicy;
     private final PubSubSubscriberOptions subscriberOptions;
@@ -82,6 +86,11 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
      * @param physicalDataType the row type of the table's physical columns
      * @param decodingFormat the format decoding the payload
      * @param subscriptions the subscriptions to consume, at least one
+     * @param createOptions the settings a missing subscription is created with, or {@code null} to
+     *     require it to exist; exactly one subscription when it is given, since the settings carry
+     *     the topic binding
+     * @param startPosition where to start consuming, or {@code null} to leave the source's own
+     *     default
      * @param orderingMode the ordering mode, or {@code null} to leave the source's own default
      * @param deserializationFailurePolicy what to do with an undecodable message, or {@code null}
      *     for the source's own default
@@ -93,6 +102,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
             DataType physicalDataType,
             DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
             List<SubscriptionDestination> subscriptions,
+            @Nullable SubscriptionCreateOptions createOptions,
+            @Nullable StartPosition startPosition,
             @Nullable OrderingMode orderingMode,
             @Nullable DeserializationFailurePolicy deserializationFailurePolicy,
             PubSubSubscriberOptions subscriberOptions,
@@ -107,6 +118,13 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                         new ArrayList<>(
                                 Preconditions.checkNotNull(
                                         subscriptions, "subscriptions must not be null")));
+        Preconditions.checkArgument(
+                createOptions == null || this.subscriptions.size() == 1,
+                "Creation settings carry a topic binding, so they belong to one subscription, but"
+                        + " %s were given.",
+                this.subscriptions.size());
+        this.createOptions = createOptions;
+        this.startPosition = startPosition;
         this.orderingMode = orderingMode;
         this.deserializationFailurePolicy = deserializationFailurePolicy;
         this.subscriberOptions =
@@ -177,11 +195,20 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
 
         PubSubSourceBuilder<RowData> builder =
                 PubSubSource.<RowData>builder()
-                        .subscriptions(subscriptions)
                         .deserializationSchema(
                                 new RowDataDeserializationSchema(
                                         physical, selected, producedTypeInfo))
                         .subscriberOptions(subscriberOptions);
+        if (createOptions != null) {
+            // The two-argument form is what authorises creating the subscription, and it takes one
+            // destination; the constructor has already checked there is exactly one.
+            builder.subscription(subscriptions.get(0), createOptions);
+        } else {
+            builder.subscriptions(subscriptions);
+        }
+        if (startPosition != null) {
+            builder.startPosition(startPosition);
+        }
         if (orderingMode != null) {
             builder.orderingMode(orderingMode);
         }
@@ -202,6 +229,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                         physicalDataType,
                         decodingFormat,
                         subscriptions,
+                        createOptions,
+                        startPosition,
                         orderingMode,
                         deserializationFailurePolicy,
                         subscriberOptions,
@@ -229,6 +258,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
         return physicalDataType.equals(that.physicalDataType)
                 && decodingFormat.equals(that.decodingFormat)
                 && subscriptions.equals(that.subscriptions)
+                && Objects.equals(createOptions, that.createOptions)
+                && Objects.equals(startPosition, that.startPosition)
                 && orderingMode == that.orderingMode
                 && deserializationFailurePolicy == that.deserializationFailurePolicy
                 && subscriberOptions.equals(that.subscriberOptions)
@@ -244,6 +275,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                 physicalDataType,
                 decodingFormat,
                 subscriptions,
+                createOptions,
+                startPosition,
                 orderingMode,
                 deserializationFailurePolicy,
                 subscriberOptions,
