@@ -276,7 +276,9 @@ public class PubSubSourceBuilder<T> {
                             + " created with deadLetterPolicy(...), but the settings for %s have"
                             + " none. Nacking does not fail the job, so without one a message the"
                             + " schema can never convert is redelivered forever.",
-                    deserializationFailurePolicy,
+                    // The constant name, not toString(): this sentence spells builder calls, while
+                    // toString() is the enum's DDL spelling for the table layer.
+                    deserializationFailurePolicy.name(),
                     entry.getKey());
         }
         return new PubSubStreamingPullSource<>(

@@ -89,7 +89,7 @@ class StartPositionTest {
                 .isNotEqualTo(StartPosition.fromTimestamp(NOW))
                 .isNotEqualTo(StartPosition.latest());
         assertThat(StartPosition.fromTimestamp(EARLIER))
-                .hasToString("StartPosition{mode=TIMESTAMP, timestamp=" + EARLIER + "}");
-        assertThat(StartPosition.latest()).hasToString("StartPosition{mode=LATEST}");
+                .hasToString("StartPosition{mode=timestamp, timestamp=" + EARLIER + "}");
+        assertThat(StartPosition.latest()).hasToString("StartPosition{mode=latest}");
     }
 }

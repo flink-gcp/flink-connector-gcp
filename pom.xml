@@ -142,6 +142,53 @@ limitations under the License.
                 <version>${flink.version}</version>
             </dependency>
 
+            <!-- Table API / SQL. Only flink-table-common is a compile dependency of a
+                 connector: it carries the factory SPI, the ability interfaces and the
+                 RowData data structures. The rest exist so a module can run SQL in a
+                 test — the planner loader is the supported way to get a planner on the
+                 test classpath (the connector parent's enforcer bans a direct
+                 flink-table-planner dependency outside test scope), and the formats are
+                 what a table IT actually encodes with. -->
+            <dependency>
+                <groupId>org.apache.flink</groupId>
+                <artifactId>flink-table-common</artifactId>
+                <version>${flink.version}</version>
+            </dependency>
+            <dependency>
+                <!-- Managed separately from the jar above: a test-jar is a distinct
+                     artifact as far as dependency management is concerned, so it needs
+                     its own entry to inherit a version. -->
+                <groupId>org.apache.flink</groupId>
+                <artifactId>flink-table-common</artifactId>
+                <version>${flink.version}</version>
+                <type>test-jar</type>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.flink</groupId>
+                <artifactId>flink-table-api-java-bridge</artifactId>
+                <version>${flink.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.flink</groupId>
+                <artifactId>flink-table-runtime</artifactId>
+                <version>${flink.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.flink</groupId>
+                <artifactId>flink-table-planner-loader</artifactId>
+                <version>${flink.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.flink</groupId>
+                <artifactId>flink-json</artifactId>
+                <version>${flink.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.flink</groupId>
+                <artifactId>flink-csv</artifactId>
+                <version>${flink.version}</version>
+            </dependency>
+
             <dependency>
                 <groupId>org.apache.avro</groupId>
                 <artifactId>avro</artifactId>

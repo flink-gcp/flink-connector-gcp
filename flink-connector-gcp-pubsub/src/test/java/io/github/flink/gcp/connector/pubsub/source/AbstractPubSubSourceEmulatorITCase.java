@@ -175,6 +175,16 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
         return new PubSubSubscriptionAdmin(emulatorEndpoint());
     }
 
+    /** Returns whether the topic exists. */
+    public static boolean topicExists(String name) {
+        try {
+            topicAdminClient.getTopic(TopicName.of(PROJECT, name));
+            return true;
+        } catch (NotFoundException e) {
+            return false;
+        }
+    }
+
     /** Returns whether the subscription exists. */
     public static boolean subscriptionExists(SubscriptionDestination subscription) {
         try {
@@ -213,10 +223,44 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
     }
 
     /**
+     * Pulls and acknowledges until {@code expected} messages have arrived or the deadline passes,
+     * returning them whole — attributes and ordering key included, which {@link #pullAndAckUntil}
+     * discards.
+     */
+    public static List<PubsubMessage> pullMessagesUntil(
+            SubscriptionDestination subscription, int expected, Duration timeout)
+            throws InterruptedException {
+        List<PubsubMessage> messages = new ArrayList<>();
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (messages.size() < expected && System.nanoTime() < deadline) {
+            List<PubsubMessage> pulled = pullMessagesAndAck(subscription, expected);
+            if (pulled.isEmpty()) {
+                Thread.sleep(100);
+            }
+            messages.addAll(pulled);
+        }
+        return messages;
+    }
+
+    /**
      * Pulls up to {@code maxMessages} from the subscription and acknowledges them, returning their
      * payloads. One pull only — use {@link #pullAndAckUntil} to assert on a known count.
      */
     public static List<String> pullAndAck(SubscriptionDestination subscription, int maxMessages) {
+        List<PubsubMessage> messages = pullMessagesAndAck(subscription, maxMessages);
+        List<String> payloads = new ArrayList<>(messages.size());
+        for (PubsubMessage message : messages) {
+            payloads.add(message.getData().toStringUtf8());
+        }
+        return payloads;
+    }
+
+    /**
+     * Pulls up to {@code maxMessages} from the subscription and acknowledges them, returning the
+     * messages. One pull only — use {@link #pullMessagesUntil} to assert on a known count.
+     */
+    public static List<PubsubMessage> pullMessagesAndAck(
+            SubscriptionDestination subscription, int maxMessages) {
         PullResponse response =
                 subscriptionAdminClient
                         .getStub()
@@ -226,16 +270,16 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
                                         .setSubscription(subscription.toSubscriptionPath())
                                         .setMaxMessages(maxMessages)
                                         .build());
-        List<String> payloads = new ArrayList<>(response.getReceivedMessagesCount());
+        List<PubsubMessage> messages = new ArrayList<>(response.getReceivedMessagesCount());
         List<String> ackIds = new ArrayList<>(response.getReceivedMessagesCount());
         for (ReceivedMessage received : response.getReceivedMessagesList()) {
-            payloads.add(received.getMessage().getData().toStringUtf8());
+            messages.add(received.getMessage());
             ackIds.add(received.getAckId());
         }
         if (!ackIds.isEmpty()) {
             subscriptionAdminClient.acknowledge(subscription.toSubscriptionPath(), ackIds);
         }
-        return payloads;
+        return messages;
     }
 
     /**

@@ -20,6 +20,13 @@ sink and multi-subscription consumption on the source.
 | Startup check; subscription auto-creation; start position (seek); `NACK` failure policy | Implemented ([#81](https://github.com/laughingman7743/flink-connector-gcp/issues/81)) |
 | Acceptance and real-GCP integration tests | Planned ([#82](https://github.com/laughingman7743/flink-connector-gcp/issues/82)) |
 
+| Table API / SQL feature | Status |
+|---|---|
+| `pubsub` table connector; `DynamicTableSink` with `attributes`/`ordering-key` metadata columns | Implemented ([#135](https://github.com/laughingman7743/flink-connector-gcp/issues/135)) |
+| `DynamicTableSource` (scan) with `message-id`/`publish-time`/`attributes`/`ordering-key` metadata columns | Planned ([#136](https://github.com/laughingman7743/flink-connector-gcp/issues/136)) |
+| Subscription auto-creation and start position as table options | Planned ([#137](https://github.com/laughingman7743/flink-connector-gcp/issues/137)) |
+| `flink-sql-connector-gcp-pubsub` shaded uber-jar | Planned ([#138](https://github.com/laughingman7743/flink-connector-gcp/issues/138)) |
+
 ```java
 Sink<MyEvent> sink =
         PubSubSink.<MyEvent>builder()
@@ -37,12 +44,29 @@ Sink<MyEvent> sink =
                 .build();
 ```
 
+```sql
+CREATE TABLE orders (
+  order_id STRING,
+  amount   INT,
+  attrs    MAP<STRING, STRING> METADATA FROM 'attributes',
+  okey     STRING             METADATA FROM 'ordering-key'
+) WITH (
+  'connector' = 'pubsub',
+  'project'   = 'my-project',
+  'topic'     = 'orders',
+  'format'    = 'json',
+  'sink.message-ordering.enabled' = 'true'
+);
+```
+
 ## Documentation
 
 Design, delivery guarantees, publisher options, topic auto-creation, the source's split model and
 ordering semantics, error handling and the testing strategy are documented in
-[docs/content/docs/connectors/datastream/pubsub.md](../docs/content/docs/connectors/datastream/pubsub.md)
-(rendered on the documentation site once it is published).
+[docs/content/docs/connectors/datastream/pubsub.md](../docs/content/docs/connectors/datastream/pubsub.md).
+The Table API / SQL option surface is documented in
+[docs/content/docs/connectors/table/pubsub.md](../docs/content/docs/connectors/table/pubsub.md).
+Both are rendered on the documentation site once it is published.
 
 ## Provenance and attribution
 

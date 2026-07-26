@@ -46,6 +46,16 @@ limitations under the License.
             <artifactId>flink-connector-base</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <!-- The whole Table API surface this module compiles against: the factory SPI,
+                 the DynamicTableSink/Source abilities, ConfigOption, the format interfaces
+                 and the RowData data structures (including JoinedRowData and
+                 ProjectedRowData). Nothing else from the Table stack is needed at compile
+                 time. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Google Cloud (versions managed by the libraries BOM) -->
         <dependency>
@@ -118,6 +128,44 @@ limitations under the License.
             <!-- Rate-limited source spanning checkpoints in the streaming integration test. -->
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-datagen</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- FactoryMocks, for driving the table factory without a planner. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- TableEnvironment for the SQL integration tests. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-api-java-bridge</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The planner behind those TableEnvironments. The loader form is the one the
+                 connector parent's enforcer permits. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-planner-loader</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- RowData runtime types the planner-generated code needs at test runtime. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-runtime</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The format the table tests encode with. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-json</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- A second format, so "any format resolves" is tested rather than assumed. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-csv</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
