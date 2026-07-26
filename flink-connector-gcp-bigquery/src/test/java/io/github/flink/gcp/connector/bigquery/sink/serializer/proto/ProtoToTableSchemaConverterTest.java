@@ -59,6 +59,59 @@ class ProtoToTableSchemaConverterTest {
         assertThat(fields.get("f_rep_ts").getType()).isEqualTo(TableFieldSchema.Type.TIMESTAMP);
     }
 
+    /**
+     * Pins today's mapping across every proto3 presence shape, none of which the converter looks at
+     * — a field is REPEATED, or it is NULLABLE. #124 changes exactly this, so having the current
+     * answer written down is what will make that diff readable.
+     */
+    @Test
+    void mapsEveryProto3PresenceShapeToNullable() {
+        TableSchema schema =
+                ProtoToTableSchemaConverter.convert(
+                        TestProtos.presence(), ProtoSchemaOptions.defaults());
+        Map<String, TableFieldSchema> fields = byName(schema);
+
+        assertThat(fields.get("p_implicit").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("p_implicit_int").getMode())
+                .isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("p_choice_a").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("p_choice_b").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("p_optional").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("p_nested").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("p_rep").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+
+        // The fixture is worth nothing unless protoc really spelled the shapes it claims to, and
+        // the proto3 optional encoding is the one a hand-built descriptor could get wrong in
+        // silence: protobuf-java enforces only that synthetic oneofs come last.
+        Descriptors.Descriptor presence = TestProtos.presence();
+        assertThat(presence.findFieldByName("p_implicit").hasPresence()).isFalse();
+        assertThat(presence.findFieldByName("p_choice_a").hasPresence()).isTrue();
+        assertThat(presence.findFieldByName("p_optional").hasPresence()).isTrue();
+        assertThat(presence.findFieldByName("p_optional").toProto().getProto3Optional()).isTrue();
+        assertThat(presence.findFieldByName("p_nested").hasPresence()).isTrue();
+    }
+
+    /**
+     * The same for proto2, where every singular field has presence — including {@code required},
+     * which is the case a presence check alone gets wrong once #124 derives modes from it.
+     */
+    @Test
+    void mapsProto2RequiredFieldsToNullableToo() {
+        TableSchema schema =
+                ProtoToTableSchemaConverter.convert(
+                        TestProtos.proto2Presence(), ProtoSchemaOptions.defaults());
+        Map<String, TableFieldSchema> fields = byName(schema);
+
+        assertThat(fields.get("q_required").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("q_optional").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("q_rep").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+
+        Descriptors.Descriptor proto2 = TestProtos.proto2Presence();
+        assertThat(proto2.findFieldByName("q_required").isRequired()).isTrue();
+        assertThat(proto2.findFieldByName("q_required").hasPresence()).isTrue();
+        assertThat(proto2.findFieldByName("q_optional").isRequired()).isFalse();
+    }
+
     @Test
     void mapsNestedMessagesToStructs() {
         TableSchema schema =

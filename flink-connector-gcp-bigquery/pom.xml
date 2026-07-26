@@ -154,4 +154,40 @@ limitations under the License.
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <!-- Compiles src/test/protobuf into test-only Java. The fixtures these
+                     tests need — oneof, proto3 optional, proto2 required, the wrapper
+                     types — are a few lines of ordinary proto each and were pages of
+                     DescriptorProtos builder calls before (#132). Test scope only:
+                     nothing in src/main uses protoc, and the generated classes are not
+                     packaged.
+
+                     protoc itself is resolved from Maven Central as
+                     com.google.protobuf:protoc:${protoc.version}:exe:<platform>, so a
+                     fresh checkout builds with nothing installed and CI needs no extra
+                     tool. See the note on protoc.version in the parent pom for which
+                     way the version constraint runs. -->
+                <groupId>io.github.ascopes</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
+                <version>${protobuf-maven-plugin.version}</version>
+                <configuration>
+                    <!-- A bare version number here means "resolve
+                         com.google.protobuf:protoc:<version>:exe:<platform> from the
+                         repository", which is what keeps protoc off PATH. -->
+                    <protoc>${protoc.version}</protoc>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>generate-test-protobuf</id>
+                        <goals>
+                            <goal>generate-test</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

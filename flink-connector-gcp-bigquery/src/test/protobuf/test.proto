@@ -1,0 +1,72 @@
+// Copyright 2026 laughingman7743
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package test;
+
+import "google/protobuf/timestamp.proto";
+
+option java_package = "io.github.flink.gcp.connector.bigquery.testproto";
+option java_multiple_files = true;
+// Without this the outer class would be named `Test` after the file, and
+// surefire's unit-test include is `**/*Test.*`, which `Test.class` matches —
+// a generated descriptor holder would be scanned for tests. Harmless today,
+// but only because it happens to contain none.
+option java_outer_classname = "TestSchemas";
+
+enum Color {
+  COLOR_UNSPECIFIED = 0;
+  RED = 1;
+  BLUE = 2;
+}
+
+message Nested {
+  string s = 1;
+  int64 n = 2;
+}
+
+// The whole type-mapping matrix in one message.
+message AllTypes {
+  int32 f_int32 = 1;
+  int64 f_int64 = 2;
+  uint32 f_uint32 = 3;
+  uint64 f_uint64 = 4;
+  float f_float = 5;
+  double f_double = 6;
+  bool f_bool = 7;
+  string f_string = 8;
+  bytes f_bytes = 9;
+  Color f_enum = 10;
+  google.protobuf.Timestamp f_ts = 11;
+  Nested f_nested = 12;
+  repeated string f_rep_string = 13;
+  map<string, int64> f_map = 14;
+  // Mapped to a JSON column by path in the tests, which is why it is a second
+  // Nested field rather than a distinct type.
+  Nested f_json = 15;
+  repeated google.protobuf.Timestamp f_rep_ts = 16;
+}
+
+// BigQuery cannot represent a recursive message, so the converter rejects one.
+message Recursive {
+  Recursive child = 1;
+}
+
+// CaseCollision is deliberately absent: two fields differing only by case are
+// accepted by protoc but generate Java that does not compile, since `ID` and
+// `id` both yield ID_FIELD_NUMBER. It stays a hand-built descriptor in
+// TestProtos — which is the honest shape of the case anyway, because a
+// descriptor that can carry the collision is one that came from a
+// FileDescriptorSet or was built at runtime, never from a generated class.
