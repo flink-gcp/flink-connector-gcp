@@ -23,6 +23,7 @@ import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
+import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,44 +51,47 @@ class PubSubWriterTest {
 
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
+    /**
+     * No test in this class triggers a topic-creation repair (that is {@link
+     * PubSubWriterAutoCreationTest}), so the schedule is never consumed — a fast one rather than a
+     * copy of the production defaults, which would drift silently when those change.
+     */
+    private static final RetrySchedule UNUSED_RECOVERY = new RetrySchedule(1, 1, 1, 0);
+
     private final FakePublisherFactory factory = new FakePublisherFactory();
     private final FakeTopicAdmin admin = new FakeTopicAdmin();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
 
     /** Routes each record to the topic named by the record itself. */
     private PubSubWriter<String> newWriter() {
-        return newWriter(PubSubPublisherOptions.defaults().getMaxInFlightMessages());
+        return newWriter(PubSubPublisherOptions.defaults());
     }
 
-    private PubSubWriter<String> newWriter(int maxInFlightMessages) {
-        return newWriter(
-                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
-                maxInFlightMessages,
-                PubSubPublisherOptions.defaults().getMaxInFlightBytes());
-    }
-
-    private PubSubWriter<String> newWriter(int maxInFlightMessages, long maxInFlightBytes) {
-        return newWriter(
-                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
-                maxInFlightMessages,
-                maxInFlightBytes);
+    private PubSubWriter<String> newWriter(PubSubPublisherOptions options) {
+        return newWriter(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()), options);
     }
 
     private PubSubWriter<String> newWriter(
-            PubSubSerializationSchema<String> serializer,
-            int maxInFlightMessages,
-            long maxInFlightBytes) {
+            PubSubSerializationSchema<String> serializer, PubSubPublisherOptions options) {
         return new PubSubWriter<>(
                 TestSinkConfigs.forResolver(
                         (element, context) -> TopicDestination.of(PROJECT, element),
                         serializer,
-                        PubSubPublisherOptions.defaults()),
+                        options),
                 factory,
                 admin,
                 mailbox,
-                maxInFlightMessages,
-                maxInFlightBytes,
-                PubSubWriter.recoverySchedule(PubSubPublisherOptions.defaults()));
+                UNUSED_RECOVERY);
+    }
+
+    /** Caps only the message count, leaving the byte cap at its default. */
+    private static PubSubPublisherOptions messageCap(int maxInFlightMessages) {
+        return PubSubPublisherOptions.builder().maxInFlightMessages(maxInFlightMessages).build();
+    }
+
+    /** Caps only the bytes, leaving the message cap at its default 1000. */
+    private static PubSubPublisherOptions byteCap(long maxInFlightBytes) {
+        return PubSubPublisherOptions.builder().maxInFlightBytes(maxInFlightBytes).build();
     }
 
     private static TopicDestination topic(String topic) {
@@ -102,6 +107,27 @@ class PubSubWriterTest {
         return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
                 .serialize(payload)
                 .getSerializedSize();
+    }
+
+    @Test
+    void theRecoveryScheduleIsDerivedFromTheOptionsWithoutJitter() {
+        // The public constructor is the only caller, so nothing else pins this mapping — and the
+        // zero jitter is a deliberate decision that lived only in a comment. Jitter is observable
+        // through backoffMs being deterministic: with a non-zero ratio it randomises per call.
+        RetrySchedule schedule =
+                PubSubWriter.recoverySchedule(
+                        PubSubPublisherOptions.builder()
+                                .recoveryInitialBackoff(Duration.ofMillis(20))
+                                .recoveryMaxBackoff(Duration.ofMillis(50))
+                                .recoveryMaxAttempts(7)
+                                .build());
+
+        assertThat(schedule.maxAttempts()).isEqualTo(7);
+        assertThat(schedule.backoffMs(1)).isEqualTo(20);
+        assertThat(schedule.backoffMs(2)).isEqualTo(40);
+        // Capped, and identical across calls — which is what "no jitter" means here.
+        assertThat(schedule.backoffMs(3)).isEqualTo(50);
+        assertThat(schedule.backoffMs(3)).isEqualTo(50);
     }
 
     @Test
@@ -193,8 +219,7 @@ class PubSubWriterTest {
                         element -> {
                             throw failure;
                         },
-                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
-                        PubSubPublisherOptions.defaults().getMaxInFlightBytes());
+                        PubSubPublisherOptions.defaults());
 
         assertThatThrownBy(() -> writer.write("topic-a", CONTEXT))
                 .isInstanceOf(IOException.class)
@@ -220,51 +245,29 @@ class PubSubWriterTest {
     }
 
     @Test
-    void publicConstructorDerivesInFlightCapFromPublisherOptions() throws Exception {
+    void thePublicConstructorAppliesTheCapsFromPublisherOptions() throws Exception {
+        // The production path (PubSubPublisherSink.createWriter) uses this constructor; every other
+        // test here uses the schedule-injecting one, so this is what pins the delegation. The byte
+        // cap is the binding one deliberately: with both caps binding at the same count, breaking
+        // either would leave the other in charge and the test would not notice.
         PubSubWriter<String> writer =
                 new PubSubWriter<>(
                         TestSinkConfigs.forResolver(
                                 (element, context) -> TopicDestination.of(PROJECT, element),
                                 PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
-                                PubSubPublisherOptions.builder().maxInFlightMessages(2).build()),
+                                byteCap(2L * sizeOf("topic-a"))),
                         factory,
                         admin,
                         mailbox);
         SettableApiFuture<String> first = SettableApiFuture.create();
-        SettableApiFuture<String> second = SettableApiFuture.create();
         factory.enqueueFuture(first);
-        factory.enqueueFuture(second);
-        writer.write("topic-a", CONTEXT);
-        writer.write("topic-a", CONTEXT);
-        assertThat(writer.getInFlightMessages()).isEqualTo(2);
-
-        first.set("message-id");
-        writer.write("topic-a", CONTEXT);
-
-        assertThat(writer.getInFlightMessages()).isEqualTo(2);
-        assertThat(factory.publishers.get(topic("topic-a")).published).hasSize(3);
-    }
-
-    @Test
-    void publicConstructorDerivesInFlightByteCapFromPublisherOptions() throws Exception {
-        PubSubWriter<String> writer =
-                new PubSubWriter<>(
-                        TestSinkConfigs.forResolver(
-                                (element, context) -> TopicDestination.of(PROJECT, element),
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
-                                PubSubPublisherOptions.builder()
-                                        .maxInFlightBytes(2L * sizeOf("topic-a"))
-                                        .build()),
-                        factory,
-                        admin,
-                        mailbox);
-        SettableApiFuture<String> first = SettableApiFuture.create();
-        SettableApiFuture<String> second = SettableApiFuture.create();
-        factory.enqueueFuture(first);
-        factory.enqueueFuture(second);
+        factory.enqueueFuture(SettableApiFuture.create());
         writer.write("topic-a", CONTEXT);
         writer.write("topic-a", CONTEXT);
         assertThat(writer.getInFlightBytes()).isEqualTo(2L * sizeOf("topic-a"));
+        // Well under the default message cap of 1000, so only the byte cap can hold the third
+        // write.
+        assertThat(writer.getInFlightMessages()).isEqualTo(2);
 
         first.set("message-id");
         writer.write("topic-a", CONTEXT);
@@ -279,8 +282,7 @@ class PubSubWriterTest {
                 newWriter(
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
                                 .withOrderingKey(element -> "some-key"),
-                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
-                        PubSubPublisherOptions.defaults().getMaxInFlightBytes());
+                        PubSubPublisherOptions.defaults());
 
         assertThatThrownBy(() -> writer.write("topic-a", CONTEXT))
                 .isInstanceOf(IOException.class)
@@ -292,7 +294,7 @@ class PubSubWriterTest {
 
     @Test
     void writeAtInFlightCapWaitsForCompletionsBeforePublishing() throws Exception {
-        PubSubWriter<String> writer = newWriter(2);
+        PubSubWriter<String> writer = newWriter(messageCap(2));
         SettableApiFuture<String> first = SettableApiFuture.create();
         SettableApiFuture<String> second = SettableApiFuture.create();
         factory.enqueueFuture(first);
@@ -312,7 +314,7 @@ class PubSubWriterTest {
 
     @Test
     void writeAtInFlightCapSurfacesFailedPublishInsteadOfPublishing() throws Exception {
-        PubSubWriter<String> writer = newWriter(1);
+        PubSubWriter<String> writer = newWriter(messageCap(1));
         RuntimeException failure = new RuntimeException("publish exploded");
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(failure));
         writer.write("topic-a", CONTEXT);
@@ -328,10 +330,7 @@ class PubSubWriterTest {
     void writeAtInFlightByteCapWaitsForCompletionsBeforePublishing() throws Exception {
         // The message cap stays at its default 1000, so only the byte cap can trip here — the
         // gap #85 exists to close, since a message may be 10 MiB and the count bounds no memory.
-        PubSubWriter<String> writer =
-                newWriter(
-                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
-                        2L * sizeOf("topic-a"));
+        PubSubWriter<String> writer = newWriter(byteCap(2L * sizeOf("topic-a")));
         SettableApiFuture<String> first = SettableApiFuture.create();
         SettableApiFuture<String> second = SettableApiFuture.create();
         factory.enqueueFuture(first);
@@ -352,10 +351,7 @@ class PubSubWriterTest {
 
     @Test
     void writeAtInFlightByteCapSurfacesFailedPublishInsteadOfPublishing() throws Exception {
-        PubSubWriter<String> writer =
-                newWriter(
-                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
-                        sizeOf("topic-a"));
+        PubSubWriter<String> writer = newWriter(byteCap(sizeOf("topic-a")));
         RuntimeException failure = new RuntimeException("publish exploded");
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(failure));
         writer.write("topic-a", CONTEXT);
@@ -372,10 +368,7 @@ class PubSubWriterTest {
         // Admission is "below the cap", not "does this message fit". A fits-predicate would never
         // admit this message, and since yield() blocks until a mail arrives and no mail can arrive
         // with nothing in flight, the write would hang instead of applying backpressure.
-        PubSubWriter<String> writer =
-                newWriter(
-                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
-                        sizeOf("topic-a") - 1L);
+        PubSubWriter<String> writer = newWriter(byteCap(sizeOf("topic-a") - 1L));
         SettableApiFuture<String> oversized = SettableApiFuture.create();
         factory.enqueueFuture(oversized);
 

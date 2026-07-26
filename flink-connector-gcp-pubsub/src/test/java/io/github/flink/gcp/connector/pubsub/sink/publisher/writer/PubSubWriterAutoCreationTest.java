@@ -80,8 +80,6 @@ class PubSubWriterAutoCreationTest {
                 factory,
                 admin,
                 mailbox,
-                PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
-                PubSubPublisherOptions.defaults().getMaxInFlightBytes(),
                 recoverySchedule);
     }
 
@@ -116,8 +114,6 @@ class PubSubWriterAutoCreationTest {
                 factory,
                 admin,
                 mailbox,
-                PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
-                maxInFlightBytes,
                 recoverySchedule);
     }
 
