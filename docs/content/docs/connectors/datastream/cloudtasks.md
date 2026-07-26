@@ -24,7 +24,7 @@ limitations under the License.
 
 Cloud Tasks sink for Apache Flink, provided by the `flink-connector-gcp-cloudtasks` module.
 
-The sink ships in #24; its emulator integration tests are #25. This page doubles as the design
+The sink ships in [#24](https://github.com/laughingman7743/flink-connector-gcp/issues/24); its emulator integration tests are [#25](https://github.com/laughingman7743/flink-connector-gcp/issues/25). This page doubles as the design
 record: it explains not only what the connector does but why each decision was taken, so the
 reasoning is settled once rather than re-argued per pull request.
 
@@ -71,7 +71,7 @@ Sink<OrderEvent> sink =
   The `httpTarget(...)` entry point plus the `with*` layering above is a convenience over that
   contract, the same relationship `PubSubSerializationSchema.dataOnly(...)` has to a full
   `PubsubMessage`. Returning the proto rather than a narrow record type is also what keeps the
-  Table API layer (#99) cheap: a `RowData` implementation slots in without reworking the sink.
+  Table API layer ([#99](https://github.com/laughingman7743/flink-connector-gcp/issues/99)) cheap: a `RowData` implementation slots in without reworking the sink.
 - `httpTarget(url)` returns a **non-generic stage** whose only method is
   `withBody(SerializationSchema<T>)`. That is what binds the record type, so everything chained
   after it — `withMethod`, `withUrl`, `withHeaders`, `withOidcToken`, `withOAuthToken` — infers `T`
@@ -319,7 +319,7 @@ Terminal failures fail the job. Failures captured by completion callbacks are re
 thread from the next `write()`/`flush()`, and `flush()` awaits every outstanding create, so a
 failure cannot slip past a checkpoint barrier. Only the first terminal failure is kept: once one is
 captured, later failures are not retried either, since the job is going to fail regardless. A
-per-record failure policy — the `FailedRowHandler` analogue — is deferred to #37 along with the
+per-record failure policy — the `FailedRowHandler` analogue — is deferred to [#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37) along with the
 other connectors'.
 
 A failure that carries no gRPC status at all — neither a gax `ApiException` nor a raw
@@ -333,7 +333,7 @@ Bodies should be sized against the smaller number until this is verified empiric
 
 ## Scope
 
-| | v1 (#24) |
+| | v1 ([#24](https://github.com/laughingman7743/flink-connector-gcp/issues/24)) |
 |---|---|
 | Targets | HTTP only; App Engine targets deferred |
 | Authorization | OIDC and OAuth tokens, per-record |
@@ -342,17 +342,17 @@ Bodies should be sized against the smaller number until this is verified empiric
 | Queue management | None — the queue must exist and be configured |
 | Pacing | None in the sink; owned by the queue |
 | Delivery | At-least-once, flush on checkpoint, stateless writer |
-| Failure policy | Fail the job; per-record policy in #37 |
-| Table API / SQL | Deferred to #99 |
+| Failure policy | Fail the job; per-record policy in [#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37) |
+| Table API / SQL | Deferred to [#99](https://github.com/laughingman7743/flink-connector-gcp/issues/99) |
 
 ## Testing
 
-Unit tests ship with the sink (#24) and cover the builder, destination identity, the writer options,
+Unit tests ship with the sink ([#24](https://github.com/laughingman7743/flink-connector-gcp/issues/24)) and cover the builder, destination identity, the writer options,
 the serialization schema and the writer itself against an in-memory fake `TaskCreator`, in the shape
 the Pub/Sub module already uses. The retry paths run on an injected time source rather than real
 sleeps, so backoff behaviour is asserted exactly instead of being waited out.
 
-Integration tests (#25) run against [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator)
+Integration tests ([#25](https://github.com/laughingman7743/flink-connector-gcp/issues/25)) run against [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator)
 (MIT, published as `ghcr.io/aertje/cloud-tasks-emulator`) driven by testcontainers as a
 `GenericContainer` — testcontainers' GCloud module has no Cloud Tasks support, and Google publishes
 no official emulator. They need no cloud credentials and therefore run on every pull request. They

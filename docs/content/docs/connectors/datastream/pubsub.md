@@ -83,7 +83,7 @@ is equivalent to not setting options at all.
 | `maxInFlightBytes` (writer cap) | 64 MiB |
 | `recoveryInitialBackoff` / `recoveryMaxBackoff` / `recoveryMaxAttempts` (topic auto-creation) | 500 ms / 10 s / 10 |
 
-**The SDK publisher's flow controller is deliberately not exposed** (#85, revising #20). In-flight
+**The SDK publisher's flow controller is deliberately not exposed** ([#85](https://github.com/laughingman7743/flink-connector-gcp/issues/85), revising [#20](https://github.com/laughingman7743/flink-connector-gcp/issues/20)). In-flight
 publishes are bounded by the writer instead, along both dimensions — see **Backpressure** below.
 Two properties made the SDK's version unusable as the sink's byte bound:
 
@@ -117,7 +117,7 @@ Pub/Sub, and the writer stores nothing in Flink state — **discarding operator 
 - The Pub/Sub `Publisher` SDK already batches; layering `AsyncSinkWriter`'s
   own batching/buffering on top double-buffers every record. Using AsyncSink idiomatically
   would mean bypassing `Publisher` and driving the raw publish RPC with AsyncSink owning
-  batching, backpressure and retries — discarding exactly the SDK behavior #20 exposes
+  batching, backpressure and retries — discarding exactly the SDK behavior [#20](https://github.com/laughingman7743/flink-connector-gcp/issues/20) exposes
   (`BatchingSettings`/`RetrySettings` map 1:1 onto `Publisher.Builder`).
 - `AsyncSinkWriter` persists unflushed buffers into writer state instead of flushing at the
   barrier, which silently loses those buffers whenever state is dropped. This project
@@ -141,7 +141,7 @@ is copied from it); that writer's infinite republish of non-fatally failed messa
 
 The byte cap exists because the message count bounds no memory on its own: Pub/Sub allows 10 MiB
 per message, so 1,000 in flight is up to ~10 GiB per subtask in the pathological case, and 256 KiB
-payloads already reach 256 MiB (#85). Publish retries hold a message for up to the 600 s total
+payloads already reach 256 MiB ([#85](https://github.com/laughingman7743/flink-connector-gcp/issues/85)). Publish retries hold a message for up to the 600 s total
 retry timeout, so a Pub/Sub partial outage is exactly when the peak is reached.
 
 **Sizing rule:** `maxInFlightBytes` × the sink subtasks sharing a TaskManager must fit that
@@ -199,7 +199,7 @@ Publish order is recovered by sorting the parked batch on a per-writer publish s
 the order the failures are observed in. The SDK cancels queued publishes from its own thread, so a
 cascade can be reported *before* the failure that caused it — anything derived from that
 observation order, including deciding whether to park a cascade based on whether something is
-parked already, is a race (#78). One consequence is worth knowing: since a cancellation is never
+parked already, is a race ([#78](https://github.com/laughingman7743/flink-connector-gcp/issues/78)). One consequence is worth knowing: since a cancellation is never
 itself a root cause, one is always parked for repair under `CREATE_IF_NEEDED` rather than failing
 the job. Under `CREATE_NEVER` nothing is parked at all, so no topic is ever created.
 
@@ -232,7 +232,7 @@ Publish completion callbacks carry their message (one small callback object per 
 released; the callback *is* the success mail, so the success path allocates nothing beyond it.
 Publish retries within the SDK default to its settings and are tunable through the
 publisher options. A per-record failure policy (the `FailedRowHandler` analog of the BigQuery
-module) and a fatal-exception classifier are deferred to #37.
+module) and a fatal-exception classifier are deferred to [#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37).
 
 ## Source
 
@@ -465,7 +465,7 @@ For anything richer than these three, deserialize permissively instead: the sche
 (and emit nothing to drop). Splitting that downstream with a side output puts the dead-letter write
 inside the pipeline, where it is checkpointed and rescalable — which a handler doing its own I/O on
 the task thread would not be. A source-side failure-handler SPI was considered and rejected for that
-reason; cross-connector dead-lettering is #37.
+reason; cross-connector dead-lettering is [#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37).
 
 **Nack on emission failure.** If the failure comes from the output rather than from the schema, the
 message is fine and the job is about to fail anyway, so it is nacked at once for immediate
@@ -721,5 +721,5 @@ library is gated on `subscriptionProperties.messageOrderingEnabled` in the strea
 which the emulator does not set — probing the client library directly against it shows callbacks
 arriving out of order with no Flink involved. The emulator test therefore asserts only that ordered
 mode consumes the subscription from a single subtask without stalling on idle ones; end-to-end
-per-key order is covered by the real-GCP suite (#82).
+per-key order is covered by the real-GCP suite ([#82](https://github.com/laughingman7743/flink-connector-gcp/issues/82)).
 
