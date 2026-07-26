@@ -218,12 +218,46 @@ class PubSubDynamicTableFactoryTest {
     }
 
     @Test
-    void acceptsSeveralSubscriptions() {
+    void splitsTheSubscriptionListOnSemicolons() {
         Map<String, String> options = minimalSourceOptions();
         options.put("subscription", "sub-a;sub-b");
 
-        assertThat(FactoryMocks.createTableSource(SCHEMA, options))
-                .isNotEqualTo(FactoryMocks.createTableSource(SCHEMA, minimalSourceOptions()));
+        // Two factory-built sources can never be compared: each discovers its own format instance
+        // and formats compare by reference. So the list is read back through behaviour instead —
+        // both elements reaching SubscriptionDestination.of is what the neighbouring tests prove,
+        // and this one proves the happy path builds at all rather than treating the whole string
+        // as one subscription name (which would fail on the ';').
+        assertThat(
+                        ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(SourceProvider.class);
+    }
+
+    @Test
+    void rejectsASubscriptionGivenAsAResourcePath() {
+        // The mistake the docs warn about: the `subscription` *column* is a resource name, so it is
+        // natural to write one here too. The option is a bare id.
+        Map<String, String> options = minimalSourceOptions();
+        options.put("subscription", "projects/p/subscriptions/s");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("must not contain '/'");
+    }
+
+    @Test
+    void rejectsAnEmptySubscriptionList() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("subscription", "");
+
+        // An empty value parses to a present-but-empty list, so the factory's own "required to
+        // read" check does not fire; the builder is what catches it.
+        assertThatThrownBy(
+                        () ->
+                                ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
+                                        .getScanRuntimeProvider(
+                                                ScanRuntimeProviderContext.INSTANCE))
+                .hasStackTraceContaining("subscription");
     }
 
     @Test
@@ -239,6 +273,7 @@ class PubSubDynamicTableFactoryTest {
                                 ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
                                         .getScanRuntimeProvider(
                                                 ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(IllegalStateException.class)
                 .hasStackTraceContaining("orderingMode(PER_KEY)");
     }
 
@@ -252,7 +287,9 @@ class PubSubDynamicTableFactoryTest {
                                 ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
                                         .getScanRuntimeProvider(
                                                 ScanRuntimeProviderContext.INSTANCE))
-                .hasStackTraceContaining("sub-a");
+                .isInstanceOf(IllegalStateException.class)
+                // The builder's own sentence, not the value echoed back from the configuration.
+                .hasStackTraceContaining("distinct");
     }
 
     @Test

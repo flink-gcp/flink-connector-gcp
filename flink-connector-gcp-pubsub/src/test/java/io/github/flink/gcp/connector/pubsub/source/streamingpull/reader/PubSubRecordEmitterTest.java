@@ -32,6 +32,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -45,6 +47,36 @@ class PubSubRecordEmitterTest {
     private final TestReaderMetrics testMetrics = new TestReaderMetrics();
     private final PubSubAckTracker ackTracker = new PubSubAckTracker(testMetrics.metrics(), null);
     private final CollectingSourceOutput<String> output = new CollectingSourceOutput<>();
+
+    @Test
+    void handsTheSchemaTheSubscriptionTheSplitCameFrom() throws Exception {
+        // The one call site of the widened SPI. Nothing else observes which subscription reaches
+        // the schema, so a constant or a null here would survive every other unit test.
+        List<SubscriptionDestination> seen = new ArrayList<>();
+        PubSubDeserializationSchema<String> recording =
+                new PubSubDeserializationSchema<String>() {
+
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public void deserialize(
+                            PubsubMessage message,
+                            SubscriptionDestination subscription,
+                            Collector<String> out) {
+                        seen.add(subscription);
+                        out.collect(message.getData().toStringUtf8());
+                    }
+
+                    @Override
+                    public TypeInformation<String> getProducedType() {
+                        return TypeInformation.of(String.class);
+                    }
+                };
+
+        emitter(recording).emitRecord(message("m-1", "a"), output, SPLIT);
+
+        assertThat(seen).containsExactly(SPLIT.getSubscription());
+    }
 
     @Test
     void emitsWithThePublishTimeAsEventTimeAndStagesTheAcknowledgement() throws Exception {

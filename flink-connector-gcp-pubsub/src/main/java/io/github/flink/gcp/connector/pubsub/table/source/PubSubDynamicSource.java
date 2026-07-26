@@ -144,13 +144,15 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
         List<String> formatKeys = new ArrayList<>();
         List<String> connectorKeys = new ArrayList<>();
         for (String key : metadataKeys) {
-            (ReadableMetadata.contains(key) ? connectorKeys : formatKeys).add(key);
+            (ReadableMetadata.find(key) != null ? connectorKeys : formatKeys).add(key);
         }
-        if (!formatKeys.isEmpty()) {
-            // Only when the planner actually selected one of the format's keys.
-            // DecodingFormat.applyReadableMetadata throws by default, and a format that declares
-            // no metadata — every built-in one — never overrides it, so an unconditional call
-            // would break every table that selects any metadata column at all.
+        if (!decodingFormat.listReadableMetadata().isEmpty()) {
+            // Guarded on the format *declaring* metadata rather than on the planner having
+            // selected some, which is how Kafka does it. Both dodge the reason the guard exists —
+            // DecodingFormat.applyReadableMetadata throws by default and no built-in format
+            // overrides it, so an unconditional call breaks every table with any metadata column —
+            // but only this form can shrink the format's key set back, and the ability's javadoc
+            // says the planner may call this more than once.
             decodingFormat.applyReadableMetadata(formatKeys);
         }
         this.metadataKeys = connectorKeys;

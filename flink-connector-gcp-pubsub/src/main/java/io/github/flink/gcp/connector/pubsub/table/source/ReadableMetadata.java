@@ -27,6 +27,8 @@ import com.google.protobuf.Timestamp;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -60,12 +62,24 @@ enum ReadableMetadata {
             "publish-time",
             DataTypes.TIMESTAMP_LTZ(3).notNull(),
             (message, subscription) -> {
+                // An unstamped message yields the epoch rather than null, because the column is
+                // NOT NULL and there is no honest alternative. The service always stamps a
+                // delivered message, so this only shows up for a hand-built one. The record
+                // emitter faces the same case on the *event time* it assigns and answers it
+                // differently — it emits without a timestamp — because there the option exists.
                 Timestamp publishTime = message.getPublishTime();
                 return TimestampData.fromEpochMillis(
                         publishTime.getSeconds() * 1_000L + publishTime.getNanos() / 1_000_000);
             }),
 
-    /** The message attributes; never null, but empty when the message carries none. */
+    /**
+     * The message attributes; never null, but empty when the message carries none.
+     *
+     * <p>Not always only what the publisher wrote: on a subscription with a dead-letter policy the
+     * client library injects {@code googclient_deliveryattempt} before the message reaches the
+     * deserialization schema. Passed through rather than stripped, so nothing the service sends is
+     * hidden.
+     */
     ATTRIBUTES(
             "attributes",
             DataTypes.MAP(DataTypes.STRING().notNull(), DataTypes.STRING().notNull()).notNull(),
@@ -115,8 +129,9 @@ enum ReadableMetadata {
      * <p>Note this does not equal what the {@code subscription} option was written with, which is
      * the bare id resolved against {@code project}.
      *
-     * <p>None of this is on the {@link PubsubMessage}, nor anywhere on the wire — {@code
-     * ReceivedMessage} carries the message, an ack id and a delivery attempt. That is why {@code
+     * <p>The subscription is on neither the {@link PubsubMessage} nor anything the SDK's receiver
+     * callback hands over — the source consumes through {@code Subscriber}, which delivers a
+     * message and an ack handle and never surfaces the streaming-pull response. That is why {@code
      * PubSubDeserializationSchema.deserialize} carries a {@link SubscriptionDestination}.
      */
     SUBSCRIPTION(
@@ -141,10 +156,6 @@ enum ReadableMetadata {
         this.converter = converter;
     }
 
-    String getKey() {
-        return key;
-    }
-
     MetadataConverter getConverter() {
         return converter;
     }
@@ -164,23 +175,24 @@ enum ReadableMetadata {
         return metadata;
     }
 
-    /** Returns whether the given key is one of this connector's. */
-    static boolean contains(String key) {
-        for (ReadableMetadata value : values()) {
-            if (value.key.equals(key)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** Returns the constant with the given metadata key. */
-    static ReadableMetadata of(String key) {
+    /** Returns the constant with the given metadata key, or {@code null} if it is not one. */
+    @Nullable
+    static ReadableMetadata find(String key) {
         for (ReadableMetadata value : values()) {
             if (value.key.equals(key)) {
                 return value;
             }
         }
-        throw new IllegalArgumentException("Unknown Pub/Sub readable metadata key '" + key + "'.");
+        return null;
+    }
+
+    /** Returns the constant with the given metadata key. */
+    static ReadableMetadata of(String key) {
+        ReadableMetadata found = find(key);
+        if (found == null) {
+            throw new IllegalArgumentException(
+                    "Unknown Pub/Sub readable metadata key '" + key + "'.");
+        }
+        return found;
     }
 }

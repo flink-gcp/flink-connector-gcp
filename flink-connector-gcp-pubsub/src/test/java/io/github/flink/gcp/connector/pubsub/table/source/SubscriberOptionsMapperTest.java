@@ -89,19 +89,25 @@ class SubscriberOptionsMapperTest {
                 .isEqualTo(PubSubSubscriberOptions.defaults());
     }
 
+    /** The key of the option the named setter is fed by, so the table above is load-bearing. */
+    private static String key(String setter) {
+        return SETTER_TO_OPTION.get(setter).key();
+    }
+
     @Test
     void mapsEveryOptionOntoItsKnob() {
         Map<String, String> options = new HashMap<>();
-        options.put("scan.flow-control.max-outstanding-element-count", "500");
-        options.put("scan.flow-control.max-outstanding-request-bytes", "7 mb");
-        options.put("scan.parallel-pull-count", "3");
-        options.put("scan.ack.max-extension-period", "30 min");
-        options.put("scan.ack.min-duration-per-extension", "20 s");
-        options.put("scan.ack.max-duration-per-extension", "90 s");
-        options.put("scan.ack.await-confirmation", "4 s");
-        options.put("scan.shutdown-timeout", "8 s");
-        options.put("scan.max-records-per-fetch", "250");
-        options.put("scan.first-checkpoint-timeout", "3 min");
+        options.put(key("flowControlMaxOutstandingElementCount"), "500");
+        options.put(key("flowControlMaxOutstandingRequestBytes"), "7 mb");
+        options.put(key("parallelPullCount"), "3");
+        options.put(key("maxAckExtensionPeriod"), "30 min");
+        options.put(key("minDurationPerAckExtension"), "20 s");
+        options.put(key("maxDurationPerAckExtension"), "90 s");
+        options.put(key("awaitAckConfirmation"), "4 s");
+        options.put(key("shutdownTimeout"), "8 s");
+        options.put(key("maxRecordsPerFetch"), "250");
+        options.put(key("firstCheckpointTimeout"), "3 min");
+        assertThat(options).hasSize(SETTER_TO_OPTION.size());
 
         PubSubSubscriberOptions mapped =
                 SubscriberOptionsMapper.map(Configuration.fromMap(options));

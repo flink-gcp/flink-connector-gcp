@@ -22,6 +22,7 @@ import org.apache.flink.types.Row;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -81,17 +82,24 @@ class PubSubTableRoundTripITCase extends PubSubTableTestBase {
                         tEnv.executeSql(
                                 "SELECT id, amount, message_id, publish_time, attrs, okey, sub"
                                         + " FROM inbound"),
-                        2);
+                        2,
+                        r -> r.getField("id"));
 
         assertThat(rows).hasSize(2);
-        assertThat(rows).extracting(r -> r.getField("id")).containsExactlyInAnyOrder("a", "b");
-        assertThat(rows).extracting(r -> r.getField("amount")).containsExactlyInAnyOrder(1, 2);
+        assertThat(rows).extracting(r -> r.getField("id")).containsAll(Arrays.asList("a", "b"));
+        assertThat(rows).extracting(r -> r.getField("amount")).containsAll(Arrays.asList(1, 2));
         assertThat(rows)
                 .extracting(r -> r.getField("okey"))
-                .containsExactlyInAnyOrder("key-1", "key-2");
+                .containsAll(Arrays.asList("key-1", "key-2"));
+        // Distinct ids, so a metadata row shared across messages would show up here.
+        assertThat(rows).extracting(r -> r.getField("message_id")).doesNotHaveDuplicates();
 
         for (Row row : rows) {
             assertThat((String) row.getField("message_id")).isNotBlank();
+            // Loosely bounded on purpose: the stamp comes from the emulator container's clock and
+            // `before` from the host's, so a tight window would flake on VM drift. That the field
+            // read really is the publish time — and not the wall clock — is pinned exactly in
+            // RowDataDeserializationSchemaTest against a hand-built stamp.
             assertThat((Instant) row.getField("publish_time")).isAfter(before);
             @SuppressWarnings("unchecked")
             Map<String, String> attributes = (Map<String, String>) row.getField("attrs");

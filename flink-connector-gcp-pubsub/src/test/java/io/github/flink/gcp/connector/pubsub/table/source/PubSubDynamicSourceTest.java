@@ -376,6 +376,51 @@ class PubSubDynamicSourceTest {
     }
 
     @Test
+    void theSelectedConnectorKeysArePartOfTheIdentityOnTheirOwn() {
+        // Every other assertion here that reaches the applied keys does so through inequality
+        // after applyReadableMetadata -- which producedDataType alone already satisfies, so a
+        // source storing the wrong keys, or none, would look identical. Same produced type on both
+        // sides isolates the keys.
+        PubSubDynamicSource withMessageId = source();
+        withMessageId.applyReadableMetadata(
+                Collections.singletonList("message-id"), PRODUCED_DATA_TYPE);
+        PubSubDynamicSource withPublishTime = source();
+        withPublishTime.applyReadableMetadata(
+                Collections.singletonList("publish-time"), PRODUCED_DATA_TYPE);
+        PubSubDynamicSource alsoMessageId = source();
+        alsoMessageId.applyReadableMetadata(
+                Collections.singletonList("message-id"), PRODUCED_DATA_TYPE);
+
+        assertThat(withMessageId).isNotEqualTo(withPublishTime).isEqualTo(alsoMessageId);
+    }
+
+    @Test
+    void theProducedTypeIsPartOfTheIdentityOnItsOwn() {
+        PubSubDynamicSource one = source();
+        one.applyReadableMetadata(Collections.singletonList("message-id"), PRODUCED_DATA_TYPE);
+        PubSubDynamicSource other = source();
+        other.applyReadableMetadata(
+                Collections.singletonList("message-id"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("id", DataTypes.STRING()),
+                        DataTypes.FIELD("m", DataTypes.BIGINT())));
+
+        assertThat(one).isNotEqualTo(other);
+    }
+
+    @Test
+    void anUnknownMetadataKeyIsRejected() {
+        PubSubDynamicSource source = source();
+        source.applyReadableMetadata(Collections.singletonList("no-such-key"), PRODUCED_DATA_TYPE);
+
+        // 'no-such-key' is not one of the connector's, so it was routed to the format; asking the
+        // connector for it is a programming error rather than a user one.
+        assertThatThrownBy(() -> ReadableMetadata.of("no-such-key"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("no-such-key");
+    }
+
+    @Test
     void listedMetadataIsUnchangedByApplying() {
         PubSubDynamicSource source = source();
         Map<String, DataType> before = source.listReadableMetadata();

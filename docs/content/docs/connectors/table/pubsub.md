@@ -93,9 +93,9 @@ connector does not forward either.
 |---|---|---|
 | `message-id` | `STRING NOT NULL` | The service-assigned id, unique within the topic |
 | `publish-time` | `TIMESTAMP_LTZ(3) NOT NULL` | When the service received the message. Pub/Sub stamps nanoseconds; this is **truncated** to milliseconds, never rounded up. The natural column for `WATERMARK FOR` |
-| `attributes` | `MAP<STRING, STRING> NOT NULL` | Never null; empty when the message carries none |
+| `attributes` | `MAP<STRING, STRING> NOT NULL` | Never null; empty when the message carries none. On a subscription with a dead-letter policy the client library injects `googclient_deliveryattempt`, which is passed through rather than stripped |
 | `ordering-key` | `STRING` | **`NULL` when the message has no key.** Pub/Sub represents "no key" as the empty string, which would be a wrong SQL value — an unordered message has no key rather than an empty one |
-| `subscription` | `STRING NOT NULL` | The subscription's **resource name**, `projects/<project>/subscriptions/<subscription>` — see below |
+| `subscription` | `STRING NOT NULL` | The subscription's **resource name**, `projects/<project>/subscriptions/<subscription>` — **not** the bare id the `subscription` option takes, so `WHERE subscription = 'orders-sub'` matches nothing. See below for why |
 
 Readable metadata a *format* declares is forwarded, and listed **before** the connector's own so
 that the produced row is a plain concatenation whichever subset is selected. Keys are unprefixed:
@@ -123,8 +123,9 @@ Note this does **not** equal the `subscription` option, which is the bare id res
 `project`. `WHERE subscription = 'orders-sub'` will not match; compare against the resource name, or
 against `'projects/' || 'my-project' || '/subscriptions/orders-sub'`.
 
-None of this metadata is on the wire per message — `ReceivedMessage` carries the message, an ack id
-and a delivery attempt — so the subscription is threaded through
+The subscription is on neither the message nor anything the SDK hands the connector — it consumes
+through `Subscriber`, whose receiver callback delivers a message and an ack handle and never
+surfaces the streaming-pull response. So it is threaded through
 `PubSubDeserializationSchema.deserialize`, which is why that SPI takes a `SubscriptionDestination`.
 
 ## Options
@@ -199,6 +200,12 @@ under the same "absent means default" rule as the sink.
 | `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch` |
 | `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout` |
 | `scan.parallelism` | Integer | the source operator's parallelism |
+
+`scan.parallel-pull-count` and `scan.parallelism` are unrelated despite the names: the first is how
+many gRPC streaming-pull connections one subscriber opens, the second is the Flink operator's
+parallelism. So are `scan.flow-control.*` and the sink's `sink.in-flight.*` — the sink's are the
+writer's own caps, because gax flow control could never be the byte bound an ordered sink needs
+([#85]({{< param BookRepo >}}/issues/85)).
 
 Several subscriptions are separated by `;` — `'subscription' = 'orders-sub;refunds-sub'` — and are
 resolved against `project`, so a subscription in **another project cannot be named**;
@@ -280,13 +287,27 @@ offers a `topic` metadata column, but the table sink writes to the one topic its
 
 ## Testing
 
-Unit tests cover the factory (identifier, required options, format discovery, parallelism), the
-option-to-setter mapping — including a reflective check that every `PubSubPublisherOptions.Builder`
-setter has an option and vice versa — the enum spellings and their round trip through a
-`ConfigOption`, and the row-to-message conversion.
+Unit tests cover the factory in both directions (identifier, required options, format discovery,
+parallelism, and the destination mistakes each direction invites), the option-to-setter mapping —
+including reflective checks that every `PubSubPublisherOptions.Builder` and every
+`PubSubSubscriberOptions.Builder` setter has an option and vice versa, and that every declared
+option is one the factory accepts — the enum spellings and their round trip through a
+`ConfigOption`, the row-to-message conversion and the message-to-rows conversion.
 
-`PubSubTableSinkITCase` runs SQL against the Pub/Sub emulator in a MiniCluster through the
-production factory, with the emulator endpoint passed as the `emulator-endpoint` option rather than
-through a test-only factory: a `CREATE TABLE` with both metadata columns, an `INSERT`, and a raw
-pull asserting the payload, the attributes and the ordering key; plus topic auto-creation,
-`create-never`, and the two plan-time refusals. No cloud credentials are needed.
+Three integration tests run SQL against the Pub/Sub emulator in a MiniCluster through the
+production factory, with the endpoint passed as the `emulator-endpoint` option rather than through
+a test-only factory. No cloud credentials are needed.
+
+- `PubSubTableSinkITCase` — a `CREATE TABLE` with both writable metadata columns, an `INSERT`, and a
+  raw pull asserting the payload, the attributes and the ordering key; plus topic auto-creation,
+  `create-never`, and the two plan-time refusals.
+- `PubSubTableSourceITCase` — reading messages published outside Flink, telling two subscriptions
+  apart through the `subscription` column, and `drop` skipping an undecodable message. The last one
+  publishes under one ordering key with `scan.ordering-mode` = `per-key`, because the SDK's receiver
+  callbacks otherwise arrive out of order and the test would pass under `fail` too.
+- `PubSubTableRoundTripITCase` — what SQL writes is what SQL reads back, over the same topic and
+  subscription, with every metadata column asserted.
+
+A source test's `TableEnvironment` enables checkpointing and disables restarts, and rows are drained
+by **distinct** count with a deadline: the transport is at-least-once, so counting total rows would
+let one redelivery crowd out an original.

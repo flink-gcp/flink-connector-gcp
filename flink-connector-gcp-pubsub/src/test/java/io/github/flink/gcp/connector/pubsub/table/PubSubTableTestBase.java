@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -42,6 +43,11 @@ import java.util.stream.Collectors;
  * factory and its {@code emulator-endpoint} option rather than a test-only factory.
  */
 abstract class PubSubTableTestBase extends AbstractPubSubSourceEmulatorITCase {
+
+    /**
+     * Comfortably inside the inherited 180 s method timeout, so a shortfall fails the assertion.
+     */
+    private static final Duration COLLECT_TIMEOUT = Duration.ofSeconds(60);
 
     static TableEnvironment streamingTableEnvironment() {
         return TableEnvironment.create(EnvironmentSettings.inStreamingMode());
@@ -64,17 +70,33 @@ abstract class PubSubTableTestBase extends AbstractPubSubSourceEmulatorITCase {
     }
 
     /**
-     * Drains {@code count} rows out of an unbounded query and closes the iterator, which cancels
-     * the job.
+     * Drains rows out of an unbounded query until {@code count} <em>distinct</em> ones have arrived
+     * or the deadline passes, then closes the iterator, which cancels the job.
+     *
+     * <p>Distinct, and returning whatever did arrive rather than blocking forever, for the two
+     * reasons the DataStream harness already records: the source is at-least-once, so a redelivery
+     * is legitimate and counting total rows would let one duplicate crowd out an original; and a
+     * shortfall must fail the assertion that asked for the rows, not the class timeout, which would
+     * cost three minutes and say nothing about what did arrive.
+     *
+     * <p>Callers should assert with {@code containsAll} rather than an exact multiset, for the same
+     * reason.
+     *
+     * @param result the query to drain
+     * @param count how many distinct rows to wait for
+     * @param distinguisher what makes a row distinct — normally the field a duplicate would repeat
      */
-    static List<Row> collect(TableResult result, int count) throws Exception {
-        List<Row> rows = new ArrayList<>(count);
+    static List<Row> collect(TableResult result, int count, Function<Row, Object> distinguisher)
+            throws Exception {
+        Map<Object, Row> rows = new LinkedHashMap<>();
+        long deadline = System.nanoTime() + COLLECT_TIMEOUT.toNanos();
         try (CloseableIterator<Row> iterator = result.collect()) {
-            while (rows.size() < count && iterator.hasNext()) {
-                rows.add(iterator.next());
+            while (rows.size() < count && System.nanoTime() < deadline && iterator.hasNext()) {
+                Row row = iterator.next();
+                rows.putIfAbsent(distinguisher.apply(row), row);
             }
         }
-        return rows;
+        return new ArrayList<>(rows.values());
     }
 
     /**
