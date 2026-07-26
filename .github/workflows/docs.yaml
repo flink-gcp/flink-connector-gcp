@@ -42,7 +42,7 @@ jobs:
       # duplication this shape removes (#111). Hugo shells out to go to resolve
       # hugo-book as a Hugo module, and hugo-book needs the extended build for
       # SCSS; install_args names both because mise.toml also pins java, maven,
-      # shellcheck and just, which this job does not need.
+      # shellcheck and just, none of which this job needs *from mise*.
       #
       # mise is safe here in a way it would not be in ci.yaml: there is no
       # setup-java for its java shim to shadow.
@@ -57,6 +57,8 @@ jobs:
         with:
           install_args: hugo-extended go
 
+      # just comes from install-action even though mise is right above it, so
+      # that every workflow installs it the same way. See the note in ci.yaml.
       - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
         with:
           tool: just

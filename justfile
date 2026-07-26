@@ -20,18 +20,22 @@
 # java and maven reach it through `mise x <tool> -- …` themselves, so they
 # behave the same either way.
 #
-# Naming the tool is required, not style. Bare `mise x -- cmd` activates *every*
-# tool in mise.toml and installs whatever is missing — in CI that means the lint
-# job downloading a JDK, Maven and Hugo it has no use for, silently undoing the
-# `install_args` that is supposed to limit it. `mise x shellcheck -- …` installs
-# shellcheck and nothing else (measured, not assumed).
+# Those two forms differ on purpose. Bare `mise x -- cmd` activates *every* tool
+# in mise.toml and installs whatever is missing, which is what the entrypoint
+# wants — `just verify` needs java and maven on PATH and names neither — and is
+# wrong inside a recipe, where it silently undoes the `install_args` limiting a
+# CI job: the lint job first ran that way and downloaded a JDK, Maven, Hugo, Go
+# and a second copy of just before reaching `shellcheck --version`.
+# `mise x shellcheck -- …` installs shellcheck and nothing else (measured
+# against an empty MISE_DATA_DIR, not assumed).
 #
 # Nothing here loads .env: mise.toml already does, with redact = true for the
 # BQ_IT_* credentials, and a second loader would create a path where that
 # redaction does not apply.
 #
-# The comment line directly above a recipe is what `just --list` prints, so it
-# is kept to one line and the reasoning goes in the block above it.
+# `just --list` prints the *last* line of the comment block above a recipe, so
+# that line is a one-line description and the reasoning goes above it. Get this
+# wrong and the listing reads as a column of sentence fragments.
 #
 # No top-level variable is assigned from a shell command: just evaluates those
 # on every invocation, whichever recipe was asked for. A default parameter value
@@ -99,7 +103,10 @@ binary-compat ceiling:
     @echo "Same tests ran on both: $(wc -l < target/floor-tests.txt | tr -d ' ') classes."
 
 # The ceiling defaults to the one the weekly workflow verifies, so the version
-# still has exactly one home.
+# still has exactly one home. That default is long enough that `just --list`
+# wraps this entry onto two lines — a [doc] attribute does not help, the
+# signature itself is what wraps — which is accepted in exchange for the
+# listing showing where the version comes from.
 #
 # Has Flink released a minor newer than the supported ceiling?
 check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.yaml | cut -d"'" -f2`:
@@ -108,11 +115,17 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 # Spotless and checkstyle cover the Java sources inside `just verify`; this is
 # everything else.
 #
-# Lint the shell scripts and the justfile.
+# `just --fmt --check` is deliberately not here. It is an unstable feature, and
+# just's compatibility guarantee covers stable ones only — so a newer just could
+# reformat and fail a pull request that changed nothing, which is exactly the
+# failure mode that makes shellcheck worth pinning. Since `just` is installed
+# unpinned (see ci.yaml), depending on it would reintroduce the problem the pin
+# exists to solve, to check the formatting of a single file.
+#
+# Lint the shell scripts.
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
-    just --fmt --check --unstable
 
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
 # into build failures.

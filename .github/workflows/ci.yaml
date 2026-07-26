@@ -42,7 +42,8 @@ jobs:
       # nothing) has no analogue here: just guarantees no 1.x release breaks an
       # existing justfile or a working command line, and that there will never
       # be a 2.0. mise.toml says `just = "1"`, so both sides mean the same
-      # thing.
+      # thing. The guarantee covers stable features only, which is why nothing
+      # CI runs uses a `--unstable` one — see the lint recipe.
       - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
         with:
           tool: just

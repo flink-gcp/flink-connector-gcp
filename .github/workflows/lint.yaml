@@ -2,8 +2,8 @@ name: Lint
 
 # Linters for the parts of the repository Maven does not cover. Spotless and
 # checkstyle handle the Java sources inside `just verify` (ci.yaml); this is
-# where everything else goes — shellcheck and `just --fmt` today, and
-# `tofu fmt`/`validate` once the OpenTofu persistent layer lands (#5).
+# where everything else goes — shellcheck today, and `tofu fmt`/`validate` once
+# the OpenTofu persistent layer lands (#5).
 #
 # Split out of ci.yaml so it reports in seconds instead of behind the
 # integration tests, and so mise's shims never share a PATH with setup-java's
@@ -15,9 +15,9 @@ on:
       - v1.20
     paths: &lint_paths
       - 'scripts/**'
-      # `just lint` runs `just --fmt --check` over the justfile, so the justfile
-      # is an input to a lint here, not merely the thing that invokes one.
-      - 'justfile'
+      # The justfile is deliberately absent: `just lint` runs no linter over it
+      # (see the note on the recipe), so it is the thing that invokes a lint
+      # here, not an input to one.
       # A shellcheck version bump must run shellcheck. mise.toml is where that
       # version is declared, so leaving it out would skip the lint in exactly
       # the change that most needs it.
@@ -42,7 +42,7 @@ permissions:
 
 jobs:
   lint:
-    name: Lint scripts and the justfile
+    name: Lint shell scripts
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -21,9 +21,10 @@ Requires JDK 17 or 21 and Maven (or use the included wrapper):
 ./mvnw verify
 ```
 
-The other commands this repository is worked with — formatting, linting, the documentation site,
-the binary-compatibility check — are recipes in the `justfile`, which CI calls too. Run
-`just --list` for the index; [mise](https://mise.jdx.dev/) installs the tools they need.
+That build is also `just verify`, which is what CI runs. The commands this repository is worked
+with — the build, formatting, linting, the documentation site, the binary-compatibility check —
+are recipes in the `justfile`, and the workflows call the same ones. Run `just --list` for the
+index; [mise](https://mise.jdx.dev/) installs the tools they need.
 
 `main` supports **Flink 2.2 and 2.3**, mirroring Flink's own policy of supporting the current and
 the previous minor release. Flink 1.20, the 1.x LTS release, is planned on a dedicated branch.

@@ -21,18 +21,26 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - `just verify-flink 2.3.0` / `just verify-module flink-connector-gcp-bigquery` — one Flink
   version, one module. `just verify <maven args>` is the passthrough the weekly matrix uses, and
   passing nothing means the version pinned in the pom
-- `just binary-compat 2.3.0` — the four-command floor-build/ceiling-rerun/fingerprint-diff
-  sequence, whose order is load-bearing. Reproducing a red weekly `binary_compat` is what it is for
-- `just lint` — shellcheck over `scripts/`, plus `just --fmt --check` over the justfile
+- `just binary-compat 2.3.0` — the floor-build/fingerprint/ceiling-rerun/diff sequence, whose
+  order is load-bearing. Reproducing a red weekly `binary_compat` is what it is for
+- `just lint` — shellcheck over `scripts/`. Deliberately does **not** run `just --fmt --check`:
+  that is an unstable feature, excluded from just's compatibility guarantee, so with `just`
+  installed unpinned it could fail an unchanged pull request
 - `just docs` / `just docs-serve` / `just docs-chroma` — build the site as CI does (a deprecation,
   a broken `relref` or a missing shortcode fails the build), preview it, regenerate the chroma
-  palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in `docs/go.mod`
-- Recipe bodies stay one command per line — no embedded `#!/usr/bin/env bash` blocks. Shell logic
-  belongs in `scripts/` where `just lint` reaches it; an embedded block is invisible to shellcheck
+  palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in
+  `docs/go.mod`
+- Recipe bodies stay one command per line — no embedded `#!/usr/bin/env bash` blocks. A single
+  compound command is fine (`binary-compat`'s final `diff … || { …; exit 1; }`); a multi-line
+  script block is not. The boundary is shellcheck coverage: it reads `scripts/`, actionlint reads
+  inline `run:` blocks, and nothing reads inside a recipe
 - **Inside a recipe, always name the tool: `mise x <tool> -- …`, never bare `mise x -- …`.** The
-  bare form activates every tool in `mise.toml` and installs what is missing, so the lint job
-  downloads a JDK, Maven and Hugo it has no use for — silently undoing the `install_args` meant to
-  limit it. Caught in CI on #113, where `mise x -- shellcheck` did exactly that
+  bare form activates every tool in `mise.toml` and installs what is missing, silently undoing the
+  `install_args` meant to limit a CI job. Caught in CI on #113: `mise x -- shellcheck` in the lint
+  job pulled a JDK, Maven, Hugo, Go and a second copy of `just`, shadowing the one
+  `install-action` had already put on `PATH`. The bare form stays right for the *entrypoint*
+  (`mise x -- just <recipe>`), which does want everything — `just verify` needs java and maven and
+  names neither
 - A top-level justfile variable assigned from a shell command runs on **every** `just` invocation,
   whichever recipe was asked for; a default *parameter* value runs only when its own recipe does.
   That is why `check-flink-release`'s ceiling is a parameter default rather than a variable
@@ -136,17 +144,17 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   (`tools/maven/checkstyle.xml`), following Flink's layout. Two consequences: `scripts/` is
   outside the `.github/**` rat exclude, so each file carries the plain Apache-2.0 header, and
   `lint.yaml` shellchecks them — `actionlint` shellchecks inline `run:` blocks, so extracting a
-  script would otherwise drop it out of linting. **A `justfile` recipe is neither**: keep bodies
-  to one command per line, because `just lint` shellchecks `scripts/` and actionlint never sees
-  inside a recipe, so a `#!/usr/bin/env bash` recipe body is shell nobody lints
+  script would otherwise drop it out of linting. **A `justfile` recipe is neither** — nothing
+  lints inside one — so a recipe body holds commands, and anything that grows into a script goes
+  to `scripts/`
 - **A multi-step sequence is named once, in the `justfile`, and CI calls that recipe** (#111) —
   `binary_compat` is one step invoking `just binary-compat` rather than four `run:` blocks, so
   the order the sequence depends on has a single definition and is rerunnable by hand. The cost
   was weighed and accepted: a failure names the `==>` phase inside the recipe rather than a step
   in the GitHub UI
 - **`lint.yaml` is where linters Maven does not run live** (spotless and checkstyle cover the
-  Java sources inside `verify`). Today that is shellcheck and `just --fmt --check`; `tofu
-  fmt`/`validate` belongs here when the OpenTofu persistent layer lands (#5). Separate from
+  Java sources inside `verify`). Today that is shellcheck; `tofu fmt`/`validate` belongs here
+  when the OpenTofu persistent layer lands (#5). Separate from
   `ci.yaml` so results arrive in seconds rather than behind the integration tests, and so mise's
   shims never share a `PATH` with `setup-java`'s JDK. Its `paths` filter must list **every input
   to a lint, not just the linted files** — `mise.toml` is in it because that is where the
@@ -160,7 +168,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   the subset of `mise.toml` the job needs. Otherwise install with `taiki-e/install-action` and no
   version — that is `just`, whose 1.x compatibility guarantee ("there will never be a 2.0") means
   a newer release cannot break an unchanged justfile, so `mise.toml` says `just = "1"` and CI
-  says `tool: just`
+  says `tool: just`. **That guarantee covers stable features only**, so nothing CI runs may
+  depend on a `--unstable` one; `just --fmt --check` is kept out of `just lint` for exactly this
+  reason. Reach for an unstable feature and the tool needs a pin, which means an inline version
+  in every install-action step — six of them today
 - **`jdx/mise-action` must not run in a job that uses `setup-java`.** `mise.toml` pins java and
   maven, so mise's shims land in front of the JDK the job just installed. That is why `lint.yaml`
   is separate from `ci.yaml`, and why `just` comes from `taiki-e/install-action` (one binary on

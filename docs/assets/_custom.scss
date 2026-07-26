@@ -22,9 +22,9 @@
 // (markup.highlight.noClasses = false) and the two palettes below are selected
 // by the same media query the theme uses for its own colours.
 //
-// Both files are verbatim output of:
-//   hugo gen chromastyles --style=github      > assets/_chroma-light.scss
-//   hugo gen chromastyles --style=github-dark > assets/_chroma-dark.scss
+// Both files are verbatim generator output. Regenerate them with
+// `just docs-chroma`, which is where the two style names are set — do not edit
+// them, and do not repeat the style names here.
 // Both imports are scoped: the light palette carries a few selectors the dark
 // one does not (`.chroma .p`, `.chroma .na`), which would otherwise leak
 // near-black punctuation onto the dark background.
