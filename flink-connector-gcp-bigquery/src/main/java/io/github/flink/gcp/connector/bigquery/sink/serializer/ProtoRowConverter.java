@@ -45,8 +45,11 @@ import java.util.List;
  * <p>Value conversions mirror the schema mapping: {@code google.protobuf.Timestamp} fields are
  * flattened to validated epoch microseconds ({@link Timestamps#toMicros}), uint32/fixed32 are
  * widened unsigned, uint64/fixed64 values above {@code Long.MAX_VALUE} are rejected, enum values
- * become their names, JSON-mapped message fields are printed as canonical protobuf JSON, and
- * nested/repeated fields (including maps) are converted recursively.
+ * become their names, JSON-mapped message fields are printed as canonical protobuf JSON while
+ * JSON-mapped string fields are written through verbatim (a {@code JSON} column is carried as a
+ * string, and the value is taken to be JSON text already — the connector does not validate it;
+ * BigQuery rejects malformed JSON as a row-level error), and nested/repeated fields (including
+ * maps) are converted recursively.
  *
  * <p>Instances hold non-serializable descriptors and must be re-created after deserialization (see
  * {@link ProtoMessageSerializer}).
@@ -129,7 +132,12 @@ public final class ProtoRowConverter {
             Descriptors.FieldDescriptor targetField,
             ProtoSchemaOptions options,
             String path) {
-        if (options.isJsonField(sourceField, path)) {
+        // Only message fields need a conversion of their own: a JSON-mapped string already holds
+        // JSON text and its target field is a proto string, so it falls through to Kind.IDENTITY
+        // below. Which fields may be JSON-mapped at all is validated once, in
+        // ProtoToTableSchemaConverter, which always runs first to produce the target descriptor.
+        if (options.isJsonField(sourceField, path)
+                && sourceField.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE) {
             return new FieldPlan(sourceField, targetField, Kind.JSON, path, null, null, null);
         }
         switch (sourceField.getJavaType()) {

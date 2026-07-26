@@ -159,6 +159,58 @@ class ProtoRowConverterTest {
         assertThat(get(row, "f_string")).isEqualTo("only");
     }
 
+    @Test
+    void writesJsonMappedStringsThroughVerbatim() throws Exception {
+        Descriptors.Descriptor source = TestProtos.annotated();
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+        ProtoRowConverter converter = converter(source, options);
+
+        Descriptors.Descriptor payloadType = source.getFile().findMessageTypeByName("APayload");
+        DynamicMessage.Builder builder = DynamicMessage.newBuilder(source);
+        set(builder, source, "a_string", "{\"k\":1}");
+        set(
+                builder,
+                source,
+                "a_message",
+                DynamicMessage.newBuilder(payloadType)
+                        .setField(payloadType.findFieldByName("s"), "printed")
+                        .build());
+        builder.addRepeatedField(source.findFieldByName("a_rep_string"), "[1,2]");
+        builder.addRepeatedField(source.findFieldByName("a_rep_string"), "{}");
+
+        DynamicMessage row = converter.convert(builder.build());
+
+        // A JSON column travels as a string, so a JSON-mapped string needs no conversion at all:
+        // byte-for-byte what the record carried, not a re-serialized form.
+        assertThat(get(row, "a_string")).isEqualTo("{\"k\":1}");
+        assertThat(get(row, "a_rep_string")).isEqualTo(Arrays.asList("[1,2]", "{}"));
+        // A JSON-mapped message is still printed as canonical protobuf JSON.
+        assertThat((String) get(row, "a_message")).contains("\"s\":\"printed\"");
+    }
+
+    @Test
+    void doesNotValidateJsonMappedStrings() throws Exception {
+        // Malformed JSON is BigQuery's to reject as a row-level error; validating every record
+        // client-side would defeat the point of a passthrough. Pins that decision.
+        Descriptors.Descriptor source = TestProtos.annotated();
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+        ProtoRowConverter converter = converter(source, options);
+
+        DynamicMessage row =
+                converter.convert(
+                        DynamicMessage.newBuilder(source)
+                                .setField(source.findFieldByName("a_string"), "not json at all")
+                                .build());
+
+        assertThat(get(row, "a_string")).isEqualTo("not json at all");
+    }
+
     private static ProtoRowConverter converter(
             Descriptors.Descriptor source, ProtoSchemaOptions options) throws Exception {
         Descriptors.Descriptor target =

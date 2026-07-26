@@ -47,7 +47,9 @@ import java.util.Set;
  *       {@code UNKNOWN_ENUM_VALUE_*} placeholder names)
  *   <li>{@code google.protobuf.Timestamp} → {@code TIMESTAMP} (microsecond precision)
  *   <li>message → {@code STRUCT}, recursively; map fields → {@code REPEATED STRUCT<key, value>}
- *   <li>fields selected by {@link ProtoSchemaOptions#isJsonField} → {@code JSON}
+ *   <li>message and string fields selected by {@link ProtoSchemaOptions#isJsonField} → {@code JSON}
+ *       (a message is not expanded into a {@code STRUCT}; a string is taken to be JSON text
+ *       already)
  *   <li>repeated fields → {@code REPEATED} mode, everything else → {@code NULLABLE}. Note that
  *       plain proto3 scalars have no presence: unset values materialize as protobuf defaults (0,
  *       empty string, first enum value), never as NULL
@@ -55,7 +57,8 @@ import java.util.Set;
  *
  * <p>Recursive message types are rejected (BigQuery schemas cannot represent them), as are sibling
  * fields whose names differ only by case (the Storage API lowercases descriptor field names).
- * Configured JSON field paths that match no message field are rejected.
+ * Configured JSON field paths that match no field are rejected; a configured JSON field option
+ * number that matches no field is not, since a message need not have JSON columns.
  */
 @Internal
 public final class ProtoToTableSchemaConverter {
@@ -72,6 +75,23 @@ public final class ProtoToTableSchemaConverter {
      */
     static boolean isTimestampMessage(Descriptors.FieldDescriptor field) {
         return Timestamp.getDescriptor().getFullName().equals(field.getMessageType().getFullName());
+    }
+
+    /**
+     * Returns whether the given field may be mapped to a {@code JSON} column: a non-map message
+     * field, whose canonical protobuf JSON is written, or a string field, whose value is already
+     * JSON text and is written through verbatim. Map fields are excluded because a proto map has no
+     * meaningful JSON column form here — its BigQuery shape is {@code REPEATED STRUCT<key, value>}.
+     */
+    private static boolean isJsonMappable(Descriptors.FieldDescriptor field) {
+        switch (field.getJavaType()) {
+            case MESSAGE:
+                return !field.isMapField();
+            case STRING:
+                return true;
+            default:
+                return false;
+        }
     }
 
     /**
@@ -118,10 +138,11 @@ public final class ProtoToTableSchemaConverter {
 
         if (options.isJsonField(field, path)) {
             Preconditions.checkArgument(
-                    field.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE
-                            && !field.isMapField(),
-                    "JSON mapping requires a (possibly repeated) message field: %s",
-                    path);
+                    isJsonMappable(field),
+                    "JSON mapping requires a (possibly repeated) message or string field, but %s is"
+                            + " %s",
+                    path,
+                    field.isMapField() ? "a map field" : field.getJavaType().toString());
             matchedJsonPaths.add(path);
             return builder.setType(TableFieldSchema.Type.JSON).build();
         }

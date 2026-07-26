@@ -60,10 +60,81 @@ API notes:
   already are protobuf messages: the BigQuery schema is derived from the message descriptor
   (integers → INT64, float/double → DOUBLE, enum → STRING, `google.protobuf.Timestamp` →
   TIMESTAMP in microseconds, nested messages → STRUCT, maps → REPEATED STRUCT<key, value>), and
-  `ProtoSchemaOptions` can map selected message fields to JSON columns.
+  `ProtoSchemaOptions` can map selected fields to [JSON columns](#json-columns).
 - `TableDestination` is pure table identity (`equals`/`hashCode` over project/dataset/table);
   per-destination creation metadata (partitioning, clustering) is supplied through
   `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
+
+## JSON columns
+
+The Storage Write API carries a `JSON` column as a string, so nothing in the *value* path
+distinguishes it from a `STRING` column. What a JSON column needs is a **marker at schema-derivation
+time**, so that the schema the connector derives — used for table auto-creation, the write stream
+and load jobs — says `JSON` rather than `STRING` or `STRUCT`. `ProtoSchemaOptions` carries that
+marker. Two field types can be marked:
+
+| Source field | Written as | Note |
+|---|---|---|
+| message (not a map) | canonical protobuf JSON | the message is *not* expanded into a `STRUCT` |
+| string | the string itself, verbatim | the value is taken to be JSON text already |
+
+There are two ways to designate the fields, and they are unioned — a field marked either way is a
+JSON column.
+
+**By dotted field path**, when the mapping is a property of the pipeline:
+
+```java
+ProtoSchemaOptions.builder()
+        .jsonFieldPath("payload")
+        .jsonFieldPath("event.details")
+        .build();
+```
+
+Paths are the proto declared field names (snake_case, not the JSON names), joined from the root
+message. A path matching no field is rejected when the schema is derived, so a typo fails the job
+rather than silently producing the wrong column type.
+
+**By protobuf field option**, when the mapping is a property of the schema — the better fit for a
+large proto corpus, since it is one line of configuration regardless of how many messages and
+fields are involved, it survives fields being renamed or moved deeper, and it stays correct when one
+job writes several message types to different destinations:
+
+```proto
+// your existing annotations proto — nothing here has to change
+extend google.protobuf.FieldOptions {
+  optional bool json = 50000;
+}
+
+message Event {
+  string payload = 1 [(json) = true];
+}
+```
+
+```java
+ProtoSchemaOptions.builder().jsonFieldOptionNumber(50000).build();
+```
+
+Only the extension number is needed. The option is found whether the descriptor knows it as a
+registered extension (descriptors from generated code) or carries it as an unknown field
+(descriptors built from a serialized `FileDescriptorSet` — protobuf-java does not resolve custom
+options against the descriptor pool, not even for a declared dependency). An existing private
+extension number can therefore be adopted as-is: no change to the protobuf sources, and no
+annotations proto to publish or register.
+
+Two consequences worth knowing:
+
+- **A field option number that matches nothing is not an error**, unlike a path — a message
+  legitimately need not have JSON columns, and the same configuration is meant to serve many message
+  types. A mistyped number therefore yields `STRING`/`STRUCT` columns silently, and under
+  `CreateDisposition.CREATE_IF_NEEDED` that mistake becomes durable in the auto-created table.
+  Check the derived schema with `serializer.getTableSchema(destination)` when adopting a number.
+- **JSON-mapped strings are not validated by the connector.** Parsing every record to pre-empt a
+  malformed value would defeat the point of a passthrough, so an invalid JSON string is rejected by
+  BigQuery as a row-level error and routed through the configured `FailedRowHandler`
+  (see [Error handling](#error-handling)).
+
+Marking a field that is neither a message nor a string — including a proto map, whose BigQuery shape
+is `REPEATED STRUCT<key, value>` — is rejected when the schema is derived, through either mechanism.
 
 ## Table auto-creation
 
