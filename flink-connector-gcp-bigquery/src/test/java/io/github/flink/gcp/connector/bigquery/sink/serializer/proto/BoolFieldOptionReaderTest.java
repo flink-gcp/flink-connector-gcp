@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.serializer;
+package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
 import com.google.api.FieldBehaviorProto;
 import com.google.cloud.bigquery.storage.v1.AppendRowsRequest;

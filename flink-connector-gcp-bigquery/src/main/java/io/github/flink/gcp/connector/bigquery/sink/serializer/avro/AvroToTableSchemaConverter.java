@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.serializer;
+package io.github.flink.gcp.connector.bigquery.sink.serializer.avro;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
@@ -200,10 +200,12 @@ public final class AvroToTableSchemaConverter {
 
     /**
      * Maps an Avro map to the {@code STRUCT<key, value>} BigQuery repeats — the column layout a
-     * proto map already gets from {@link ProtoToTableSchemaConverter}, so both serializers produce
-     * one table shape for the same logical data. Avro map keys are always strings, and an entry
-     * always has one, so the key column is {@code REQUIRED} — unless {@link
-     * AvroSchemaOptions#isAllFieldsNullable} is set, which means every column without exception.
+     * proto map already gets from {@link
+     * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoToTableSchemaConverter
+     * ProtoToTableSchemaConverter}, so both serializers produce one table shape for the same
+     * logical data. Avro map keys are always strings, and an entry always has one, so the key
+     * column is {@code REQUIRED} — unless {@link AvroSchemaOptions#isAllFieldsNullable} is set,
+     * which means every column without exception.
      */
     private static void applyMapEntry(
             TableFieldSchema.Builder builder,
