@@ -86,8 +86,6 @@ class DefaultPublisherFactoryTest {
 
         BatchingSettings batching = DefaultPublisherFactory.batchingSettings(options);
 
-        assertThat(batching.getFlowControlSettings())
-                .isEqualTo(SDK_BATCHING_DEFAULTS.getFlowControlSettings());
         assertThat(batching.getFlowControlSettings().getLimitExceededBehavior())
                 .isEqualTo(FlowController.LimitExceededBehavior.Ignore);
         // The writer cap is not an SDK knob, so it does not shrink the batch thresholds.

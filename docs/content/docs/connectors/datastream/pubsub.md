@@ -114,7 +114,7 @@ Pub/Sub, and the writer stores nothing in Flink state — **discarding operator 
 
 **FLIP-171 `AsyncSinkBase` was evaluated and rejected** for this sink:
 
-- The Pub/Sub `Publisher` SDK already batches and flow-controls; layering `AsyncSinkWriter`'s
+- The Pub/Sub `Publisher` SDK already batches; layering `AsyncSinkWriter`'s
   own batching/buffering on top double-buffers every record. Using AsyncSink idiomatically
   would mean bypassing `Publisher` and driving the raw publish RPC with AsyncSink owning
   batching, backpressure and retries — discarding exactly the SDK behavior #20 exposes
@@ -668,8 +668,9 @@ Unit tests cover the builder/facade, destination identity, the serialization ada
 SDK settings mapping with a drift guard pinned to the SDK's own retry defaults) and the writer
 (fan-out to per-topic publishers, publisher reuse, checkpoint flush draining, async error
 capture, backpressure at both in-flight caps — including that the byte cap trips with the message
-count far below its own, that an oversized message is still admitted rather than hanging, and that
-the repair is exempt — close semantics, the topic auto-creation repair paths, and the
+count far below its own, that an oversized message is still admitted rather than hanging, that a
+zero-byte message still counts as in flight for the drain, and that the repair is exempt — close
+semantics, the topic auto-creation repair paths, and the
 ordering-cascade park/resume/republish paths) against in-memory fakes. The two writer test classes
 carry a class-level timeout: the fake mailbox blocks on an empty queue exactly as the real one
 does, so a broken in-flight predicate hangs rather than fails, and the timeout turns that back

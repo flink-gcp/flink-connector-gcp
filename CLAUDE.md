@@ -254,7 +254,7 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   `io.github.flink.gcp.connector.pubsub.*`
 - **Pub/Sub sink** (#18): Publisher-based flush-on-checkpoint stateless writer; FLIP-171
   `AsyncSinkBase` evaluated and rejected (SDK `Publisher` already batches; AsyncSink persists
-  buffers into writer state). Mailbox-based backpressure with an in-flight cap; writer-owned
+  buffers into writer state). Mailbox-based backpressure with in-flight caps; writer-owned
   per-topic publishers (no JVM-wide cache); publish failures are capture-and-rethrow (the
   Apache connector's infinite republish is deliberately not adopted). Topic auto-creation (#19)
   is reactive — NOT_FOUND publishes are parked and republished after creating the topic via the
@@ -289,7 +289,7 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   flake, and it was *also* the only thing hiding a silent ordering violation, since the parked
   list was appended in observation order too. Consequences to keep: a cancellation is never a root
   cause, so under `CREATE_IF_NEEDED` one is parked unconditionally and a fatal root is caught by
-  the pre-repair drain (`awaitInFlightBelow(1)` → `checkAsyncError`) rather than by classifying
+  the pre-repair drain (`drainInFlight()` → `checkAsyncError`) rather than by classifying
   the cascade; under `CREATE_NEVER` nothing is parked at all, which every parking branch must
   check, since parking is what leads to `createTopic`. Emulator
   support (#21) is a builder option `emulatorEndpoint(host:port)` — plaintext + no credentials

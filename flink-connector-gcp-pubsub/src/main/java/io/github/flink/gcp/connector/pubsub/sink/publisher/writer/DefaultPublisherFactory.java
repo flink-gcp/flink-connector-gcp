@@ -138,31 +138,25 @@ public final class DefaultPublisherFactory implements PublisherFactory {
     }
 
     /**
-     * Builds the SDK batching settings: the SDK defaults overlaid with the set thresholds. The
-     * publisher's flow controller is left at the SDK default — {@code
-     * LimitExceededBehavior.Ignore}, for which {@code Publisher} constructs no controller at all —
-     * because in-flight publishes are bounded by the writer instead, which yields to the task
-     * mailbox rather than blocking the task thread and stays effective with message ordering
-     * enabled.
+     * Builds the SDK batching settings: the SDK defaults overlaid with the set thresholds. The flow
+     * controller is left at the SDK default of {@code LimitExceededBehavior.Ignore}, for which
+     * {@code Publisher} constructs no controller at all — in-flight publishes are bounded by the
+     * writer instead (see {@link PubSubPublisherOptions}).
      */
     @VisibleForTesting
     static BatchingSettings batchingSettings(PubSubPublisherOptions options) {
-        BatchingSettings defaults = Publisher.Builder.getDefaultBatchingSettings();
-        long elementCountThreshold =
-                options.getBatchElementCountThreshold() != null
-                        ? options.getBatchElementCountThreshold()
-                        : defaults.getElementCountThreshold();
-        long requestByteThreshold =
-                options.getBatchRequestByteThreshold() != null
-                        ? options.getBatchRequestByteThreshold()
-                        : defaults.getRequestByteThreshold();
-        BatchingSettings.Builder batching = defaults.toBuilder();
+        BatchingSettings.Builder batching =
+                Publisher.Builder.getDefaultBatchingSettings().toBuilder();
+        if (options.getBatchElementCountThreshold() != null) {
+            batching.setElementCountThreshold(options.getBatchElementCountThreshold());
+        }
+        if (options.getBatchRequestByteThreshold() != null) {
+            batching.setRequestByteThreshold(options.getBatchRequestByteThreshold());
+        }
         if (options.getBatchDelayThreshold() != null) {
             batching.setDelayThresholdDuration(options.getBatchDelayThreshold());
         }
-        return batching.setElementCountThreshold(elementCountThreshold)
-                .setRequestByteThreshold(requestByteThreshold)
-                .build();
+        return batching.build();
     }
 
     /**

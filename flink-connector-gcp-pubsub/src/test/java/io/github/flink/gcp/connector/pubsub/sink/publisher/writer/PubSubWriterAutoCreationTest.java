@@ -142,6 +142,18 @@ class PubSubWriterAutoCreationTest {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Serialized size of the message the ordering serializer produces for this payload. Goes
+     * through the serializer rather than rebuilding the message, so it cannot drift from what the
+     * writer actually measures.
+     */
+    private static int sizeOf(String payload) throws IOException {
+        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                .withOrderingKey(element -> element.split(":")[0])
+                .serialize(payload)
+                .getSerializedSize();
+    }
+
     @Test
     void notFoundPublishCreatesTopicAndRepublishesOnNextWrite() throws Exception {
         PubSubWriter<String> writer = newWriter(CreateDisposition.CREATE_IF_NEEDED);
@@ -199,13 +211,23 @@ class PubSubWriterAutoCreationTest {
         assertThat(writer.getInFlightBytes()).isZero();
     }
 
-    /** Serialized size of the message the ordering serializer produces for this payload. */
-    private static int sizeOf(String payload) {
-        return PubsubMessage.newBuilder()
-                .setData(com.google.protobuf.ByteString.copyFromUtf8(payload))
-                .setOrderingKey(payload.split(":")[0])
-                .build()
-                .getSerializedSize();
+    @Test
+    void aZeroByteMessageStillCountsAsInFlightForTheDrain() throws Exception {
+        // A PubsubMessage with an empty payload serializes to zero bytes, so inFlightBytes == 0
+        // does NOT imply an empty writer. This is why drainInFlight() keys on the message count:
+        // a byte-keyed drain would return immediately here, skip the failure mail, and complete a
+        // checkpoint with the message neither published nor repaired.
+        PubSubWriter<String> writer = newWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+
+        writer.write("", CONTEXT);
+        assertThat(writer.getInFlightMessages()).isEqualTo(1);
+        assertThat(writer.getInFlightBytes()).isZero();
+
+        writer.flush(false);
+
+        assertThat(admin.created).containsExactly(TOPIC);
+        assertThat(publishedPayloads()).containsExactly("", "");
     }
 
     @Test
@@ -384,7 +406,7 @@ class PubSubWriterAutoCreationTest {
     void aRepairWaitsForACascadeThatIsStillInFlight() throws Exception {
         // #78 names a second window — a cascade arriving after the repair emptied the buffer — but
         // the in-flight accounting already closes it. repairPendingTopics opens with
-        // awaitInFlightBelow(1), which waits for inFlightMessages to reach zero, and the count
+        // drainInFlight(), which waits for inFlightMessages to reach zero, and the count
         // drops only inside a failure or completion mail. So every publish's mail has run before a
         // batch is snapshotted. Here the cascade's mail is deliberately left queued when the
         // repair is triggered: without that drain the root is repaired alone and the cascade

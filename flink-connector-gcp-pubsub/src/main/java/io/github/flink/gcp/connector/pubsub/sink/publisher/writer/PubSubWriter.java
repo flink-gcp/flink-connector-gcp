@@ -22,6 +22,7 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.IOUtils;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.ThrowingRunnable;
 
 import com.google.api.core.ApiFuture;
@@ -102,9 +103,11 @@ import java.util.concurrent.CancellationException;
  *       republishing, so the peak is one destination's parked batch.
  * </ul>
  *
- * <p>Messages parked for a repair are not counted by either cap: their failure mail released them
- * before parking. They are the same objects the repair republishes, so this shifts no memory out of
- * view.
+ * <p>Messages parked for a repair are released from both counters by their failure mail, so under a
+ * {@code NOT_FOUND} storm the writer can hold roughly a cap's worth of parked payload alongside a
+ * cap's worth newly admitted: peak retention is ~2× the configured cap, not 1×. It stays bounded
+ * because {@link #write} repairs before admitting the next record, so parked messages cannot
+ * accumulate across writes.
  *
  * <h2>Topic auto-creation</h2>
  *
@@ -216,6 +219,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         this.publisherFactory = publisherFactory;
         this.topicAdmin = topicAdmin;
         this.mailboxExecutor = mailboxExecutor;
+        // Checked here, not only on the options builder: a non-positive cap holds the
+        // awaitCapacity predicate with nothing in flight, and yield() blocks until a mail arrives
+        // — so it is a silent permanent park, not a rejected configuration. Fail where the
+        // invariant is relied on rather than trusting every caller of this constructor.
+        Preconditions.checkArgument(
+                maxInFlightMessages > 0, "maxInFlightMessages must be positive");
+        Preconditions.checkArgument(maxInFlightBytes > 0, "maxInFlightBytes must be positive");
         this.maxInFlightMessages = maxInFlightMessages;
         this.maxInFlightBytes = maxInFlightBytes;
         this.recoverySchedule = recoverySchedule;

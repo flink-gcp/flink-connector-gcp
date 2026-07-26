@@ -67,7 +67,7 @@ upstream license header:
 
 Deviations from upstream, sink side: dynamic per-record topic destinations with a writer-owned
 per-topic publisher map (upstream: single fixed topic with a JVM-wide static publisher cache),
-mailbox-based backpressure with an in-flight cap and async error capture (upstream: unbounded
+mailbox-based backpressure with in-flight message and byte caps and async error capture (upstream: unbounded
 future list), and a hand-written builder following this repository's conventions (upstream:
 AutoValue).
 

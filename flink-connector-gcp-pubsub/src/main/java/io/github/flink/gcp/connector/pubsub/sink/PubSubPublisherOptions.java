@@ -37,11 +37,8 @@ import java.util.Objects;
  * <p>In-flight publishes are bounded by the writer itself, along both dimensions that matter:
  * {@link Builder#maxInFlightMessages(int)} and {@link Builder#maxInFlightBytes(long)}. Both yield
  * to the task mailbox rather than blocking the task thread, and both apply with message ordering
- * enabled. The SDK publisher's own flow controller is deliberately <b>not</b> exposed: it blocks
- * the task thread instead of yielding, and google-cloud-pubsub (1.152.0) leaks a flow-control
- * permit for every publish rejected or cancelled on a paused ordering key, which can eventually
- * hang publishing — so it could never have been the byte bound an ordered sink needs (see the
- * connector documentation).
+ * enabled. The SDK publisher's own flow controller is deliberately <b>not</b> exposed; the
+ * connector documentation records why.
  *
  * <p>Instances are immutable and serializable.
  */
@@ -509,19 +506,21 @@ public final class PubSubPublisherOptions implements Serializable {
         }
 
         /**
-         * Caps the serialized bytes of the writer's unacknowledged publishes, bounding sink memory
-         * where the message count cannot: Pub/Sub allows 10 MiB per message, so {@link
-         * #maxInFlightMessages(int)} alone leaves the retained payload unbounded. Defaults to 64
-         * MiB per writer subtask — with the default message cap of 1000 that binds only above ~64
-         * KiB per message, so small-message pipelines keep today's behavior. Size the value so that
-         * it, times the sink subtasks sharing a TaskManager, fits the heap budget.
+         * Caps the total {@code PubsubMessage.getSerializedSize()} of the writer's unacknowledged
+         * publishes, bounding sink memory where the message count cannot: Pub/Sub allows 10 MiB per
+         * message, so {@link #maxInFlightMessages(int)} alone leaves the retained payload
+         * unbounded. Defaults to 64 MiB per writer subtask — with the default message cap of 1000
+         * that binds only above ~64 KiB per message, so small-message pipelines keep today's
+         * behavior.
+         *
+         * <p><b>Sizing:</b> this value, times the sink subtasks sharing a TaskManager, must fit
+         * that TaskManager's heap budget. The counter measures serialized protobuf size, which
+         * under-counts actual JVM retention — leave headroom.
          *
          * <p>Like the message cap, a write at the cap yields to the task mailbox rather than
          * blocking the task thread, and it applies with {@link #enableMessageOrdering(boolean)}
-         * enabled. Admission is checked <em>before</em> a publish rather than against the message's
-         * own size, so a message larger than the cap is still published when the writer is empty
-         * and the cap is exceeded until it completes; that is what keeps an oversized message from
-         * deadlocking the writer. Pass {@link Long#MAX_VALUE} to bound by message count only.
+         * enabled. A message larger than the cap is still published rather than rejected, exceeding
+         * the cap until it completes. Pass {@link Long#MAX_VALUE} to bound by message count only.
          *
          * @param maxInFlightBytes the in-flight byte cap, positive
          * @return this builder

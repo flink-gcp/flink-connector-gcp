@@ -94,13 +94,13 @@ class PubSubWriterTest {
     }
 
     /**
-     * Serialized size of the message the data-only serializer produces for this payload — the unit
-     * the writer's byte cap is expressed in.
+     * Serialized size of the message this test's serializer produces for the payload — the unit the
+     * writer's byte cap is expressed in. Goes through the serializer rather than rebuilding the
+     * message, so it cannot drift from what the writer actually measures.
      */
-    private static int sizeOf(String payload) {
-        return PubsubMessage.newBuilder()
-                .setData(com.google.protobuf.ByteString.copyFromUtf8(payload))
-                .build()
+    private static int sizeOf(String payload) throws IOException {
+        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                .serialize(payload)
                 .getSerializedSize();
     }
 
