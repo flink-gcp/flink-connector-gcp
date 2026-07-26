@@ -47,9 +47,9 @@ import java.util.Set;
  *       field options, each supplied as the generated extension or as its extension number.
  *       Everything configured is unioned, so a field marked by any of them is a {@code JSON}
  *       column.
- *   <li><b>Nullability.</b> Every column is derived as {@code NULLABLE} by default. {@link
- *       Builder#deriveRequiredColumns()} reads each field's presence instead and derives {@code
- *       REQUIRED} where protobuf cannot express absence.
+ *   <li><b>Nullability.</b> Every non-repeated column is derived as {@code NULLABLE} by default.
+ *       {@link Builder#deriveRequiredColumns()} reads each field's presence instead and derives
+ *       {@code REQUIRED} where protobuf cannot express absence.
  * </ul>
  *
  * <p>Two reasons {@code NULLABLE} is the default. A proto3 field without presence is the spelling
@@ -98,7 +98,10 @@ public final class ProtoSchemaOptions implements Serializable {
         this.deriveRequiredColumns = builder.deriveRequiredColumns;
     }
 
-    /** Returns the default options: no JSON field mapping, and every column {@code NULLABLE}. */
+    /**
+     * Returns the default options: no JSON field mapping, every non-repeated column {@code
+     * NULLABLE}.
+     */
     public static ProtoSchemaOptions defaults() {
         return DEFAULTS;
     }

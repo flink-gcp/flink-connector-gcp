@@ -21,9 +21,12 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.UninitializedMessageException;
 import com.google.protobuf.util.Timestamps;
 import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.PresenceChild;
+import io.github.flink.gcp.connector.bigquery.testproto.Proto2Child;
+import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -302,6 +305,88 @@ class ProtoRowConverterTest {
         assertThat(get(nested, "c_implicit")).isEqualTo("");
         assertThat(nested.hasField(nested.getDescriptorForType().findFieldByName("c_optional")))
                 .isFalse();
+    }
+
+    /**
+     * proto2 {@code required} is the only way this option derives a {@code REQUIRED}
+     * <em>message</em> column — a singular message always has presence, so before the option the
+     * proto path could not produce one at all. Both halves are newly reachable: {@code
+     * BQTableSchemaToProtoDescriptor} emitting a required message field, and the row converter
+     * populating it.
+     */
+    @Test
+    void writesRequiredMessageColumnsDerivedFromProto2Required() throws Exception {
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().deriveRequiredColumns().build();
+        ProtoRowConverter converter = converter(TestProtos.proto2Presence(), options);
+
+        DynamicMessage row =
+                converter.convert(
+                        Proto2Presence.newBuilder()
+                                .setQRequired("here")
+                                .setQRequiredChild(
+                                        Proto2Child.newBuilder().setCOptional("deep").build())
+                                .build());
+
+        Descriptors.Descriptor rowType = row.getDescriptorForType();
+        assertThat(rowType.findFieldByName("q_required").isRequired()).isTrue();
+        assertThat(rowType.findFieldByName("q_required_child").isRequired()).isTrue();
+        assertThat(get(row, "q_required")).isEqualTo("here");
+        DynamicMessage child = (DynamicMessage) get(row, "q_required_child");
+        assertThat(get(child, "c_optional")).isEqualTo("deep");
+        assertThat(row.hasField(rowType.findFieldByName("q_optional_child"))).isFalse();
+    }
+
+    /**
+     * The one failure mode the option introduces, which the option's javadoc and the docs both
+     * promise. A proto2 {@code required} field has presence, so the converter skips it when the
+     * source omits it — and the target column is {@code REQUIRED}, so {@code build()} refuses.
+     * Reaching it needs a source message that violates its own contract, which only {@code
+     * buildPartial} can produce; the writers catch this as a row-level failure and route it to the
+     * configured {@code FailedRowHandler}.
+     */
+    @Test
+    void aMissingProto2RequiredFieldIsARowLevelFailure() throws Exception {
+        Descriptors.Descriptor source = TestProtos.proto2Presence();
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().deriveRequiredColumns().build();
+        ProtoRowConverter converter = converter(source, options);
+        DynamicMessage partial =
+                DynamicMessage.newBuilder(source)
+                        .setField(source.findFieldByName("q_optional"), "only")
+                        .buildPartial();
+
+        assertThatThrownBy(() -> converter.convert(partial))
+                .isInstanceOf(UninitializedMessageException.class)
+                .hasMessageContaining("q_required");
+    }
+
+    /**
+     * A map entry's {@code key} and {@code value} become {@code REQUIRED} under the option, so the
+     * entry has to be populated for {@code build()} to succeed. It is — an entry always
+     * materializes both — but that is a property of protobuf's synthetic map entries rather than of
+     * this code, so it is pinned rather than assumed.
+     */
+    @Test
+    void writesRequiredMapEntryColumns() throws Exception {
+        Descriptors.Descriptor source = TestProtos.allTypes();
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().deriveRequiredColumns().build();
+        ProtoRowConverter converter = converter(source, options);
+        Descriptors.Descriptor entryType = source.findFieldByName("f_map").getMessageType();
+        DynamicMessage.Builder builder = DynamicMessage.newBuilder(source);
+        builder.addRepeatedField(
+                source.findFieldByName("f_map"),
+                DynamicMessage.newBuilder(entryType)
+                        .setField(entryType.findFieldByName("key"), "k")
+                        .setField(entryType.findFieldByName("value"), 5L)
+                        .build());
+
+        DynamicMessage row = converter.convert(builder.build());
+
+        DynamicMessage entry = (DynamicMessage) ((List<?>) get(row, "f_map")).get(0);
+        Descriptors.Descriptor entryRowType = entry.getDescriptorForType();
+        assertThat(entryRowType.findFieldByName("key").isRequired()).isTrue();
+        assertThat(entryRowType.findFieldByName("value").isRequired()).isTrue();
+        assertThat(get(entry, "key")).isEqualTo("k");
+        assertThat(get(entry, "value")).isEqualTo(5L);
     }
 
     /**

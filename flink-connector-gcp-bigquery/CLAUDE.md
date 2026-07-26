@@ -127,8 +127,8 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   under `tr_TR` a column named `ID` becomes the proto field `ıd`, which no `Locale.ROOT` key
   matches. Position is exact here precisely because the descriptor is always derived from the table
   schema this connector just produced. **The `REQUIRED`-by-default decision recorded above is being
-  reversed in #145** — the protobuf mapping is normative and Avro moves to match it; read that entry
-  and #145 before touching Avro nullability
+  reversed in #145** — the protobuf mapping is normative and Avro moves to match it; read the
+  **BigQuery protobuf nullability** entry below and #145 before touching Avro nullability
 - **BigQuery protobuf nullability** (#124 Part 1, with Part 3's `oneof` pin; Part 2 — well-known
   types — still open): `ProtoToTableSchemaConverter` derives the mode from presence only under
   `ProtoSchemaOptions.Builder.deriveRequiredColumns()`, and the default stays **`NULLABLE`**.
@@ -153,8 +153,11 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   is clumsy but is the house style (`isAllowFieldRelaxation()`). Note the polarity is a **deliberate
   deviation** from that connector, whose `allBQFieldsNullable` defaults to `false`. The predicate is
   `isRequired() || !hasPresence()`, **two clauses because a proto2 `required` field has presence
-  and is mandatory all the same** (`hasPresence()` is `!= IMPLICIT`, `isRequired()` is
-  `LEGACY_REQUIRED`, derived independently) — presence alone would map the one unambiguous case to
+  and is mandatory all the same** (`isRequired()` is `fieldPresence == LEGACY_REQUIRED`;
+  `hasPresence()` is the **full** disjunction `isProto3Optional || MESSAGE || GROUP || isExtension()
+  || containingOneof != null || fieldPresence != IMPLICIT`, guarded by `!isRepeated()` — write it out
+  when reasoning, because the `MESSAGE` clause is the one that gets forgotten, and #124 Part 2 is
+  entirely about message types) — presence alone would map the one unambiguous case to
   `NULLABLE`. `isRepeated()` is tested **first**, so a repeated JSON-marked field stays
   `REPEATED JSON`; a mutant reordering those two lines fails seven tests. **A singular `JSON`
   column is never `REQUIRED`**, stated about JSON rather than about presence: `ProtoRowConverter`'s
@@ -163,8 +166,10 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   proto2 → `LABEL_REQUIRED` is enforced by `build()`, so the pair would throw
   `UninitializedMessageException` on every record omitting the field (verified by mutation: the
   mutant reports `missing required fields: a_string, a_twice`). The broader rule loses fidelity
-  only for a proto2 `required` JSON field, which is worth one clause. Map entry `key`/`value` have
-  implicit presence and so become `REQUIRED`, converging with the Avro path. The **value path is
+  only for a proto2 `required` JSON field, which is worth one clause. A **proto3** map entry's `key`/`value` have
+  implicit presence and so become `REQUIRED`, converging with the Avro path — but that scope is
+  load-bearing: a message-valued map keeps a `NULLABLE` value (the `MESSAGE` clause above), and in
+  proto2 both entry fields have explicit presence and stay `NULLABLE`. The **value path is
   unchanged** — the issue body's claim that this writes `0`/`""` where NULL was written before is
   wrong, since `MessagePlan.convert` skips only on `hasPresence() && !hasField()` and a
   presence-less scalar was already written with its default. `SchemaUnifier` needed no change: it

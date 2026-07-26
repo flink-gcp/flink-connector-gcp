@@ -72,32 +72,35 @@ API notes:
 
 ## Column modes
 
-**Every column a serializer derives is `NULLABLE` by default. Constraints are opt-in.** `REPEATED` is
-the one mode derived without being asked for, because a repeated field has no nullable form — a
-BigQuery `REPEATED` column is empty, never NULL.
+**The policy is that a derived column is `NULLABLE`, and a constraint is something you ask for.**
+`REPEATED` is the one mode derived without being asked for, because a repeated field has no nullable
+form — a BigQuery `REPEATED` column is empty, never NULL. Where each serializer stands today:
 
 | Serializer | Default | To constrain |
 |---|---|---|
-| [Protobuf messages](#protobuf-messages) | every column `NULLABLE` | `ProtoSchemaOptions.builder().deriveRequiredColumns()` derives `REQUIRED` from field presence |
-| [Avro records](#avro-records) | **the outlier today**: `REQUIRED` unless the field is a `["null", T]` union | `AvroSchemaOptions.builder().allFieldsNullable()` opts *out*, the inverse polarity. Being aligned on the above in [#145]({{< param BookRepo >}}/issues/145) |
-| [JSON records](#json-records) | taken from the schema you supply | write the mode you want in that schema; an omitted mode is `NULLABLE` |
+| [Protobuf messages](#protobuf-messages) | every column `NULLABLE` — follows the policy | `ProtoSchemaOptions.builder().deriveRequiredColumns()` derives `REQUIRED` from field presence |
+| [Avro records](#avro-records) | **the outlier**: `REQUIRED` unless the field is a `["null", T]` union | `AvroSchemaOptions.builder().allFieldsNullable()` opts *out* — the inverse polarity. Being aligned on the policy in [#145]({{< param BookRepo >}}/issues/145) |
+| [JSON records](#json-records) | whatever the schema you supply says; an omitted mode is `NULLABLE` | write the mode you want in that schema — there is no option, because you already wrote it |
 
-Two reasons the default is the unconstrained one:
+Why the policy runs this way:
 
 - **`REQUIRED` is the mode BigQuery cannot walk back.** It cannot be added to an existing table, so a
-  `REQUIRED` column only ever appears at creation time and relaxing it afterwards is a schema update
+  `REQUIRED` column only ever appears at creation time, and relaxing one afterwards is a schema update
   rather than an edit — needing `allowFieldRelaxation`, which is off by default. Defaulting to the
   irreversible choice is the wrong way round.
-- **A source schema's "mandatory" is often not a statement about mandatoriness.** A plain proto3
-  scalar simply has no way to say "unset"; that is a property of the syntax, not a decision the schema
-  author made. Deriving `REQUIRED` from it would make nearly every scalar column of an auto-created
-  table `REQUIRED` on the strength of a default nobody chose.
+- **The protobuf mapping is the normative one**, and the front ends are expected to match it, because
+  every write path ends in a protobuf row: `STORAGE_API_*` writes protobuf directly, the Avro and
+  JSON serializers convert into one, and File loads stages Avro only incidentally — a staging format,
+  not a contract. So where a front end disagrees, it is the front end that moves.
+- **A source schema's "mandatory" is not always a statement about mandatoriness.** On the protobuf
+  side especially: a plain proto3 scalar has no way to say "unset", which is a property of the syntax
+  rather than a decision its author made, so deriving `REQUIRED` from it would constrain nearly every
+  scalar column of an auto-created table on the strength of a default nobody chose. An Avro
+  `["null", T]` union *is* deliberate, which is why that side reads as the more faithful one taken
+  alone — the reason it still moves is the bullet above, not this one.
 
-**The protobuf mapping is the normative one**, and the others are expected to match it, because every
-write path ends in a protobuf row: `STORAGE_API_*` writes protobuf directly, the Avro and JSON
-serializers convert into one, and File loads stages Avro only incidentally — that is a staging format,
-not a contract. So where a front end disagrees with the protobuf mapping, it is the front end that
-moves.
+There is deliberately no inverse switch anywhere: with `NULLABLE` as the default, "all columns
+nullable" is just not asking for the constraint.
 
 ## Protobuf messages
 
@@ -154,17 +157,22 @@ A plain proto3 scalar cannot say "unset" — an unset value is indistinguishable
 default — so `REQUIRED` is the faithful mode for it, and one the value path already satisfies: such
 a field always reaches the column as `0`, `""` or the first enum value, never as NULL. proto2
 `required` is listed separately because it *has* presence and is mandatory all the same, so a
-presence test alone would map the one unambiguous case to `NULLABLE`. A map entry's `key` and
-`value` have no presence either, so they become `REQUIRED`, which is what the Avro path already
-does for a map key.
+presence test alone would map the one unambiguous case to `NULLABLE`.
 
-Why `NULLABLE` is the default, and why there is deliberately no inverse switch — with this default,
-"all fields nullable" is just *not* calling the opt-in — is in [Column modes](#column-modes).
+A **proto3** map entry's `key` and `value` have implicit presence too, so a `map<string, int64>`
+becomes `REPEATED STRUCT<key REQUIRED, value REQUIRED>` — which is what the Avro path already does
+for a map key. The scope matters: a **message-valued** map follows the message rule instead, so
+`map<string, Foo>` keeps a `NULLABLE` value, and in proto2 both entry fields have explicit presence
+and stay `NULLABLE`.
 
-**A `JSON` column is never `REQUIRED`.** An unset plain proto3 string is left unset rather than
-written as `""` (see [JSON columns](#json-columns)), and "no presence" is precisely the condition
-that would otherwise make the column `REQUIRED` — the two together would fail every record that
-legitimately omits the field.
+Why `NULLABLE` is the default, and why there is no inverse switch, is in
+[Column modes](#column-modes).
+
+**A `JSON` column is never `REQUIRED`.** A JSON-mapped string without presence is left unset when
+empty rather than written as `""` (see [JSON columns](#json-columns)), and "no presence" is precisely
+the condition that would otherwise make the column `REQUIRED` — the two together would fail every
+record that legitimately omits the field. Note this is the one place a presence-less field is *not*
+written: elsewhere it always reaches the column as its type default.
 
 Three things to weigh before enabling it:
 
@@ -175,6 +183,12 @@ Three things to weigh before enabling it:
   configured `FailedRowHandler` (see [Error handling](#error-handling)). Reaching that needs a
   proto2 `required` field missing from a partially built message; every other `REQUIRED` column is
   one the value path always writes.
+- **Turning it back off later is not symmetrical.** Simply removing the option leaves existing rows
+  writable, since a presence-less field still carries its default. What bites is the *field* gaining
+  presence — adding `optional` to it, or moving it into a `oneof`. The derived mode becomes `NULLABLE`
+  and the row then legitimately omits the column, while the table still has it `REQUIRED`, so every
+  such record is a row-level failure until the column is relaxed — which needs
+  `allowFieldRelaxation`, off by default.
 - **BigQuery cannot add a `REQUIRED` column to an existing table**, so a column derived this way is
   only ever created together with the table. See
   [Table auto-creation](#table-auto-creation), [Schema evolution](#schema-evolution) and
@@ -361,9 +375,9 @@ The one thing it changes in the value path is what happens to a record that omit
 schema declares mandatory: by default that is a row-level failure, and under `allFieldsNullable()`
 the column is simply left unset. Records that do carry the value convert identically either way.
 
-**This default is the outlier and is due to change.** Every other serializer derives `NULLABLE` and
-takes a constraint as an opt-in; see [Column modes](#column-modes) for the policy and the reasoning.
-Aligning this side on it — default, polarity and method name — is tracked in
+**This default is the outlier and is due to change.** The policy is that a derived column is
+`NULLABLE` and a constraint is asked for — see [Column modes](#column-modes) for it and the
+reasoning. Aligning this side on it, default and polarity and method name, is tracked in
 [#145]({{< param BookRepo >}}/issues/145).
 
 **JSON columns.** `AvroSchemaOptions.builder().jsonFieldPath("event.payload")` derives a `string`
@@ -398,9 +412,11 @@ either.
 A null array and an empty one are indistinguishable once written: `["null", array<T>]` derives a
 `REPEATED` column, and BigQuery has no NULL array to map the difference onto.
 
-**Cost.** Conversion is one pass over each record, which `ProtoMessageSerializer` on an
-already-protobuf stream does not pay. Where the input format is yours to choose and throughput
-matters, a native protobuf record avoids it.
+**Cost.** Conversion is one pass over each record, reading Avro values and writing protobuf ones.
+Note that a protobuf stream is not free either — `ProtoMessageSerializer` also rebuilds every record
+into the row descriptor's shape, since the Storage Write API wants BigQuery's column layout rather
+than your message's — but it starts from protobuf accessors rather than Avro ones and has no logical
+types to convert.
 
 ## JSON records
 

@@ -162,9 +162,8 @@ class ProtoToTableSchemaConverterTest {
         assertThat(fields.get("q_optional_child").getMode())
                 .isEqualTo(TableFieldSchema.Mode.NULLABLE);
         assertThat(fields.get("q_rep").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
-        // Every proto2 singular field has presence, so presence alone would say NULLABLE here.
-        assertThat(TestProtos.proto2Presence().findFieldByName("q_required").hasPresence())
-                .isTrue();
+        // That q_required has presence — so presence alone would say NULLABLE here — is asserted by
+        // mapsProto2RequiredFieldsToNullableByDefaultToo rather than repeated.
     }
 
     /**

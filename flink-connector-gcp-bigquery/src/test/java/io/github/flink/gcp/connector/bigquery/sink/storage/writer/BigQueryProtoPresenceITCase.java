@@ -18,9 +18,12 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
+import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.Schema;
+import com.google.cloud.bigquery.TableId;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializer;
@@ -34,6 +37,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 /**
  * Integration test for {@link ProtoMessageSerializer} with {@link
@@ -93,6 +97,31 @@ class BigQueryProtoPresenceITCase extends AbstractBigQueryEmulatorITCase {
         } finally {
             writer.close();
         }
+
+        // Read the created table back. Without this the whole test would pass identically with the
+        // option turned off: the value path does not consult it — only schema derivation does — so
+        // the rows below are not evidence about modes at all.
+        Schema created =
+                restClient
+                        .getTable(TableId.of(PROJECT, DATASET, "proto_presence"))
+                        .getDefinition()
+                        .getSchema();
+        assertThat(created).isNotNull();
+        assertThat(created.getFields())
+                .extracting(Field::getName, Field::getMode)
+                .contains(
+                        tuple("p_implicit", Field.Mode.REQUIRED),
+                        tuple("p_implicit_int", Field.Mode.REQUIRED),
+                        tuple("p_optional", Field.Mode.NULLABLE),
+                        tuple("p_choice_a", Field.Mode.NULLABLE),
+                        tuple("p_nested", Field.Mode.NULLABLE),
+                        tuple("p_rep", Field.Mode.REPEATED));
+        // The recursion reaches the server too: a REQUIRED leaf inside a NULLABLE STRUCT.
+        assertThat(created.getFields().get("p_nested").getSubFields())
+                .extracting(Field::getName, Field::getMode)
+                .contains(
+                        tuple("c_implicit", Field.Mode.REQUIRED),
+                        tuple("c_optional", Field.Mode.NULLABLE));
 
         assertThat(rows())
                 .containsExactly(
