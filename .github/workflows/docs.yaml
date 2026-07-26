@@ -41,8 +41,8 @@ jobs:
       # env carrying a "keep in sync with mise.toml" comment, which is the
       # duplication this shape removes (#111). Hugo shells out to go to resolve
       # hugo-book as a Hugo module, and hugo-book needs the extended build for
-      # SCSS; install_args names both because mise.toml also pins java, maven,
-      # shellcheck and just, none of which this job needs *from mise*.
+      # SCSS; install_args names both because mise.toml pins the tools every
+      # recipe needs, and this job wants none of the others *from mise*.
       #
       # mise is safe here in a way it would not be in ci.yaml: there is no
       # setup-java for its java shim to shadow.

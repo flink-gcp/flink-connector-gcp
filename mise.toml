@@ -19,6 +19,13 @@ shellcheck = "0.11.0"
 # taiki-e/install-action, which takes no version file, and "any 1.x" is what
 # both sides then mean.
 just = "1"
+# Pins GitHub Actions to commit SHAs (`just pin-actions`). Declared here because
+# the justfile names it, so `mise install` gives a checkout that can run every
+# recipe — `mise x pinact` worked without this, but silently against whatever
+# release was newest that day. A major-version specifier: nothing in CI runs
+# pinact, so a newer release cannot fail a pull request, and the worst a change
+# in its output does is show up as a diff the author is already reading.
+pinact = "4"
 
 [env]
 # Local, uncommitted settings — e.g. credentials and BQ_IT_* variables for the

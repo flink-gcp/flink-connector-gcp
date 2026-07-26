@@ -48,8 +48,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # install_args limits this to shellcheck — mise.toml also pins java,
-      # maven, hugo, go and just, none of which this job needs from mise. The
+      # install_args limits this to shellcheck — mise.toml pins the tools every
+      # recipe needs, none of which this job wants from mise. The
       # version comes from mise.toml, so it is declared once and is the same
       # locally and here, and not the runner image's copy: that is 0.9.0 on
       # ubuntu-24.04 and 0.11.0 on 26.04, so an ubuntu-latest migration would
