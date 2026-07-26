@@ -77,9 +77,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - The site is built as a CI check only; GitHub Pages publishing waits until the repository is
   public (#6). Each module README links to its docs page by in-repo relative path — those links
   become site URLs when Pages goes live, which is a checklist item on #6
-- A module `CLAUDE.md` (`flink-connector-gcp-<product>/CLAUDE.md`) is the third per-module file and
-  is **Claude-facing only** — never rendered, never linked from the site, so nothing user-facing
-  belongs in it. It carries that module's design decisions and nothing else; behavior and public
+- A module `CLAUDE.md` (`flink-connector-gcp-<product>/CLAUDE.md`) is the third document in this
+  split and the only **Claude-facing** one — never rendered, never linked from the site, so
+  nothing user-facing belongs in it. It carries that module's design decisions and nothing else; behavior and public
   API still go to the docs page, status still goes to the README table. Being unrendered, it keeps
   bare `#N` references under the same exemption the root `CLAUDE.md` already has
 
@@ -269,8 +269,11 @@ packages.
 ## Design decisions (do not silently revisit)
 
 Per-connector design decisions live in module-scoped `CLAUDE.md` files, which load when Claude
-touches a file in that module. **Read the module file before changing behavior or public API
-there** — reasoning about a module without it is how a settled decision gets re-argued:
+touches a file in that module. **Read the module file before changing a module's behavior or
+public API — and before answering a design question about it**, which is the case the on-demand
+load does not cover: a session that never opens a file in the module never sees its decisions, and
+reasoning about a module without them is how a settled decision gets re-argued. The topics below
+are the trigger; they are not a summary, and none of them is safe to answer from:
 
 - `flink-connector-gcp-bigquery/CLAUDE.md` — facade and serializer SPI, error handling (#13),
   FILE_LOADS (#14) and its streaming form (#69), STORAGE_API_EXACTLY_ONCE (#30), per-write-method
