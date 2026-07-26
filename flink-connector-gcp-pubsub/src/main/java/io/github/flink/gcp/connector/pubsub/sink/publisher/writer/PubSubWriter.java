@@ -196,7 +196,12 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             PublisherFactory publisherFactory,
             TopicAdmin topicAdmin,
             MailboxExecutor mailboxExecutor) {
-        this(config, publisherFactory, topicAdmin, mailboxExecutor, recoverySchedule(config));
+        this(
+                config,
+                publisherFactory,
+                topicAdmin,
+                mailboxExecutor,
+                recoverySchedule(config.getPublisherOptions()));
     }
 
     /**
@@ -232,8 +237,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     }
 
     /** Maps the public recovery knobs onto the internal schedule (jitter deliberately zero). */
-    private static RetrySchedule recoverySchedule(PubSubSinkConfig<?> config) {
-        PubSubPublisherOptions options = config.getPublisherOptions();
+    @VisibleForTesting
+    static RetrySchedule recoverySchedule(PubSubPublisherOptions options) {
         return new RetrySchedule(
                 options.getRecoveryInitialBackoff().toMillis(),
                 options.getRecoveryMaxBackoff().toMillis(),

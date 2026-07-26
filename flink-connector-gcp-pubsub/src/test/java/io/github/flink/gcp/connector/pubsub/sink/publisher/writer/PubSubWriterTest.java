@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,16 +51,16 @@ class PubSubWriterTest {
 
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
-    private final FakePublisherFactory factory = new FakePublisherFactory();
-    private final FakeTopicAdmin admin = new FakeTopicAdmin();
-    private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
-
     /**
      * No test in this class triggers a topic-creation repair (that is {@link
      * PubSubWriterAutoCreationTest}), so the schedule is never consumed — a fast one rather than a
      * copy of the production defaults, which would drift silently when those change.
      */
     private static final RetrySchedule UNUSED_RECOVERY = new RetrySchedule(1, 1, 1, 0);
+
+    private final FakePublisherFactory factory = new FakePublisherFactory();
+    private final FakeTopicAdmin admin = new FakeTopicAdmin();
+    private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
 
     /** Routes each record to the topic named by the record itself. */
     private PubSubWriter<String> newWriter() {
@@ -106,6 +107,27 @@ class PubSubWriterTest {
         return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
                 .serialize(payload)
                 .getSerializedSize();
+    }
+
+    @Test
+    void theRecoveryScheduleIsDerivedFromTheOptionsWithoutJitter() {
+        // The public constructor is the only caller, so nothing else pins this mapping — and the
+        // zero jitter is a deliberate decision that lived only in a comment. Jitter is observable
+        // through backoffMs being deterministic: with a non-zero ratio it randomises per call.
+        RetrySchedule schedule =
+                PubSubWriter.recoverySchedule(
+                        PubSubPublisherOptions.builder()
+                                .recoveryInitialBackoff(Duration.ofMillis(20))
+                                .recoveryMaxBackoff(Duration.ofMillis(50))
+                                .recoveryMaxAttempts(7)
+                                .build());
+
+        assertThat(schedule.maxAttempts()).isEqualTo(7);
+        assertThat(schedule.backoffMs(1)).isEqualTo(20);
+        assertThat(schedule.backoffMs(2)).isEqualTo(40);
+        // Capped, and identical across calls — which is what "no jitter" means here.
+        assertThat(schedule.backoffMs(3)).isEqualTo(50);
+        assertThat(schedule.backoffMs(3)).isEqualTo(50);
     }
 
     @Test
