@@ -22,7 +22,6 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.Descriptors;
-import com.google.protobuf.Timestamp;
 
 import java.util.HashSet;
 import java.util.Locale;
@@ -45,11 +44,26 @@ import java.util.Set;
  *       BYTES}
  *   <li>enum → {@code STRING} (the enum value name; unknown enum numbers surface as protobuf's
  *       {@code UNKNOWN_ENUM_VALUE_*} placeholder names)
- *   <li>{@code google.protobuf.Timestamp} → {@code TIMESTAMP} (microsecond precision)
+ *   <li>{@code google.protobuf.Timestamp} → {@code TIMESTAMP} (microsecond precision; anything
+ *       finer is truncated)
+ *   <li>{@code google.protobuf.Duration} → {@code INT64} microseconds (likewise truncated; a
+ *       duration outside protobuf's valid range is a row-level failure)
+ *   <li>{@code google.protobuf.FieldMask} → {@code STRING}, its paths joined by commas exactly as
+ *       declared — not lowerCamelCased, as protobuf's canonical JSON form would
+ *   <li>the nine {@code google.protobuf.*Value} wrappers → the wrapped scalar's type. A wrapper
+ *       exists precisely so that "unset" is distinguishable from {@code 0} or {@code ""}, and that
+ *       distinction reaches the column: being a message field it has presence, so it stays {@code
+ *       NULLABLE} even when required columns are derived
+ *   <li>{@code google.protobuf.Struct}, {@code Value} and {@code ListValue} → {@code JSON}, with no
+ *       configuration. They carry arbitrary JSON and are mutually recursive, so this is the only
+ *       shape a BigQuery schema can represent them in at all
+ *   <li>{@code google.protobuf.Any} → {@code STRUCT<type_url, value>}, deliberately not unpacked:
+ *       the payload cannot be expanded without the descriptor its type URL names
  *   <li>message → {@code STRUCT}, recursively; map fields → {@code REPEATED STRUCT<key, value>}
  *   <li>message and string fields selected by {@link ProtoSchemaOptions#isJsonField} → {@code JSON}
  *       (a message is not expanded into a {@code STRUCT}; a string is taken to be JSON text
- *       already)
+ *       already). This selection wins over every well-known-type mapping above, so a marked {@code
+ *       Timestamp} or wrapper field is printed as canonical protobuf JSON rather than flattened
  * </ul>
  *
  * <p>Column modes: repeated fields (including maps) are {@code REPEATED}, and everything else is
@@ -61,26 +75,16 @@ import java.util.Set;
  * value), never as NULL.
  *
  * <p>Recursive message types are rejected (BigQuery schemas cannot represent them), as are sibling
- * fields whose names differ only by case (the Storage API lowercases descriptor field names).
- * Configured JSON field paths that match no field are rejected; a configured JSON field option
- * number that matches no field is not, since a message need not have JSON columns.
+ * fields whose names differ only by case (the Storage API lowercases descriptor field names) and
+ * messages with no fields at all, {@code google.protobuf.Empty} among them (a BigQuery {@code
+ * STRUCT} must have at least one column). Configured JSON field paths that match no field are
+ * rejected; a configured JSON field option number that matches no field is not, since a message
+ * need not have JSON columns.
  */
 @Internal
 public final class ProtoToTableSchemaConverter {
 
     private ProtoToTableSchemaConverter() {}
-
-    /**
-     * Returns whether the given message field is a {@code google.protobuf.Timestamp}, mapped to a
-     * BigQuery {@code TIMESTAMP} column. Shared with the row conversion planner so schema and value
-     * conversion cannot disagree.
-     *
-     * @param field a message-typed field
-     * @return whether the field maps to TIMESTAMP
-     */
-    static boolean isTimestampMessage(Descriptors.FieldDescriptor field) {
-        return Timestamp.getDescriptor().getFullName().equals(field.getMessageType().getFullName());
-    }
 
     /**
      * Returns whether the given field may be mapped to a {@code JSON} column: a non-map message
@@ -136,7 +140,15 @@ public final class ProtoToTableSchemaConverter {
         // Asked once and reused: this is the single JSON decision point, it walks the descriptor's
         // file-dependency graph for every configured option, and it decides the mode as well as
         // the type.
-        boolean jsonColumn = options.isJsonField(field, path);
+        //
+        // Struct/Value/ListValue join it here rather than in convertMessageField below, and that
+        // placement does three things with no second branch: modeOf's "a singular JSON column is
+        // never REQUIRED" rule covers them as written; the recursion guard is never reached, which
+        // is the whole point, since they are mutually recursive; and an explicitly configured JSON
+        // marking keeps winning over every well-known-type mapping, because this branch returns
+        // before the switch below ever asks what the message type is.
+        boolean jsonColumn =
+                options.isJsonField(field, path) || ProtoWellKnownType.of(field).isJsonMapped();
         TableFieldSchema.Builder builder =
                 TableFieldSchema.newBuilder()
                         .setName(field.getName())
@@ -153,33 +165,44 @@ public final class ProtoToTableSchemaConverter {
             return builder.setType(TableFieldSchema.Type.JSON).build();
         }
 
+        if (field.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE) {
+            convertMessageField(field, path, options, ancestors, matchedJsonPaths, builder);
+        } else {
+            builder.setType(scalarType(field, path));
+        }
+        return builder.build();
+    }
+
+    /**
+     * Returns the BigQuery type of a non-message field.
+     *
+     * <p>Shared with the wrapper mapping, which asks it about the wrapper's {@code value} sub-field
+     * — so {@code Int64Value} and a bare {@code int64} cannot map to different column types.
+     *
+     * @param field a field that is not a message, or the {@code value} field of a wrapper
+     * @param path the dotted path used in the error message
+     * @return the BigQuery column type
+     */
+    private static TableFieldSchema.Type scalarType(
+            Descriptors.FieldDescriptor field, String path) {
         switch (field.getJavaType()) {
             case INT:
             case LONG:
-                builder.setType(TableFieldSchema.Type.INT64);
-                break;
+                return TableFieldSchema.Type.INT64;
             case FLOAT:
             case DOUBLE:
-                builder.setType(TableFieldSchema.Type.DOUBLE);
-                break;
+                return TableFieldSchema.Type.DOUBLE;
             case BOOLEAN:
-                builder.setType(TableFieldSchema.Type.BOOL);
-                break;
+                return TableFieldSchema.Type.BOOL;
             case STRING:
             case ENUM:
-                builder.setType(TableFieldSchema.Type.STRING);
-                break;
+                return TableFieldSchema.Type.STRING;
             case BYTE_STRING:
-                builder.setType(TableFieldSchema.Type.BYTES);
-                break;
-            case MESSAGE:
-                convertMessageField(field, path, options, ancestors, matchedJsonPaths, builder);
-                break;
+                return TableFieldSchema.Type.BYTES;
             default:
                 throw new IllegalArgumentException(
                         "Unsupported protobuf type " + field.getType() + " for field " + path);
         }
-        return builder.build();
     }
 
     /**
@@ -197,6 +220,11 @@ public final class ProtoToTableSchemaConverter {
      * fails {@code build()} for every record that legitimately omits it. The broader rule also
      * covers a proto2 {@code required} JSON field, where {@code REQUIRED} would in fact be correct;
      * one clause is worth more than fidelity in a combination that exotic.
+     *
+     * <p>Well-known types need no clause here. A wrapper, a {@code Duration} and a {@code
+     * FieldMask} are message fields, so they have presence and stay {@code NULLABLE} — which for a
+     * wrapper is the whole point of the type. The one exception is deliberate: a proto2 {@code
+     * required} wrapper derives {@code REQUIRED}, and it is mandatory, so that is faithful.
      */
     private static TableFieldSchema.Mode modeOf(
             Descriptors.FieldDescriptor field, ProtoSchemaOptions options, boolean jsonColumn) {
@@ -221,10 +249,45 @@ public final class ProtoToTableSchemaConverter {
             Set<String> matchedJsonPaths,
             TableFieldSchema.Builder builder) {
         Descriptors.Descriptor messageType = field.getMessageType();
-        if (isTimestampMessage(field)) {
-            builder.setType(TableFieldSchema.Type.TIMESTAMP);
-            return;
+        // Before the recursion guard on purpose, and not to be moved below it: a recognised
+        // well-known type is never expanded, so it can neither recurse nor collide by case, while
+        // moving this down would reject a message carrying two Timestamps on one path.
+        switch (ProtoWellKnownType.of(field)) {
+            case TIMESTAMP:
+                builder.setType(TableFieldSchema.Type.TIMESTAMP);
+                return;
+            case DURATION:
+                builder.setType(TableFieldSchema.Type.INT64);
+                return;
+            case FIELD_MASK:
+                builder.setType(TableFieldSchema.Type.STRING);
+                return;
+            case WRAPPER:
+                // The wrapped scalar decides the column type, through the same function a bare
+                // scalar of that type goes through, so the two cannot drift.
+                builder.setType(scalarType(messageType.findFieldByName("value"), path));
+                return;
+            case JSON:
+                throw new IllegalStateException(
+                        "Struct, Value and ListValue are mapped to JSON in convertField and must"
+                                + " never reach message expansion, but "
+                                + path
+                                + " did");
+            case NONE:
+            default:
+                break;
         }
+        // A sibling of the recursion rejection below, and stated about columns rather than about
+        // google.protobuf.Empty, because any zero-field message reaches it. Measured: the BigQuery
+        // client library rejects such a column itself ("The RECORD field must have at least one
+        // sub-field"), before a request is ever sent, so the table cannot be created whatever the
+        // service would say — and that message names no field.
+        Preconditions.checkArgument(
+                !messageType.getFields().isEmpty(),
+                "BigQuery cannot represent a STRUCT with no columns, but %s has no fields (field"
+                        + " %s)",
+                messageType.getFullName(),
+                path);
         Preconditions.checkArgument(
                 !ancestors.contains(messageType.getFullName()),
                 "Recursive message types are not supported by BigQuery: %s (field %s)",

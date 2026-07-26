@@ -133,8 +133,54 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   under `tr_TR` a column named `ID` becomes the proto field `ıd`, which no `Locale.ROOT` key
   matches. Position is exact here precisely because the descriptor is always derived from the table
   schema this connector just produced
-- **BigQuery protobuf nullability** (#124 Part 1, with Part 3's `oneof` pin; Part 2 — well-known
-  types — still open): `ProtoToTableSchemaConverter` derives the mode from presence only under
+- **BigQuery protobuf well-known types** (#147, which is #124 Part 2): recognition lives in a
+  package-private `ProtoWellKnownType` enum keyed on **full name** — a descriptor built from a
+  serialized `FileDescriptorSet` carries its own copy of `wrappers.proto`, so identity comparison
+  would miss every one — replacing `ProtoToTableSchemaConverter.isTimestampMessage`, which was a
+  boolean only because n was 1. **Six constants, not sixteen**: the nine wrappers share one, because
+  both the column type and the conversion kind come from the wrapper's `value` sub-field through the
+  *same* `scalarType`/`scalarKind` functions a bare scalar goes through, so a `UInt64Value` inherits
+  the `uint64` range check with no second table to keep in sync. Mappings: wrappers → the wrapped
+  scalar; `Struct`/`Value`/`ListValue` → `JSON`; `Duration` → `INT64` micros; `FieldMask` → `STRING`
+  of comma-joined **verbatim** paths (`FieldMaskUtil.toString`, not `toJsonString`, which
+  lowerCamelCases them); `Any` → **nothing**, it stays `STRUCT<type_url, value>` because unpacking
+  needs a `TypeRegistry` the connector cannot obtain — and marking it JSON is not a workaround, since
+  the printer then fails per record. `INTERVAL` for `Duration` was rejected because
+  `TableSchemaToAvroConverter` rejects it and would break the FILE_LOADS round trip (#126), and
+  `REPEATED STRING` for `FieldMask` because a *repeated* `FieldMask` cannot be flattened, so singular
+  and repeated would map differently.
+  Two placements are load-bearing. Auto-JSON is folded into the **existing `jsonColumn` flag** in
+  `convertField` rather than added as a branch in `convertMessageField`: that way `modeOf`'s "a
+  singular JSON column is never REQUIRED" rule covers it with no new clause, the recursion guard is
+  never reached (these types are mutually recursive and were rejected outright before), and **a
+  configured JSON marking keeps winning** — the branch returns before the message type is inspected.
+  The identical expression appears in `ProtoRowConverter.buildFieldPlan` and must stay identical: an
+  auto-JSON column's target field is a *string*, so a plan that disagreed would ask it for its
+  message type and throw at construction. And the WKT switch sits **before** the recursion guard, so
+  two `Timestamp`s on one path are not a rejection. Modes need no new rule at all: these are message
+  fields, so they have presence. The one deviation is deliberate — a proto2 `required` wrapper
+  derives `REQUIRED`, and it is mandatory, so that is faithful.
+  An out-of-range `Duration` is a **row-level** failure like uint64 overflow, rewrapped so the
+  message names the field (protobuf's own names none); sub-microsecond truncation is silent, as it
+  already is for `Timestamp`. `FieldPlan` moved to named static factories rather than a ninth and
+  tenth constructor parameter — state grew by exactly two fields, since `Timestamp` and `Duration`
+  share `seconds`/`nanos`, and a wrapper's `value` and a `FieldMask`'s `paths` are both "the
+  message's only field". Only `Duration`/`FieldMask` need the `instanceof`-or-rebuild shape
+  `toEpochMicros` established, because only they *construct* a well-known type to hand to
+  `Durations`/`FieldMaskUtil`; a wrapper does not, so one `getField` serves a generated instance and
+  a `DynamicMessage` alike.
+  Two things **measured**, not assumed. A zero-field message (`google.protobuf.Empty`) is rejected at
+  schema derivation by a check stated about *columns* rather than about `Empty`, so it catches any
+  user-written empty message too: the BigQuery client library rejects such a column itself ("The
+  RECORD field must have at least one sub-field") before a request is ever sent, with a message
+  naming no field. And `REPEATED JSON` works on **real** BigQuery but not on the goccy emulator,
+  which rejects every insert into a table carrying an `ARRAY<JSON>` column, empty or populated —
+  hence the fixture's `WellKnownSingular` for the emulator write test and
+  `BigQueryProtoRepeatedJsonITCase`, gated on `BQ_IT_PROJECT`, for the repeated half. This is a
+  **breaking schema change** for any existing table (`STRUCT` → scalar): `SchemaUnifier` rejects the
+  union rather than corrupting rows
+- **BigQuery protobuf nullability** (#124 Part 1, with Part 3's `oneof` pin; Part 2 is the entry
+  above): `ProtoToTableSchemaConverter` derives the mode from presence only under
   `ProtoSchemaOptions.Builder.deriveRequiredColumns()`, and the default stays **`NULLABLE`**.
   Reasons, in order of weight: proto3's presence-less form is the spelling you get by *not* thinking
   about nullability, so deriving `REQUIRED` from it by default would make nearly every scalar column

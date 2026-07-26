@@ -34,8 +34,10 @@ import java.io.IOException;
  *
  * <p>The BigQuery table schema is derived from the message's descriptor (see {@link
  * ProtoToTableSchemaConverter} for the type mapping), and each record is rewritten into a
- * BigQuery-storage compatible row: {@code google.protobuf.Timestamp} fields become {@code
- * TIMESTAMP} (microseconds) and enums become their value names.
+ * BigQuery-storage compatible row: well-known types are recognised ({@code Timestamp} becomes
+ * {@code TIMESTAMP} in microseconds, a {@code *Value} wrapper the scalar it wraps, {@code
+ * Struct}/{@code Value}/{@code ListValue} a {@code JSON} column) and enums become their value
+ * names.
  *
  * <p>{@link ProtoSchemaOptions} adjusts two things about the derived schema: which fields become
  * {@code JSON} columns, and whether column modes come from field presence instead of every

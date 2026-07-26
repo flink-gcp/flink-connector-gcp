@@ -21,9 +21,13 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.BigQuerySchemaUtil;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.Duration;
 import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.FieldMask;
 import com.google.protobuf.MessageOrBuilder;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Durations;
+import com.google.protobuf.util.FieldMaskUtil;
 import com.google.protobuf.util.JsonFormat;
 import com.google.protobuf.util.Timestamps;
 
@@ -38,19 +42,24 @@ import java.util.List;
  *
  * <p>All descriptor-dependent decisions — source/target field pairing (via {@link
  * BigQuerySchemaUtil#getFieldName}, which tracks the library's field-naming contract), value
- * conversion kinds, JSON selection, timestamp sub-field descriptors — are resolved once into a
- * conversion plan at construction time; per-record conversion is a flat loop over the plan with no
- * lookups, string building or name comparisons.
+ * conversion kinds, JSON selection, well-known-type sub-field descriptors — are resolved once into
+ * a conversion plan at construction time; per-record conversion is a flat loop over the plan with
+ * no lookups, string building or name comparisons.
  *
  * <p>Value conversions mirror the schema mapping: {@code google.protobuf.Timestamp} fields are
- * flattened to validated epoch microseconds ({@link Timestamps#toMicros}), uint32/fixed32 are
- * widened unsigned, uint64/fixed64 values above {@code Long.MAX_VALUE} are rejected, enum values
- * become their names, JSON-mapped message fields are printed as canonical protobuf JSON while
- * JSON-mapped string fields are written through verbatim (a {@code JSON} column is carried as a
- * string, and the value is taken to be JSON text already — the connector does not validate it;
- * BigQuery rejects malformed JSON as a row-level error, with the sole exception of the empty string
- * on a field without presence, which is left unset rather than written), and nested/repeated fields
- * (including maps) are converted recursively.
+ * flattened to validated epoch microseconds ({@link Timestamps#toMicros}) and {@code Duration}
+ * fields to microseconds ({@link Durations#toMicros}, an out-of-range duration being a row-level
+ * failure like the uint64 case below), a {@code FieldMask} becomes its comma-joined paths ({@link
+ * FieldMaskUtil#toString}), a {@code *Value} wrapper is unwrapped and then converted exactly as the
+ * scalar it holds, {@code Struct}/{@code Value}/{@code ListValue} are printed as canonical protobuf
+ * JSON like any other JSON-mapped message, uint32/fixed32 are widened unsigned, uint64/fixed64
+ * values above {@code Long.MAX_VALUE} are rejected, enum values become their names, JSON-mapped
+ * message fields are printed as canonical protobuf JSON while JSON-mapped string fields are written
+ * through verbatim (a {@code JSON} column is carried as a string, and the value is taken to be JSON
+ * text already — the connector does not validate it; BigQuery rejects malformed JSON as a row-level
+ * error, with the sole exception of the empty string on a field without presence, which is left
+ * unset rather than written), and nested/repeated fields (including maps) are converted
+ * recursively.
  *
  * <p>Instances hold non-serializable descriptors and must be re-created after deserialization (see
  * {@link ProtoMessageSerializer}).
@@ -100,6 +109,10 @@ public final class ProtoRowConverter {
         FLOAT_TO_DOUBLE,
         ENUM_NAME,
         TIMESTAMP_MICROS,
+        DURATION_MICROS,
+        FIELD_MASK_STRING,
+        /** Unwraps a {@code google.protobuf.*Value}, then applies the scalar kind beneath it. */
+        WRAPPER,
         JSON,
         STRUCT
     }
@@ -133,86 +146,89 @@ public final class ProtoRowConverter {
             Descriptors.FieldDescriptor targetField,
             ProtoSchemaOptions options,
             String path) {
+        ProtoWellKnownType wellKnown = ProtoWellKnownType.of(sourceField);
         // A JSON-mapped string already holds JSON text and its target field is a proto string, so
-        // it
-        // converts as IDENTITY; only the empty-value rule is its own, and that is decided here
+        // it converts as IDENTITY; only the empty-value rule is its own, and that is decided here
         // rather than per record. Which fields may be JSON-mapped at all is validated once, in
         // ProtoToTableSchemaConverter, which always runs first to produce the target descriptor.
-        if (options.isJsonField(sourceField, path)) {
+        //
+        // The condition is character-for-character the one in that converter's convertField, and
+        // has to be: the target field of an automatic JSON column is a string, so a plan that
+        // disagreed would ask a string field for its message type and throw at construction.
+        if (options.isJsonField(sourceField, path) || wellKnown.isJsonMapped()) {
             if (sourceField.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE) {
-                return new FieldPlan(sourceField, targetField, Kind.JSON, path, null, null, null);
+                return FieldPlan.json(sourceField, targetField, path);
             }
-            return new FieldPlan(
-                    sourceField,
-                    targetField,
-                    Kind.IDENTITY,
-                    path,
-                    null,
-                    null,
-                    null,
-                    !sourceField.hasPresence());
+            return FieldPlan.jsonString(sourceField, targetField, path, !sourceField.hasPresence());
         }
-        switch (sourceField.getJavaType()) {
+        if (sourceField.getJavaType() != Descriptors.FieldDescriptor.JavaType.MESSAGE) {
+            return FieldPlan.scalar(sourceField, targetField, scalarKind(sourceField, path), path);
+        }
+        Descriptors.Descriptor messageType = sourceField.getMessageType();
+        switch (wellKnown) {
+            case TIMESTAMP:
+                return FieldPlan.timestamp(
+                        sourceField,
+                        targetField,
+                        path,
+                        messageType.findFieldByName("seconds"),
+                        messageType.findFieldByName("nanos"));
+            case DURATION:
+                return FieldPlan.duration(
+                        sourceField,
+                        targetField,
+                        path,
+                        messageType.findFieldByName("seconds"),
+                        messageType.findFieldByName("nanos"));
+            case FIELD_MASK:
+                return FieldPlan.fieldMask(
+                        sourceField, targetField, path, messageType.findFieldByName("paths"));
+            case WRAPPER:
+                // The inner kind comes from the same function a bare scalar goes through, so a
+                // UInt64Value is range-checked by exactly the code that checks a bare uint64.
+                Descriptors.FieldDescriptor valueField = messageType.findFieldByName("value");
+                return FieldPlan.wrapper(
+                        sourceField, targetField, path, scalarKind(valueField, path), valueField);
+            case JSON:
+                throw new IllegalStateException(
+                        "Struct, Value and ListValue are handled by the JSON branch above, but "
+                                + path
+                                + " reached message planning");
+            case NONE:
+            default:
+                return FieldPlan.struct(
+                        sourceField,
+                        targetField,
+                        path,
+                        buildMessagePlan(messageType, targetField.getMessageType(), options, path));
+        }
+    }
+
+    /**
+     * Returns the conversion kind of a non-message field.
+     *
+     * @param field a field that is not a message
+     * @param path the dotted path used in the error message
+     * @return the conversion kind
+     */
+    private static Kind scalarKind(Descriptors.FieldDescriptor field, String path) {
+        switch (field.getJavaType()) {
             case INT:
-                return new FieldPlan(
-                        sourceField,
-                        targetField,
-                        isUnsigned(sourceField) ? Kind.UINT32_TO_LONG : Kind.INT_TO_LONG,
-                        path,
-                        null,
-                        null,
-                        null);
+                return isUnsigned(field) ? Kind.UINT32_TO_LONG : Kind.INT_TO_LONG;
             case LONG:
-                return new FieldPlan(
-                        sourceField,
-                        targetField,
-                        isUnsigned(sourceField) ? Kind.UINT64_CHECKED : Kind.IDENTITY,
-                        path,
-                        null,
-                        null,
-                        null);
+                return isUnsigned(field) ? Kind.UINT64_CHECKED : Kind.IDENTITY;
             case FLOAT:
-                return new FieldPlan(
-                        sourceField, targetField, Kind.FLOAT_TO_DOUBLE, path, null, null, null);
+                return Kind.FLOAT_TO_DOUBLE;
+            case ENUM:
+                return Kind.ENUM_NAME;
             case DOUBLE:
             case BOOLEAN:
             case STRING:
             case BYTE_STRING:
-                return new FieldPlan(
-                        sourceField, targetField, Kind.IDENTITY, path, null, null, null);
-            case ENUM:
-                return new FieldPlan(
-                        sourceField, targetField, Kind.ENUM_NAME, path, null, null, null);
-            case MESSAGE:
-                if (ProtoToTableSchemaConverter.isTimestampMessage(sourceField)) {
-                    Descriptors.Descriptor timestampType = sourceField.getMessageType();
-                    return new FieldPlan(
-                            sourceField,
-                            targetField,
-                            Kind.TIMESTAMP_MICROS,
-                            path,
-                            null,
-                            timestampType.findFieldByName("seconds"),
-                            timestampType.findFieldByName("nanos"));
-                }
-                return new FieldPlan(
-                        sourceField,
-                        targetField,
-                        Kind.STRUCT,
-                        path,
-                        buildMessagePlan(
-                                sourceField.getMessageType(),
-                                targetField.getMessageType(),
-                                options,
-                                path),
-                        null,
-                        null);
+                return Kind.IDENTITY;
             default:
                 throw new IllegalArgumentException(
-                        "Unsupported protobuf type "
-                                + sourceField.getType()
-                                + " for field "
-                                + path);
+                        "Unsupported protobuf type " + field.getType() + " for field " + path);
         }
     }
 
@@ -268,8 +284,23 @@ public final class ProtoRowConverter {
         private final Kind kind;
         private final String path;
         private final MessagePlan nested;
-        private final Descriptors.FieldDescriptor timestampSeconds;
-        private final Descriptors.FieldDescriptor timestampNanos;
+
+        /**
+         * The {@code seconds} and {@code nanos} of a {@code Timestamp} or a {@code Duration} — one
+         * pair of slots, because the two well-known types have the same two-field shape.
+         */
+        private final Descriptors.FieldDescriptor secondsField;
+
+        private final Descriptors.FieldDescriptor nanosField;
+
+        /**
+         * The one sub-field a value is read from: a wrapper's {@code value}, a {@code FieldMask}'s
+         * {@code paths}. Both are "the message's only field", which is why one slot carries them.
+         */
+        private final Descriptors.FieldDescriptor valueField;
+
+        /** The scalar kind applied once a wrapper is unwrapped; never a message kind. */
+        private final Kind innerKind;
 
         /**
          * Whether an empty value must be left unset rather than written, decided once here so the
@@ -288,42 +319,163 @@ public final class ProtoRowConverter {
          */
         private final boolean omitEmptyString;
 
-        FieldPlan(
+        private FieldPlan(
                 Descriptors.FieldDescriptor sourceField,
                 Descriptors.FieldDescriptor targetField,
                 Kind kind,
                 String path,
                 MessagePlan nested,
-                Descriptors.FieldDescriptor timestampSeconds,
-                Descriptors.FieldDescriptor timestampNanos) {
-            this(
-                    sourceField,
-                    targetField,
-                    kind,
-                    path,
-                    nested,
-                    timestampSeconds,
-                    timestampNanos,
-                    false);
-        }
-
-        FieldPlan(
-                Descriptors.FieldDescriptor sourceField,
-                Descriptors.FieldDescriptor targetField,
-                Kind kind,
-                String path,
-                MessagePlan nested,
-                Descriptors.FieldDescriptor timestampSeconds,
-                Descriptors.FieldDescriptor timestampNanos,
+                Descriptors.FieldDescriptor secondsField,
+                Descriptors.FieldDescriptor nanosField,
+                Descriptors.FieldDescriptor valueField,
+                Kind innerKind,
                 boolean omitEmptyString) {
             this.sourceField = sourceField;
             this.targetField = targetField;
             this.kind = kind;
             this.path = path;
             this.nested = nested;
-            this.timestampSeconds = timestampSeconds;
-            this.timestampNanos = timestampNanos;
+            this.secondsField = secondsField;
+            this.nanosField = nanosField;
+            this.valueField = valueField;
+            this.innerKind = innerKind;
             this.omitEmptyString = omitEmptyString;
+        }
+
+        /** A field converted by a scalar {@link Kind}, with nothing else to carry. */
+        static FieldPlan scalar(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                Kind kind,
+                String path) {
+            return new FieldPlan(
+                    sourceField, targetField, kind, path, null, null, null, null, null, false);
+        }
+
+        /** A JSON-mapped message field, printed as canonical protobuf JSON. */
+        static FieldPlan json(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                String path) {
+            return new FieldPlan(
+                    sourceField, targetField, Kind.JSON, path, null, null, null, null, null, false);
+        }
+
+        /** A JSON-mapped string field, written through verbatim. */
+        static FieldPlan jsonString(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                String path,
+                boolean omitEmptyString) {
+            return new FieldPlan(
+                    sourceField,
+                    targetField,
+                    Kind.IDENTITY,
+                    path,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    omitEmptyString);
+        }
+
+        /** A nested message field, converted by its own plan. */
+        static FieldPlan struct(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                String path,
+                MessagePlan nested) {
+            return new FieldPlan(
+                    sourceField,
+                    targetField,
+                    Kind.STRUCT,
+                    path,
+                    nested,
+                    null,
+                    null,
+                    null,
+                    null,
+                    false);
+        }
+
+        /** A {@code google.protobuf.Timestamp} field, flattened to epoch microseconds. */
+        static FieldPlan timestamp(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                String path,
+                Descriptors.FieldDescriptor seconds,
+                Descriptors.FieldDescriptor nanos) {
+            return new FieldPlan(
+                    sourceField,
+                    targetField,
+                    Kind.TIMESTAMP_MICROS,
+                    path,
+                    null,
+                    seconds,
+                    nanos,
+                    null,
+                    null,
+                    false);
+        }
+
+        /** A {@code google.protobuf.Duration} field, flattened to microseconds. */
+        static FieldPlan duration(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                String path,
+                Descriptors.FieldDescriptor seconds,
+                Descriptors.FieldDescriptor nanos) {
+            return new FieldPlan(
+                    sourceField,
+                    targetField,
+                    Kind.DURATION_MICROS,
+                    path,
+                    null,
+                    seconds,
+                    nanos,
+                    null,
+                    null,
+                    false);
+        }
+
+        /** A {@code google.protobuf.FieldMask} field, flattened to its comma-joined paths. */
+        static FieldPlan fieldMask(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                String path,
+                Descriptors.FieldDescriptor paths) {
+            return new FieldPlan(
+                    sourceField,
+                    targetField,
+                    Kind.FIELD_MASK_STRING,
+                    path,
+                    null,
+                    null,
+                    null,
+                    paths,
+                    null,
+                    false);
+        }
+
+        /** A {@code google.protobuf.*Value} wrapper, unwrapped then converted as its scalar. */
+        static FieldPlan wrapper(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                String path,
+                Kind innerKind,
+                Descriptors.FieldDescriptor valueField) {
+            return new FieldPlan(
+                    sourceField,
+                    targetField,
+                    Kind.WRAPPER,
+                    path,
+                    null,
+                    null,
+                    null,
+                    valueField,
+                    innerKind,
+                    false);
         }
 
         boolean omits(Object value) {
@@ -332,6 +484,30 @@ public final class ProtoRowConverter {
 
         Object convertValue(Object value) throws IOException {
             switch (kind) {
+                case TIMESTAMP_MICROS:
+                    return toEpochMicros(value);
+                case DURATION_MICROS:
+                    return toDurationMicros(value);
+                case FIELD_MASK_STRING:
+                    return toFieldMaskString(value);
+                case WRAPPER:
+                    // A wrapper adds exactly one thing to a bare scalar: presence, which the
+                    // caller has already acted on by the time we get here. Unwrap, then run the
+                    // conversion the scalar itself would have run.
+                    return convertScalar(
+                            innerKind, ((MessageOrBuilder) value).getField(valueField));
+                case JSON:
+                    return JSON_PRINTER.print((MessageOrBuilder) value);
+                case STRUCT:
+                    return nested.convert((MessageOrBuilder) value);
+                default:
+                    return convertScalar(kind, value);
+            }
+        }
+
+        /** The scalar half, reached directly and through a wrapper. */
+        private Object convertScalar(Kind scalarKind, Object value) {
+            switch (scalarKind) {
                 case IDENTITY:
                     return value;
                 case INT_TO_LONG:
@@ -354,14 +530,8 @@ public final class ProtoRowConverter {
                     return ((Float) value).doubleValue();
                 case ENUM_NAME:
                     return ((Descriptors.EnumValueDescriptor) value).getName();
-                case TIMESTAMP_MICROS:
-                    return toEpochMicros(value);
-                case JSON:
-                    return JSON_PRINTER.print((MessageOrBuilder) value);
-                case STRUCT:
-                    return nested.convert((MessageOrBuilder) value);
                 default:
-                    throw new IllegalStateException("Unknown conversion kind: " + kind);
+                    throw new IllegalStateException("Unknown conversion kind: " + scalarKind);
             }
         }
 
@@ -372,9 +542,50 @@ public final class ProtoRowConverter {
             MessageOrBuilder message = (MessageOrBuilder) value;
             return Timestamps.toMicros(
                     Timestamp.newBuilder()
-                            .setSeconds((Long) message.getField(timestampSeconds))
-                            .setNanos((Integer) message.getField(timestampNanos))
+                            .setSeconds((Long) message.getField(secondsField))
+                            .setNanos((Integer) message.getField(nanosField))
                             .build());
+        }
+
+        private long toDurationMicros(Object value) {
+            Duration duration;
+            if (value instanceof Duration) {
+                duration = (Duration) value;
+            } else {
+                MessageOrBuilder message = (MessageOrBuilder) value;
+                duration =
+                        Duration.newBuilder()
+                                .setSeconds((Long) message.getField(secondsField))
+                                .setNanos((Integer) message.getField(nanosField))
+                                .build();
+            }
+            try {
+                return Durations.toMicros(duration);
+            } catch (IllegalArgumentException e) {
+                // Row-level, like the uint64 range check above — one malformed record must not
+                // fail the job. Rewrapped because protobuf's own message names no field, and a
+                // message with several Duration columns would give a FailedRow nobody can act on.
+                throw new IllegalArgumentException(
+                        "google.protobuf.Duration value of field "
+                                + path
+                                + " (seconds="
+                                + duration.getSeconds()
+                                + ", nanos="
+                                + duration.getNanos()
+                                + ") is out of range and cannot be represented as INT64"
+                                + " microseconds",
+                        e);
+            }
+        }
+
+        private String toFieldMaskString(Object value) {
+            if (value instanceof FieldMask) {
+                return FieldMaskUtil.toString((FieldMask) value);
+            }
+            MessageOrBuilder message = (MessageOrBuilder) value;
+            @SuppressWarnings("unchecked")
+            List<String> paths = (List<String>) message.getField(valueField);
+            return FieldMaskUtil.toString(FieldMask.newBuilder().addAllPaths(paths).build());
         }
     }
 }

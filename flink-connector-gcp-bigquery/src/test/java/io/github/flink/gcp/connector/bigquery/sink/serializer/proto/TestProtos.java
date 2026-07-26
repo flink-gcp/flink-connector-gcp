@@ -25,6 +25,8 @@ import io.github.flink.gcp.connector.bigquery.testproto.AllTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.Recursive;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnown;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownEmpty;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,8 +36,8 @@ import java.util.List;
  *
  * <p>Ordinary shapes come from real {@code .proto} sources under {@code src/test/protobuf},
  * compiled by protoc at build time: the {@code AllTypes} type-mapping matrix, a recursive message,
- * and the presence fixtures whose {@code oneof} and proto3 {@code optional} spellings are what
- * motivated the codegen (#132).
+ * the well-known-type matrix, and the presence fixtures whose {@code oneof} and proto3 {@code
+ * optional} spellings are what motivated the codegen (#132).
  *
  * <p>What remains here is hand-built because protoc <em>cannot produce it</em>, not as a leftover.
  * The annotation fixtures need custom options left as unknown fields, an annotations proto missing
@@ -102,6 +104,22 @@ final class TestProtos {
     /** Every proto3 presence shape, from {@code src/test/protobuf/presence.proto}. */
     static Descriptors.Descriptor presence() {
         return Presence.getDescriptor();
+    }
+
+    /**
+     * Every well-known type the converters recognise, plus {@code Any}, which they deliberately do
+     * not. From {@code src/test/protobuf/wellknown.proto}.
+     */
+    static Descriptors.Descriptor wellKnown() {
+        return WellKnown.getDescriptor();
+    }
+
+    /**
+     * A {@code google.protobuf.Empty} field: a message with no fields, and so a {@code STRUCT} with
+     * no columns, which BigQuery cannot represent.
+     */
+    static Descriptors.Descriptor wellKnownEmpty() {
+        return WellKnownEmpty.getDescriptor();
     }
 
     /**

@@ -187,6 +187,8 @@ public final class ProtoSchemaOptions implements Serializable {
          *   <tr><td>proto2 {@code required}</td><td>{@code REQUIRED}</td></tr>
          *   <tr><td>proto2 {@code optional}</td><td>{@code NULLABLE}</td></tr>
          *   <tr><td>singular {@code JSON} column</td><td>{@code NULLABLE}, always</td></tr>
+         *   <tr><td>singular well-known type, wrappers included</td>
+         *       <td>{@code NULLABLE} — a message field, so it has presence</td></tr>
          * </table>
          *
          * <p>A plain proto3 scalar cannot say "unset" — an unset value is indistinguishable from
