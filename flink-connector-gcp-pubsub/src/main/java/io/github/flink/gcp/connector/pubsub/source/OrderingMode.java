@@ -24,6 +24,12 @@ import org.apache.flink.annotation.PublicEvolving;
  * <p>Ordered delivery is only meaningful for subscriptions created with {@code
  * enableMessageOrdering}; see the connector documentation for the end-to-end guarantee and its
  * cost.
+ *
+ * <p>{@link #toString()} returns the hyphenated spelling rather than the constant name, because
+ * that spelling is what a SQL {@code WITH} clause is written in: Flink resolves an enum {@code
+ * ConfigOption} by matching the configured value against {@code toString()}, case-insensitively and
+ * with no other normalization. Flink's own {@code DeliveryGuarantee} carries its option spelling
+ * the same way.
  */
 @PublicEvolving
 public enum OrderingMode {
@@ -35,7 +41,7 @@ public enum OrderingMode {
      * them. Nothing waits on anything, and an ordering key may move between subtasks whenever
      * streaming-pull affinity shifts.
      */
-    NONE,
+    NONE("none"),
 
     /**
      * Preserves per-ordering-key delivery order within each subscription. Each subscription is
@@ -56,5 +62,16 @@ public enum OrderingMode {
      * <p>Order is preserved <em>up to the source's output</em>. Preserving it further requires
      * partitioning the stream by the ordering key, for example {@code keyBy(orderingKey)}.
      */
-    PER_KEY
+    PER_KEY("per-key");
+
+    private final String value;
+
+    OrderingMode(String value) {
+        this.value = value;
+    }
+
+    @Override
+    public String toString() {
+        return value;
+    }
 }

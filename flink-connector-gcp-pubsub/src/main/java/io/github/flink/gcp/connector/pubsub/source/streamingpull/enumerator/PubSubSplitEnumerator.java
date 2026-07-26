@@ -280,8 +280,10 @@ public class PubSubSplitEnumerator
         if (config.getDeserializationFailurePolicy().requiresDeadLetterPolicy()
                 && !info.isDeadLetterPolicyConfigured()) {
             throw new IOException(
+                    // The constant name, not toString(): this sentence spells builder calls, while
+                    // toString() is the enum's DDL spelling for the table layer.
                     "deserializationFailurePolicy("
-                            + config.getDeserializationFailurePolicy()
+                            + config.getDeserializationFailurePolicy().name()
                             + ") requires a dead-letter policy on "
                             + subscription
                             + ", which has none. Nacking returns the message without failing the"

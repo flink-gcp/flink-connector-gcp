@@ -49,7 +49,15 @@ public final class StartPosition implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    /** Which starting point a {@link StartPosition} names. */
+    /**
+     * Which starting point a {@link StartPosition} names.
+     *
+     * <p>{@link #toString()} returns the hyphenated spelling rather than the constant name, because
+     * that spelling is what a SQL {@code WITH} clause is written in: Flink resolves an enum {@code
+     * ConfigOption} by matching the configured value against {@code toString()}, case-insensitively
+     * and with no other normalization. Flink's own {@code DeliveryGuarantee} carries its option
+     * spelling the same way.
+     */
     @PublicEvolving
     public enum Mode {
 
@@ -57,7 +65,7 @@ public final class StartPosition implements Serializable {
          * Starts wherever the subscription already is, delivering whatever it has not acknowledged.
          * The default, and the only mode that issues no seek and so leaves other consumers alone.
          */
-        CONTINUE_FROM_SUBSCRIPTION,
+        CONTINUE_FROM_SUBSCRIPTION("continue-from-subscription"),
 
         /**
          * Starts from the oldest message the subscription still holds, replaying its whole retained
@@ -68,7 +76,7 @@ public final class StartPosition implements Serializable {
          * does. Against a subscription with neither, this recovers only what was never
          * acknowledged.
          */
-        EARLIEST_RETAINED,
+        EARLIEST_RETAINED("earliest-retained"),
 
         /**
          * Starts from messages published after the job starts, discarding the existing backlog by
@@ -79,14 +87,25 @@ public final class StartPosition implements Serializable {
          * reproducible: a failover before the source assigns any split seeks again, to a later
          * instant, discarding whatever arrived in between.
          */
-        LATEST,
+        LATEST("latest"),
 
         /**
          * Starts from a given instant: messages published before it are marked acknowledged, those
          * published after it unacknowledged. Subject to the same retention limits as {@link
          * #EARLIEST_RETAINED} when the instant is in the past.
          */
-        TIMESTAMP
+        TIMESTAMP("timestamp");
+
+        private final String value;
+
+        Mode(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
     }
 
     private static final StartPosition CONTINUE =
@@ -201,7 +220,7 @@ public final class StartPosition implements Serializable {
     @Override
     public String toString() {
         return mode == Mode.TIMESTAMP
-                ? "StartPosition{mode=TIMESTAMP, timestamp=" + timestamp + "}"
+                ? "StartPosition{mode=" + mode + ", timestamp=" + timestamp + "}"
                 : "StartPosition{mode=" + mode + "}";
     }
 }
