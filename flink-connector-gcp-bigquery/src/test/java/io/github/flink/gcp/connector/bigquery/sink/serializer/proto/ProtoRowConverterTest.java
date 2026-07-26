@@ -23,6 +23,7 @@ import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.github.flink.gcp.connector.bigquery.testproto.Presence;
+import io.github.flink.gcp.connector.bigquery.testproto.PresenceChild;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -259,7 +260,8 @@ class ProtoRowConverterTest {
      * Deriving REQUIRED must never poison an ordinary record. The row descriptor is built without a
      * syntax, so {@code BQTableSchemaToProtoDescriptor} maps REQUIRED to a proto2 {@code
      * LABEL_REQUIRED} field that {@code build()} enforces — and every column the predicate makes
-     * REQUIRED is one the value path always writes.
+     * REQUIRED is one the value path always writes. Reaching this test at all is the assertion:
+     * {@code build()} throws rather than returning a partial message.
      */
     @Test
     void writesEveryRequiredColumnWhenDerivedFromPresence() throws Exception {
@@ -271,10 +273,37 @@ class ProtoRowConverterTest {
 
         Descriptors.Descriptor rowType = row.getDescriptorForType();
         assertThat(rowType.findFieldByName("p_implicit").isRequired()).isTrue();
-        assertThat(row.getInitializationErrorString()).isEmpty();
         assertThat(get(row, "p_implicit")).isEqualTo("");
         assertThat(get(row, "p_implicit_int")).isEqualTo(0L);
         assertThat(row.hasField(rowType.findFieldByName("p_nested"))).isFalse();
+    }
+
+    /**
+     * The same, one level down: a REQUIRED column inside a NULLABLE {@code STRUCT}. An unset nested
+     * message is skipped whole, so the case only arises when the struct is present but empty — and
+     * then its presence-less children have to be written for the nested {@code build()} to succeed,
+     * which is the half an all-unset record never exercises.
+     */
+    @Test
+    void writesRequiredColumnsInsideAPresentButEmptyStruct() throws Exception {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().deriveRequiredFromPresence().build();
+        ProtoRowConverter converter = converter(TestProtos.presence(), options);
+
+        DynamicMessage row =
+                converter.convert(
+                        Presence.newBuilder()
+                                .setPNested(PresenceChild.getDefaultInstance())
+                                .build());
+
+        Descriptors.Descriptor rowType = row.getDescriptorForType();
+        DynamicMessage nested = (DynamicMessage) get(row, "p_nested");
+        assertThat(rowType.findFieldByName("p_nested").isRequired()).isFalse();
+        assertThat(nested.getDescriptorForType().findFieldByName("c_implicit").isRequired())
+                .isTrue();
+        assertThat(get(nested, "c_implicit")).isEqualTo("");
+        assertThat(nested.hasField(nested.getDescriptorForType().findFieldByName("c_optional")))
+                .isFalse();
     }
 
     /**
