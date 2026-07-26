@@ -37,10 +37,12 @@ import org.apache.flink.table.types.logical.VarCharType;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.StartPosition;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreamingPullSource;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -53,6 +55,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /**
  * Tests for {@link PubSubDynamicSource}.
@@ -457,7 +460,10 @@ class PubSubDynamicSourceTest {
     }
 
     @Test
-    void buildsASourceFromCreationSettingsAndAStartPosition() {
+    void carriesTheCreationSettingsAndTheStartPositionIntoTheBuiltSource() {
+        // Read back off the built source rather than asserted as "it builds": neither value is
+        // visible anywhere else, so without this a source that dropped them both would look
+        // healthy to every unit test and fail only in an emulator IT, by timing out.
         PubSubDynamicSource source =
                 new PubSubDynamicSource(
                         PHYSICAL_DATA_TYPE,
@@ -471,8 +477,41 @@ class PubSubDynamicSourceTest {
                         null,
                         null);
 
-        assertThat(source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
-                .isInstanceOf(SourceProvider.class);
+        Source<RowData, ?, ?> built =
+                ((SourceProvider)
+                                source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                        .createSource();
+
+        PubSubSourceConfig<?> config = ((PubSubStreamingPullSource<?>) built).getConfig();
+        assertThat(config.getStartPosition()).isEqualTo(StartPosition.earliestRetained());
+        assertThat(config.getCreateOptions())
+                .containsExactly(entry(SUBSCRIPTIONS.get(0), CREATE_OPTIONS));
+    }
+
+    @Test
+    void leavesBothUnsetWhenNeitherWasGiven() {
+        Source<RowData, ?, ?> built =
+                ((SourceProvider)
+                                new PubSubDynamicSource(
+                                                PHYSICAL_DATA_TYPE,
+                                                new DecodingTestFormat(),
+                                                SUBSCRIPTIONS,
+                                                null,
+                                                null,
+                                                null,
+                                                null,
+                                                PubSubSubscriberOptions.defaults(),
+                                                null,
+                                                null)
+                                        .getScanRuntimeProvider(
+                                                ScanRuntimeProviderContext.INSTANCE))
+                        .createSource();
+
+        PubSubSourceConfig<?> config = ((PubSubStreamingPullSource<?>) built).getConfig();
+        // The builder's own default, not one restated here.
+        assertThat(config.getStartPosition()).isEqualTo(StartPosition.continueFromSubscription());
+        assertThat(config.getCreateOptions()).isEmpty();
+        assertThat(config.getSubscriptions()).isEqualTo(SUBSCRIPTIONS);
     }
 
     @Test
