@@ -77,3 +77,59 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `parallelPullCount > 1` is rejected with `orderingMode(PER_KEY)` rather than silently forced to 1
   (the factory still force-sets 1 so the guarantee does not rest on the SDK default). The `NACK` deserialization-failure policy is deferred to #81, where
   the `GetSubscription` preflight can verify a dead-letter policy exists
+- **Pub/Sub Table API / SQL** (#47, split into #135–#138): the `table` layer is a *mapping* onto the
+  DataStream builders, never a second implementation — one typed `ConfigOption` per builder setter,
+  applied with `getOptional(...).ifPresent(...)` so "absent from the DDL" and "left at the
+  connector's default" are the same state and no default is restated in a `ConfigOption`. A
+  reflective test asserts the setter set and the option set match, which is what keeps that true
+  once the key names are grouped (`sink.batching.*`, `sink.retry.*`) and no naming rule connects
+  the two. **No `properties.*` passthrough**: Kafka's is a map its own client parses, Pub/Sub has
+  none, and #20 already decided no gax type reaches the public API. Byte knobs are `memoryType()`,
+  converted at the mapper boundary so `MemorySize` never reaches the connector API.
+  **The four connector enums carry their DDL spelling in `toString()`** (`create-if-needed`,
+  `per-key`, `nack`, `continue-from-subscription`) because `ConfigurationUtils.convertToEnum`
+  matches on `toString()` case-insensitively and normalizes nothing — Flink's own
+  `DeliveryGuarantee` has the same shape. Table-local `DescribedEnum` duplicates (Kafka's
+  `ScanStartupMode`) were the alternative and were declined: four extra types and a conversion step
+  for no gain. The one visible cost is `StartPosition.toString()`, which now reads
+  `StartPosition{mode=latest}`.
+  One factory class implements both directions (#136 adds `DynamicTableSourceFactory` to it), so
+  `topic`/`subscription` are **not** in `requiredOptions()` — each is checked in the `create...`
+  method that needs it, or a table used in only one direction would be forced to configure the
+  other. Sink specifics: metadata is **not** forwarded to formats (no built-in format ships
+  writable metadata, and Kafka does not forward either), so the physical prefix of a consumed row
+  is exactly the table's physical columns and a reused `ProjectedRowData` hides the metadata suffix
+  from the encoder; the row is written into the `PubsubMessage.Builder` directly rather than
+  through the public `withAttributes`/`withOrderingKey` combinators, whose `Map<String, String>`
+  extractor would allocate a map per record; a null attribute key or value **fails the write**
+  rather than being dropped; `ChangelogMode.insertOnly()` because Pub/Sub cannot express a
+  retraction; and an `ordering-key` column without `sink.message-ordering.enabled` is rejected in
+  `applyWritableMetadata`, since the writer would otherwise fail on the first record. Credentials
+  stay ADC-only (#139) and dynamic per-record topics stay out (#140) — both cut from #47
+  deliberately.
+  **Package layout**: `table` holds the `@PublicEvolving` options class and the factory, `table.sink`
+  (and `table.source` from #136) the `@Internal` implementation — a deliberate departure from Kafka,
+  which keeps its whole table layer flat. The root `CLAUDE.md` rule (public API at the package root,
+  implementation beneath) decides it, and #136 is the in-prospect sibling the #119 test asks for, so
+  this is #125's situation rather than Cloud Tasks'. **The factory is the only place a DDL option
+  becomes a value** — `PubSubDynamicSink` takes resolved constructor arguments and has no
+  configuration vocabulary at all, which is why `PublisherOptionsMapper` is `@Internal public`
+  rather than package-private.
+  **Source specifics** (#136): the SPI was widened to
+  `deserialize(PubsubMessage, SubscriptionDestination, Collector<T>)` rather than dropping the
+  `subscription` metadata column — nothing is published, so a signature change is the cheap option
+  (see the repo-level stance), and `SubscriptionSplit` was already in `emitRecord`, so the call site
+  was one line. That column carries the **resource name**, not the
+  bare id — the argument is on the docs page; what belongs here is that a two-column
+  short-id-plus-resource-name design was built and dropped as redundant, and that the column
+  deliberately does **not** equal the `subscription` option, which is documented rather than fixed.
+  **`DecodingFormat.applyReadableMetadata` throws by default** and no built-in format overrides it,
+  so it must be guarded — and the guard is on the format *declaring* metadata, as Kafka's is, not on
+  the planner having selected some: only that form can shrink the key set back, and the ability
+  permits repeated calls. Calling it unconditionally breaks every table with any metadata column;
+  caught by the acceptance IT, never by a unit test.
+  **Per-key ordering is not reachable from SQL** (#143): the guarantee is per writer subtask, the
+  DataStream answer is a `keyBy` before the sink, and SQL has no equivalent — `DISTRIBUTED BY` needs
+  `SupportsBucketing`, which this sink does not implement. `sink.parallelism = 1` is the only correct
+  configuration today; it is documented rather than enforced, because a distribution the user
+  arranged upstream is legitimate and the sink cannot tell the difference

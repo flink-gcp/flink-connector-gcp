@@ -22,6 +22,7 @@ import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.util.Collector;
 
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -30,9 +31,10 @@ import java.io.Serializable;
  * Deserializes Pub/Sub messages into source records.
  *
  * <p>Implementations receive the full {@link PubsubMessage}, so the payload, message attributes,
- * the ordering key, the message id and the publish time are all available. Messages that only carry
- * a payload can wrap a plain Flink {@link DeserializationSchema} with {@link
- * #dataOnly(DeserializationSchema)}.
+ * the ordering key, the message id and the publish time are all available, along with the {@link
+ * SubscriptionDestination} it arrived on — which the message itself does not carry and a source
+ * consuming several subscriptions needs. Messages that only carry a payload can wrap a plain Flink
+ * {@link DeserializationSchema} with {@link #dataOnly(DeserializationSchema)}.
  *
  * <p>Records are handed to a {@link Collector} rather than returned, so one message may produce any
  * number of records — including none, which drops the message (it is still acknowledged with the
@@ -60,11 +62,14 @@ public interface PubSubDeserializationSchema<T> extends Serializable, ResultType
      * Deserializes the given Pub/Sub message, emitting zero or more records.
      *
      * @param message the received message
+     * @param subscription the subscription the message arrived on, constant for the duration of a
+     *     split but not for the schema, which serves every split the reader is assigned
      * @param out collector for the produced records
      * @throws IOException if the message cannot be deserialized; handling is governed by the
      *     source's deserialization failure policy
      */
-    void deserialize(PubsubMessage message, Collector<T> out) throws IOException;
+    void deserialize(PubsubMessage message, SubscriptionDestination subscription, Collector<T> out)
+            throws IOException;
 
     /**
      * Wraps a plain Flink {@link DeserializationSchema} into a schema that deserializes the message

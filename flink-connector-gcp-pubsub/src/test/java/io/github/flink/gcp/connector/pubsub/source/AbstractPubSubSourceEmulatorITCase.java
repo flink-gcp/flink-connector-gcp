@@ -53,20 +53,23 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Shared harness for source integration tests against the Pub/Sub emulator: the container,
- * plaintext admin clients, and helpers to create topics and subscriptions and to publish into them.
- * Sources under test use the production {@code DefaultSubscriberFactory} in its emulator-endpoint
- * mode.
+ * Shared harness for integration tests against the Pub/Sub emulator: the container, plaintext admin
+ * clients, and helpers to create topics and subscriptions, publish into them and pull back out.
+ * Connectors under test use the production factories in their emulator-endpoint mode.
  *
- * <p>Separate from the sink's harness, which is package-private in its writer package; extracting a
- * shared one is tracked in issue #27. Only the container image is shared, through {@link
+ * <p>Named for the source because that is where it started; the table tests build on it too, since
+ * asserting what a sink published means pulling from a subscription. The sink's own harness is
+ * still separate — it is package-private in the writer package — and folding the two together is
+ * tracked in issue #27. Only the container image is shared, through {@link
  * PubSubEmulatorContainers}.
  */
 @Testcontainers
@@ -175,6 +178,16 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
         return new PubSubSubscriptionAdmin(emulatorEndpoint());
     }
 
+    /** Returns whether the topic exists. */
+    public static boolean topicExists(String name) {
+        try {
+            topicAdminClient.getTopic(TopicName.of(PROJECT, name));
+            return true;
+        } catch (NotFoundException e) {
+            return false;
+        }
+    }
+
     /** Returns whether the subscription exists. */
     public static boolean subscriptionExists(SubscriptionDestination subscription) {
         try {
@@ -213,10 +226,51 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
     }
 
     /**
+     * Pulls and acknowledges until {@code expected} <em>distinct</em> messages have arrived or the
+     * deadline passes, returning them whole — attributes and ordering key included, which {@link
+     * #pullAndAckUntil} discards.
+     *
+     * <p>Distinct by message id, for the same reason {@link #pullAndAckUntil} collects into a set:
+     * an acknowledgement is not necessarily applied before the next pull is served, and the sink is
+     * at-least-once, so the same message can come back. Counting redeliveries would make every
+     * exact-count assertion a coin flip.
+     */
+    public static List<PubsubMessage> pullMessagesUntil(
+            SubscriptionDestination subscription, int expected, Duration timeout)
+            throws InterruptedException {
+        Map<String, PubsubMessage> messages = new LinkedHashMap<>();
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (messages.size() < expected && System.nanoTime() < deadline) {
+            List<PubsubMessage> pulled = pullMessagesAndAck(subscription, expected);
+            if (pulled.isEmpty()) {
+                Thread.sleep(100);
+            }
+            for (PubsubMessage message : pulled) {
+                messages.putIfAbsent(message.getMessageId(), message);
+            }
+        }
+        return new ArrayList<>(messages.values());
+    }
+
+    /**
      * Pulls up to {@code maxMessages} from the subscription and acknowledges them, returning their
      * payloads. One pull only — use {@link #pullAndAckUntil} to assert on a known count.
      */
     public static List<String> pullAndAck(SubscriptionDestination subscription, int maxMessages) {
+        List<PubsubMessage> messages = pullMessagesAndAck(subscription, maxMessages);
+        List<String> payloads = new ArrayList<>(messages.size());
+        for (PubsubMessage message : messages) {
+            payloads.add(message.getData().toStringUtf8());
+        }
+        return payloads;
+    }
+
+    /**
+     * Pulls up to {@code maxMessages} from the subscription and acknowledges them, returning the
+     * messages. One pull only — use {@link #pullMessagesUntil} to assert on a known count.
+     */
+    public static List<PubsubMessage> pullMessagesAndAck(
+            SubscriptionDestination subscription, int maxMessages) {
         PullResponse response =
                 subscriptionAdminClient
                         .getStub()
@@ -226,16 +280,16 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
                                         .setSubscription(subscription.toSubscriptionPath())
                                         .setMaxMessages(maxMessages)
                                         .build());
-        List<String> payloads = new ArrayList<>(response.getReceivedMessagesCount());
+        List<PubsubMessage> messages = new ArrayList<>(response.getReceivedMessagesCount());
         List<String> ackIds = new ArrayList<>(response.getReceivedMessagesCount());
         for (ReceivedMessage received : response.getReceivedMessagesList()) {
-            payloads.add(received.getMessage().getData().toStringUtf8());
+            messages.add(received.getMessage());
             ackIds.add(received.getAckId());
         }
         if (!ackIds.isEmpty()) {
             subscriptionAdminClient.acknowledge(subscription.toSubscriptionPath(), ackIds);
         }
-        return payloads;
+        return messages;
     }
 
     /**

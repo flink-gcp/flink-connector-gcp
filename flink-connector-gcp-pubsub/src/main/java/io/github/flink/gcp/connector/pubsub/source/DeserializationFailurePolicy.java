@@ -24,6 +24,12 @@ import org.apache.flink.annotation.PublicEvolving;
  * <p>Set via {@link
  * PubSubSourceBuilder#deserializationFailurePolicy(DeserializationFailurePolicy)}. Whichever is
  * chosen, the failure is counted in Flink's standard {@code numRecordsInErrors} metric.
+ *
+ * <p>{@link #toString()} returns the lower-case spelling rather than the constant name, because
+ * that spelling is what a SQL {@code WITH} clause is written in: Flink resolves an enum {@code
+ * ConfigOption} by matching the configured value against {@code toString()}, case-insensitively and
+ * with no other normalization. Flink's own {@code DeliveryGuarantee} carries its option spelling
+ * the same way.
  */
 @PublicEvolving
 public enum DeserializationFailurePolicy {
@@ -34,7 +40,7 @@ public enum DeserializationFailurePolicy {
      * removed or the schema is fixed. That is the default because silently discarding data should
      * be a decision, not an accident.
      */
-    FAIL,
+    FAIL("fail"),
 
     /**
      * Discards the message and carries on, acknowledging it immediately so it is not redelivered.
@@ -45,7 +51,7 @@ public enum DeserializationFailurePolicy {
      * emitted prefix has already reached the output and cannot be recalled — so a partial message
      * is discarded partially.
      */
-    DROP,
+    DROP("drop"),
 
     /**
      * Returns the message to Pub/Sub for redelivery and carries on, leaving what to do with it to
@@ -63,16 +69,23 @@ public enum DeserializationFailurePolicy {
      * <p>Like {@link #DROP}, a schema that emitted records before failing keeps those, so the
      * message is both partially emitted and redelivered in full.
      */
-    NACK(true);
+    NACK("nack", true);
 
+    private final String value;
     private final boolean requiresDeadLetterPolicy;
 
-    DeserializationFailurePolicy() {
-        this(false);
+    DeserializationFailurePolicy(String value) {
+        this(value, false);
     }
 
-    DeserializationFailurePolicy(boolean requiresDeadLetterPolicy) {
+    DeserializationFailurePolicy(String value, boolean requiresDeadLetterPolicy) {
+        this.value = value;
         this.requiresDeadLetterPolicy = requiresDeadLetterPolicy;
+    }
+
+    @Override
+    public String toString() {
+        return value;
     }
 
     /**
