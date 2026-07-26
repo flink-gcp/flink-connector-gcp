@@ -57,10 +57,8 @@ API notes:
   watermark) so time-based routing such as daily tables is expressible. Resolvers run per record:
   cache and reuse `TableDestination` instances.
 - `ProtoMessageSerializer.of(MyMessage.class)` is the built-in serializer for records that
-  already are protobuf messages: the BigQuery schema is derived from the message descriptor
-  (integers → INT64, float/double → DOUBLE, enum → STRING, `google.protobuf.Timestamp` →
-  TIMESTAMP in microseconds, nested messages → STRUCT, maps → REPEATED STRUCT<key, value>), and
-  `ProtoSchemaOptions` can map selected fields to [JSON columns](#json-columns).
+  already are protobuf messages. The BigQuery schema is derived from the message descriptor; see
+  [Protobuf messages](#protobuf-messages) for the type mapping and for `ProtoSchemaOptions`.
 - `AvroRecordSerializer.of(schema)` is the built-in serializer for Avro records — both
   `GenericRecord` and generated `SpecificRecord` streams, since it accepts `IndexedRecord`. The
   BigQuery schema is derived from the Avro writer schema; see [Avro records](#avro-records) for
@@ -71,6 +69,130 @@ API notes:
 - `TableDestination` is pure table identity (`equals`/`hashCode` over project/dataset/table);
   per-destination creation metadata (partitioning, clustering) is supplied through
   `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
+
+## Column modes
+
+**The policy is that a derived column is `NULLABLE`, and a constraint is something you ask for.**
+`REPEATED` is the one mode derived without being asked for, because a repeated field has no nullable
+form — a BigQuery `REPEATED` column is empty, never NULL. Where each serializer stands today:
+
+| Serializer | Default | To constrain |
+|---|---|---|
+| [Protobuf messages](#protobuf-messages) | every column `NULLABLE` — follows the policy | `ProtoSchemaOptions.builder().deriveRequiredColumns()` derives `REQUIRED` from field presence |
+| [Avro records](#avro-records) | **the outlier**: `REQUIRED` unless the field is a `["null", T]` union | `AvroSchemaOptions.builder().allFieldsNullable()` opts *out* — the inverse polarity. Being aligned on the policy in [#145]({{< param BookRepo >}}/issues/145) |
+| [JSON records](#json-records) | whatever the schema you supply says; an omitted mode is `NULLABLE` | write the mode you want in that schema. **No option, deliberately** — nothing is derived, so there is nothing to overrule, and the schema is often the destination table's own |
+
+Why the policy runs this way:
+
+- **`REQUIRED` is the mode BigQuery cannot walk back.** It cannot be added to an existing table, so a
+  `REQUIRED` column only ever appears at creation time, and relaxing one afterwards is a schema update
+  rather than an edit — needing `allowFieldRelaxation`, which is off by default. Defaulting to the
+  irreversible choice is the wrong way round.
+- **The protobuf mapping is the normative one**, and the front ends are expected to match it, because
+  every write path ends in a protobuf row: `STORAGE_API_*` writes protobuf directly, the Avro and
+  JSON serializers convert into one, and File loads stages Avro only incidentally — a staging format,
+  not a contract. So where a front end disagrees, it is the front end that moves.
+- **A source schema's "mandatory" is not always a statement about mandatoriness.** On the protobuf
+  side especially: a plain proto3 scalar has no way to say "unset", which is a property of the syntax
+  rather than a decision its author made, so deriving `REQUIRED` from it would constrain nearly every
+  scalar column of an auto-created table on the strength of a default nobody chose. An Avro
+  `["null", T]` union *is* deliberate, which is why that side reads as the more faithful one taken
+  alone — the reason it still moves is the bullet above, not this one.
+
+There is deliberately no inverse switch anywhere: with `NULLABLE` as the default, "all columns
+nullable" is just not asking for the constraint.
+
+## Protobuf messages
+
+`ProtoMessageSerializer` derives the BigQuery schema from the message descriptor and rewrites each
+message into the protobuf row the Storage Write API accepts.
+
+| Protobuf | BigQuery |
+|---|---|
+| `int32`, `sint32`, `sfixed32`, `int64`, `sint64`, `sfixed64` | `INT64` |
+| `uint32`, `fixed32` | `INT64`, widened unsigned |
+| `uint64`, `fixed64` | `INT64`; a value above `Long.MAX_VALUE` is a row-level failure |
+| `float`, `double` | `DOUBLE` |
+| `bool` | `BOOL` |
+| `string` | `STRING` |
+| `bytes` | `BYTES` |
+| enum | `STRING`, the value name |
+| `google.protobuf.Timestamp` | `TIMESTAMP`, microsecond precision |
+| message | `STRUCT`, recursively |
+| `map<K, V>` | `REPEATED STRUCT<key, value>` |
+| message or string marked by `ProtoSchemaOptions` | `JSON`, see [JSON columns](#json-columns) |
+
+A recursive message is rejected — BigQuery schemas cannot represent one — as are sibling fields
+whose names differ only by case, which the Storage API cannot tell apart because it lowercases
+descriptor field names.
+
+Well-known types other than `Timestamp` are not recognised yet: wrapper types such as `Int64Value`
+become `STRUCT<value>` rather than a nullable scalar, and `Struct`/`Value`/`ListValue` are rejected
+by the recursion guard unless marked as JSON columns. Tracked in
+[#124]({{< param BookRepo >}}/issues/124).
+
+### Nullability
+
+By default every non-repeated column is `NULLABLE`.
+`ProtoSchemaOptions.builder().deriveRequiredColumns()` reads each field's presence instead:
+
+```java
+ProtoMessageSerializer.of(
+        MyMessage.class,
+        ProtoSchemaOptions.builder().deriveRequiredColumns().build());
+```
+
+| Field | Mode |
+|---|---|
+| `repeated`, including maps | `REPEATED` |
+| plain proto3 singular scalar or enum | `REQUIRED` |
+| proto3 `optional` | `NULLABLE` |
+| `oneof` member | `NULLABLE` |
+| singular message field | `NULLABLE` |
+| proto2 `required` | `REQUIRED` |
+| proto2 `optional` | `NULLABLE` |
+| singular `JSON` column | `NULLABLE`, always |
+
+A plain proto3 scalar cannot say "unset" — an unset value is indistinguishable from the type
+default — so `REQUIRED` is the faithful mode for it, and one the value path already satisfies: such
+a field always reaches the column as `0`, `""` or the first enum value, never as NULL. proto2
+`required` is listed separately because it *has* presence and is mandatory all the same, so a
+presence test alone would map the one unambiguous case to `NULLABLE`.
+
+A **proto3** map entry's `key` and `value` have implicit presence too, so a `map<string, int64>`
+becomes `REPEATED STRUCT<key REQUIRED, value REQUIRED>` — which is what the Avro path already does
+for a map key. The scope matters: a **message-valued** map follows the message rule instead, so
+`map<string, Foo>` keeps a `NULLABLE` value, and in proto2 both entry fields have explicit presence
+and stay `NULLABLE`.
+
+Why `NULLABLE` is the default, and why there is no inverse switch, is in
+[Column modes](#column-modes).
+
+**A `JSON` column is never `REQUIRED`.** A JSON-mapped string without presence is left unset when
+empty rather than written as `""` (see [JSON columns](#json-columns)), and "no presence" is precisely
+the condition that would otherwise make the column `REQUIRED` — the two together would fail every
+record that legitimately omits the field. Note this is the one place a presence-less field is *not*
+written: elsewhere it always reaches the column as its type default.
+
+Three things to weigh before enabling it:
+
+- Only the derived schema changes. Values are converted identically either way, and toggling the
+  option changes protobuf field labels rather than the encoding of any value, so rows already
+  serialized stay valid.
+- A record that leaves a `REQUIRED`-derived field unset is a row-level failure routed to the
+  configured `FailedRowHandler` (see [Error handling](#error-handling)). Reaching that needs a
+  proto2 `required` field missing from a partially built message; every other `REQUIRED` column is
+  one the value path always writes.
+- **Turning it back off later is not symmetrical.** Simply removing the option leaves existing rows
+  writable, since a presence-less field still carries its default. What bites is the *field* gaining
+  presence — adding `optional` to it, or moving it into a `oneof`. The derived mode becomes `NULLABLE`
+  and the row then legitimately omits the column, while the table still has it `REQUIRED`, so every
+  such record is a row-level failure until the column is relaxed — which needs
+  `allowFieldRelaxation`, off by default.
+- **BigQuery cannot add a `REQUIRED` column to an existing table**, so a column derived this way is
+  only ever created together with the table. See
+  [Table auto-creation](#table-auto-creation), [Schema evolution](#schema-evolution) and
+  [File loads](#file-loads) for what that means afterwards.
 
 ## JSON columns
 
@@ -186,7 +308,9 @@ Three consequences worth knowing:
   valid JSON, and would fail every record that legitimately omits the field. This applies only to
   fields *without* presence: where the proto can say "unset" (`optional string`, or proto2), an
   explicit `""` is your own statement and is passed through as-is. Repeated elements are likewise
-  explicit and passed through.
+  explicit and passed through. This is also why a JSON column is never `REQUIRED` under
+  [`deriveRequiredColumns()`](#nullability) — the condition that leaves the value unset is the
+  same one that would make the column mandatory.
 
 Marking a field that is neither a message nor a string — including a proto map, whose BigQuery shape
 is `REPEATED STRUCT<key, value>` — is rejected when the schema is derived, through either mechanism.
@@ -251,6 +375,11 @@ The one thing it changes in the value path is what happens to a record that omit
 schema declares mandatory: by default that is a row-level failure, and under `allFieldsNullable()`
 the column is simply left unset. Records that do carry the value convert identically either way.
 
+**This default is the outlier and is due to change.** The policy is that a derived column is
+`NULLABLE` and a constraint is asked for — see [Column modes](#column-modes) for it and the
+reasoning. Aligning this side on it, default and polarity and method name, is tracked in
+[#145]({{< param BookRepo >}}/issues/145).
+
 **JSON columns.** `AvroSchemaOptions.builder().jsonFieldPath("event.payload")` derives a `string`
 field at that dotted path as a [`JSON` column](#json-columns) instead of `STRING`. As on the
 protobuf path the value is passed through verbatim and is *not* validated — malformed JSON is a
@@ -283,9 +412,11 @@ either.
 A null array and an empty one are indistinguishable once written: `["null", array<T>]` derives a
 `REPEATED` column, and BigQuery has no NULL array to map the difference onto.
 
-**Cost.** Conversion is one pass over each record, which `ProtoMessageSerializer` on an
-already-protobuf stream does not pay. Where the input format is yours to choose and throughput
-matters, a native protobuf record avoids it.
+**Cost.** Conversion is one pass over each record, reading Avro values and writing protobuf ones.
+Note that a protobuf stream is not free either — `ProtoMessageSerializer` also rebuilds every record
+into the row descriptor's shape, since the Storage Write API wants BigQuery's column layout rather
+than your message's — but it starts from protobuf accessors rather than Avro ones and has no logical
+types to convert.
 
 ## JSON records
 
@@ -308,6 +439,15 @@ type, [`JSON` columns](#json-columns) included: there is no marker option here, 
 already says so. A column type the Storage descriptor conversion cannot express — `RANGE` today — is
 rejected when the serializer is created, so it fails where the pipeline is built rather than on the
 first record.
+
+**Column modes work the same way, which is why there is no nullability option here either.** The
+other two serializers need one because they derive modes from a source schema that may not mean what
+it appears to (see [Column modes](#column-modes)); here you wrote the schema, so a `REQUIRED` column
+in it is your own statement and is passed through as-is — including when you fetched it from the
+destination table, which is the point of the `Schema` overload. A column with no mode set is
+`NULLABLE`, so the unconstrained default still holds for anything you did not decide. The
+consequence to know: a document omitting a `REQUIRED` column is a row-level failure, reported by the
+conversion library and routed through the configured `FailedRowHandler`.
 
 Conversion is the Storage Write API client's own `JsonToProtoMessage`, the same one
 `JsonStreamWriter` uses. What each column type accepts:
@@ -382,6 +522,10 @@ parallel subtasks (HTTP 409 is treated as success); the credentials need
 `bigquery.tables.create` on the destination dataset. Options apply only at creation time —
 existing tables are never modified.
 
+Creation is also the **only** moment a `REQUIRED` column can appear: BigQuery cannot add one to an
+existing table. So the serializer's [column modes](#column-modes) are decided here, durably, and
+relaxing a column afterwards is a schema update rather than an edit.
+
 With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
 
 ## Schema evolution
@@ -435,6 +579,13 @@ Caveats:
 - Rows already handed to the sink are retained as serialized bytes and are never re-encoded, so
   serializer schema evolution must be wire-compatible: append new fields at the end (including
   inside nested types) and relax `REQUIRED`→`NULLABLE`; never remove, reorder or re-type fields.
+  Turning a nullability option on or off is wire-compatible in both directions — it changes
+  protobuf field labels, not the encoding of any value.
+- A column the serializer newly derives as `REQUIRED` is added to an existing table as `NULLABLE`,
+  after which the derived schema and the table disagree about that column forever. That is
+  harmless: the union only ever relaxes, so it reports no change and never tries to tighten. The
+  reverse does bite — a table created with `REQUIRED` columns whose schema later relaxes needs
+  `allowFieldRelaxation`, which is off by default.
 - A schema update propagates to the Storage Write API backend within minutes. The writer keeps
   re-appending affected batches for up to ~15 minutes (flat 30 s waits, ±25 % jitter, 30
   attempts) — a schema repair can therefore block a checkpoint longer than Flink's default
@@ -697,6 +848,23 @@ ids keep exactly-once; only that checkpoint's atomic visibility is lost).
 `ALLOW_FIELD_ADDITION`/`ALLOW_FIELD_RELAXATION` options. BigQuery honors them only for
 `WRITE_APPEND` loads; with `WRITE_TRUNCATE` the loaded schema replaces the table schema anyway.
 
+**`REQUIRED` columns and load jobs.** A load job carries a schema of its own, so what BigQuery does
+when that schema disagrees with the destination table matters here in a way it does not for the
+Storage Write API. Measured against real BigQuery:
+
+| Provided schema vs. the table | Outcome |
+|---|---|
+| an existing column declared `REQUIRED` where the table has it `NULLABLE` | accepted; the tightening is silently ignored and the column stays `NULLABLE` |
+| a **new** column declared `REQUIRED`, with `allowNewFields()` | the job is **rejected at submission** — *"Cannot add required fields to an existing schema"* |
+
+The second row is a real defect on the single-load path, tracked in
+[#142]({{< param BookRepo >}}/issues/142): a direct load builds its schema from the serializer alone,
+while the temp-table path reconciles against the live table and demotes new `REQUIRED` columns to
+`NULLABLE` first. Until it is fixed, a serializer that derives `REQUIRED` — the Avro default, or
+protobuf under [`deriveRequiredColumns()`](#nullability) — can fail a whole load job when its
+schema grows a new column against a pre-existing table. A load job is all-or-nothing, so there is no
+row-level policy to catch it.
+
 **Staging cleanup.** Staged files are deleted after a successful load — best-effort; on failure
 they are deliberately kept so a Flink restart retries deterministically. Point `stagingPath` at a
 **dedicated bucket (separate from checkpoint/savepoint storage) with a lifecycle rule** (for
@@ -772,7 +940,12 @@ credentials.
 classification and the writer/committer state machines against in-memory fakes. The Avro
 serializer additionally carries a round-trip test (`AvroSchemaRoundTripTest`) that pins
 `AvroToTableSchemaConverter` against the `TableSchemaToAvroConverter` FILE_LOADS stages files with.
-Without it the two could drift apart and corrupt staged files with nothing going red.
+Without it the two could drift apart and corrupt staged files with nothing going red. The protobuf
+mode mapping is pinned against real `.proto` fixtures compiled at build time — every proto3
+presence shape and the proto2 `required`/`optional` pair, both by default and under
+`deriveRequiredColumns()` — and `ProtoRowConverterTest` pins the value side of the same
+question: an unselected `oneof` branch is left unset, while a presence-less field is written as its
+type default.
 
 **Emulator integration tests** run [goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator)
 in a testcontainer and exercise the Storage Write API gRPC endpoint plus the REST
@@ -786,7 +959,12 @@ scalars, `TIMESTAMP`, `DATE`, `BYTES`, an enum, a `REPEATED` field, a nested `ST
 `REPEATED STRUCT<key, value>` and a `JSON` column; `TIME`, `DATETIME` and `NUMERIC` are excluded
 because the emulator implements neither the packed civil-time encoding nor the decimal byte
 encoding and reads those columns back as unrelated values whatever is written), the same for JSON
-documents including the `ignoreUnknownFields` option (`BigQueryJsonDocumentSerializerITCase`), and a
+documents including the `ignoreUnknownFields` option (`BigQueryJsonDocumentSerializerITCase`),
+protobuf messages under `deriveRequiredColumns()` (`BigQueryProtoPresenceITCase` — the table is
+created with the derived `REQUIRED` columns and the values read back as presence says they should:
+presence-less columns carry `""`/`0`, `optional` and the unselected `oneof` branch come back NULL;
+the query works around two emulator deviations around an *empty* repeated column, where
+`ARRAY_TO_STRING` panics the emulator and `ARRAY_LENGTH` returns NULL instead of 0), and a
 buffered-stream smoke test of the production
 exactly-once client wiring (`BigQueryBufferedStreamSmokeITCase` — single flush only: the
 emulator keeps no flush cursor, every `FlushRows` re-inserts all rows up to the offset, and

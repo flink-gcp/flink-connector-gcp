@@ -36,6 +36,17 @@ class ProtoSchemaOptionsTest {
     }
 
     @Test
+    void deriveRequiredColumnsIsOptIn() {
+        assertThat(ProtoSchemaOptions.defaults().isDeriveRequiredColumns()).isFalse();
+        assertThat(
+                        ProtoSchemaOptions.builder()
+                                .deriveRequiredColumns()
+                                .build()
+                                .isDeriveRequiredColumns())
+                .isTrue();
+    }
+
+    @Test
     void accumulatesFieldOptionNumbers() {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder()
@@ -158,17 +169,19 @@ class ProtoSchemaOptionsTest {
 
     @Test
     void survivesJavaSerialization() throws Exception {
-        // The options travel in the job graph inside the serializer, so both mechanisms have to
-        // come back after a round trip.
+        // The options travel in the job graph inside the serializer, so every mechanism has to come
+        // back after a round trip.
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder()
                         .jsonFieldPath("payload")
                         .jsonFieldOptionNumber(50000)
+                        .deriveRequiredColumns()
                         .build();
 
         ProtoSchemaOptions copy = InstantiationUtil.clone(options);
 
         assertThat(copy.getJsonFieldPaths()).containsExactly("payload");
         assertThat(copy.getJsonFieldOptions()).containsExactly(entry(50000, null));
+        assertThat(copy.isDeriveRequiredColumns()).isTrue();
     }
 }

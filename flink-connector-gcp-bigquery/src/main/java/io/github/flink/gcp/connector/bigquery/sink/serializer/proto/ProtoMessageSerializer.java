@@ -35,8 +35,12 @@ import java.io.IOException;
  * <p>The BigQuery table schema is derived from the message's descriptor (see {@link
  * ProtoToTableSchemaConverter} for the type mapping), and each record is rewritten into a
  * BigQuery-storage compatible row: {@code google.protobuf.Timestamp} fields become {@code
- * TIMESTAMP} (microseconds), enums become their value names, and fields configured via {@link
- * ProtoSchemaOptions} are written as {@code JSON} columns.
+ * TIMESTAMP} (microseconds) and enums become their value names.
+ *
+ * <p>{@link ProtoSchemaOptions} adjusts two things about the derived schema: which fields become
+ * {@code JSON} columns, and whether column modes come from field presence instead of every
+ * non-repeated column being {@code NULLABLE} (see {@link
+ * ProtoSchemaOptions.Builder#deriveRequiredColumns()}).
  *
  * <p>All destinations share the schema of {@code T}; the message class (not its non-serializable
  * descriptor) is stored, so instances survive Flink's job-graph serialization and rebuild their

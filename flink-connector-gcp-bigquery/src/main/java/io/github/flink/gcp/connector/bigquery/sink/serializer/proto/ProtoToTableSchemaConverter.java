@@ -50,10 +50,15 @@ import java.util.Set;
  *   <li>message and string fields selected by {@link ProtoSchemaOptions#isJsonField} → {@code JSON}
  *       (a message is not expanded into a {@code STRUCT}; a string is taken to be JSON text
  *       already)
- *   <li>repeated fields → {@code REPEATED} mode, everything else → {@code NULLABLE}. Note that
- *       plain proto3 scalars have no presence: unset values materialize as protobuf defaults (0,
- *       empty string, first enum value), never as NULL
  * </ul>
+ *
+ * <p>Column modes: repeated fields (including maps) are {@code REPEATED}, and everything else is
+ * {@code NULLABLE} — unless {@link ProtoSchemaOptions.Builder#deriveRequiredColumns()} is set,
+ * which derives {@code REQUIRED} for a field that {@linkplain
+ * Descriptors.FieldDescriptor#isRequired is declared required} or that {@linkplain
+ * Descriptors.FieldDescriptor#hasPresence has no presence}. Note that a plain proto3 scalar has no
+ * presence either way: unset values materialize as protobuf defaults (0, empty string, first enum
+ * value), never as NULL.
  *
  * <p>Recursive message types are rejected (BigQuery schemas cannot represent them), as are sibling
  * fields whose names differ only by case (the Storage API lowercases descriptor field names).
@@ -128,15 +133,16 @@ public final class ProtoToTableSchemaConverter {
             Set<String> ancestors,
             Set<String> matchedJsonPaths) {
         String path = parentPath.isEmpty() ? field.getName() : parentPath + "." + field.getName();
+        // Asked once and reused: this is the single JSON decision point, it walks the descriptor's
+        // file-dependency graph for every configured option, and it decides the mode as well as
+        // the type.
+        boolean jsonColumn = options.isJsonField(field, path);
         TableFieldSchema.Builder builder =
                 TableFieldSchema.newBuilder()
                         .setName(field.getName())
-                        .setMode(
-                                field.isRepeated()
-                                        ? TableFieldSchema.Mode.REPEATED
-                                        : TableFieldSchema.Mode.NULLABLE);
+                        .setMode(modeOf(field, options, jsonColumn));
 
-        if (options.isJsonField(field, path)) {
+        if (jsonColumn) {
             Preconditions.checkArgument(
                     isJsonMappable(field),
                     "JSON mapping requires a (possibly repeated) message or string field, but %s is"
@@ -174,6 +180,37 @@ public final class ProtoToTableSchemaConverter {
                         "Unsupported protobuf type " + field.getType() + " for field " + path);
         }
         return builder.build();
+    }
+
+    /**
+     * Returns the BigQuery mode of the given field.
+     *
+     * <p>{@code repeated} is tested first and unconditionally, so a repeated JSON-mapped field
+     * stays {@code REPEATED JSON} and a map stays {@code REPEATED STRUCT} — a BigQuery {@code
+     * REPEATED} column cannot be {@code NULLABLE} anyway.
+     *
+     * <p>A singular {@code JSON} column is never {@code REQUIRED}. The rule is stated about JSON
+     * rather than about presence because the alternative would poison whole streams: {@link
+     * ProtoRowConverter} deliberately leaves a JSON-mapped string <em>without presence</em> unset
+     * when it is empty (an empty string is not valid JSON), and "without presence" is exactly the
+     * condition that would make the column {@code REQUIRED} — a required target field left unset
+     * fails {@code build()} for every record that legitimately omits it. The broader rule also
+     * covers a proto2 {@code required} JSON field, where {@code REQUIRED} would in fact be correct;
+     * one clause is worth more than fidelity in a combination that exotic.
+     */
+    private static TableFieldSchema.Mode modeOf(
+            Descriptors.FieldDescriptor field, ProtoSchemaOptions options, boolean jsonColumn) {
+        if (field.isRepeated()) {
+            return TableFieldSchema.Mode.REPEATED;
+        }
+        if (!options.isDeriveRequiredColumns() || jsonColumn) {
+            return TableFieldSchema.Mode.NULLABLE;
+        }
+        // isRequired() as well as presence: a proto2 required field has presence and is mandatory
+        // all the same, so testing presence alone would map the one unambiguous case to NULLABLE.
+        return field.isRequired() || !field.hasPresence()
+                ? TableFieldSchema.Mode.REQUIRED
+                : TableFieldSchema.Mode.NULLABLE;
     }
 
     private static void convertMessageField(

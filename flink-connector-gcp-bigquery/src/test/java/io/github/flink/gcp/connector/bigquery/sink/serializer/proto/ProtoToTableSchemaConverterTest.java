@@ -33,6 +33,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link ProtoToTableSchemaConverter}. */
 class ProtoToTableSchemaConverterTest {
 
+    private static final ProtoSchemaOptions DERIVE_REQUIRED =
+            ProtoSchemaOptions.builder().deriveRequiredColumns().build();
+
     @Test
     void mapsTheFullTypeMatrix() {
         TableSchema schema =
@@ -60,12 +63,13 @@ class ProtoToTableSchemaConverterTest {
     }
 
     /**
-     * Pins today's mapping across every proto3 presence shape, none of which the converter looks at
-     * — a field is REPEATED, or it is NULLABLE. #124 changes exactly this, so having the current
-     * answer written down is what will make that diff readable.
+     * By default the converter looks at no presence shape at all — a field is REPEATED, or it is
+     * NULLABLE. That default is deliberate: proto3's presence-less form is the spelling you get by
+     * not thinking about nullability, so deriving REQUIRED from it would make nearly every scalar
+     * column of an auto-created table REQUIRED on the strength of a syntax default.
      */
     @Test
-    void mapsEveryProto3PresenceShapeToNullable() {
+    void mapsEveryProto3PresenceShapeToNullableByDefault() {
         TableSchema schema =
                 ProtoToTableSchemaConverter.convert(
                         TestProtos.presence(), ProtoSchemaOptions.defaults());
@@ -93,10 +97,10 @@ class ProtoToTableSchemaConverterTest {
 
     /**
      * The same for proto2, where every singular field has presence — including {@code required},
-     * which is the case a presence check alone gets wrong once #124 derives modes from it.
+     * which is the case a presence check alone gets wrong once modes are derived from presence.
      */
     @Test
-    void mapsProto2RequiredFieldsToNullableToo() {
+    void mapsProto2RequiredFieldsToNullableByDefaultToo() {
         TableSchema schema =
                 ProtoToTableSchemaConverter.convert(
                         TestProtos.proto2Presence(), ProtoSchemaOptions.defaults());
@@ -110,6 +114,110 @@ class ProtoToTableSchemaConverterTest {
         assertThat(proto2.findFieldByName("q_required").isRequired()).isTrue();
         assertThat(proto2.findFieldByName("q_required").hasPresence()).isTrue();
         assertThat(proto2.findFieldByName("q_optional").isRequired()).isFalse();
+    }
+
+    @Test
+    void deriveRequiredColumnsMapsPresencelessProto3FieldsToRequired() {
+        TableSchema schema =
+                ProtoToTableSchemaConverter.convert(TestProtos.presence(), DERIVE_REQUIRED);
+        Map<String, TableFieldSchema> fields = byName(schema);
+
+        // No presence: an unset value reaches the column as "" / 0, never as NULL, so REQUIRED is
+        // both faithful and always satisfied.
+        assertThat(fields.get("p_implicit").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(fields.get("p_implicit_int").getMode())
+                .isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        // Presence, from the oneof, from the optional keyword, and inherent to a message field.
+        assertThat(fields.get("p_choice_a").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("p_choice_b").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("p_optional").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("p_nested").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        // Repeated has no presence either, so the mode decision has to test it first.
+        assertThat(fields.get("p_rep").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+
+        // And it recurses: the nested struct's own children are derived the same way.
+        assertThat(fields.get("p_nested").getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getMode)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(
+                                "c_implicit", TableFieldSchema.Mode.REQUIRED),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "c_optional", TableFieldSchema.Mode.NULLABLE));
+    }
+
+    /**
+     * proto2 {@code required} is the case {@code hasPresence()} alone gets wrong: it has presence
+     * and is mandatory all the same, so the predicate needs its second clause.
+     */
+    @Test
+    void deriveRequiredColumnsKeepsProto2RequiredRequired() {
+        TableSchema schema =
+                ProtoToTableSchemaConverter.convert(TestProtos.proto2Presence(), DERIVE_REQUIRED);
+        Map<String, TableFieldSchema> fields = byName(schema);
+
+        assertThat(fields.get("q_required").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(fields.get("q_required_child").getMode())
+                .isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(fields.get("q_optional").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("q_optional_child").getMode())
+                .isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("q_rep").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+        // That q_required has presence — so presence alone would say NULLABLE here — is asserted by
+        // mapsProto2RequiredFieldsToNullableByDefaultToo rather than repeated.
+    }
+
+    /**
+     * A proto3 map entry's synthetic {@code key} and {@code value} have implicit presence, so they
+     * become {@code REQUIRED} — which converges with the Avro path, where a map key is {@code
+     * REQUIRED} by default. An entry always carries both, so nothing can leave them unset.
+     */
+    @Test
+    void deriveRequiredColumnsMakesMapKeyAndValueRequired() {
+        TableSchema schema =
+                ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), DERIVE_REQUIRED);
+        Map<String, TableFieldSchema> fields = byName(schema);
+
+        TableFieldSchema map = fields.get("f_map");
+        assertThat(map.getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+        assertThat(map.getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getMode)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("key", TableFieldSchema.Mode.REQUIRED),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "value", TableFieldSchema.Mode.REQUIRED));
+        // An enum has no presence; a message field always has it, Timestamp included.
+        assertThat(fields.get("f_enum").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(fields.get("f_ts").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("f_nested").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+    }
+
+    /**
+     * A singular JSON column is never REQUIRED. {@code ProtoRowConverter} leaves an unset
+     * presence-less JSON string unset rather than writing {@code ""} — and "no presence" is exactly
+     * what would make the column REQUIRED, so the two together would fail every record that
+     * legitimately omits the field.
+     */
+    @Test
+    void deriveRequiredColumnsLeavesJsonColumnsNullable() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .deriveRequiredColumns()
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(TestProtos.annotated(), options));
+
+        assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_string").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("a_message").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        // A repeated JSON field stays REPEATED: the mode decision tests repeated before JSON.
+        assertThat(fields.get("a_rep_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_rep_string").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+        // The exception is about JSON, not about the option: an identically shaped plain string
+        // field in the same message is REQUIRED.
+        assertThat(fields.get("a_plain").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(fields.get("a_plain").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(TestProtos.annotated().findFieldByName("a_string").hasPresence()).isFalse();
     }
 
     @Test
