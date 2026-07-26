@@ -118,8 +118,11 @@ enum WritableMetadata {
     /**
      * Returns the metadata this connector can write, keyed by metadata key, in declaration order.
      *
-     * <p>The map is ordered because {@code SupportsWritingMetadata} hands the selected keys back in
-     * the iteration order of this map, and the schema positions the metadata columns by that order.
+     * <p>{@code SupportsWritingMetadata} hands the selected keys back in the iteration order of
+     * this map, and the consumed row is laid out from that same list — so correctness does not rest
+     * on <em>which</em> order this is, only on it being the one the planner echoes back. The map is
+     * ordered anyway, as the ability's javadoc recommends, so the column layout of a plan is a
+     * property of this declaration rather than of a hash function.
      */
     static Map<String, DataType> listAll() {
         Map<String, DataType> metadata = new LinkedHashMap<>();
