@@ -156,7 +156,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   the topic binding: N options objects are inexpressible in a flat DDL namespace, and sharing one
   would duplicate every message with nothing reporting an error. The precondition is checked in the
   mapper and again in `PubSubDynamicSource`'s constructor, which is the code that indexes the list.
-  A `scan.auto-create.topics` `mapType()` extension for N>1 is recorded and deferred. The builder's
+  A `scan.auto-create.topics` `mapType()` extension for N>1 is deferred to #152. The builder's
   own cross-checks (ordering under `PER_KEY`, a dead-letter policy under a policy that needs one)
   then reach SQL users unchanged, which `carriesTheCreationSettingsAndTheStartPositionIntoTheBuiltSource`
   and its sibling are what prove — the create options and the start position are otherwise invisible
@@ -173,4 +173,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   vocabulary over a difference the DataStream API makes deliberately, and this layer maps rather
   than invents. `scan.` itself is not a choice — it is Flink's read-side prefix, carried by every
   source option here and by `FactoryUtil.SOURCE_PARALLELISM` (`scan.parallelism`) — and with one
-  factory serving both directions it is what tells a reader which half an option belongs to
+  factory serving both directions it is what tells a reader which half an option belongs to.
+  **That settlement has a stated expiry**: #153 would give the sink creation *settings* for the
+  topic it creates — today it has none, while a created subscription takes nine, and that asymmetry
+  is the issue's opening argument. It would make the two sides more alike than they were when this
+  was decided, so re-open the naming there rather than assuming this answer still holds.
+  **The source never creates a topic.** There is no `createTopic` in the `source` package, so
+  `scan.auto-create.topic` names a topic that must already exist, while the sink's
+  `create-if-needed` does create one — the same two words meaning opposite things across one DDL,
+  which is why both user-facing documents now say so outright. A sink-created topic also takes every
+  `Topic` field's service default, message retention among them, so a backwards seek over it replays
+  nothing that was already acknowledged (#153 again)
