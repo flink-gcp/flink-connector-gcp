@@ -20,6 +20,10 @@ Sink<MyEvent> sink =
                 .build();
 ```
 
+Ready-made serializers cover the common input shapes: `ProtoMessageSerializer.of(MyMessage.class)`
+for records that already are protobuf messages, and `AvroRecordSerializer.of(schema)` for Avro
+`GenericRecord` and `SpecificRecord` streams.
+
 ## Documentation
 
 Design, delivery guarantees, schema evolution, error handling, tuning and the testing strategy
@@ -61,7 +65,11 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   are independent implementations of that protocol over Flink 2.x `SupportsWriterState`/
   `SupportsCommitter`, deliberately diverging on finalization (streams are never finalized
   here: real BigQuery rejects `FlushRows` on a finalized stream, which would break restored
-  pending commits)
+  pending commits). For the Avro serializer ([#66](https://github.com/laughingman7743/flink-connector-gcp/issues/66)) it is the `AvroToProtoSerializer` type
+  matrix that was the reference — which logical types map where, and the `["null", T]`-only union
+  rule. `AvroToTableSchemaConverter` and `AvroRowConverter` are independent implementations, and
+  deliberately diverge on Avro maps, which are mapped to `REPEATED STRUCT<key, value>` rather than
+  rejected
 - [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage)
   (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`, `BqToBqStorageSchemaConverter`) —
   reference for proto/schema conversion (`StorageSchemaConverter` and

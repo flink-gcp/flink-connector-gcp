@@ -61,6 +61,10 @@ API notes:
   (integers → INT64, float/double → DOUBLE, enum → STRING, `google.protobuf.Timestamp` →
   TIMESTAMP in microseconds, nested messages → STRUCT, maps → REPEATED STRUCT<key, value>), and
   `ProtoSchemaOptions` can map selected fields to [JSON columns](#json-columns).
+- `AvroRecordSerializer.of(schema)` is the built-in serializer for Avro records — both
+  `GenericRecord` and generated `SpecificRecord` streams, since it accepts `IndexedRecord`. The
+  BigQuery schema is derived from the Avro writer schema; see [Avro records](#avro-records) for
+  the type mapping and for `AvroSchemaOptions`.
 - `TableDestination` is pure table identity (`equals`/`hashCode` over project/dataset/table);
   per-destination creation metadata (partitioning, clustering) is supplied through
   `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
@@ -183,6 +187,102 @@ Three consequences worth knowing:
 
 Marking a field that is neither a message nor a string — including a proto map, whose BigQuery shape
 is `REPEATED STRUCT<key, value>` — is rejected when the schema is derived, through either mechanism.
+
+## Avro records
+
+`AvroRecordSerializer` writes Avro records without a protobuf definition in sight. It takes
+one Avro writer schema for the whole job — as a `Schema` or as its JSON text, for jobs that read it
+from a schema registry or a configuration option — derives the BigQuery schema from it, and
+rewrites each record into the protobuf row the Storage Write API accepts.
+
+```java
+Sink<GenericRecord> sink =
+        BigQuerySink.<GenericRecord>builder()
+                .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                .serializer(AvroRecordSerializer.of(schema))
+                .build();
+```
+
+Records are accepted as `IndexedRecord`, so generated `SpecificRecord` classes work too. Values are
+read in whichever representation the record carries: a `GenericRecord` decoded without conversions
+holds the raw base value (`long`, `int`, `ByteBuffer`), while a `SpecificRecord` generated with
+Avro's logical-type conversions holds `Instant`, `LocalDate`, `LocalTime`, `LocalDateTime`,
+`BigDecimal` or `UUID`. Both are accepted for every logical type.
+
+**Type mapping.**
+
+| Avro | BigQuery |
+|---|---|
+| `string`, `string` + `uuid` | `STRING` |
+| `enum` | `STRING` (the symbol name) |
+| `bytes`, `fixed` | `BYTES` |
+| `int`, `long` | `INT64` |
+| `float`, `double` | `DOUBLE` |
+| `boolean` | `BOOL` |
+| `int` + `date` | `DATE` |
+| `int` + `time-millis`, `long` + `time-micros` | `TIME` |
+| `long` + `timestamp-millis`, `long` + `timestamp-micros` | `TIMESTAMP` (microseconds) |
+| `long` + `local-timestamp-millis`, `long` + `local-timestamp-micros` | `DATETIME` |
+| `bytes`/`fixed` + `decimal(p, s)` | `NUMERIC` when `s ≤ 9` and `p - s ≤ 29`, else `BIGNUMERIC` (`s ≤ 38`, `p - s ≤ 38`); the precision and scale are carried onto the column |
+| `record` | `STRUCT`, recursively |
+| `map<string, V>` | `REPEATED STRUCT<key, value>` — the shape a proto map already gets |
+| `["null", T]` | mode `NULLABLE` |
+| `array<T>` | mode `REPEATED`, whether or not a union around it admitted null |
+| anything else | mode `REQUIRED` |
+
+**Nullability.** A field that is not a `["null", T]` union becomes a `REQUIRED` column, which is the
+faithful reading of the Avro schema — and a trap in an auto-created table, since relaxing a column
+afterwards is a schema update rather than an edit. `AvroSchemaOptions.builder().allFieldsNullable()`
+derives every column as `NULLABLE` instead:
+
+```java
+AvroRecordSerializer.of(
+        schema, AvroSchemaOptions.builder().allFieldsNullable().build());
+```
+
+This changes the derived schema — the one used for table auto-creation, for the write stream and
+for load jobs. `REPEATED` fields are unaffected, since a BigQuery `REPEATED` column cannot be
+`NULLABLE`; nested record fields and map entry columns are relaxed along with the rest.
+
+The one thing it changes in the value path is what happens to a record that omits a field the Avro
+schema declares mandatory: by default that is a row-level failure, and under `allFieldsNullable()`
+the column is simply left unset. Records that do carry the value convert identically either way.
+
+**JSON columns.** `AvroSchemaOptions.builder().jsonFieldPath("event.payload")` derives a `string`
+field at that dotted path as a [`JSON` column](#json-columns) instead of `STRING`. As on the
+protobuf path the value is passed through verbatim and is *not* validated — malformed JSON is a
+BigQuery row-level error, routed to the configured `FailedRowHandler`. A path matching no field, or
+matching a field that is not a `string`, is rejected when the schema is derived. There is no
+annotation-driven equivalent of `ProtoSchemaOptions`' field options: Avro has no standard JSON
+logical type to key off.
+
+**Rejected at job start**, because writing something plausible instead would be worse than failing
+early: unions with more than one non-null branch (BigQuery has no union type), a bare `null` field,
+arrays of nullable elements and arrays of arrays or maps (a `REPEATED` column holds no NULLs and
+does not nest), recursive record types, sibling fields whose names differ only by case (the Storage
+API lowercases descriptor field names), a decimal wider than `BIGNUMERIC`, and the logical types
+BigQuery cannot store without losing information — `timestamp-nanos`, `local-timestamp-nanos`,
+`duration`, `big-decimal`, and `uuid` on a `fixed`. A logical type Avro itself rejects as invalid is
+dropped by its parser, so the field lands on its base type.
+
+"Job start" is literal: the schema is derived when `AvroRecordSerializer.of(...)` is called, so a
+mapping problem is thrown where the pipeline is built. Deferring it to the first record would put it
+inside the sink's per-record failure handling, where a log-and-drop or DLQ policy would swallow one
+misconfiguration once per record instead of failing the job.
+
+**Row-level failures**, routed to the `FailedRowHandler` (see
+[Error handling](#error-handling)): a missing value for a `REQUIRED` column, a null element in a
+repeated field, a decimal too wide or too precise for its column, and a value whose Java type does
+not match the field. A `BigDecimal` carrying more fractional digits than the column declares is one
+of these rather than being rounded silently — the byte form of the same field cannot express it
+either.
+
+A null array and an empty one are indistinguishable once written: `["null", array<T>]` derives a
+`REPEATED` column, and BigQuery has no NULL array to map the difference onto.
+
+**Cost.** Conversion is one pass over each record, which `ProtoMessageSerializer` on an
+already-protobuf stream does not pay. Where the input format is yours to choose and throughput
+matters, a native protobuf record avoids it.
 
 ## Table auto-creation
 
@@ -583,7 +683,10 @@ The module is tested at three levels; `./mvnw verify` runs the first two and nee
 credentials.
 
 **Unit tests** cover the builder/facade dispatch, serializers, schema converters, error
-classification and the writer/committer state machines against in-memory fakes.
+classification and the writer/committer state machines against in-memory fakes. The Avro
+serializer additionally carries a round-trip test (`AvroSchemaRoundTripTest`) that pins
+`AvroToTableSchemaConverter` against the `TableSchemaToAvroConverter` FILE_LOADS stages files with.
+Without it the two could drift apart and corrupt staged files with nothing going red.
 
 **Emulator integration tests** run [goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator)
 in a testcontainer and exercise the Storage Write API gRPC endpoint plus the REST
@@ -591,7 +694,13 @@ table-metadata path end to end: plain at-least-once appends across checkpoint-st
 through the `BigQuerySink` facade (`BigQueryDefaultStreamWriterITCase`), dynamic multi-table
 destinations (`BigQueryDynamicDestinationsITCase`), table auto-creation with create dispositions
 (`BigQueryTableAutoCreationITCase`), schema evolution
-(`BigQuerySchemaEvolutionITCase`), and a buffered-stream smoke test of the production
+(`BigQuerySchemaEvolutionITCase`), Avro records written through the facade into a table created
+from the serializer's own derived schema (`BigQueryAvroSerializerITCase` — `REQUIRED`/`NULLABLE`
+scalars, `TIMESTAMP`, `DATE`, `BYTES`, an enum, a `REPEATED` field, a nested `STRUCT`, a map as
+`REPEATED STRUCT<key, value>` and a `JSON` column; `TIME`, `DATETIME` and `NUMERIC` are excluded
+because the emulator implements neither the packed civil-time encoding nor the decimal byte
+encoding and reads those columns back as unrelated values whatever is written), and a
+buffered-stream smoke test of the production
 exactly-once client wiring (`BigQueryBufferedStreamSmokeITCase` — single flush only: the
 emulator keeps no flush cursor, every `FlushRows` re-inserts all rows up to the offset, and
 buffered appends neither honor the request offset nor raise `OFFSET_ALREADY_EXISTS`, so the
