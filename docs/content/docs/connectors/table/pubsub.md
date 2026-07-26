@@ -269,7 +269,9 @@ backwards seek recovers only what was never acknowledged.
 That is worth checking when the topic was created by `sink.create-disposition` =
 `create-if-needed`, which creates it with **service defaults and no message retention** — so a
 backwards seek over such a topic recovers only the unacknowledged backlog unless the subscription
-itself sets `scan.auto-create.retain-acked-messages`.
+itself sets `scan.auto-create.retain-acked-messages`. A created topic cannot be configured at all
+today, unlike a created subscription; that asymmetry is
+[#153]({{< param BookRepo >}}/issues/153).
 
 ### Subscription auto-creation covers one subscription
 
