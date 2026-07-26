@@ -266,6 +266,11 @@ of this option: already-acknowledged messages are replayable only if the subscri
 `retain-acked-messages` or its topic retains messages. Against a subscription with neither, a
 backwards seek recovers only what was never acknowledged.
 
+That is worth checking when the topic was created by `sink.create-disposition` =
+`create-if-needed`, which creates it with **service defaults and no message retention** — so a
+backwards seek over such a topic recovers only the unacknowledged backlog unless the subscription
+itself sets `scan.auto-create.retain-acked-messages`.
+
 ### Subscription auto-creation covers one subscription
 
 Setting `scan.auto-create.topic` is what authorizes creating a missing subscription, and it binds
