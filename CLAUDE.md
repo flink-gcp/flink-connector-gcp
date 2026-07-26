@@ -351,6 +351,43 @@ packages.
   when two extensions claim one number. The name **rules out a foreign declaration**; it cannot
   arbitrate between two rivals both present in the pool, since an unresolved option records only its
   number
+- **BigQuery Avro serializer** (#66, Avro half; the JSON half closes the issue in a second PR):
+  `AvroRecordSerializer` is `ProtoMessageSerializer`'s shape with an Avro front end — the
+  schema is held as its **JSON text** (serializable, unlike a parsed `Schema`) and the
+  `TableSchema`/descriptor/row-converter triple is rebuilt lazily. It accepts **`IndexedRecord`**,
+  not `GenericRecord`, so `SpecificRecord` streams work; consequently each temporal and decimal
+  conversion accepts **both** the raw Avro value and the converted one (`Instant`, `LocalDate`,
+  `LocalTime`, `LocalDateTime`, `BigDecimal`, `UUID`), because a generated class with Avro's
+  conversions enabled carries the latter and assuming the former would be a per-row
+  `ClassCastException`. `AvroToTableSchemaConverter` is the inverse of the FILE_LOADS
+  `TableSchemaToAvroConverter`, which is why `AvroSchemaRoundTripTest` pins the two against each
+  other: an Avro serializer feeding FILE_LOADS goes Avro → `TableSchema` → Avro, so drift corrupts
+  staged files instead of failing a build. Decisions not to re-litigate: a non-union field is
+  **`REQUIRED`** (the faithful inverse), with `AvroSchemaOptions.allFieldsNullable()` as the
+  escape hatch — it touches **schema derivation only**, leaves `REPEATED` alone (a BigQuery
+  `REPEATED` column cannot be `NULLABLE`) and recurses into nested structs; Avro `map<string,V>` →
+  `REPEATED STRUCT<key,value>` rather than rejected as the Dataproc connector does, because the
+  proto path already gives proto maps that shape; JSON columns are marked by **dotted path only**
+  (Avro has no standard JSON logical type to key off, so `ProtoSchemaOptions`' field-option
+  mechanism has no analogue); and the logical types BigQuery cannot store faithfully
+  (`timestamp-nanos`, `local-timestamp-nanos`, `duration`, `big-decimal`, `uuid` on a `fixed`) are
+  **rejected at job start** rather than silently falling back to the base type — literally at job
+  start, because the schema is derived in `AvroRecordSerializer.of(...)` rather than lazily: the
+  lazy path first runs from `serialize()`, inside the writers' `FailedRowHandler` catch, where one
+  misconfiguration would look like a poison record and a log-and-drop policy would swallow the whole
+  stream. A `["null", array]` field is `REPEATED`, so a null array and an empty one are
+  indistinguishable — BigQuery offers no way to keep them apart, and the alternative is rejecting
+  the schema. Two things caught in self-review and worth not re-deriving: BigQuery bounds a
+  parameterized decimal by its **integer** digits (`NUMERIC(P,S)` needs `S ≤ 9` and `P - S ≤ 29`,
+  `BIGNUMERIC` `S ≤ 38` and `P - S ≤ 38`), not by total precision, so `decimal(35,2)` is BIGNUMERIC
+  and `decimal(77,38)` is rejected; and `AvroRowConverter` pairs schema fields to descriptor fields
+  **by position**, because `BQTableSchemaToProtoDescriptor` lowercases with the *default* locale —
+  under `tr_TR` a column named `ID` becomes the proto field `ıd`, which no `Locale.ROOT` key
+  matches. Position is exact here precisely because the descriptor is always derived from the table
+  schema this connector just produced. The protobuf analogue of the
+  nullability work (deriving `REQUIRED` from proto3 `optional` presence, plus a matching
+  `ProtoSchemaOptions` switch) is deliberately a separate issue: `ProtoToTableSchemaConverter`
+  emits `NULLABLE` unconditionally today
 - **Pub/Sub**: base implementation is vendored from `GoogleCloudPlatform/pubsub`
   `flink-connector/` (decision record: issues #17 and #31); the Apache connector is only a
   design reference (table-factory plumbing, emulator harness). All packages are normalized to

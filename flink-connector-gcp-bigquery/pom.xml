@@ -98,7 +98,8 @@ limitations under the License.
             <artifactId>google-cloud-storage</artifactId>
         </dependency>
         <dependency>
-            <!-- Avro staging files for the FILE_LOADS write method. -->
+            <!-- Avro staging files for the FILE_LOADS write method, and the record type of
+                 AvroRecordSerializer — so this is on the module's public API. -->
             <groupId>org.apache.avro</groupId>
             <artifactId>avro</artifactId>
         </dependency>
