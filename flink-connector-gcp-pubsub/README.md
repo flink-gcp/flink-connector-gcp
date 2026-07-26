@@ -7,7 +7,7 @@ sink and multi-subscription consumption on the source.
 |---|---|
 | SinkV2 at-least-once sink; per-record topic resolution; per-topic publishers; checkpoint flush | Implemented (#18) |
 | Topic auto-creation | Implemented (#19) |
-| Attributes/ordering-key conveniences; message ordering; batching/flow-control/retry options; recovery and in-flight knobs | Implemented (#20) |
+| Attributes/ordering-key conveniences; message ordering; batching/retry options; recovery knobs; in-flight message and byte caps | Implemented (#20, byte cap #85) |
 | Per-record failure policy; fatal-exception classifier | Planned (#37) |
 | Emulator integration tests | Implemented (#21) |
 
@@ -67,7 +67,7 @@ upstream license header:
 
 Deviations from upstream, sink side: dynamic per-record topic destinations with a writer-owned
 per-topic publisher map (upstream: single fixed topic with a JVM-wide static publisher cache),
-mailbox-based backpressure with an in-flight cap and async error capture (upstream: unbounded
+mailbox-based backpressure with in-flight message and byte caps and async error capture (upstream: unbounded
 future list), and a hand-written builder following this repository's conventions (upstream:
 AutoValue).
 

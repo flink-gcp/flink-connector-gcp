@@ -77,28 +77,29 @@ is equivalent to not setting options at all.
 | Knob | Default when unset |
 |---|---|
 | `batchElementCountThreshold` / `batchRequestByteThreshold` / `batchDelayThreshold` | SDK batching defaults (100 / 1000 B / 1 ms) |
-| `flowControlMaxOutstandingElementCount` / `flowControlMaxOutstandingRequestBytes` | no limit |
 | `retryTotalTimeout`, `retryInitialDelay`, `retryDelayMultiplier`, `retryMaxDelay`, `retryInitialRpcTimeout`, `retryRpcTimeoutMultiplier`, `retryMaxRpcTimeout`, `retryMaxAttempts` | SDK publish-retry defaults (600 s total, 100 ms initial, ×4, 60 s cap, ...) |
 | `enableMessageOrdering` | `false` |
 | `maxInFlightMessages` (writer cap) | 1000 |
+| `maxInFlightBytes` (writer cap) | 64 MiB |
 | `recoveryInitialBackoff` / `recoveryMaxBackoff` / `recoveryMaxAttempts` (topic auto-creation) | 500 ms / 10 s / 10 |
 
-Flow-control limits use the SDK's `LimitExceededBehavior.Block`: a publish beyond a limit blocks
-the task thread until in-flight publishes complete — plain backpressure (permits are released on
-SDK threads, so there is no deadlock). `ThrowException` and `Ignore` are deliberately not
-exposed. The writer's `maxInFlightMessages` remains the mailbox-friendly primary cap; the
-flow-control byte limit is the bound the element-count cap cannot provide. Because the SDK
-publisher does not cap its batch thresholds to the flow-control limits (a batch that could never
-fill under them would stall until the delay alarm while holding permits), the sink caps the
-thresholds itself when limits are set.
+**The SDK publisher's flow controller is deliberately not exposed** (#85, revising #20). In-flight
+publishes are bounded by the writer instead, along both dimensions — see **Backpressure** below.
+Two properties made the SDK's version unusable as the sink's byte bound:
 
-**Flow-control limits cannot be combined with message ordering** — the options builder rejects
-the combination: in `google-cloud-pubsub` 1.152.0, `Publisher.publish` acquires a flow-control
-permit *before* the paused-ordering-key check, and the paused-key rejection and per-key
-cancellation paths never release it (verified in the SDK source). After a per-key publish
-failure, leaked permits would permanently shrink — and with `Block` eventually exhaust — the
-flow-control budget, hanging the task thread with no exception. The guard can be relaxed once
-the SDK fixes the leak.
+- It blocks the task thread rather than yielding to the mailbox, which is what the writer's own
+  cap exists to avoid.
+- It **cannot be combined with message ordering.** In `google-cloud-pubsub` 1.152.0,
+  `Publisher.publish` acquires a flow-control permit *before* the paused-ordering-key check, and
+  neither the paused-key rejection nor the per-key cancellation path releases it (verified in the
+  SDK source). After a per-key publish failure, leaked permits permanently shrink — and under
+  `Block` eventually exhaust — the budget, hanging the task thread with no exception. That left
+  ordered sinks, where a paused key holds its whole cascade, with no byte bound at all.
+
+One interaction to size around: a `batchRequestByteThreshold` above `maxInFlightBytes` means a
+batch can never fill under the writer cap, so batches leave only on the delay threshold (or
+`flush()`). That is latency, not deadlock — the delay alarm always fires — but keep the batch
+threshold below the in-flight cap.
 
 ## Delivery guarantees and state
 
@@ -113,11 +114,11 @@ Pub/Sub, and the writer stores nothing in Flink state — **discarding operator 
 
 **FLIP-171 `AsyncSinkBase` was evaluated and rejected** for this sink:
 
-- The Pub/Sub `Publisher` SDK already batches and flow-controls; layering `AsyncSinkWriter`'s
+- The Pub/Sub `Publisher` SDK already batches; layering `AsyncSinkWriter`'s
   own batching/buffering on top double-buffers every record. Using AsyncSink idiomatically
   would mean bypassing `Publisher` and driving the raw publish RPC with AsyncSink owning
   batching, backpressure and retries — discarding exactly the SDK behavior #20 exposes
-  (`BatchingSettings`/`FlowControlSettings`/`RetrySettings` map 1:1 onto `Publisher.Builder`).
+  (`BatchingSettings`/`RetrySettings` map 1:1 onto `Publisher.Builder`).
 - `AsyncSinkWriter` persists unflushed buffers into writer state instead of flushing at the
   barrier, which silently loses those buffers whenever state is dropped. This project
   deliberately chose flush-on-checkpoint statelessness (the BigQuery module records the same
@@ -129,14 +130,34 @@ Checkpointing must be enabled for the at-least-once guarantee in streaming jobs:
 Flink never calls `flush()` mid-stream, so messages buffered in the SDK publishers are lost on
 failure. Batch execution is covered by the end-of-input flush.
 
-**Backpressure.** The number of unacknowledged publishes per writer is capped
-(`maxInFlightMessages`, default 1,000). Publish completions are re-dispatched onto the task
-mailbox, so all writer state is single-threaded; a write at the cap yields to the mailbox until
-completions bring the count back down, bounding sink memory between checkpoints. This is the
-mailbox model of the Apache `flink-connector-gcp-pubsub` writer (a design reference — no code is
-copied from it); that writer's infinite republish of non-fatally failed messages under
-`failOnError=false` is deliberately **not** adopted. SDK-side flow control is available through
-the publisher options.
+**Backpressure.** Unacknowledged publishes per writer subtask are capped along both dimensions
+that bound memory: their number (`maxInFlightMessages`, default 1,000) and their serialized size
+(`maxInFlightBytes`, default 64 MiB, measured as `PubsubMessage.getSerializedSize()`). Publish
+completions are re-dispatched onto the task mailbox, so all writer state is single-threaded; a
+write at either cap yields to the mailbox until completions bring the counters back down. This is
+the mailbox model of the Apache `flink-connector-gcp-pubsub` writer (a design reference — no code
+is copied from it); that writer's infinite republish of non-fatally failed messages under
+`failOnError=false` is deliberately **not** adopted.
+
+The byte cap exists because the message count bounds no memory on its own: Pub/Sub allows 10 MiB
+per message, so 1,000 in flight is up to ~10 GiB per subtask in the pathological case, and 256 KiB
+payloads already reach 256 MiB (#85). Publish retries hold a message for up to the 600 s total
+retry timeout, so a Pub/Sub partial outage is exactly when the peak is reached.
+
+**Sizing rule:** `maxInFlightBytes` × the sink subtasks sharing a TaskManager must fit that
+TaskManager's heap budget, alongside everything else in the job. The 64 MiB default is per subtask,
+deliberately below Google's own 100 MB Java-subscriber default, which is per *client*. With the
+1,000-message cap, the byte cap binds only above ~64 KiB per message — below that the message cap
+still trips first, so small-message pipelines are unaffected by it.
+
+Two bounded ways the byte cap is exceeded, both deliberate:
+
+- Admission is checked *before* a publish, not against the message's own size, so a message larger
+  than the cap is published anyway when the writer is empty and overshoots until it completes. A
+  "does it fit" predicate would never admit such a message: yielding blocks until a mail arrives,
+  and with nothing in flight no mail can arrive, so it would hang the task rather than backpressure
+  it.
+- A topic-creation repair republishes its parked batch without re-checking either cap (see below).
 
 ## Publisher lifecycle
 
@@ -182,6 +203,15 @@ parked already, is a race (#78). One consequence is worth knowing: since a cance
 itself a root cause, one is always parked for repair under `CREATE_IF_NEEDED` rather than failing
 the job. Under `CREATE_NEVER` nothing is parked at all, so no topic is ever created.
 
+The repair republishes its parked batch **without re-checking the in-flight caps**, so both
+counters can transiently exceed them by one destination's batch size. This is bounded — the parked
+messages were themselves admitted under the caps, and the repair drains the writer to empty before
+republishing — and it is the cheaper of the two options: yielding between the batch's publishes
+would run failure mails in the middle of a key's republish and reorder it, reintroducing the
+hazard the publish-sequence sorting exists to close. Parked messages are counted by neither cap
+while parked; their failure mail released them, and they are the same objects the repair
+republishes, so nothing is hidden from the accounting.
+
 Caveats: without ordering keys, repaired messages are republished after later writes may have
 published (no guarantee regression — the sink is at-least-once); a repair inside `flush()`
 extends the checkpoint duration by up to the backoff budget of each repaired destination;
@@ -198,8 +228,9 @@ completion callbacks are rethrown on the task thread from the next `write()`/`fl
 slip past a checkpoint barrier — `flush()` also repairs any `NOT_FOUND` failure it discovers
 while draining, so a completed checkpoint never leaves messages parked for topic creation.
 Publish completion callbacks carry their message (one small callback object per publish) so the
-`NOT_FOUND` repair can republish it; the success path still enqueues a per-destination shared
-mail. Publish retries within the SDK default to its settings and are tunable through the
+`NOT_FOUND` repair can republish it, plus its serialized size so both in-flight counters can be
+released; the callback *is* the success mail, so the success path allocates nothing beyond it.
+Publish retries within the SDK default to its settings and are tunable through the
 publisher options. A per-record failure policy (the `FailedRowHandler` analog of the BigQuery
 module) and a fatal-exception classifier are deferred to #37.
 
@@ -636,8 +667,14 @@ Unit tests cover the builder/facade, destination identity, the serialization ada
 (data-only, attributes/ordering-key composition), the publisher options (defaults, validation,
 SDK settings mapping with a drift guard pinned to the SDK's own retry defaults) and the writer
 (fan-out to per-topic publishers, publisher reuse, checkpoint flush draining, async error
-capture, backpressure at the in-flight cap, close semantics, the topic auto-creation repair
-paths, and the ordering-cascade park/resume/republish paths) against in-memory fakes. Emulator
+capture, backpressure at both in-flight caps — including that the byte cap trips with the message
+count far below its own, that an oversized message is still admitted rather than hanging, that a
+zero-byte message still counts as in flight for the drain, and that the repair is exempt — close
+semantics, the topic auto-creation repair paths, and the
+ordering-cascade park/resume/republish paths) against in-memory fakes. The two writer test classes
+carry a class-level timeout: the fake mailbox blocks on an empty queue exactly as the real one
+does, so a broken in-flight predicate hangs rather than fails, and the timeout turns that back
+into a test failure. Emulator
 integration tests (testcontainers `PubSubEmulatorContainer`) run the production publisher
 factory and topic admin in their emulator-endpoint mode and cover topic auto-creation
 end-to-end, attributes and per-key ordered delivery (including ordering across the auto-creation

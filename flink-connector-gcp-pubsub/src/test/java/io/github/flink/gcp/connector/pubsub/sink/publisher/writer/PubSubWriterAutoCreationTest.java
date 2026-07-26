@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationS
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -42,7 +43,13 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for the topic auto-creation (NOT_FOUND repair) paths of {@link PubSubWriter}. */
+/**
+ * Tests for the topic auto-creation (NOT_FOUND repair) paths of {@link PubSubWriter}.
+ *
+ * <p>Timed out as a class: {@link FakeMailboxExecutor#yield()} blocks on an empty mailbox, so a
+ * drain or admission predicate that can no longer be satisfied hangs rather than fails.
+ */
+@Timeout(30)
 class PubSubWriterAutoCreationTest {
 
     private static final String PROJECT = "test-project";
@@ -74,6 +81,7 @@ class PubSubWriterAutoCreationTest {
                 admin,
                 mailbox,
                 PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
+                PubSubPublisherOptions.defaults().getMaxInFlightBytes(),
                 recoverySchedule);
     }
 
@@ -87,17 +95,29 @@ class PubSubWriterAutoCreationTest {
 
     private PubSubWriter<String> newOrderingWriter(
             CreateDisposition disposition, RetrySchedule recoverySchedule) {
+        return newOrderingWriter(
+                disposition,
+                recoverySchedule,
+                PubSubPublisherOptions.defaults().getMaxInFlightBytes());
+    }
+
+    private PubSubWriter<String> newOrderingWriter(
+            CreateDisposition disposition, RetrySchedule recoverySchedule, long maxInFlightBytes) {
         return new PubSubWriter<>(
                 TestSinkConfigs.forTopic(
                         TOPIC,
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
                                 .withOrderingKey(element -> element.split(":")[0]),
                         disposition,
-                        PubSubPublisherOptions.builder().enableMessageOrdering(true).build()),
+                        PubSubPublisherOptions.builder()
+                                .enableMessageOrdering(true)
+                                .maxInFlightBytes(maxInFlightBytes)
+                                .build()),
                 factory,
                 admin,
                 mailbox,
                 PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
+                maxInFlightBytes,
                 recoverySchedule);
     }
 
@@ -122,6 +142,18 @@ class PubSubWriterAutoCreationTest {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Serialized size of the message the ordering serializer produces for this payload. Goes
+     * through the serializer rather than rebuilding the message, so it cannot drift from what the
+     * writer actually measures.
+     */
+    private static int sizeOf(String payload) throws IOException {
+        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                .withOrderingKey(element -> element.split(":")[0])
+                .serialize(payload)
+                .getSerializedSize();
+    }
+
     @Test
     void notFoundPublishCreatesTopicAndRepublishesOnNextWrite() throws Exception {
         PubSubWriter<String> writer = newWriter(CreateDisposition.CREATE_IF_NEEDED);
@@ -135,6 +167,67 @@ class PubSubWriterAutoCreationTest {
         assertThat(publishedPayloads()).containsExactly("first", "first", "second");
         mailbox.drain();
         assertThat(writer.getInFlightMessages()).isZero();
+        assertThat(writer.getInFlightBytes()).isZero();
+    }
+
+    @Test
+    void parkedMessagesAreCountedByNeitherInFlightCap() throws Exception {
+        // A parked message's bytes were released by its failure mail, so the caps describe only
+        // what the SDK still holds. The parked payload is the same object the repair republishes,
+        // so nothing is hidden — but a reader comparing the counters against writer memory needs
+        // to know this, and a future "count parked bytes too" change would break the drain.
+        PubSubWriter<String> writer = newWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        writer.write("first", CONTEXT);
+        mailbox.drain();
+
+        assertThat(writer.getInFlightMessages()).isZero();
+        assertThat(writer.getInFlightBytes()).isZero();
+
+        // Still parked, so the repair republishes it.
+        writer.flush(false);
+        assertThat(publishedPayloads()).containsExactly("first", "first");
+    }
+
+    @Test
+    void theRepairRepublishesTheParkedBatchWithoutRecheckingTheCaps() throws Exception {
+        // The byte cap admits one message at a time, yet the repair republishes both parked
+        // messages in one batch: re-checking the cap inside the republish loop would interleave
+        // failure mails between a key's publishes and break the ordering the sorted batch exists
+        // to preserve (#78). The overshoot is bounded by one destination's parked batch.
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        CreateDisposition.CREATE_IF_NEEDED, FAST_SCHEDULE, sizeOf("k1:first"));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        writer.write("k1:first", CONTEXT);
+        writer.write("k1:second", CONTEXT);
+
+        writer.flush(false);
+
+        assertThat(admin.created).containsExactly(TOPIC);
+        assertThat(publishedPayloads())
+                .containsExactly("k1:first", "k1:second", "k1:first", "k1:second");
+        assertThat(writer.getInFlightBytes()).isZero();
+    }
+
+    @Test
+    void aZeroByteMessageStillCountsAsInFlightForTheDrain() throws Exception {
+        // A PubsubMessage with an empty payload serializes to zero bytes, so inFlightBytes == 0
+        // does NOT imply an empty writer. This is why drainInFlight() keys on the message count:
+        // a byte-keyed drain would return immediately here, skip the failure mail, and complete a
+        // checkpoint with the message neither published nor repaired.
+        PubSubWriter<String> writer = newWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+
+        writer.write("", CONTEXT);
+        assertThat(writer.getInFlightMessages()).isEqualTo(1);
+        assertThat(writer.getInFlightBytes()).isZero();
+
+        writer.flush(false);
+
+        assertThat(admin.created).containsExactly(TOPIC);
+        assertThat(publishedPayloads()).containsExactly("", "");
     }
 
     @Test
@@ -313,7 +406,7 @@ class PubSubWriterAutoCreationTest {
     void aRepairWaitsForACascadeThatIsStillInFlight() throws Exception {
         // #78 names a second window — a cascade arriving after the repair emptied the buffer — but
         // the in-flight accounting already closes it. repairPendingTopics opens with
-        // awaitInFlightBelow(1), which waits for inFlightMessages to reach zero, and the count
+        // drainInFlight(), which waits for inFlightMessages to reach zero, and the count
         // drops only inside a failure or completion mail. So every publish's mail has run before a
         // batch is snapshotted. Here the cascade's mail is deliberately left queued when the
         // repair is triggered: without that drain the root is repaired alone and the cascade
