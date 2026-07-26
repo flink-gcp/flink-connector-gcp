@@ -158,5 +158,19 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   mapper and again in `PubSubDynamicSource`'s constructor, which is the code that indexes the list.
   A `scan.auto-create.topics` `mapType()` extension for N>1 is recorded and deferred. The builder's
   own cross-checks (ordering under `PER_KEY`, a dead-letter policy under a policy that needs one)
-  then reach SQL users unchanged, which `theCreationSettingsReachTheBuildersOwnCrossCheck` is what
-  proves — the create options are otherwise invisible from outside the built `Source`
+  then reach SQL users unchanged, which `carriesTheCreationSettingsAndTheStartPositionIntoTheBuiltSource`
+  and its sibling are what prove — the create options and the start position are otherwise invisible
+  from outside the built `Source`, and a mutant that dropped the start position on the way to the
+  builder survived every unit test until they read it back through
+  `PubSubStreamingPullSource.getConfig()`.
+  **The two directions spell resource creation differently on purpose, and this is where that was
+  settled** (the question #136 left open, having counted `sink.create-disposition`, `sink.recovery.*`
+  and `scan.auto-create.*` as three spellings of one feature). They are not one feature. A topic
+  needs no configuration to exist, so the sink can gate creation with a `CreateDisposition` enum and
+  a "create with defaults" is meaningful; a subscription without a topic binding is not a
+  subscription, so the source has no disposition enum at all and **the presence of settings is the
+  authorization**. `scan.create.*` was weighed and declined: sharing the word would put a uniform
+  vocabulary over a difference the DataStream API makes deliberately, and this layer maps rather
+  than invents. `scan.` itself is not a choice — it is Flink's read-side prefix, carried by every
+  source option here and by `FactoryUtil.SOURCE_PARALLELISM` (`scan.parallelism`) — and with one
+  factory serving both directions it is what tells a reader which half an option belongs to

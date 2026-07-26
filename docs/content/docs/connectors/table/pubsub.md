@@ -292,9 +292,10 @@ CREATE TABLE orders (
 naming several is rejected. The settings carry the topic binding, so one set of them would bind
 every subscription to the same topic — and Pub/Sub delivers a complete copy of a topic's stream to
 each of its subscriptions, so such a table would emit every message once per subscription with
-nothing reporting an error. Several auto-created subscriptions therefore mean several tables. A
-`scan.auto-create.topics` map option is recorded and deferred: the DDL for several subscriptions
-with distinct topics is a configuration file rather than SQL.
+nothing reporting an error. Several auto-created subscriptions therefore mean several tables; a map
+option that would lift the restriction is deferred to
+[#152]({{< param BookRepo >}}/issues/152). Multi-subscription tables are unaffected when the
+subscriptions already exist.
 
 Three further rules, each because the option shape and the setter shape differ:
 
@@ -395,8 +396,16 @@ state, between "configured" and "default", that this option design exists to rem
 keys creation settings by subscription because they carry the topic binding, and a flat DDL
 namespace cannot express one object per subscription. Rather than pick a rule for sharing them,
 `scan.auto-create.topic` requires `subscription` to name exactly one — one precondition makes the
-duplication hazard inexpressible. A `scan.auto-create.topics` map option would lift that, and is
-deferred rather than tracked: the DDL it would need is a configuration file rather than SQL.
+duplication hazard inexpressible. Lifting it needs a map option, and the DDL that would take is a
+configuration file rather than SQL; deferred to
+[#152]({{< param BookRepo >}}/issues/152).
+
+**The two directions spell resource creation differently, and that is not an oversight.** The sink
+gates topic creation with `sink.create-disposition`, an enum; the source has no disposition option
+at all, and the presence of `scan.auto-create.topic` is the authorization. A topic needs no
+configuration to exist, so "create with defaults" means something for it; a subscription without a
+topic binding is not a subscription, so it cannot. Spelling both `create` would put one vocabulary
+over a difference the DataStream API makes on purpose.
 
 ## Testing
 
