@@ -308,6 +308,35 @@ class BoolFieldOptionReaderTest {
     }
 
     @Test
+    void picksTheExpectedDeclarationWhenTwoShareTheNumber() {
+        // Both annotations protos are in this message's pool, each declaring number 50000, and the
+        // rival is listed last so a stack-based walk meets it first. Taking the first number match
+        // would answer with the rival's name and report "different option" — the field would
+        // quietly
+        // stop being a JSON column even though its own annotation is the configured one.
+        Descriptors.FieldDescriptor field =
+                TestProtos.ambiguouslyAnnotated().findFieldByName("m_string");
+
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                field,
+                                TestProtos.JSON_OPTION_NUMBER,
+                                TestProtos.JSON_OPTION_FULL_NAME))
+                .isTrue();
+        // The other side of the same coin, and a real limit worth pinning: once both declarations
+        // are in the pool the two are indistinguishable, because an unresolved option records only
+        // its number — nothing says which declaration it was written against. The name rules out a
+        // foreign declaration (see rulesOutARivalAnnotationsProtoAtTheSameNumber, where only the
+        // rival is in the pool); it cannot arbitrate between two that are both present.
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                field,
+                                TestProtos.JSON_OPTION_NUMBER,
+                                TestProtos.COLLIDING_OPTION_FULL_NAME))
+                .isTrue();
+    }
+
+    @Test
     void acceptsABoolWrittenTwiceOnTheWireOnceTheDeclarationIsKnown() {
         // Protobuf lets a singular scalar appear more than once and keeps the last occurrence. The
         // encoding heuristic insists on exactly one varint, so applying it after the declaration

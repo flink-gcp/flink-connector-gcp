@@ -144,6 +144,11 @@ How much the connector can verify depends on what reaches it, in three steps:
 | The annotations proto among the descriptor's transitive dependencies | yes | exactly, from the declaration |
 | Neither — the number is all there is | no | from the wire encoding only |
 
+The name rules out a declaration that is *not* yours. It cannot arbitrate between two rival
+declarations that are both in the pool: an unresolved option records only its number, so nothing
+says which of them it was written against. Passing the generated extension is the only form where
+the value itself carries that identity.
+
 The third row is a real case: a `FileDescriptorSet` assembled without the annotations import leaves
 nothing to identify the option but its bytes. There the connector requires the encoding of a
 singular `bool` — one varint of `0` or `1` — so a string, a repeated, or an integer option outside

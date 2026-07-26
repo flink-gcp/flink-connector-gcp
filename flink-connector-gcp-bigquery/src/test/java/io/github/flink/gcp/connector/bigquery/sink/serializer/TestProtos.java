@@ -155,6 +155,48 @@ final class TestProtos {
     }
 
     /**
+     * A message whose descriptor pool holds <em>both</em> annotations protos, each declaring an
+     * extension at {@link #JSON_OPTION_NUMBER}, with the field annotated by ours. protoc rejects
+     * that conflict within one compilation, but a pool assembled from several sources can hold it,
+     * and then only the expected name says which declaration is the right one.
+     *
+     * <p>The rival is listed last so a stack-based walk reaches it first — the declaration search
+     * must not simply take the first number match.
+     */
+    static Descriptors.Descriptor ambiguouslyAnnotated() {
+        DescriptorProtos.FileDescriptorProto proto =
+                DescriptorProtos.FileDescriptorProto.newBuilder()
+                        .setName("ambiguous.proto")
+                        .setPackage("ambiguous")
+                        .setSyntax("proto3")
+                        .addDependency(ANNOTATIONS_PROTO)
+                        .addDependency(COLLIDING_ANNOTATIONS_PROTO)
+                        .addMessageType(
+                                DescriptorProtos.DescriptorProto.newBuilder()
+                                        .setName("Ambiguous")
+                                        .addField(
+                                                withOptions(
+                                                        scalar(
+                                                                "m_string",
+                                                                1,
+                                                                DescriptorProtos
+                                                                        .FieldDescriptorProto.Type
+                                                                        .TYPE_STRING),
+                                                        boolOption(JSON_OPTION_NUMBER, true))))
+                        .build();
+        try {
+            return Descriptors.FileDescriptor.buildFrom(
+                            DescriptorProtos.FileDescriptorProto.parseFrom(proto.toByteString()),
+                            new Descriptors.FileDescriptor[] {
+                                annotationsFile(), collidingAnnotationsFile()
+                            })
+                    .findMessageTypeByName("Ambiguous");
+        } catch (InvalidProtocolBufferException | Descriptors.DescriptorValidationException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    /**
      * The JSON option as a {@code GeneratedExtension}, built the way protoc's output does it — so
      * the builder overload that takes one can be covered without adding a codegen step to the
      * build.

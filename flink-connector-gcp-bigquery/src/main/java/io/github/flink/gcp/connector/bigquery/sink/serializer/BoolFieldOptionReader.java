@@ -58,6 +58,11 @@ import java.util.Set;
  * reachable — either as the known extension itself, or through the descriptor's transitive file
  * dependencies, which a {@code FileDescriptorSet} normally includes even though protobuf will not
  * use them to resolve the value.
+ *
+ * <p>The name rules out a declaration that is <em>not</em> the expected one. It cannot arbitrate
+ * between two rival declarations that are both in the pool: an unresolved option records only its
+ * number, so nothing says which of them it was written against. Only a resolved extension — the
+ * generated class on the classpath — carries that identity in the value itself.
  */
 @Internal
 final class BoolFieldOptionReader {
