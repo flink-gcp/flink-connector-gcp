@@ -101,7 +101,6 @@ public final class ProtoRowConverter {
         ENUM_NAME,
         TIMESTAMP_MICROS,
         JSON,
-        JSON_STRING,
         STRUCT
     }
 
@@ -135,15 +134,23 @@ public final class ProtoRowConverter {
             ProtoSchemaOptions options,
             String path) {
         // A JSON-mapped string already holds JSON text and its target field is a proto string, so
-        // it needs no value conversion — only the empty-value handling that JSON_STRING carries.
-        // Which fields may be JSON-mapped at all is validated once, in ProtoToTableSchemaConverter,
-        // which always runs first to produce the target descriptor.
+        // it
+        // converts as IDENTITY; only the empty-value rule is its own, and that is decided here
+        // rather than per record. Which fields may be JSON-mapped at all is validated once, in
+        // ProtoToTableSchemaConverter, which always runs first to produce the target descriptor.
         if (options.isJsonField(sourceField, path)) {
-            Kind kind =
-                    sourceField.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE
-                            ? Kind.JSON
-                            : Kind.JSON_STRING;
-            return new FieldPlan(sourceField, targetField, kind, path, null, null, null);
+            if (sourceField.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE) {
+                return new FieldPlan(sourceField, targetField, Kind.JSON, path, null, null, null);
+            }
+            return new FieldPlan(
+                    sourceField,
+                    targetField,
+                    Kind.IDENTITY,
+                    path,
+                    null,
+                    null,
+                    null,
+                    !sourceField.hasPresence());
         }
         switch (sourceField.getJavaType()) {
             case INT:
@@ -245,7 +252,7 @@ public final class ProtoRowConverter {
                         continue;
                     }
                     Object value = source.getField(field.sourceField);
-                    if (field.omitsEmptyJsonString(value)) {
+                    if (field.omits(value)) {
                         continue;
                     }
                     builder.setField(field.targetField, field.convertValue(value));
@@ -264,6 +271,23 @@ public final class ProtoRowConverter {
         private final Descriptors.FieldDescriptor timestampSeconds;
         private final Descriptors.FieldDescriptor timestampNanos;
 
+        /**
+         * Whether an empty value must be left unset rather than written, decided once here so the
+         * per-record path stays a flat switch.
+         *
+         * <p>Only ever true for a JSON-mapped string without presence. A plain proto3 scalar has no
+         * presence, so an unset one arrives as {@code ""} — and the BigQuery row descriptor's JSON
+         * field <em>does</em> have presence, so writing it would put an explicit empty string in
+         * the column. The empty string is not valid JSON, so that could only come back as a
+         * row-level error, which for a field most records legitimately leave unset means failing on
+         * most records. Leaving the column unset (NULL) is the only outcome that can succeed.
+         *
+         * <p>Deliberately limited to fields without presence: where the source can say "unset", an
+         * explicit {@code ""} is the user's own statement and is passed through unchanged. Repeated
+         * elements are explicit for the same reason.
+         */
+        private final boolean omitEmptyString;
+
         FieldPlan(
                 Descriptors.FieldDescriptor sourceField,
                 Descriptors.FieldDescriptor targetField,
@@ -272,6 +296,26 @@ public final class ProtoRowConverter {
                 MessagePlan nested,
                 Descriptors.FieldDescriptor timestampSeconds,
                 Descriptors.FieldDescriptor timestampNanos) {
+            this(
+                    sourceField,
+                    targetField,
+                    kind,
+                    path,
+                    nested,
+                    timestampSeconds,
+                    timestampNanos,
+                    false);
+        }
+
+        FieldPlan(
+                Descriptors.FieldDescriptor sourceField,
+                Descriptors.FieldDescriptor targetField,
+                Kind kind,
+                String path,
+                MessagePlan nested,
+                Descriptors.FieldDescriptor timestampSeconds,
+                Descriptors.FieldDescriptor timestampNanos,
+                boolean omitEmptyString) {
             this.sourceField = sourceField;
             this.targetField = targetField;
             this.kind = kind;
@@ -279,32 +323,16 @@ public final class ProtoRowConverter {
             this.nested = nested;
             this.timestampSeconds = timestampSeconds;
             this.timestampNanos = timestampNanos;
+            this.omitEmptyString = omitEmptyString;
         }
 
-        /**
-         * Returns whether this singular value must be left unset rather than written.
-         *
-         * <p>A plain proto3 scalar has no presence, so an unset JSON-mapped string arrives here as
-         * {@code ""} — and the BigQuery row descriptor's JSON field <em>does</em> have presence, so
-         * writing it would put an explicit empty string in the column. The empty string is not
-         * valid JSON, so that could only ever come back as a row-level error, which for a field
-         * most records legitimately leave unset would mean failing on most records. Leaving the
-         * column unset (NULL) is the only outcome that can succeed.
-         *
-         * <p>Deliberately limited to fields without presence: where the source can say "unset", an
-         * explicit {@code ""} is the user's own statement and is passed through unchanged. Repeated
-         * elements are explicit for the same reason.
-         */
-        boolean omitsEmptyJsonString(Object value) {
-            return kind == Kind.JSON_STRING
-                    && !sourceField.hasPresence()
-                    && ((String) value).isEmpty();
+        boolean omits(Object value) {
+            return omitEmptyString && ((String) value).isEmpty();
         }
 
         Object convertValue(Object value) throws IOException {
             switch (kind) {
                 case IDENTITY:
-                case JSON_STRING:
                     return value;
                 case INT_TO_LONG:
                     return ((Integer) value).longValue();

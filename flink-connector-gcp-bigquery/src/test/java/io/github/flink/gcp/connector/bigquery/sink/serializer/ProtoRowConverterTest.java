@@ -183,6 +183,9 @@ class ProtoRowConverterTest {
         // An element is explicit even when empty, so unlike a no-presence singular field it is not
         // dropped — the other half of the empty-string rule.
         builder.addRepeatedField(source.findFieldByName("a_rep_string"), "");
+        // Malformed JSON is BigQuery's to reject as a row-level error; validating every record
+        // client-side would defeat the point of a passthrough, so it must survive unchanged.
+        builder.addRepeatedField(source.findFieldByName("a_rep_string"), "not json at all");
         builder.addRepeatedField(
                 source.findFieldByName("a_rep_message"),
                 DynamicMessage.newBuilder(payloadType)
@@ -194,7 +197,8 @@ class ProtoRowConverterTest {
         // A JSON column travels as a string, so a JSON-mapped string needs no conversion at all:
         // byte-for-byte what the record carried, not a re-serialized form.
         assertThat(get(row, "a_string")).isEqualTo("{\"k\":1}");
-        assertThat(get(row, "a_rep_string")).isEqualTo(Arrays.asList("[1,2]", "{}", ""));
+        assertThat(get(row, "a_rep_string"))
+                .isEqualTo(Arrays.asList("[1,2]", "{}", "", "not json at all"));
         // A JSON-mapped message is still printed as canonical protobuf JSON, singular or repeated.
         assertThat((String) get(row, "a_message")).contains("\"s\":\"printed\"");
         assertThat((List<?>) get(row, "a_rep_message"))
@@ -223,26 +227,6 @@ class ProtoRowConverterTest {
         // hasField, since getField returns "" for a set and an unset field alike.
         assertThat(row.hasField(rowType.findFieldByName("a_plain"))).isTrue();
         assertThat(row.getField(rowType.findFieldByName("a_plain"))).isEqualTo("");
-    }
-
-    @Test
-    void doesNotValidateJsonMappedStrings() throws Exception {
-        // Malformed JSON is BigQuery's to reject as a row-level error; validating every record
-        // client-side would defeat the point of a passthrough. Pins that decision.
-        Descriptors.Descriptor source = TestProtos.annotated();
-        ProtoSchemaOptions options =
-                ProtoSchemaOptions.builder()
-                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
-                        .build();
-        ProtoRowConverter converter = converter(source, options);
-
-        DynamicMessage row =
-                converter.convert(
-                        DynamicMessage.newBuilder(source)
-                                .setField(source.findFieldByName("a_string"), "not json at all")
-                                .build());
-
-        assertThat(get(row, "a_string")).isEqualTo("not json at all");
     }
 
     private static ProtoRowConverter converter(

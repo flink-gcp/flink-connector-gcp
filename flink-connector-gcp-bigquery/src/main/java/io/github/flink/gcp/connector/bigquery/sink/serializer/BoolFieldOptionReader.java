@@ -24,6 +24,7 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.UnknownFieldSet;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
@@ -104,30 +105,35 @@ final class BoolFieldOptionReader {
         // The value is unresolved, but the declaration may still be in the pool. When it is, it
         // gives both the name — so a collision on the number can be ruled out — and the declared
         // type, which is a stricter check than the encoding can offer.
-        Descriptors.FieldDescriptor declaration = findDeclaration(field, extensionNumber);
+        Descriptors.FieldDescriptor declaration =
+                findDeclaration(field, extensionNumber, expectedName);
+        List<Long> varints = unknownFields.getField(extensionNumber).getVarintList();
         if (declaration != null) {
             if (isDifferentOption(declaration, expectedName)) {
                 return false;
             }
             checkIsSingularBool(declaration, field, extensionNumber);
+        } else {
+            // With no declaration the encoding is all there is to go on, so it has to stand in for
+            // the type check the descriptor would otherwise give — else the same .proto would be
+            // accepted or rejected depending only on how the user obtained the descriptor. A
+            // singular bool is one varint of 0 or 1; a repeated option, an enum, an integer outside
+            // {0, 1}, and anything length-delimited or fixed-width are a *different* option at this
+            // number and must not be read as true. An integer option holding 0 or 1 stays
+            // indistinguishable, which is irreducible without the declared type.
+            Preconditions.checkArgument(
+                    varints.size() == 1 && (varints.get(0) == 0L || varints.get(0) == 1L),
+                    "Field option number %s on field %s is not encoded as a singular bool and so is"
+                            + " a different option; a JSON field option must be declared as"
+                            + " 'optional bool ... = %s'",
+                    extensionNumber,
+                    field.getFullName(),
+                    extensionNumber);
         }
-        List<Long> varints = unknownFields.getField(extensionNumber).getVarintList();
-        // With no declaration the encoding is all there is to go on, so it has to carry the type
-        // check the descriptor would otherwise give — else the same .proto would be accepted or
-        // rejected depending only on how the user obtained the descriptor. A singular bool is
-        // exactly one varint of 0 or 1; a repeated option, an enum, an integer outside {0, 1}, and
-        // anything length-delimited or fixed-width are a *different* option at this number and must
-        // not be read as true. An integer option holding 0 or 1 stays indistinguishable, which is
-        // irreducible without the declared type.
-        Preconditions.checkArgument(
-                varints.size() == 1 && (varints.get(0) == 0L || varints.get(0) == 1L),
-                "Field option number %s on field %s is not encoded as a singular bool and so is a"
-                        + " different option; a JSON field option must be declared as"
-                        + " 'optional bool ... = %s'",
-                extensionNumber,
-                field.getFullName(),
-                extensionNumber);
-        return varints.get(0) != 0L;
+        // Protobuf allows a singular scalar to appear more than once on the wire and keeps the last
+        // occurrence, so once the declaration has proven the option is a bool this must not insist
+        // on exactly one varint.
+        return !varints.isEmpty() && varints.get(varints.size() - 1) != 0L;
     }
 
     /**
@@ -164,28 +170,55 @@ final class BoolFieldOptionReader {
      * declaration itself is there whenever the annotations proto travelled with the schema, which
      * is the usual shape of a {@code FileDescriptorSet}.
      *
+     * <p>Both file-level and message-scoped {@code extend} blocks are searched: nesting the block
+     * inside a scoping message is a common way to keep an annotation out of the package namespace,
+     * and missing it would quietly drop the option back to the encoding heuristic.
+     *
+     * <p>Nothing stops a pool from holding two declarations at the same number — protoc rejects
+     * that within one compilation, but a merged pool need not — so a declaration carrying the name
+     * the caller expects wins over one that merely matches the number.
+     *
      * @return the declaration, or {@code null} if the annotations proto is not in the pool
      */
     private static Descriptors.FieldDescriptor findDeclaration(
-            Descriptors.FieldDescriptor field, int extensionNumber) {
+            Descriptors.FieldDescriptor field, int extensionNumber, String expectedName) {
         Set<String> visited = new HashSet<>();
-        Deque<Descriptors.FileDescriptor> pending = new ArrayDeque<>();
-        pending.push(field.getFile());
-        while (!pending.isEmpty()) {
-            Descriptors.FileDescriptor file = pending.pop();
+        Deque<Descriptors.FileDescriptor> pendingFiles = new ArrayDeque<>();
+        pendingFiles.push(field.getFile());
+        Descriptors.FieldDescriptor byNumber = null;
+        while (!pendingFiles.isEmpty()) {
+            Descriptors.FileDescriptor file = pendingFiles.pop();
+            // A FileDescriptor can only be built from already-built dependencies, so the graph is a
+            // DAG and this only saves repeated work on diamond imports.
             if (!visited.add(file.getFullName())) {
                 continue;
             }
-            for (Descriptors.FieldDescriptor extension : file.getExtensions()) {
-                if (extension.getNumber() == extensionNumber
-                        && FIELD_OPTIONS.equals(extension.getContainingType().getFullName())) {
-                    return extension;
+            for (Descriptors.FieldDescriptor candidate : extensionsOf(file)) {
+                if (candidate.getNumber() != extensionNumber
+                        || !FIELD_OPTIONS.equals(candidate.getContainingType().getFullName())) {
+                    continue;
+                }
+                if (expectedName != null && expectedName.equals(candidate.getFullName())) {
+                    return candidate;
+                }
+                if (byNumber == null) {
+                    byNumber = candidate;
                 }
             }
-            for (Descriptors.FileDescriptor dependency : file.getDependencies()) {
-                pending.push(dependency);
-            }
+            pendingFiles.addAll(file.getDependencies());
         }
-        return null;
+        return byNumber;
+    }
+
+    /** Every extension declared in the file, at file level or nested inside any message. */
+    private static List<Descriptors.FieldDescriptor> extensionsOf(Descriptors.FileDescriptor file) {
+        List<Descriptors.FieldDescriptor> extensions = new ArrayList<>(file.getExtensions());
+        Deque<Descriptors.Descriptor> pending = new ArrayDeque<>(file.getMessageTypes());
+        while (!pending.isEmpty()) {
+            Descriptors.Descriptor message = pending.pop();
+            extensions.addAll(message.getExtensions());
+            pending.addAll(message.getNestedTypes());
+        }
+        return extensions;
     }
 }

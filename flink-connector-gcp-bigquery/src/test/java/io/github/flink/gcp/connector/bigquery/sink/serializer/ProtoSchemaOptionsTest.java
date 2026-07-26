@@ -46,7 +46,9 @@ class ProtoSchemaOptionsTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {0, -1, 536870912, 19000, 19999})
+    // 1 and 999 are valid field numbers but not valid FieldOptions *extension* numbers: it declares
+    // "extensions 1000 to max".
+    @ValueSource(ints = {0, -1, 1, 999, 536870912, 19000, 19999})
     void rejectsFieldOptionNumbersProtobufCannotUse(int extensionNumber) {
         assertThatThrownBy(
                         () -> ProtoSchemaOptions.builder().jsonFieldOptionNumber(extensionNumber))
@@ -56,7 +58,7 @@ class ProtoSchemaOptionsTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {1, 18999, 20000, 50000, 536870911})
+    @ValueSource(ints = {1000, 18999, 20000, 50000, 536870911})
     void acceptsFieldOptionNumbersProtobufCanUse(int extensionNumber) {
         assertThat(
                         ProtoSchemaOptions.builder()

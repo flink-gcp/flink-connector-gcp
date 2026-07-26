@@ -45,9 +45,9 @@ import java.util.Set;
  * </ul>
  *
  * <p>Fields are selected either by their dotted path from the root message (for example {@code
- * payload} or {@code event.details}) or by a boolean custom field option identified by its
- * extension number. The two mechanisms are unioned, so a field marked either way is a {@code JSON}
- * column.
+ * payload} or {@code event.details}) or by a boolean custom field option, supplied either as the
+ * generated extension or as its extension number. The two mechanisms are unioned, so a field marked
+ * either way is a {@code JSON} column.
  */
 @PublicEvolving
 public final class ProtoSchemaOptions implements Serializable {
@@ -57,10 +57,12 @@ public final class ProtoSchemaOptions implements Serializable {
     /** Sentinel for {@link #jsonFieldOptionNumber}: no field option is configured. */
     private static final int NO_FIELD_OPTION = 0;
 
-    private static final int MIN_FIELD_NUMBER = 1;
-    private static final int MAX_FIELD_NUMBER = 536870911;
-    private static final int FIRST_RESERVED_FIELD_NUMBER = 19000;
-    private static final int LAST_RESERVED_FIELD_NUMBER = 19999;
+    // google.protobuf.FieldOptions declares "extensions 1000 to max", so numbers below 1000 can
+    // never be one of its extensions however valid they are as ordinary field numbers.
+    private static final int MIN_EXTENSION_NUMBER = 1000;
+    private static final int MAX_EXTENSION_NUMBER = 536870911;
+    private static final int FIRST_RESERVED_NUMBER = 19000;
+    private static final int LAST_RESERVED_NUMBER = 19999;
 
     private static final ProtoSchemaOptions DEFAULTS = new ProtoSchemaOptions(new Builder());
 
@@ -91,18 +93,19 @@ public final class ProtoSchemaOptions implements Serializable {
 
     /**
      * Returns the {@code google.protobuf.FieldOptions} extension number marking {@code JSON}
-     * columns, or {@code 0} if no field option is configured.
+     * columns, or {@code 0} if no field option is configured. Package-private: {@link #isJsonField}
+     * is the supported way to ask, and the sibling options classes expose only what the sink itself
+     * reads back.
      */
-    public int getJsonFieldOptionNumber() {
+    int getJsonFieldOptionNumber() {
         return jsonFieldOptionNumber;
     }
 
     /**
      * Returns the full name of the field option marking {@code JSON} columns, or {@code null} when
-     * the option was configured by number alone. When present, a declaration found at the same
-     * number under a different name is treated as an unrelated option rather than a marker.
+     * the option was configured by number alone.
      */
-    public String getJsonFieldOptionName() {
+    String getJsonFieldOptionName() {
         return jsonFieldOptionName;
     }
 
@@ -141,7 +144,10 @@ public final class ProtoSchemaOptions implements Serializable {
          * is on the classpath. It is the same mechanism, but the compiler enforces that the option
          * really is a {@code bool}, and the option's full name is captured so that an unrelated
          * option sharing the extension number — which protobuf's private range makes possible,
-         * since it has no registry — cannot be mistaken for this marker.
+         * since it has no registry — is ignored wherever its declaration can be resolved. That is
+         * everywhere the annotations proto is either on the classpath or among the descriptor's
+         * transitive dependencies; a descriptor that arrives with neither leaves the number as the
+         * only available identity.
          *
          * <pre>{@code
          * ProtoSchemaOptions.builder().jsonFieldOption(MyAnnotations.json).build();
@@ -221,21 +227,23 @@ public final class ProtoSchemaOptions implements Serializable {
          * @return this builder
          */
         public Builder jsonFieldOptionNumber(int extensionNumber) {
-            // Reconfiguring by number drops any name captured by jsonFieldOption; that method
-            // re-assigns it afterwards.
-            this.jsonFieldOptionName = null;
             Preconditions.checkArgument(
-                    extensionNumber >= MIN_FIELD_NUMBER
-                            && extensionNumber <= MAX_FIELD_NUMBER
-                            && (extensionNumber < FIRST_RESERVED_FIELD_NUMBER
-                                    || extensionNumber > LAST_RESERVED_FIELD_NUMBER),
-                    "jsonFieldOptionNumber must be a protobuf field number in [%s, %s] and outside"
-                            + " protobuf's reserved range [%s, %s], but was %s",
-                    MIN_FIELD_NUMBER,
-                    MAX_FIELD_NUMBER,
-                    FIRST_RESERVED_FIELD_NUMBER,
-                    LAST_RESERVED_FIELD_NUMBER,
+                    extensionNumber >= MIN_EXTENSION_NUMBER
+                            && extensionNumber <= MAX_EXTENSION_NUMBER
+                            && (extensionNumber < FIRST_RESERVED_NUMBER
+                                    || extensionNumber > LAST_RESERVED_NUMBER),
+                    "jsonFieldOptionNumber must be a google.protobuf.FieldOptions extension number"
+                            + " in [%s, %s] and outside protobuf's reserved range [%s, %s], but was"
+                            + " %s",
+                    MIN_EXTENSION_NUMBER,
+                    MAX_EXTENSION_NUMBER,
+                    FIRST_RESERVED_NUMBER,
+                    LAST_RESERVED_NUMBER,
                     extensionNumber);
+            // Only after the check, so a rejected number cannot leave the previous number paired
+            // with no name — that would silently downgrade the collision guard for a caller that
+            // catches the exception. jsonFieldOption re-assigns the name after delegating here.
+            this.jsonFieldOptionName = null;
             this.jsonFieldOptionNumber = extensionNumber;
             return this;
         }

@@ -21,6 +21,10 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.GeneratedMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.TimestampProto;
+import com.google.protobuf.UnknownFieldSet;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Programmatically built test descriptors (no protoc code generation needed): a proto3 file with an
@@ -49,7 +53,24 @@ final class TestProtos {
     /** A repeated bool field option: the right wire type, the wrong arity. */
     static final int REPEATED_BOOL_OPTION_NUMBER = 50004;
 
+    /**
+     * A bool option declared inside a scoping message rather than at file level — a common way to
+     * keep an annotation out of the package namespace, and invisible to a declaration search that
+     * only looks at {@code FileDescriptor.getExtensions()}.
+     */
+    static final int SCOPED_OPTION_NUMBER = 50005;
+
+    /** Full name of the scoped option: note the {@code Scope} segment. */
+    static final String SCOPED_OPTION_FULL_NAME = "annot.Scope.scoped_json";
+
+    /**
+     * A <em>different</em> annotations proto claiming the same number as {@link
+     * #JSON_OPTION_NUMBER}, as two teams picking from protobuf's unregistered private range would.
+     */
+    static final String COLLIDING_OPTION_FULL_NAME = "other.json";
+
     private static final String ANNOTATIONS_PROTO = "annot.proto";
+    private static final String COLLIDING_ANNOTATIONS_PROTO = "other_annot.proto";
 
     private TestProtos() {}
 
@@ -96,6 +117,41 @@ final class TestProtos {
     /** A message whose option-marked field is neither a message nor a string. */
     static Descriptors.Descriptor annotatedBadType() {
         return annotatedFile(false).findMessageTypeByName("AnnotatedBadType");
+    }
+
+    /**
+     * A message annotated by a <em>different</em> annotations proto that happens to use the same
+     * extension number, in the unknown-field form. Nothing but the declaration's full name
+     * separates it from the real marker.
+     */
+    static Descriptors.Descriptor collidingAnnotated() {
+        DescriptorProtos.FileDescriptorProto proto =
+                DescriptorProtos.FileDescriptorProto.newBuilder()
+                        .setName("colliding.proto")
+                        .setPackage("colliding")
+                        .setSyntax("proto3")
+                        .addDependency(COLLIDING_ANNOTATIONS_PROTO)
+                        .addMessageType(
+                                DescriptorProtos.DescriptorProto.newBuilder()
+                                        .setName("Colliding")
+                                        .addField(
+                                                withOptions(
+                                                        scalar(
+                                                                "c_string",
+                                                                1,
+                                                                DescriptorProtos
+                                                                        .FieldDescriptorProto.Type
+                                                                        .TYPE_STRING),
+                                                        collidingOption())))
+                        .build();
+        try {
+            return Descriptors.FileDescriptor.buildFrom(
+                            DescriptorProtos.FileDescriptorProto.parseFrom(proto.toByteString()),
+                            new Descriptors.FileDescriptor[] {collidingAnnotationsFile()})
+                    .findMessageTypeByName("Colliding");
+        } catch (InvalidProtocolBufferException | Descriptors.DescriptorValidationException e) {
+            throw new AssertionError(e);
+        }
     }
 
     /**
@@ -417,6 +473,30 @@ final class TestProtos {
                                                         ".annotated.APayload",
                                                         true)),
                                         boolOption(JSON_OPTION_NUMBER, true)))
+                        .addField(
+                                withOptions(
+                                        scalar(
+                                                "a_scoped",
+                                                12,
+                                                DescriptorProtos.FieldDescriptorProto.Type
+                                                        .TYPE_STRING),
+                                        boolOption(SCOPED_OPTION_NUMBER, true)))
+                        .addField(
+                                withOptions(
+                                        scalar(
+                                                "a_leveled_one",
+                                                13,
+                                                DescriptorProtos.FieldDescriptorProto.Type
+                                                        .TYPE_STRING),
+                                        longOption(NON_BOOL_VARINT_OPTION_NUMBER, 1L)))
+                        .addField(
+                                withOptions(
+                                        scalar(
+                                                "a_twice",
+                                                14,
+                                                DescriptorProtos.FieldDescriptorProto.Type
+                                                        .TYPE_STRING),
+                                        repeatedVarintOnTheWire(JSON_OPTION_NUMBER, 1L, 1L)))
                         .build();
 
         DescriptorProtos.DescriptorProto badType =
@@ -442,6 +522,36 @@ final class TestProtos {
                 .addMessageType(annotated)
                 .addMessageType(badType)
                 .build();
+    }
+
+    private static Descriptors.FileDescriptor collidingAnnotationsFile() {
+        DescriptorProtos.FileDescriptorProto proto =
+                DescriptorProtos.FileDescriptorProto.newBuilder()
+                        .setName(COLLIDING_ANNOTATIONS_PROTO)
+                        .setPackage("other")
+                        .setSyntax("proto2")
+                        .addDependency("google/protobuf/descriptor.proto")
+                        .addExtension(
+                                fieldOption(
+                                        "json",
+                                        JSON_OPTION_NUMBER,
+                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_BOOL))
+                        .build();
+        try {
+            return Descriptors.FileDescriptor.buildFrom(
+                    proto, new Descriptors.FileDescriptor[] {DescriptorProtos.getDescriptor()});
+        } catch (Descriptors.DescriptorValidationException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private static DescriptorProtos.FieldOptions collidingOption() {
+        for (Descriptors.FieldDescriptor extension : collidingAnnotationsFile().getExtensions()) {
+            if (extension.getNumber() == JSON_OPTION_NUMBER) {
+                return DescriptorProtos.FieldOptions.newBuilder().setField(extension, true).build();
+            }
+        }
+        throw new AssertionError("No colliding extension built");
     }
 
     private static Descriptors.FileDescriptor annotationsFile() {
@@ -489,6 +599,16 @@ final class TestProtos {
                                         "flags",
                                         REPEATED_BOOL_OPTION_NUMBER,
                                         DescriptorProtos.FieldDescriptorProto.Type.TYPE_BOOL)))
+                // extend inside a scoping message, not at file level.
+                .addMessageType(
+                        DescriptorProtos.DescriptorProto.newBuilder()
+                                .setName("Scope")
+                                .addExtension(
+                                        fieldOption(
+                                                "scoped_json",
+                                                SCOPED_OPTION_NUMBER,
+                                                DescriptorProtos.FieldDescriptorProto.Type
+                                                        .TYPE_BOOL)))
                 .build();
     }
 
@@ -515,6 +635,23 @@ final class TestProtos {
                 .build();
     }
 
+    /**
+     * A singular option whose value appears more than once on the wire. Protobuf permits this and
+     * keeps the last occurrence; it is only reachable by writing the unknown fields directly, since
+     * setting the extension would collapse it.
+     */
+    private static DescriptorProtos.FieldOptions repeatedVarintOnTheWire(
+            int number, long... values) {
+        UnknownFieldSet.Field.Builder field = UnknownFieldSet.Field.newBuilder();
+        for (long value : values) {
+            field.addVarint(value);
+        }
+        return DescriptorProtos.FieldOptions.newBuilder()
+                .setUnknownFields(
+                        UnknownFieldSet.newBuilder().addField(number, field.build()).build())
+                .build();
+    }
+
     private static DescriptorProtos.FieldOptions longOption(int number, long value) {
         return DescriptorProtos.FieldOptions.newBuilder()
                 .setField(extension(number), value)
@@ -531,7 +668,12 @@ final class TestProtos {
     }
 
     private static Descriptors.FieldDescriptor extension(int number) {
-        for (Descriptors.FieldDescriptor extension : annotationsFile().getExtensions()) {
+        Descriptors.FileDescriptor file = annotationsFile();
+        List<Descriptors.FieldDescriptor> candidates = new ArrayList<>(file.getExtensions());
+        for (Descriptors.Descriptor message : file.getMessageTypes()) {
+            candidates.addAll(message.getExtensions());
+        }
+        for (Descriptors.FieldDescriptor extension : candidates) {
             if (extension.getNumber() == number) {
                 return extension;
             }

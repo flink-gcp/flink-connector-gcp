@@ -39,7 +39,15 @@ class BoolFieldOptionReaderTest {
 
     @ParameterizedTest(name = "{0}")
     @ValueSource(
-            strings = {"a_string", "a_message", "a_false", "a_other", "a_labeled", "a_leveled"})
+            strings = {
+                "a_string",
+                "a_message",
+                "a_false",
+                "a_other",
+                "a_labeled",
+                "a_leveled",
+                "a_scoped"
+            })
     void theTwoDescriptorFormsReallyDifferOnTheWire(String name) {
         // Guards every parameterised case below: if a fixture field ever ended up in the same form
         // in both descriptors, its "unknown fields" case would silently test the other path. Runs
@@ -123,10 +131,9 @@ class BoolFieldOptionReaderTest {
     @ParameterizedTest(name = "throughBytes={0}")
     @ValueSource(booleans = {false, true})
     void rejectsANonBoolOptionThatIsVarintEncoded(boolean throughBytes) {
-        // The string option above is rejected in the unknown-field form by accident of its wire
-        // type. An int64 option shares the bool's encoding, so nothing but the value range
-        // separates them — an existing annotation number holding a severity or a version would
-        // otherwise turn every annotated field into a JSON column, silently and durably.
+        // Both forms resolve the declaration here, so both are caught by its declared type. The
+        // varint case still earns its place: the string option above is length-delimited and would
+        // be rejected by wire type alone, which proves nothing about a type check.
         Descriptors.FieldDescriptor field = field(throughBytes, "a_leveled");
 
         assertThatThrownBy(
@@ -228,10 +235,7 @@ class BoolFieldOptionReaderTest {
     }
 
     @Test
-    void cannotTellAnIntegerOptionFromABoolWithoutADeclaration() {
-        // The documented irreducible case, pinned so the @throws contract stays honest: int64 = 7
-        // is
-        // out of {0, 1} and is caught, but a value of 0 or 1 is indistinguishable from a bool.
+    void rejectsAVarintOptionOutsideTheBoolRangeWithoutADeclaration() {
         Descriptors.FieldDescriptor field =
                 TestProtos.annotatedWithoutAnnotationsProto().findFieldByName("a_leveled");
 
@@ -241,6 +245,89 @@ class BoolFieldOptionReaderTest {
                                         field, TestProtos.NON_BOOL_VARINT_OPTION_NUMBER, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("not encoded as a singular bool");
+    }
+
+    @Test
+    void cannotTellAnIntegerOptionFromABoolWithoutADeclaration() {
+        // The genuinely irreducible case the @throws contract admits to, pinned so it stays honest:
+        // an int64 option holding 1 is byte-for-byte a bool set to true. a_leveled (= 7) is caught
+        // only because 7 falls outside {0, 1}; this one cannot be.
+        Descriptors.FieldDescriptor field =
+                TestProtos.annotatedWithoutAnnotationsProto().findFieldByName("a_leveled_one");
+
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                field, TestProtos.NON_BOOL_VARINT_OPTION_NUMBER, null))
+                .isTrue();
+    }
+
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void findsAnOptionDeclaredInsideAScopingMessage(boolean throughBytes) {
+        // `extend` nested in a message is common style for keeping an annotation out of the package
+        // namespace. A declaration search looking only at file-level extensions would miss it and
+        // silently drop both the name check and the declared-type check for that option.
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                field(throughBytes, "a_scoped"),
+                                TestProtos.SCOPED_OPTION_NUMBER,
+                                TestProtos.SCOPED_OPTION_FULL_NAME))
+                .isTrue();
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                field(throughBytes, "a_scoped"),
+                                TestProtos.SCOPED_OPTION_NUMBER,
+                                "annot.scoped_json"))
+                .as("a file-level name must not match the scoped declaration")
+                .isFalse();
+    }
+
+    @Test
+    void rulesOutARivalAnnotationsProtoAtTheSameNumber() {
+        // Not a synthetic name this time: a second annotations proto really declaring bool 50000,
+        // reached through the message's own dependency. Only the full name separates the two.
+        Descriptors.FieldDescriptor field =
+                TestProtos.collidingAnnotated().findFieldByName("c_string");
+
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                field,
+                                TestProtos.JSON_OPTION_NUMBER,
+                                TestProtos.JSON_OPTION_FULL_NAME))
+                .isFalse();
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                field,
+                                TestProtos.JSON_OPTION_NUMBER,
+                                TestProtos.COLLIDING_OPTION_FULL_NAME))
+                .as("its own owner's configuration still matches")
+                .isTrue();
+        assertThat(BoolFieldOptionReader.isSetToTrue(field, TestProtos.JSON_OPTION_NUMBER, null))
+                .as("without a name the number is the only identity, so it still matches")
+                .isTrue();
+    }
+
+    @Test
+    void acceptsABoolWrittenTwiceOnTheWireOnceTheDeclarationIsKnown() {
+        // Protobuf lets a singular scalar appear more than once and keeps the last occurrence. The
+        // encoding heuristic insists on exactly one varint, so applying it after the declaration
+        // has
+        // already proven the option is a bool would reject a perfectly legitimate option — it must
+        // only stand in when nothing else can answer.
+        Descriptors.FieldDescriptor field = field(true, "a_twice");
+        assertThat(
+                        field.getOptions()
+                                .getUnknownFields()
+                                .getField(TestProtos.JSON_OPTION_NUMBER)
+                                .getVarintList())
+                .hasSize(2);
+
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                field,
+                                TestProtos.JSON_OPTION_NUMBER,
+                                TestProtos.JSON_OPTION_FULL_NAME))
+                .isTrue();
     }
 
     @Test

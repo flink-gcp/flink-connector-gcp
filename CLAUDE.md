@@ -248,6 +248,27 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   options live in a nested immutable options object set on the builder (`FileLoadsOptions` via
   `fileLoadsOptions(...)`, `BufferedStreamOptions` via `bufferedStreamOptions(...)`); `build()`
   requires it for its write method and rejects it for others
+- **BigQuery JSON columns** (#49 paths, #50 field options): a `JSON` column is carried as a string
+  by the Storage Write API, so `ProtoSchemaOptions` is purely a **schema-derivation marker** —
+  it decides whether the derived schema says `JSON` instead of `STRUCT`/`STRING` for table
+  auto-creation, the write stream and load jobs. It covers **message and string** fields (a message
+  is printed as canonical proto JSON; a string is passed through verbatim and *not* validated —
+  malformed JSON is a BigQuery row-level error, routed to `FailedRowHandler`). #50's issue text
+  says message-only; that was widened in the implementing PR because the corpus the feature exists
+  to migrate annotates **string** fields, so option selection alone would have delivered nothing.
+  `isJsonField(field, path)` is the single decision point both converters consult. Consequences not
+  to re-litigate: an unset plain proto3 string is **left unset rather than written as `""`** (the
+  row descriptor's JSON field has presence, and `""` is not valid JSON, so writing it would fail
+  every record that omits the field) — limited to fields without presence, since elsewhere `""` is
+  the user's own statement. An option **number matching no field is deliberately not an error**,
+  unlike a path, because one configuration serves every message type a job writes. **No
+  `ExtensionRegistry`**: protobuf-java never resolves custom options against the descriptor pool
+  (not even for a declared dependency), so the unknown-fields read is the *normal* path, and
+  `getAllFields()` reaches a generated extension by number without the generated class. Because
+  protobuf's private extension range has no registry, the option's **full name is its identity** —
+  `jsonFieldOption(GeneratedExtension)` captures it (the extension itself is not `Serializable` and
+  must not be retained); `jsonFieldOptionNumber(int)` remains for descriptors that arrive without
+  the annotations artifact, and then only the wire encoding can stand in for the type check
 - **Pub/Sub**: base implementation is vendored from `GoogleCloudPlatform/pubsub`
   `flink-connector/` (decision record: issues #17 and #31); the Apache connector is only a
   design reference (table-factory plumbing, emulator harness). All packages are normalized to

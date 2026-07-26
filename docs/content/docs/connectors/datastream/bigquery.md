@@ -134,10 +134,23 @@ or register.
 so an unrelated annotation can occupy the same number — and a job that writes several message types
 is exactly where protos from different sources meet. The extension supplies the option's full name
 as well, so a declaration found under a different name is treated as an unrelated option and the
-field is left alone. It also makes the compiler check that the option really is a `bool`. With the
-bare number, the connector still verifies the declared type wherever it can resolve the declaration
-(including through the descriptor's transitive file dependencies), but two `bool` options at the
-same number are indistinguishable.
+field is left alone. It also makes the compiler check that the option really is a `bool`.
+
+How much the connector can verify depends on what reaches it, in three steps:
+
+| What is available | Name checked | Type checked |
+|---|---|---|
+| The generated extension class (option is a resolved extension) | yes | exactly, from the descriptor |
+| The annotations proto among the descriptor's transitive dependencies | yes | exactly, from the declaration |
+| Neither — the number is all there is | no | from the wire encoding only |
+
+The third row is a real case: a `FileDescriptorSet` assembled without the annotations import leaves
+nothing to identify the option but its bytes. There the connector requires the encoding of a
+singular `bool` — one varint of `0` or `1` — so a string, a repeated, or an integer option outside
+that range is rejected with *"is not encoded as a singular bool"* rather than silently marking a
+column. An integer option that happens to hold `0` or `1` is indistinguishable from a `bool` and is
+accepted; that is why passing the extension, or shipping the annotations proto with the schema, is
+worth doing.
 
 Three consequences worth knowing:
 

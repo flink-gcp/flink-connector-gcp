@@ -229,22 +229,35 @@ class ProtoToTableSchemaConverterTest {
                                 "n_plain", TableFieldSchema.Type.STRING));
     }
 
-    @ParameterizedTest(name = "throughBytes={0}")
-    @ValueSource(booleans = {false, true})
-    void mapsFieldsMarkedByAGeneratedExtension(boolean throughBytes) {
-        // The end-to-end shape a user with the annotations artifact on their classpath writes: the
-        // extension supplies both the number and the name, so a collision on the number cannot be
-        // mistaken for this marker.
-        ProtoSchemaOptions options =
+    @Test
+    void aRivalAnnotationAtTheSameNumberDoesNotProduceAJsonColumn() {
+        // The whole point of passing the generated extension: `colliding.proto` is annotated by a
+        // different annotations proto that also claims number 50000, and the resulting column must
+        // stay STRING. Configured by number alone the same field would become JSON.
+        ProtoSchemaOptions byExtension =
                 ProtoSchemaOptions.builder()
                         .jsonFieldOption(TestProtos.jsonOptionExtension())
                         .build();
-        Map<String, TableFieldSchema> fields =
-                byName(ProtoToTableSchemaConverter.convert(annotated(throughBytes), options));
+        ProtoSchemaOptions byNumber =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
 
-        assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
-        assertThat(fields.get("a_message").getType()).isEqualTo(TableFieldSchema.Type.JSON);
-        assertThat(fields.get("a_plain").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(
+                        byName(
+                                        ProtoToTableSchemaConverter.convert(
+                                                TestProtos.collidingAnnotated(), byExtension))
+                                .get("c_string")
+                                .getType())
+                .isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(
+                        byName(
+                                        ProtoToTableSchemaConverter.convert(
+                                                TestProtos.collidingAnnotated(), byNumber))
+                                .get("c_string")
+                                .getType())
+                .as("by number alone there is nothing to tell the two options apart")
+                .isEqualTo(TableFieldSchema.Type.JSON);
     }
 
     @Test
