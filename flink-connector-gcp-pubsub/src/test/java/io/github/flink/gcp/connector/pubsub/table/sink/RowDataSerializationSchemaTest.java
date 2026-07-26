@@ -39,7 +39,13 @@ import static org.assertj.core.api.Assertions.entry;
 /** Tests for {@link RowDataSerializationSchema}. */
 class RowDataSerializationSchemaTest {
 
-    /** Records the rows it is handed, so the projection handed to the format can be inspected. */
+    /**
+     * Records the rows it is handed, so the projection handed to the format can be inspected.
+     *
+     * <p>Renders any field type rather than assuming {@code STRING}: a schema that mistakenly hands
+     * over the metadata suffix must fail on the assertion about what the format saw, not on a class
+     * cast inside this encoder — a cast error would kill the same mutants for the wrong reason.
+     */
     private static final class RecordingEncoder implements SerializationSchema<RowData> {
 
         private static final long serialVersionUID = 1L;
@@ -51,10 +57,21 @@ class RowDataSerializationSchemaTest {
             StringBuilder rendered = new StringBuilder();
             for (int i = 0; i < element.getArity(); i++) {
                 rendered.append(i == 0 ? "" : "|");
-                rendered.append(element.isNullAt(i) ? "null" : element.getString(i).toString());
+                rendered.append(render(element, i));
             }
             seen.add(rendered.toString());
             return rendered.toString().getBytes(StandardCharsets.UTF_8);
+        }
+
+        private static String render(RowData element, int pos) {
+            if (element.isNullAt(pos)) {
+                return "null";
+            }
+            try {
+                return element.getString(pos).toString();
+            } catch (ClassCastException e) {
+                return "<non-string>";
+            }
         }
     }
 
@@ -130,16 +147,9 @@ class RowDataSerializationSchemaTest {
         assertThat(message.getOrderingKey()).isEmpty();
     }
 
-    @Test
-    void anEmptyOrderingKeySetsNoKey() throws Exception {
-        RowDataSerializationSchema schema =
-                new RowDataSerializationSchema(
-                        new RecordingEncoder(),
-                        1,
-                        new WritableMetadata[] {WritableMetadata.ORDERING_KEY});
-
-        assertThat(schema.serialize(row(str("a"), str(""))).getOrderingKey()).isEmpty();
-    }
+    // There is deliberately no test for an *empty* ordering key. proto3 gives a singular string no
+    // presence, so setOrderingKey("") builds a message equal to one where it was never set — the
+    // guard in WritableMetadata is documentation, and any test of it would be unfalsifiable.
 
     @Test
     void anEmptyAttributesMapAddsNothing() throws Exception {
@@ -213,7 +223,7 @@ class RowDataSerializationSchemaTest {
     }
 
     @Test
-    void theProjectionIsReusedAcrossRecords() throws Exception {
+    void aReusedProjectionShowsEachRecordRatherThanTheFirst() throws Exception {
         RecordingEncoder encoder = new RecordingEncoder();
         RowDataSerializationSchema schema =
                 new RowDataSerializationSchema(

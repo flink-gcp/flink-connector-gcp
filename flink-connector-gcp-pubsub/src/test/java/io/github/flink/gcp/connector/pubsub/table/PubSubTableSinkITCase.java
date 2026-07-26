@@ -133,6 +133,8 @@ class PubSubTableSinkITCase extends PubSubTableTestBase {
                                 "create-never"));
 
         // The writer's message names the Java constant, which is what a stack trace is read with.
+        // await() returns once rather than looping because the TableEnvironment enables no
+        // checkpointing, so Flink's restart strategy resolves to none.
         assertThatThrownBy(() -> tEnv.executeSql("INSERT INTO never VALUES ('a')").await())
                 .hasStackTraceContaining("CREATE_NEVER");
         assertThat(topicExists(name)).isFalse();
@@ -168,12 +170,16 @@ class PubSubTableSinkITCase extends PubSubTableTestBase {
                         + withOptions("topic", name, "format", "json"));
 
         // Pub/Sub cannot express a retraction, so an aggregation must be rejected at plan time
-        // rather than publishing its -U rows as ordinary messages.
+        // rather than publishing its -U rows as ordinary messages. The assertion names the table
+        // rather than the planner's wording: the wording is Flink's and the weekly matrix builds
+        // against an unreleased Flink, where a rephrasing upstream would turn this red for no
+        // reason. What the connector controls -- ChangelogMode.insertOnly() -- is pinned in
+        // PubSubDynamicSinkTest.
         assertThatThrownBy(
                         () ->
                                 tEnv.executeSql(
                                         "INSERT INTO counts SELECT id, COUNT(*) FROM"
                                                 + " (VALUES ('a'), ('a')) AS t(id) GROUP BY id"))
-                .hasStackTraceContaining("doesn't support consuming update");
+                .hasStackTraceContaining("counts");
     }
 }

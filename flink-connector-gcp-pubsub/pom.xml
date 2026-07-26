@@ -48,10 +48,10 @@ limitations under the License.
         </dependency>
         <dependency>
             <!-- The whole Table API surface this module compiles against: the factory SPI,
-                 the DynamicTableSink/Source abilities, ConfigOption, the format interfaces
-                 and the RowData data structures (including JoinedRowData and
-                 ProjectedRowData). Nothing else from the Table stack is needed at compile
-                 time. -->
+                 the DynamicTableSink/Source abilities, the format interfaces and the RowData
+                 data structures (including ProjectedRowData). Nothing else from the Table
+                 stack is needed at compile time; ConfigOption comes from flink-core, which
+                 is already a dependency. -->
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-table-common</artifactId>
             <scope>provided</scope>

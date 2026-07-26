@@ -115,7 +115,7 @@ class PubSubDynamicTableFactoryTest {
     }
 
     @Test
-    void rejectsABlankTopicThroughTheDestinationItBuilds() {
+    void rejectsATopicGivenAsAResourcePath() {
         Map<String, String> options = minimalSinkOptions();
         options.put("topic", "projects/p/topics/t");
 
@@ -124,5 +124,71 @@ class PubSubDynamicTableFactoryTest {
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("must not contain '/'");
+    }
+
+    @Test
+    void rejectsAnEmptyTopic() {
+        Map<String, String> options = minimalSinkOptions();
+        options.put("topic", "");
+
+        // An empty value is *present*, so the factory's own "required to write" check does not
+        // fire; the destination's precondition is what catches it.
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("must not be blank");
+    }
+
+    @Test
+    void rejectsASinkWithoutAProject() {
+        Map<String, String> options = minimalSinkOptions();
+        options.remove("project");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("project");
+    }
+
+    @Test
+    void rejectsASinkWithoutAFormat() {
+        Map<String, String> options = minimalSinkOptions();
+        options.remove("format");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("format");
+    }
+
+    @Test
+    void rejectsAnUnknownFormat() {
+        Map<String, String> options = minimalSinkOptions();
+        options.put("format", "no-such-format");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("no-such-format");
+    }
+
+    @Test
+    void rejectsAnUnparseableCreateDisposition() {
+        Map<String, String> options = minimalSinkOptions();
+        options.put("sink.create-disposition", "create_if_needed");
+
+        // The DDL spelling is hyphenated; the constant name is not accepted, and the message lists
+        // what is.
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("sink.create-disposition");
+    }
+
+    @Test
+    void acceptsTheHyphenatedCreateDisposition() {
+        Map<String, String> options = minimalSinkOptions();
+        options.put("sink.create-disposition", "create-never");
+
+        // That the value actually reaches the writer is asserted end to end in
+        // PubSubTableSinkITCase; here it only has to parse, since the sink exposes no getter and
+        // comparing two factory-built sinks would compare two distinct format instances.
+        assertThat(FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(PubSubDynamicSink.class);
     }
 }

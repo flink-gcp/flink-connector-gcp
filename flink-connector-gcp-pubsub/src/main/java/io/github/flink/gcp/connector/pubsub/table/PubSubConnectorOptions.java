@@ -36,10 +36,11 @@ import java.time.Duration;
  * types, so a typed option exists for every knob and an untyped escape hatch would only reintroduce
  * the SDK surface the programmatic API keeps out.
  *
- * <p>Almost every option is declared without a default, and the factory applies it with {@code
+ * <p>Every option is declared without a default, and the factory applies it with {@code
  * getOptional(...).ifPresent(...)}. "Absent from the DDL" then means "left at the connector's or
- * the SDK's default", with no third state to invent and no default duplicated between here and the
- * options object it feeds.
+ * the SDK's default", with no third state to invent. No default value is restated in a description
+ * either: the options object it feeds is the one place a default is written, and a copy here is a
+ * copy nothing checks.
  *
  * <p>Byte-valued options are {@link MemorySize}, so they can be written as {@code 64mb}. The value
  * is converted to a {@code long} where it is applied and never reaches the connector's public API.
@@ -86,8 +87,7 @@ public final class PubSubConnectorOptions {
                     .enumType(CreateDisposition.class)
                     .noDefaultValue()
                     .withDescription(
-                            "Whether the sink may create the topic when it does not exist."
-                                    + " Defaults to create-if-needed.");
+                            "Whether the sink may create the topic when it does not exist.");
 
     // ------------------------------------------------------------------------
     //  Sink — publisher batching
@@ -167,8 +167,8 @@ public final class PubSubConnectorOptions {
                     .intType()
                     .noDefaultValue()
                     .withDescription(
-                            "The cap on publish attempts. 0 bounds retries by the total timeout"
-                                    + " alone, which is also the default behavior.");
+                            "The cap on publish attempts. 0 means the retries are bounded by the"
+                                    + " total timeout alone.");
 
     // ------------------------------------------------------------------------
     //  Sink — ordering, in-flight caps and auto-creation recovery
@@ -179,17 +179,14 @@ public final class PubSubConnectorOptions {
                     .booleanType()
                     .noDefaultValue()
                     .withDescription(
-                            "Whether publishers honor message ordering keys. Defaults to false, and"
-                                    + " must be true for a table that writes the 'ordering-key'"
-                                    + " metadata column.");
+                            "Whether publishers honor message ordering keys. Must be true for a"
+                                    + " table that writes the 'ordering-key' metadata column.");
 
     public static final ConfigOption<Integer> SINK_IN_FLIGHT_MAX_MESSAGES =
             ConfigOptions.key("sink.in-flight.max-messages")
                     .intType()
                     .noDefaultValue()
-                    .withDescription(
-                            "The cap on unacknowledged publishes per sink subtask. Defaults to"
-                                    + " 1000.");
+                    .withDescription("The cap on unacknowledged publishes per sink subtask.");
 
     public static final ConfigOption<MemorySize> SINK_IN_FLIGHT_MAX_BYTES =
             ConfigOptions.key("sink.in-flight.max-bytes")
@@ -197,31 +194,26 @@ public final class PubSubConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The cap on the serialized bytes of unacknowledged publishes per sink"
-                                    + " subtask. Defaults to 64 mb.");
+                                    + " subtask.");
 
     public static final ConfigOption<Duration> SINK_RECOVERY_INITIAL_BACKOFF =
             ConfigOptions.key("sink.recovery.initial-backoff")
                     .durationType()
                     .noDefaultValue()
-                    .withDescription(
-                            "The first backoff of the topic auto-creation recovery. Defaults to"
-                                    + " 500 ms.");
+                    .withDescription("The first backoff of the topic auto-creation recovery.");
 
     public static final ConfigOption<Duration> SINK_RECOVERY_MAX_BACKOFF =
             ConfigOptions.key("sink.recovery.max-backoff")
                     .durationType()
                     .noDefaultValue()
-                    .withDescription(
-                            "The cap on the backoff of the topic auto-creation recovery. Defaults"
-                                    + " to 10 s.");
+                    .withDescription("The cap on the backoff of the topic auto-creation recovery.");
 
     public static final ConfigOption<Integer> SINK_RECOVERY_MAX_ATTEMPTS =
             ConfigOptions.key("sink.recovery.max-attempts")
                     .intType()
                     .noDefaultValue()
                     .withDescription(
-                            "The cap on republish attempts of the topic auto-creation recovery."
-                                    + " Defaults to 10.");
+                            "The cap on republish attempts of the topic auto-creation recovery.");
 
     private PubSubConnectorOptions() {}
 }

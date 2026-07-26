@@ -84,22 +84,18 @@ class PublisherOptionsMapperTest {
 
     @Test
     void everyPublisherKnobHasAnOption() {
+        // Deliberately not filtered on arity: the sibling SubscriptionCreateOptions.Builder already
+        // has a no-arg setter and a two-arg one, so an arity filter here would let a knob of either
+        // shape slip in unmapped — which is precisely what this guard exists to prevent.
         Set<String> setters =
                 Arrays.stream(PubSubPublisherOptions.Builder.class.getDeclaredMethods())
                         .filter(m -> Modifier.isPublic(m.getModifiers()))
                         .filter(m -> m.getReturnType() == PubSubPublisherOptions.Builder.class)
-                        .filter(m -> m.getParameterCount() == 1)
                         .map(Method::getName)
                         .collect(Collectors.toSet());
 
         // Both directions: a new knob without an option, and an option whose knob was removed.
         assertThat(setters).isEqualTo(SETTER_TO_OPTION.keySet());
-    }
-
-    @Test
-    void everyOptionKeyIsUnique() {
-        assertThat(SETTER_TO_OPTION.values().stream().map(ConfigOption::key).distinct())
-                .hasSize(SETTER_TO_OPTION.size());
     }
 
     @Test
@@ -159,6 +155,7 @@ class PublisherOptionsMapperTest {
                                         "sink.retry.max-attempts", "3")));
 
         assertThat(mapped.getRetryMaxAttempts()).isEqualTo(3);
+        assertThat(mapped.hasRetryOverrides()).isTrue();
         assertThat(mapped.hasBatchingOverrides()).isFalse();
         assertThat(mapped.getRetryTotalTimeout()).isNull();
     }

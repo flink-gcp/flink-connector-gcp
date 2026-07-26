@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.pubsub.table.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.Sink;
-import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.format.EncodingFormat;
@@ -27,7 +26,6 @@ import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.Preconditions;
 
@@ -71,29 +69,21 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
     private List<String> metadataKeys = Collections.emptyList();
 
     /**
-     * Builds a sink from the resolved table options.
+     * Builds a sink from values the factory has already resolved.
      *
-     * @param config the table options, already validated by the factory helper
+     * <p>Deliberately takes no {@code ReadableConfig}: turning a DDL option into a value happens in
+     * one place, the factory, so this class has no configuration vocabulary at all.
+     *
      * @param physicalDataType the row type of the table's physical columns
      * @param encodingFormat the format encoding the payload
      * @param topic the destination topic
+     * @param createDisposition whether a missing topic may be created, or {@code null} to leave the
+     *     sink's own default
+     * @param publisherOptions the publisher and writer tuning
+     * @param emulatorEndpoint the emulator to use instead of the service, or {@code null}
+     * @param parallelism the sink operator's parallelism, or {@code null} for the job's
      */
     public PubSubDynamicSink(
-            ReadableConfig config,
-            DataType physicalDataType,
-            EncodingFormat<SerializationSchema<RowData>> encodingFormat,
-            TopicDestination topic) {
-        this(
-                physicalDataType,
-                encodingFormat,
-                topic,
-                config.getOptional(PubSubConnectorOptions.SINK_CREATE_DISPOSITION).orElse(null),
-                PublisherOptionsMapper.map(config),
-                config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
-                config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null));
-    }
-
-    private PubSubDynamicSink(
             DataType physicalDataType,
             EncodingFormat<SerializationSchema<RowData>> encodingFormat,
             TopicDestination topic,

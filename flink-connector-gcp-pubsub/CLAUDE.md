@@ -106,4 +106,17 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   retraction; and an `ordering-key` column without `sink.message-ordering.enabled` is rejected in
   `applyWritableMetadata`, since the writer would otherwise fail on the first record. Credentials
   stay ADC-only (#139) and dynamic per-record topics stay out (#140) — both cut from #47
-  deliberately
+  deliberately.
+  **Package layout**: `table` holds the `@PublicEvolving` options class and the factory, `table.sink`
+  (and `table.source` from #136) the `@Internal` implementation — a deliberate departure from Kafka,
+  which keeps its whole table layer flat. The root `CLAUDE.md` rule (public API at the package root,
+  implementation beneath) decides it, and #136 is the in-prospect sibling the #119 test asks for, so
+  this is #125's situation rather than Cloud Tasks'. **The factory is the only place a DDL option
+  becomes a value** — `PubSubDynamicSink` takes resolved constructor arguments and has no
+  configuration vocabulary at all, which is why `PublisherOptionsMapper` is `@Internal public`
+  rather than package-private.
+  **Per-key ordering is not reachable from SQL** (#143): the guarantee is per writer subtask, the
+  DataStream answer is a `keyBy` before the sink, and SQL has no equivalent — `DISTRIBUTED BY` needs
+  `SupportsBucketing`, which this sink does not implement. `sink.parallelism = 1` is the only correct
+  configuration today; it is documented rather than enforced, because a distribution the user
+  arranged upstream is legitimate and the sink cannot tell the difference

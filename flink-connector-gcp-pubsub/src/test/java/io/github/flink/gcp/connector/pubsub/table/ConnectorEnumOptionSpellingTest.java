@@ -62,6 +62,25 @@ class ConnectorEnumOptionSpellingTest {
     }
 
     @Test
+    void noConstantOfAnyEnumKeepsTheUnderscoreSpelling() {
+        // Exhaustive where the assertions above are hand-written: a constant added later without a
+        // hyphenated value would round-trip happily (it parses from its own toString()) while
+        // putting an underscore back into the DDL, which is the whole thing this guards.
+        assertHyphenated(CreateDisposition.class);
+        assertHyphenated(OrderingMode.class);
+        assertHyphenated(DeserializationFailurePolicy.class);
+        assertHyphenated(StartPosition.Mode.class);
+    }
+
+    private static <E extends Enum<E>> void assertHyphenated(Class<E> enumClass) {
+        for (E constant : enumClass.getEnumConstants()) {
+            assertThat(constant.toString())
+                    .as("%s.%s", enumClass.getSimpleName(), constant.name())
+                    .isEqualTo(constant.name().toLowerCase(Locale.ROOT).replace('_', '-'));
+        }
+    }
+
+    @Test
     void everyConstantOfEveryEnumParsesBackFromItsOwnSpelling() {
         assertRoundTrips(CreateDisposition.class);
         assertRoundTrips(OrderingMode.class);

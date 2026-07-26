@@ -30,6 +30,7 @@ import org.apache.flink.table.factories.SerializationFormatFactory;
 
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
+import io.github.flink.gcp.connector.pubsub.table.sink.PublisherOptionsMapper;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -105,9 +106,12 @@ public class PubSubDynamicTableFactory implements DynamicTableSinkFactory {
                                                         PubSubConnectorOptions.TOPIC.key(),
                                                         IDENTIFIER)));
         return new PubSubDynamicSink(
-                config,
                 context.getPhysicalRowDataType(),
                 encodingFormat,
-                TopicDestination.of(config.get(PubSubConnectorOptions.PROJECT), topic));
+                TopicDestination.of(config.get(PubSubConnectorOptions.PROJECT), topic),
+                config.getOptional(PubSubConnectorOptions.SINK_CREATE_DISPOSITION).orElse(null),
+                PublisherOptionsMapper.map(config),
+                config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
+                config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null));
     }
 }

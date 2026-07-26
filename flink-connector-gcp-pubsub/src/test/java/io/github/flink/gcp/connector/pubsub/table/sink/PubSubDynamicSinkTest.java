@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.pubsub.table.sink;
 
 import org.apache.flink.api.common.serialization.SerializationSchema;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -28,14 +27,14 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
 
+import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -54,6 +53,12 @@ class PubSubDynamicSinkTest {
     /** An encoding format that compares by value, so it does not confuse the equality tests. */
     private static final class ConstantEncodingFormat
             implements EncodingFormat<SerializationSchema<RowData>> {
+
+        private final String name;
+
+        ConstantEncodingFormat(String name) {
+            this.name = name;
+        }
 
         @Override
         public SerializationSchema<RowData> createRuntimeEncoder(
@@ -76,17 +81,18 @@ class PubSubDynamicSinkTest {
 
         @Override
         public boolean equals(Object o) {
-            return o instanceof ConstantEncodingFormat;
+            return o instanceof ConstantEncodingFormat
+                    && name.equals(((ConstantEncodingFormat) o).name);
         }
 
         @Override
         public int hashCode() {
-            return ConstantEncodingFormat.class.hashCode();
+            return name.hashCode();
         }
     }
 
     private static final EncodingFormat<SerializationSchema<RowData>> FORMAT =
-            new ConstantEncodingFormat();
+            new ConstantEncodingFormat("format-a");
 
     private static final DataType PHYSICAL_DATA_TYPE =
             DataTypes.ROW(DataTypes.FIELD("id", DataTypes.STRING()));
@@ -96,20 +102,19 @@ class PubSubDynamicSinkTest {
                     DataTypes.FIELD("id", DataTypes.STRING()),
                     DataTypes.FIELD("k", DataTypes.STRING()));
 
-    private static PubSubDynamicSink sink(String... keysAndValues) {
-        Map<String, String> options = new HashMap<>();
-        for (int i = 0; i < keysAndValues.length; i += 2) {
-            options.put(keysAndValues[i], keysAndValues[i + 1]);
-        }
+    private static final TopicDestination TOPIC = TopicDestination.of("my-project", "my-topic");
+
+    private static PubSubDynamicSink sink() {
+        return sink(PubSubPublisherOptions.defaults());
+    }
+
+    private static PubSubDynamicSink sink(PubSubPublisherOptions publisherOptions) {
         return new PubSubDynamicSink(
-                Configuration.fromMap(options),
-                PHYSICAL_DATA_TYPE,
-                FORMAT,
-                TopicDestination.of("my-project", "my-topic"));
+                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, publisherOptions, null, null);
     }
 
     private static PubSubDynamicSink orderedSink() {
-        return sink("sink.message-ordering.enabled", "true");
+        return sink(PubSubPublisherOptions.builder().enableMessageOrdering(true).build());
     }
 
     @Test
@@ -131,7 +136,27 @@ class PubSubDynamicSinkTest {
 
         sink.applyWritableMetadata(Collections.singletonList("attributes"), CONSUMED_DATA_TYPE);
 
-        assertThat(sink).isNotEqualTo(sink());
+        // The applied keys are private, so they are read back through the one thing that exposes
+        // them: a sink that applied a *different* key is not equal to this one.
+        PubSubDynamicSink applyingTheOtherKey = orderedSink();
+        applyingTheOtherKey.applyWritableMetadata(
+                Collections.singletonList("ordering-key"), CONSUMED_DATA_TYPE);
+        PubSubDynamicSink applyingTheSameKey = sink();
+        applyingTheSameKey.applyWritableMetadata(
+                Collections.singletonList("attributes"), CONSUMED_DATA_TYPE);
+
+        assertThat(sink).isEqualTo(applyingTheSameKey).isNotEqualTo(applyingTheOtherKey);
+    }
+
+    @Test
+    void buildsTheSerializerFromTheAppliedMetadata() {
+        PubSubDynamicSink sink = orderedSink();
+        sink.applyWritableMetadata(Collections.singletonList("ordering-key"), CONSUMED_DATA_TYPE);
+
+        // The provider is only reachable after metadata has been applied in a real plan, so this is
+        // the one place the metadata-to-serializer wiring runs outside the emulator IT.
+        assertThat(sink.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false)))
+                .isInstanceOf(SinkV2Provider.class);
     }
 
     @Test
@@ -196,23 +221,65 @@ class PubSubDynamicSinkTest {
     }
 
     @Test
-    void sinksDifferingOnlyInAnOptionAreNotEqual() {
+    void everyFieldOfTheSinkIsPartOfItsIdentity() {
+        PubSubPublisherOptions defaults = PubSubPublisherOptions.defaults();
+        PubSubPublisherOptions other =
+                PubSubPublisherOptions.builder().maxInFlightMessages(7).build();
+
         assertThat(sink())
-                .isNotEqualTo(sink("sink.in-flight.max-messages", "7"))
-                .isNotEqualTo(sink("sink.create-disposition", "create-never"))
-                .isNotEqualTo(sink("emulator-endpoint", "localhost:8085"))
-                .isNotEqualTo(sink("sink.parallelism", "4"));
+                .isNotEqualTo(
+                        new PubSubDynamicSink(
+                                DataTypes.ROW(DataTypes.FIELD("other", DataTypes.INT())),
+                                FORMAT,
+                                TOPIC,
+                                null,
+                                defaults,
+                                null,
+                                null))
+                .isNotEqualTo(
+                        new PubSubDynamicSink(
+                                PHYSICAL_DATA_TYPE,
+                                new ConstantEncodingFormat("format-b"),
+                                TOPIC,
+                                null,
+                                defaults,
+                                null,
+                                null))
+                .isNotEqualTo(
+                        new PubSubDynamicSink(
+                                PHYSICAL_DATA_TYPE,
+                                FORMAT,
+                                TopicDestination.of("my-project", "other-topic"),
+                                null,
+                                defaults,
+                                null,
+                                null))
+                .isNotEqualTo(
+                        new PubSubDynamicSink(
+                                PHYSICAL_DATA_TYPE,
+                                FORMAT,
+                                TOPIC,
+                                CreateDisposition.CREATE_NEVER,
+                                defaults,
+                                null,
+                                null))
+                .isNotEqualTo(sink(other))
+                .isNotEqualTo(
+                        new PubSubDynamicSink(
+                                PHYSICAL_DATA_TYPE,
+                                FORMAT,
+                                TOPIC,
+                                null,
+                                defaults,
+                                "localhost:8085",
+                                null))
+                .isNotEqualTo(
+                        new PubSubDynamicSink(
+                                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, defaults, null, 4));
     }
 
     @Test
-    void aSinkIsNotEqualToADifferentTopic() {
-        PubSubDynamicSink other =
-                new PubSubDynamicSink(
-                        new Configuration(),
-                        PHYSICAL_DATA_TYPE,
-                        FORMAT,
-                        TopicDestination.of("my-project", "other-topic"));
-
-        assertThat(sink()).isNotEqualTo(other);
+    void aSinkIsNotEqualToNullOrToAnotherType() {
+        assertThat(sink()).isNotEqualTo(null).isNotEqualTo("Pub/Sub table sink");
     }
 }

@@ -3,6 +3,8 @@
 Cloud Pub/Sub sink and source for Apache Flink, with dynamic per-record topic destinations on the
 sink and multi-subscription consumption on the source.
 
+### Sink
+
 | Sink feature | Status |
 |---|---|
 | SinkV2 at-least-once sink; per-record topic resolution; per-topic publishers; checkpoint flush | Implemented ([#18](https://github.com/laughingman7743/flink-connector-gcp/issues/18)) |
@@ -10,6 +12,8 @@ sink and multi-subscription consumption on the source.
 | Attributes/ordering-key conveniences; message ordering; batching/retry options; recovery knobs; in-flight message and byte caps | Implemented ([#20](https://github.com/laughingman7743/flink-connector-gcp/issues/20), byte cap [#85](https://github.com/laughingman7743/flink-connector-gcp/issues/85)) |
 | Per-record failure policy; fatal-exception classifier | Planned ([#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37)) |
 | Emulator integration tests | Implemented ([#21](https://github.com/laughingman7743/flink-connector-gcp/issues/21)) |
+
+### Source
 
 | Source feature | Status |
 |---|---|
@@ -19,6 +23,8 @@ sink and multi-subscription consumption on the source.
 | Deserialization failure policy; nack on collect failure; metrics; acknowledgement confirmation | Implemented ([#80](https://github.com/laughingman7743/flink-connector-gcp/issues/80)) |
 | Startup check; subscription auto-creation; start position (seek); `NACK` failure policy | Implemented ([#81](https://github.com/laughingman7743/flink-connector-gcp/issues/81)) |
 | Acceptance and real-GCP integration tests | Planned ([#82](https://github.com/laughingman7743/flink-connector-gcp/issues/82)) |
+
+### Table API / SQL
 
 | Table API / SQL feature | Status |
 |---|---|

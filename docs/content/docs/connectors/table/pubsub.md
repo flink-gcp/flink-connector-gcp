@@ -27,11 +27,8 @@ DataStream sink and source described in
 {{< relref "docs/connectors/datastream/pubsub" >}}, which is where the behavior behind every option
 is documented; this page covers the option surface and the decisions specific to SQL.
 
-Per-feature implementation status is tracked in the
+Per-feature implementation status — including which directions are implemented — is tracked in the
 [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-pubsub/README.md).
-
-Reading a table is not implemented yet
-([#136]({{< param BookRepo >}}/issues/136)); today the connector can only be written to.
 
 ```sql
 CREATE TABLE orders (
@@ -63,7 +60,7 @@ outside the payload.
 | Metadata key | Type | Notes |
 |---|---|---|
 | `attributes` | `MAP<STRING, STRING>` | A null column adds no attributes. A null key or a null value in the map **fails the write**: Pub/Sub attributes can represent neither, and dropping the entry would be data loss the query cannot see. Filter such entries out first |
-| `ordering-key` | `STRING` | A null or empty value sets no key. Requires `sink.message-ordering.enabled` = `true` |
+| `ordering-key` | `STRING` | A null or empty value sets no key. Requires `sink.message-ordering.enabled` = `true`, and see the ordering caveat below |
 
 Metadata is not forwarded to the format. No built-in format ships writable metadata, and the Kafka
 connector does not forward either.
@@ -127,9 +124,24 @@ At-least-once, unchanged from the DataStream sink: messages are published asynch
 flushed at each checkpoint, and a failover republishes whatever the last completed checkpoint did
 not cover.
 
-The sink accepts **inserts only**. Pub/Sub has no way to express a retraction, so an updating query
-is rejected when the job is planned rather than publishing its `-U` and `-D` rows as ordinary
-messages:
+### Ordering from SQL needs `sink.parallelism` = `1`
+
+Pub/Sub orders an ordering key's messages only among publishes from one client, and the sink owns
+one publisher per writer subtask. The DataStream API answers that with a `keyBy` on the ordering
+key before the sink; **SQL has no equivalent**. `DISTRIBUTED BY` is rejected because this sink does
+not implement `SupportsBucketing`, and nothing else keys the sink's input, so at any parallelism
+above one two rows sharing an ordering key may be published by two subtasks and arrive out of
+order.
+
+Until that is addressed ([#143]({{< param BookRepo >}}/issues/143)), a table that writes the
+`ordering-key` metadata column and actually depends on the order must also set
+`'sink.parallelism' = '1'`. The connector does not enforce this: a single-subtask-per-key
+distribution arranged upstream is legitimate, and the sink cannot tell the difference.
+
+### Inserts only
+
+Pub/Sub has no way to express a retraction, so an updating query is rejected when the job is
+planned rather than publishing its `-U` and `-D` rows as ordinary messages:
 
 ```
 INSERT INTO orders SELECT id, COUNT(*) FROM staged GROUP BY id

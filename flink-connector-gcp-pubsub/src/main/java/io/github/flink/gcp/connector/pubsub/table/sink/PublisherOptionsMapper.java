@@ -33,11 +33,18 @@ import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
  * place a bad value is rejected, so a SQL user gets the same message a DataStream user does.
  */
 @Internal
-final class PublisherOptionsMapper {
+public final class PublisherOptionsMapper {
 
     private PublisherOptionsMapper() {}
 
-    static PubSubPublisherOptions map(ReadableConfig config) {
+    /**
+     * Maps the table options onto publisher options.
+     *
+     * @param config the table options
+     * @return the publisher options; exactly {@link PubSubPublisherOptions#defaults()} when the
+     *     configuration sets none of them
+     */
+    public static PubSubPublisherOptions map(ReadableConfig config) {
         PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
 
         config.getOptional(PubSubConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD)
