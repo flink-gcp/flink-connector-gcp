@@ -67,6 +67,45 @@ class ProtoSchemaOptionsTest {
     }
 
     @Test
+    void capturesTheNumberAndNameFromAGeneratedExtension() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOption(TestProtos.jsonOptionExtension())
+                        .build();
+
+        assertThat(options.getJsonFieldOptionNumber()).isEqualTo(TestProtos.JSON_OPTION_NUMBER);
+        assertThat(options.getJsonFieldOptionName()).isEqualTo(TestProtos.JSON_OPTION_FULL_NAME);
+    }
+
+    @Test
+    void survivesJavaSerializationWhenConfiguredFromAnExtension() throws Exception {
+        // GeneratedExtension holds a protobuf descriptor and is not Serializable, so the builder
+        // must keep its number and name rather than the extension. If that ever regressed, these
+        // options would stop travelling in the job graph.
+        ProtoSchemaOptions copy =
+                InstantiationUtil.clone(
+                        ProtoSchemaOptions.builder()
+                                .jsonFieldOption(TestProtos.jsonOptionExtension())
+                                .build());
+
+        assertThat(copy.getJsonFieldOptionName()).isEqualTo(TestProtos.JSON_OPTION_FULL_NAME);
+        assertThat(copy.getJsonFieldOptionNumber()).isEqualTo(TestProtos.JSON_OPTION_NUMBER);
+    }
+
+    @Test
+    void reconfiguringByNumberDropsAPreviouslyCapturedName() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOption(TestProtos.jsonOptionExtension())
+                        .jsonFieldOptionNumber(50009)
+                        .build();
+
+        assertThat(options.getJsonFieldOptionNumber()).isEqualTo(50009);
+        // Keeping the old name would silently make every field fail the name check.
+        assertThat(options.getJsonFieldOptionName()).isNull();
+    }
+
+    @Test
     void survivesJavaSerialization() throws Exception {
         // The options travel in the job graph inside the serializer, so both mechanisms have to
         // come back after a round trip.

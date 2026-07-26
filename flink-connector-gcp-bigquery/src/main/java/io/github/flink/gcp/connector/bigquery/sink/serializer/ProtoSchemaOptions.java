@@ -19,7 +19,9 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import com.google.protobuf.DescriptorProtos;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.GeneratedMessage;
 
 import java.io.Serializable;
 import java.util.Collection;
@@ -64,10 +66,12 @@ public final class ProtoSchemaOptions implements Serializable {
 
     private final Set<String> jsonFieldPaths;
     private final int jsonFieldOptionNumber;
+    private final String jsonFieldOptionName;
 
     private ProtoSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
         this.jsonFieldOptionNumber = builder.jsonFieldOptionNumber;
+        this.jsonFieldOptionName = builder.jsonFieldOptionName;
     }
 
     /** Returns the default options: no JSON field mapping. */
@@ -94,6 +98,15 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /**
+     * Returns the full name of the field option marking {@code JSON} columns, or {@code null} when
+     * the option was configured by number alone. When present, a declaration found at the same
+     * number under a different name is treated as an unrelated option rather than a marker.
+     */
+    public String getJsonFieldOptionName() {
+        return jsonFieldOptionName;
+    }
+
+    /**
      * Returns whether the given field is mapped to a BigQuery {@code JSON} column. This is the
      * single decision point consulted by both schema derivation and row conversion, so the two can
      * never disagree on which columns are JSON.
@@ -105,7 +118,8 @@ public final class ProtoSchemaOptions implements Serializable {
     public boolean isJsonField(Descriptors.FieldDescriptor field, String path) {
         return jsonFieldPaths.contains(path)
                 || (jsonFieldOptionNumber != NO_FIELD_OPTION
-                        && BoolFieldOptionReader.isSetToTrue(field, jsonFieldOptionNumber));
+                        && BoolFieldOptionReader.isSetToTrue(
+                                field, jsonFieldOptionNumber, jsonFieldOptionName));
     }
 
     /** Builder for {@link ProtoSchemaOptions}. */
@@ -114,8 +128,43 @@ public final class ProtoSchemaOptions implements Serializable {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();
         private int jsonFieldOptionNumber = NO_FIELD_OPTION;
+        private String jsonFieldOptionName;
 
         Builder() {}
+
+        /**
+         * Maps every message or string field carrying the given boolean field option, set to {@code
+         * true}, to a BigQuery {@code JSON} column — wherever it appears in the message tree, at
+         * any nesting depth.
+         *
+         * <p>Prefer this over {@link #jsonFieldOptionNumber} whenever the generated extension class
+         * is on the classpath. It is the same mechanism, but the compiler enforces that the option
+         * really is a {@code bool}, and the option's full name is captured so that an unrelated
+         * option sharing the extension number — which protobuf's private range makes possible,
+         * since it has no registry — cannot be mistaken for this marker.
+         *
+         * <pre>{@code
+         * ProtoSchemaOptions.builder().jsonFieldOption(MyAnnotations.json).build();
+         * }</pre>
+         *
+         * <p>The extension itself is not retained: it holds a protobuf descriptor and is not
+         * Java-serializable, while these options travel in the job graph. Only its number and name
+         * are kept.
+         *
+         * @param extension the generated extension for a {@code bool} option on {@code
+         *     google.protobuf.FieldOptions}
+         * @return this builder
+         */
+        public Builder jsonFieldOption(
+                GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean>
+                        extension) {
+            Descriptors.FieldDescriptor descriptor =
+                    Preconditions.checkNotNull(extension, "extension must not be null")
+                            .getDescriptor();
+            jsonFieldOptionNumber(descriptor.getNumber());
+            this.jsonFieldOptionName = descriptor.getFullName();
+            return this;
+        }
 
         /**
          * Maps the message or string field at the given dotted path to a BigQuery {@code JSON}
@@ -147,9 +196,16 @@ public final class ProtoSchemaOptions implements Serializable {
          * google.protobuf.FieldOptions} extension, set to {@code true}, to a BigQuery {@code JSON}
          * column — wherever it appears in the message tree, at any nesting depth.
          *
-         * <p>Only the extension number is needed: the option is found whether the descriptor knows
-         * it as a registered extension or carries it as an unknown field. An existing private
-         * extension number can therefore be adopted as-is, with no change to the protobuf sources.
+         * <p>Use this when the generated extension class is <em>not</em> on the classpath; prefer
+         * {@link #jsonFieldOption} when it is. Only the extension number is needed: the option is
+         * found whether the descriptor knows it as a registered extension or carries it as an
+         * unknown field. An existing private extension number can therefore be adopted as-is, with
+         * no change to the protobuf sources.
+         *
+         * <p>The number alone is not an identity — protobuf's private extension range has no
+         * registry, so an unrelated annotation can occupy it. The declaration is checked for a
+         * {@code bool} type wherever it can be resolved, but two {@code bool} options at the same
+         * number are indistinguishable without a name.
          *
          * <p>Unlike {@link #jsonFieldPath}, a number that matches no field is <em>not</em> an error
          * — one configuration is meant to serve every message type a job writes, and a message
@@ -165,6 +221,9 @@ public final class ProtoSchemaOptions implements Serializable {
          * @return this builder
          */
         public Builder jsonFieldOptionNumber(int extensionNumber) {
+            // Reconfiguring by number drops any name captured by jsonFieldOption; that method
+            // re-assigns it afterwards.
+            this.jsonFieldOptionName = null;
             Preconditions.checkArgument(
                     extensionNumber >= MIN_FIELD_NUMBER
                             && extensionNumber <= MAX_FIELD_NUMBER

@@ -61,11 +61,15 @@ class BoolFieldOptionReaderTest {
     void findsTheOptionSetToTrue(boolean throughBytes) {
         assertThat(
                         BoolFieldOptionReader.isSetToTrue(
-                                field(throughBytes, "a_string"), TestProtos.JSON_OPTION_NUMBER))
+                                field(throughBytes, "a_string"),
+                                TestProtos.JSON_OPTION_NUMBER,
+                                null))
                 .isTrue();
         assertThat(
                         BoolFieldOptionReader.isSetToTrue(
-                                field(throughBytes, "a_message"), TestProtos.JSON_OPTION_NUMBER))
+                                field(throughBytes, "a_message"),
+                                TestProtos.JSON_OPTION_NUMBER,
+                                null))
                 .isTrue();
     }
 
@@ -74,7 +78,9 @@ class BoolFieldOptionReaderTest {
     void treatsAnExplicitFalseAsNotSet(boolean throughBytes) {
         assertThat(
                         BoolFieldOptionReader.isSetToTrue(
-                                field(throughBytes, "a_false"), TestProtos.JSON_OPTION_NUMBER))
+                                field(throughBytes, "a_false"),
+                                TestProtos.JSON_OPTION_NUMBER,
+                                null))
                 .isFalse();
     }
 
@@ -83,7 +89,9 @@ class BoolFieldOptionReaderTest {
     void returnsFalseWhenTheFieldCarriesNoOptions(boolean throughBytes) {
         assertThat(
                         BoolFieldOptionReader.isSetToTrue(
-                                field(throughBytes, "a_plain"), TestProtos.JSON_OPTION_NUMBER))
+                                field(throughBytes, "a_plain"),
+                                TestProtos.JSON_OPTION_NUMBER,
+                                null))
                 .isFalse();
     }
 
@@ -92,7 +100,9 @@ class BoolFieldOptionReaderTest {
     void ignoresAnOptionWithADifferentNumber(boolean throughBytes) {
         assertThat(
                         BoolFieldOptionReader.isSetToTrue(
-                                field(throughBytes, "a_other"), TestProtos.JSON_OPTION_NUMBER))
+                                field(throughBytes, "a_other"),
+                                TestProtos.JSON_OPTION_NUMBER,
+                                null))
                 .isFalse();
     }
 
@@ -104,7 +114,7 @@ class BoolFieldOptionReaderTest {
         assertThatThrownBy(
                         () ->
                                 BoolFieldOptionReader.isSetToTrue(
-                                        field, TestProtos.NON_BOOL_OPTION_NUMBER))
+                                        field, TestProtos.NON_BOOL_OPTION_NUMBER, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(String.valueOf(TestProtos.NON_BOOL_OPTION_NUMBER))
                 .hasMessageContaining("a_labeled");
@@ -122,7 +132,7 @@ class BoolFieldOptionReaderTest {
         assertThatThrownBy(
                         () ->
                                 BoolFieldOptionReader.isSetToTrue(
-                                        field, TestProtos.NON_BOOL_VARINT_OPTION_NUMBER))
+                                        field, TestProtos.NON_BOOL_VARINT_OPTION_NUMBER, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(String.valueOf(TestProtos.NON_BOOL_VARINT_OPTION_NUMBER))
                 .hasMessageContaining("a_leveled");
@@ -138,9 +148,118 @@ class BoolFieldOptionReaderTest {
         assertThatThrownBy(
                         () ->
                                 BoolFieldOptionReader.isSetToTrue(
-                                        field, TestProtos.REPEATED_BOOL_OPTION_NUMBER))
+                                        field, TestProtos.REPEATED_BOOL_OPTION_NUMBER, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("a_flagged");
+    }
+
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void ignoresAnUnrelatedOptionThatSharesTheNumber(boolean throughBytes) {
+        // Protobuf's private extension range has no registry, so two annotation protos can pick the
+        // same number independently. Given the expected name, a declaration found under a different
+        // one is a different option and the field stays a plain column. The message case is the
+        // dangerous one: it would otherwise become JSON text instead of a STRUCT, silently, in an
+        // auto-created table.
+        for (String name : new String[] {"a_string", "a_message"}) {
+            assertThat(
+                            BoolFieldOptionReader.isSetToTrue(
+                                    field(throughBytes, name),
+                                    TestProtos.JSON_OPTION_NUMBER,
+                                    "someone.else.json"))
+                    .as(name)
+                    .isFalse();
+        }
+    }
+
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void matchesOnTheExpectedName(boolean throughBytes) {
+        // Counterpart of the test above, on the same fields with the name that does match — so a
+        // reader that simply returned false whenever a name was supplied would not pass both.
+        for (String name : new String[] {"a_string", "a_message"}) {
+            assertThat(
+                            BoolFieldOptionReader.isSetToTrue(
+                                    field(throughBytes, name),
+                                    TestProtos.JSON_OPTION_NUMBER,
+                                    "annot.json"))
+                    .as(name)
+                    .isTrue();
+        }
+    }
+
+    @Test
+    void fallsBackToTheEncodingWhenTheAnnotationsProtoIsAbsent() {
+        // The last resort: options unresolved *and* no declaration anywhere in the pool. Every
+        // other
+        // fixture resolves the declaration, so without this the encoding heuristic would not be
+        // exercised at all — and it is the only thing standing between an unrelated varint option
+        // and a wrongly typed column.
+        Descriptors.Descriptor descriptor = TestProtos.annotatedWithoutAnnotationsProto();
+        assertThat(descriptor.getFile().getDependencies()).isEmpty();
+
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                descriptor.findFieldByName("a_string"),
+                                TestProtos.JSON_OPTION_NUMBER,
+                                null))
+                .isTrue();
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                descriptor.findFieldByName("a_false"),
+                                TestProtos.JSON_OPTION_NUMBER,
+                                null))
+                .isFalse();
+        // The repeated-bool and string options are still caught, by arity and by wire type.
+        assertThatThrownBy(
+                        () ->
+                                BoolFieldOptionReader.isSetToTrue(
+                                        descriptor.findFieldByName("a_flagged"),
+                                        TestProtos.REPEATED_BOOL_OPTION_NUMBER,
+                                        null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                BoolFieldOptionReader.isSetToTrue(
+                                        descriptor.findFieldByName("a_labeled"),
+                                        TestProtos.NON_BOOL_OPTION_NUMBER,
+                                        null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void cannotTellAnIntegerOptionFromABoolWithoutADeclaration() {
+        // The documented irreducible case, pinned so the @throws contract stays honest: int64 = 7
+        // is
+        // out of {0, 1} and is caught, but a value of 0 or 1 is indistinguishable from a bool.
+        Descriptors.FieldDescriptor field =
+                TestProtos.annotatedWithoutAnnotationsProto().findFieldByName("a_leveled");
+
+        assertThatThrownBy(
+                        () ->
+                                BoolFieldOptionReader.isSetToTrue(
+                                        field, TestProtos.NON_BOOL_VARINT_OPTION_NUMBER, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not encoded as a singular bool");
+    }
+
+    @Test
+    void resolvesTheDeclaredTypeThroughTheDependencyGraph() {
+        // protobuf will not use a declared dependency to resolve an option's *value*, but the
+        // declaration is still in the pool. Finding it turns the encoding heuristic into an exact
+        // type check — which is the only thing that can distinguish a varint-encoded int64 option
+        // from a bool.
+        Descriptors.FieldDescriptor field = field(true, "a_leveled");
+        assertThat(field.getOptions().getUnknownFields().asMap())
+                .containsKey(TestProtos.NON_BOOL_VARINT_OPTION_NUMBER);
+
+        assertThatThrownBy(
+                        () ->
+                                BoolFieldOptionReader.isSetToTrue(
+                                        field, TestProtos.NON_BOOL_VARINT_OPTION_NUMBER, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("annot.level")
+                .hasMessageContaining("LONG");
     }
 
     @Test
@@ -156,10 +275,13 @@ class BoolFieldOptionReaderTest {
                 .anyMatch(option -> option.getNumber() == fieldBehavior);
         // google.api.field_behavior is a repeated enum, so it is found by number and then rejected
         // for its type rather than going unnoticed.
-        assertThatThrownBy(() -> BoolFieldOptionReader.isSetToTrue(writeStream, fieldBehavior))
+        assertThatThrownBy(
+                        () -> BoolFieldOptionReader.isSetToTrue(writeStream, fieldBehavior, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("google.api.field_behavior");
-        assertThat(BoolFieldOptionReader.isSetToTrue(writeStream, TestProtos.JSON_OPTION_NUMBER))
+        assertThat(
+                        BoolFieldOptionReader.isSetToTrue(
+                                writeStream, TestProtos.JSON_OPTION_NUMBER, null))
                 .isFalse();
     }
 

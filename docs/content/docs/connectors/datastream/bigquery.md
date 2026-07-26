@@ -110,16 +110,34 @@ message Event {
 }
 ```
 
+When the generated extension class is on your classpath, pass it directly:
+
+```java
+ProtoSchemaOptions.builder().jsonFieldOption(MyAnnotations.json).build();
+```
+
+Otherwise — a schema registry hands you descriptors but not the annotations artifact — the extension
+number alone works:
+
 ```java
 ProtoSchemaOptions.builder().jsonFieldOptionNumber(50000).build();
 ```
 
-Only the extension number is needed. The option is found whether the descriptor knows it as a
-registered extension (descriptors from generated code) or carries it as an unknown field
-(descriptors built from a serialized `FileDescriptorSet` — protobuf-java does not resolve custom
-options against the descriptor pool, not even for a declared dependency). An existing private
-extension number can therefore be adopted as-is: no change to the protobuf sources, and no
-annotations proto to publish or register.
+Either way the option is found whether the descriptor knows it as a registered extension
+(descriptors from generated code) or carries it as an unknown field (descriptors built from a
+serialized `FileDescriptorSet` — protobuf-java does not resolve custom options against the
+descriptor pool, not even for a declared dependency). An existing private extension number can
+therefore be adopted as-is: no change to the protobuf sources, and no annotations proto to publish
+or register.
+
+**Prefer the extension over the bare number.** Protobuf's private extension range has no registry,
+so an unrelated annotation can occupy the same number — and a job that writes several message types
+is exactly where protos from different sources meet. The extension supplies the option's full name
+as well, so a declaration found under a different name is treated as an unrelated option and the
+field is left alone. It also makes the compiler check that the option really is a `bool`. With the
+bare number, the connector still verifies the declared type wherever it can resolve the declaration
+(including through the descriptor's transitive file dependencies), but two `bool` options at the
+same number are indistinguishable.
 
 Three consequences worth knowing:
 

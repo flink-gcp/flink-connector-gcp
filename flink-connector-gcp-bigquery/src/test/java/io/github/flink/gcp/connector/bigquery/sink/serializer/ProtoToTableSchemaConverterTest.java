@@ -229,6 +229,24 @@ class ProtoToTableSchemaConverterTest {
                                 "n_plain", TableFieldSchema.Type.STRING));
     }
 
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void mapsFieldsMarkedByAGeneratedExtension(boolean throughBytes) {
+        // The end-to-end shape a user with the annotations artifact on their classpath writes: the
+        // extension supplies both the number and the name, so a collision on the number cannot be
+        // mistaken for this marker.
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOption(TestProtos.jsonOptionExtension())
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(annotated(throughBytes), options));
+
+        assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_message").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_plain").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+    }
+
     @Test
     void unionsFieldPathsAndFieldOptions() {
         ProtoSchemaOptions options =

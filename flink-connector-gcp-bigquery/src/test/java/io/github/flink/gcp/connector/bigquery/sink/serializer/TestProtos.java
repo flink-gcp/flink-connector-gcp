@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
 import com.google.protobuf.DescriptorProtos;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.GeneratedMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.TimestampProto;
 
@@ -82,10 +83,36 @@ final class TestProtos {
         return annotatedFile(true).findMessageTypeByName("Annotated");
     }
 
+    /**
+     * The same message again, with the options unresolved <em>and</em> the annotations proto absent
+     * from the descriptor pool — a {@code FileDescriptorSet} built without the unused import. This
+     * is the only form in which nothing but the wire encoding identifies the option, so it is what
+     * exercises the encoding fallback; every other fixture resolves the declaration.
+     */
+    static Descriptors.Descriptor annotatedWithoutAnnotationsProto() {
+        return annotatedFile(true, false).findMessageTypeByName("Annotated");
+    }
+
     /** A message whose option-marked field is neither a message nor a string. */
     static Descriptors.Descriptor annotatedBadType() {
         return annotatedFile(false).findMessageTypeByName("AnnotatedBadType");
     }
+
+    /**
+     * The JSON option as a {@code GeneratedExtension}, built the way protoc's output does it — so
+     * the builder overload that takes one can be covered without adding a codegen step to the
+     * build.
+     */
+    static GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean>
+            jsonOptionExtension() {
+        GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean> extension =
+                GeneratedMessage.newFileScopedGeneratedExtension(Boolean.class, null);
+        extension.internalInit(extension(JSON_OPTION_NUMBER));
+        return extension;
+    }
+
+    /** The full name the JSON option is declared under in the synthetic annotations proto. */
+    static final String JSON_OPTION_FULL_NAME = "annot.json";
 
     private static Descriptors.FileDescriptor file() {
         try {
@@ -247,7 +274,15 @@ final class TestProtos {
     }
 
     private static Descriptors.FileDescriptor annotatedFile(boolean throughBytes) {
+        return annotatedFile(throughBytes, true);
+    }
+
+    private static Descriptors.FileDescriptor annotatedFile(
+            boolean throughBytes, boolean withAnnotationsProto) {
         DescriptorProtos.FileDescriptorProto proto = annotatedFileProto();
+        if (!withAnnotationsProto) {
+            proto = proto.toBuilder().clearDependency().build();
+        }
         if (throughBytes) {
             // Round-tripping without an extension registry is exactly what building a descriptor
             // from a serialized FileDescriptorSet does: the options survive as unknown fields.
@@ -259,7 +294,10 @@ final class TestProtos {
         }
         try {
             return Descriptors.FileDescriptor.buildFrom(
-                    proto, new Descriptors.FileDescriptor[] {annotationsFile()});
+                    proto,
+                    withAnnotationsProto
+                            ? new Descriptors.FileDescriptor[] {annotationsFile()}
+                            : new Descriptors.FileDescriptor[0]);
         } catch (Descriptors.DescriptorValidationException e) {
             throw new AssertionError(e);
         }
