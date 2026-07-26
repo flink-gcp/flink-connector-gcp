@@ -170,8 +170,6 @@ abstract class AbstractPubSubEmulatorITCase {
                 new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint()),
                 newTopicAdmin(),
                 mailbox,
-                config.getPublisherOptions().getMaxInFlightMessages(),
-                config.getPublisherOptions().getMaxInFlightBytes(),
                 EMULATOR_RECOVERY_SCHEDULE);
     }
 

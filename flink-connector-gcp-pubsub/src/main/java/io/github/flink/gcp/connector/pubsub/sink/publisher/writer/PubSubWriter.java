@@ -196,45 +196,44 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             PublisherFactory publisherFactory,
             TopicAdmin topicAdmin,
             MailboxExecutor mailboxExecutor) {
-        this(
-                config,
-                publisherFactory,
-                topicAdmin,
-                mailboxExecutor,
-                config.getPublisherOptions().getMaxInFlightMessages(),
-                config.getPublisherOptions().getMaxInFlightBytes(),
-                recoverySchedule(config.getPublisherOptions()));
+        this(config, publisherFactory, topicAdmin, mailboxExecutor, recoverySchedule(config));
     }
 
+    /**
+     * Creates the writer with an explicit auto-creation recovery schedule, so tests need not sit
+     * through the production backoff. Every other knob is read from the config's publisher options
+     * — the caps especially, so there is exactly one path by which they reach the writer.
+     */
     @VisibleForTesting
     PubSubWriter(
             PubSubSinkConfig<T> config,
             PublisherFactory publisherFactory,
             TopicAdmin topicAdmin,
             MailboxExecutor mailboxExecutor,
-            int maxInFlightMessages,
-            long maxInFlightBytes,
             RetrySchedule recoverySchedule) {
         this.config = config;
         this.publisherFactory = publisherFactory;
         this.topicAdmin = topicAdmin;
         this.mailboxExecutor = mailboxExecutor;
+        PubSubPublisherOptions options = config.getPublisherOptions();
         // Checked here, not only on the options builder: a non-positive cap holds the
         // awaitCapacity predicate with nothing in flight, and yield() blocks until a mail arrives
         // — so it is a silent permanent park, not a rejected configuration. Fail where the
-        // invariant is relied on rather than trusting every caller of this constructor.
+        // invariant is relied on rather than trusting that every options instance came from the
+        // builder, which Java deserialization does not run.
         Preconditions.checkArgument(
-                maxInFlightMessages > 0, "maxInFlightMessages must be positive");
-        Preconditions.checkArgument(maxInFlightBytes > 0, "maxInFlightBytes must be positive");
-        this.maxInFlightMessages = maxInFlightMessages;
-        this.maxInFlightBytes = maxInFlightBytes;
+                options.getMaxInFlightMessages() > 0, "maxInFlightMessages must be positive");
+        Preconditions.checkArgument(
+                options.getMaxInFlightBytes() > 0, "maxInFlightBytes must be positive");
+        this.maxInFlightMessages = options.getMaxInFlightMessages();
+        this.maxInFlightBytes = options.getMaxInFlightBytes();
         this.recoverySchedule = recoverySchedule;
-        this.orderingEnabled = config.getPublisherOptions().isEnableMessageOrdering();
+        this.orderingEnabled = options.isEnableMessageOrdering();
     }
 
     /** Maps the public recovery knobs onto the internal schedule (jitter deliberately zero). */
-    @VisibleForTesting
-    static RetrySchedule recoverySchedule(PubSubPublisherOptions options) {
+    private static RetrySchedule recoverySchedule(PubSubSinkConfig<?> config) {
+        PubSubPublisherOptions options = config.getPublisherOptions();
         return new RetrySchedule(
                 options.getRecoveryInitialBackoff().toMillis(),
                 options.getRecoveryMaxBackoff().toMillis(),
