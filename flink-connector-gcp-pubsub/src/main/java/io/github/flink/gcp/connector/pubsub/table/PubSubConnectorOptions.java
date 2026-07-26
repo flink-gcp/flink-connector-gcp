@@ -32,7 +32,7 @@ import java.util.List;
 /**
  * The {@code WITH} options of the {@code pubsub} table connector.
  *
- * <p>Each option corresponds to exactly one setter on {@link
+ * <p>Each option corresponds to a setter — one each, but for the three exceptions below — on {@link
  * io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder}, {@link
  * io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions.Builder}, {@link
  * io.github.flink.gcp.connector.pubsub.source.PubSubSourceBuilder}, {@link

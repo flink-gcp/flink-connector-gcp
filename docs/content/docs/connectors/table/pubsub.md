@@ -395,9 +395,8 @@ state, between "configured" and "default", that this option design exists to rem
 keys creation settings by subscription because they carry the topic binding, and a flat DDL
 namespace cannot express one object per subscription. Rather than pick a rule for sharing them,
 `scan.auto-create.topic` requires `subscription` to name exactly one — one precondition makes the
-duplication hazard inexpressible. N>1 is deferred to a map option
-([#137]({{< param BookRepo >}}/issues/137)); the DDL it would need is a configuration file rather
-than SQL.
+duplication hazard inexpressible. A `scan.auto-create.topics` map option would lift that, and is
+deferred rather than tracked: the DDL it would need is a configuration file rather than SQL.
 
 ## Testing
 
@@ -427,11 +426,13 @@ a test-only factory. No cloud credentials are needed.
 - `PubSubTableAutoCreateITCase` — the two features whose effects exist only on the service: a
   subscription the table created and then consumed, with its settings read back off the service;
   `earliest-retained` replaying a backlog that was already acknowledged elsewhere; and `timestamp`
-  starting past the messages published before it. The last one takes its cutoff from the publish
-  time the service assigned, read through a second subscription of the same topic, rather than from
-  this JVM's clock — the two clocks are not the same one. It also drains past the two rows it
-  expects, so a message the seek should have skipped fails the assertion by arriving late rather
-  than passing unnoticed.
+  replaying only what was published after a cutoff. Both seek tests **acknowledge the whole backlog
+  outside Flink first**, so the seek is the only thing that can produce a row — otherwise a seek
+  that never happened would deliver the same rows plus older ones, and the emulator's delivery
+  order would decide the result. The cutoff is the publish time the service assigned plus one
+  millisecond, not `Instant.now()`: the container's clock and the test JVM's are not the same one.
+  Both subscriptions are unordered, because the emulator does not support seek on an
+  ordering-enabled one.
 
 A source test's `TableEnvironment` enables checkpointing and disables restarts, and rows are drained
 by **distinct** count with a deadline: the transport is at-least-once, so counting total rows would
