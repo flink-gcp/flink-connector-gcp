@@ -100,9 +100,9 @@ public class PubSubSinkBuilder<T> {
     }
 
     /**
-     * Sets the publisher and writer tuning options (batching, flow control, publish retries,
-     * message ordering, the in-flight cap and the topic auto-creation recovery backoff). Optional;
-     * defaults to {@link PubSubPublisherOptions#defaults()}.
+     * Sets the publisher and writer tuning options (batching, publish retries, message ordering,
+     * the in-flight caps and the topic auto-creation recovery backoff). Optional; defaults to
+     * {@link PubSubPublisherOptions#defaults()}.
      *
      * @param publisherOptions the options
      * @return this builder

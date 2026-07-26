@@ -298,16 +298,31 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   `io.github.flink.gcp.connector.pubsub.*`
 - **Pub/Sub sink** (#18): Publisher-based flush-on-checkpoint stateless writer; FLIP-171
   `AsyncSinkBase` evaluated and rejected (SDK `Publisher` already batches; AsyncSink persists
-  buffers into writer state). Mailbox-based backpressure with an in-flight cap; writer-owned
+  buffers into writer state). Mailbox-based backpressure with in-flight caps; writer-owned
   per-topic publishers (no JVM-wide cache); publish failures are capture-and-rethrow (the
   Apache connector's infinite republish is deliberately not adopted). Topic auto-creation (#19)
   is reactive — NOT_FOUND publishes are parked and republished after creating the topic via the
   `TopicAdmin` SPI (`sink.topics`, ALREADY_EXISTS = success), gated by `CreateDisposition`.
   Tuning (#20) lives in one `PubSubPublisherOptions` object (nested-options pattern; plain
   serializable values, no gax types on the public API; unset = SDK/sink default): batching,
-  flow control (Block-only; the builder rejects combining with ordering — SDK 1.152.0 leaks
-  permits on paused keys), publish retries, `enableMessageOrdering`, the in-flight cap and the
-  recovery backoff.
+  publish retries, `enableMessageOrdering`, the in-flight caps and the recovery backoff.
+  In-flight bounds (#85, revising #20): the writer owns **both** caps — `maxInFlightMessages`
+  (1000) and `maxInFlightBytes` (64 MiB per subtask) — and the two SDK `flowControl*` knobs #20
+  exposed are **removed**, not deprecated. gax flow control could never be the byte bound an
+  ordered sink needs: SDK 1.152.0 leaks a permit per publish cancelled on a paused key (so the
+  builder rejected combining it with ordering — exactly where cascades pile up), and it blocks the
+  task thread instead of yielding to the mailbox. Message count alone bounds no memory, since
+  Pub/Sub allows 10 MiB per message. Three constraints not to re-litigate: the byte bound is an
+  *additional* condition on `write`'s admission only, because the three drains (now
+  `drainInFlight()`, named apart from `awaitCapacity()` for exactly this reason) must keep meaning
+  "empty, and `checkAsyncError`" — #78/#110 made that load-bearing; admission is "below the cap",
+  never "does this message fit", since `yield()` blocks until a mail arrives and no mail can
+  arrive at zero in flight, so a fits-predicate would hang the task on an oversized message
+  instead of backpressuring it; and the topic-creation repair republishes its parked batch
+  **exempt from both caps**, because yielding between a key's republishes reorders it. Parked
+  messages are counted by neither cap (their failure mail released them). The two writer test
+  classes carry `@Timeout(30)`: the fake mailbox blocks like the real one, so a broken predicate
+  hangs rather than fails.
   Ordering×repair (revised in #78): cascade cancellations are parked alongside their NOT_FOUND
   root and every repair attempt calls `resumePublish` before republishing, but **per-key order is
   restored by sorting the parked batch on a publish sequence, never by observation order** — the
@@ -318,7 +333,7 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   flake, and it was *also* the only thing hiding a silent ordering violation, since the parked
   list was appended in observation order too. Consequences to keep: a cancellation is never a root
   cause, so under `CREATE_IF_NEEDED` one is parked unconditionally and a fatal root is caught by
-  the pre-repair drain (`awaitInFlightBelow(1)` → `checkAsyncError`) rather than by classifying
+  the pre-repair drain (`drainInFlight()` → `checkAsyncError`) rather than by classifying
   the cascade; under `CREATE_NEVER` nothing is parked at all, which every parking branch must
   check, since parking is what leads to `createTopic`. Emulator
   support (#21) is a builder option `emulatorEndpoint(host:port)` — plaintext + no credentials

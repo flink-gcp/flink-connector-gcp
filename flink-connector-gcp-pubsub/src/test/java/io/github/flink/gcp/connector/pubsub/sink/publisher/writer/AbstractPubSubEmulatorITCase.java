@@ -171,6 +171,7 @@ abstract class AbstractPubSubEmulatorITCase {
                 newTopicAdmin(),
                 mailbox,
                 config.getPublisherOptions().getMaxInFlightMessages(),
+                config.getPublisherOptions().getMaxInFlightBytes(),
                 EMULATOR_RECOVERY_SCHEDULE);
     }
 

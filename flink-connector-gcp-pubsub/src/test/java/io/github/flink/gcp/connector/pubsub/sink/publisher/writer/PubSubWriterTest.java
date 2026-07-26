@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -34,7 +35,14 @@ import java.util.concurrent.CompletableFuture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link PubSubWriter} against fake publishers and a fake mailbox. */
+/**
+ * Tests for {@link PubSubWriter} against fake publishers and a fake mailbox.
+ *
+ * <p>Timed out as a class: {@link FakeMailboxExecutor#yield()} blocks on an empty mailbox exactly
+ * as the real one does, so an in-flight predicate that can hold with nothing in flight hangs rather
+ * than fails. The timeout turns that into a failed test instead of a stuck CI job.
+ */
+@Timeout(30)
 class PubSubWriterTest {
 
     private static final String PROJECT = "test-project";
@@ -52,11 +60,22 @@ class PubSubWriterTest {
 
     private PubSubWriter<String> newWriter(int maxInFlightMessages) {
         return newWriter(
-                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()), maxInFlightMessages);
+                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                maxInFlightMessages,
+                PubSubPublisherOptions.defaults().getMaxInFlightBytes());
+    }
+
+    private PubSubWriter<String> newWriter(int maxInFlightMessages, long maxInFlightBytes) {
+        return newWriter(
+                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                maxInFlightMessages,
+                maxInFlightBytes);
     }
 
     private PubSubWriter<String> newWriter(
-            PubSubSerializationSchema<String> serializer, int maxInFlightMessages) {
+            PubSubSerializationSchema<String> serializer,
+            int maxInFlightMessages,
+            long maxInFlightBytes) {
         return new PubSubWriter<>(
                 TestSinkConfigs.forResolver(
                         (element, context) -> TopicDestination.of(PROJECT, element),
@@ -66,11 +85,23 @@ class PubSubWriterTest {
                 admin,
                 mailbox,
                 maxInFlightMessages,
+                maxInFlightBytes,
                 PubSubWriter.recoverySchedule(PubSubPublisherOptions.defaults()));
     }
 
     private static TopicDestination topic(String topic) {
         return TopicDestination.of(PROJECT, topic);
+    }
+
+    /**
+     * Serialized size of the message this test's serializer produces for the payload — the unit the
+     * writer's byte cap is expressed in. Goes through the serializer rather than rebuilding the
+     * message, so it cannot drift from what the writer actually measures.
+     */
+    private static int sizeOf(String payload) throws IOException {
+        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                .serialize(payload)
+                .getSerializedSize();
     }
 
     @Test
@@ -162,7 +193,8 @@ class PubSubWriterTest {
                         element -> {
                             throw failure;
                         },
-                        PubSubPublisherOptions.defaults().getMaxInFlightMessages());
+                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
+                        PubSubPublisherOptions.defaults().getMaxInFlightBytes());
 
         assertThatThrownBy(() -> writer.write("topic-a", CONTEXT))
                 .isInstanceOf(IOException.class)
@@ -182,7 +214,9 @@ class PubSubWriterTest {
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("topic-a")
                 .hasCause(failure);
+        // The rejected publish registers no callback, so counting it would leak both counters.
         assertThat(writer.getInFlightMessages()).isEqualTo(1);
+        assertThat(writer.getInFlightBytes()).isEqualTo(sizeOf("topic-a"));
     }
 
     @Test
@@ -212,12 +246,41 @@ class PubSubWriterTest {
     }
 
     @Test
+    void publicConstructorDerivesInFlightByteCapFromPublisherOptions() throws Exception {
+        PubSubWriter<String> writer =
+                new PubSubWriter<>(
+                        TestSinkConfigs.forResolver(
+                                (element, context) -> TopicDestination.of(PROJECT, element),
+                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubPublisherOptions.builder()
+                                        .maxInFlightBytes(2L * sizeOf("topic-a"))
+                                        .build()),
+                        factory,
+                        admin,
+                        mailbox);
+        SettableApiFuture<String> first = SettableApiFuture.create();
+        SettableApiFuture<String> second = SettableApiFuture.create();
+        factory.enqueueFuture(first);
+        factory.enqueueFuture(second);
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-a", CONTEXT);
+        assertThat(writer.getInFlightBytes()).isEqualTo(2L * sizeOf("topic-a"));
+
+        first.set("message-id");
+        writer.write("topic-a", CONTEXT);
+
+        assertThat(writer.getInFlightBytes()).isEqualTo(2L * sizeOf("topic-a"));
+        assertThat(factory.publishers.get(topic("topic-a")).published).hasSize(3);
+    }
+
+    @Test
     void rejectsOrderingKeyWhenMessageOrderingIsDisabled() {
         PubSubWriter<String> writer =
                 newWriter(
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
                                 .withOrderingKey(element -> "some-key"),
-                        PubSubPublisherOptions.defaults().getMaxInFlightMessages());
+                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
+                        PubSubPublisherOptions.defaults().getMaxInFlightBytes());
 
         assertThatThrownBy(() -> writer.write("topic-a", CONTEXT))
                 .isInstanceOf(IOException.class)
@@ -262,7 +325,74 @@ class PubSubWriterTest {
     }
 
     @Test
-    void completionMailsKeepInFlightCountBounded() throws Exception {
+    void writeAtInFlightByteCapWaitsForCompletionsBeforePublishing() throws Exception {
+        // The message cap stays at its default 1000, so only the byte cap can trip here — the
+        // gap #85 exists to close, since a message may be 10 MiB and the count bounds no memory.
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
+                        2L * sizeOf("topic-a"));
+        SettableApiFuture<String> first = SettableApiFuture.create();
+        SettableApiFuture<String> second = SettableApiFuture.create();
+        factory.enqueueFuture(first);
+        factory.enqueueFuture(second);
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-a", CONTEXT);
+        assertThat(writer.getInFlightBytes()).isEqualTo(2L * sizeOf("topic-a"));
+        assertThat(writer.getInFlightMessages()).isEqualTo(2);
+
+        // Completing a publish enqueues a completion mail. That the third write returns at all is
+        // the evidence it yielded to the mailbox rather than blocking: nothing else runs the mail.
+        first.set("message-id");
+        writer.write("topic-a", CONTEXT);
+
+        assertThat(writer.getInFlightBytes()).isEqualTo(2L * sizeOf("topic-a"));
+        assertThat(factory.publishers.get(topic("topic-a")).published).hasSize(3);
+    }
+
+    @Test
+    void writeAtInFlightByteCapSurfacesFailedPublishInsteadOfPublishing() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
+                        sizeOf("topic-a"));
+        RuntimeException failure = new RuntimeException("publish exploded");
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(failure));
+        writer.write("topic-a", CONTEXT);
+
+        assertThatThrownBy(() -> writer.write("topic-a", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("topic-a")
+                .hasCause(failure);
+        assertThat(factory.publishers.get(topic("topic-a")).published).hasSize(1);
+    }
+
+    @Test
+    void aMessageLargerThanTheByteCapIsAdmittedOnAnEmptyWriter() throws Exception {
+        // Admission is "below the cap", not "does this message fit". A fits-predicate would never
+        // admit this message, and since yield() blocks until a mail arrives and no mail can arrive
+        // with nothing in flight, the write would hang instead of applying backpressure.
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.defaults().getMaxInFlightMessages(),
+                        sizeOf("topic-a") - 1L);
+        SettableApiFuture<String> oversized = SettableApiFuture.create();
+        factory.enqueueFuture(oversized);
+
+        writer.write("topic-a", CONTEXT);
+
+        assertThat(factory.publishers.get(topic("topic-a")).published).hasSize(1);
+        assertThat(writer.getInFlightBytes()).isGreaterThan(sizeOf("topic-a") - 1L);
+
+        // ... and the overshoot is transient: the next write waits for it to complete.
+        oversized.set("message-id");
+        writer.write("topic-a", CONTEXT);
+
+        assertThat(factory.publishers.get(topic("topic-a")).published).hasSize(2);
+    }
+
+    @Test
+    void completionMailsKeepInFlightCountAndBytesBounded() throws Exception {
         PubSubWriter<String> writer = newWriter();
 
         for (int i = 0; i < 10; i++) {
@@ -271,6 +401,20 @@ class PubSubWriterTest {
         mailbox.drain();
 
         assertThat(writer.getInFlightMessages()).isZero();
+        assertThat(writer.getInFlightBytes()).isZero();
+    }
+
+    @Test
+    void aFailedPublishReleasesItsBytesToo() throws Exception {
+        PubSubWriter<String> writer = newWriter();
+        factory.enqueueFuture(
+                ApiFutures.immediateFailedFuture(new RuntimeException("publish exploded")));
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+
+        // The failure mail releases both counters; only the terminal error is retained.
+        assertThat(writer.getInFlightMessages()).isZero();
+        assertThat(writer.getInFlightBytes()).isZero();
     }
 
     @Test

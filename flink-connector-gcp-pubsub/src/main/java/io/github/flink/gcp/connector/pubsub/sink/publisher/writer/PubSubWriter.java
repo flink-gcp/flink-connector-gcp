@@ -22,6 +22,7 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.IOUtils;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.ThrowingRunnable;
 
 import com.google.api.core.ApiFuture;
@@ -63,7 +64,7 @@ import java.util.concurrent.CancellationException;
  *
  * <h2>Threading model</h2>
  *
- * <p>All mutable state — the publisher map, the in-flight counter, the pending-retry buffers and
+ * <p>All mutable state — the publisher map, the in-flight counters, the pending-retry buffers and
  * the captured asynchronous error — is touched only on the task thread. Publish completion
  * callbacks do not mutate state directly; they re-dispatch onto the {@link MailboxExecutor}, whose
  * mails run on the task thread inside {@link MailboxExecutor#yield()} calls. This is the
@@ -80,12 +81,33 @@ import java.util.concurrent.CancellationException;
  * failures captured by completion callbacks are rethrown on the task thread from the next {@link
  * #write} or {@link #flush}, failing the job (retries within a publish are delegated to the SDK).
  *
- * <p>The number of unacknowledged publishes is capped ({@code
- * PubSubPublisherOptions.maxInFlightMessages}, default 1000); once the cap is reached, {@link
- * #write} yields to the mailbox until completions bring the count back down, bounding sink memory
- * between checkpoints. (A topic-creation repair republishes its parked batch without re-checking
- * the cap, so the count can transiently exceed it by the batch size — bounded, since parked
- * messages were themselves once under the cap.)
+ * <p>Unacknowledged publishes are capped along both dimensions that bound memory: their number
+ * ({@code PubSubPublisherOptions.maxInFlightMessages}, default 1000) and their serialized size
+ * ({@code PubSubPublisherOptions.maxInFlightBytes}, default 64 MiB). At either cap {@link #write}
+ * yields to the mailbox until completions bring the counters back down. The byte cap exists because
+ * the message count alone bounds nothing: Pub/Sub allows 10 MiB per message, and the SDK
+ * publisher's flow controller — the only byte bound before — is unusable with message ordering
+ * enabled (see {@code PubSubPublisherOptions}).
+ *
+ * <p>Two documented ways the byte cap is exceeded, both bounded:
+ *
+ * <ul>
+ *   <li>Admission is checked before a publish rather than against the message's own size, so a
+ *       message larger than the cap is admitted on an empty writer and overshoots it until it
+ *       completes. This is deliberate: a "does it fit" predicate would never admit such a message,
+ *       and since {@link MailboxExecutor#yield()} blocks until a mail arrives and no mail can
+ *       arrive with nothing in flight, that would be a task hang rather than backpressure.
+ *   <li>A topic-creation repair republishes its parked batch without re-checking either cap, so
+ *       both counters can transiently exceed it by the batch size. Parked messages were themselves
+ *       admitted under the caps, and {@link #repairPendingTopics} drains to empty before
+ *       republishing, so the peak is one destination's parked batch.
+ * </ul>
+ *
+ * <p>Messages parked for a repair are released from both counters by their failure mail, so under a
+ * {@code NOT_FOUND} storm the writer can hold roughly a cap's worth of parked payload alongside a
+ * cap's worth newly admitted: peak retention is ~2× the configured cap, not 1×. It stays bounded
+ * because {@link #write} repairs before admitting the next record, so parked messages cannot
+ * accumulate across writes.
  *
  * <h2>Topic auto-creation</h2>
  *
@@ -94,7 +116,7 @@ import java.util.concurrent.CancellationException;
  * topic is created through the {@link TopicAdmin} (idempotent across parallel subtasks — {@code
  * ALREADY_EXISTS} is treated as success), and the messages are republished within a bounded backoff
  * budget covering topic-metadata propagation. Failures discovered while a {@link #write} waits on
- * the in-flight cap are repaired on the next {@code write} or {@code flush}; {@code flush} repairs
+ * an in-flight cap are repaired on the next {@code write} or {@code flush}; {@code flush} repairs
  * until nothing is pending, so a completed checkpoint never leaves parked messages behind. Under
  * {@link CreateDisposition#CREATE_NEVER}, a {@code NOT_FOUND} publish fails the job immediately.
  *
@@ -126,6 +148,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private final TopicAdmin topicAdmin;
     private final MailboxExecutor mailboxExecutor;
     private final int maxInFlightMessages;
+    private final long maxInFlightBytes;
     private final RetrySchedule recoverySchedule;
     private final boolean orderingEnabled;
 
@@ -134,6 +157,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /** Number of publishes not yet acknowledged; touched only on the task thread. */
     private int inFlightMessages;
+
+    /**
+     * Serialized size of the publishes not yet acknowledged; touched only on the task thread.
+     * Excludes messages parked for a topic-creation repair — their failure mail released them
+     * before parking, and the repair republishes those same objects.
+     */
+    private long inFlightBytes;
 
     /**
      * Issue order of publishes, which is what a parked batch is sorted by. Assigned in {@link
@@ -172,6 +202,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 topicAdmin,
                 mailboxExecutor,
                 config.getPublisherOptions().getMaxInFlightMessages(),
+                config.getPublisherOptions().getMaxInFlightBytes(),
                 recoverySchedule(config.getPublisherOptions()));
     }
 
@@ -182,12 +213,21 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             TopicAdmin topicAdmin,
             MailboxExecutor mailboxExecutor,
             int maxInFlightMessages,
+            long maxInFlightBytes,
             RetrySchedule recoverySchedule) {
         this.config = config;
         this.publisherFactory = publisherFactory;
         this.topicAdmin = topicAdmin;
         this.mailboxExecutor = mailboxExecutor;
+        // Checked here, not only on the options builder: a non-positive cap holds the
+        // awaitCapacity predicate with nothing in flight, and yield() blocks until a mail arrives
+        // — so it is a silent permanent park, not a rejected configuration. Fail where the
+        // invariant is relied on rather than trusting every caller of this constructor.
+        Preconditions.checkArgument(
+                maxInFlightMessages > 0, "maxInFlightMessages must be positive");
+        Preconditions.checkArgument(maxInFlightBytes > 0, "maxInFlightBytes must be positive");
         this.maxInFlightMessages = maxInFlightMessages;
+        this.maxInFlightBytes = maxInFlightBytes;
         this.recoverySchedule = recoverySchedule;
         this.orderingEnabled = config.getPublisherOptions().isEnableMessageOrdering();
     }
@@ -230,7 +270,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                             + " the sink.");
         }
         DestinationState state = stateFor(destination);
-        awaitInFlightBelow(maxInFlightMessages);
+        awaitCapacity();
         publishTo(state, message);
     }
 
@@ -247,7 +287,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             for (DestinationState state : states.values()) {
                 state.publisher.flushOutstanding();
             }
-            awaitInFlightBelow(1);
+            drainInFlight();
         } while (repairNeeded);
     }
 
@@ -292,6 +332,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * completion callback.
      */
     private void publishTo(DestinationState state, PubsubMessage message) throws IOException {
+        // Memoized by protobuf, so recomputing it in the callback would be equivalent; taking it
+        // once keeps a single source of the number the counter is adjusted by.
+        int serializedSize = message.getSerializedSize();
         ApiFuture<String> future;
         try {
             future = state.publisher.publish(message);
@@ -299,19 +342,55 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             throw new IOException(
                     "Failed to publish a record to Pub/Sub topic " + state.destination + ".", e);
         }
+        // Counted only once the publish is accepted: a synchronous throw registers no callback, so
+        // nothing would ever release it.
         inFlightMessages++;
+        inFlightBytes += serializedSize;
         ApiFutures.addCallback(
-                future, new PublishCallback(state, message, nextPublishSequence++), Runnable::run);
+                future,
+                new PublishCallback(state, message, nextPublishSequence++, serializedSize),
+                Runnable::run);
+    }
+
+    /** Releases one completed publish from both in-flight counters. */
+    private void releaseInFlight(int serializedSize) {
+        inFlightMessages--;
+        inFlightBytes -= serializedSize;
     }
 
     /**
-     * Runs mailbox mails (publish completions) until fewer than {@code limit} publishes are in
-     * flight, surfacing any captured publish failure — including one processed by the final mail —
-     * before the caller publishes further messages. With {@code limit == 1} this drains the writer
-     * completely.
+     * Admission gate for {@link #write}: runs mailbox mails (publish completions) until both
+     * in-flight caps have room, surfacing any captured publish failure before the caller publishes.
+     *
+     * <p>Both predicates are "at or above the cap", never "would this message fit", so an empty
+     * writer always admits. That matters beyond overshoot accounting: {@link
+     * MailboxExecutor#yield()} blocks until a mail arrives, and with nothing in flight no mail can
+     * arrive, so any predicate that can hold at zero is a task hang rather than backpressure. The
+     * positive-value preconditions on both options are what rule that out.
      */
-    private void awaitInFlightBelow(int limit) throws IOException, InterruptedException {
-        while (inFlightMessages >= limit) {
+    private void awaitCapacity() throws IOException, InterruptedException {
+        while (inFlightMessages >= maxInFlightMessages || inFlightBytes >= maxInFlightBytes) {
+            checkAsyncError();
+            mailboxExecutor.yield();
+        }
+        checkAsyncError();
+    }
+
+    /**
+     * Runs mailbox mails until <b>no</b> publish is in flight, surfacing any captured publish
+     * failure — including one processed by the final mail — before the caller proceeds.
+     *
+     * <p>This is a correctness primitive, not backpressure, and reaching exactly zero is what two
+     * guarantees rest on (#78, #110): a fatal root failure reaches {@code asyncError} and is
+     * rethrown here before any cascade of it can be republished, and a parked batch is never
+     * snapshotted while a cascade of it is still in flight. It must stay independent of the
+     * in-flight caps — no byte or count limit may weaken it into a low-water mark.
+     *
+     * <p>Keyed on the message count alone: a {@code PubsubMessage} can serialize to zero bytes, so
+     * {@code inFlightBytes == 0} does not imply an empty writer.
+     */
+    private void drainInFlight() throws IOException, InterruptedException {
+        while (inFlightMessages > 0) {
             checkAsyncError();
             mailboxExecutor.yield();
         }
@@ -326,8 +405,12 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /** Task-thread handler for a failed publish, run as a mailbox mail. */
     private void onPublishFailed(
-            DestinationState state, PubsubMessage message, long sequence, Throwable throwable) {
-        inFlightMessages--;
+            DestinationState state,
+            PubsubMessage message,
+            long sequence,
+            int serializedSize,
+            Throwable throwable) {
+        releaseInFlight(serializedSize);
         if (isRecoverableNotFound(throwable)) {
             state.pendingRetries.put(sequence, message);
             state.repairCause = throwable;
@@ -362,9 +445,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             // mails may still be queued, or still being enqueued by the SDK thread, and a repair
             // started from a partial batch would republish only part of a key's messages. The
             // drain is also what makes parking a cascade safe in the first place — a fatal root
-            // reaches asyncError here, and awaitInFlightBelow rethrows it, so no cascade of a
+            // reaches asyncError here, and drainInFlight rethrows it, so no cascade of a
             // fatal root is ever republished.
-            awaitInFlightBelow(1);
+            drainInFlight();
             // Iterate a snapshot: repairDestination yields to the mailbox, so hardening against
             // a mail ever reaching stateFor() keeps this loop safe from map mutation.
             for (DestinationState state : new ArrayList<>(states.values())) {
@@ -379,9 +462,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Creates the destination's topic and republishes its parked messages, retrying within the
      * recovery schedule while topic metadata propagates. Each attempt drains the writer completely
      * (repair is rare, so waiting on unrelated destinations' publishes is acceptable for the
-     * simplicity of reusing {@link #awaitInFlightBelow}). Failures during a retry re-enter the
-     * pending buffer through the normal callback path; non-{@code NOT_FOUND} failures abort the
-     * repair from within the drain.
+     * simplicity of reusing {@link #drainInFlight}). Failures during a retry re-enter the pending
+     * buffer through the normal callback path; non-{@code NOT_FOUND} failures abort the repair from
+     * within the drain.
      */
     private void repairDestination(DestinationState state)
             throws IOException, InterruptedException {
@@ -402,7 +485,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 publishTo(state, message);
             }
             state.publisher.flushOutstanding();
-            awaitInFlightBelow(1);
+            drainInFlight();
             if (state.pendingRetries.isEmpty()) {
                 return;
             }
@@ -507,6 +590,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         return inFlightMessages;
     }
 
+    @VisibleForTesting
+    long getInFlightBytes() {
+        return inFlightBytes;
+    }
+
     /** Per-topic publisher plus the destination's repair and completion state. */
     private final class DestinationState {
 
@@ -527,12 +615,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
          */
         private Throwable repairCause;
 
-        /**
-         * Success mail shared by every publish to this destination, so the success path enqueues no
-         * per-record mail allocation (the per-publish callback itself is the only one).
-         */
-        private final ThrowingRunnable<Exception> completionMail = () -> inFlightMessages--;
-
         private final String completionDescription;
         private final String failureDescription;
 
@@ -548,31 +630,45 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Re-dispatches publish completions onto the mailbox so state stays task-thread-only.
      *
      * <p>One instance per publish: the callback carries its message so a failed publish can be
-     * republished after topic auto-creation, and its publish sequence so the parked batch can be
-     * ordered independently of the order the failures arrive in (the destination's success mail is
-     * still shared).
+     * republished after topic auto-creation, its publish sequence so the parked batch can be
+     * ordered independently of the order the failures arrive in, and its serialized size so both
+     * in-flight counters can be released.
+     *
+     * <p>It is also its own success mail, which is why the success path still allocates nothing
+     * beyond this object. A mail shared per destination — what this replaces — cannot carry a size,
+     * and a per-record success lambda would put an allocation back on the hot path.
      */
-    private final class PublishCallback implements ApiFutureCallback<String> {
+    private final class PublishCallback
+            implements ApiFutureCallback<String>, ThrowingRunnable<Exception> {
 
         private final DestinationState state;
         private final PubsubMessage message;
         private final long sequence;
+        private final int serializedSize;
 
-        private PublishCallback(DestinationState state, PubsubMessage message, long sequence) {
+        private PublishCallback(
+                DestinationState state, PubsubMessage message, long sequence, int serializedSize) {
             this.state = state;
             this.message = message;
             this.sequence = sequence;
+            this.serializedSize = serializedSize;
+        }
+
+        /** The success mail: runs on the task thread. */
+        @Override
+        public void run() {
+            releaseInFlight(serializedSize);
         }
 
         @Override
         public void onSuccess(String messageId) {
-            mailboxExecutor.execute(state.completionMail, state.completionDescription);
+            mailboxExecutor.execute(this, state.completionDescription);
         }
 
         @Override
         public void onFailure(Throwable throwable) {
             mailboxExecutor.execute(
-                    () -> onPublishFailed(state, message, sequence, throwable),
+                    () -> onPublishFailed(state, message, sequence, serializedSize, throwable),
                     state.failureDescription);
         }
     }
