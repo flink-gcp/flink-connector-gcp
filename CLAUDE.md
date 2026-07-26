@@ -224,21 +224,24 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
   stages follow the Flink FileSink precedent with `.writer`, `.committer` and
   post-commit-topology subpackages (`.loadjob` here, FileSink's `.compactor`) as the topology
   requires — a family without 2PC simply has no `.committer` package.
-  **This layer only appears when a module has more than one family.** With one family it names
-  nothing and the module goes straight to `sink` + `sink.writer` (`sink.committer`, … as the
-  topology requires) — decided in #119, where Cloud Tasks' `sink.createtask` was named after the
-  `CreateTask` RPC rather than after a design, and no sibling can arrive because
-  `BatchCreateTasks` and `BufferTask` are REST-only and absent from the Java client. Pub/Sub's
-  `sink.publisher` was flattened with it so the two single-family modules stay alike. Adding the
-  layer back is what a *second* family costs, and it is a mechanical move: nothing public lives
-  in it
+  **One family, with no second one in prospect, means no layer**: the module goes straight to
+  `sink` + `sink.writer` (`sink.committer`, … as the topology requires). Decided in #119, where
+  Cloud Tasks' `sink.createtask` was named after the `CreateTask` RPC rather than after a design
+  and no sibling can arrive at all — `BatchCreateTasks` and `BufferTask` are REST-only and absent
+  from the Java client. Pub/Sub's `sink.publisher` went with it so the two single-family modules
+  stay alike. Adding the layer back is what a second family costs, and it is a mechanical move:
+  nothing public lives in it
 - `sink.tables` — shared table-metadata layer consumed by every write method: the `TableAdmin`
   SPI and its REST implementation, schema snapshot/unifier, REST↔Storage schema converters
 - `sink.serializer` — record-conversion SPI and its implementations
 - `sink.failure` — row-level failure SPI (`FailedRow`, handlers, DLQ stub), kept separate so the
   cross-connector extraction planned in #37 stays cheap
 - `source` / `table` — reserved for sources (#31, #34, #64) and Table API (#47, #57), with the
-  same philosophy: public API at the package root, implementation subpackages beneath
+  same philosophy: public API at the package root, implementation subpackages beneath. The
+  family rule above applies here too, and `source.streamingpull` **keeps** its layer under it:
+  the sibling Cloud Tasks cannot have is real here, since a unary-`Pull` source is a live
+  alternative — weighed, and rejected on trade-offs the connector documentation records as
+  cutting both ways
 
 A new top-level class in a module's `sink` root needs a reason to be public API; implementation
 types belong in the subpackages. The one standing exception is a single-family module's
