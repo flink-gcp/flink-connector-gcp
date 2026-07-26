@@ -31,9 +31,12 @@ jobs:
           java-version: '17'
           cache: maven
 
-      # install-action rather than mise: mise.toml pins java and maven, so
-      # mise's shims would sit in front of the JDK setup-java just installed.
-      # This drops one binary on PATH and creates no shims.
+      # install-action rather than mise: this drops one binary on PATH and
+      # creates no shims at all, which is the simplest thing that can work in a
+      # job that also runs setup-java. mise would work too — mise.toml pins java
+      # and maven, so its shims lead the JDK by default, but add_shims_to_path:
+      # false turns that off. install-action is preferred here for having
+      # nothing to turn off, not because the two cannot be combined.
       #
       # `tool: just` carries no version on purpose. install-action reads no
       # version file, so pinning it would mean an inline version in six places

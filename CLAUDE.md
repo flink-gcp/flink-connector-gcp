@@ -170,8 +170,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - **`lint.yaml` is where linters Maven does not run live** (spotless and checkstyle cover the
   Java sources inside `verify`). Today that is shellcheck and actionlint; `tofu fmt`/`validate`
   belongs here when the OpenTofu persistent layer lands (#5). Separate from
-  `ci.yaml` so results arrive in seconds rather than behind the integration tests, and so mise's
-  shims never share a `PATH` with `setup-java`'s JDK. Its `paths` filter must list **every input
+  `ci.yaml` so results arrive in seconds rather than behind the integration tests — that is the
+  whole reason, the mise-versus-`setup-java` one having turned out to be a disarmable default
+  rather than a conflict (see below). Its `paths` filter must list **every input
   to a lint, not just the linted files** — `mise.toml` is in it because that is where the
   shellcheck version is pinned, and skipping the lint on a version bump would skip it in the one
   change that most needs it. `docs.yaml` carries `mise.toml` for the same reason since #111
@@ -187,10 +188,21 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   depend on a `--unstable` one; `just --fmt --check` is kept out of `just lint` for exactly this
   reason. Reach for an unstable feature and the tool needs a pin, which means an inline version
   in every install-action step — six of them today
-- **`jdx/mise-action` must not run in a job that uses `setup-java`.** `mise.toml` pins java and
-  maven, so mise's shims land in front of the JDK the job just installed. That is why `lint.yaml`
-  is separate from `ci.yaml`, and why `just` comes from `taiki-e/install-action` (one binary on
-  `PATH`, no shims) in every workflow rather than from mise in the two that already have it
+- **`jdx/mise-action` beside `setup-java` needs `add_shims_to_path: false`.** `mise.toml` pins java
+  and maven, and the action defaults **both** `add_shims_to_path` and `export_path` to `true`, so
+  out of the box its shims and env paths land in front of the JDK the job just installed. That is a
+  default to disarm, not a combination to forbid — this bullet said "must not run" until it was
+  checked, extrapolated from a real incident that was a *different* mechanism (`mise x --` without
+  a tool name, which has its own rule under Build); the two have never actually run together in any
+  workflow here. When a `setup-java` job does need a mise-pinned tool: set
+  `add_shims_to_path: false`, scope `install_args` to that tool, and invoke it by explicit path —
+  `just lint` already does exactly that, handing actionlint `-shellcheck "$(mise which shellcheck)"`.
+  **Better still, arrange not to need it.** A tool the Java build depends on should come from Maven
+  where it can, because its version then lives beside the dependency it has to track and no workflow
+  changes at all — protoc resolves as `com.google.protobuf:protoc:<version>:exe:<platform>`, which
+  is why #132 added code generation without touching CI. None of this changes why `just` comes from
+  `taiki-e/install-action` in every workflow: that rests on its own reason, one binary on `PATH` and
+  no shims at all
 - `docs.yaml` and `lint.yaml` both carry `paths` filters, so a pull request touching neither
   never reports them. Fine while they are optional — but **a required check that never reports
   blocks a pull request forever**, so making either one required means dropping its filter or
