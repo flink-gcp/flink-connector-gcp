@@ -310,10 +310,10 @@ class BoolFieldOptionReaderTest {
     @Test
     void picksTheExpectedDeclarationWhenTwoShareTheNumber() {
         // Both annotations protos are in this message's pool, each declaring number 50000, and the
-        // rival is listed last so a stack-based walk meets it first. Taking the first number match
-        // would answer with the rival's name and report "different option" — the field would
-        // quietly
-        // stop being a JSON column even though its own annotation is the configured one.
+        // rival is declared first — the search walks dependencies breadth-first in declaration
+        // order, so the rival is the first number match. Taking it would answer with the rival's
+        // name and report "different option", and the field would stop being a JSON column even
+        // though its own annotation is the configured one.
         Descriptors.FieldDescriptor field =
                 TestProtos.ambiguouslyAnnotated().findFieldByName("m_string");
 

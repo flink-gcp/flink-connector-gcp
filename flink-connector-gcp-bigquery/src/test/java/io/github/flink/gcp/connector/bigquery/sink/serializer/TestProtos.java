@@ -37,7 +37,10 @@ final class TestProtos {
     /** A bool field option marking a field as a BigQuery {@code JSON} column. */
     static final int JSON_OPTION_NUMBER = 50000;
 
-    /** A second, unrelated bool field option; fields carrying only it must not become JSON. */
+    /**
+     * A second, unrelated bool field option: a field carrying only it must not become JSON unless
+     * this number is configured too.
+     */
     static final int OTHER_OPTION_NUMBER = 50001;
 
     /** A string field option, used to check that a non-bool option at the number is rejected. */
@@ -160,8 +163,9 @@ final class TestProtos {
      * that conflict within one compilation, but a pool assembled from several sources can hold it,
      * and then only the expected name says which declaration is the right one.
      *
-     * <p>The rival is listed last so a stack-based walk reaches it first — the declaration search
-     * must not simply take the first number match.
+     * <p>The rival is declared <em>first</em>, because the declaration search walks dependencies
+     * breadth-first in declaration order — so the rival is the first number match, and a search
+     * that simply took it would answer with the wrong name.
      */
     static Descriptors.Descriptor ambiguouslyAnnotated() {
         DescriptorProtos.FileDescriptorProto proto =
@@ -169,8 +173,8 @@ final class TestProtos {
                         .setName("ambiguous.proto")
                         .setPackage("ambiguous")
                         .setSyntax("proto3")
-                        .addDependency(ANNOTATIONS_PROTO)
                         .addDependency(COLLIDING_ANNOTATIONS_PROTO)
+                        .addDependency(ANNOTATIONS_PROTO)
                         .addMessageType(
                                 DescriptorProtos.DescriptorProto.newBuilder()
                                         .setName("Ambiguous")
@@ -188,7 +192,7 @@ final class TestProtos {
             return Descriptors.FileDescriptor.buildFrom(
                             DescriptorProtos.FileDescriptorProto.parseFrom(proto.toByteString()),
                             new Descriptors.FileDescriptor[] {
-                                annotationsFile(), collidingAnnotationsFile()
+                                collidingAnnotationsFile(), annotationsFile()
                             })
                     .findMessageTypeByName("Ambiguous");
         } catch (InvalidProtocolBufferException | Descriptors.DescriptorValidationException e) {

@@ -47,9 +47,9 @@ import java.util.Set;
  * </ul>
  *
  * <p>Fields are selected either by their dotted path from the root message (for example {@code
- * payload} or {@code event.details}) or by a boolean custom field option, supplied either as the
- * generated extension or as its extension number. The two mechanisms are unioned, so a field marked
- * either way is a {@code JSON} column.
+ * payload} or {@code event.details}) or by one or more boolean custom field options, each supplied
+ * as the generated extension or as its extension number. Everything configured is unioned, so a
+ * field marked by any of them is a {@code JSON} column.
  */
 @PublicEvolving
 public final class ProtoSchemaOptions implements Serializable {
@@ -110,6 +110,12 @@ public final class ProtoSchemaOptions implements Serializable {
      * single decision point consulted by both schema derivation and row conversion, so the two can
      * never disagree on which columns are JSON.
      *
+     * <p>Configured options are consulted until one matches. Each may also <em>reject</em> a field
+     * whose option at that number is not a singular bool, so for a field carrying both a valid
+     * option and a malformed one the registration order decides between a JSON column and a
+     * failure. Reaching that needs a number registered for an option that is not a bool, which is
+     * already a misconfiguration.
+     *
      * @param field the field descriptor
      * @param path the dotted path of the field from the root message
      * @return whether the field is written as JSON
@@ -160,6 +166,8 @@ public final class ProtoSchemaOptions implements Serializable {
          * <p>Additive, like {@link #jsonFieldPath}: several annotation vocabularies can be marked.
          * Registering the same number twice keeps the entry that carries a name, since an unnamed
          * one would match anything at that number and defeat the check the named one exists for.
+         * Where two extensions claim one number the last call wins — only one entry per number is
+         * kept, and neither choice is self-evidently right.
          *
          * @param extension the generated extension for a {@code bool} option on {@code
          *     google.protobuf.FieldOptions}
@@ -234,21 +242,12 @@ public final class ProtoSchemaOptions implements Serializable {
          */
         public Builder jsonFieldOptionNumber(int extensionNumber) {
             checkExtensionNumber(extensionNumber);
-            this.jsonFieldOptions.putIfAbsent(extensionNumber, null);
-            return this;
-        }
-
-        /**
-         * Maps every message or string field carrying any of the given boolean {@code
-         * google.protobuf.FieldOptions} extensions, set to {@code true}, to a BigQuery {@code JSON}
-         * column.
-         *
-         * @param extensionNumbers extension numbers within {@code google.protobuf.FieldOptions}
-         * @return this builder
-         */
-        public Builder jsonFieldOptionNumbers(Collection<Integer> extensionNumbers) {
-            Preconditions.checkNotNull(extensionNumbers, "extensionNumbers must not be null")
-                    .forEach(this::jsonFieldOptionNumber);
+            // A name always wins, so never displace an existing entry. Deliberately containsKey and
+            // not putIfAbsent or computeIfAbsent: both key off a null *value*, and a bare number is
+            // stored as exactly that — computeIfAbsent would not even add the key.
+            if (!this.jsonFieldOptions.containsKey(extensionNumber)) {
+                this.jsonFieldOptions.put(extensionNumber, null);
+            }
             return this;
         }
 
@@ -258,9 +257,9 @@ public final class ProtoSchemaOptions implements Serializable {
                             && extensionNumber <= MAX_EXTENSION_NUMBER
                             && (extensionNumber < FIRST_RESERVED_NUMBER
                                     || extensionNumber > LAST_RESERVED_NUMBER),
-                    "jsonFieldOptionNumber must be a google.protobuf.FieldOptions extension number"
-                            + " in [%s, %s] and outside protobuf's reserved range [%s, %s], but was"
-                            + " %s",
+                    "A JSON field option number must be a google.protobuf.FieldOptions extension"
+                            + " number in [%s, %s] and outside protobuf's reserved range [%s, %s],"
+                            + " but was %s",
                     MIN_EXTENSION_NUMBER,
                     MAX_EXTENSION_NUMBER,
                     FIRST_RESERVED_NUMBER,

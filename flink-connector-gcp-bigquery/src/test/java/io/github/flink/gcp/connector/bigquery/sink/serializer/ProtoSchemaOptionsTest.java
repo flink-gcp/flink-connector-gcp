@@ -22,8 +22,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.util.Arrays;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
@@ -42,12 +40,14 @@ class ProtoSchemaOptionsTest {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder()
                         .jsonFieldOptionNumber(50000)
-                        .jsonFieldOptionNumbers(Arrays.asList(50001, 50002))
+                        .jsonFieldOptionNumber(50001)
+                        .jsonFieldOptionNumber(50002)
                         .build();
 
+        // containsOnly, not containsOnlyKeys plus containsValues: the latter ignores duplicates, so
+        // it would pass with one of the three mapped to a name.
         assertThat(options.getJsonFieldOptions())
-                .containsOnlyKeys(50000, 50001, 50002)
-                .containsValues(null, null, null);
+                .containsOnly(entry(50000, null), entry(50001, null), entry(50002, null));
     }
 
     @Test
@@ -99,7 +99,7 @@ class ProtoSchemaOptionsTest {
         assertThatThrownBy(
                         () -> ProtoSchemaOptions.builder().jsonFieldOptionNumber(extensionNumber))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("jsonFieldOptionNumber")
+                .hasMessageContaining("JSON field option number")
                 .hasMessageContaining(String.valueOf(extensionNumber));
     }
 
@@ -151,7 +151,7 @@ class ProtoSchemaOptionsTest {
                         .build();
 
         assertThat(options.getJsonFieldOptions())
-                .containsExactly(
+                .containsOnly(
                         entry(TestProtos.JSON_OPTION_NUMBER, TestProtos.JSON_OPTION_FULL_NAME),
                         entry(TestProtos.OTHER_OPTION_NUMBER, null));
     }
@@ -169,6 +169,6 @@ class ProtoSchemaOptionsTest {
         ProtoSchemaOptions copy = InstantiationUtil.clone(options);
 
         assertThat(copy.getJsonFieldPaths()).containsExactly("payload");
-        assertThat(copy.getJsonFieldOptions()).containsOnlyKeys(50000);
+        assertThat(copy.getJsonFieldOptions()).containsExactly(entry(50000, null));
     }
 }

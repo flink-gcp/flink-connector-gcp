@@ -124,9 +124,10 @@ ProtoSchemaOptions.builder().jsonFieldOptionNumber(50000).build();
 ```
 
 Both are additive, like `jsonFieldPath`, so a job whose messages come from several sources can name
-each annotation vocabulary it has to understand. Registering the same number both ways keeps the
-entry that carries a name — an unnamed one would match anything at that number and defeat the check
-the named one is there for.
+each annotation vocabulary it has to understand. Only one entry is kept per extension number:
+registering the same number both ways keeps the one that carries a name — an unnamed entry would
+match anything at that number and defeat the check the named one is there for — and if two
+extensions claim one number, the last one registered wins.
 
 Either way the option is found whether the descriptor knows it as a registered extension
 (descriptors from generated code) or carries it as an unknown field (descriptors built from a

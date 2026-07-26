@@ -270,9 +270,10 @@ types belong in the subpackages. Test sources mirror the main-tree packages.
   must not be retained); `jsonFieldOptionNumber(int)` remains for descriptors that arrive without
   the annotations artifact, and then only the wire encoding can stand in for the type check. Both
   **accumulate** like `jsonFieldPath` — one job can meet several annotation vocabularies — keyed by
-  number so a named entry always wins over a bare one at the same number. The name **rules out a
-  foreign declaration**; it cannot arbitrate between two rivals both present in the pool, since an
-  unresolved option records only its number
+  number so a named entry always wins over a bare one at the same number, and the last name wins
+  when two extensions claim one number. The name **rules out a foreign declaration**; it cannot
+  arbitrate between two rivals both present in the pool, since an unresolved option records only its
+  number
 - **Pub/Sub**: base implementation is vendored from `GoogleCloudPlatform/pubsub`
   `flink-connector/` (decision record: issues #17 and #31); the Apache connector is only a
   design reference (table-factory plumbing, emulator harness). All packages are normalized to
