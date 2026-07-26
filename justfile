@@ -50,6 +50,12 @@ mvn := "./mvnw -ntp"
 default:
     @just --list
 
+# `just help` would otherwise be read as a recipe name and fail with "justfile
+# does not contain recipe `help`", which is a poor answer to someone asking what
+# there is to run. `-h` and `--help` are just's own CLI help — a hundred lines of
+# options, not this project's commands — so they are not the same thing.
+alias help := default
+
 # Runs spotless/checkstyle (validate), unit tests, integration tests, packaging
 # and the apache-rat license-header check. Extra arguments go to Maven, which is
 # how the weekly version matrix selects a Flink version — passing none means the
