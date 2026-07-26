@@ -72,15 +72,19 @@ API notes:
 
 ## Column modes
 
-**The policy is that a derived column is `NULLABLE`, and a constraint is something you ask for.**
-`REPEATED` is the one mode derived without being asked for, because a repeated field has no nullable
-form — a BigQuery `REPEATED` column is empty, never NULL. Where each serializer stands today:
+**A derived column is `NULLABLE`. A constraint is something you ask for.** `REPEATED` is the one mode
+derived without being asked for, because a repeated field has no nullable form — a BigQuery
+`REPEATED` column is empty, never NULL.
 
 | Serializer | Default | To constrain |
 |---|---|---|
-| [Protobuf messages](#protobuf-messages) | every column `NULLABLE` — follows the policy | `ProtoSchemaOptions.builder().deriveRequiredColumns()` derives `REQUIRED` from field presence |
-| [Avro records](#avro-records) | **the outlier**: `REQUIRED` unless the field is a `["null", T]` union | `AvroSchemaOptions.builder().allFieldsNullable()` opts *out* — the inverse polarity. Being aligned on the policy in [#145]({{< param BookRepo >}}/issues/145) |
+| [Protobuf messages](#protobuf-messages) | every non-repeated column `NULLABLE` | `ProtoSchemaOptions.builder().deriveRequiredColumns()` — `REQUIRED` where the field has no presence |
+| [Avro records](#avro-records) | every non-repeated column `NULLABLE` | `AvroSchemaOptions.builder().deriveRequiredColumns()` — `REQUIRED` where the field is not a `["null", T]` union |
 | [JSON records](#json-records) | whatever the schema you supply says; an omitted mode is `NULLABLE` | write the mode you want in that schema. **No option, deliberately** — nothing is derived, so there is nothing to overrule, and the schema is often the destination table's own |
+
+The two derived serializers take **the same option under the same name**; only the signal differs,
+which is the point — the same records should reach the same table shape whichever front end carried
+them.
 
 Why the policy runs this way:
 
@@ -88,16 +92,16 @@ Why the policy runs this way:
   `REQUIRED` column only ever appears at creation time, and relaxing one afterwards is a schema update
   rather than an edit — needing `allowFieldRelaxation`, which is off by default. Defaulting to the
   irreversible choice is the wrong way round.
-- **The protobuf mapping is the normative one**, and the front ends are expected to match it, because
-  every write path ends in a protobuf row: `STORAGE_API_*` writes protobuf directly, the Avro and
-  JSON serializers convert into one, and File loads stages Avro only incidentally — a staging format,
-  not a contract. So where a front end disagrees, it is the front end that moves.
+- **The protobuf mapping is the normative one**, which is why Avro follows it rather than the other
+  way round: every write path ends in a protobuf row — `STORAGE_API_*` writes protobuf directly, the
+  Avro and JSON serializers convert into one, and File loads stages Avro only incidentally, a staging
+  format rather than a contract. Where a front end disagrees, the front end moves.
 - **A source schema's "mandatory" is not always a statement about mandatoriness.** On the protobuf
   side especially: a plain proto3 scalar has no way to say "unset", which is a property of the syntax
   rather than a decision its author made, so deriving `REQUIRED` from it would constrain nearly every
   scalar column of an auto-created table on the strength of a default nobody chose. An Avro
-  `["null", T]` union *is* deliberate, which is why that side reads as the more faithful one taken
-  alone — the reason it still moves is the bullet above, not this one.
+  `["null", T]` union *is* deliberate, so this reason does not carry on that side — Avro shares the
+  default because of the two above, not this one.
 
 There is deliberately no inverse switch anywhere: with `NULLABLE` as the default, "all columns
 nullable" is just not asking for the constraint.
@@ -129,7 +133,7 @@ descriptor field names.
 Well-known types other than `Timestamp` are not recognised yet: wrapper types such as `Int64Value`
 become `STRUCT<value>` rather than a nullable scalar, and `Struct`/`Value`/`ListValue` are rejected
 by the recursion guard unless marked as JSON columns. Tracked in
-[#124]({{< param BookRepo >}}/issues/124).
+[#147]({{< param BookRepo >}}/issues/147).
 
 ### Nullability
 
@@ -353,32 +357,33 @@ Avro's logical-type conversions holds `Instant`, `LocalDate`, `LocalTime`, `Loca
 | `bytes`/`fixed` + `decimal(p, s)` | `NUMERIC` when `s ≤ 9` and `p - s ≤ 29`, else `BIGNUMERIC` (`s ≤ 38`, `p - s ≤ 38`); the precision and scale are carried onto the column |
 | `record` | `STRUCT`, recursively |
 | `map<string, V>` | `REPEATED STRUCT<key, value>` — the shape a proto map already gets |
-| `["null", T]` | mode `NULLABLE` |
-| `array<T>` | mode `REPEATED`, whether or not a union around it admitted null |
-| anything else | mode `REQUIRED` |
+| `array<T>`, `map<string, V>` | mode `REPEATED`, whether or not a union around it admitted null |
+| anything else | mode `NULLABLE`; `REQUIRED` under `deriveRequiredColumns()` when not a `["null", T]` union |
 
-**Nullability.** A field that is not a `["null", T]` union becomes a `REQUIRED` column, which is the
-faithful reading of the Avro schema — and a trap in an auto-created table, since relaxing a column
-afterwards is a schema update rather than an edit. `AvroSchemaOptions.builder().allFieldsNullable()`
-derives every column as `NULLABLE` instead:
+**Nullability.** Every non-repeated column is `NULLABLE` by default, as on every other serializer
+(see [Column modes](#column-modes) for why).
+`AvroSchemaOptions.builder().deriveRequiredColumns()` reads the Avro schema instead, deriving
+`REQUIRED` for any field that is not a `["null", T]` union:
 
 ```java
 AvroRecordSerializer.of(
-        schema, AvroSchemaOptions.builder().allFieldsNullable().build());
+        schema, AvroSchemaOptions.builder().deriveRequiredColumns().build());
 ```
 
-This changes the derived schema — the one used for table auto-creation, for the write stream and
-for load jobs. `REPEATED` fields are unaffected, since a BigQuery `REPEATED` column cannot be
-`NULLABLE`; nested record fields and map entry columns are relaxed along with the rest.
+This changes the derived schema — the one used for table auto-creation, for the write stream and for
+load jobs. `REPEATED` fields are unaffected, since a BigQuery `REPEATED` column cannot be `NULLABLE`;
+nested record fields and map entry columns are covered along with the rest, so a map key becomes
+`REQUIRED` too — the same shape the protobuf path derives for a proto3 map key.
 
 The one thing it changes in the value path is what happens to a record that omits a field the Avro
-schema declares mandatory: by default that is a row-level failure, and under `allFieldsNullable()`
-the column is simply left unset. Records that do carry the value convert identically either way.
+schema declares mandatory: by default the column is left unset, and under `deriveRequiredColumns()`
+that record is a row-level failure routed to the configured `FailedRowHandler`. Records that do carry
+the value convert identically either way.
 
-**This default is the outlier and is due to change.** The policy is that a derived column is
-`NULLABLE` and a constraint is asked for — see [Column modes](#column-modes) for it and the
-reasoning. Aligning this side on it, default and polarity and method name, is tracked in
-[#145]({{< param BookRepo >}}/issues/145).
+It also changes what staged FILE_LOADS files look like, since `NULLABLE` becomes `["null", T]` on the
+way back out: a value costs a union branch index and an unset field is written as an explicit Avro
+null. Self-consistent — both staging converters read the same derived schema — but worth knowing when
+comparing file sizes across the change.
 
 **JSON columns.** `AvroSchemaOptions.builder().jsonFieldPath("event.payload")` derives a `string`
 field at that dotted path as a [`JSON` column](#json-columns) instead of `STRING`. As on the
@@ -403,7 +408,9 @@ inside the sink's per-record failure handling, where a log-and-drop or DLQ polic
 misconfiguration once per record instead of failing the job.
 
 **Row-level failures**, routed to the `FailedRowHandler` (see
-[Error handling](#error-handling)): a missing value for a `REQUIRED` column, a null element in a
+[Error handling](#error-handling)): a missing value for a `REQUIRED` column — which for a
+derived schema means only under `deriveRequiredColumns()`, since otherwise no derived column is
+mandatory (see [Column modes](#column-modes)) — a null element in a
 repeated field, a decimal too wide or too precise for its column, and a value whose Java type does
 not match the field. A `BigDecimal` carrying more fractional digits than the column declares is one
 of these rather than being rounded silently — the byte form of the same field cannot express it
@@ -954,7 +961,9 @@ through the `BigQuerySink` facade (`BigQueryDefaultStreamWriterITCase`), dynamic
 destinations (`BigQueryDynamicDestinationsITCase`), table auto-creation with create dispositions
 (`BigQueryTableAutoCreationITCase`), schema evolution
 (`BigQuerySchemaEvolutionITCase`), Avro records written through the facade into a table created
-from the serializer's own derived schema (`BigQueryAvroSerializerITCase` — `REQUIRED`/`NULLABLE`
+from the serializer's own derived schema (`BigQueryAvroSerializerITCase` — run under
+`deriveRequiredColumns()` and asserting the created table's modes, so the option is verified rather
+than merely exercised: `REQUIRED`/`NULLABLE`
 scalars, `TIMESTAMP`, `DATE`, `BYTES`, an enum, a `REPEATED` field, a nested `STRUCT`, a map as
 `REPEATED STRUCT<key, value>` and a `JSON` column; `TIME`, `DATETIME` and `NUMERIC` are excluded
 because the emulator implements neither the packed civil-time encoding nor the decimal byte
