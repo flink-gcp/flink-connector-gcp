@@ -209,6 +209,20 @@ final class TestProtos {
         return extension;
     }
 
+    /** The rival annotations proto's option at the same number, as a {@code GeneratedExtension}. */
+    static GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean>
+            collidingOptionExtension() {
+        GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean> extension =
+                GeneratedMessage.newFileScopedGeneratedExtension(Boolean.class, null);
+        for (Descriptors.FieldDescriptor candidate : collidingAnnotationsFile().getExtensions()) {
+            if (candidate.getNumber() == JSON_OPTION_NUMBER) {
+                extension.internalInit(candidate);
+                return extension;
+            }
+        }
+        throw new AssertionError("No colliding extension built");
+    }
+
     /** The full name the JSON option is declared under in the synthetic annotations proto. */
     static final String JSON_OPTION_FULL_NAME = "annot.json";
 

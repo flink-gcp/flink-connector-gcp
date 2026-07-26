@@ -73,6 +73,24 @@ class ProtoSchemaOptionsTest {
                         entry(TestProtos.JSON_OPTION_NUMBER, TestProtos.JSON_OPTION_FULL_NAME));
     }
 
+    @Test
+    void theLastNameWinsWhenTwoExtensionsClaimOneNumber() {
+        // Pathological but expressible, and the map can only hold one entry per number: two
+        // *named* registrations at the same number resolve last-call-wins, the conventional builder
+        // semantic. Stated here because neither choice is self-evidently right.
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOption(TestProtos.jsonOptionExtension())
+                        .jsonFieldOption(TestProtos.collidingOptionExtension())
+                        .build();
+
+        assertThat(options.getJsonFieldOptions())
+                .containsExactly(
+                        entry(
+                                TestProtos.JSON_OPTION_NUMBER,
+                                TestProtos.COLLIDING_OPTION_FULL_NAME));
+    }
+
     @ParameterizedTest
     // 1 and 999 are valid field numbers but not valid FieldOptions *extension* numbers: it declares
     // "extensions 1000 to max".
