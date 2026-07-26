@@ -80,7 +80,7 @@ form — a BigQuery `REPEATED` column is empty, never NULL. Where each serialize
 |---|---|---|
 | [Protobuf messages](#protobuf-messages) | every column `NULLABLE` — follows the policy | `ProtoSchemaOptions.builder().deriveRequiredColumns()` derives `REQUIRED` from field presence |
 | [Avro records](#avro-records) | **the outlier**: `REQUIRED` unless the field is a `["null", T]` union | `AvroSchemaOptions.builder().allFieldsNullable()` opts *out* — the inverse polarity. Being aligned on the policy in [#145]({{< param BookRepo >}}/issues/145) |
-| [JSON records](#json-records) | whatever the schema you supply says; an omitted mode is `NULLABLE` | write the mode you want in that schema — there is no option, because you already wrote it |
+| [JSON records](#json-records) | whatever the schema you supply says; an omitted mode is `NULLABLE` | write the mode you want in that schema. **No option, deliberately** — nothing is derived, so there is nothing to overrule, and the schema is often the destination table's own |
 
 Why the policy runs this way:
 
@@ -439,6 +439,15 @@ type, [`JSON` columns](#json-columns) included: there is no marker option here, 
 already says so. A column type the Storage descriptor conversion cannot express — `RANGE` today — is
 rejected when the serializer is created, so it fails where the pipeline is built rather than on the
 first record.
+
+**Column modes work the same way, which is why there is no nullability option here either.** The
+other two serializers need one because they derive modes from a source schema that may not mean what
+it appears to (see [Column modes](#column-modes)); here you wrote the schema, so a `REQUIRED` column
+in it is your own statement and is passed through as-is — including when you fetched it from the
+destination table, which is the point of the `Schema` overload. A column with no mode set is
+`NULLABLE`, so the unconstrained default still holds for anything you did not decide. The
+consequence to know: a document omitting a `REQUIRED` column is a row-level failure, reported by the
+conversion library and routed through the configured `FailedRowHandler`.
 
 Conversion is the Storage Write API client's own `JsonToProtoMessage`, the same one
 `JsonStreamWriter` uses. What each column type accepts:
