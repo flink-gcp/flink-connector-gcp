@@ -217,7 +217,7 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
   destination types, and the `@Internal` types shared by every write method (the sink config,
   the fixed-destination resolver, `RetrySchedule` until #61 extracts a shared retry module)
 - `sink.<writepath>` — one subpackage per write-path family, which may host several write
-  methods (BigQuery: `sink.storageapi` holds the Storage Write API family — the default-stream
+  methods (BigQuery: `sink.storage` holds the Storage Write API family — the default-stream
   at-least-once method today, and the #30 buffered-stream exactly-once method beside it,
   sharing the appender machinery; `sink.fileloads` holds FILE_LOADS). The package root holds
   the Sink classes, the family's public options objects and committable contracts; internal
@@ -230,7 +230,17 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
   and no sibling can arrive at all — `BatchCreateTasks` and `BufferTask` are REST-only and absent
   from the Java client. Pub/Sub's `sink.publisher` went with it so the two single-family modules
   stay alike. Adding the layer back is what a second family costs, and it is a mechanical move:
-  nothing public lives in it
+  nothing public lives in it.
+  **The layer is spelled the way Google spells it in code, with no `api` suffix** (#121):
+  `sink.storage` mirrors `com.google.cloud.bigquery.storage.v1` and the
+  `google-cloud-bigquerystorage` artifact, as `sink.fileloads` already drops the Jobs-API word.
+  The public `WriteMethod.STORAGE_API_*` constants keep the product's documented name on
+  purpose — the package names an implementation family to maintainers, the enum names a feature
+  to users. Inside it, an SPI's real implementation is named after **the SDK type it wraps** —
+  `WriteClientBufferedStreamService` over `BigQueryWriteClient`, as `StreamWriterRowAppenderFactory`
+  is over `StreamWriter`. Neither `Storage*` nor the repository's usual `Default*` works here: the
+  SPI is equally a Storage API type, so that prefix distinguishes nothing, and *default stream* is
+  a BigQuery stream type in this package — the opposite of a buffered one
 - `sink.tables` — shared table-metadata layer consumed by every write method: the `TableAdmin`
   SPI and its REST implementation, schema snapshot/unifier, REST↔Storage schema converters
 - `sink.serializer` — record-conversion SPI and its implementations
