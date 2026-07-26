@@ -260,6 +260,25 @@ class ProtoToTableSchemaConverterTest {
                 .isEqualTo(TableFieldSchema.Type.JSON);
     }
 
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void unionsSeveralFieldOptions(boolean throughBytes) {
+        // Two annotation vocabularies in one job: a_string carries the JSON option, a_other carries
+        // the second one, and configuring both must map both. With a single-valued option the
+        // second registration would have replaced the first and a_string would stay STRING.
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOption(TestProtos.jsonOptionExtension())
+                        .jsonFieldOptionNumber(TestProtos.OTHER_OPTION_NUMBER)
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(annotated(throughBytes), options));
+
+        assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_other").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_plain").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+    }
+
     @Test
     void unionsFieldPathsAndFieldOptions() {
         ProtoSchemaOptions options =

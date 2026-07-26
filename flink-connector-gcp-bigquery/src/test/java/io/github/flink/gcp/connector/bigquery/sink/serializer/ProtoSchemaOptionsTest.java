@@ -22,8 +22,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Arrays;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /** Tests for {@link ProtoSchemaOptions}. */
 class ProtoSchemaOptionsTest {
@@ -31,18 +34,43 @@ class ProtoSchemaOptionsTest {
     @Test
     void defaultsMapNothingToJson() {
         assertThat(ProtoSchemaOptions.defaults().getJsonFieldPaths()).isEmpty();
-        assertThat(ProtoSchemaOptions.defaults().getJsonFieldOptionNumber()).isZero();
+        assertThat(ProtoSchemaOptions.defaults().getJsonFieldOptions()).isEmpty();
     }
 
     @Test
-    void keepsTheLastFieldOptionNumber() {
+    void accumulatesFieldOptionNumbers() {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder()
                         .jsonFieldOptionNumber(50000)
-                        .jsonFieldOptionNumber(50001)
+                        .jsonFieldOptionNumbers(Arrays.asList(50001, 50002))
                         .build();
 
-        assertThat(options.getJsonFieldOptionNumber()).isEqualTo(50001);
+        assertThat(options.getJsonFieldOptions())
+                .containsOnlyKeys(50000, 50001, 50002)
+                .containsValues(null, null, null);
+    }
+
+    @Test
+    void keepsTheNamedEntryWhenTheSameNumberIsRegisteredTwice() {
+        // Order must not matter: an unnamed entry beside a named one would match anything at that
+        // number, which is exactly what the name is there to prevent.
+        ProtoSchemaOptions nameLast =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .jsonFieldOption(TestProtos.jsonOptionExtension())
+                        .build();
+        ProtoSchemaOptions nameFirst =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOption(TestProtos.jsonOptionExtension())
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .build();
+
+        assertThat(nameLast.getJsonFieldOptions())
+                .containsExactly(
+                        entry(TestProtos.JSON_OPTION_NUMBER, TestProtos.JSON_OPTION_FULL_NAME));
+        assertThat(nameFirst.getJsonFieldOptions())
+                .containsExactly(
+                        entry(TestProtos.JSON_OPTION_NUMBER, TestProtos.JSON_OPTION_FULL_NAME));
     }
 
     @ParameterizedTest
@@ -64,8 +92,8 @@ class ProtoSchemaOptionsTest {
                         ProtoSchemaOptions.builder()
                                 .jsonFieldOptionNumber(extensionNumber)
                                 .build()
-                                .getJsonFieldOptionNumber())
-                .isEqualTo(extensionNumber);
+                                .getJsonFieldOptions())
+                .containsOnlyKeys(extensionNumber);
     }
 
     @Test
@@ -75,8 +103,9 @@ class ProtoSchemaOptionsTest {
                         .jsonFieldOption(TestProtos.jsonOptionExtension())
                         .build();
 
-        assertThat(options.getJsonFieldOptionNumber()).isEqualTo(TestProtos.JSON_OPTION_NUMBER);
-        assertThat(options.getJsonFieldOptionName()).isEqualTo(TestProtos.JSON_OPTION_FULL_NAME);
+        assertThat(options.getJsonFieldOptions())
+                .containsExactly(
+                        entry(TestProtos.JSON_OPTION_NUMBER, TestProtos.JSON_OPTION_FULL_NAME));
     }
 
     @Test
@@ -90,21 +119,23 @@ class ProtoSchemaOptionsTest {
                                 .jsonFieldOption(TestProtos.jsonOptionExtension())
                                 .build());
 
-        assertThat(copy.getJsonFieldOptionName()).isEqualTo(TestProtos.JSON_OPTION_FULL_NAME);
-        assertThat(copy.getJsonFieldOptionNumber()).isEqualTo(TestProtos.JSON_OPTION_NUMBER);
+        assertThat(copy.getJsonFieldOptions())
+                .containsExactly(
+                        entry(TestProtos.JSON_OPTION_NUMBER, TestProtos.JSON_OPTION_FULL_NAME));
     }
 
     @Test
-    void reconfiguringByNumberDropsAPreviouslyCapturedName() {
+    void keepsSeparateNumbersSeparate() {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder()
                         .jsonFieldOption(TestProtos.jsonOptionExtension())
-                        .jsonFieldOptionNumber(50009)
+                        .jsonFieldOptionNumber(TestProtos.OTHER_OPTION_NUMBER)
                         .build();
 
-        assertThat(options.getJsonFieldOptionNumber()).isEqualTo(50009);
-        // Keeping the old name would silently make every field fail the name check.
-        assertThat(options.getJsonFieldOptionName()).isNull();
+        assertThat(options.getJsonFieldOptions())
+                .containsExactly(
+                        entry(TestProtos.JSON_OPTION_NUMBER, TestProtos.JSON_OPTION_FULL_NAME),
+                        entry(TestProtos.OTHER_OPTION_NUMBER, null));
     }
 
     @Test
@@ -120,6 +151,6 @@ class ProtoSchemaOptionsTest {
         ProtoSchemaOptions copy = InstantiationUtil.clone(options);
 
         assertThat(copy.getJsonFieldPaths()).containsExactly("payload");
-        assertThat(copy.getJsonFieldOptionNumber()).isEqualTo(50000);
+        assertThat(copy.getJsonFieldOptions()).containsOnlyKeys(50000);
     }
 }

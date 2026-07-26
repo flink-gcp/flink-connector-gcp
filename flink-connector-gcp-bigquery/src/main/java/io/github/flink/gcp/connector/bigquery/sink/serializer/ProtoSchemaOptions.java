@@ -27,6 +27,8 @@ import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -54,9 +56,6 @@ public final class ProtoSchemaOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    /** Sentinel for {@link #jsonFieldOptionNumber}: no field option is configured. */
-    private static final int NO_FIELD_OPTION = 0;
-
     // google.protobuf.FieldOptions declares "extensions 1000 to max", so numbers below 1000 can
     // never be one of its extensions however valid they are as ordinary field numbers.
     private static final int MIN_EXTENSION_NUMBER = 1000;
@@ -67,13 +66,19 @@ public final class ProtoSchemaOptions implements Serializable {
     private static final ProtoSchemaOptions DEFAULTS = new ProtoSchemaOptions(new Builder());
 
     private final Set<String> jsonFieldPaths;
-    private final int jsonFieldOptionNumber;
-    private final String jsonFieldOptionName;
+
+    /**
+     * Configured field options, keyed by extension number, valued by the option's full name or
+     * {@code null} when it was configured by number alone. Keyed by number because two entries for
+     * one number would be contradictory — and because an unnamed entry sitting beside a named one
+     * would match anything at that number, defeating the name check the named entry exists for.
+     */
+    private final Map<Integer, String> jsonFieldOptions;
 
     private ProtoSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
-        this.jsonFieldOptionNumber = builder.jsonFieldOptionNumber;
-        this.jsonFieldOptionName = builder.jsonFieldOptionName;
+        this.jsonFieldOptions =
+                Collections.unmodifiableMap(new LinkedHashMap<>(builder.jsonFieldOptions));
     }
 
     /** Returns the default options: no JSON field mapping. */
@@ -92,21 +97,12 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /**
-     * Returns the {@code google.protobuf.FieldOptions} extension number marking {@code JSON}
-     * columns, or {@code 0} if no field option is configured. Package-private: {@link #isJsonField}
-     * is the supported way to ask, and the sibling options classes expose only what the sink itself
-     * reads back.
+     * Returns the configured field options: extension number to the option's full name, or {@code
+     * null} where it was configured by number alone. Package-private: {@link #isJsonField} is the
+     * supported way to ask, and the sibling options classes expose only what the sink reads back.
      */
-    int getJsonFieldOptionNumber() {
-        return jsonFieldOptionNumber;
-    }
-
-    /**
-     * Returns the full name of the field option marking {@code JSON} columns, or {@code null} when
-     * the option was configured by number alone.
-     */
-    String getJsonFieldOptionName() {
-        return jsonFieldOptionName;
+    Map<Integer, String> getJsonFieldOptions() {
+        return jsonFieldOptions;
     }
 
     /**
@@ -119,10 +115,15 @@ public final class ProtoSchemaOptions implements Serializable {
      * @return whether the field is written as JSON
      */
     public boolean isJsonField(Descriptors.FieldDescriptor field, String path) {
-        return jsonFieldPaths.contains(path)
-                || (jsonFieldOptionNumber != NO_FIELD_OPTION
-                        && BoolFieldOptionReader.isSetToTrue(
-                                field, jsonFieldOptionNumber, jsonFieldOptionName));
+        if (jsonFieldPaths.contains(path)) {
+            return true;
+        }
+        for (Map.Entry<Integer, String> option : jsonFieldOptions.entrySet()) {
+            if (BoolFieldOptionReader.isSetToTrue(field, option.getKey(), option.getValue())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Builder for {@link ProtoSchemaOptions}. */
@@ -130,8 +131,7 @@ public final class ProtoSchemaOptions implements Serializable {
     public static final class Builder {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();
-        private int jsonFieldOptionNumber = NO_FIELD_OPTION;
-        private String jsonFieldOptionName;
+        private final Map<Integer, String> jsonFieldOptions = new LinkedHashMap<>();
 
         Builder() {}
 
@@ -157,6 +157,10 @@ public final class ProtoSchemaOptions implements Serializable {
          * Java-serializable, while these options travel in the job graph. Only its number and name
          * are kept.
          *
+         * <p>Additive, like {@link #jsonFieldPath}: several annotation vocabularies can be marked.
+         * Registering the same number twice keeps the entry that carries a name, since an unnamed
+         * one would match anything at that number and defeat the check the named one exists for.
+         *
          * @param extension the generated extension for a {@code bool} option on {@code
          *     google.protobuf.FieldOptions}
          * @return this builder
@@ -167,8 +171,9 @@ public final class ProtoSchemaOptions implements Serializable {
             Descriptors.FieldDescriptor descriptor =
                     Preconditions.checkNotNull(extension, "extension must not be null")
                             .getDescriptor();
-            jsonFieldOptionNumber(descriptor.getNumber());
-            this.jsonFieldOptionName = descriptor.getFullName();
+            checkExtensionNumber(descriptor.getNumber());
+            // A name always wins over a bare number for the same option.
+            this.jsonFieldOptions.put(descriptor.getNumber(), descriptor.getFullName());
             return this;
         }
 
@@ -219,14 +224,35 @@ public final class ProtoSchemaOptions implements Serializable {
          * {@code STRUCT} columns instead of failing. Check the outcome with {@code
          * BigQueryProtoSerializer#getTableSchema}.
          *
-         * <p>A job annotates its fields with one vocabulary, so this is a single number: calling
-         * this more than once replaces the previous one rather than adding to it.
+         * <p>Additive, like {@link #jsonFieldPath}. Registering a number that {@link
+         * #jsonFieldOption} already supplied a name for keeps the name: an unnamed entry beside a
+         * named one would match anything at that number and defeat the check.
          *
          * @param extensionNumber the extension number of the option within {@code
          *     google.protobuf.FieldOptions}
          * @return this builder
          */
         public Builder jsonFieldOptionNumber(int extensionNumber) {
+            checkExtensionNumber(extensionNumber);
+            this.jsonFieldOptions.putIfAbsent(extensionNumber, null);
+            return this;
+        }
+
+        /**
+         * Maps every message or string field carrying any of the given boolean {@code
+         * google.protobuf.FieldOptions} extensions, set to {@code true}, to a BigQuery {@code JSON}
+         * column.
+         *
+         * @param extensionNumbers extension numbers within {@code google.protobuf.FieldOptions}
+         * @return this builder
+         */
+        public Builder jsonFieldOptionNumbers(Collection<Integer> extensionNumbers) {
+            Preconditions.checkNotNull(extensionNumbers, "extensionNumbers must not be null")
+                    .forEach(this::jsonFieldOptionNumber);
+            return this;
+        }
+
+        private static void checkExtensionNumber(int extensionNumber) {
             Preconditions.checkArgument(
                     extensionNumber >= MIN_EXTENSION_NUMBER
                             && extensionNumber <= MAX_EXTENSION_NUMBER
@@ -240,12 +266,6 @@ public final class ProtoSchemaOptions implements Serializable {
                     FIRST_RESERVED_NUMBER,
                     LAST_RESERVED_NUMBER,
                     extensionNumber);
-            // Only after the check, so a rejected number cannot leave the previous number paired
-            // with no name — that would silently downgrade the collision guard for a caller that
-            // catches the exception. jsonFieldOption re-assigns the name after delegating here.
-            this.jsonFieldOptionName = null;
-            this.jsonFieldOptionNumber = extensionNumber;
-            return this;
         }
 
         /** Builds the options. */
