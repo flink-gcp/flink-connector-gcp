@@ -38,11 +38,20 @@ import java.util.Set;
  *       the protobuf path (see {@link
  *       io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions
  *       ProtoSchemaOptions}).
- *   <li><b>Nullability.</b> By default an Avro field that is not a {@code ["null", T]} union maps
- *       to a {@code REQUIRED} column. {@link Builder#allFieldsNullable()} relaxes every column to
- *       {@code NULLABLE} instead, which is what a pipeline wants when the destination table should
- *       tolerate fields the source schema happens to declare mandatory today.
+ *   <li><b>Nullability.</b> Every non-repeated column is derived as {@code NULLABLE} by default.
+ *       {@link Builder#deriveRequiredColumns()} reads the Avro schema instead and derives {@code
+ *       REQUIRED} for any field that is not a {@code ["null", T]} union.
  * </ul>
+ *
+ * <p>Two reasons {@code NULLABLE} is the default. {@code REQUIRED} is the mode BigQuery cannot walk
+ * back — it cannot be added to an existing table, so such a column only ever appears at creation
+ * time and relaxing one afterwards is a schema update rather than an edit. And the protobuf mapping
+ * is the normative one for every serializer, because every write path ends in a protobuf row: the
+ * Storage Write API takes protobuf, and this serializer converts into one. An Avro {@code ["null",
+ * T]} union is admittedly the schema author's own statement, which makes {@code REQUIRED} the more
+ * faithful reading of an Avro schema taken alone — that is why this side used to default to it —
+ * but faithfulness to one front end does not outweigh agreeing with the wire form every path
+ * shares.
  */
 @PublicEvolving
 public final class AvroSchemaOptions implements Serializable {
@@ -52,14 +61,17 @@ public final class AvroSchemaOptions implements Serializable {
     private static final AvroSchemaOptions DEFAULTS = new AvroSchemaOptions(new Builder());
 
     private final Set<String> jsonFieldPaths;
-    private final boolean allFieldsNullable;
+    private final boolean deriveRequiredColumns;
 
     private AvroSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
-        this.allFieldsNullable = builder.allFieldsNullable;
+        this.deriveRequiredColumns = builder.deriveRequiredColumns;
     }
 
-    /** Returns the default options: no JSON field mapping, nullability taken from the schema. */
+    /**
+     * Returns the default options: no JSON field mapping, every non-repeated column {@code
+     * NULLABLE}.
+     */
     public static AvroSchemaOptions defaults() {
         return DEFAULTS;
     }
@@ -74,9 +86,9 @@ public final class AvroSchemaOptions implements Serializable {
         return jsonFieldPaths;
     }
 
-    /** Returns whether every derived column is forced to {@code NULLABLE}. */
-    public boolean isAllFieldsNullable() {
-        return allFieldsNullable;
+    /** Returns whether column modes are derived from the Avro schema. */
+    public boolean isDeriveRequiredColumns() {
+        return deriveRequiredColumns;
     }
 
     /**
@@ -96,7 +108,7 @@ public final class AvroSchemaOptions implements Serializable {
     public static final class Builder {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();
-        private boolean allFieldsNullable;
+        private boolean deriveRequiredColumns;
 
         Builder() {}
 
@@ -127,19 +139,31 @@ public final class AvroSchemaOptions implements Serializable {
         }
 
         /**
-         * Derives every column as {@code NULLABLE}, overriding the {@code REQUIRED} mode an Avro
-         * field that is not a {@code ["null", T]} union would otherwise produce. Nested record
-         * fields are relaxed too; {@code REPEATED} fields are not affected, since a BigQuery {@code
-         * REPEATED} field cannot be {@code NULLABLE}.
+         * Derives each column's mode from the Avro schema, instead of deriving every non-repeated
+         * column as {@code NULLABLE}: a field that is not a {@code ["null", T]} union becomes
+         * {@code REQUIRED}. Nested record fields and map entry columns are covered too; {@code
+         * REPEATED} fields are unaffected, since a BigQuery {@code REPEATED} column cannot be
+         * {@code NULLABLE}.
+         *
+         * <p>Named as on the protobuf side ({@link
+         * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions.Builder#deriveRequiredColumns()
+         * ProtoSchemaOptions.Builder.deriveRequiredColumns()}) because the two mean the same thing;
+         * only the signal differs — a {@code ["null", T]} union here, field presence there.
          *
          * <p>This changes only the derived schema — the one used for table auto-creation, for the
-         * write stream and for load jobs. Values are converted identically either way: a field the
-         * Avro schema declares mandatory still always carries a value.
+         * write stream and for load jobs. Records that carry the value convert identically either
+         * way.
+         *
+         * <p>Two consequences to weigh. A record that <em>omits</em> a field the Avro schema
+         * declares mandatory becomes a row-level failure routed to the configured {@code
+         * FailedRowHandler}, where by default the column is simply left unset. And BigQuery cannot
+         * add a {@code REQUIRED} column to an existing table, so a column derived this way is only
+         * ever created together with the table.
          *
          * @return this builder
          */
-        public Builder allFieldsNullable() {
-            this.allFieldsNullable = true;
+        public Builder deriveRequiredColumns() {
+            this.deriveRequiredColumns = true;
             return this;
         }
 

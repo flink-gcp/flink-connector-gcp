@@ -29,23 +29,34 @@ import static org.assertj.core.api.Assertions.assertThat;
  * mapping the FILE_LOADS write method stages files with. An Avro serializer feeding FILE_LOADS goes
  * Avro → {@code TableSchema} → Avro, so the two converters drifting apart would corrupt staged
  * files rather than fail a build.
+ *
+ * <p>The type assertions run under {@link AvroSchemaOptions.Builder#deriveRequiredColumns()},
+ * because {@code REQUIRED} is the only mode {@code TableSchemaToAvroConverter} maps back to a bare
+ * type — every other mode is wrapped in {@code ["null", T]}. So the opt-in is what makes the round
+ * trip an <em>identity</em> for a non-union field, and an identity is what catches drift. The
+ * default's own shape is pinned separately by {@link
+ * #byDefaultEveryNonRepeatedFieldStagesAsANullableUnion()}, so both directions are covered.
  */
 class AvroSchemaRoundTripTest {
 
-    private static Schema staged(String fieldsJson) {
+    private static final AvroSchemaOptions DERIVE_REQUIRED =
+            AvroSchemaOptions.builder().deriveRequiredColumns().build();
+
+    private static Schema staged(String fieldsJson, AvroSchemaOptions options) {
         Schema source =
                 new Schema.Parser()
                         .parse(
                                 "{\"type\":\"record\",\"name\":\"Row\",\"fields\":["
                                         + fieldsJson
                                         + "]}");
-        TableSchema tableSchema =
-                AvroToTableSchemaConverter.convert(source, AvroSchemaOptions.defaults());
+        TableSchema tableSchema = AvroToTableSchemaConverter.convert(source, options);
         return TableSchemaToAvroConverter.convert(tableSchema);
     }
 
     private static Schema stagedType(String fieldTypeJson) {
-        return staged("{\"name\":\"f\",\"type\":" + fieldTypeJson + "}").getField("f").schema();
+        return staged("{\"name\":\"f\",\"type\":" + fieldTypeJson + "}", DERIVE_REQUIRED)
+                .getField("f")
+                .schema();
     }
 
     @Test
@@ -92,6 +103,36 @@ class AvroSchemaRoundTripTest {
         assertThat(stagedType("\"string\"").getType()).isEqualTo(Schema.Type.STRING);
         assertThat(stagedType("[\"null\",\"string\"]").getType()).isEqualTo(Schema.Type.UNION);
         assertThat(stagedType("{\"type\":\"array\",\"items\":\"string\"}").getType())
+                .isEqualTo(Schema.Type.ARRAY);
+    }
+
+    /**
+     * The other direction, which the default takes: a non-union field derives {@code NULLABLE} and
+     * so stages as {@code ["null", T]} with a null default. Not an identity, and deliberately so —
+     * but it has to be the *right* non-identity, since this is the shape staged files actually
+     * carry for an ordinary job. A value then costs a union branch index, and an unset field is
+     * written as an explicit Avro null rather than the type default.
+     */
+    @Test
+    void byDefaultEveryNonRepeatedFieldStagesAsANullableUnion() {
+        Schema.Field field =
+                staged("{\"name\":\"f\",\"type\":\"string\"}", AvroSchemaOptions.defaults())
+                        .getField("f");
+
+        assertThat(field.schema().getType()).isEqualTo(Schema.Type.UNION);
+        assertThat(field.schema().getTypes())
+                .extracting(Schema::getType)
+                .containsExactly(Schema.Type.NULL, Schema.Type.STRING);
+        assertThat(field.hasDefaultValue()).isTrue();
+        // A collection is REPEATED either way, so the default does not reach it.
+        assertThat(
+                        staged(
+                                        "{\"name\":\"f\",\"type\":{\"type\":\"array\",\"items\":"
+                                                + "\"string\"}}",
+                                        AvroSchemaOptions.defaults())
+                                .getField("f")
+                                .schema()
+                                .getType())
                 .isEqualTo(Schema.Type.ARRAY);
     }
 
