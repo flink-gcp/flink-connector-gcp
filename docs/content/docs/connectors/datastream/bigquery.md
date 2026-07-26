@@ -65,6 +65,9 @@ API notes:
   `GenericRecord` and generated `SpecificRecord` streams, since it accepts `IndexedRecord`. The
   BigQuery schema is derived from the Avro writer schema; see [Avro records](#avro-records) for
   the type mapping and for `AvroSchemaOptions`.
+- `JsonDocumentSerializer.of(schema)` is the built-in serializer for records that are JSON documents, as
+  text. JSON carries no schema, so the destination schema is supplied rather than derived; see
+  [JSON records](#json-records).
 - `TableDestination` is pure table identity (`equals`/`hashCode` over project/dataset/table);
   per-destination creation metadata (partitioning, clustering) is supplied through
   `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
@@ -283,6 +286,89 @@ A null array and an empty one are indistinguishable once written: `["null", arra
 **Cost.** Conversion is one pass over each record, which `ProtoMessageSerializer` on an
 already-protobuf stream does not pay. Where the input format is yours to choose and throughput
 matters, a native protobuf record avoids it.
+
+## JSON records
+
+`JsonDocumentSerializer` writes records that are JSON documents, as `String`s. JSON carries no schema of its
+own, so unlike the protobuf and Avro serializers this one cannot derive the destination schema — it
+is supplied, in whichever form the surrounding code already holds:
+
+```java
+Sink<String> sink =
+        BigQuerySink.<String>builder()
+                .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                .serializer(JsonDocumentSerializer.of(schema))
+                .build();
+```
+
+`of(...)` takes either the Storage API `TableSchema` the sink uses internally or the REST client's
+`Schema` — the type a table read back through `BigQuery.getTable(...)` gives you. That schema is the
+source of truth for table auto-creation, the write stream and load jobs, and it decides every column
+type, [`JSON` columns](#json-columns) included: there is no marker option here, because the schema
+already says so. A column type the Storage descriptor conversion cannot express — `RANGE` today — is
+rejected when the serializer is created, so it fails where the pipeline is built rather than on the
+first record.
+
+Conversion is the Storage Write API client's own `JsonToProtoMessage`, the same one
+`JsonStreamWriter` uses. What each column type accepts:
+
+| Column | JSON value |
+|---|---|
+| `STRING` | a string; a number or boolean is stringified |
+| `INT64`, `DOUBLE`, `BOOL` | the matching JSON type, or its string form |
+| `NUMERIC`, `BIGNUMERIC` | a string (exact) or a number |
+| `TIMESTAMP` | an ISO-8601 string, **or a number read as epoch microseconds** |
+| `DATE` | a `yyyy-MM-dd` string, or a number read as days since the epoch |
+| `DATETIME`, `TIME` | a string |
+| `JSON` | the JSON **text**, as a string — not a nested object |
+| `BYTES` | a JSON array of byte values — not base64 |
+| `STRUCT` | an object |
+| `REPEATED` | an array |
+
+Three of those rows are traps worth stating plainly, because each is accepted rather than rejected:
+
+- **A bare number in a `TIMESTAMP` column is epoch microseconds.** Epoch seconds and epoch
+  milliseconds — the two encodings a JSON document usually carries — are therefore stored as some
+  other instant, with no error anywhere. Send an ISO-8601 string, or convert before the sink.
+- **A `JSON` column takes the JSON text as a string**, so `{"payload":{"k":1}}` fails and
+  `{"payload":"{\"k\":1}"}` is what to write.
+- **A `BYTES` column takes a JSON array of byte values**, such as `[104,105]` — not the base64 string
+  that protobuf's own canonical JSON mapping uses. A base64 document fails per record until it is
+  pre-decoded.
+
+Keys are matched to columns **case-insensitively**, so a key whose spelling differs from the column's
+is not an unknown field — and two keys differing only by case are not two fields either: one value
+wins, and which one is undefined.
+
+**Unknown fields.** A document carrying a field the table has no column for fails the record, on the
+grounds that discarding data should be asked for. Ask for it when the source is a document stream
+nobody controls — a topic whose producers add fields ahead of the table being the usual case:
+
+```java
+JsonDocumentSerializer.of(schema, JsonDocumentSerializerOptions.builder().ignoreUnknownFields().build());
+```
+
+A record whose fields are *all* dropped as unknown produces a row with every column NULL rather than
+a failure — worth knowing if the destination has no `REQUIRED` column to catch it.
+
+**Row-level failures**, routed to the `FailedRowHandler` (see
+[Error handling](#error-handling)): text that is not a JSON object, a record carrying more than one
+JSON value, an empty object, a value that will not convert to its column type, a missing `REQUIRED`
+column, and an unknown field unless the option above is set. The client library reports the
+conversion failures as unchecked exceptions; the serializer converts them so the sink can route the
+row rather than fail the job. The `FailedRow` carries the diagnostic but not the document — the
+writer is stateless, as on the other two paths.
+
+The multi-value check is there because parsing stops at the end of the first JSON value: without it
+a mis-split newline-delimited record would silently become one row and drop the rest.
+
+**The schema is fixed for the life of the job.** This serializer reports no schema fingerprint, so
+the sink never refreshes the stream from it. A table that has to follow its producers means
+rebuilding the serializer and restarting.
+
+**Cost.** Conversion is a JSON parse on top of the per-record pass the Avro serializer already
+costs. Where the input format is yours to choose and throughput matters, a native protobuf record
+avoids both.
 
 ## Table auto-creation
 
@@ -699,7 +785,8 @@ from the serializer's own derived schema (`BigQueryAvroSerializerITCase` — `RE
 scalars, `TIMESTAMP`, `DATE`, `BYTES`, an enum, a `REPEATED` field, a nested `STRUCT`, a map as
 `REPEATED STRUCT<key, value>` and a `JSON` column; `TIME`, `DATETIME` and `NUMERIC` are excluded
 because the emulator implements neither the packed civil-time encoding nor the decimal byte
-encoding and reads those columns back as unrelated values whatever is written), and a
+encoding and reads those columns back as unrelated values whatever is written), the same for JSON
+documents including the `ignoreUnknownFields` option (`BigQueryJsonDocumentSerializerITCase`), and a
 buffered-stream smoke test of the production
 exactly-once client wiring (`BigQueryBufferedStreamSmokeITCase` — single flush only: the
 emulator keeps no flush cursor, every `FlushRows` re-inserts all rows up to the offset, and

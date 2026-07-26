@@ -21,8 +21,9 @@ Sink<MyEvent> sink =
 ```
 
 Ready-made serializers cover the common input shapes: `ProtoMessageSerializer.of(MyMessage.class)`
-for records that already are protobuf messages, and `AvroRecordSerializer.of(schema)` for Avro
-`GenericRecord` and `SpecificRecord` streams.
+for records that already are protobuf messages, `AvroRecordSerializer.of(schema)` for Avro
+`GenericRecord` and `SpecificRecord` streams, and `JsonDocumentSerializer.of(schema)` for JSON documents
+as text.
 
 ## Documentation
 
@@ -70,10 +71,13 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   rule. `AvroToTableSchemaConverter` and `AvroRowConverter` are independent implementations, and
   deliberately diverge on Avro maps, which are mapped to `REPEATED STRUCT<key, value>` rather than
   rejected
-- [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage)
-  (`JsonToProtoMessage`, `BQTableSchemaToProtoDescriptor`, `BqToBqStorageSchemaConverter`) —
-  reference for proto/schema conversion (`StorageSchemaConverter` and
-  `BigQuerySchemaConverter` are independent implementations of the two directions)
+- [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage) —
+  `BQTableSchemaToProtoDescriptor`, `CivilTimeEncoder` and `BigDecimalByteStringEncoder` are
+  **called** by every serializer here, and `JsonToProtoMessage` is the whole of
+  `JsonDocumentSerializer`'s conversion, so this is a runtime dependency rather than only a
+  reference. `BqToBqStorageSchemaConverter` is the design reference for the schema conversion
+  `StorageSchemaConverter` and `BigQuerySchemaConverter` implement independently in both
+  directions
 - [Aiven-Open/bigquery-connector-for-apache-kafka](https://github.com/Aiven-Open/bigquery-connector-for-apache-kafka)
   (the maintained continuation of
   [wepay/kafka-connect-bigquery](https://github.com/wepay/kafka-connect-bigquery)) — design

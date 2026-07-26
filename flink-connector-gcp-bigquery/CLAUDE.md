@@ -131,3 +131,35 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `ProtoSchemaOptions` switch) is deliberately a separate issue: `ProtoToTableSchemaConverter`
   emits `NULLABLE` unconditionally today
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
+- **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
+  **`String`** records and a **supplied** schema, since JSON has none of its own — either the
+  Storage `TableSchema` or the REST `Schema` (converted with the existing `BigQuerySchemaConverter`,
+  which is why `google-cloud-bigquery` is now on the module's public API). That is also why it needs
+  no JSON-column marker: the schema already says `JSON`, unlike the proto and Avro paths where the
+  column type has to be inferred. Conversion is the client library's own `JsonToProtoMessage` — the
+  one `JsonStreamWriter` uses — so there is deliberately **no row converter class here**; wrapping a
+  single call in one would add a layer without adding anything. Named for its input like its
+  siblings, and *not* `JsonSerializer`: that simple name collides with Jackson's and Gson's, in
+  exactly the pipelines that produce JSON text. Decisions and traps not to re-derive:
+  `new JSONObject(String)` **stops at the end of the first value and ignores the rest**, so a
+  mis-split newline-delimited record would silently become one row and drop the remainder —
+  `serialize` parses through a `JSONTokener` and rejects trailing content instead. The library
+  reports every per-row problem as an **unchecked** exception (`RowIndexToErrorException`, whose
+  message is a map keyed by row index; it is package-private, so it cannot be named in a catch
+  clause), and a bare `IllegalStateException("JSONObject is empty.")` for `{}` — which is
+  pre-empted, not caught, so the message can say which record it was. A **`BYTES` column takes a
+  JSON array of byte values, never base64** (#131), and a **`JSON` column takes the JSON *text* as a
+  string, never a nested object** — both contradict what a JSON document usually carries, and both
+  are pinned by tests so they read as known limitations. A **bare number in a `TIMESTAMP` column is
+  epoch microseconds**, so epoch-seconds and epoch-millis documents are accepted and stored as some
+  other instant; pinned too, since nothing can detect it. Keys match columns **case-insensitively**,
+  so a differently-spelled key is not an "unknown field". `ignoreUnknownFields` is the one option
+  (default strict). `org.json:json` is declared explicitly with a version property because it is
+  used directly; note that entry *overrides* bigquerystorage's own transitive version rather than
+  following it, and our `dependency:tree` cannot reveal the drift. Two things not to simplify away:
+  the descriptor is derived **in the constructor** for the reason the Avro entry above gives, and
+  `descriptor()` is called *outside* `serialize`'s `catch (RuntimeException)` so that a schema
+  problem is not reported as a bad record — on a task manager the constructor never runs, and every
+  writer calls `serialize` before `getDescriptor`, so that is where the first build happens there.
+  An empty schema is rejected outright, since a table with no columns is a misconfiguration rather
+  than a degenerate case worth supporting

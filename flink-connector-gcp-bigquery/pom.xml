@@ -53,6 +53,9 @@ limitations under the License.
             <artifactId>google-cloud-bigquerystorage</artifactId>
         </dependency>
         <dependency>
+            <!-- The REST client: table metadata and load jobs, and the Schema type
+                 JsonDocumentSerializer accepts — so this is on the module's public API.
+                 Version managed by the libraries BOM. -->
             <groupId>com.google.cloud</groupId>
             <artifactId>google-cloud-bigquery</artifactId>
         </dependency>
@@ -102,6 +105,14 @@ limitations under the License.
                  AvroRecordSerializer — so this is on the module's public API. -->
             <groupId>org.apache.avro</groupId>
             <artifactId>avro</artifactId>
+        </dependency>
+        <dependency>
+            <!-- JSONObject, the parameter type JsonToProtoMessage takes; JsonSerializer parses
+                 its String records into one. Reaches us transitively from
+                 google-cloud-bigquerystorage anyway, but is used directly, so it is declared.
+                 Not on this module's public API: records are plain Strings. -->
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
         </dependency>
 
         <!-- Test dependencies -->
