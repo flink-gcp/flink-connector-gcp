@@ -23,9 +23,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   passing nothing means the version pinned in the pom
 - `just binary-compat 2.3.0` — the floor-build/fingerprint/ceiling-rerun/diff sequence, whose
   order is load-bearing. Reproducing a red weekly `binary_compat` is what it is for
-- `just lint` — shellcheck over `scripts/`. Deliberately does **not** run `just --fmt --check`:
-  that is an unstable feature, excluded from just's compatibility guarantee, so with `just`
-  installed unpinned it could fail an unchanged pull request
+- `just lint` — shellcheck over `scripts/`, actionlint over `.github/workflows/`. Deliberately
+  does **not** run `just --fmt --check`: that is an unstable feature, excluded from just's
+  compatibility guarantee, so with `just` installed unpinned it could fail an unchanged pull
+  request. actionlint is handed `-shellcheck "$(mise which shellcheck)"` rather than letting it
+  find one on `PATH` — the runner image ships its own, and it is not the pinned one
 - `just docs` / `just docs-serve` / `just docs-chroma` — build the site as CI does (a deprecation,
   a broken `relref` or a missing shortcode fails the build), preview it, regenerate the chroma
   palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in
@@ -143,8 +145,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   red. `tools/` is not the place: it holds build tool *configuration*
   (`tools/maven/checkstyle.xml`), following Flink's layout. Two consequences: `scripts/` is
   outside the `.github/**` rat exclude, so each file carries the plain Apache-2.0 header, and
-  `lint.yaml` shellchecks them — `actionlint` shellchecks inline `run:` blocks, so extracting a
-  script would otherwise drop it out of linting. **A `justfile` recipe is neither** — nothing
+  `just lint` shellchecks them — and also runs `actionlint`, which shellchecks inline `run:`
+  blocks, so a script stays linted whether it lives in `scripts/` or in a `run:` block.
+  **A `justfile` recipe is neither** — nothing
   lints inside one — so a recipe body holds commands, and anything that grows into a script goes
   to `scripts/`
 - **A multi-step sequence is named once, in the `justfile`, and CI calls that recipe** (#111) —
@@ -153,8 +156,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   was weighed and accepted: a failure names the `==>` phase inside the recipe rather than a step
   in the GitHub UI
 - **`lint.yaml` is where linters Maven does not run live** (spotless and checkstyle cover the
-  Java sources inside `verify`). Today that is shellcheck; `tofu fmt`/`validate` belongs here
-  when the OpenTofu persistent layer lands (#5). Separate from
+  Java sources inside `verify`). Today that is shellcheck and actionlint; `tofu fmt`/`validate`
+  belongs here when the OpenTofu persistent layer lands (#5). Separate from
   `ci.yaml` so results arrive in seconds rather than behind the integration tests, and so mise's
   shims never share a `PATH` with `setup-java`'s JDK. Its `paths` filter must list **every input
   to a lint, not just the linted files** — `mise.toml` is in it because that is where the

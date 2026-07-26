@@ -128,10 +128,19 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 # unpinned (see ci.yaml), depending on it would reintroduce the problem the pin
 # exists to solve, to check the formatting of a single file.
 #
-# Lint the shell scripts.
+# actionlint shells out to shellcheck for inline `run:` blocks, and picks it off
+# PATH by default. That default is wrong here: the GitHub runner image ships its
+# own shellcheck (0.9.0 on ubuntu-24.04) and would quietly be preferred to the
+# version mise.toml pins, so the workflows would be linted by a shellcheck this
+# repository did not choose. `mise which` names the pinned one outright. Passing
+# an empty string to -shellcheck disables the integration entirely, so a typo
+# here silently stops checking `run:` blocks rather than failing.
+#
+# Lint the shell scripts and the workflows.
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
+    mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
 
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
 # into build failures.

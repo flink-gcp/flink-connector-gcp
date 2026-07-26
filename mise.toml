@@ -11,6 +11,12 @@ go = "1.26"
 # CI installs this exact version from here (.github/workflows/lint.yaml), so
 # there is no second place to update.
 shellcheck = "0.11.0"
+# Lints .github/workflows/. Exactly pinned for the same reason as shellcheck: a
+# linter that gains a check fails a pull request that changed nothing. It also
+# shells out to shellcheck for inline `run:` blocks, which is why the lint
+# recipe hands it an explicit path instead of trusting PATH — the runner image
+# carries its own shellcheck, and it is not this one.
+actionlint = "1.7.12"
 # Task runner (justfile). A major-version specifier rather than an exact pin,
 # unlike shellcheck above: just guarantees that no 1.x release breaks an
 # existing justfile or a working command line, and that there will never be a
