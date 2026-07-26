@@ -77,6 +77,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - The site is built as a CI check only; GitHub Pages publishing waits until the repository is
   public (#6). Each module README links to its docs page by in-repo relative path — those links
   become site URLs when Pages goes live, which is a checklist item on #6
+- A module `CLAUDE.md` (`flink-connector-gcp-<product>/CLAUDE.md`) is the third per-module file and
+  is **Claude-facing only** — never rendered, never linked from the site, so nothing user-facing
+  belongs in it. It carries that module's design decisions and nothing else; behavior and public
+  API still go to the docs page, status still goes to the README table. Being unrendered, it keeps
+  bare `#N` references under the same exemption the root `CLAUDE.md` already has
 
 ## Workflow rules
 
@@ -263,239 +268,17 @@ packages.
 
 ## Design decisions (do not silently revisit)
 
-- **BigQuery**: `BigQueryIO`-style facade — one builder, per-write-method SinkV2 implementations.
-  Storage Write API connection multiplexing is delegated to the client SDK connection pool
-  (`setEnableConnectionPool`); no self-built keyed writer pool. The serializer SPI is an abstract
-  class (`BigQueryProtoSerializer`) with `getDescriptor(TableDestination)` + `ByteString`
-  rows — not a functional interface (descriptors are not Java-serializable)
-- **BigQuery error handling** (#13): a single `FailedRowHandler` SPI covers all row-level
-  failure policies — fail-job (default), log-and-drop, and DLQ routing (the `DeadLetterQueue`
-  interface is an experimental stub; lifecycle and shared-module extraction are decided in #37).
-  `FailedRow` carries serialized protobuf bytes, not the original record (the writer is
-  stateless). SDK in-stream retry settings are hardcoded in `StreamWriterRowAppenderFactory`;
-  exposing them is deferred until a real-world need shows which knobs matter
-- **BigQuery FILE_LOADS** (#14, load stage revised in #69): exactly-once via deterministic
-  BigQuery job ids (hash of destination + sorted staged URIs) with get-then-submit re-attach.
-  Avro-only staging in v0.1, written with the `google-cloud-storage` client directly (no Flink
-  filesystem plugin dependency). Load jobs run **in the committer** behind a pre-commit topology
-  (`SupportsPreCommitTopology`) whose trailing `.global()` routes every subtask's committables to
-  committer subtask 0 (the #14 post-commit-topology design was replaced in #69: records emitted
-  to a post-commit topology during job shutdown are not guaranteed to be processed — verified
-  empirically, the final streaming batch was lost — while committer commits ride the
-  final-checkpoint wait and the framework's committer state). Jobs are submitted all at once then
-  awaited. Cleanup is best-effort on success only; a staging bucket lifecycle rule is the
-  documented mitigation for orphans
-- **BigQuery streaming FILE_LOADS** (#69): same `WriteMethod.FILE_LOADS` value, allowed under
-  explicit `STREAMING` + checkpointing (`AUTOMATIC` stays rejected); `WRITE_APPEND` only. The
-  checkpoint is the trigger: each completed checkpoint's committables are committed
-  synchronously (a slow load delays the next checkpoint = backpressure; async in-flight loads
-  were evaluated and rejected — `commit()` must mean durable, or a crash after the next
-  checkpoint strands submitted-but-unconfirmed loads). A `FileLoadsCheckpointStamper` pre-commit
-  map stamps the checkpoint id onto committables (the `Committer` SPI cannot see it); job ids
-  gain a visible `-c<checkpointId>` segment (hash material unchanged) and derive their Flink-job
-  segment from the committable's originating job id (stamped by the writer) so re-commits after
-  a new-JobID restore still re-attach; streaming overflow submits direct append jobs
-  sequentially instead of temp-table+copy. Streaming also requires EXACTLY_ONCE checkpointing
-  and checkpoints-after-tasks-finish (the final batch rides the post-finish checkpoint). Quota
-  guard at graph construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5
-  min warns (1,500 load jobs/table/day), plus a runtime cadence warning in the committer
-- **BigQuery STORAGE_API_EXACTLY_ONCE** (#30): buffered streams + 2PC on checkpoints. **One
-  stream per writer subtask, reused across checkpoints and tracked in Flink writer state**
-  (Dataproc-connector style; stream-per-checkpoint explicitly rejected — GCP support told the
-  user frequent CreateWriteStream churn is not intended usage). Committable = (streamName,
-  inclusive flushOffset, subtaskId); committer calls `FlushRows` synchronously, `ALREADY_EXISTS`
-  = already flushed = success, everything else throws (restart + idempotent re-commit; no
-  deterministic-id machinery, no checkpoint stamper, no `.global()` — committer runs at sink
-  parallelism, the pre-commit topology is identity and exists only as the validation hook).
-  Restore: synchronous probe append at the restored offset; offset conflicts / dead stream /
-  reopen failure abandon the stream for a fresh one at offset 0 (rows past the restored offset
-  were never committable, so they stay invisible). **Streams are never finalized anywhere** —
-  real BigQuery rejects `FlushRows` on a finalized stream (verified; the batch IT caught it),
-  so finalizing races restored-but-uncommitted commits; open streams' unflushed tails are
-  invisible and cost nothing. Server-side row-level errors route to `FailedRowHandler` with
-  offset-recompute recovery (atomic request rejection → route failing rows, replay survivors +
-  trailing batches; `ALREADY_EXISTS` during an offset-shifting replay is terminal). v1 scope:
-  fixed destination only (builder rejects `destinationResolver`), no mid-stream schema
-  evolution (stream schema pinned at creation), BATCH supported (commit at end of input),
-  streaming requires EXACTLY_ONCE + checkpoints-after-tasks-finish; retry knobs are
-  builder-configurable via `BufferedStreamOptions` with defaults. The goccy emulator keeps no
-  flush cursor (re-flush duplicates), so exactly-once ITs run against real GCP; the emulator
-  gets a single-flush smoke test only
-- **Per-write-method option scoping** (decided in #14, was deferred on PR #46): write-method-only
-  options live in a nested immutable options object set on the builder (`FileLoadsOptions` via
-  `fileLoadsOptions(...)`, `BufferedStreamOptions` via `bufferedStreamOptions(...)`); `build()`
-  requires it for its write method and rejects it for others
-- **BigQuery JSON columns** (#49 paths, #50 field options): a `JSON` column is carried as a string
-  by the Storage Write API, so `ProtoSchemaOptions` is purely a **schema-derivation marker** —
-  it decides whether the derived schema says `JSON` instead of `STRUCT`/`STRING` for table
-  auto-creation, the write stream and load jobs. It covers **message and string** fields (a message
-  is printed as canonical proto JSON; a string is passed through verbatim and *not* validated —
-  malformed JSON is a BigQuery row-level error, routed to `FailedRowHandler`). #50's issue text
-  says message-only; that was widened in the implementing PR because the corpus the feature exists
-  to migrate annotates **string** fields, so option selection alone would have delivered nothing.
-  `isJsonField(field, path)` is the single decision point both converters consult. Consequences not
-  to re-litigate: an unset plain proto3 string is **left unset rather than written as `""`** (the
-  row descriptor's JSON field has presence, and `""` is not valid JSON, so writing it would fail
-  every record that omits the field) — limited to fields without presence, since elsewhere `""` is
-  the user's own statement. An option **number matching no field is deliberately not an error**,
-  unlike a path, because one configuration serves every message type a job writes. **No
-  `ExtensionRegistry`**: protobuf-java never resolves custom options against the descriptor pool
-  (not even for a declared dependency), so the unknown-fields read is the *normal* path, and
-  `getAllFields()` reaches a generated extension by number without the generated class. Because
-  protobuf's private extension range has no registry, the option's **full name is its identity** —
-  `jsonFieldOption(GeneratedExtension)` captures it (the extension itself is not `Serializable` and
-  must not be retained); `jsonFieldOptionNumber(int)` remains for descriptors that arrive without
-  the annotations artifact, and then only the wire encoding can stand in for the type check. Both
-  **accumulate** like `jsonFieldPath` — one job can meet several annotation vocabularies — keyed by
-  number so a named entry always wins over a bare one at the same number, and the last name wins
-  when two extensions claim one number. The name **rules out a foreign declaration**; it cannot
-  arbitrate between two rivals both present in the pool, since an unresolved option records only its
-  number
-- **BigQuery Avro serializer** (#66, Avro half; the JSON half closes the issue in a second PR):
-  `AvroRecordSerializer` is `ProtoMessageSerializer`'s shape with an Avro front end — the
-  schema is held as its **JSON text** (serializable, unlike a parsed `Schema`) and the
-  `TableSchema`/descriptor/row-converter triple is rebuilt lazily. It accepts **`IndexedRecord`**,
-  not `GenericRecord`, so `SpecificRecord` streams work; consequently each temporal and decimal
-  conversion accepts **both** the raw Avro value and the converted one (`Instant`, `LocalDate`,
-  `LocalTime`, `LocalDateTime`, `BigDecimal`, `UUID`), because a generated class with Avro's
-  conversions enabled carries the latter and assuming the former would be a per-row
-  `ClassCastException`. `AvroToTableSchemaConverter` is the inverse of the FILE_LOADS
-  `TableSchemaToAvroConverter`, which is why `AvroSchemaRoundTripTest` pins the two against each
-  other: an Avro serializer feeding FILE_LOADS goes Avro → `TableSchema` → Avro, so drift corrupts
-  staged files instead of failing a build. Decisions not to re-litigate: a non-union field is
-  **`REQUIRED`** (the faithful inverse), with `AvroSchemaOptions.allFieldsNullable()` as the
-  escape hatch — it touches **schema derivation only**, leaves `REPEATED` alone (a BigQuery
-  `REPEATED` column cannot be `NULLABLE`) and recurses into nested structs; Avro `map<string,V>` →
-  `REPEATED STRUCT<key,value>` rather than rejected as the Dataproc connector does, because the
-  proto path already gives proto maps that shape; JSON columns are marked by **dotted path only**
-  (Avro has no standard JSON logical type to key off, so `ProtoSchemaOptions`' field-option
-  mechanism has no analogue); and the logical types BigQuery cannot store faithfully
-  (`timestamp-nanos`, `local-timestamp-nanos`, `duration`, `big-decimal`, `uuid` on a `fixed`) are
-  **rejected at job start** rather than silently falling back to the base type — literally at job
-  start, because the schema is derived in `AvroRecordSerializer.of(...)` rather than lazily: the
-  lazy path first runs from `serialize()`, inside the writers' `FailedRowHandler` catch, where one
-  misconfiguration would look like a poison record and a log-and-drop policy would swallow the whole
-  stream. A `["null", array]` field is `REPEATED`, so a null array and an empty one are
-  indistinguishable — BigQuery offers no way to keep them apart, and the alternative is rejecting
-  the schema. Two things caught in self-review and worth not re-deriving: BigQuery bounds a
-  parameterized decimal by its **integer** digits (`NUMERIC(P,S)` needs `S ≤ 9` and `P - S ≤ 29`,
-  `BIGNUMERIC` `S ≤ 38` and `P - S ≤ 38`), not by total precision, so `decimal(35,2)` is BIGNUMERIC
-  and `decimal(77,38)` is rejected; and `AvroRowConverter` pairs schema fields to descriptor fields
-  **by position**, because `BQTableSchemaToProtoDescriptor` lowercases with the *default* locale —
-  under `tr_TR` a column named `ID` becomes the proto field `ıd`, which no `Locale.ROOT` key
-  matches. Position is exact here precisely because the descriptor is always derived from the table
-  schema this connector just produced. The protobuf analogue of the
-  nullability work (deriving `REQUIRED` from proto3 `optional` presence, plus a matching
-  `ProtoSchemaOptions` switch) is deliberately a separate issue: `ProtoToTableSchemaConverter`
-  emits `NULLABLE` unconditionally today
-- **Pub/Sub**: base implementation is vendored from `GoogleCloudPlatform/pubsub`
-  `flink-connector/` (decision record: issues #17 and #31); the Apache connector is only a
-  design reference (table-factory plumbing, emulator harness). All packages are normalized to
-  `io.github.flink.gcp.connector.pubsub.*`
-- **Pub/Sub sink** (#18): Publisher-based flush-on-checkpoint stateless writer; FLIP-171
-  `AsyncSinkBase` evaluated and rejected (SDK `Publisher` already batches; AsyncSink persists
-  buffers into writer state). Mailbox-based backpressure with in-flight caps; writer-owned
-  per-topic publishers (no JVM-wide cache); publish failures are capture-and-rethrow (the
-  Apache connector's infinite republish is deliberately not adopted). Topic auto-creation (#19)
-  is reactive — NOT_FOUND publishes are parked and republished after creating the topic via the
-  `TopicAdmin` SPI (`sink.topics`, ALREADY_EXISTS = success), gated by `CreateDisposition`.
-  Tuning (#20) lives in one `PubSubPublisherOptions` object (nested-options pattern; plain
-  serializable values, no gax types on the public API; unset = SDK/sink default): batching,
-  publish retries, `enableMessageOrdering`, the in-flight caps and the recovery backoff.
-  In-flight bounds (#85, revising #20): the writer owns **both** caps — `maxInFlightMessages`
-  (1000) and `maxInFlightBytes` (64 MiB per subtask) — and the two SDK `flowControl*` knobs #20
-  exposed are **removed**, not deprecated. gax flow control could never be the byte bound an
-  ordered sink needs: SDK 1.152.0 leaks a permit per publish cancelled on a paused key (so the
-  builder rejected combining it with ordering — exactly where cascades pile up), and it blocks the
-  task thread instead of yielding to the mailbox. Message count alone bounds no memory, since
-  Pub/Sub allows 10 MiB per message. Three constraints not to re-litigate: the byte bound is an
-  *additional* condition on `write`'s admission only, because the three drains (now
-  `drainInFlight()`, named apart from `awaitCapacity()` for exactly this reason) must keep meaning
-  "empty, and `checkAsyncError`" — #78/#110 made that load-bearing; admission is "below the cap",
-  never "does this message fit", since `yield()` blocks until a mail arrives and no mail can
-  arrive at zero in flight, so a fits-predicate would hang the task on an oversized message
-  instead of backpressuring it; and the topic-creation repair republishes its parked batch
-  **exempt from both caps**, because yielding between a key's republishes reorders it. Parked
-  messages are counted by neither cap (their failure mail released them). The two writer test
-  classes carry `@Timeout(30)`: the fake mailbox blocks like the real one, so a broken predicate
-  hangs rather than fails.
-  Ordering×repair (revised in #78): cascade cancellations are parked alongside their NOT_FOUND
-  root and every repair attempt calls `resumePublish` before republishing, but **per-key order is
-  restored by sorting the parked batch on a publish sequence, never by observation order** — the
-  "mailbox FIFO preserves per-key order" premise this was first built on is false, because the SDK
-  cancels an ordering key's queued publishes from its own thread, so a cascade can be observed
-  before the failure that caused it. Anything derived from that order is a race, including
-  deciding whether to park a cascade by whether something is parked already: that was the #78
-  flake, and it was *also* the only thing hiding a silent ordering violation, since the parked
-  list was appended in observation order too. Consequences to keep: a cancellation is never a root
-  cause, so under `CREATE_IF_NEEDED` one is parked unconditionally and a fatal root is caught by
-  the pre-repair drain (`drainInFlight()` → `checkAsyncError`) rather than by classifying
-  the cascade; under `CREATE_NEVER` nothing is parked at all, which every parking branch must
-  check, since parking is what leads to `createTopic`. Emulator
-  support (#21) is a builder option `emulatorEndpoint(host:port)` — plaintext + no credentials
-  for publishers (each owning its channel) and the auto-creation admin, mirroring the Apache
-  connector's `withHostAndPortForEmulator`; the emulator ITs (including a MiniCluster streaming
-  test through the public builder) reuse the production factory/admin, no test-only factory.
-  Per-record failure policy and the fatal-exception classifier moved to #37. Decision record in
-  the connector documentation page
-- **Pub/Sub source** (#79, #80): FLIP-27 streaming-pull source; split = (subscription, uid), ack on
-  checkpoint completion, nack on close. Tuning lives in one `PubSubSubscriberOptions` object
-  (nested-options pattern, same shape as `PubSubPublisherOptions`). Two decisions deviate from the
-  #80 issue text and must not be silently re-litigated:
-  (a) the **subscriber shutdown mode is not exposed** — `NACK_IMMEDIATELY` is fixed because
-  `WAIT_FOR_PROCESSING` waits for acknowledgements that only arrive at checkpoint completion, which
-  never happens during close; only `shutdownTimeout` is a knob (an SDK enum on the public API would
-  also break the #47 SQL mapping);
-  (b) the "**fail when running without checkpointing**" guard **cannot read the configuration** —
-  `SourceReaderContext.getConfiguration()` is the TaskManager configuration
-  (`SourceOperatorFactory` passes `getTaskManagerInfo().getConfiguration()`), while
-  `env.enableCheckpointing(...)` writes into the job configuration, so absence proves nothing and
-  failing on it would break jobs that enable checkpointing programmatically while passing every
-  MiniCluster test. Replaced by `MissingCheckpointDetector` (no checkpoint taken + messages
-  outstanding + budget spent → fail), **evaluated from `PubSubSplitReader.fetch()`, not the record
-  path** — once flow control fills, the client stops delivering and `pollNext` is never called
-  again, so a record-driven check would go silent in exactly the state it exists to catch; the
-  detector bounds the fetch park only while armed, so a healthy reader parks indefinitely as
-  before. The config-derived ack-extension check is a best-effort warning only.
-  `parallelPullCount > 1` is rejected with `orderingMode(PER_KEY)` rather than silently forced to 1
-  (the factory still force-sets 1 so the guarantee does not rest on the SDK default). The `NACK` deserialization-failure policy is deferred to #81, where
-  the `GetSubscription` preflight can verify a dead-letter policy exists
-- **Cloud Tasks sink** (#23, design settled; implemented in #24): Cloud Tasks is an HTTP dispatch
-  queue whose **pacing lives on the queue** (`maxDispatchesPerSecond`, `maxConcurrentDispatches`,
-  retry config), so the sink has no rate knobs and there is **no queue auto-creation** — an
-  auto-created queue would carry default limits, discarding the throttling that is the reason to
-  use the service, and a deleted queue name cannot be reused for 3 days. HTTP targets only (App
-  Engine targets are region-locked, invert 429/503 overload behaviour and are "less common");
-  targets need an external IP; OIDC vs OAuth is chosen by the target, not by preference, so the
-  builder rejects setting both. Fixed **and** per-record queue destinations from v1 — unlike
-  Pub/Sub topics and BigQuery tables this costs nothing, since one `CloudTasksClient` serves every
-  queue with no per-destination stream. **Unnamed tasks by default**; `taskIdExtractor(...)` **on
-  the sink builder, not the serializer** (a `Task` has no id field — only the full `name` path,
-  which needs the resolved queue) opts into deduplication (`ALREADY_EXISTS` = success), and the
-  sink **hashes the extracted key with SHA-256**, because Google documents that sequential ids
-  raise latency *and* error rates. The serializer never sets a name, so there is no second path
-  around the hashing. The dedup window is **contradicted in Google's own sources — REST says up to
-  24 h, the v2 proto says ~1 h — so design against 1 h**. **Retries are the sink's
-  responsibility**: the generated client gives `CreateTask` an empty retryable-code set and a 20 s
-  timeout (verified in `CloudTasksStubSettings` 2.94.0), as it does for every mutating method; the
-  sink retries `UNAVAILABLE`/`DEADLINE_EXCEEDED`/`RESOURCE_EXHAUSTED` and gives `NOT_FOUND` a
-  separate short budget (a 30-day-idle queue re-activates slowly, but a mistyped queue must not
-  burn the full budget per record). `BatchCreateTasks` and `BufferTask` are **both REST-only and
-  absent from the Java client**, and no method is configured with batching, so one RPC per record
-  with a mailbox-based in-flight cap. Queue-level `httpTarget.uriOverride` can silently override
-  per-task URLs and **cannot be detected through the v2 client at all** (the field does not exist
-  in the v2 proto).
-  At-least-once, stateless writer, flush on checkpoint. Decision record in the connector
-  documentation page
-- **Cloud Tasks implementation** (#24, PR #107): retrying is **one sink-owned loop in the writer**,
-  not gax `createTaskSettings` retry — gax has a single retryable-code set and schedule per method,
-  which cannot express the separate short `NOT_FOUND` budget, and a sink-owned loop is testable
-  against a fake client. A failed create is **parked with a due time** and re-dispatched unchanged
-  from the next `write()`/`flush()`; parked creates count against `maxInFlightTasks` (they are
-  records the service has not accepted) and are dropped on close (not covered by a checkpoint, so
-  the restart replays them). The serialization schema is a **two-stage builder**:
-  `httpTarget(url)` returns a non-generic stage whose `withBody(SerializationSchema<T>)` binds the
-  record type, so the chain infers `T` without a witness; `withUrl(...)` gives per-record URLs. The
-  body is sent **only under POST/PUT/PATCH** — Cloud Tasks errors on a body under any other method,
-  and since `withBody` binds `T` it cannot be omitted
-- Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
+Per-connector design decisions live in module-scoped `CLAUDE.md` files, which load when Claude
+touches a file in that module. **Read the module file before changing behavior or public API
+there** — reasoning about a module without it is how a settled decision gets re-argued:
+
+- `flink-connector-gcp-bigquery/CLAUDE.md` — facade and serializer SPI, error handling (#13),
+  FILE_LOADS (#14) and its streaming form (#69), STORAGE_API_EXACTLY_ONCE (#30), per-write-method
+  option scoping, JSON columns (#49/#50), Avro serializer (#66), deferred `location()` (#10)
+- `flink-connector-gcp-pubsub/CLAUDE.md` — vendoring provenance (#17/#31), sink (#18), topic
+  auto-creation (#19), tuning (#20) and in-flight bounds (#85), ordering×repair (#78), emulator
+  (#21), source (#79/#80)
+- `flink-connector-gcp-cloudtasks/CLAUDE.md` — sink design (#23) and implementation (#24)
+
+Decisions that span connectors stay here: the package layout convention above, the version policy
+and the licensing rules. A new connector gets its own module file rather than a section here.
