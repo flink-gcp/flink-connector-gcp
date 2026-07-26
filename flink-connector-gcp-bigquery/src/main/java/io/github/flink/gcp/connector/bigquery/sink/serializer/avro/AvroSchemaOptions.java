@@ -47,11 +47,12 @@ import java.util.Set;
  * back — it cannot be added to an existing table, so such a column only ever appears at creation
  * time and relaxing one afterwards is a schema update rather than an edit. And the protobuf mapping
  * is the normative one for every serializer, because every write path ends in a protobuf row: the
- * Storage Write API takes protobuf, and this serializer converts into one. An Avro {@code ["null",
- * T]} union is admittedly the schema author's own statement, which makes {@code REQUIRED} the more
- * faithful reading of an Avro schema taken alone — that is why this side used to default to it —
- * but faithfulness to one front end does not outweigh agreeing with the wire form every path
- * shares.
+ * Storage Write API takes protobuf, and this serializer converts into one. FILE_LOADS stages Avro,
+ * but only incidentally — a staging format rather than a contract, and Parquet is equally possible
+ * — so that is not a reason for the Avro mapping to lead. An Avro {@code ["null", T]} union is
+ * admittedly the schema author's own statement, which makes {@code REQUIRED} the more faithful
+ * reading of an Avro schema taken alone — that is why this side used to default to it — but
+ * faithfulness to one front end does not outweigh agreeing with the wire form every path shares.
  */
 @PublicEvolving
 public final class AvroSchemaOptions implements Serializable {
@@ -113,32 +114,6 @@ public final class AvroSchemaOptions implements Serializable {
         Builder() {}
 
         /**
-         * Maps the {@code string} field at the given dotted path to a BigQuery {@code JSON} column.
-         * Paths that match no field, or that match a field which is not a {@code string}, are
-         * rejected when the schema is derived.
-         *
-         * @param path dotted field path from the root record, for example {@code event.details}
-         * @return this builder
-         */
-        public Builder jsonFieldPath(String path) {
-            this.jsonFieldPaths.add(Preconditions.checkNotNull(path, "path must not be null"));
-            return this;
-        }
-
-        /**
-         * Maps all {@code string} fields at the given dotted paths to BigQuery {@code JSON}
-         * columns.
-         *
-         * @param paths dotted field paths from the root record
-         * @return this builder
-         */
-        public Builder jsonFieldPaths(Collection<String> paths) {
-            Preconditions.checkNotNull(paths, "paths must not be null")
-                    .forEach(this::jsonFieldPath);
-            return this;
-        }
-
-        /**
          * Derives each column's mode from the Avro schema, instead of deriving every non-repeated
          * column as {@code NULLABLE}: a field that is not a {@code ["null", T]} union becomes
          * {@code REQUIRED}. Nested record fields and map entry columns are covered too; {@code
@@ -164,6 +139,32 @@ public final class AvroSchemaOptions implements Serializable {
          */
         public Builder deriveRequiredColumns() {
             this.deriveRequiredColumns = true;
+            return this;
+        }
+
+        /**
+         * Maps the {@code string} field at the given dotted path to a BigQuery {@code JSON} column.
+         * Paths that match no field, or that match a field which is not a {@code string}, are
+         * rejected when the schema is derived.
+         *
+         * @param path dotted field path from the root record, for example {@code event.details}
+         * @return this builder
+         */
+        public Builder jsonFieldPath(String path) {
+            this.jsonFieldPaths.add(Preconditions.checkNotNull(path, "path must not be null"));
+            return this;
+        }
+
+        /**
+         * Maps all {@code string} fields at the given dotted paths to BigQuery {@code JSON}
+         * columns.
+         *
+         * @param paths dotted field paths from the root record
+         * @return this builder
+         */
+        public Builder jsonFieldPaths(Collection<String> paths) {
+            Preconditions.checkNotNull(paths, "paths must not be null")
+                    .forEach(this::jsonFieldPath);
             return this;
         }
 

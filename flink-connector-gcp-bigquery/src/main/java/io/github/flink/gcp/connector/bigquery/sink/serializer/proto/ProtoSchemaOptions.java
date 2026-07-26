@@ -169,9 +169,10 @@ public final class ProtoSchemaOptions implements Serializable {
 
         /**
          * Derives each column's mode from its field's presence, instead of deriving every
-         * non-repeated column as {@code NULLABLE}. Nested message fields are covered too; repeated
-         * fields are unaffected, since a BigQuery {@code REPEATED} column cannot be {@code
-         * NULLABLE}.
+         * non-repeated column as {@code NULLABLE}. Nested message fields are covered too, and so
+         * are map entry columns — a proto3 entry's {@code key} and {@code value} have implicit
+         * presence, so both become {@code REQUIRED}. Repeated fields are unaffected, since a
+         * BigQuery {@code REPEATED} column cannot be {@code NULLABLE}.
          *
          * <p>The resulting map:
          *

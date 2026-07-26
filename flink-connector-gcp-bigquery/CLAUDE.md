@@ -130,8 +130,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   **by position**, because `BQTableSchemaToProtoDescriptor` lowercases with the *default* locale —
   under `tr_TR` a column named `ID` becomes the proto field `ıd`, which no `Locale.ROOT` key
   matches. Position is exact here precisely because the descriptor is always derived from the table
-  schema this connector just produced. Nullability is **not** decided in this entry — the reasoning is
-  shared with protobuf and lives in the entry below
+  schema this connector just produced
 - **BigQuery protobuf nullability** (#124 Part 1, with Part 3's `oneof` pin; Part 2 — well-known
   types — still open): `ProtoToTableSchemaConverter` derives the mode from presence only under
   `ProtoSchemaOptions.Builder.deriveRequiredColumns()`, and the default stays **`NULLABLE`**.

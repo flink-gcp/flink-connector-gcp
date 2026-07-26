@@ -164,8 +164,8 @@ a field always reaches the column as `0`, `""` or the first enum value, never as
 presence test alone would map the one unambiguous case to `NULLABLE`.
 
 A **proto3** map entry's `key` and `value` have implicit presence too, so a `map<string, int64>`
-becomes `REPEATED STRUCT<key REQUIRED, value REQUIRED>` — which is what the Avro path already does
-for a map key. The scope matters: a **message-valued** map follows the message rule instead, so
+becomes `REPEATED STRUCT<key REQUIRED, value REQUIRED>` — which is what the Avro path derives for a
+map key under its own [`deriveRequiredColumns()`](#avro-records), the two converging by design. The scope matters: a **message-valued** map follows the message rule instead, so
 `map<string, Foo>` keeps a `NULLABLE` value, and in proto2 both entry fields have explicit presence
 and stay `NULLABLE`.
 
@@ -357,7 +357,7 @@ Avro's logical-type conversions holds `Instant`, `LocalDate`, `LocalTime`, `Loca
 | `bytes`/`fixed` + `decimal(p, s)` | `NUMERIC` when `s ≤ 9` and `p - s ≤ 29`, else `BIGNUMERIC` (`s ≤ 38`, `p - s ≤ 38`); the precision and scale are carried onto the column |
 | `record` | `STRUCT`, recursively |
 | `map<string, V>` | `REPEATED STRUCT<key, value>` — the shape a proto map already gets |
-| `array<T>`, `map<string, V>` | mode `REPEATED`, whether or not a union around it admitted null |
+| `array<T>` | mode `REPEATED`, whether or not a union around it admitted null — as does a map |
 | anything else | mode `NULLABLE`; `REQUIRED` under `deriveRequiredColumns()` when not a `["null", T]` union |
 
 **Nullability.** Every non-repeated column is `NULLABLE` by default, as on every other serializer
@@ -373,7 +373,7 @@ AvroRecordSerializer.of(
 This changes the derived schema — the one used for table auto-creation, for the write stream and for
 load jobs. `REPEATED` fields are unaffected, since a BigQuery `REPEATED` column cannot be `NULLABLE`;
 nested record fields and map entry columns are covered along with the rest, so a map key becomes
-`REQUIRED` too — the same shape the protobuf path derives for a proto3 map key.
+`REQUIRED` too — the same shape the protobuf path derives for a proto3 map key under the same option.
 
 The one thing it changes in the value path is what happens to a record that omits a field the Avro
 schema declares mandatory: by default the column is left unset, and under `deriveRequiredColumns()`
@@ -867,9 +867,12 @@ Storage Write API. Measured against real BigQuery:
 The second row is a real defect on the single-load path, tracked in
 [#142]({{< param BookRepo >}}/issues/142): a direct load builds its schema from the serializer alone,
 while the temp-table path reconciles against the live table and demotes new `REQUIRED` columns to
-`NULLABLE` first. Until it is fixed, a serializer that derives `REQUIRED` — the Avro default, or
-protobuf under [`deriveRequiredColumns()`](#nullability) — can fail a whole load job when its
-schema grows a new column against a pre-existing table. A load job is all-or-nothing, so there is no
+`NULLABLE` first. Until it is fixed, a job that asks for `REQUIRED` columns — either serializer under
+`deriveRequiredColumns()` — can fail a whole load job when its schema grows a new column against a
+pre-existing table. **A default-configured job cannot reach it**, since no derived column is
+`REQUIRED` unless asked for; that was not true while the Avro serializer defaulted to `REQUIRED`, and
+is one reason it no longer does (see [Column modes](#column-modes)). A load job is all-or-nothing, so
+there is no
 row-level policy to catch it.
 
 **Staging cleanup.** Staged files are deleted after a successful load — best-effort; on failure

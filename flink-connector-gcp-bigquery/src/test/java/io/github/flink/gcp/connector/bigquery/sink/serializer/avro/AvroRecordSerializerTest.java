@@ -79,9 +79,8 @@ class AvroRecordSerializerTest {
 
     @Test
     void optionsReachSchemaDerivation() {
-        // Asserted through the opt-in rather than the default: NULLABLE is now what a *lost*
-        // options
-        // object would also produce, so only the tightening direction distinguishes the two.
+        // Asserted through the opt-in, not the default: NULLABLE is now what a *lost* options
+        // object would produce too, so only the tightening direction distinguishes the two.
         AvroRecordSerializer serializer =
                 AvroRecordSerializer.of(
                         schema(), AvroSchemaOptions.builder().deriveRequiredColumns().build());

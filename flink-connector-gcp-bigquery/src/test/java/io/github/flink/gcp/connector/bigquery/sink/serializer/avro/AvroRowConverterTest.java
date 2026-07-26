@@ -337,9 +337,8 @@ class AvroRowConverterTest {
 
     @Test
     void byDefaultAMissingMandatoryValueIsLeftUnset() throws Exception {
-        // "Mandatory" per the Avro schema — a bare "string" rather than ["null","string"] — which
-        // by
-        // default is not carried into the column mode at all, so there is nothing to violate.
+        // "Mandatory" per the Avro schema — a bare "string" rather than ["null","string"] — is not
+        // carried into the column mode by default, so there is nothing for the record to violate.
         Setup setup = setupOf("\"string\"");
 
         assertThat(setup.isSet(setup.convert(setup.record()), "f")).isFalse();

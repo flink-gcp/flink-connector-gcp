@@ -227,7 +227,7 @@ class AvroToTableSchemaConverterTest {
                 .containsExactly(
                         org.assertj.core.groups.Tuple.tuple("n", TableFieldSchema.Mode.REQUIRED),
                         org.assertj.core.groups.Tuple.tuple("m", TableFieldSchema.Mode.NULLABLE));
-        // The struct holding them is NULLABLE, since the field itself is not a union.
+        // And the struct holding them is REQUIRED itself, the field not being a union either.
         assertThat(converted.getFields(0).getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
     }
 
