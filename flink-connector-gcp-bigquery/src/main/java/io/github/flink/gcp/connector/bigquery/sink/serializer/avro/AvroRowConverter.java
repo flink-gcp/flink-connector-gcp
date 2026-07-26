@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.serializer;
+package io.github.flink.gcp.connector.bigquery.sink.serializer.avro;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;

@@ -245,7 +245,26 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
   named throughout this package and the opposite of a buffered one
 - `sink.tables` — shared table-metadata layer consumed by every write method: the `TableAdmin`
   SPI and its REST implementation, schema snapshot/unifier, REST↔Storage schema converters
-- `sink.serializer` — record-conversion SPI and its implementations
+- `sink.serializer` — the record-conversion SPI (`BigQueryProtoSerializer`) alone, with
+  `sink.serializer.<format>` beneath it for each input format: `.proto`, `.avro`, and `.json` when
+  the #66 JSON half lands. Each format package holds its facade, its `@PublicEvolving` options
+  object and the `@Internal` types behind them, mirroring how `sink.<writepath>` keeps
+  `FileLoadsOptions` and `BufferedStreamOptions` inside their family packages — so this is a
+  public-API layer, not merely an internals split. Decided in #125, after #123 took the package
+  to ten classes with the names already doing the package's job (`Proto*` ×4, `Avro*` ×4). It
+  **passes** the #119 rule rather than contradicting it: that rule is a test, not a count — *one
+  family, with no second one in prospect, means no layer* — and here two formats exist today while
+  the issue that introduced the second one already plans a third, the exact opposite of Cloud
+  Tasks' `sink.createtask`. `BigQueryProtoSerializer` keeps its name and its place at the root:
+  the split makes it *read* as the proto family's SPI when it means "the wire form is protobuf,
+  whatever the input was", but its javadoc says so, and renaming would touch the sink core, the
+  writers and ~20 tests for no behavioural gain — considered and declined, unlike the #121 rename.
+  Every package-private coupling stays inside one format, so nothing had to widen to `public`;
+  that holds only because the tests move with their format. The format packages must not import
+  each other: the three Avro→proto javadoc references are **fully-qualified `{@link}`s rather than
+  imports**, so the independence is a property of the import graph and not just of the call graph.
+  Spotless does keep a javadoc-only import (measured, not assumed), so the short form was
+  available and was declined for that reason
 - `sink.failure` — row-level failure SPI (`FailedRow`, handlers, DLQ stub), kept separate so the
   cross-connector extraction planned in #37 stays cheap
 - `source` / `table` — reserved for sources (#31, #34, #64) and Table API (#47, #57), with the

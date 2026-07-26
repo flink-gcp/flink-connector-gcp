@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.serializer;
+package io.github.flink.gcp.connector.bigquery.sink.serializer.avro;
 
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
@@ -24,6 +24,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.IndexedRecord;
 
@@ -48,9 +49,10 @@ import java.io.IOException;
  * the serializer is created, so an unmappable schema fails where the pipeline is built rather than
  * on the first record.
  *
- * <p>Conversion costs one pass over each record, unlike {@link ProtoMessageSerializer} on an
- * already-protobuf stream. Where the input is under your control and throughput matters, a native
- * protobuf record avoids it.
+ * <p>Conversion costs one pass over each record, unlike {@link
+ * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializer
+ * ProtoMessageSerializer} on an already-protobuf stream. Where the input is under your control and
+ * throughput matters, a native protobuf record avoids it.
  */
 @PublicEvolving
 public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedRecord> {

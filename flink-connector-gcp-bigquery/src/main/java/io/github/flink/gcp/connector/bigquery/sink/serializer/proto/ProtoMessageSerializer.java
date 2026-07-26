@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.serializer;
+package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
@@ -25,6 +25,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 
 import java.io.IOException;
 

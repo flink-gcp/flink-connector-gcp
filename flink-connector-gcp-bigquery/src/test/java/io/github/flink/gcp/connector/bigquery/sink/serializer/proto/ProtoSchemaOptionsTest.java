@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.serializer;
+package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
 import org.apache.flink.util.InstantiationUtil;
 

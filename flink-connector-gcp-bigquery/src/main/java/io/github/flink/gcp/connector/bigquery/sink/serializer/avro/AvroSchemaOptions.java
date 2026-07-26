@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.serializer;
+package io.github.flink.gcp.connector.bigquery.sink.serializer.avro;
 
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
@@ -35,7 +35,9 @@ import java.util.Set;
  *       BigQuery {@code JSON} column instead of {@code STRING}. The Storage Write API carries a
  *       {@code JSON} column as a string, so this is purely a schema-derivation marker — the value
  *       is written through verbatim and is <em>not</em> validated by the connector, exactly as on
- *       the protobuf path (see {@link ProtoSchemaOptions}).
+ *       the protobuf path (see {@link
+ *       io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions
+ *       ProtoSchemaOptions}).
  *   <li><b>Nullability.</b> By default an Avro field that is not a {@code ["null", T]} union maps
  *       to a {@code REQUIRED} column. {@link Builder#allFieldsNullable()} relaxes every column to
  *       {@code NULLABLE} instead, which is what a pipeline wants when the destination table should
