@@ -24,9 +24,9 @@ import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.storageapi.BigQueryBufferedStreamSink;
-import io.github.flink.gcp.connector.bigquery.sink.storageapi.BigQueryDefaultStreamSink;
-import io.github.flink.gcp.connector.bigquery.sink.storageapi.BufferedStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 
 /**
  * Builder for BigQuery sinks, obtained from {@link BigQuerySink#builder()}.
