@@ -31,10 +31,27 @@ jobs:
           java-version: '17'
           cache: maven
 
+      # install-action rather than mise: mise.toml pins java and maven, so
+      # mise's shims would sit in front of the JDK setup-java just installed.
+      # This drops one binary on PATH and creates no shims.
+      #
+      # `tool: just` carries no version on purpose. install-action reads no
+      # version file, so pinning it would mean an inline version in six places
+      # to keep in sync with mise.toml — and the reason shellcheck *is* pinned
+      # (a newer release adds checks that fail a pull request which changed
+      # nothing) has no analogue here: just guarantees no 1.x release breaks an
+      # existing justfile or a working command line, and that there will never
+      # be a 2.0. mise.toml says `just = "1"`, so both sides mean the same
+      # thing. The guarantee covers stable features only, which is why nothing
+      # CI runs uses a `--unstable` one — see the lint recipe.
+      - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
+        with:
+          tool: just
+
       # Runs the full lifecycle: spotless/checkstyle (validate), compile,
       # unit tests (test), packaging, integration tests (integration-test)
       # and the apache-rat license-header check (verify). Integration tests
       # use testcontainers-based emulators and require no cloud credentials,
       # so this job is safe to run on any pull request.
       - name: Build and verify
-        run: ./mvnw -ntp verify
+        run: just verify

@@ -11,14 +11,41 @@ dependencies managed through `com.google.cloud:libraries-bom`.
 
 ## Build
 
-- `./mvnw verify` — full build: spotless/checkstyle (validate), unit tests, integration tests,
-  apache-rat license-header check. Requires JDK 17 (`mise.toml` pins java/maven; `mise x maven java -- ./mvnw ...` works without global installs)
-- `./mvnw spotless:apply` — run before committing; CI fails on unformatted code
-- Single module: `./mvnw -pl flink-connector-gcp-bigquery verify`
-- Documentation site: `mise x -- hugo serve --source docs` to preview,
-  `mise x -- hugo --gc --minify --source docs --panicOnWarning` for the check CI runs (a
-  deprecation, a broken `relref` or a missing shortcode fails the build). `mise.toml` pins
-  hugo-extended and Go; hugo-book is a Hugo module pinned in `docs/go.mod`
+Commands live in the `justfile` and **CI calls the same recipes**, so what runs locally is what
+runs in the workflows (#111). `just --list` is the index; run `mise x -- just <recipe>` in a shell
+without mise activated. Add a command here rather than to a workflow `run:` block.
+
+- `just verify` — full build (`./mvnw -ntp verify`): spotless/checkstyle (validate), unit tests,
+  integration tests, apache-rat license-header check. Requires JDK 17; `mise.toml` pins java/maven
+- `just format` — run before committing; CI fails on unformatted code
+- `just verify-flink 2.3.0` / `just verify-module flink-connector-gcp-bigquery` — one Flink
+  version, one module. `just verify <maven args>` is the passthrough the weekly matrix uses, and
+  passing nothing means the version pinned in the pom
+- `just binary-compat 2.3.0` — the floor-build/fingerprint/ceiling-rerun/diff sequence, whose
+  order is load-bearing. Reproducing a red weekly `binary_compat` is what it is for
+- `just lint` — shellcheck over `scripts/`, actionlint over `.github/workflows/`. Deliberately
+  does **not** run `just --fmt --check`: that is an unstable feature, excluded from just's
+  compatibility guarantee, so with `just` installed unpinned it could fail an unchanged pull
+  request. actionlint is handed `-shellcheck "$(mise which shellcheck)"` rather than letting it
+  find one on `PATH` — the runner image ships its own, and it is not the pinned one
+- `just docs` / `just docs-serve` / `just docs-chroma` — build the site as CI does (a deprecation,
+  a broken `relref` or a missing shortcode fails the build), preview it, regenerate the chroma
+  palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in
+  `docs/go.mod`
+- Recipe bodies stay one command per line — no embedded `#!/usr/bin/env bash` blocks. A single
+  compound command is fine (`binary-compat`'s final `diff … || { …; exit 1; }`); a multi-line
+  script block is not. The boundary is shellcheck coverage: it reads `scripts/`, actionlint reads
+  inline `run:` blocks, and nothing reads inside a recipe
+- **Inside a recipe, always name the tool: `mise x <tool> -- …`, never bare `mise x -- …`.** The
+  bare form activates every tool in `mise.toml` and installs what is missing, silently undoing the
+  `install_args` meant to limit a CI job. Caught in CI on #113: `mise x -- shellcheck` in the lint
+  job pulled a JDK, Maven, Hugo, Go and a second copy of `just`, shadowing the one
+  `install-action` had already put on `PATH`. The bare form stays right for the *entrypoint*
+  (`mise x -- just <recipe>`), which does want everything — `just verify` needs java and maven and
+  names neither
+- A top-level justfile variable assigned from a shell command runs on **every** `just` invocation,
+  whichever recipe was asked for; a default *parameter* value runs only when its own recipe does.
+  That is why `check-flink-release`'s ceiling is a parameter default rather than a variable
 
 ## Documentation (`docs/` vs module READMEs)
 
@@ -38,9 +65,8 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   (`relref`, `param`) are fine; prefer `{{< param BookRepo >}}` over hardcoding the repository URL
 - Syntax highlighting is class-based (`markup.highlight.noClasses = false`) with the palettes
   selected by `prefers-color-scheme` in `docs/assets/_custom.scss`, which hugo-book bundles into
-  its own stylesheet. Regenerate the palettes with, from `docs/`:
-  `hugo gen chromastyles --style=github > assets/_chroma-light.scss` and
-  `--style=github-dark > assets/_chroma-dark.scss` (verbatim output; apache-rat excludes them)
+  its own stylesheet. Regenerate the palettes with `just docs-chroma`, which is where the two
+  `hugo gen chromastyles` style names live (verbatim output; apache-rat excludes them)
 - The site is built as a CI check only; GitHub Pages publishing waits until the repository is
   public (#6). Each module README links to its docs page by in-repo relative path — those links
   become site URLs when Pages goes live, which is a checklist item on #6
@@ -63,8 +89,8 @@ dependencies managed through `com.google.cloud:libraries-bom`.
     concurrency, public API and simplification, test quality and flakiness). One agent asked for
     "a review" returns much less than three asked for different things — and verify each finding
     against the code before acting on it
-- Pin GitHub Actions to commit SHAs with pinact (`mise x pinact -- pinact run`) whenever a
-  workflow is added or an action version changes
+- Pin GitHub Actions to commit SHAs with `just pin-actions` whenever a workflow is added or an
+  action version changes
 - Commit messages, PR titles/descriptions, code comments, javadoc and issues are written in
   English
 - Issues use milestones `v0.1.0` / `v0.2.0` / `v0.3.0+` and GitHub sub-issues; PRs close their
@@ -106,9 +132,9 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   (1) `pom.xml` `flink.version` → the old ceiling, (2) `weekly.yaml` `FLINK_CEILING` and
   `FLINK_NEXT_SNAPSHOT`, (3) `docs/content/_index.md` table, (4) `README.md` under Build,
   (5) this section. Then **re-run the binary-compatibility measurement against the new ceiling
-  before claiming the range** — the old measurement says nothing about the new pair. Do not
-  hand-maintain this list: `scripts/check-flink-release.sh` prints it in its failure output,
-  which is the copy that gets read
+  before claiming the range** (`just binary-compat <new ceiling>`) — the old measurement says
+  nothing about the new pair. Do not hand-maintain this list: `scripts/check-flink-release.sh`
+  prints it in its failure output, which is the copy that gets read
 - `scripts/check-flink-release.sh` (the `new_minor_check` job) exists because suppressing the
   dependabot minor PR removed the only thing that announced a Flink release. It compares the
   ceiling passed to it against Maven Central weekly and fails until the range is moved. It is
@@ -119,22 +145,40 @@ dependencies managed through `com.google.cloud:libraries-bom`.
   red. `tools/` is not the place: it holds build tool *configuration*
   (`tools/maven/checkstyle.xml`), following Flink's layout. Two consequences: `scripts/` is
   outside the `.github/**` rat exclude, so each file carries the plain Apache-2.0 header, and
-  `lint.yaml` shellchecks them — `actionlint` shellchecks inline `run:` blocks, so extracting a
-  script would otherwise drop it out of linting
+  `just lint` shellchecks them — and also runs `actionlint`, which shellchecks inline `run:`
+  blocks, so a script stays linted whether it lives in `scripts/` or in a `run:` block.
+  **A `justfile` recipe is neither** — nothing
+  lints inside one — so a recipe body holds commands, and anything that grows into a script goes
+  to `scripts/`
+- **A multi-step sequence is named once, in the `justfile`, and CI calls that recipe** (#111) —
+  `binary_compat` is one step invoking `just binary-compat` rather than four `run:` blocks, so
+  the order the sequence depends on has a single definition and is rerunnable by hand. The cost
+  was weighed and accepted: a failure names the `==>` phase inside the recipe rather than a step
+  in the GitHub UI
 - **`lint.yaml` is where linters Maven does not run live** (spotless and checkstyle cover the
-  Java sources inside `verify`). Today that is shellcheck; `tofu fmt`/`validate` belongs here
-  when the OpenTofu persistent layer lands (#5). Separate from `ci.yaml` so results arrive in
-  seconds rather than behind the integration tests, and so mise's shims never share a `PATH`
-  with `setup-java`'s JDK. Its `paths` filter must list **every input to a lint, not just the
-  linted files** — `mise.toml` is in it because that is where the shellcheck version is pinned,
-  and skipping the lint on a version bump would skip it in the one change that most needs it
-- **shellcheck's version is pinned in `mise.toml`** and installed from there by
-  `jdx/mise-action` with `install_args: shellcheck` (that argument matters: `mise.toml` also
-  pins java, maven, hugo and go, which the job does not need). Not the runner image's copy: that
-  is 0.9.0 on ubuntu-24.04 and 0.11.0 on 26.04, so a `ubuntu-latest` migration would fail a pull
-  request that changed nothing. Declared once, identical locally and in CI — prefer this shape
-  for any new tool over `docs.yaml`'s `HUGO_VERSION`-plus-"keep in sync with mise.toml"
-  duplication, which predates it (#111 covers moving `docs.yaml` onto it)
+  Java sources inside `verify`). Today that is shellcheck and actionlint; `tofu fmt`/`validate`
+  belongs here when the OpenTofu persistent layer lands (#5). Separate from
+  `ci.yaml` so results arrive in seconds rather than behind the integration tests, and so mise's
+  shims never share a `PATH` with `setup-java`'s JDK. Its `paths` filter must list **every input
+  to a lint, not just the linted files** — `mise.toml` is in it because that is where the
+  shellcheck version is pinned, and skipping the lint on a version bump would skip it in the one
+  change that most needs it. `docs.yaml` carries `mise.toml` for the same reason since #111
+- **Where a tool's version lives decides how CI installs it.** Pin in `mise.toml` and install
+  with `jdx/mise-action` + `install_args` when a version skew can fail a pull request that
+  changed nothing — shellcheck (0.9.0 on ubuntu-24.04, 0.11.0 on 26.04, so an `ubuntu-latest`
+  migration would fail an unrelated PR) and hugo/go (`docs.yaml` moved onto this shape in #111,
+  retiring its `HUGO_VERSION`-plus-"keep in sync" duplication). `install_args` matters: it names
+  the subset of `mise.toml` the job needs. Otherwise install with `taiki-e/install-action` and no
+  version — that is `just`, whose 1.x compatibility guarantee ("there will never be a 2.0") means
+  a newer release cannot break an unchanged justfile, so `mise.toml` says `just = "1"` and CI
+  says `tool: just`. **That guarantee covers stable features only**, so nothing CI runs may
+  depend on a `--unstable` one; `just --fmt --check` is kept out of `just lint` for exactly this
+  reason. Reach for an unstable feature and the tool needs a pin, which means an inline version
+  in every install-action step — six of them today
+- **`jdx/mise-action` must not run in a job that uses `setup-java`.** `mise.toml` pins java and
+  maven, so mise's shims land in front of the JDK the job just installed. That is why `lint.yaml`
+  is separate from `ci.yaml`, and why `just` comes from `taiki-e/install-action` (one binary on
+  `PATH`, no shims) in every workflow rather than from mise in the two that already have it
 - `docs.yaml` and `lint.yaml` both carry `paths` filters, so a pull request touching neither
   never reports them. Fine while they are optional — but **a required check that never reports
   blocks a pull request forever**, so making either one required means dropping its filter or

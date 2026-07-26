@@ -22,18 +22,18 @@
 # by another that gained tests. flink-connector-parent runs both unit tests and
 # integration tests through surefire, so both land here.
 #
-# The binary-compatibility job in .github/workflows/weekly.yaml uses it, but it
-# is meant to be run by hand too — reproducing that job locally is the first
-# thing to do when it goes red:
+# Called by the `binary-compat` recipe in the justfile, which is the sequence
+# this belongs to: build against the floor, fingerprint, re-run the built
+# classes on the newer Flink, diff. The weekly binary_compat job runs that same
+# recipe, so reproducing it when it goes red is one command:
 #
-#     ./mvnw verify                                   # build against the floor
-#     scripts/surefire-fingerprint.sh > /tmp/floor.txt
-#     ./mvnw -Dflink.version=<newer> \
-#         surefire:test@default-test surefire:test@integration-tests
-#     scripts/surefire-fingerprint.sh | diff -u /tmp/floor.txt -
+#     just binary-compat <newer>
 #
-# The execution ids are load-bearing: a bare `surefire:test` ignores the
-# execution-level includes/excludes and silently skips every ITCase.
+# Two constraints are why that is a recipe rather than something to retype. The
+# fingerprint has to be taken between the two runs, because the second
+# overwrites the reports. And the surefire execution ids are load-bearing: a
+# bare `surefire:test` ignores the execution-level includes/excludes and
+# silently skips every ITCase.
 
 set -euo pipefail
 
