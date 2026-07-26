@@ -131,7 +131,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   and #145 before touching Avro nullability
 - **BigQuery protobuf nullability** (#124 Part 1, with Part 3's `oneof` pin; Part 2 — well-known
   types — still open): `ProtoToTableSchemaConverter` derives the mode from presence only under
-  `ProtoSchemaOptions.Builder.deriveRequiredFromSchema()`, and the default stays **`NULLABLE`**.
+  `ProtoSchemaOptions.Builder.deriveRequiredColumns()`, and the default stays **`NULLABLE`**.
   Reasons, in order of weight: proto3's presence-less form is the spelling you get by *not* thinking
   about nullability, so deriving `REQUIRED` from it by default would make nearly every scalar column
   of an auto-created table `REQUIRED` on the strength of a syntax default; and `REQUIRED` is the mode
@@ -143,9 +143,15 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   Avro-schema faithfulness in isolation, before the protobuf mapping was settled and before #142 was
   measured. There is **no `allFieldsNullable()`** here (the issue title notwithstanding): with a
   `NULLABLE` default it would mean exactly "don't call the opt-in", and two inverse switches need a
-  documented meaning per combination. The name is `deriveRequiredFromSchema()` rather than
-  `...FromPresence()` **so that both serializers can carry the same name** — presence is the signal
-  on this side, a `["null", T]` union on Avro's, and the javadoc says which. The predicate is
+  documented meaning per combination. **The name went through two rejected candidates**, so don't
+  re-open it: `deriveRequiredFromPresence()` names a protobuf mechanism and so cannot be shared with
+  Avro, and `deriveRequiredFromSchema()` was worse — *everything* here is derived from the schema
+  (types, JSON columns, the whole `TableSchema`), so the qualifier distinguished nothing.
+  `deriveRequiredColumns()` names what appears on the BigQuery side, which is also where the
+  irreversibility lives, and matches the `allowNewFields()` / `allowFieldRelaxation()` vocabulary
+  already borrowed from Aiven's connector. Getter is `isDeriveRequiredColumns()` — `is` + verb phrase
+  is clumsy but is the house style (`isAllowFieldRelaxation()`). Note the polarity is a **deliberate
+  deviation** from that connector, whose `allBQFieldsNullable` defaults to `false`. The predicate is
   `isRequired() || !hasPresence()`, **two clauses because a proto2 `required` field has presence
   and is mandatory all the same** (`hasPresence()` is `!= IMPLICIT`, `isRequired()` is
   `LEGACY_REQUIRED`, derived independently) — presence alone would map the one unambiguous case to

@@ -264,9 +264,8 @@ class ProtoRowConverterTest {
      * {@code build()} throws rather than returning a partial message.
      */
     @Test
-    void writesEveryRequiredColumnWhenDerivedFromSchema() throws Exception {
-        ProtoSchemaOptions options =
-                ProtoSchemaOptions.builder().deriveRequiredFromSchema().build();
+    void writesEveryDerivedRequiredColumn() throws Exception {
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().deriveRequiredColumns().build();
         ProtoRowConverter converter = converter(TestProtos.presence(), options);
 
         DynamicMessage row = converter.convert(Presence.getDefaultInstance());
@@ -286,8 +285,7 @@ class ProtoRowConverterTest {
      */
     @Test
     void writesRequiredColumnsInsideAPresentButEmptyStruct() throws Exception {
-        ProtoSchemaOptions options =
-                ProtoSchemaOptions.builder().deriveRequiredFromSchema().build();
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().deriveRequiredColumns().build();
         ProtoRowConverter converter = converter(TestProtos.presence(), options);
 
         DynamicMessage row =
@@ -317,7 +315,7 @@ class ProtoRowConverterTest {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder()
                         .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
-                        .deriveRequiredFromSchema()
+                        .deriveRequiredColumns()
                         .build();
         ProtoRowConverter converter = converter(source, options);
 

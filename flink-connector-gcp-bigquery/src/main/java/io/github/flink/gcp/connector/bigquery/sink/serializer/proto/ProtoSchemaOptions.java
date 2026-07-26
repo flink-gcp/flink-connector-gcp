@@ -48,7 +48,7 @@ import java.util.Set;
  *       Everything configured is unioned, so a field marked by any of them is a {@code JSON}
  *       column.
  *   <li><b>Nullability.</b> Every column is derived as {@code NULLABLE} by default. {@link
- *       Builder#deriveRequiredFromSchema()} reads each field's presence instead and derives {@code
+ *       Builder#deriveRequiredColumns()} reads each field's presence instead and derives {@code
  *       REQUIRED} where protobuf cannot express absence.
  * </ul>
  *
@@ -86,13 +86,13 @@ public final class ProtoSchemaOptions implements Serializable {
      */
     private final Map<Integer, String> jsonFieldOptions;
 
-    private final boolean deriveRequiredFromSchema;
+    private final boolean deriveRequiredColumns;
 
     private ProtoSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
         this.jsonFieldOptions =
                 Collections.unmodifiableMap(new LinkedHashMap<>(builder.jsonFieldOptions));
-        this.deriveRequiredFromSchema = builder.deriveRequiredFromSchema;
+        this.deriveRequiredColumns = builder.deriveRequiredColumns;
     }
 
     /** Returns the default options: no JSON field mapping, and every column {@code NULLABLE}. */
@@ -111,8 +111,8 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /** Returns whether column modes are derived from field presence. */
-    public boolean isDeriveRequiredFromSchema() {
-        return deriveRequiredFromSchema;
+    public boolean isDeriveRequiredColumns() {
+        return deriveRequiredColumns;
     }
 
     /**
@@ -157,7 +157,7 @@ public final class ProtoSchemaOptions implements Serializable {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();
         private final Map<Integer, String> jsonFieldOptions = new LinkedHashMap<>();
-        private boolean deriveRequiredFromSchema;
+        private boolean deriveRequiredColumns;
 
         Builder() {}
 
@@ -202,8 +202,8 @@ public final class ProtoSchemaOptions implements Serializable {
          *
          * @return this builder
          */
-        public Builder deriveRequiredFromSchema() {
-            this.deriveRequiredFromSchema = true;
+        public Builder deriveRequiredColumns() {
+            this.deriveRequiredColumns = true;
             return this;
         }
 

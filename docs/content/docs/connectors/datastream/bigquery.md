@@ -102,12 +102,12 @@ by the recursion guard unless marked as JSON columns. Tracked in
 ### Nullability
 
 By default every non-repeated column is `NULLABLE`.
-`ProtoSchemaOptions.builder().deriveRequiredFromSchema()` reads each field's presence instead:
+`ProtoSchemaOptions.builder().deriveRequiredColumns()` reads each field's presence instead:
 
 ```java
 ProtoMessageSerializer.of(
         MyMessage.class,
-        ProtoSchemaOptions.builder().deriveRequiredFromSchema().build());
+        ProtoSchemaOptions.builder().deriveRequiredColumns().build());
 ```
 
 | Field | Mode |
@@ -278,7 +278,7 @@ Three consequences worth knowing:
   fields *without* presence: where the proto can say "unset" (`optional string`, or proto2), an
   explicit `""` is your own statement and is passed through as-is. Repeated elements are likewise
   explicit and passed through. This is also why a JSON column is never `REQUIRED` under
-  [`deriveRequiredFromSchema()`](#nullability) — the condition that leaves the value unset is the
+  [`deriveRequiredColumns()`](#nullability) — the condition that leaves the value unset is the
   same one that would make the column mandatory.
 
 Marking a field that is neither a message nor a string — including a proto map, whose BigQuery shape
@@ -345,7 +345,7 @@ schema declares mandatory: by default that is a row-level failure, and under `al
 the column is simply left unset. Records that do carry the value convert identically either way.
 
 Note that the protobuf switch currently has the **opposite polarity**: `NULLABLE` by default, with
-[`deriveRequiredFromSchema()`](#nullability) opting in. That is the direction both will settle on —
+[`deriveRequiredColumns()`](#nullability) opting in. That is the direction both will settle on —
 the protobuf mapping is normative, since every write path ends in a protobuf row and Avro is a front
 end — so this default and this method name are the ones due to change, tracked in
 [#145]({{< param BookRepo >}}/issues/145).
@@ -821,7 +821,7 @@ The second row is a real defect on the single-load path, tracked in
 [#142]({{< param BookRepo >}}/issues/142): a direct load builds its schema from the serializer alone,
 while the temp-table path reconciles against the live table and demotes new `REQUIRED` columns to
 `NULLABLE` first. Until it is fixed, a serializer that derives `REQUIRED` — the Avro default, or
-protobuf under [`deriveRequiredFromSchema()`](#nullability) — can fail a whole load job when its
+protobuf under [`deriveRequiredColumns()`](#nullability) — can fail a whole load job when its
 schema grows a new column against a pre-existing table. A load job is all-or-nothing, so there is no
 row-level policy to catch it.
 
@@ -903,7 +903,7 @@ serializer additionally carries a round-trip test (`AvroSchemaRoundTripTest`) th
 Without it the two could drift apart and corrupt staged files with nothing going red. The protobuf
 mode mapping is pinned against real `.proto` fixtures compiled at build time — every proto3
 presence shape and the proto2 `required`/`optional` pair, both by default and under
-`deriveRequiredFromSchema()` — and `ProtoRowConverterTest` pins the value side of the same
+`deriveRequiredColumns()` — and `ProtoRowConverterTest` pins the value side of the same
 question: an unselected `oneof` branch is left unset, while a presence-less field is written as its
 type default.
 
@@ -920,7 +920,7 @@ scalars, `TIMESTAMP`, `DATE`, `BYTES`, an enum, a `REPEATED` field, a nested `ST
 because the emulator implements neither the packed civil-time encoding nor the decimal byte
 encoding and reads those columns back as unrelated values whatever is written), the same for JSON
 documents including the `ignoreUnknownFields` option (`BigQueryJsonDocumentSerializerITCase`),
-protobuf messages under `deriveRequiredFromSchema()` (`BigQueryProtoPresenceITCase` — the table is
+protobuf messages under `deriveRequiredColumns()` (`BigQueryProtoPresenceITCase` — the table is
 created with the derived `REQUIRED` columns and the values read back as presence says they should:
 presence-less columns carry `""`/`0`, `optional` and the unselected `oneof` branch come back NULL;
 the query works around two emulator deviations around an *empty* repeated column, where
