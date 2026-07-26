@@ -153,7 +153,7 @@ silently loses those buffers whenever state is dropped.
 
 Checkpointing must be enabled for the at-least-once guarantee in streaming jobs: without it,
 Flink never calls `flush()` mid-stream, so sub-threshold buffers are lost on failure (a
-time-based flush option for checkpoint-less jobs is tracked in [#54](https://github.com/laughingman7743/flink-connector-gcp/issues/54)). Batch execution is covered
+time-based flush option for checkpoint-less jobs is tracked in [#54]({{< param BookRepo >}}/issues/54)). Batch execution is covered
 by the end-of-input flush. End-to-end loss behavior additionally depends on the source's own
 state handling.
 
@@ -187,7 +187,7 @@ Neither method is uniformly safer — their loss paths are disjoint:
 | Loss path | `STORAGE_API_AT_LEAST_ONCE` | `STORAGE_API_EXACTLY_ONCE` |
 |---|---|---|
 | Discarded operator state | none (duplicates only) | up to one checkpoint |
-| Checkpointing disabled | buffered rows lost ([#54](https://github.com/laughingman7743/flink-connector-gcp/issues/54)) | impossible — rejected at graph construction |
+| Checkpointing disabled | buffered rows lost ([#54]({{< param BookRepo >}}/issues/54)) | impossible — rejected at graph construction |
 | Committable outliving its write stream | none (holds no committer state) | possible — see [Exactly-once](#exactly-once-buffered-streams) |
 | `FailedRowHandler` drop policies | by configuration | by configuration |
 
@@ -327,7 +327,7 @@ awaited — BigQuery runs them concurrently server-side): once at end of input i
 completed checkpoint in streaming. Load jobs carry the serializer's schema explicitly
 (`useAvroLogicalTypes`), plus the partitioning/clustering from `tableCreateOptions(...)` for
 tables created under `CREATE_IF_NEEDED`. Loading in the committer (rather than a post-commit
-topology, where the [#14](https://github.com/laughingman7743/flink-connector-gcp/issues/14) batch implementation originally ran it) is deliberate: committables ride
+topology, where the [#14]({{< param BookRepo >}}/issues/14) batch implementation originally ran it) is deliberate: committables ride
 in Flink's committer state until their loads succeed, and the final batch of a streaming job is
 committed during task shutdown's final-checkpoint wait — records emitted to a post-commit
 topology at that point are not guaranteed to be processed before the job terminates.
@@ -444,7 +444,7 @@ Sink<MyEvent> sink =
 - `FailedRowHandler.logAndDrop()` — logs each failed row at WARN and drops it
 - `FailedRowHandler.sendToDeadLetterQueue(...)` — forwards each failed row to a
   `DeadLetterQueue`, an experimental stub interface for the cross-connector DLQ
-  standardization ([#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37)). The stub has no flush/checkpoint lifecycle yet: implementations
+  standardization ([#37]({{< param BookRepo >}}/issues/37)). The stub has no flush/checkpoint lifecycle yet: implementations
   should write through synchronously (throwing on failure), and restarts can produce
   duplicate dead-letter entries
 - Custom handlers implement `FailedRowHandler`; throwing from `handle` fails the checkpoint,
@@ -481,7 +481,7 @@ connect through a test-only plaintext appender
 factory (`EmulatorAppenderFactory`) that also papers over two emulator deviations tracked by
 [goccy/bigquery-emulator#342](https://github.com/goccy/bigquery-emulator/issues/342) (default-stream naming, `UNKNOWN` instead of `NOT_FOUND` for missing
 tables); routing the *production* factory at the emulator via an injection seam is tracked in
-[#54](https://github.com/laughingman7743/flink-connector-gcp/issues/54). One further deviation (same family): on a connection opened after an earlier connection to
+[#54]({{< param BookRepo >}}/issues/54). One further deviation (same family): on a connection opened after an earlier connection to
 the emulator has closed, only the first `AppendRows` request is durably applied — follow-ups are
 acknowledged but never become queryable. The multi-flush scenario therefore runs in its own test
 class, whose connection is guaranteed to be its container's first (one forked JVM and fresh
@@ -505,5 +505,5 @@ credential-less CI:
   (`BigQueryBufferedStreamExactlyOnceITCase`, gated on `BQ_IT_PROJECT`/`BQ_IT_DATASET` only;
   no bucket needed)
 
-The remaining real-GCP coverage (MiniCluster E2E on GitHub Actions via WIF) is tracked in [#16](https://github.com/laughingman7743/flink-connector-gcp/issues/16)
-and [#28](https://github.com/laughingman7743/flink-connector-gcp/issues/28).
+The remaining real-GCP coverage (MiniCluster E2E on GitHub Actions via WIF) is tracked in [#16]({{< param BookRepo >}}/issues/16)
+and [#28]({{< param BookRepo >}}/issues/28).
