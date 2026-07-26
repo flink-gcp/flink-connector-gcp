@@ -385,6 +385,22 @@ way back out: a value costs a union branch index and an unset field is written a
 null. Self-consistent — both staging converters read the same derived schema — but worth knowing when
 comparing file sizes across the change.
 
+**Writing into a table that already has `REQUIRED` columns.** Tables an Avro pipeline auto-created
+before this default changed have `REQUIRED` scalars, and the derived schema no longer agrees with
+them. The disagreement is tolerated silently: the schema union only ever *relaxes*, and relaxing needs
+`allowFieldRelaxation`, which is off by default. Rows that carry every value are unaffected. A row
+that omits one is not, and where it surfaces depends on the write method:
+
+| Write method | A row omitting a column the table has as `REQUIRED` |
+|---|---|
+| `STORAGE_API_*` | BigQuery rejects that row; it is routed to the `FailedRowHandler` per policy |
+| `FILE_LOADS` | the **load job** fails, taking every other row in the same commit with it — there is no row-level policy at load time |
+
+So on a pre-existing table, either keep `deriveRequiredColumns()` on — which reproduces the old
+schema and moves the rejection back to the client, where the message names the field — or relax the
+table's columns once with `schemaUpdateOptions(SchemaUpdateOptions.builder().allowFieldRelaxation()
+.build())`.
+
 **JSON columns.** `AvroSchemaOptions.builder().jsonFieldPath("event.payload")` derives a `string`
 field at that dotted path as a [`JSON` column](#json-columns) instead of `STRING`. As on the
 protobuf path the value is passed through verbatim and is *not* validated — malformed JSON is a

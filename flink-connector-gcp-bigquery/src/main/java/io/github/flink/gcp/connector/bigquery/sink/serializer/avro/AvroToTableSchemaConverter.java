@@ -56,9 +56,10 @@ import java.util.Set;
  *       STRUCT<key, value>}, matching the shape proto maps already get
  *   <li>{@code string} fields selected by {@link AvroSchemaOptions#isJsonField} → {@code JSON} (the
  *       value is taken to be JSON text already and is not validated)
- *   <li>{@code array<T>} and {@code map<string, V>} → {@code REPEATED}; everything else → {@code
- *       NULLABLE}, unless {@link AvroSchemaOptions#isDeriveRequiredColumns} is set, and then a
- *       field that is not a {@code ["null", T]} union → {@code REQUIRED}
+ *   <li>modes: arrays and maps → {@code REPEATED}; everything else → {@code NULLABLE}, unless
+ *       {@link AvroSchemaOptions#isDeriveRequiredColumns} is set, and then a field that is not a
+ *       {@code ["null", T]} union → {@code REQUIRED}. A {@code JSON} column stays {@code NULLABLE}
+ *       either way, as does the synthesized map {@code key} column unless the option is set
  * </ul>
  *
  * <p>Rejected as configuration errors, because writing something plausible instead would be worse
@@ -171,7 +172,7 @@ public final class AvroToTableSchemaConverter {
                 applyMapEntry(builder, base, path, options, ancestors, matchedJsonPaths);
                 break;
             default:
-                builder.setMode(modeOf(nullable, options));
+                builder.setMode(modeOf(nullable, options, options.isJsonField(path)));
                 applyType(builder, base, path, options, ancestors, matchedJsonPaths);
                 break;
         }
@@ -187,12 +188,22 @@ public final class AvroToTableSchemaConverter {
      * come here at all — a BigQuery {@code REPEATED} column cannot be {@code NULLABLE}, so {@code
      * ARRAY} and {@code MAP} are {@code REPEATED} whatever the option says.
      *
+     * <p>A singular {@code JSON} column is never {@code REQUIRED}, matching {@link
+     * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoToTableSchemaConverter
+     * ProtoToTableSchemaConverter} — the two options share a name, so they must not diverge on
+     * which columns they constrain. That side needs the rule to avoid poisoning every record which
+     * omits the field; here it is a plainer matter of not making a column mandatory that BigQuery
+     * cannot relax afterwards, when an empty string is a row-level error in a {@code JSON} column
+     * either way.
+     *
      * @param nullable whether the Avro schema admits null for this field
      * @param options the schema mapping options
+     * @param jsonColumn whether this column is mapped to {@code JSON}
      * @return the BigQuery mode
      */
-    private static TableFieldSchema.Mode modeOf(boolean nullable, AvroSchemaOptions options) {
-        if (!options.isDeriveRequiredColumns() || nullable) {
+    private static TableFieldSchema.Mode modeOf(
+            boolean nullable, AvroSchemaOptions options, boolean jsonColumn) {
+        if (!options.isDeriveRequiredColumns() || nullable || jsonColumn) {
             return TableFieldSchema.Mode.NULLABLE;
         }
         return TableFieldSchema.Mode.REQUIRED;
@@ -238,9 +249,9 @@ public final class AvroToTableSchemaConverter {
                         TableFieldSchema.newBuilder()
                                 .setName("key")
                                 .setType(TableFieldSchema.Type.STRING)
-                                // An Avro map key is never a union, so it is never nullable of its
-                                // own accord — the option alone decides.
-                                .setMode(modeOf(false, options))
+                                // An Avro map key is never a union and never a JSON column, so it
+                                // is never nullable of its own accord — the option alone decides.
+                                .setMode(modeOf(false, options, false))
                                 .build())
                 .addFields(
                         convertValue(

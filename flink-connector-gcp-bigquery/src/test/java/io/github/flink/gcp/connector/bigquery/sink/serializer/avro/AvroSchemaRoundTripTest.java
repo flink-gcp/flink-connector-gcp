@@ -35,7 +35,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * type — every other mode is wrapped in {@code ["null", T]}. So the opt-in is what makes the round
  * trip an <em>identity</em> for a non-union field, and an identity is what catches drift. The
  * default's own shape is pinned separately by {@link
- * #byDefaultEveryNonRepeatedFieldStagesAsANullableUnion()}, so both directions are covered.
+ * #byDefaultEveryNonRepeatedFieldStagesAsANullableUnion()} — which is a weaker guard by nature,
+ * since a union round trip is not an identity to compare against; the values on that path are
+ * covered by {@code ProtoToAvroConverterTest.convertsNullableColumnsThroughTheUnionPath} instead.
  */
 class AvroSchemaRoundTripTest {
 

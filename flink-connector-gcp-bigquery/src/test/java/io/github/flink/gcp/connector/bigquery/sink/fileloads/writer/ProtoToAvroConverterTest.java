@@ -244,6 +244,63 @@ class ProtoToAvroConverterTest {
                 .hasMessageContaining("n");
     }
 
+    /**
+     * The union path, which is what every ordinary job now stages: with {@code NULLABLE} the
+     * default column mode on both serializers, a scalar's Avro schema is {@code ["null", T]} rather
+     * than a bare type, so the converter has to unwrap it before reading a logical type or
+     * descending into a struct. The rest of this class drives {@code REQUIRED} columns, i.e. the
+     * bare-type path.
+     *
+     * <p>A NUMERIC is the case that would fail loudest — {@code unwrap} feeding the decimal's
+     * logical type to a cast — and a present-but-default string is the case that would fail
+     * quietly, being indistinguishable from an absent one if the presence gate ever regressed.
+     */
+    @Test
+    void convertsNullableColumnsThroughTheUnionPath() throws Exception {
+        Setup setup =
+                new Setup(
+                        schemaOf(
+                                field(
+                                        "n",
+                                        TableFieldSchema.Type.NUMERIC,
+                                        TableFieldSchema.Mode.NULLABLE),
+                                field(
+                                        "s",
+                                        TableFieldSchema.Type.STRING,
+                                        TableFieldSchema.Mode.NULLABLE),
+                                TableFieldSchema.newBuilder()
+                                        .setName("st")
+                                        .setType(TableFieldSchema.Type.STRUCT)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE)
+                                        .addFields(
+                                                field(
+                                                        "inner",
+                                                        TableFieldSchema.Type.STRING,
+                                                        TableFieldSchema.Mode.NULLABLE))
+                                        .build()));
+        Descriptors.Descriptor structType = setup.field("st").getMessageType();
+        DynamicMessage row =
+                DynamicMessage.newBuilder(setup.descriptor)
+                        .setField(
+                                setup.field("n"),
+                                BigDecimalByteStringEncoder.encodeToNumericByteString(
+                                        new BigDecimal("1.500000000")))
+                        // Set, but to the type default: an explicit "" must not stage as Avro null.
+                        .setField(setup.field("s"), "")
+                        .setField(
+                                setup.field("st"),
+                                DynamicMessage.newBuilder(structType)
+                                        .setField(structType.findFieldByName("inner"), "deep")
+                                        .build())
+                        .build();
+
+        GenericRecord record = setup.converter.convert(row);
+
+        assertThat(record.get("n")).isInstanceOf(ByteBuffer.class);
+        assertThat(record.get("s")).isEqualTo("");
+        assertThat(((GenericRecord) record.get("st")).get("inner")).isEqualTo("deep");
+    }
+
     @Test
     void absentNullableFieldBecomesNull() throws Exception {
         Setup setup =

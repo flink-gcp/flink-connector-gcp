@@ -106,8 +106,10 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   other: an Avro serializer feeding FILE_LOADS goes Avro → `TableSchema` → Avro, so drift corrupts
   staged files instead of failing a build — but note the round-trip **identity** it pins holds only
   under `deriveRequiredColumns()`, since `REQUIRED` is the only mode `TableSchemaToAvroConverter` maps
-  back to a bare type; the default's `["null", T]` shape is pinned separately, so both directions are
-  covered. Decisions not to re-litigate: nullability is **`NULLABLE` by default with
+  back to a bare type. The default's `["null", T]` shape is pinned separately, but that half is a
+  weaker guard — there is no identity to compare against — so the *values* on the union path are
+  covered by `ProtoToAvroConverterTest` instead, which is where a nullable decimal or a nullable
+  struct would break. Decisions not to re-litigate: nullability is **`NULLABLE` by default with
   `AvroSchemaOptions.deriveRequiredColumns()` as the opt-in** — see the protobuf nullability entry
   below for the reasoning, which is shared and was settled in #145; it touches **schema derivation
   only**, leaves `REPEATED` alone (a BigQuery `REPEATED` column cannot be `NULLABLE`) and recurses

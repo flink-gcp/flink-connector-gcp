@@ -503,6 +503,56 @@ class AvroToTableSchemaConverterTest {
                 .hasMessageContaining("(at f)");
     }
 
+    /**
+     * A singular {@code JSON} column is never {@code REQUIRED}, matching the protobuf side. The two
+     * options share a name, so they must not diverge on which columns they constrain — and a JSON
+     * column is a poor thing to make mandatory, an empty string being a row-level error in one
+     * either way.
+     */
+    @Test
+    void deriveRequiredColumnsLeavesJsonColumnsNullable() {
+        TableSchema converted =
+                AvroToTableSchemaConverter.convert(
+                        record(
+                                "{\"name\":\"a\",\"type\":\"string\"},"
+                                        + "{\"name\":\"b\",\"type\":\"string\"}"),
+                        AvroSchemaOptions.builder()
+                                .jsonFieldPath("a")
+                                .deriveRequiredColumns()
+                                .build());
+
+        assertThat(converted.getFieldsList())
+                .extracting(
+                        TableFieldSchema::getName,
+                        TableFieldSchema::getType,
+                        TableFieldSchema::getMode)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(
+                                "a", TableFieldSchema.Type.JSON, TableFieldSchema.Mode.NULLABLE),
+                        // The identically shaped field beside it shows the option is otherwise on.
+                        org.assertj.core.groups.Tuple.tuple(
+                                "b", TableFieldSchema.Type.STRING, TableFieldSchema.Mode.REQUIRED));
+    }
+
+    /**
+     * A {@code REQUIRED} column inside a {@code NULLABLE} struct — the one opt-in shape that only
+     * arises when the outer record is a {@code ["null", record]} union, so the recursion has to
+     * keep deriving after relaxing the parent.
+     */
+    @Test
+    void deriveRequiredColumnsReachesInsideANullableStruct() {
+        TableSchema converted =
+                AvroToTableSchemaConverter.convert(
+                        recordOf(
+                                "[\"null\",{\"type\":\"record\",\"name\":\"Inner\","
+                                        + "\"fields\":[{\"name\":\"n\",\"type\":\"long\"}]}]"),
+                        DERIVE_REQUIRED);
+
+        assertThat(converted.getFields(0).getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(converted.getFields(0).getFields(0).getMode())
+                .isEqualTo(TableFieldSchema.Mode.REQUIRED);
+    }
+
     @Test
     void deriveRequiredColumnsReachesMapKeyAndValue() {
         TableSchema converted =

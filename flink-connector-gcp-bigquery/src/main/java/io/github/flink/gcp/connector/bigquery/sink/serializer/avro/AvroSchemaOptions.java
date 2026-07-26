@@ -40,7 +40,10 @@ import java.util.Set;
  *       ProtoSchemaOptions}).
  *   <li><b>Nullability.</b> Every non-repeated column is derived as {@code NULLABLE} by default.
  *       {@link Builder#deriveRequiredColumns()} reads the Avro schema instead and derives {@code
- *       REQUIRED} for any field that is not a {@code ["null", T]} union.
+ *       REQUIRED} for a field that is not a {@code ["null", T]} union — arrays and maps stay {@code
+ *       REPEATED}, a {@code JSON} column stays {@code NULLABLE}, and the synthesized map {@code
+ *       key} column, which corresponds to no Avro field at all, becomes {@code REQUIRED} with the
+ *       rest.
  * </ul>
  *
  * <p>Two reasons {@code NULLABLE} is the default. {@code REQUIRED} is the mode BigQuery cannot walk
@@ -131,9 +134,9 @@ public final class AvroSchemaOptions implements Serializable {
          *
          * <p>Two consequences to weigh. A record that <em>omits</em> a field the Avro schema
          * declares mandatory becomes a row-level failure routed to the configured {@code
-         * FailedRowHandler}, where by default the column is simply left unset. And BigQuery cannot
-         * add a {@code REQUIRED} column to an existing table, so a column derived this way is only
-         * ever created together with the table.
+         * FailedRowHandler}; without this option the column is simply left unset instead. And
+         * BigQuery cannot add a {@code REQUIRED} column to an existing table, so a column derived
+         * this way is only ever created together with the table.
          *
          * @return this builder
          */
