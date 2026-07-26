@@ -115,7 +115,7 @@ public final class ProtoToTableSchemaConverter {
         unmatched.removeAll(matchedJsonPaths);
         Preconditions.checkArgument(
                 unmatched.isEmpty(),
-                "JSON field paths matching no message field of %s: %s",
+                "JSON field paths matching no field of %s: %s",
                 descriptor.getFullName(),
                 unmatched);
         return builder.build();

@@ -121,7 +121,7 @@ options against the descriptor pool, not even for a declared dependency). An exi
 extension number can therefore be adopted as-is: no change to the protobuf sources, and no
 annotations proto to publish or register.
 
-Two consequences worth knowing:
+Three consequences worth knowing:
 
 - **A field option number that matches nothing is not an error**, unlike a path — a message
   legitimately need not have JSON columns, and the same configuration is meant to serve many message
@@ -132,6 +132,12 @@ Two consequences worth knowing:
   malformed value would defeat the point of a passthrough, so an invalid JSON string is rejected by
   BigQuery as a row-level error and routed through the configured `FailedRowHandler`
   (see [Error handling](#error-handling)).
+- **An unset plain proto3 string leaves the column NULL**, rather than writing `""`. A plain proto3
+  scalar has no presence, so an unset value reaches the sink as the empty string — which is not
+  valid JSON, and would fail every record that legitimately omits the field. This applies only to
+  fields *without* presence: where the proto can say "unset" (`optional string`, or proto2), an
+  explicit `""` is your own statement and is passed through as-is. Repeated elements are likewise
+  explicit and passed through.
 
 Marking a field that is neither a message nor a string — including a proto map, whose BigQuery shape
 is `REPEATED STRUCT<key, value>` — is rejected when the schema is derived, through either mechanism.

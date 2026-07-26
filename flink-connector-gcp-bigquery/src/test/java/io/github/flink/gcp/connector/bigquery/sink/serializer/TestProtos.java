@@ -38,6 +38,16 @@ final class TestProtos {
     /** A string field option, used to check that a non-bool option at the number is rejected. */
     static final int NON_BOOL_OPTION_NUMBER = 50002;
 
+    /**
+     * An int64 field option. Unlike a string option it is varint-encoded, so it is
+     * indistinguishable from a bool by wire type alone — which is the only signal available once
+     * the option arrives as an unknown field.
+     */
+    static final int NON_BOOL_VARINT_OPTION_NUMBER = 50003;
+
+    /** A repeated bool field option: the right wire type, the wrong arity. */
+    static final int REPEATED_BOOL_OPTION_NUMBER = 50004;
+
     private static final String ANNOTATIONS_PROTO = "annot.proto";
 
     private TestProtos() {}
@@ -343,6 +353,32 @@ final class TestProtos {
                                                         .TYPE_STRING),
                                         stringOption(NON_BOOL_OPTION_NUMBER, "not-a-bool")))
                         .addField(message("a_nested", 8, ".annotated.AnnotatedNested", false))
+                        .addField(
+                                withOptions(
+                                        scalar(
+                                                "a_leveled",
+                                                9,
+                                                DescriptorProtos.FieldDescriptorProto.Type
+                                                        .TYPE_STRING),
+                                        longOption(NON_BOOL_VARINT_OPTION_NUMBER, 7L)))
+                        .addField(
+                                withOptions(
+                                        scalar(
+                                                "a_flagged",
+                                                10,
+                                                DescriptorProtos.FieldDescriptorProto.Type
+                                                        .TYPE_STRING),
+                                        repeatedBoolOption(
+                                                REPEATED_BOOL_OPTION_NUMBER, false, true)))
+                        .addField(
+                                withOptions(
+                                        repeated(
+                                                message(
+                                                        "a_rep_message",
+                                                        11,
+                                                        ".annotated.APayload",
+                                                        true)),
+                                        boolOption(JSON_OPTION_NUMBER, true)))
                         .build();
 
         DescriptorProtos.DescriptorProto badType =
@@ -404,6 +440,17 @@ final class TestProtos {
                                 "label",
                                 NON_BOOL_OPTION_NUMBER,
                                 DescriptorProtos.FieldDescriptorProto.Type.TYPE_STRING))
+                .addExtension(
+                        fieldOption(
+                                "level",
+                                NON_BOOL_VARINT_OPTION_NUMBER,
+                                DescriptorProtos.FieldDescriptorProto.Type.TYPE_INT64))
+                .addExtension(
+                        repeated(
+                                fieldOption(
+                                        "flags",
+                                        REPEATED_BOOL_OPTION_NUMBER,
+                                        DescriptorProtos.FieldDescriptorProto.Type.TYPE_BOOL)))
                 .build();
     }
 
@@ -428,6 +475,21 @@ final class TestProtos {
         return DescriptorProtos.FieldOptions.newBuilder()
                 .setField(extension(number), value)
                 .build();
+    }
+
+    private static DescriptorProtos.FieldOptions longOption(int number, long value) {
+        return DescriptorProtos.FieldOptions.newBuilder()
+                .setField(extension(number), value)
+                .build();
+    }
+
+    private static DescriptorProtos.FieldOptions repeatedBoolOption(int number, boolean... values) {
+        Descriptors.FieldDescriptor extension = extension(number);
+        DescriptorProtos.FieldOptions.Builder builder = DescriptorProtos.FieldOptions.newBuilder();
+        for (boolean value : values) {
+            builder.addRepeatedField(extension, value);
+        }
+        return builder.build();
     }
 
     private static Descriptors.FieldDescriptor extension(int number) {

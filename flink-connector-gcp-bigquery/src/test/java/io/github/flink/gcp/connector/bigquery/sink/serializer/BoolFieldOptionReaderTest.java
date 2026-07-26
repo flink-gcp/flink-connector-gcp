@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.ArrayList;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -35,18 +37,23 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class BoolFieldOptionReaderTest {
 
-    @Test
-    void theTwoDescriptorFormsReallyDifferOnTheWire() {
-        // Guards the parameterisation below: if both fixtures ever ended up in the same form, every
-        // "unknown fields" case would silently be testing the known-extension path instead.
-        Descriptors.FieldDescriptor known = field(false, "a_string");
-        Descriptors.FieldDescriptor unknown = field(true, "a_string");
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(
+            strings = {"a_string", "a_message", "a_false", "a_other", "a_labeled", "a_leveled"})
+    void theTwoDescriptorFormsReallyDifferOnTheWire(String name) {
+        // Guards every parameterised case below: if a fixture field ever ended up in the same form
+        // in both descriptors, its "unknown fields" case would silently test the other path. Runs
+        // over each annotated field, not just one, because the option types differ between them and
+        // it is the odd ones out — a_labeled, a_leveled — that decide the rejection cases.
+        Descriptors.FieldDescriptor known = field(false, name);
+        Descriptors.FieldDescriptor unknown = field(true, name);
 
-        assertThat(known.getOptions().getAllFields()).isNotEmpty();
+        assertThat(known.getOptions().getAllFields().keySet())
+                .extracting(Descriptors.FieldDescriptor::getNumber)
+                .isEqualTo(
+                        new ArrayList<>(unknown.getOptions().getUnknownFields().asMap().keySet()));
         assertThat(known.getOptions().getUnknownFields().asMap()).isEmpty();
         assertThat(unknown.getOptions().getAllFields()).isEmpty();
-        assertThat(unknown.getOptions().getUnknownFields().asMap())
-                .containsKey(TestProtos.JSON_OPTION_NUMBER);
     }
 
     @ParameterizedTest(name = "throughBytes={0}")
@@ -103,6 +110,39 @@ class BoolFieldOptionReaderTest {
                 .hasMessageContaining("a_labeled");
     }
 
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void rejectsANonBoolOptionThatIsVarintEncoded(boolean throughBytes) {
+        // The string option above is rejected in the unknown-field form by accident of its wire
+        // type. An int64 option shares the bool's encoding, so nothing but the value range
+        // separates them — an existing annotation number holding a severity or a version would
+        // otherwise turn every annotated field into a JSON column, silently and durably.
+        Descriptors.FieldDescriptor field = field(throughBytes, "a_leveled");
+
+        assertThatThrownBy(
+                        () ->
+                                BoolFieldOptionReader.isSetToTrue(
+                                        field, TestProtos.NON_BOOL_VARINT_OPTION_NUMBER))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(String.valueOf(TestProtos.NON_BOOL_VARINT_OPTION_NUMBER))
+                .hasMessageContaining("a_leveled");
+    }
+
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void rejectsARepeatedBoolOption(boolean throughBytes) {
+        // Right wire type, wrong arity — and the fixture's last element is true, so reading it as
+        // "last one wins" would report a JSON column.
+        Descriptors.FieldDescriptor field = field(throughBytes, "a_flagged");
+
+        assertThatThrownBy(
+                        () ->
+                                BoolFieldOptionReader.isSetToTrue(
+                                        field, TestProtos.REPEATED_BOOL_OPTION_NUMBER))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("a_flagged");
+    }
+
     @Test
     void findsExtensionsOnDescriptorsFromGeneratedCode() {
         // The synthetic fixtures above build their extension descriptors at runtime; this pins the
@@ -112,7 +152,8 @@ class BoolFieldOptionReaderTest {
                 AppendRowsRequest.getDescriptor().findFieldByName("write_stream");
         int fieldBehavior = FieldBehaviorProto.fieldBehavior.getNumber();
 
-        assertThat(writeStream.getOptions().getUnknownFields().asMap()).isEmpty();
+        assertThat(writeStream.getOptions().getAllFields().keySet())
+                .anyMatch(option -> option.getNumber() == fieldBehavior);
         // google.api.field_behavior is a repeated enum, so it is found by number and then rejected
         // for its type rather than going unnoticed.
         assertThatThrownBy(() -> BoolFieldOptionReader.isSetToTrue(writeStream, fieldBehavior))

@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import com.google.protobuf.Descriptors;
+
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
@@ -100,7 +102,7 @@ public final class ProtoSchemaOptions implements Serializable {
      * @param path the dotted path of the field from the root message
      * @return whether the field is written as JSON
      */
-    public boolean isJsonField(com.google.protobuf.Descriptors.FieldDescriptor field, String path) {
+    public boolean isJsonField(Descriptors.FieldDescriptor field, String path) {
         return jsonFieldPaths.contains(path)
                 || (jsonFieldOptionNumber != NO_FIELD_OPTION
                         && BoolFieldOptionReader.isSetToTrue(field, jsonFieldOptionNumber));
@@ -146,17 +148,17 @@ public final class ProtoSchemaOptions implements Serializable {
          * column — wherever it appears in the message tree, at any nesting depth.
          *
          * <p>Only the extension number is needed: the option is found whether the descriptor knows
-         * it as a registered extension or carries it as an unknown field, which is what descriptors
-         * built from a serialized {@code FileDescriptorSet} do. An existing private extension
-         * number can therefore be adopted as-is, with no change to the protobuf sources and no
-         * annotations proto to publish.
+         * it as a registered extension or carries it as an unknown field. An existing private
+         * extension number can therefore be adopted as-is, with no change to the protobuf sources.
          *
          * <p>Unlike {@link #jsonFieldPath}, a number that matches no field is <em>not</em> an error
-         * — a message legitimately need not have JSON columns — so a mistyped number yields {@code
-         * STRING} or {@code STRUCT} columns instead of failing. Check the outcome with {@code
+         * — one configuration is meant to serve every message type a job writes, and a message
+         * legitimately need not have JSON columns — so a mistyped number yields {@code STRING} or
+         * {@code STRUCT} columns instead of failing. Check the outcome with {@code
          * BigQueryProtoSerializer#getTableSchema}.
          *
-         * <p>Calling this more than once replaces the previous number rather than adding to it.
+         * <p>A job annotates its fields with one vocabulary, so this is a single number: calling
+         * this more than once replaces the previous one rather than adding to it.
          *
          * @param extensionNumber the extension number of the option within {@code
          *     google.protobuf.FieldOptions}
@@ -164,17 +166,14 @@ public final class ProtoSchemaOptions implements Serializable {
          */
         public Builder jsonFieldOptionNumber(int extensionNumber) {
             Preconditions.checkArgument(
-                    extensionNumber >= MIN_FIELD_NUMBER && extensionNumber <= MAX_FIELD_NUMBER,
-                    "jsonFieldOptionNumber must be a valid protobuf field number in [%s, %s] but"
-                            + " was %s",
+                    extensionNumber >= MIN_FIELD_NUMBER
+                            && extensionNumber <= MAX_FIELD_NUMBER
+                            && (extensionNumber < FIRST_RESERVED_FIELD_NUMBER
+                                    || extensionNumber > LAST_RESERVED_FIELD_NUMBER),
+                    "jsonFieldOptionNumber must be a protobuf field number in [%s, %s] and outside"
+                            + " protobuf's reserved range [%s, %s], but was %s",
                     MIN_FIELD_NUMBER,
                     MAX_FIELD_NUMBER,
-                    extensionNumber);
-            Preconditions.checkArgument(
-                    extensionNumber < FIRST_RESERVED_FIELD_NUMBER
-                            || extensionNumber > LAST_RESERVED_FIELD_NUMBER,
-                    "jsonFieldOptionNumber must not be in protobuf's reserved range [%s, %s] but"
-                            + " was %s",
                     FIRST_RESERVED_FIELD_NUMBER,
                     LAST_RESERVED_FIELD_NUMBER,
                     extensionNumber);

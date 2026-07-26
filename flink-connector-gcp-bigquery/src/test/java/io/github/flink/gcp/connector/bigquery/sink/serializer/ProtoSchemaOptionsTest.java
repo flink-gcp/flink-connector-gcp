@@ -51,7 +51,8 @@ class ProtoSchemaOptionsTest {
         assertThatThrownBy(
                         () -> ProtoSchemaOptions.builder().jsonFieldOptionNumber(extensionNumber))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("jsonFieldOptionNumber");
+                .hasMessageContaining("jsonFieldOptionNumber")
+                .hasMessageContaining(String.valueOf(extensionNumber));
     }
 
     @ParameterizedTest

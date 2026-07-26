@@ -110,7 +110,9 @@ class ProtoToTableSchemaConverterTest {
         ProtoSchemaOptions options = ProtoSchemaOptions.builder().jsonFieldPath("f_string").build();
         TableSchema schema = ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options);
 
-        assertThat(byName(schema).get("f_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        TableFieldSchema json = byName(schema).get("f_string");
+        assertThat(json.getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(json.getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
     }
 
     @Test
@@ -189,16 +191,23 @@ class ProtoToTableSchemaConverterTest {
         Map<String, TableFieldSchema> fields = byName(schema);
 
         assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_string").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
         assertThat(fields.get("a_message").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("a_message").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
         assertThat(fields.get("a_message").getFieldsList()).isEmpty();
 
         assertThat(fields.get("a_plain").getType()).isEqualTo(TableFieldSchema.Type.STRING);
         assertThat(fields.get("a_false").getType()).isEqualTo(TableFieldSchema.Type.STRING);
         assertThat(fields.get("a_other").getType()).isEqualTo(TableFieldSchema.Type.STRING);
 
-        TableFieldSchema repeated = fields.get("a_rep_string");
-        assertThat(repeated.getType()).isEqualTo(TableFieldSchema.Type.JSON);
-        assertThat(repeated.getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+        for (String repeated : new String[] {"a_rep_string", "a_rep_message"}) {
+            assertThat(fields.get(repeated).getType())
+                    .as(repeated)
+                    .isEqualTo(TableFieldSchema.Type.JSON);
+            assertThat(fields.get(repeated).getMode())
+                    .as(repeated)
+                    .isEqualTo(TableFieldSchema.Mode.REPEATED);
+        }
     }
 
     @ParameterizedTest(name = "throughBytes={0}")
@@ -226,6 +235,9 @@ class ProtoToTableSchemaConverterTest {
                 ProtoSchemaOptions.builder()
                         .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
                         .jsonFieldPath("a_plain")
+                        // Also naming a field the option already marks must not double-count it in
+                        // the matched-path bookkeeping, nor make it any less of a JSON column.
+                        .jsonFieldPath("a_string")
                         .build();
         Map<String, TableFieldSchema> fields =
                 byName(ProtoToTableSchemaConverter.convert(TestProtos.annotated(), options));
@@ -260,7 +272,10 @@ class ProtoToTableSchemaConverterTest {
                                 ProtoToTableSchemaConverter.convert(
                                         TestProtos.annotatedBadType(), options))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("b_int");
+                .hasMessageContaining("b_int")
+                // Not just "it threw": the message must name why, or a change reporting every
+                // rejection as a map field would go unnoticed.
+                .hasMessageContaining("LONG");
     }
 
     private static Descriptors.Descriptor annotated(boolean throughBytes) {

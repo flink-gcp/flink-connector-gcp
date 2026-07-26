@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.DescriptorProtos;
@@ -44,6 +45,7 @@ import java.util.Map;
  *       as bytes this is the normal case rather than a fallback.
  * </ul>
  */
+@Internal
 final class BoolFieldOptionReader {
 
     private BoolFieldOptionReader() {}
@@ -58,7 +60,8 @@ final class BoolFieldOptionReader {
      *     google.protobuf.FieldOptions}
      * @return whether the option is present and true
      * @throws IllegalArgumentException if an option with that number is present but is not a
-     *     singular boolean
+     *     singular boolean. Where the option is an unknown field only its encoding is available, so
+     *     an integer option holding 0 or 1 is indistinguishable from a bool and is accepted.
      */
     static boolean isSetToTrue(Descriptors.FieldDescriptor field, int extensionNumber) {
         DescriptorProtos.FieldOptions options = field.getOptions();
@@ -87,16 +90,21 @@ final class BoolFieldOptionReader {
             return false;
         }
         List<Long> varints = unknownFields.getField(extensionNumber).getVarintList();
+        // Here the encoding is all there is to go on, so it has to carry the type check that the
+        // known-extension path gets from the descriptor — otherwise the same .proto would be
+        // accepted or rejected depending only on how the user obtained the descriptor. A singular
+        // bool is exactly one varint of 0 or 1; a repeated option, an enum, an integer outside
+        // {0, 1}, and anything length-delimited or fixed-width are all a *different* option at this
+        // number and must not be read as true. An integer option holding 0 or 1 stays
+        // indistinguishable from a bool, which is irreducible without the declared type.
         Preconditions.checkArgument(
-                !varints.isEmpty(),
-                "Field option number %s on field %s is not encoded as a varint and therefore not a"
-                        + " bool option; a JSON field option must be declared as"
+                varints.size() == 1 && (varints.get(0) == 0L || varints.get(0) == 1L),
+                "Field option number %s on field %s is not encoded as a singular bool and so is a"
+                        + " different option; a JSON field option must be declared as"
                         + " 'optional bool ... = %s'",
                 extensionNumber,
                 field.getFullName(),
                 extensionNumber);
-        // Last one wins, mirroring protobuf's own handling of a repeated occurrence of a singular
-        // scalar on the wire.
-        return varints.get(varints.size() - 1) != 0L;
+        return varints.get(0) != 0L;
     }
 }

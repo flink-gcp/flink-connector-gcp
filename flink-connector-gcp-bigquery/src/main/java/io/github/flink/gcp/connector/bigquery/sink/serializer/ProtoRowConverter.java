@@ -48,8 +48,9 @@ import java.util.List;
  * become their names, JSON-mapped message fields are printed as canonical protobuf JSON while
  * JSON-mapped string fields are written through verbatim (a {@code JSON} column is carried as a
  * string, and the value is taken to be JSON text already — the connector does not validate it;
- * BigQuery rejects malformed JSON as a row-level error), and nested/repeated fields (including
- * maps) are converted recursively.
+ * BigQuery rejects malformed JSON as a row-level error, with the sole exception of the empty string
+ * on a field without presence, which is left unset rather than written), and nested/repeated fields
+ * (including maps) are converted recursively.
  *
  * <p>Instances hold non-serializable descriptors and must be re-created after deserialization (see
  * {@link ProtoMessageSerializer}).
@@ -100,6 +101,7 @@ public final class ProtoRowConverter {
         ENUM_NAME,
         TIMESTAMP_MICROS,
         JSON,
+        JSON_STRING,
         STRUCT
     }
 
@@ -132,13 +134,16 @@ public final class ProtoRowConverter {
             Descriptors.FieldDescriptor targetField,
             ProtoSchemaOptions options,
             String path) {
-        // Only message fields need a conversion of their own: a JSON-mapped string already holds
-        // JSON text and its target field is a proto string, so it falls through to Kind.IDENTITY
-        // below. Which fields may be JSON-mapped at all is validated once, in
-        // ProtoToTableSchemaConverter, which always runs first to produce the target descriptor.
-        if (options.isJsonField(sourceField, path)
-                && sourceField.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE) {
-            return new FieldPlan(sourceField, targetField, Kind.JSON, path, null, null, null);
+        // A JSON-mapped string already holds JSON text and its target field is a proto string, so
+        // it needs no value conversion — only the empty-value handling that JSON_STRING carries.
+        // Which fields may be JSON-mapped at all is validated once, in ProtoToTableSchemaConverter,
+        // which always runs first to produce the target descriptor.
+        if (options.isJsonField(sourceField, path)) {
+            Kind kind =
+                    sourceField.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE
+                            ? Kind.JSON
+                            : Kind.JSON_STRING;
+            return new FieldPlan(sourceField, targetField, kind, path, null, null, null);
         }
         switch (sourceField.getJavaType()) {
             case INT:
@@ -239,9 +244,11 @@ public final class ProtoRowConverter {
                     if (field.sourceField.hasPresence() && !source.hasField(field.sourceField)) {
                         continue;
                     }
-                    builder.setField(
-                            field.targetField,
-                            field.convertValue(source.getField(field.sourceField)));
+                    Object value = source.getField(field.sourceField);
+                    if (field.omitsEmptyJsonString(value)) {
+                        continue;
+                    }
+                    builder.setField(field.targetField, field.convertValue(value));
                 }
             }
             return builder.build();
@@ -274,9 +281,30 @@ public final class ProtoRowConverter {
             this.timestampNanos = timestampNanos;
         }
 
+        /**
+         * Returns whether this singular value must be left unset rather than written.
+         *
+         * <p>A plain proto3 scalar has no presence, so an unset JSON-mapped string arrives here as
+         * {@code ""} — and the BigQuery row descriptor's JSON field <em>does</em> have presence, so
+         * writing it would put an explicit empty string in the column. The empty string is not
+         * valid JSON, so that could only ever come back as a row-level error, which for a field
+         * most records legitimately leave unset would mean failing on most records. Leaving the
+         * column unset (NULL) is the only outcome that can succeed.
+         *
+         * <p>Deliberately limited to fields without presence: where the source can say "unset", an
+         * explicit {@code ""} is the user's own statement and is passed through unchanged. Repeated
+         * elements are explicit for the same reason.
+         */
+        boolean omitsEmptyJsonString(Object value) {
+            return kind == Kind.JSON_STRING
+                    && !sourceField.hasPresence()
+                    && ((String) value).isEmpty();
+        }
+
         Object convertValue(Object value) throws IOException {
             switch (kind) {
                 case IDENTITY:
+                case JSON_STRING:
                     return value;
                 case INT_TO_LONG:
                     return ((Integer) value).longValue();
