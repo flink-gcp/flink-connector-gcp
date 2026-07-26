@@ -210,7 +210,9 @@ class PubSubRecordEmitterTest {
     private static final class RewrappingSchema implements PubSubDeserializationSchema<String> {
 
         @Override
-        public void deserialize(PubsubMessage message, Collector<String> out) throws IOException {
+        public void deserialize(
+                PubsubMessage message, SubscriptionDestination subscription, Collector<String> out)
+                throws IOException {
             try {
                 out.collect("record");
             } catch (Throwable t) {
@@ -229,7 +231,9 @@ class PubSubRecordEmitterTest {
             implements PubSubDeserializationSchema<String> {
 
         @Override
-        public void deserialize(PubsubMessage message, Collector<String> out) throws IOException {
+        public void deserialize(
+                PubsubMessage message, SubscriptionDestination subscription, Collector<String> out)
+                throws IOException {
             throw new IOException("not my format");
         }
 
@@ -244,7 +248,9 @@ class PubSubRecordEmitterTest {
             implements PubSubDeserializationSchema<String> {
 
         @Override
-        public void deserialize(PubsubMessage message, Collector<String> out) throws IOException {
+        public void deserialize(
+                PubsubMessage message, SubscriptionDestination subscription, Collector<String> out)
+                throws IOException {
             out.collect("first");
             throw new IOException("truncated");
         }
@@ -283,7 +289,10 @@ class PubSubRecordEmitterTest {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public void deserialize(PubsubMessage message, Collector<String> out) {
+        public void deserialize(
+                PubsubMessage message,
+                SubscriptionDestination subscription,
+                Collector<String> out) {
             for (String part : message.getData().toString(StandardCharsets.UTF_8).split(",")) {
                 out.collect(part);
             }
@@ -301,7 +310,10 @@ class PubSubRecordEmitterTest {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public void deserialize(PubsubMessage message, Collector<String> out) {}
+        public void deserialize(
+                PubsubMessage message,
+                SubscriptionDestination subscription,
+                Collector<String> out) {}
 
         @Override
         public TypeInformation<String> getProducedType() {

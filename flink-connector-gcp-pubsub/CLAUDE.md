@@ -115,6 +115,25 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   becomes a value** — `PubSubDynamicSink` takes resolved constructor arguments and has no
   configuration vocabulary at all, which is why `PublisherOptionsMapper` is `@Internal public`
   rather than package-private.
+  **Source specifics** (#136): the SPI was widened to
+  `deserialize(PubsubMessage, SubscriptionDestination, Collector<T>)` rather than dropping the
+  `subscription` metadata column — nothing is published, so a signature change is the cheap option
+  (see the repo-level stance), and `SubscriptionSplit` was already in `emitRecord`, so the call site
+  was one line. That column carries the **resource name**
+  `projects/<project>/subscriptions/<sub>`, not the bare id: it is the only form Pub/Sub's API
+  speaks in (`Subscription.name`, every RPC's `subscription` field), it is AIP-122's canonical
+  relative resource name, and Pub/Sub publishes no URL or self-link — the full resource name and the
+  resource URI are string operations on it. A two-column short-id-plus-resource-name design was
+  built and then dropped as redundant. Consequence to document, not to fix: the column does **not**
+  equal the `subscription` option, which is a bare id.
+  Format readable metadata **is** forwarded (unlike the sink's writable metadata, which no format
+  ships), listed before the connector's own so the produced row stays a plain concatenation; a
+  format declaring one of the connector's keys is rejected. `getChangelogMode()` delegates to the
+  format, so a changelog format over Pub/Sub works.
+  **`DecodingFormat.applyReadableMetadata` throws by default** and no built-in format overrides it,
+  so it must only be called when the planner actually selected one of the format's keys — calling it
+  unconditionally breaks every table with any metadata column. Caught by the acceptance IT, never by
+  a unit test.
   **Per-key ordering is not reachable from SQL** (#143): the guarantee is per writer subtask, the
   DataStream answer is a `keyBy` before the sink, and SQL has no equivalent — `DISTRIBUTED BY` needs
   `SupportsBucketing`, which this sink does not implement. `sink.parallelism = 1` is the only correct

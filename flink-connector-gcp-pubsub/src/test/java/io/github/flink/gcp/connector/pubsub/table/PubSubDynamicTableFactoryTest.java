@@ -22,10 +22,15 @@ import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
+import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 
 import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
+import io.github.flink.gcp.connector.pubsub.table.source.PubSubDynamicSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -178,6 +183,102 @@ class PubSubDynamicTableFactoryTest {
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("sink.create-disposition");
+    }
+
+    // ------------------------------------------------------------------------
+    //  Source
+    // ------------------------------------------------------------------------
+
+    private static Map<String, String> minimalSourceOptions() {
+        Map<String, String> options = new HashMap<>();
+        options.put("connector", PubSubDynamicTableFactory.IDENTIFIER);
+        options.put("project", "my-project");
+        options.put("subscription", "my-sub");
+        options.put("format", "json");
+        return options;
+    }
+
+    @Test
+    void buildsASourceFromTheMinimalOptionSet() {
+        DynamicTableSource source = FactoryMocks.createTableSource(SCHEMA, minimalSourceOptions());
+
+        assertThat(source).isInstanceOf(PubSubDynamicSource.class);
+        assertThat(source.asSummaryString()).isEqualTo("Pub/Sub table source");
+    }
+
+    @Test
+    void rejectsASourceWithoutASubscription() {
+        Map<String, String> options = minimalSourceOptions();
+        options.remove("subscription");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'subscription' is required to read from a 'pubsub' table.");
+    }
+
+    @Test
+    void acceptsSeveralSubscriptions() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("subscription", "sub-a;sub-b");
+
+        assertThat(FactoryMocks.createTableSource(SCHEMA, options))
+                .isNotEqualTo(FactoryMocks.createTableSource(SCHEMA, minimalSourceOptions()));
+    }
+
+    @Test
+    void letsTheSourceBuilderRejectAnImpossibleCombination() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.ordering-mode", "per-key");
+        options.put("scan.parallel-pull-count", "4");
+
+        // Not re-implemented in the factory: the builder already refuses this with a message that
+        // names the setter, and duplicating it here would be a second place to keep correct.
+        assertThatThrownBy(
+                        () ->
+                                ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
+                                        .getScanRuntimeProvider(
+                                                ScanRuntimeProviderContext.INSTANCE))
+                .hasStackTraceContaining("orderingMode(PER_KEY)");
+    }
+
+    @Test
+    void rejectsADuplicatedSubscription() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("subscription", "sub-a;sub-a");
+
+        assertThatThrownBy(
+                        () ->
+                                ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
+                                        .getScanRuntimeProvider(
+                                                ScanRuntimeProviderContext.INSTANCE))
+                .hasStackTraceContaining("sub-a");
+    }
+
+    @Test
+    void oneOptionMapServesBothDirections() {
+        Map<String, String> options = minimalSinkOptions();
+        options.putAll(minimalSourceOptions());
+
+        // The common shape: one CREATE TABLE both INSERTed into and SELECTed from. Neither
+        // direction's options may be rejected as unknown by the other.
+        assertThat(FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(PubSubDynamicSink.class);
+        assertThat(FactoryMocks.createTableSource(SCHEMA, options))
+                .isInstanceOf(PubSubDynamicSource.class);
+    }
+
+    @Test
+    void passesTheConfiguredSourceParallelismToTheProvider() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.parallelism", "5");
+
+        ScanTableSource.ScanRuntimeProvider provider =
+                ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
+                        .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+
+        assertThat(provider).isInstanceOf(SourceProvider.class);
+        assertThat(((SourceProvider) provider).getParallelism()).contains(5);
     }
 
     @Test

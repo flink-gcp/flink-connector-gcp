@@ -81,9 +81,10 @@ class PubSubConnectorOptionsTest {
         PubSubDynamicTableFactory factory = new PubSubDynamicTableFactory();
         Set<String> declared =
                 declaredOptions().stream().map(ConfigOption::key).collect(Collectors.toSet());
-        // The two Flink-owned options the factory borrows rather than declaring itself.
+        // The Flink-owned options the factory borrows rather than declaring itself.
         declared.add("format");
         declared.add("sink.parallelism");
+        declared.add("scan.parallelism");
 
         Set<String> fromFactory = new HashSet<>();
         factory.requiredOptions().forEach(o -> fromFactory.add(o.key()));
