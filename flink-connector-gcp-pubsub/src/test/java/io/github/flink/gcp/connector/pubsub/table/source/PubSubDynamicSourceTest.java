@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.pubsub.table.source;
 
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -343,7 +345,15 @@ class PubSubDynamicSourceTest {
 
         assertThat(provider).isInstanceOf(SourceProvider.class);
         assertThat(((SourceProvider) provider).getParallelism()).contains(4);
-        assertThat(((SourceProvider) provider).createSource()).isNotNull();
+
+        // The source reports the *produced* type, physical columns plus the metadata that was
+        // applied — not the physical type. The planner supplies its own type info on this path, so
+        // nothing else here would notice the difference; the DataStream path reads exactly this.
+        Source<RowData, ?, ?> built = ((SourceProvider) provider).createSource();
+        assertThat(((ResultTypeQueryable<?>) built).getProducedType())
+                .isEqualTo(
+                        ScanRuntimeProviderContext.INSTANCE.createTypeInformation(
+                                PRODUCED_DATA_TYPE));
     }
 
     @Test
