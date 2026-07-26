@@ -58,6 +58,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   licensing obligation, so it stays in the repository
 - Implementation status lives in the README table only; the docs page links to it instead of
   repeating it. Keep the two from drifting by adding status nowhere else
+- **Issue references in module READMEs and docs pages are explicit links**, never bare `#N`.
+  GitHub autolinks `#N` only in issue/PR *comments*, not in repository markdown files, and Hugo
+  never does — so a bare `#N` is dead text in both places a reader actually sees. READMEs use the
+  full URL; docs pages use `[#N]({{< param BookRepo >}}/issues/N)`. Cross-repository references
+  keep their `owner/repo#N` text and point at *that* repository — `goccy/bigquery-emulator#342`
+  is the one in the tree, and a blind `#N` rewrite would have pointed it here. `CLAUDE.md` is
+  deliberately exempt: it is read by Claude, not rendered for users
 - Pages are plain markdown with front matter (`title`, `type: docs`, `weight` — spaced by 10 so a
   new connector slots in without renumbering) and the plain Apache-2.0 header as an HTML comment.
   **No Flink shortcodes and no vendored Flink layout code** — `artifact`/`tabs`/`hint` do not

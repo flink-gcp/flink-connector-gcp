@@ -6,9 +6,9 @@ One builder dispatches to a write-method implementation at job-graph constructio
 
 | Write method | Status |
 |---|---|
-| `STORAGE_API_AT_LEAST_ONCE` | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: #15) |
-| `STORAGE_API_EXACTLY_ONCE` | Implemented (#30) |
-| `FILE_LOADS` | Implemented (#14 batch, #69 streaming) |
+| `STORAGE_API_AT_LEAST_ONCE` | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: [#15](https://github.com/laughingman7743/flink-connector-gcp/issues/15)) |
+| `STORAGE_API_EXACTLY_ONCE` | Implemented ([#30](https://github.com/laughingman7743/flink-connector-gcp/issues/30)) |
+| `FILE_LOADS` | Implemented ([#14](https://github.com/laughingman7743/flink-connector-gcp/issues/14) batch, [#69](https://github.com/laughingman7743/flink-connector-gcp/issues/69) streaming) |
 
 ```java
 Sink<MyEvent> sink =
@@ -43,7 +43,7 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   `StorageApiFlushAndFinalizeDoFn` flush semantics (`ALREADY_EXISTS` on `FlushRows` means the
   offset was already flushed and is success — the idempotent-re-commit foundation)
 - [Apache Flink](https://github.com/apache/flink) sink runtime — design reference for the
-  committer-based load stage (#69): the SinkV2 committer/committable machinery
+  committer-based load stage ([#69](https://github.com/laughingman7743/flink-connector-gcp/issues/69)): the SinkV2 committer/committable machinery
   (`CommitterOperator`, `GlobalCommitterOperator`) and the `FileSink` pre-commit-topology
   precedent were studied to establish that streaming commits must run in the committer (records
   emitted to a post-commit topology during job shutdown are not guaranteed to be processed); the
@@ -73,6 +73,6 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   the update-on-error flow with a bounded jittered wait for schema propagation, and the
   coordinator-free concurrent-update retry pattern (`SchemaUnifier`,
   `BigQueryDefaultStreamWriter`'s reconciliation and `BigQueryTableAdmin`'s lost-race handling
-  are independent reimplementations; the full design research is recorded on issue #12)
+  are independent reimplementations; the full design research is recorded on issue [#12](https://github.com/laughingman7743/flink-connector-gcp/issues/12))
 
 No source code has been copied into this module so far.
