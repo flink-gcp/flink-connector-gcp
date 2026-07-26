@@ -22,6 +22,7 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -226,6 +227,78 @@ class ProtoRowConverterTest {
         // A plain string column is unaffected: "" stays a legitimate value there. Asserted through
         // hasField, since getField returns "" for a set and an unset field alike.
         assertThat(row.hasField(rowType.findFieldByName("a_plain"))).isTrue();
+        assertThat(row.getField(rowType.findFieldByName("a_plain"))).isEqualTo("");
+    }
+
+    /**
+     * A {@code oneof} has no BigQuery counterpart, so each member becomes its own column and the
+     * branch not taken must read back as NULL. That falls out of the presence check in {@code
+     * MessagePlan.convert}: a oneof member always has explicit presence. Delete that check and an
+     * unselected {@code int64} branch silently writes 0 and a {@code string} branch "" — which is
+     * why the presence-less field is asserted alongside, as the contrast.
+     */
+    @Test
+    void leavesTheUnselectedOneofBranchUnset() throws Exception {
+        ProtoRowConverter converter =
+                converter(TestProtos.presence(), ProtoSchemaOptions.defaults());
+
+        DynamicMessage row = converter.convert(Presence.newBuilder().setPChoiceB(7L).build());
+
+        Descriptors.Descriptor rowType = row.getDescriptorForType();
+        assertThat(row.hasField(rowType.findFieldByName("p_choice_b"))).isTrue();
+        assertThat(get(row, "p_choice_b")).isEqualTo(7L);
+        assertThat(row.hasField(rowType.findFieldByName("p_choice_a"))).isFalse();
+        assertThat(row.hasField(rowType.findFieldByName("p_optional"))).isFalse();
+        // The contrast: a field without presence cannot say "unset", so it is written as its type
+        // default rather than skipped.
+        assertThat(row.hasField(rowType.findFieldByName("p_implicit"))).isTrue();
+        assertThat(get(row, "p_implicit")).isEqualTo("");
+    }
+
+    /**
+     * Deriving REQUIRED must never poison an ordinary record. The row descriptor is built without a
+     * syntax, so {@code BQTableSchemaToProtoDescriptor} maps REQUIRED to a proto2 {@code
+     * LABEL_REQUIRED} field that {@code build()} enforces — and every column the predicate makes
+     * REQUIRED is one the value path always writes.
+     */
+    @Test
+    void writesEveryRequiredColumnWhenDerivedFromPresence() throws Exception {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().deriveRequiredFromPresence().build();
+        ProtoRowConverter converter = converter(TestProtos.presence(), options);
+
+        DynamicMessage row = converter.convert(Presence.getDefaultInstance());
+
+        Descriptors.Descriptor rowType = row.getDescriptorForType();
+        assertThat(rowType.findFieldByName("p_implicit").isRequired()).isTrue();
+        assertThat(row.getInitializationErrorString()).isEmpty();
+        assertThat(get(row, "p_implicit")).isEqualTo("");
+        assertThat(get(row, "p_implicit_int")).isEqualTo(0L);
+        assertThat(row.hasField(rowType.findFieldByName("p_nested"))).isFalse();
+    }
+
+    /**
+     * The JSON exception, from the value side: were a JSON-mapped presence-less string derived as
+     * REQUIRED, the rule that leaves it unset when empty would fail {@code build()} on every record
+     * omitting it — a poison record on every record, routed to the FailedRowHandler.
+     */
+    @Test
+    void keepsJsonColumnsWritableWhenRequiredIsDerived() throws Exception {
+        Descriptors.Descriptor source = TestProtos.annotated();
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .deriveRequiredFromPresence()
+                        .build();
+        ProtoRowConverter converter = converter(source, options);
+
+        DynamicMessage row = converter.convert(DynamicMessage.newBuilder(source).build());
+
+        Descriptors.Descriptor rowType = row.getDescriptorForType();
+        assertThat(rowType.findFieldByName("a_string").isRequired()).isFalse();
+        assertThat(row.hasField(rowType.findFieldByName("a_string"))).isFalse();
+        // The plain string beside it is REQUIRED and carries the protobuf default.
+        assertThat(rowType.findFieldByName("a_plain").isRequired()).isTrue();
         assertThat(row.getField(rowType.findFieldByName("a_plain"))).isEqualTo("");
     }
 

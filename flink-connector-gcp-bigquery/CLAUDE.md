@@ -126,10 +126,36 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   **by position**, because `BQTableSchemaToProtoDescriptor` lowercases with the *default* locale —
   under `tr_TR` a column named `ID` becomes the proto field `ıd`, which no `Locale.ROOT` key
   matches. Position is exact here precisely because the descriptor is always derived from the table
-  schema this connector just produced. The protobuf analogue of the
-  nullability work (deriving `REQUIRED` from proto3 `optional` presence, plus a matching
-  `ProtoSchemaOptions` switch) is deliberately a separate issue: `ProtoToTableSchemaConverter`
-  emits `NULLABLE` unconditionally today
+  schema this connector just produced. The protobuf analogue of the nullability work landed
+  separately in #124 and is deliberately **not** symmetric with this one — see the entry below
+- **BigQuery protobuf nullability** (#124 Part 1, with Part 3's `oneof` pin; Part 2 — well-known
+  types — still open): `ProtoToTableSchemaConverter` derives the mode from presence only under
+  `ProtoSchemaOptions.Builder.deriveRequiredFromPresence()`, and the default stays **`NULLABLE`**.
+  That is the **opposite polarity to `AvroSchemaOptions.allFieldsNullable()`**, on purpose and not
+  by oversight: an Avro `["null", T]` is the schema author's own statement, while proto3's
+  presence-less form is the spelling you get by *not* thinking about nullability, so deriving
+  `REQUIRED` from it by default would make nearly every scalar column of an auto-created table
+  `REQUIRED` on the strength of a syntax default. There is **no `allFieldsNullable()`** here (the
+  issue title notwithstanding): with a `NULLABLE` default it would mean exactly "don't call the
+  opt-in", and two inverse switches need a documented meaning per combination. The predicate is
+  `isRequired() || !hasPresence()`, **two clauses because a proto2 `required` field has presence
+  and is mandatory all the same** (`hasPresence()` is `!= IMPLICIT`, `isRequired()` is
+  `LEGACY_REQUIRED`, derived independently) — presence alone would map the one unambiguous case to
+  `NULLABLE`. `isRepeated()` is tested **first**, so a repeated JSON-marked field stays
+  `REPEATED JSON`; a mutant reordering those two lines fails seven tests. **A singular `JSON`
+  column is never `REQUIRED`**, stated about JSON rather than about presence: `ProtoRowConverter`'s
+  `omitEmptyString` (the #50 rule) is set to `!hasPresence()`, *identical* to the `REQUIRED`
+  trigger, and `BQTableSchemaToProtoDescriptor` builds its row descriptor with **no syntax** →
+  proto2 → `LABEL_REQUIRED` is enforced by `build()`, so the pair would throw
+  `UninitializedMessageException` on every record omitting the field (verified by mutation: the
+  mutant reports `missing required fields: a_string, a_twice`). The broader rule loses fidelity
+  only for a proto2 `required` JSON field, which is worth one clause. Map entry `key`/`value` have
+  implicit presence and so become `REQUIRED`, converging with the Avro path. The **value path is
+  unchanged** — the issue body's claim that this writes `0`/`""` where NULL was written before is
+  wrong, since `MessagePlan.convert` skips only on `hasPresence() && !hasField()` and a
+  presence-less scalar was already written with its default. `SchemaUnifier` needed no change: it
+  only relaxes, so derived-`REQUIRED` against an existing `NULLABLE` column is a silent no-op
+  already pinned by `modesAreNeverTightened`
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
 - **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
   **`String`** records and a **supplied** schema, since JSON has none of its own — either the

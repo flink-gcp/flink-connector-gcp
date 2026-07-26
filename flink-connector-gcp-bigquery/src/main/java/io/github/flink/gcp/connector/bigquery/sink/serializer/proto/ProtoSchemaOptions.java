@@ -32,24 +32,35 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Options controlling how protobuf descriptors are mapped to BigQuery schemas.
- *
- * <p>Currently supports marking fields as BigQuery {@code JSON} columns. The Storage Write API
- * carries a {@code JSON} column as a string, so this mapping is purely a schema-derivation marker:
- * it decides whether the derived BigQuery schema says {@code JSON} rather than {@code STRUCT} or
- * {@code STRING}. Two field types can be marked:
+ * Options controlling how protobuf descriptors are mapped to BigQuery schemas. Two mappings can be
+ * adjusted:
  *
  * <ul>
- *   <li>a <b>message</b> field is not expanded into a {@code STRUCT}; it is serialized to its
- *       canonical protobuf JSON representation
- *   <li>a <b>string</b> field is written through verbatim — its value is expected to be JSON text
- *       already, and is not validated by the connector
+ *   <li><b>JSON columns.</b> The Storage Write API carries a {@code JSON} column as a string, so
+ *       this mapping is purely a schema-derivation marker: it decides whether the derived BigQuery
+ *       schema says {@code JSON} rather than {@code STRUCT} or {@code STRING}. Two field types can
+ *       be marked — a <b>message</b> field, which is not expanded into a {@code STRUCT} but
+ *       serialized to its canonical protobuf JSON representation, and a <b>string</b> field, which
+ *       is written through verbatim, its value expected to be JSON text already and not validated
+ *       by the connector. Fields are selected either by their dotted path from the root message
+ *       (for example {@code payload} or {@code event.details}) or by one or more boolean custom
+ *       field options, each supplied as the generated extension or as its extension number.
+ *       Everything configured is unioned, so a field marked by any of them is a {@code JSON}
+ *       column.
+ *   <li><b>Nullability.</b> Every column is derived as {@code NULLABLE} by default. {@link
+ *       Builder#deriveRequiredFromPresence()} reads each field's presence instead and derives
+ *       {@code REQUIRED} where protobuf cannot express absence.
  * </ul>
  *
- * <p>Fields are selected either by their dotted path from the root message (for example {@code
- * payload} or {@code event.details}) or by one or more boolean custom field options, each supplied
- * as the generated extension or as its extension number. Everything configured is unioned, so a
- * field marked by any of them is a {@code JSON} column.
+ * <p>The nullability switch has the <em>opposite polarity</em> to its Avro counterpart: {@link
+ * io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions AvroSchemaOptions}
+ * defaults to {@code REQUIRED} and opts out with {@code allFieldsNullable()}, while this class
+ * defaults to {@code NULLABLE} and opts in. An Avro {@code ["null", T]} union is the schema
+ * author's own statement about nullability, so honoring it by default is faithful. A proto3 field
+ * without presence is the spelling you get by <em>not</em> thinking about nullability — {@code
+ * optional} has to be added deliberately — so deriving {@code REQUIRED} from it by default would
+ * make nearly every scalar column of an auto-created table {@code REQUIRED} on the strength of a
+ * syntax default.
  */
 @PublicEvolving
 public final class ProtoSchemaOptions implements Serializable {
@@ -75,13 +86,16 @@ public final class ProtoSchemaOptions implements Serializable {
      */
     private final Map<Integer, String> jsonFieldOptions;
 
+    private final boolean deriveRequiredFromPresence;
+
     private ProtoSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
         this.jsonFieldOptions =
                 Collections.unmodifiableMap(new LinkedHashMap<>(builder.jsonFieldOptions));
+        this.deriveRequiredFromPresence = builder.deriveRequiredFromPresence;
     }
 
-    /** Returns the default options: no JSON field mapping. */
+    /** Returns the default options: no JSON field mapping, and every column {@code NULLABLE}. */
     public static ProtoSchemaOptions defaults() {
         return DEFAULTS;
     }
@@ -94,6 +108,11 @@ public final class ProtoSchemaOptions implements Serializable {
     /** Returns the dotted paths of fields mapped to BigQuery {@code JSON} columns. */
     public Set<String> getJsonFieldPaths() {
         return jsonFieldPaths;
+    }
+
+    /** Returns whether column modes are derived from field presence. */
+    public boolean isDeriveRequiredFromPresence() {
+        return deriveRequiredFromPresence;
     }
 
     /**
@@ -138,8 +157,55 @@ public final class ProtoSchemaOptions implements Serializable {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();
         private final Map<Integer, String> jsonFieldOptions = new LinkedHashMap<>();
+        private boolean deriveRequiredFromPresence;
 
         Builder() {}
+
+        /**
+         * Derives each column's mode from its field's presence, instead of deriving every
+         * non-repeated column as {@code NULLABLE}. Nested message fields are covered too; repeated
+         * fields are unaffected, since a BigQuery {@code REPEATED} column cannot be {@code
+         * NULLABLE}.
+         *
+         * <p>The resulting map:
+         *
+         * <table>
+         *   <caption>Presence to BigQuery mode</caption>
+         *   <tr><th>Field</th><th>Mode</th></tr>
+         *   <tr><td>{@code repeated}, including maps</td><td>{@code REPEATED}</td></tr>
+         *   <tr><td>plain proto3 singular scalar or enum</td><td>{@code REQUIRED}</td></tr>
+         *   <tr><td>proto3 {@code optional}</td><td>{@code NULLABLE}</td></tr>
+         *   <tr><td>{@code oneof} member</td><td>{@code NULLABLE}</td></tr>
+         *   <tr><td>singular message field</td><td>{@code NULLABLE}</td></tr>
+         *   <tr><td>proto2 {@code required}</td><td>{@code REQUIRED}</td></tr>
+         *   <tr><td>proto2 {@code optional}</td><td>{@code NULLABLE}</td></tr>
+         *   <tr><td>singular {@code JSON} column</td><td>{@code NULLABLE}, always</td></tr>
+         * </table>
+         *
+         * <p>A plain proto3 scalar cannot say "unset" — an unset value is indistinguishable from
+         * the type default — so {@code REQUIRED} is the faithful column mode for it, and the one
+         * the value path already satisfies: such a field is always written, as {@code 0}, {@code
+         * ""} or the first enum value. Proto2 {@code required} is called out separately because it
+         * <em>has</em> presence and is mandatory all the same, so presence alone would map the one
+         * unambiguous case to {@code NULLABLE}.
+         *
+         * <p>This changes only the derived schema — the one used for table auto-creation, for the
+         * write stream and for load jobs. Values are converted identically either way, and toggling
+         * it changes protobuf labels rather than the encoding of any value, so rows already
+         * serialized stay valid.
+         *
+         * <p>Two consequences worth weighing before enabling it. A record that leaves a {@code
+         * REQUIRED}-derived field unset — reachable only through a proto2 {@code required} field on
+         * a partially built message — becomes a row-level failure routed to the configured {@code
+         * FailedRowHandler}. And BigQuery cannot add a {@code REQUIRED} column to an existing
+         * table, so a column derived this way is only ever created with the table.
+         *
+         * @return this builder
+         */
+        public Builder deriveRequiredFromPresence() {
+            this.deriveRequiredFromPresence = true;
+            return this;
+        }
 
         /**
          * Maps every message or string field carrying the given boolean field option, set to {@code
