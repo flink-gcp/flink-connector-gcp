@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link ProtoToTableSchemaConverter}. */
 class ProtoToTableSchemaConverterTest {
 
-    private static final ProtoSchemaOptions REQUIRED_FROM_PRESENCE =
-            ProtoSchemaOptions.builder().deriveRequiredFromPresence().build();
+    private static final ProtoSchemaOptions REQUIRED_FROM_SCHEMA =
+            ProtoSchemaOptions.builder().deriveRequiredFromSchema().build();
 
     @Test
     void mapsTheFullTypeMatrix() {
@@ -117,9 +117,9 @@ class ProtoToTableSchemaConverterTest {
     }
 
     @Test
-    void deriveRequiredFromPresenceMapsPresencelessProto3FieldsToRequired() {
+    void deriveRequiredFromSchemaMapsPresencelessProto3FieldsToRequired() {
         TableSchema schema =
-                ProtoToTableSchemaConverter.convert(TestProtos.presence(), REQUIRED_FROM_PRESENCE);
+                ProtoToTableSchemaConverter.convert(TestProtos.presence(), REQUIRED_FROM_SCHEMA);
         Map<String, TableFieldSchema> fields = byName(schema);
 
         // No presence: an unset value reaches the column as "" / 0, never as NULL, so REQUIRED is
@@ -150,10 +150,10 @@ class ProtoToTableSchemaConverterTest {
      * and is mandatory all the same, so the predicate needs its second clause.
      */
     @Test
-    void deriveRequiredFromPresenceKeepsProto2RequiredRequired() {
+    void deriveRequiredFromSchemaKeepsProto2RequiredRequired() {
         TableSchema schema =
                 ProtoToTableSchemaConverter.convert(
-                        TestProtos.proto2Presence(), REQUIRED_FROM_PRESENCE);
+                        TestProtos.proto2Presence(), REQUIRED_FROM_SCHEMA);
         Map<String, TableFieldSchema> fields = byName(schema);
 
         assertThat(fields.get("q_required").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
@@ -174,9 +174,9 @@ class ProtoToTableSchemaConverterTest {
      * REQUIRED} by default. An entry always carries both, so nothing can leave them unset.
      */
     @Test
-    void deriveRequiredFromPresenceMakesMapKeyAndValueRequired() {
+    void deriveRequiredFromSchemaMakesMapKeyAndValueRequired() {
         TableSchema schema =
-                ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), REQUIRED_FROM_PRESENCE);
+                ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), REQUIRED_FROM_SCHEMA);
         Map<String, TableFieldSchema> fields = byName(schema);
 
         TableFieldSchema map = fields.get("f_map");
@@ -200,11 +200,11 @@ class ProtoToTableSchemaConverterTest {
      * legitimately omits the field.
      */
     @Test
-    void deriveRequiredFromPresenceLeavesJsonColumnsNullable() {
+    void deriveRequiredFromSchemaLeavesJsonColumnsNullable() {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder()
                         .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
-                        .deriveRequiredFromPresence()
+                        .deriveRequiredFromSchema()
                         .build();
         Map<String, TableFieldSchema> fields =
                 byName(ProtoToTableSchemaConverter.convert(TestProtos.annotated(), options));

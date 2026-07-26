@@ -102,12 +102,12 @@ by the recursion guard unless marked as JSON columns. Tracked in
 ### Nullability
 
 By default every non-repeated column is `NULLABLE`.
-`ProtoSchemaOptions.builder().deriveRequiredFromPresence()` reads each field's presence instead:
+`ProtoSchemaOptions.builder().deriveRequiredFromSchema()` reads each field's presence instead:
 
 ```java
 ProtoMessageSerializer.of(
         MyMessage.class,
-        ProtoSchemaOptions.builder().deriveRequiredFromPresence().build());
+        ProtoSchemaOptions.builder().deriveRequiredFromSchema().build());
 ```
 
 | Field | Mode |
@@ -129,15 +129,20 @@ presence test alone would map the one unambiguous case to `NULLABLE`. A map entr
 `value` have no presence either, so they become `REQUIRED`, which is what the Avro path already
 does for a map key.
 
-**The default differs from `AvroSchemaOptions` on purpose**, and in the opposite direction: Avro
-derives `REQUIRED` by default and `allFieldsNullable()` opts out, while this option defaults to
-`NULLABLE` and opts in. An Avro `["null", T]` union is the schema author's own statement about
-nullability. A proto3 field without presence is the spelling you get by *not* thinking about it —
-`optional` has to be added deliberately, and a large share of real proto3 schemas contain none at
-all — so deriving `REQUIRED` from it by default would make nearly every scalar column of an
-auto-created table `REQUIRED` on the strength of a syntax default. There is deliberately no
-`allFieldsNullable()` here: with a `NULLABLE` default it would mean exactly "do not call the
-opt-in", and two inverse switches would need a documented meaning for every combination.
+**Why `NULLABLE` is the default.** A proto3 field without presence is the spelling you get by *not*
+thinking about nullability — `optional` has to be added deliberately, and a large share of real
+proto3 schemas contain none at all — so deriving `REQUIRED` from it by default would make nearly
+every scalar column of an auto-created table `REQUIRED` on the strength of a syntax default. And
+that is the mode you cannot walk back: BigQuery cannot add a `REQUIRED` column to an existing table,
+and relaxing one needs `allowFieldRelaxation`. There is deliberately no inverse switch — with a
+`NULLABLE` default, "all fields nullable" is just *not* calling the opt-in.
+
+**This mapping is the normative one for every write path**, because every path ends in a protobuf
+row: `STORAGE_API_*` writes protobuf directly, the Avro and JSON serializers convert to a protobuf
+row too, and FILE_LOADS stages Avro only incidentally — it is a staging format, not a contract.
+[Avro records](#avro-records) still defaults to `REQUIRED` and opts out with `allFieldsNullable()`;
+aligning it on this option, name included, is tracked in
+[#145]({{< param BookRepo >}}/issues/145).
 
 **A `JSON` column is never `REQUIRED`.** An unset plain proto3 string is left unset rather than
 written as `""` (see [JSON columns](#json-columns)), and "no presence" is precisely the condition
@@ -273,7 +278,7 @@ Three consequences worth knowing:
   fields *without* presence: where the proto can say "unset" (`optional string`, or proto2), an
   explicit `""` is your own statement and is passed through as-is. Repeated elements are likewise
   explicit and passed through. This is also why a JSON column is never `REQUIRED` under
-  [`deriveRequiredFromPresence()`](#nullability) — the condition that leaves the value unset is the
+  [`deriveRequiredFromSchema()`](#nullability) — the condition that leaves the value unset is the
   same one that would make the column mandatory.
 
 Marking a field that is neither a message nor a string — including a proto map, whose BigQuery shape
@@ -339,9 +344,11 @@ The one thing it changes in the value path is what happens to a record that omit
 schema declares mandatory: by default that is a row-level failure, and under `allFieldsNullable()`
 the column is simply left unset. Records that do carry the value convert identically either way.
 
-Note that the protobuf switch has the **opposite polarity**: `NULLABLE` by default, with
-[`deriveRequiredFromPresence()`](#nullability) opting in. The reasoning for the asymmetry is
-recorded there. The two paths do converge on a `REQUIRED` map key.
+Note that the protobuf switch currently has the **opposite polarity**: `NULLABLE` by default, with
+[`deriveRequiredFromSchema()`](#nullability) opting in. That is the direction both will settle on —
+the protobuf mapping is normative, since every write path ends in a protobuf row and Avro is a front
+end — so this default and this method name are the ones due to change, tracked in
+[#145]({{< param BookRepo >}}/issues/145).
 
 **JSON columns.** `AvroSchemaOptions.builder().jsonFieldPath("event.payload")` derives a `string`
 field at that dotted path as a [`JSON` column](#json-columns) instead of `STRING`. As on the
@@ -814,7 +821,7 @@ The second row is a real defect on the single-load path, tracked in
 [#142]({{< param BookRepo >}}/issues/142): a direct load builds its schema from the serializer alone,
 while the temp-table path reconciles against the live table and demotes new `REQUIRED` columns to
 `NULLABLE` first. Until it is fixed, a serializer that derives `REQUIRED` — the Avro default, or
-protobuf under [`deriveRequiredFromPresence()`](#nullability) — can fail a whole load job when its
+protobuf under [`deriveRequiredFromSchema()`](#nullability) — can fail a whole load job when its
 schema grows a new column against a pre-existing table. A load job is all-or-nothing, so there is no
 row-level policy to catch it.
 
@@ -896,7 +903,7 @@ serializer additionally carries a round-trip test (`AvroSchemaRoundTripTest`) th
 Without it the two could drift apart and corrupt staged files with nothing going red. The protobuf
 mode mapping is pinned against real `.proto` fixtures compiled at build time — every proto3
 presence shape and the proto2 `required`/`optional` pair, both by default and under
-`deriveRequiredFromPresence()` — and `ProtoRowConverterTest` pins the value side of the same
+`deriveRequiredFromSchema()` — and `ProtoRowConverterTest` pins the value side of the same
 question: an unselected `oneof` branch is left unset, while a presence-less field is written as its
 type default.
 
@@ -913,7 +920,7 @@ scalars, `TIMESTAMP`, `DATE`, `BYTES`, an enum, a `REPEATED` field, a nested `ST
 because the emulator implements neither the packed civil-time encoding nor the decimal byte
 encoding and reads those columns back as unrelated values whatever is written), the same for JSON
 documents including the `ignoreUnknownFields` option (`BigQueryJsonDocumentSerializerITCase`),
-protobuf messages under `deriveRequiredFromPresence()` (`BigQueryProtoPresenceITCase` — the table is
+protobuf messages under `deriveRequiredFromSchema()` (`BigQueryProtoPresenceITCase` — the table is
 created with the derived `REQUIRED` columns and the values read back as presence says they should:
 presence-less columns carry `""`/`0`, `optional` and the unselected `oneof` branch come back NULL;
 the query works around two emulator deviations around an *empty* repeated column, where

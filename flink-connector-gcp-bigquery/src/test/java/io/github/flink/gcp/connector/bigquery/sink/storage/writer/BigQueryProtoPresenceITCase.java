@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Integration test for {@link ProtoMessageSerializer} with {@link
- * ProtoSchemaOptions.Builder#deriveRequiredFromPresence()} against the BigQuery emulator
+ * ProtoSchemaOptions.Builder#deriveRequiredFromSchema()} against the BigQuery emulator
  * (goccy/bigquery-emulator): protobuf messages written through the {@link BigQuerySink} facade into
  * a table created from the serializer's own derived schema.
  *
@@ -62,7 +62,7 @@ class BigQueryProtoPresenceITCase extends AbstractBigQueryEmulatorITCase {
         ProtoMessageSerializer<Presence> serializer =
                 ProtoMessageSerializer.of(
                         Presence.class,
-                        ProtoSchemaOptions.builder().deriveRequiredFromPresence().build());
+                        ProtoSchemaOptions.builder().deriveRequiredFromSchema().build());
         createTable("proto_presence", serializer.getTableSchema(null));
 
         BigQueryDefaultStreamSink<Presence> sink =

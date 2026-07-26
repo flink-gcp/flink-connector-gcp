@@ -36,13 +36,13 @@ class ProtoSchemaOptionsTest {
     }
 
     @Test
-    void deriveRequiredFromPresenceIsOptIn() {
-        assertThat(ProtoSchemaOptions.defaults().isDeriveRequiredFromPresence()).isFalse();
+    void deriveRequiredFromSchemaIsOptIn() {
+        assertThat(ProtoSchemaOptions.defaults().isDeriveRequiredFromSchema()).isFalse();
         assertThat(
                         ProtoSchemaOptions.builder()
-                                .deriveRequiredFromPresence()
+                                .deriveRequiredFromSchema()
                                 .build()
-                                .isDeriveRequiredFromPresence())
+                                .isDeriveRequiredFromSchema())
                 .isTrue();
     }
 
@@ -175,13 +175,13 @@ class ProtoSchemaOptionsTest {
                 ProtoSchemaOptions.builder()
                         .jsonFieldPath("payload")
                         .jsonFieldOptionNumber(50000)
-                        .deriveRequiredFromPresence()
+                        .deriveRequiredFromSchema()
                         .build();
 
         ProtoSchemaOptions copy = InstantiationUtil.clone(options);
 
         assertThat(copy.getJsonFieldPaths()).containsExactly("payload");
         assertThat(copy.getJsonFieldOptions()).containsExactly(entry(50000, null));
-        assertThat(copy.isDeriveRequiredFromPresence()).isTrue();
+        assertThat(copy.isDeriveRequiredFromSchema()).isTrue();
     }
 }

@@ -126,18 +126,26 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   **by position**, because `BQTableSchemaToProtoDescriptor` lowercases with the *default* locale —
   under `tr_TR` a column named `ID` becomes the proto field `ıd`, which no `Locale.ROOT` key
   matches. Position is exact here precisely because the descriptor is always derived from the table
-  schema this connector just produced. The protobuf analogue of the nullability work landed
-  separately in #124 and is deliberately **not** symmetric with this one — see the entry below
+  schema this connector just produced. **The `REQUIRED`-by-default decision recorded above is being
+  reversed in #145** — the protobuf mapping is normative and Avro moves to match it; read that entry
+  and #145 before touching Avro nullability
 - **BigQuery protobuf nullability** (#124 Part 1, with Part 3's `oneof` pin; Part 2 — well-known
   types — still open): `ProtoToTableSchemaConverter` derives the mode from presence only under
-  `ProtoSchemaOptions.Builder.deriveRequiredFromPresence()`, and the default stays **`NULLABLE`**.
-  That is the **opposite polarity to `AvroSchemaOptions.allFieldsNullable()`**, on purpose and not
-  by oversight: an Avro `["null", T]` is the schema author's own statement, while proto3's
-  presence-less form is the spelling you get by *not* thinking about nullability, so deriving
-  `REQUIRED` from it by default would make nearly every scalar column of an auto-created table
-  `REQUIRED` on the strength of a syntax default. There is **no `allFieldsNullable()`** here (the
-  issue title notwithstanding): with a `NULLABLE` default it would mean exactly "don't call the
-  opt-in", and two inverse switches need a documented meaning per combination. The predicate is
+  `ProtoSchemaOptions.Builder.deriveRequiredFromSchema()`, and the default stays **`NULLABLE`**.
+  Reasons, in order of weight: proto3's presence-less form is the spelling you get by *not* thinking
+  about nullability, so deriving `REQUIRED` from it by default would make nearly every scalar column
+  of an auto-created table `REQUIRED` on the strength of a syntax default; and `REQUIRED` is the mode
+  BigQuery cannot walk back. **This mapping is normative for every serializer** — every write path
+  ends in a protobuf row (`STORAGE_API_*` directly; the Avro and JSON serializers via
+  `BQTableSchemaToProtoDescriptor`; FILE_LOADS stages Avro only incidentally, and could stage
+  Parquet) — so **#145 moves Avro onto this default and this method name**, rather than the reverse.
+  That supersedes the "not symmetric on purpose" reasoning first recorded on #124, which weighed
+  Avro-schema faithfulness in isolation, before the protobuf mapping was settled and before #142 was
+  measured. There is **no `allFieldsNullable()`** here (the issue title notwithstanding): with a
+  `NULLABLE` default it would mean exactly "don't call the opt-in", and two inverse switches need a
+  documented meaning per combination. The name is `deriveRequiredFromSchema()` rather than
+  `...FromPresence()` **so that both serializers can carry the same name** — presence is the signal
+  on this side, a `["null", T]` union on Avro's, and the javadoc says which. The predicate is
   `isRequired() || !hasPresence()`, **two clauses because a proto2 `required` field has presence
   and is mandatory all the same** (`hasPresence()` is `!= IMPLICIT`, `isRequired()` is
   `LEGACY_REQUIRED`, derived independently) — presence alone would map the one unambiguous case to

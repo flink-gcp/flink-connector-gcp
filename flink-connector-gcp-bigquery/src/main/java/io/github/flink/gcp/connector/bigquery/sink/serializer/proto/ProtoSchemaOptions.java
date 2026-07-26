@@ -48,8 +48,8 @@ import java.util.Set;
  *       Everything configured is unioned, so a field marked by any of them is a {@code JSON}
  *       column.
  *   <li><b>Nullability.</b> Every column is derived as {@code NULLABLE} by default. {@link
- *       Builder#deriveRequiredFromPresence()} reads each field's presence instead and derives
- *       {@code REQUIRED} where protobuf cannot express absence.
+ *       Builder#deriveRequiredFromSchema()} reads each field's presence instead and derives {@code
+ *       REQUIRED} where protobuf cannot express absence.
  * </ul>
  *
  * <p>The nullability switch has the <em>opposite polarity</em> to its Avro counterpart: {@link
@@ -86,13 +86,13 @@ public final class ProtoSchemaOptions implements Serializable {
      */
     private final Map<Integer, String> jsonFieldOptions;
 
-    private final boolean deriveRequiredFromPresence;
+    private final boolean deriveRequiredFromSchema;
 
     private ProtoSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
         this.jsonFieldOptions =
                 Collections.unmodifiableMap(new LinkedHashMap<>(builder.jsonFieldOptions));
-        this.deriveRequiredFromPresence = builder.deriveRequiredFromPresence;
+        this.deriveRequiredFromSchema = builder.deriveRequiredFromSchema;
     }
 
     /** Returns the default options: no JSON field mapping, and every column {@code NULLABLE}. */
@@ -111,8 +111,8 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /** Returns whether column modes are derived from field presence. */
-    public boolean isDeriveRequiredFromPresence() {
-        return deriveRequiredFromPresence;
+    public boolean isDeriveRequiredFromSchema() {
+        return deriveRequiredFromSchema;
     }
 
     /**
@@ -157,7 +157,7 @@ public final class ProtoSchemaOptions implements Serializable {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();
         private final Map<Integer, String> jsonFieldOptions = new LinkedHashMap<>();
-        private boolean deriveRequiredFromPresence;
+        private boolean deriveRequiredFromSchema;
 
         Builder() {}
 
@@ -202,8 +202,8 @@ public final class ProtoSchemaOptions implements Serializable {
          *
          * @return this builder
          */
-        public Builder deriveRequiredFromPresence() {
-            this.deriveRequiredFromPresence = true;
+        public Builder deriveRequiredFromSchema() {
+            this.deriveRequiredFromSchema = true;
             return this;
         }
 

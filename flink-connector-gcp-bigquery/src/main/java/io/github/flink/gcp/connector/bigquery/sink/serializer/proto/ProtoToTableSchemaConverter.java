@@ -53,7 +53,7 @@ import java.util.Set;
  * </ul>
  *
  * <p>Column modes: repeated fields (including maps) are {@code REPEATED}, and everything else is
- * {@code NULLABLE} — unless {@link ProtoSchemaOptions.Builder#deriveRequiredFromPresence()} is set,
+ * {@code NULLABLE} — unless {@link ProtoSchemaOptions.Builder#deriveRequiredFromSchema()} is set,
  * which derives {@code REQUIRED} for a field that {@linkplain
  * Descriptors.FieldDescriptor#isRequired is declared required} or that {@linkplain
  * Descriptors.FieldDescriptor#hasPresence has no presence}. Note that a plain proto3 scalar has no
@@ -203,7 +203,7 @@ public final class ProtoToTableSchemaConverter {
         if (field.isRepeated()) {
             return TableFieldSchema.Mode.REPEATED;
         }
-        if (!options.isDeriveRequiredFromPresence() || jsonColumn) {
+        if (!options.isDeriveRequiredFromSchema() || jsonColumn) {
             return TableFieldSchema.Mode.NULLABLE;
         }
         // isRequired() as well as presence: a proto2 required field has presence and is mandatory
