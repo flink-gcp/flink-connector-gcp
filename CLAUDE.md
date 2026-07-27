@@ -26,7 +26,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
-  `scripts/licence-sources.json`. `update-notice` regenerates after a dependency change;
+  `scripts/licence-sources.toml`. `update-notice` regenerates after a dependency change;
   `check-notice` verifies offline in CI. Both take the module as an argument, so the SQL uber-jars
   to come reuse them. **Invoke the licence goal
   through a phase, never as a bare `license:add-third-party`**: a CLI goal invocation selects

@@ -22,7 +22,7 @@ everything mechanical is generated from it:
     bundled artifacts license-maven-plugin resolved to that licence (names as
     normalised by the licenseMerges in the root POM);
   - every artifact whose licence is not Apache-2.0 must have an entry in
-    scripts/licence-sources.json, which pins where its licence text comes from
+    scripts/licence-sources.toml, which pins where its licence text comes from
     (the artifact's own jar where it ships one, an https URL otherwise) and the
     sha256 of that text. --update materialises those files; the check verifies
     the checked-in files still hash to the recorded values.
@@ -49,7 +49,6 @@ Standard library only, deliberately: nothing here justifies a package manager.
 
 import argparse
 import hashlib
-import json
 import re
 import subprocess
 import sys
@@ -57,7 +56,16 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-SOURCES = Path(__file__).parent / "licence-sources.json"
+try:
+    import tomllib  # stdlib since 3.11
+except ModuleNotFoundError:  # pragma: no cover - version guard, not logic
+    sys.exit(
+        "This script needs Python 3.11+ (tomllib). mise.toml pins a suitable "
+        "python; run `mise x -- just check-notice <module>`, or any python3 "
+        ">= 3.11. CI installs one with actions/setup-python."
+    )
+
+SOURCES = Path(__file__).parent / "licence-sources.toml"
 
 # `    (Licence Name) Artifact Description (groupId:artifactId:version - url)`
 THIRD_PARTY_LINE = re.compile(
@@ -137,7 +145,8 @@ def read_resolved(module: Path) -> dict[str, str]:
 
 
 def load_sources() -> dict[str, dict]:
-    files = json.loads(SOURCES.read_text(encoding="utf-8"))["files"]
+    with SOURCES.open("rb") as handle:
+        files = tomllib.load(handle)["files"]
     owners: dict[str, str] = {}
     for name, entry in files.items():
         for ga in entry["artifacts"]:

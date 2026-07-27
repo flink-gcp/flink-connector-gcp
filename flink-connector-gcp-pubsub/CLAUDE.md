@@ -236,7 +236,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   so a wrong group, a duplicate bullet or a stale version is not a checkable mistake but an
   *inexpressible* one. `just update-notice <module>` regenerates; `just check-notice <module>`
   (CI) re-renders in memory and fails on any drift, offline. Licence *texts* come only from
-  `scripts/licence-sources.json`, each entry pinned by **sha256** with its provenance recorded:
+  `scripts/licence-sources.toml`, each entry pinned by **sha256** with its provenance recorded:
   the artifact's own jar where one ships a text (threetenbp, javax.annotation-api — best
   provenance, version-exact), otherwise a curated URL whose ref matches the bundled version and
   whose note says why (protobuf's Java 4.33.x maps to core tag v33.x; gax and google-auth live in
@@ -259,7 +259,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   sibling SQL module inherits one vocabulary rather than inventing a second.
   **What a sibling actually costs, measured against the BigQuery module's 113-artifact tree**: the
   plugin block and one execution in its pom, its own `NOTICE.template`, a CI step, and
-  `licence-sources.json` entries for its non-Apache artifacts (the file and its pins are shared, so
+  `licence-sources.toml` entries for its non-Apache artifacts (the file and its pins are shared, so
   overlapping dependencies cost nothing twice). No new `licenseMerges` — that list was extended
   here, once, to cover the spellings that tree adds (`Apache License V2.0`, `BSD 3-clause`,
   `MIT License`, `The MIT License`, `The BSD 2-Clause License`), and `failOnMissing` does not fire

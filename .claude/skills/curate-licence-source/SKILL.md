@@ -1,6 +1,6 @@
 ---
 name: curate-licence-source
-description: Curate a licence text source or licensing decision for a shaded flink-sql-connector-gcp-* module. Use when `just check-notice` / `scripts/check-notice.py` fails with "no entry in licence-sources.json covers …", "licences the template has no paragraph for", a restricted-licence (GPL/SSPL/non-commercial) error, or when the packaging IT reports a new unrelocated package root. Covers the fallback ladder for obtaining a licence text with defensible provenance, and the decisions that must go to the user.
+description: Curate a licence text source or licensing decision for a shaded flink-sql-connector-gcp-* module. Use when `just check-notice` / `scripts/check-notice.py` fails with "no entry in licence-sources.toml covers …", "licences the template has no paragraph for", a restricted-licence (GPL/SSPL/non-commercial) error, or when the packaging IT reports a new unrelocated package root. Covers the fallback ladder for obtaining a licence text with defensible provenance, and the decisions that must go to the user.
 ---
 
 # Curate a licence source for a shaded module
@@ -12,11 +12,11 @@ user — never in a silently chosen source. That rule exists because this
 repository once shipped licence texts curl'd from repository heads chosen ad
 hoc, and replacing them is where this procedure comes from.
 
-## Failure: "no entry in licence-sources.json covers <groupId:artifactId>"
+## Failure: "no entry in licence-sources.toml covers <groupId:artifactId>"
 
 A non-Apache-2.0 artifact needs its licence text pinned. Work down this ladder
 and stop at the first rung that holds. Record the outcome in
-`scripts/licence-sources.json` (entry: `artifacts`, `jar` or `url`, `sha256`,
+`scripts/licence-sources.toml` (entry: `artifacts`, `jar` or `url`, `sha256`,
 `note` explaining why this rung).
 
 1. **The artifact's own jar.** `unzip -Z1 <jar> | grep -iE 'LICEN|COPYING|NOTICE'`
