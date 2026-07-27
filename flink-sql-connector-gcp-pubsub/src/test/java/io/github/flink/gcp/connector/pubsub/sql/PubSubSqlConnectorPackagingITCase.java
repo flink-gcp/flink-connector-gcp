@@ -18,11 +18,19 @@ package io.github.flink.gcp.connector.pubsub.sql;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.regex.Pattern;
@@ -31,8 +39,21 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Asserts the shape of the shaded jar: that SQL can discover the connector in it, and that nothing
- * escaped relocation except what deliberately did.
+ * Asserts the shape of the shaded jar: that SQL can discover the connector in it, that every
+ * runtime dependency actually made it in, and that no <em>class</em> escaped relocation except
+ * those that deliberately did.
+ *
+ * <p>Classes, deliberately. Around 128 non-class resources keep their original paths, and are not
+ * checked here: the {@code google/**}{@code /*.proto} descriptors from {@code
+ * proto-google-common-protos}, the {@code META-INF/native-image/} configuration, the {@code .java}
+ * sources {@code jsr305} ships beside its classes, and two that are load-bearing where they are —
+ * {@code mozilla/public-suffix-list.txt}, which httpclient reads by literal path, and gax's
+ * root-level {@code dependencies.properties}, whose lookup carries no package for shade to rewrite.
+ * The proto descriptors are inert for a Java runtime (protobuf reads descriptors compiled into the
+ * generated classes, not these files), which is why every surveyed uber-jar leaves them alone.
+ * {@code dependencies.properties} is the one with a real, if cosmetic, collision surface: another
+ * jar in {@code lib/} shipping one would feed a foreign version string into the relocated gax's
+ * {@code x-goog-api-client} header.
  *
  * <p>This is a jar-content test, not a runtime one — {@link PubSubSqlConnectorSmokeITCase} is what
  * proves the relocated classes actually work. Named {@code ITCase} because it must run after {@code
@@ -88,9 +109,72 @@ class PubSubSqlConnectorPackagingITCase {
         }
     }
 
+    /**
+     * Every artifact on the runtime classpath actually contributed its classes to the jar.
+     *
+     * <p>The counterpart to {@code BundledDependenciesNoticeTest}, and the reason that one is not
+     * enough: the NOTICE diff compares the dependency <em>tree</em> against a text file, and an
+     * artifact left out of {@code artifactSet/includes} is missing from neither — only from the
+     * jar. Dropping {@code io.grpc:grpc-xds} from that list removes 4143 classes while leaving
+     * every other assertion here green, because they all check that nothing extra is present, not
+     * that anything in particular is.
+     *
+     * <p>Checked by sampling one class per artifact and looking for it at its relocated name, or at
+     * its original name when its package is on the allow-list above.
+     */
+    @Test
+    void everyRuntimeDependencyContributedItsClassesToTheJar() throws Exception {
+        Path classpathFile = ShadedJar.targetDir().resolve("runtime-classpath.txt");
+        assertThat(classpathFile)
+                .as("written by maven-dependency-plugin during the build")
+                .exists();
+
+        List<Path> artifacts =
+                Arrays.stream(
+                                Files.readString(classpathFile, StandardCharsets.UTF_8)
+                                        .trim()
+                                        .split(Pattern.quote(File.pathSeparator)))
+                        .filter(entry -> !entry.isBlank())
+                        .map(Paths::get)
+                        .filter(path -> path.getFileName().toString().endsWith(".jar"))
+                        .collect(Collectors.toList());
+
+        assertThat(artifacts).as("parsed from %s", classpathFile).hasSizeGreaterThan(40);
+
+        List<String> missing = new ArrayList<>();
+        try (JarFile uberJar = open()) {
+            Set<String> present = new HashSet<>(entryNames(uberJar));
+            for (Path artifact : artifacts) {
+                String sample = sampleClassEntry(artifact);
+                if (sample == null) {
+                    // Legitimately class-free: com.google.guava:listenablefuture ships an empty
+                    // jar purely to win version mediation against guava.
+                    continue;
+                }
+                boolean unrelocated = UNRELOCATED_ALLOW_LIST.stream().anyMatch(sample::startsWith);
+                String expected = unrelocated ? sample : ShadedJar.SHADED_PREFIX + sample;
+                if (!present.contains(expected)) {
+                    missing.add(artifact.getFileName() + " (looked for " + expected + ")");
+                }
+            }
+        }
+
+        assertThat(missing)
+                .as(
+                        "artifacts on the runtime classpath whose classes are not in the jar —"
+                                + " almost always a dependency the tree gained and"
+                                + " artifactSet/includes did not, which fails at runtime with"
+                                + " NoClassDefFoundError rather than at build time")
+                .isEmpty();
+    }
+
     @Test
     void everyBundledPackageIsRelocatedExceptTheDocumentedExemptions() throws Exception {
         try (JarFile jar = open()) {
+            assertThat(classEntries(jar))
+                    .as("an empty or truncated jar would satisfy the emptiness check below")
+                    .isNotEmpty();
+
             List<String> escaped =
                     classEntries(jar).stream()
                             .filter(name -> !name.startsWith(ShadedJar.SHADED_PREFIX))
@@ -168,12 +252,20 @@ class PubSubSqlConnectorPackagingITCase {
         try (JarFile jar = open()) {
             String notice = read(jar, "META-INF/NOTICE");
 
-            assertThat(notice)
-                    .isNotNull()
+            assertThat(notice).isNotNull();
+
+            // Scoped to the header block the transformer generates, NOT the whole file: it
+            // aggregates every bundled artifact's own NOTICE, several of which legitimately carry
+            // ASF copyright lines, and one bundling a component with a 2006 inception year would
+            // fail a whole-file check for a reason unrelated to what this guards.
+            String header = notice.substring(0, Math.min(notice.length(), 600));
+            assertThat(header)
+                    .as("the transformer's own header block")
                     .contains("GCP Connectors for Apache Flink\nCopyright 2026 laughingman7743")
-                    // The transformer's own defaults, which name the ASF and an inception year of
-                    // 2006. Setting only <projectName> leaves them in place.
-                    .doesNotContain("Copyright 2006");
+                    // The transformer defaults name the ASF and an inception year of 2006, and
+                    // setting only <projectName> leaves both in place.
+                    .doesNotContain("Copyright 2006")
+                    .doesNotContain("Copyright 2026 The Apache Software Foundation");
 
             assertThat(entryNames(jar))
                     .as("the licence texts the NOTICE points at")
@@ -185,6 +277,25 @@ class PubSubSqlConnectorPackagingITCase {
 
     private static JarFile open() throws IOException {
         return new JarFile(ShadedJar.path().toFile());
+    }
+
+    /**
+     * One class entry from {@code artifact} that shading would carry across unchanged apart from
+     * its package, or null if it has none.
+     *
+     * <p>{@code module-info} is excluded because the shade filters drop it, and {@code META-INF}
+     * because multi-release copies live there under a versioned path that relocation does not
+     * mirror.
+     */
+    private static String sampleClassEntry(Path artifact) throws IOException {
+        try (JarFile jar = new JarFile(artifact.toFile())) {
+            return entryNames(jar).stream()
+                    .filter(name -> name.endsWith(".class"))
+                    .filter(name -> !name.startsWith("META-INF/"))
+                    .filter(name -> !name.endsWith("module-info.class"))
+                    .findFirst()
+                    .orElse(null);
+        }
     }
 
     private static List<String> entryNames(JarFile jar) {

@@ -469,6 +469,13 @@ traded a real collision for a hypothetical one. Relocating instead costs two ext
 rename the native libraries in step, and the packaging test derives the expected names from the
 shaded prefix so the two cannot drift.
 
+One consequence to know before reaching for a tuning flag: relocation rewrites netty's **system
+property names** along with its packages. Inside this jar the knob spelled
+`io.grpc.netty.shaded.io.netty.maxDirectMemory` upstream becomes
+`io.github.flink.gcp.connector.pubsub.shaded.io.grpc.netty.shaded.io.netty.maxDirectMemory`, so a
+`-D` using the upstream name has no effect. This is inherent to relocating an already-relocated
+gRPC and is true of every project listed below.
+
 That pairing is the established practice rather than a local invention: the same two entries appear
 in googleapis/java-bigtable-hbase, Dataproc's gcs-connector, spark-bigquery, Beam's gRPC vendoring
 and the uber-jars of both Google-maintained Flink connectors. The project that skipped it,

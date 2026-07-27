@@ -45,13 +45,16 @@ final class ShadedJar {
      * surefire configuration sets, rather than against the working directory: the integration-test
      * execution forks, and a relative {@code target/} does not resolve there.
      *
-     * <p>The {@code original-} prefixed sibling is the pre-shade jar the shade plugin leaves
-     * behind; excluding it is what makes this the *shaded* artifact rather than whichever of the
-     * two the filesystem happened to return first.
+     * <p>The shade plugin leaves the pre-shade jar beside the shaded one as {@code
+     * original-<name>.jar}. It is excluded by the {@code startsWith} below rather than by a rule of
+     * its own — worth knowing before reordering that predicate, because nothing else keeps the
+     * unshaded jar out and every assertion built on this would then be about the wrong file.
+     *
+     * <p>Two matches means a stale jar from an earlier version is still in {@code target/}; run
+     * {@code mvn clean}.
      */
     static Path path() throws IOException {
-        Path target = Paths.get(System.getProperty("project.basedir", ".")).resolve("target");
-        try (Stream<Path> entries = Files.list(target)) {
+        try (Stream<Path> entries = Files.list(targetDir())) {
             List<Path> candidates =
                     entries.filter(
                                     p -> {
@@ -65,9 +68,27 @@ final class ShadedJar {
                             .collect(Collectors.toList());
             if (candidates.size() != 1) {
                 throw new IllegalStateException(
-                        "Expected exactly one shaded jar in target/, found " + candidates);
+                        "Expected exactly one shaded jar in target/, found "
+                                + candidates
+                                + " — more than one usually means a stale jar from an earlier"
+                                + " version; run `mvn clean`");
             }
-            return candidates.get(0);
+            return candidates.get(0).normalize();
         }
+    }
+
+    /**
+     * The module's {@code target/} directory.
+     *
+     * <p>Resolved against the {@code project.basedir} system property the connector parent's
+     * surefire configuration sets. Normalized, because {@link Path#toAbsolutePath()} does not
+     * remove a leading {@code .} and {@link Path#equals} compares name elements — so an
+     * unnormalized fallback path could never equal a code-source location it in fact points at.
+     */
+    static Path targetDir() {
+        return Paths.get(System.getProperty("project.basedir", "."))
+                .resolve("target")
+                .toAbsolutePath()
+                .normalize();
     }
 }

@@ -131,9 +131,14 @@
                                  but META-INF/NOTICE has to list the bundle by hand anyway and
                                  an explicit set keeps the two readable side by side. Note this
                                  list alone does NOT make a new transitive fail the build — an
-                                 unlisted one is silently dropped, surfacing at runtime. What
-                                 catches that is BundledDependenciesNoticeTest, which diffs this
-                                 jar's runtime tree against the NOTICE. -->
+                                 unlisted one is silently dropped, surfacing at runtime. Two tests
+                                 close that: BundledDependenciesNoticeTest diffs the recorded
+                                 runtime tree against the NOTICE, and
+                                 PubSubSqlConnectorPackagingITCase's
+                                 everyRuntimeDependencyContributedItsClassesToTheJar opens each
+                                 artifact and looks for its classes in the jar. The second is the
+                                 one that catches a drop, because adding the artifact to the
+                                 NOTICE alone would satisfy the first. -->
                             <artifactSet>
                                 <includes>
                                     <include>io.github.flink-gcp:flink-connector-gcp-pubsub</include>
@@ -331,7 +336,13 @@
                                  Left alone it would stamp ASF provenance onto an artifact this
                                  project does not publish under the ASF. combine.self="override"
                                  because the parent declares its <transformers> with
-                                 combine.children="append" — without it we would get both. -->
+                                 combine.children="append" — without it we would get both.
+
+                                 The cost of overriding: this list must stay a superset of the
+                                 parent's. It is one today (ServicesResourceTransformer and the
+                                 notice transformer are all it declares), but a transformer added
+                                 in a future flink-connector-parent would not reach this module,
+                                 and nothing would say so. -->
                             <transformers combine.self="override">
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
@@ -354,6 +365,9 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
+                <!-- No <version> here either, but the source differs from the shade plugin's:
+                     this one resolves to 3.1.1 from org.apache:apache:20, the ASF grandparent,
+                     rather than from flink-connector-parent. Pinned there, so reproducible. -->
                 <executions>
                     <!-- The input to BundledDependenciesNoticeTest: the exact runtime tree
                          that ends up in the jar, written where a test can read it. This is

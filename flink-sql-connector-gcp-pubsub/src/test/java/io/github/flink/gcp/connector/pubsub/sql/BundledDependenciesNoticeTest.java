@@ -55,7 +55,13 @@ class BundledDependenciesNoticeTest {
     /** This project's own artifacts are bundled but are not a third-party licence obligation. */
     private static final String OWN_GROUP_ID = "io.github.flink-gcp";
 
-    /** {@code groupId:artifactId:type[:classifier]:version}, as {@code dependency:list} prints. */
+    /**
+     * {@code groupId:artifactId:type:version}, as {@code dependency:list} prints it.
+     *
+     * <p>A classified artifact ({@code g:a:jar:linux-x86_64:2.0}) would put the classifier in the
+     * version group. Nothing in this tree carries one; if that changes, the mismatched coordinate
+     * fails the comparison below rather than slipping through, so the wrong shape is loud.
+     */
     private static final Pattern COORDINATES =
             Pattern.compile(
                     "([A-Za-z0-9_.\\-]+):([A-Za-z0-9_.\\-]+):[A-Za-z0-9_.\\-]+"
@@ -105,8 +111,12 @@ class BundledDependenciesNoticeTest {
         List<String> lines = Files.readAllLines(NOTICE, StandardCharsets.UTF_8);
         return lines.stream()
                 .filter(line -> line.startsWith("- "))
-                // Entries in the non-Apache groups carry a trailing licence-file pointer.
-                .map(line -> line.substring(2).split(" ", 2)[0])
+                // Entries in the non-Apache groups carry a trailing licence-file pointer. The
+                // trim also strips the CR a Windows checkout leaves on every line: without it the
+                // Apache-group entries, which have nothing after the coordinate, would each keep a
+                // trailing \r and mismatch. The repository has no .gitattributes, so that checkout
+                // is the default one on Windows.
+                .map(line -> line.substring(2).split(" ", 2)[0].trim())
                 .collect(Collectors.toSet());
     }
 }

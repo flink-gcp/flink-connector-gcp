@@ -56,6 +56,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Runs a SQL job through the shaded classes, against the Pub/Sub emulator.
@@ -186,11 +187,13 @@ class PubSubSqlConnectorSmokeITCase {
                         + ") "
                         + withOptions("subscription", name, "format", "json"));
 
+        // Bounded for the same reason as collect(): the no-argument await() has no timeout, so an
+        // INSERT job that never finishes would hang to the class timeout.
         tEnv.executeSql(
                         "INSERT INTO outbound VALUES"
                                 + " ('a', 1, MAP['source', 'sql']),"
                                 + " ('b', 2, MAP['source', 'sql'])")
-                .await();
+                .await(COLLECT_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
 
         List<Row> rows = collect(tEnv.executeSql("SELECT * FROM inbound"), 2);
 
@@ -208,23 +211,37 @@ class PubSubSqlConnectorSmokeITCase {
     }
 
     /**
-     * Drains rows until {@code count} distinct ids have arrived or the deadline passes.
+     * Drains rows until {@code count} distinct ids have arrived, or fails after {@link
+     * #COLLECT_TIMEOUT}.
      *
-     * <p>Distinct, and deadline-bounded rather than blocking, for the reasons the connector
-     * module's table harness records: the transport is at-least-once so a redelivery would
-     * otherwise crowd out an original, and a shortfall must fail this assertion rather than the
-     * class timeout.
+     * <p>Distinct because the transport is at-least-once, so counting total rows would let one
+     * redelivery crowd out an original.
+     *
+     * <p>The timeout is <em>preemptive</em>, and that is the whole point. {@code hasNext()} on an
+     * unbounded query blocks until a row arrives, so a deadline tested in the loop condition is
+     * only reached between rows — it bounds a partial shortfall and does nothing at all in the case
+     * CI actually produces, zero rows. That case would otherwise sit in {@code hasNext()} until the
+     * class timeout and report an interrupt from inside Flink's fetcher rather than "expected 2
+     * rows". The connector module's harness has the same loop and the same hole ({@code
+     * PubSubTableTestBase.collect}); this is the fixed shape.
      */
-    private static List<Row> collect(TableResult result, int count) throws Exception {
-        Map<Object, Row> rows = new LinkedHashMap<>();
-        long deadline = System.nanoTime() + COLLECT_TIMEOUT.toNanos();
-        try (CloseableIterator<Row> iterator = result.collect()) {
-            while (rows.size() < count && System.nanoTime() < deadline && iterator.hasNext()) {
-                Row row = iterator.next();
-                rows.putIfAbsent(row.getField("id"), row);
-            }
-        }
-        return new ArrayList<>(rows.values());
+    private static List<Row> collect(TableResult result, int count) {
+        return assertTimeoutPreemptively(
+                COLLECT_TIMEOUT,
+                () -> {
+                    Map<Object, Row> rows = new LinkedHashMap<>();
+                    try (CloseableIterator<Row> iterator = result.collect()) {
+                        while (rows.size() < count && iterator.hasNext()) {
+                            Row row = iterator.next();
+                            rows.putIfAbsent(row.getField("id"), row);
+                        }
+                    }
+                    return new ArrayList<>(rows.values());
+                },
+                () ->
+                        "timed out waiting for "
+                                + count
+                                + " distinct rows from the shaded connector");
     }
 
     /** Renders a {@code WITH} clause carrying the connector, project and emulator endpoint. */
