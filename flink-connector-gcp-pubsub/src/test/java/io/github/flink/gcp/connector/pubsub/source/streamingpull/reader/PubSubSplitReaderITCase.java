@@ -31,7 +31,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -46,8 +48,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
 
-    /** Long enough that redelivery in these tests can only come from an explicit nack. */
+    /**
+     * Long enough that a first delivery in these tests can only come from the initial publish. It
+     * is also the fallback bound {@link #REDELIVERY_TIMEOUT} must cover: an unacknowledged message
+     * whose nack never took effect is redelivered when this deadline expires.
+     */
     private static final int ACK_DEADLINE_SECONDS = 60;
+
+    /**
+     * Bound on waiting for redelivery after a close, deliberately longer than {@link
+     * #ACK_DEADLINE_SECONDS}. The claim under test is that closing the reader loses nothing, not
+     * that the emulator redelivers a nacked message promptly: a nack is a fire-and-forget {@code
+     * modifyAckDeadline(0)}, so its timing — even whether it was applied at all — is the service's
+     * property, not the connector's, and the emulator does not specify it (issue #118; asserting
+     * promptness moved to the real-GCP suite, issue #82). Under this bound a dropped or delayed
+     * nack degrades to a pass slow enough to stand out in the test timing, while an actual loss — a
+     * close that acknowledged instead of nacking, say — still fails.
+     */
+    private static final Duration REDELIVERY_TIMEOUT = Duration.ofSeconds(90);
 
     private static final int MAX_RECORDS_PER_FETCH = 100;
 
@@ -74,16 +92,21 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
 
         // A fresh subscriber must see nothing: the messages were acknowledged, and closing the
         // first reader had nothing left to nack.
-        assertThat(payloads(receiveWithFreshReader(split, Duration.ofSeconds(5)))).isEmpty();
+        assertThat(
+                        payloads(
+                                receiveWithFreshReader(
+                                        split, Integer.MAX_VALUE, Duration.ofSeconds(5))))
+                .isEmpty();
     }
 
     @Test
-    void closingTheReaderNacksUnacknowledgedMessagesSoTheyComeBackAtOnce() throws Exception {
+    void closingTheReaderNacksUnacknowledgedMessagesSoTheyAreRedelivered() throws Exception {
         SubscriptionDestination subscription =
                 createTopicAndSubscription("reader-nack", ACK_DEADLINE_SECONDS);
         publish("reader-nack", "m1", "m2");
         SubscriptionSplit split = new SubscriptionSplit(subscription, "0");
-        PubSubAckTracker ackTracker = newTracker();
+        TestReaderMetrics readerMetrics = new TestReaderMetrics();
+        PubSubAckTracker ackTracker = new PubSubAckTracker(readerMetrics.metrics(), null);
 
         try (PubSubSplitReader reader = reader(ackTracker)) {
             reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split)));
@@ -95,8 +118,14 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
             ackTracker.addCheckpoint(1L);
         }
 
-        // Without the nack these would only reappear after the 60 s acknowledgement deadline.
-        assertThat(payloads(receiveWithFreshReader(split, Duration.ofSeconds(30))))
+        // The connector's half of the contract, asserted deterministically: closing issued a nack
+        // for both messages. This is what tells a working close from one silently relying on the
+        // acknowledgement-deadline fallback the redelivery window below also covers.
+        assertThat(readerMetrics.counter("messagesNacked")).isEqualTo(2);
+
+        // The service's half, reduced to what the emulator can honestly promise: the messages come
+        // back rather than being lost.
+        assertThat(payloads(receiveWithFreshReader(split, 2, REDELIVERY_TIMEOUT)))
                 .containsExactlyInAnyOrder("m1", "m2");
     }
 
@@ -131,21 +160,30 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
                 new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount));
     }
 
+    /**
+     * Receives with a fresh reader until {@code expected} distinct messages have arrived or the
+     * timeout elapses, so a wait for messages known to be coming ends when they do, while an
+     * emptiness check ({@code expected = Integer.MAX_VALUE}) holds its full window.
+     */
     private static List<PubsubMessage> receiveWithFreshReader(
-            SubscriptionSplit split, Duration timeout) throws Exception {
+            SubscriptionSplit split, int expected, Duration timeout) throws Exception {
         try (PubSubSplitReader reader = reader(newTracker())) {
             reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split)));
-            return fetchUntil(reader, Integer.MAX_VALUE, timeout);
+            return fetchUntil(reader, expected, timeout);
         }
     }
 
     /**
-     * Fetches until {@code expected} messages have been collected or the timeout elapses. A fetch
-     * blocks until data arrives, so a waker nudges the reader once the deadline passes.
+     * Fetches until {@code expected} <em>distinct</em> messages have been collected or the timeout
+     * elapses, returning them in arrival order. Distinct by message id because delivery is
+     * at-least-once: a wait long enough to span the acknowledgement deadline (see {@link
+     * #REDELIVERY_TIMEOUT}) can legitimately see the same message twice, and a duplicate must
+     * dedupe rather than crowd out a message still to arrive. A fetch blocks until data arrives, so
+     * a waker nudges the reader once the deadline passes.
      */
     private static List<PubsubMessage> fetchUntil(
             PubSubSplitReader reader, int expected, Duration timeout) throws Exception {
-        List<PubsubMessage> received = new ArrayList<>();
+        Map<String, PubsubMessage> received = new LinkedHashMap<>();
         long deadlineNanos = System.nanoTime() + timeout.toNanos();
         ScheduledExecutorService waker = Executors.newSingleThreadScheduledExecutor();
         try {
@@ -158,15 +196,15 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
         } finally {
             waker.shutdownNow();
         }
-        return received;
+        return new ArrayList<>(received.values());
     }
 
     private static void drain(
-            RecordsWithSplitIds<PubsubMessage> records, List<PubsubMessage> into) {
+            RecordsWithSplitIds<PubsubMessage> records, Map<String, PubsubMessage> into) {
         while (records.nextSplit() != null) {
             PubsubMessage message;
             while ((message = records.nextRecordFromSplit()) != null) {
-                into.add(message);
+                into.putIfAbsent(message.getMessageId(), message);
             }
         }
     }
