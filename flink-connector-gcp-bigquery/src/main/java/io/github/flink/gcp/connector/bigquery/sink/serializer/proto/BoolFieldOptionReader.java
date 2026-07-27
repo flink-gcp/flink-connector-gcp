@@ -53,7 +53,7 @@ import java.util.Set;
  * <p>Extension numbers in protobuf's private range have no registry, so two annotation protos can
  * pick the same one independently. When the caller knows the option's full name, a declaration
  * found under a different name is therefore treated as a <em>different option</em> that merely
- * shares the number, and the field is left alone rather than becoming a JSON column. The value's
+ * shares the number, and the field is left alone rather than becoming a marked column. The value's
  * own options message never carries that name, but the extension's <em>declaration</em> is usually
  * reachable — either as the known extension itself, or through the descriptor's transitive file
  * dependencies, which a {@code FileDescriptorSet} normally includes even though protobuf will not
@@ -129,8 +129,8 @@ final class BoolFieldOptionReader {
             Preconditions.checkArgument(
                     varints.size() == 1 && (varints.get(0) == 0L || varints.get(0) == 1L),
                     "Field option number %s on field %s is not encoded as a singular bool and so is"
-                            + " a different option; a JSON field option must be declared as"
-                            + " 'optional bool ... = %s'",
+                            + " a different option; a field option read by this connector must be"
+                            + " declared as 'optional bool ... = %s'",
                     extensionNumber,
                     field.getFullName(),
                     extensionNumber);
@@ -159,8 +159,9 @@ final class BoolFieldOptionReader {
                 !declaration.isRepeated()
                         && declaration.getJavaType()
                                 == Descriptors.FieldDescriptor.JavaType.BOOLEAN,
-                "Field option %s (number %s) on field %s is not a singular bool but %s%s; a JSON"
-                        + " field option must be declared as 'optional bool ... = %s'",
+                "Field option %s (number %s) on field %s is not a singular bool but %s%s; a field"
+                        + " option read by this connector must be declared as 'optional bool ... ="
+                        + " %s'",
                 declaration.getFullName(),
                 extensionNumber,
                 field.getFullName(),

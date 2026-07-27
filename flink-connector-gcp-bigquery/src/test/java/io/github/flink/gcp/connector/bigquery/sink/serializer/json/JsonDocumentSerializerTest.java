@@ -356,6 +356,37 @@ class JsonDocumentSerializerTest {
                 .hasMessageContaining("root.payload");
     }
 
+    /**
+     * A {@code GEOGRAPHY} column needs no marker option here — the supplied schema already says so,
+     * which is why this serializer was never part of the gap the marker options close. Untested
+     * until now all the same.
+     */
+    @Test
+    void aGeographyColumnTakesItsTextForm() throws Exception {
+        TableSchema withGeography =
+                TableSchema.newBuilder()
+                        .addFields(
+                                field(
+                                        "boundary",
+                                        TableFieldSchema.Type.GEOGRAPHY,
+                                        TableFieldSchema.Mode.NULLABLE))
+                        .build();
+        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(withGeography);
+
+        assertThat(value(row(serializer, "{\"boundary\":\"POINT(1 2)\"}"), "boundary"))
+                .isEqualTo("POINT(1 2)");
+
+        // Pinned for the same reason as the JSON column above, and the trap is sharper here: the
+        // accepted forms include GeoJSON, so nesting the object is the obvious thing to write in a
+        // JSON document — and it is not what the column takes.
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        "{\"boundary\":{\"type\":\"Point\",\"coordinates\":[1,2]}}"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("root.boundary");
+    }
+
     @Test
     void aNumberInATemporalColumnIsTakenAsItsStorageEncoding() throws Exception {
         TableSchema withTimestamp =

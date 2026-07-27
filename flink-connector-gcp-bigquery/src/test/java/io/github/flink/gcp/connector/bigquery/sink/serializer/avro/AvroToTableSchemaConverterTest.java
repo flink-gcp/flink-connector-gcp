@@ -616,6 +616,123 @@ class AvroToTableSchemaConverterTest {
     }
 
     @Test
+    void geographyFieldPathMarksStringAsGeography() {
+        Schema schema =
+                record(
+                        "{\"name\":\"boundary\",\"type\":\"string\"},"
+                                + "{\"name\":\"plain\",\"type\":\"string\"}");
+        TableSchema converted =
+                AvroToTableSchemaConverter.convert(
+                        schema, AvroSchemaOptions.builder().geographyFieldPath("boundary").build());
+        assertThat(converted.getFields(0).getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+        assertThat(converted.getFields(1).getType()).isEqualTo(TableFieldSchema.Type.STRING);
+    }
+
+    @Test
+    void geographyFieldPathReachesNestedFields() {
+        Schema schema =
+                recordOf(
+                        "{\"type\":\"record\",\"name\":\"Inner\",\"fields\":"
+                                + "[{\"name\":\"boundary\",\"type\":[\"null\",\"string\"]}]}");
+        TableSchema converted =
+                AvroToTableSchemaConverter.convert(
+                        schema,
+                        AvroSchemaOptions.builder().geographyFieldPath("f.boundary").build());
+        assertThat(converted.getFields(0).getFields(0).getType())
+                .isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+    }
+
+    @Test
+    void geographyFieldPathReachesRepeatedAndMapValueFields() {
+        TableFieldSchema repeated =
+                AvroToTableSchemaConverter.convert(
+                                recordOf("{\"type\":\"array\",\"items\":\"string\"}"),
+                                AvroSchemaOptions.builder().geographyFieldPath("f").build())
+                        .getFields(0);
+        assertThat(repeated.getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+        assertThat(repeated.getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+
+        TableFieldSchema mapValue =
+                AvroToTableSchemaConverter.convert(
+                                recordOf("{\"type\":\"map\",\"values\":\"string\"}"),
+                                AvroSchemaOptions.builder().geographyFieldPath("f.value").build())
+                        .getFields(0);
+        assertThat(mapValue.getFields(1).getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+    }
+
+    @Test
+    void rejectsGeographyFieldPathOnNonStringField() {
+        assertThatThrownBy(
+                        () ->
+                                AvroToTableSchemaConverter.convert(
+                                        recordOf("\"long\""),
+                                        AvroSchemaOptions.builder()
+                                                .geographyFieldPath("f")
+                                                .build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("GEOGRAPHY mapping requires");
+    }
+
+    @Test
+    void rejectsGeographyFieldPathOnAMapField() {
+        assertThatThrownBy(
+                        () ->
+                                AvroToTableSchemaConverter.convert(
+                                        recordOf("{\"type\":\"map\",\"values\":\"string\"}"),
+                                        AvroSchemaOptions.builder()
+                                                .geographyFieldPath("f")
+                                                .build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("GEOGRAPHY mapping requires");
+    }
+
+    @Test
+    void rejectsGeographyFieldPathMatchingNoField() {
+        assertThatThrownBy(
+                        () ->
+                                AvroToTableSchemaConverter.convert(
+                                        recordOf("\"string\""),
+                                        AvroSchemaOptions.builder()
+                                                .geographyFieldPath("nope")
+                                                .build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("matching no field");
+    }
+
+    /** A column has one type, so a path claimed by both markers is a configuration error. */
+    @Test
+    void rejectsAFieldMarkedAsBothJsonAndGeography() {
+        assertThatThrownBy(
+                        () ->
+                                AvroToTableSchemaConverter.convert(
+                                        recordOf("\"string\""),
+                                        AvroSchemaOptions.builder()
+                                                .jsonFieldPath("f")
+                                                .geographyFieldPath("f")
+                                                .build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("both a JSON and a GEOGRAPHY");
+    }
+
+    /** The JSON carve-out above, for a geography column: same rule, stated about the marking. */
+    @Test
+    void deriveRequiredColumnsLeavesGeographyColumnsNullable() {
+        TableSchema converted =
+                AvroToTableSchemaConverter.convert(
+                        record(
+                                "{\"name\":\"a\",\"type\":\"string\"},"
+                                        + "{\"name\":\"b\",\"type\":\"string\"}"),
+                        AvroSchemaOptions.builder()
+                                .geographyFieldPath("a")
+                                .deriveRequiredColumns()
+                                .build());
+
+        assertThat(converted.getFields(0).getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+        assertThat(converted.getFields(0).getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(converted.getFields(1).getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+    }
+
+    @Test
     void rejectsJsonFieldPathOnAMapField() {
         assertThatThrownBy(
                         () ->

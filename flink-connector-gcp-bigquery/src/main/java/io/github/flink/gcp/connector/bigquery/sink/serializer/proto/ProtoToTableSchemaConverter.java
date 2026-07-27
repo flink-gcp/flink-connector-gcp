@@ -64,6 +64,9 @@ import java.util.Set;
  *       (a message is not expanded into a {@code STRUCT}; a string is taken to be JSON text
  *       already). This selection wins over every well-known-type mapping above, so a marked {@code
  *       Timestamp} or wrapper field is printed as canonical protobuf JSON rather than flattened
+ *   <li>string fields selected by {@link ProtoSchemaOptions#isGeographyField} → {@code GEOGRAPHY},
+ *       the value taken to be WKT, hex-encoded WKB or GeoJSON already. Strings only, unlike the
+ *       JSON marking: no protobuf message means a geography to BigQuery
  * </ul>
  *
  * <p>Column modes: repeated fields (including maps) are {@code REPEATED}, and everything else is
@@ -77,9 +80,9 @@ import java.util.Set;
  * <p>Recursive message types are rejected (BigQuery schemas cannot represent them), as are sibling
  * fields whose names differ only by case (the Storage API lowercases descriptor field names) and
  * messages with no fields at all, {@code google.protobuf.Empty} among them (a BigQuery {@code
- * STRUCT} must have at least one column). Configured JSON field paths that match no field are
- * rejected; a configured JSON field option number that matches no field is not, since a message
- * need not have JSON columns.
+ * STRUCT} must have at least one column). Configured JSON and geography field paths that match no
+ * field are rejected, as is a field marked as both; a configured JSON or geography field option
+ * number that matches no field is not, since a message need not have columns of either kind.
  */
 @Internal
 public final class ProtoToTableSchemaConverter {
@@ -87,20 +90,61 @@ public final class ProtoToTableSchemaConverter {
     private ProtoToTableSchemaConverter() {}
 
     /**
-     * Returns whether the given field may be mapped to a {@code JSON} column: a non-map message
-     * field, whose canonical protobuf JSON is written, or a string field, whose value is already
-     * JSON text and is written through verbatim. Map fields are excluded because a proto map has no
-     * meaningful JSON column form here — its BigQuery shape is {@code REPEATED STRUCT<key, value>}.
+     * Returns the BigQuery type the given field is marked with, or {@code null} where it is marked
+     * with none: the configured markings, plus the automatic {@code JSON} of {@code Struct}, {@code
+     * Value} and {@code ListValue}.
+     *
+     * <p>The single decision point, called by {@link ProtoRowConverter} as well as from here, so a
+     * row plan cannot disagree with the schema about which columns are marked or with what. It used
+     * to be an expression duplicated in both, with a comment in each saying it must stay identical
+     * to the other — the target field of a marked column is a string, so a plan that disagreed
+     * would ask a string field for its message type and throw at construction.
+     *
+     * <p>A configured marking wins over the automatic one, which matters where both could apply: a
+     * {@code Struct} field marked as JSON is JSON either way, but one marked as geography — by path
+     * or by field option — is rejected below rather than quietly staying JSON.
+     *
+     * <p>Takes the field rather than a pre-computed {@link ProtoWellKnownType}, so neither caller
+     * can hand it the wrong one — which is the whole point of there being a single one of these.
+     * The cost is that {@code ProtoWellKnownType.of} runs twice per message field, once here and
+     * once in the caller's own switch; it is a name-and-shape lookup, it runs at schema derivation
+     * rather than per record, and buying it back would mean re-introducing the parameter this
+     * signature refuses.
      */
-    private static boolean isJsonMappable(Descriptors.FieldDescriptor field) {
-        switch (field.getJavaType()) {
-            case MESSAGE:
-                return !field.isMapField();
-            case STRING:
-                return true;
-            default:
-                return false;
+    static TableFieldSchema.Type markedType(
+            Descriptors.FieldDescriptor field, String path, ProtoSchemaOptions options) {
+        TableFieldSchema.Type configured = options.configuredMarkedType(field, path);
+        if (configured != null) {
+            return configured;
         }
+        return ProtoWellKnownType.of(field).isJsonMapped() ? TableFieldSchema.Type.JSON : null;
+    }
+
+    /**
+     * Rejects a field that cannot carry the column it is marked as.
+     *
+     * <p>{@code JSON} takes a non-map message field, whose canonical protobuf JSON is written, or a
+     * string field, whose value is already JSON text and is written through verbatim. Map fields
+     * are excluded because a proto map has no meaningful JSON column form here — its BigQuery shape
+     * is {@code REPEATED STRUCT<key, value>}. {@code GEOGRAPHY} takes a string and nothing else: a
+     * message has no geography meaning.
+     */
+    private static void checkMarkable(
+            Descriptors.FieldDescriptor field, String path, TableFieldSchema.Type marked) {
+        // A string is markable as anything; the message case is JSON's alone, so it is spelled as
+        // the exception rather than as the fall-through — a third marker would otherwise inherit
+        // JSON's laxer rule by default.
+        boolean string = field.getJavaType() == Descriptors.FieldDescriptor.JavaType.STRING;
+        boolean nonMapMessage =
+                field.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE
+                        && !field.isMapField();
+        Preconditions.checkArgument(
+                string || (marked == TableFieldSchema.Type.JSON && nonMapMessage),
+                "%s mapping requires a (possibly repeated) %s field, but %s is %s",
+                marked,
+                marked == TableFieldSchema.Type.JSON ? "message or string" : "string",
+                path,
+                field.isMapField() ? "a map field" : field.getJavaType().toString());
     }
 
     /**
@@ -115,16 +159,17 @@ public final class ProtoToTableSchemaConverter {
         TableSchema.Builder builder = TableSchema.newBuilder();
         Set<String> ancestors = new HashSet<>();
         ancestors.add(descriptor.getFullName());
-        Set<String> matchedJsonPaths = new HashSet<>();
+        Set<String> matchedMarkedPaths = new HashSet<>();
         checkCaseCollisions(descriptor, "");
         for (Descriptors.FieldDescriptor field : descriptor.getFields()) {
-            builder.addFields(convertField(field, "", options, ancestors, matchedJsonPaths));
+            builder.addFields(convertField(field, "", options, ancestors, matchedMarkedPaths));
         }
         Set<String> unmatched = new HashSet<>(options.getJsonFieldPaths());
-        unmatched.removeAll(matchedJsonPaths);
+        unmatched.addAll(options.getGeographyFieldPaths());
+        unmatched.removeAll(matchedMarkedPaths);
         Preconditions.checkArgument(
                 unmatched.isEmpty(),
-                "JSON field paths matching no field of %s: %s",
+                "JSON or GEOGRAPHY field paths matching no field of %s: %s",
                 descriptor.getFullName(),
                 unmatched);
         return builder.build();
@@ -135,34 +180,28 @@ public final class ProtoToTableSchemaConverter {
             String parentPath,
             ProtoSchemaOptions options,
             Set<String> ancestors,
-            Set<String> matchedJsonPaths) {
+            Set<String> matchedMarkedPaths) {
         String path = parentPath.isEmpty() ? field.getName() : parentPath + "." + field.getName();
-        // Asked once and reused: this is the single JSON decision point, it walks the descriptor's
-        // file-dependency graph for every configured option, and it decides the mode as well as
-        // the type.
+        // Asked once and reused: the single marker decision point. It walks the descriptor's
+        // file-dependency graph for every configured field option, and it decides the mode as well
+        // as the type.
         //
         // Struct/Value/ListValue join it here, and that placement does three things with no second
-        // branch: modeOf's "a singular JSON column is never REQUIRED" rule covers them as written;
-        // the recursion guard is never reached, which is the whole point, since they are mutually
-        // recursive; and an explicitly configured JSON marking keeps winning over every
+        // branch: modeOf's "a singular marked column is never REQUIRED" rule covers them as
+        // written; the recursion guard is never reached, which is the whole point, since they are
+        // mutually recursive; and an explicitly configured marking keeps winning over every
         // well-known-type mapping, because this branch returns before the switch below ever asks
         // what the message type is.
-        ProtoWellKnownType wellKnown = ProtoWellKnownType.of(field);
-        boolean jsonColumn = options.isJsonField(field, path) || wellKnown.isJsonMapped();
+        TableFieldSchema.Type marked = markedType(field, path, options);
         TableFieldSchema.Builder builder =
                 TableFieldSchema.newBuilder()
                         .setName(field.getName())
-                        .setMode(modeOf(field, options, jsonColumn));
+                        .setMode(modeOf(field, options, marked != null));
 
-        if (jsonColumn) {
-            Preconditions.checkArgument(
-                    isJsonMappable(field),
-                    "JSON mapping requires a (possibly repeated) message or string field, but %s is"
-                            + " %s",
-                    path,
-                    field.isMapField() ? "a map field" : field.getJavaType().toString());
-            matchedJsonPaths.add(path);
-            return builder.setType(TableFieldSchema.Type.JSON).build();
+        if (marked != null) {
+            checkMarkable(field, path, marked);
+            matchedMarkedPaths.add(path);
+            return builder.setType(marked).build();
         }
 
         // The well-known types that become one flat column are settled here rather than inside
@@ -170,7 +209,7 @@ public final class ProtoToTableSchemaConverter {
         // consumes it sits within a few lines of it. Reaching expansion at all therefore means an
         // ordinary message: no case for JSON is possible below, because the branch above already
         // returned for it.
-        switch (wellKnown) {
+        switch (ProtoWellKnownType.of(field)) {
             case TIMESTAMP:
                 return builder.setType(TableFieldSchema.Type.TIMESTAMP).build();
             case DURATION:
@@ -189,7 +228,7 @@ public final class ProtoToTableSchemaConverter {
         }
 
         if (field.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE) {
-            expandMessageField(field, path, options, ancestors, matchedJsonPaths, builder);
+            expandMessageField(field, path, options, ancestors, matchedMarkedPaths, builder);
         } else {
             builder.setType(scalarType(field, path));
         }
@@ -231,18 +270,19 @@ public final class ProtoToTableSchemaConverter {
     /**
      * Returns the BigQuery mode of the given field.
      *
-     * <p>{@code repeated} is tested first and unconditionally, so a repeated JSON-mapped field
-     * stays {@code REPEATED JSON} and a map stays {@code REPEATED STRUCT} — a BigQuery {@code
-     * REPEATED} column cannot be {@code NULLABLE} anyway.
+     * <p>{@code repeated} is tested first and unconditionally, so a repeated marked field stays
+     * {@code REPEATED JSON} or {@code REPEATED GEOGRAPHY} and a map stays {@code REPEATED STRUCT} —
+     * a BigQuery {@code REPEATED} column cannot be {@code NULLABLE} anyway.
      *
-     * <p>A singular {@code JSON} column is never {@code REQUIRED}. The rule is stated about JSON
+     * <p>A singular marked column is never {@code REQUIRED}. The rule is stated about the marking
      * rather than about presence because the alternative would poison whole streams: {@link
-     * ProtoRowConverter} deliberately leaves a JSON-mapped string <em>without presence</em> unset
-     * when it is empty (an empty string is not valid JSON), and "without presence" is exactly the
-     * condition that would make the column {@code REQUIRED} — a required target field left unset
-     * fails {@code build()} for every record that legitimately omits it. The broader rule also
-     * covers a proto2 {@code required} JSON field, where {@code REQUIRED} would in fact be correct;
-     * one clause is worth more than fidelity in a combination that exotic.
+     * ProtoRowConverter} deliberately leaves a marked string <em>without presence</em> unset when
+     * it is empty (an empty string is neither valid JSON nor a valid geometry), and "without
+     * presence" is exactly the condition that would make the column {@code REQUIRED} — a required
+     * target field left unset fails {@code build()} for every record that legitimately omits it.
+     * The broader rule also covers a proto2 {@code required} marked field, where {@code REQUIRED}
+     * would in fact be correct; one clause is worth more than fidelity in a combination that
+     * exotic.
      *
      * <p>Well-known types need no clause here. A wrapper, a {@code Duration} and a {@code
      * FieldMask} are message fields, so they have presence and stay {@code NULLABLE} — which for a
@@ -250,11 +290,11 @@ public final class ProtoToTableSchemaConverter {
      * required} wrapper derives {@code REQUIRED}, and it is mandatory, so that is faithful.
      */
     private static TableFieldSchema.Mode modeOf(
-            Descriptors.FieldDescriptor field, ProtoSchemaOptions options, boolean jsonColumn) {
+            Descriptors.FieldDescriptor field, ProtoSchemaOptions options, boolean markedColumn) {
         if (field.isRepeated()) {
             return TableFieldSchema.Mode.REPEATED;
         }
-        if (!options.isDeriveRequiredColumns() || jsonColumn) {
+        if (!options.isDeriveRequiredColumns() || markedColumn) {
             return TableFieldSchema.Mode.NULLABLE;
         }
         // isRequired() as well as presence: a proto2 required field has presence and is mandatory
@@ -278,7 +318,7 @@ public final class ProtoToTableSchemaConverter {
             String path,
             ProtoSchemaOptions options,
             Set<String> ancestors,
-            Set<String> matchedJsonPaths,
+            Set<String> matchedMarkedPaths,
             TableFieldSchema.Builder builder) {
         Descriptors.Descriptor messageType = field.getMessageType();
         // A sibling of the recursion rejection below, and stated about columns rather than about
@@ -301,7 +341,7 @@ public final class ProtoToTableSchemaConverter {
         builder.setType(TableFieldSchema.Type.STRUCT);
         checkCaseCollisions(messageType, path);
         for (Descriptors.FieldDescriptor sub : messageType.getFields()) {
-            builder.addFields(convertField(sub, path, options, ancestors, matchedJsonPaths));
+            builder.addFields(convertField(sub, path, options, ancestors, matchedMarkedPaths));
         }
         ancestors.remove(messageType.getFullName());
     }

@@ -18,9 +18,12 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.protobuf.Descriptors;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -29,10 +32,131 @@ import static org.assertj.core.api.Assertions.entry;
 /** Tests for {@link ProtoSchemaOptions}. */
 class ProtoSchemaOptionsTest {
 
+    /** An unannotated string field, so only a configured path can select it. */
+    private static Descriptors.FieldDescriptor aField() {
+        return TestProtos.allTypes().findFieldByName("f_string");
+    }
+
     @Test
     void defaultsMapNothingToJson() {
         assertThat(ProtoSchemaOptions.defaults().getJsonFieldPaths()).isEmpty();
         assertThat(ProtoSchemaOptions.defaults().getJsonFieldOptions()).isEmpty();
+    }
+
+    @Test
+    void defaultsMapNothingToGeography() {
+        assertThat(ProtoSchemaOptions.defaults().getGeographyFieldPaths()).isEmpty();
+        assertThat(ProtoSchemaOptions.defaults().getGeographyFieldOptions()).isEmpty();
+        assertThat(ProtoSchemaOptions.defaults().isGeographyField(aField(), "anything")).isFalse();
+    }
+
+    @Test
+    void geographyFieldPathsAccumulateAcrossCalls() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldPath("a")
+                        .geographyFieldPaths(Arrays.asList("b.c", "d"))
+                        .geographyFieldPath("a")
+                        .build();
+
+        assertThat(options.getGeographyFieldPaths()).containsExactlyInAnyOrder("a", "b.c", "d");
+        assertThat(options.isGeographyField(aField(), "b.c")).isTrue();
+        assertThat(options.isGeographyField(aField(), "b")).isFalse();
+    }
+
+    @Test
+    void geographyFieldOptionNumbersAccumulateAndStayOutOfTheJsonRegistry() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
+                        .geographyFieldOptionNumber(TestProtos.OTHER_OPTION_NUMBER)
+                        .build();
+
+        assertThat(options.getGeographyFieldOptions())
+                .containsOnly(
+                        entry(TestProtos.GEOGRAPHY_OPTION_NUMBER, null),
+                        entry(TestProtos.OTHER_OPTION_NUMBER, null));
+        // The two markers keep separate registries: configuring one must not select the other.
+        assertThat(options.getJsonFieldOptions()).isEmpty();
+    }
+
+    /**
+     * The {@code GeneratedExtension} overload, which is the one the javadoc tells users to prefer.
+     * Without this, writing into the JSON registry by copy-paste would go unnoticed — and so would
+     * losing the captured name, which is the whole reason to prefer it over the bare number.
+     */
+    @Test
+    void capturesTheNumberAndNameFromAGeographyExtension() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOption(TestProtos.geographyOptionExtension())
+                        .build();
+
+        assertThat(options.getGeographyFieldOptions())
+                .containsExactly(
+                        entry(
+                                TestProtos.GEOGRAPHY_OPTION_NUMBER,
+                                TestProtos.GEOGRAPHY_OPTION_FULL_NAME));
+        assertThat(options.getJsonFieldOptions()).isEmpty();
+    }
+
+    @Test
+    void keepsTheNamedGeographyEntryWhenTheSameNumberIsRegisteredTwice() {
+        ProtoSchemaOptions nameLast =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
+                        .geographyFieldOption(TestProtos.geographyOptionExtension())
+                        .build();
+        ProtoSchemaOptions nameFirst =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOption(TestProtos.geographyOptionExtension())
+                        .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
+                        .build();
+
+        assertThat(nameLast.getGeographyFieldOptions())
+                .containsExactly(
+                        entry(
+                                TestProtos.GEOGRAPHY_OPTION_NUMBER,
+                                TestProtos.GEOGRAPHY_OPTION_FULL_NAME));
+        assertThat(nameFirst.getGeographyFieldOptions())
+                .containsExactly(
+                        entry(
+                                TestProtos.GEOGRAPHY_OPTION_NUMBER,
+                                TestProtos.GEOGRAPHY_OPTION_FULL_NAME));
+    }
+
+    /**
+     * One number registered as both markers says every field carrying that annotation is two kinds
+     * of column at once — broken for every message, not just some — so it needs no descriptor and
+     * is rejected where it is written.
+     */
+    @Test
+    void rejectsOneNumberRegisteredAsBothMarkers() {
+        assertThatThrownBy(
+                        () ->
+                                ProtoSchemaOptions.builder()
+                                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                                        .geographyFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("both a JSON and a GEOGRAPHY option")
+                .hasMessageContaining(String.valueOf(TestProtos.JSON_OPTION_NUMBER));
+    }
+
+    @Test
+    void returnedGeographyPathsAreUnmodifiable() {
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().geographyFieldPath("a").build();
+
+        assertThatThrownBy(() -> options.getGeographyFieldPaths().add("b"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void rejectsNullGeographyPaths() {
+        assertThatThrownBy(() -> ProtoSchemaOptions.builder().geographyFieldPath(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> ProtoSchemaOptions.builder().geographyFieldPaths(null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test
@@ -107,11 +231,24 @@ class ProtoSchemaOptionsTest {
     // "extensions 1000 to max".
     @ValueSource(ints = {0, -1, 1, 999, 536870912, 19000, 19999})
     void rejectsFieldOptionNumbersProtobufCannotUse(int extensionNumber) {
+        // The check is shared by both markers, so its message names neither — asserted, since
+        // "field option number" alone would still pass if it said "JSON field option number".
         assertThatThrownBy(
                         () -> ProtoSchemaOptions.builder().jsonFieldOptionNumber(extensionNumber))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("JSON field option number")
-                .hasMessageContaining(String.valueOf(extensionNumber));
+                .hasMessageContaining("field option number")
+                .hasMessageContaining(String.valueOf(extensionNumber))
+                .hasMessageNotContaining("JSON")
+                .hasMessageNotContaining("GEOGRAPHY");
+        assertThatThrownBy(
+                        () ->
+                                ProtoSchemaOptions.builder()
+                                        .geographyFieldOptionNumber(extensionNumber))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("field option number")
+                .hasMessageContaining(String.valueOf(extensionNumber))
+                .hasMessageNotContaining("JSON")
+                .hasMessageNotContaining("GEOGRAPHY");
     }
 
     @ParameterizedTest
@@ -175,6 +312,8 @@ class ProtoSchemaOptionsTest {
                 ProtoSchemaOptions.builder()
                         .jsonFieldPath("payload")
                         .jsonFieldOptionNumber(50000)
+                        .geographyFieldPath("boundary")
+                        .geographyFieldOption(TestProtos.geographyOptionExtension())
                         .deriveRequiredColumns()
                         .build();
 
@@ -182,6 +321,13 @@ class ProtoSchemaOptionsTest {
 
         assertThat(copy.getJsonFieldPaths()).containsExactly("payload");
         assertThat(copy.getJsonFieldOptions()).containsExactly(entry(50000, null));
+        assertThat(copy.getGeographyFieldPaths()).containsExactly("boundary");
+        // A *named* entry, since the name is the part that could be lost in serialization.
+        assertThat(copy.getGeographyFieldOptions())
+                .containsExactly(
+                        entry(
+                                TestProtos.GEOGRAPHY_OPTION_NUMBER,
+                                TestProtos.GEOGRAPHY_OPTION_FULL_NAME));
         assertThat(copy.isDeriveRequiredColumns()).isTrue();
     }
 }

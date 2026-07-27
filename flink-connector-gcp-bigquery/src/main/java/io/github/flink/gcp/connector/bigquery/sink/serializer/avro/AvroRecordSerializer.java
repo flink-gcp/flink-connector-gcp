@@ -36,8 +36,8 @@ import java.io.IOException;
  * <p>The BigQuery table schema is derived from the Avro writer schema (see {@link
  * AvroToTableSchemaConverter} for the type mapping) and each record is rewritten into a
  * BigQuery-storage compatible row: logical types become their BigQuery counterparts, enums become
- * their symbol names, maps become repeated {@code STRUCT<key, value>}, and fields configured
- * through {@link AvroSchemaOptions} are written as {@code JSON} columns.
+ * their symbol names, maps become repeated {@code STRUCT<key, value>}, and string fields marked
+ * through {@link AvroSchemaOptions} become {@code JSON} or {@code GEOGRAPHY} columns.
  *
  * <p>Records are accepted as {@link IndexedRecord}, so this serves both {@code GenericRecord}
  * streams and generated {@code SpecificRecord} streams; values are read in whichever representation

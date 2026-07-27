@@ -57,6 +57,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the acceptance scenario of issue #14. Load jobs are free; the test only costs cents of storage
  * for minutes.
  *
+ * <p>Also the only place a {@code GEOGRAPHY} column is loaded end to end (#126): a staged Avro
+ * {@code string} against an explicit destination schema saying {@code GEOGRAPHY}, a pairing
+ * BigQuery's documentation describes for CSV and JSON but not for Avro.
+ *
  * <p>Requires application-default credentials plus:
  *
  * <ul>
@@ -95,9 +99,24 @@ class BigQueryFileLoadsITCase {
                                     .setName("value")
                                     .setType(TableFieldSchema.Type.INT64)
                                     .setMode(TableFieldSchema.Mode.NULLABLE))
+                    // Here to prove the claim #126 rests on: that a GEOGRAPHY column survives the
+                    // whole FILE_LOADS path. The staging converters have folded GEOGRAPHY in with
+                    // STRING and JSON since FILE_LOADS was written, but nothing could derive such a
+                    // column until the marker options existed, so no load job had ever carried one
+                    // — and BigQuery's own documentation spells out WKT loading for CSV and JSON
+                    // only, never for Avro. What is under test is the pairing: an Avro `string`
+                    // field against an explicit destination schema that says GEOGRAPHY.
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("boundary")
+                                    .setType(TableFieldSchema.Type.GEOGRAPHY)
+                                    .setMode(TableFieldSchema.Mode.NULLABLE))
                     .build();
 
-    /** Rows travel as {@code "table|name|value"} strings (an empty value means NULL). */
+    /**
+     * Rows travel as {@code "table|name|value|boundary"} strings (an empty value or boundary means
+     * NULL).
+     */
     private static final class RowSerializer extends BigQueryProtoSerializer<String> {
         private static final long serialVersionUID = 1L;
 
@@ -134,6 +153,9 @@ class BigQueryFileLoadsITCase {
             if (!parts[2].isEmpty()) {
                 row.setField(descriptor().findFieldByName("value"), Long.parseLong(parts[2]));
             }
+            if (!parts[3].isEmpty()) {
+                row.setField(descriptor().findFieldByName("boundary"), parts[3]);
+            }
             return row.build().toByteString();
         }
     }
@@ -157,12 +179,14 @@ class BigQueryFileLoadsITCase {
         env.setParallelism(2);
 
         env.fromData(
-                        TABLE_A + "|alpha|1",
-                        TABLE_A + "|beta|2",
-                        TABLE_A + "|gamma|",
-                        TABLE_A + "|delta|4",
-                        TABLE_B + "|epsilon|5",
-                        TABLE_B + "|zeta|6")
+                        TABLE_A + "|alpha|1|POINT(1 2)",
+                        TABLE_A + "|beta|2|LINESTRING(0 0, 1 1)",
+                        // A NULL geography as well as a populated one: the column is NULLABLE, and
+                        // an unset one has to load too.
+                        TABLE_A + "|gamma||",
+                        TABLE_A + "|delta|4|",
+                        TABLE_B + "|epsilon|5|POINT(3 4)",
+                        TABLE_B + "|zeta|6|")
                 .sinkTo(
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
@@ -196,6 +220,20 @@ class BigQueryFileLoadsITCase {
                                 TABLE_A))
                 .containsExactly(1L);
 
+        // The GEOGRAPHY column: the value BigQuery parsed out of the staged Avro string, read back
+        // as WKT. A load that had stored the text verbatim in a STRING column would fail ST_AsText.
+        assertThat(
+                        queryStrings(
+                                "SELECT ST_ASTEXT(boundary) FROM `%s` WHERE name = 'alpha'",
+                                TABLE_A))
+                .containsExactly("POINT(1 2)");
+        assertThat(
+                        queryLongs(
+                                "SELECT COUNT(*) FROM `%s` WHERE name = 'gamma' AND boundary IS"
+                                        + " NULL",
+                                TABLE_A))
+                .containsExactly(1L);
+
         // Staged objects are deleted after a successful load.
         Storage storage = StorageOptions.newBuilder().setProjectId(PROJECT).build().getService();
         assertThat(storage.list(BUCKET, Storage.BlobListOption.prefix(STAGING_PREFIX)).iterateAll())
@@ -208,6 +246,18 @@ class BigQueryFileLoadsITCase {
         List<Long> values = new ArrayList<>();
         result.iterateAll()
                 .forEach(row -> values.add(row.get(0).isNull() ? null : row.get(0).getLongValue()));
+        return values;
+    }
+
+    private static List<String> queryStrings(String queryTemplate, String table) throws Exception {
+        String query = String.format(queryTemplate, PROJECT + "." + DATASET + "." + table);
+        TableResult result = bigQuery().query(QueryJobConfiguration.newBuilder(query).build());
+        List<String> values = new ArrayList<>();
+        result.iterateAll()
+                .forEach(
+                        row ->
+                                values.add(
+                                        row.get(0).isNull() ? null : row.get(0).getStringValue()));
         return values;
     }
 
