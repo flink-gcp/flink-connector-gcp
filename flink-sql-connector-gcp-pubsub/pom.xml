@@ -386,6 +386,22 @@
                             <outputFile>${project.build.directory}/runtime-dependencies.txt</outputFile>
                         </configuration>
                     </execution>
+                    <!-- The same tree as file paths, so a test can open each artifact and check
+                         its classes really landed in the uber-jar. The NOTICE diff cannot: it
+                         compares the dependency tree against a text file, and an artifact missing
+                         from artifactSet/includes is present in both of those and absent only
+                         from the jar. -->
+                    <execution>
+                        <id>record-runtime-classpath</id>
+                        <phase>generate-test-resources</phase>
+                        <goals>
+                            <goal>build-classpath</goal>
+                        </goals>
+                        <configuration>
+                            <includeScope>runtime</includeScope>
+                            <outputFile>${project.build.directory}/runtime-classpath.txt</outputFile>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
 
