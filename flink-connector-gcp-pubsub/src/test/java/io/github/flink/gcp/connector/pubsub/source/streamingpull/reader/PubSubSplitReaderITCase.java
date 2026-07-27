@@ -92,11 +92,9 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
 
         // A fresh subscriber must see nothing: the messages were acknowledged, and closing the
         // first reader had nothing left to nack.
-        assertThat(
-                        payloads(
-                                receiveWithFreshReader(
-                                        split, Integer.MAX_VALUE, Duration.ofSeconds(5))))
-                .isEmpty();
+        List<PubsubMessage> redelivered =
+                receiveWithFreshReader(split, Integer.MAX_VALUE, Duration.ofSeconds(5));
+        assertThat(payloads(redelivered)).isEmpty();
     }
 
     @Test
@@ -175,11 +173,11 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
 
     /**
      * Fetches until {@code expected} <em>distinct</em> messages have been collected or the timeout
-     * elapses, returning them in arrival order. Distinct by message id because delivery is
-     * at-least-once: a wait long enough to span the acknowledgement deadline (see {@link
-     * #REDELIVERY_TIMEOUT}) can legitimately see the same message twice, and a duplicate must
-     * dedupe rather than crowd out a message still to arrive. A fetch blocks until data arrives, so
-     * a waker nudges the reader once the deadline passes.
+     * elapses, returning them in arrival order. Distinct by split and message id — message ids are
+     * only unique within a topic — because delivery is at-least-once: a wait long enough to span
+     * the acknowledgement deadline (see {@link #REDELIVERY_TIMEOUT}) can legitimately see the same
+     * message twice, and a duplicate must dedupe rather than crowd out a message still to arrive. A
+     * fetch blocks until data arrives, so a waker nudges the reader once the deadline passes.
      */
     private static List<PubsubMessage> fetchUntil(
             PubSubSplitReader reader, int expected, Duration timeout) throws Exception {
@@ -201,10 +199,11 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
 
     private static void drain(
             RecordsWithSplitIds<PubsubMessage> records, Map<String, PubsubMessage> into) {
-        while (records.nextSplit() != null) {
+        String splitId;
+        while ((splitId = records.nextSplit()) != null) {
             PubsubMessage message;
             while ((message = records.nextRecordFromSplit()) != null) {
-                into.putIfAbsent(message.getMessageId(), message);
+                into.putIfAbsent(splitId + "/" + message.getMessageId(), message);
             }
         }
     }
