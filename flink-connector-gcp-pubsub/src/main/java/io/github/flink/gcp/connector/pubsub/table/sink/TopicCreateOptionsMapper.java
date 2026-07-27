@@ -36,8 +36,9 @@ import java.util.List;
  *
  * <p>Under the same contract as {@code PublisherOptionsMapper}: every knob is applied with {@code
  * getOptional(...).ifPresent(...)}, no default is introduced, and value validation is left to the
- * builder so a SQL user gets the message a DataStream user gets. The one rule owned here is the
- * disposition cross-check, because it names option keys rather than builder methods.
+ * builder so a SQL user gets the message a DataStream user gets. The two rules owned here — the
+ * disposition cross-check and the storage-policy pair — are owned because their messages must name
+ * option keys rather than builder methods.
  *
  * <p><b>Unlike the source's {@code scan.auto-create.*}, these options do not authorize creation</b>
  * — {@code sink.create-disposition} does, and it defaults to {@code create-if-needed}, so the

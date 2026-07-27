@@ -725,7 +725,9 @@ does, so a broken in-flight predicate hangs rather than fails, and the timeout t
 into a test failure. Emulator
 integration tests (testcontainers `PubSubEmulatorContainer`) run the production publisher
 factory and topic admin in their emulator-endpoint mode and cover topic auto-creation
-end-to-end, attributes and per-key ordered delivery (including ordering across the auto-creation
+end-to-end (a fully-populated `TopicCreateOptions` reading back field for field off the created
+topic — from the SQL DDL too — with the option-to-protobuf translation also unit-tested on its
+own), attributes and per-key ordered delivery (including ordering across the auto-creation
 repair), publishing under overridden batching settings, dynamic destinations fanning out to
 several topics (including auto-creating them), and the checkpoint flush (batching thresholds
 set so high that only `flush` can drive delivery, which must also drain the in-flight count —
