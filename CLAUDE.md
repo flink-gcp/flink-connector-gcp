@@ -312,7 +312,9 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   `location()` (#10)
 - `flink-connector-gcp-pubsub/CLAUDE.md` — vendoring provenance (#17/#31), sink (#18), topic
   auto-creation (#19), tuning (#20) and in-flight bounds (#85), ordering×repair (#78), emulator
-  (#21), source (#79/#80)
+  (#21), source (#79/#80), Table API/SQL (#47, split into #135–#138) and the shaded uber-jar
+  (#138) — which is where the repository's only shading decisions live, so read it before adding
+  a second `flink-sql-connector-gcp-*`
 - `flink-connector-gcp-cloudtasks/CLAUDE.md` — sink design (#23) and implementation (#24)
 
 Decisions that span connectors stay here: the package layout convention above, the version policy
