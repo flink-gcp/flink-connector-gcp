@@ -22,9 +22,12 @@ import com.google.protobuf.GeneratedMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.UnknownFieldSet;
 import io.github.flink.gcp.connector.bigquery.testproto.AllTypes;
+import io.github.flink.gcp.connector.bigquery.testproto.EmptyWellKnownType;
 import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
+import io.github.flink.gcp.connector.bigquery.testproto.Proto2WellKnownTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.Recursive;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,8 +37,8 @@ import java.util.List;
  *
  * <p>Ordinary shapes come from real {@code .proto} sources under {@code src/test/protobuf},
  * compiled by protoc at build time: the {@code AllTypes} type-mapping matrix, a recursive message,
- * and the presence fixtures whose {@code oneof} and proto3 {@code optional} spellings are what
- * motivated the codegen (#132).
+ * the well-known-type matrix, and the presence fixtures whose {@code oneof} and proto3 {@code
+ * optional} spellings are what motivated the codegen (#132).
  *
  * <p>What remains here is hand-built because protoc <em>cannot produce it</em>, not as a leftover.
  * The annotation fixtures need custom options left as unknown fields, an annotations proto missing
@@ -102,6 +105,84 @@ final class TestProtos {
     /** Every proto3 presence shape, from {@code src/test/protobuf/presence.proto}. */
     static Descriptors.Descriptor presence() {
         return Presence.getDescriptor();
+    }
+
+    /**
+     * Every well-known type the converters recognise, plus {@code Any}, which they deliberately do
+     * not. From {@code src/test/protobuf/wellknown.proto}.
+     */
+    static Descriptors.Descriptor wellKnownTypes() {
+        return WellKnownTypes.getDescriptor();
+    }
+
+    /**
+     * A {@code google.protobuf.Empty} field: a message with no fields, and so a {@code STRUCT} with
+     * no columns, which BigQuery cannot represent.
+     */
+    static Descriptors.Descriptor emptyWellKnownType() {
+        return EmptyWellKnownType.getDescriptor();
+    }
+
+    /**
+     * proto2 wrappers, one {@code required} and one {@code optional}: the documented deviation from
+     * "a well-known type column is always NULLABLE". From {@code
+     * src/test/protobuf/wellknown2.proto}.
+     */
+    static Descriptors.Descriptor proto2WellKnownTypes() {
+        return Proto2WellKnownTypes.getDescriptor();
+    }
+
+    /**
+     * A message whose field is typed {@code google.protobuf.Duration} but carries a single {@code
+     * millis} field instead of {@code seconds}/{@code nanos}.
+     *
+     * <p>Hand-built, and necessarily so: protoc compiles every file under {@code src/test/protobuf}
+     * in one invocation, so a second definition of {@code google.protobuf.Duration} there would
+     * collide with the real one {@code wellknown.proto} imports. Nothing reserves the {@code
+     * google.protobuf} package, though, so a descriptor pool assembled at runtime can carry exactly
+     * this — which is why recognition checks the shape and not only the name.
+     */
+    static Descriptors.Descriptor collidingWellKnownType() {
+        DescriptorProtos.FileDescriptorProto fake =
+                DescriptorProtos.FileDescriptorProto.newBuilder()
+                        .setName("colliding_duration.proto")
+                        .setPackage("google.protobuf")
+                        .setSyntax("proto3")
+                        .addMessageType(
+                                DescriptorProtos.DescriptorProto.newBuilder()
+                                        .setName("Duration")
+                                        .addField(
+                                                scalar(
+                                                        "millis",
+                                                        1,
+                                                        DescriptorProtos.FieldDescriptorProto.Type
+                                                                .TYPE_INT64)))
+                        .build();
+        DescriptorProtos.FileDescriptorProto holder =
+                DescriptorProtos.FileDescriptorProto.newBuilder()
+                        .setName("colliding_holder.proto")
+                        .setPackage("colliding")
+                        .setSyntax("proto3")
+                        .addDependency("colliding_duration.proto")
+                        .addMessageType(
+                                DescriptorProtos.DescriptorProto.newBuilder()
+                                        .setName("Holder")
+                                        .addField(
+                                                message(
+                                                        "d",
+                                                        1,
+                                                        ".google.protobuf.Duration",
+                                                        false)))
+                        .build();
+        try {
+            Descriptors.FileDescriptor fakeFile =
+                    Descriptors.FileDescriptor.buildFrom(fake, new Descriptors.FileDescriptor[0]);
+            return Descriptors.FileDescriptor.buildFrom(
+                            holder, new Descriptors.FileDescriptor[] {fakeFile})
+                    .findMessageTypeByName("Holder");
+        } catch (Descriptors.DescriptorValidationException e) {
+            throw new AssertionError(e);
+        }
     }
 
     /**

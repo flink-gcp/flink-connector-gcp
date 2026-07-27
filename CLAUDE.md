@@ -308,8 +308,8 @@ are the trigger; they are not a summary, and none of them is safe to answer from
 
 - `flink-connector-gcp-bigquery/CLAUDE.md` — facade and serializer SPI, error handling (#13),
   FILE_LOADS (#14) and its streaming form (#69), STORAGE_API_EXACTLY_ONCE (#30), per-write-method
-  option scoping, JSON columns (#49/#50), Avro and JSON serializers (#66), deferred
-  `location()` (#10)
+  option scoping, JSON columns (#49/#50), Avro and JSON serializers (#66), column modes
+  (#124/#145), protobuf well-known types (#147), deferred `location()` (#10)
 - `flink-connector-gcp-pubsub/CLAUDE.md` — vendoring provenance (#17/#31), sink (#18), topic
   auto-creation (#19), tuning (#20) and in-flight bounds (#85), ordering×repair (#78), emulator
   (#21), source (#79/#80)

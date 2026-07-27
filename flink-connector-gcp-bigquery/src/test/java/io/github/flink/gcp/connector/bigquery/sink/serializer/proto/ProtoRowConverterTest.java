@@ -17,21 +17,41 @@
 package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
 import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
+import com.google.protobuf.Any;
+import com.google.protobuf.BoolValue;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.BytesValue;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.DoubleValue;
+import com.google.protobuf.Duration;
 import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.FieldMask;
+import com.google.protobuf.FloatValue;
+import com.google.protobuf.Int32Value;
+import com.google.protobuf.Int64Value;
+import com.google.protobuf.ListValue;
+import com.google.protobuf.NullValue;
+import com.google.protobuf.StringValue;
+import com.google.protobuf.Struct;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.UInt32Value;
+import com.google.protobuf.UInt64Value;
 import com.google.protobuf.UninitializedMessageException;
+import com.google.protobuf.Value;
 import com.google.protobuf.util.Timestamps;
 import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.PresenceChild;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Child;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypesChild;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -412,6 +432,465 @@ class ProtoRowConverterTest {
         // The plain string beside it is REQUIRED and carries the protobuf default.
         assertThat(rowType.findFieldByName("a_plain").isRequired()).isTrue();
         assertThat(row.getField(rowType.findFieldByName("a_plain"))).isEqualTo("");
+    }
+
+    @Test
+    void unwrapsWrapperTypesToTheirScalarValues() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWInt32(Int32Value.of(-7))
+                                        .setWUint32(UInt32Value.of(-1)) // 4294967295 unsigned
+                                        .setWInt64(Int64Value.of(9L))
+                                        .setWUint64(UInt64Value.of(11L))
+                                        .setWFloat(FloatValue.of(0.5f))
+                                        .setWDouble(DoubleValue.of(2.5d))
+                                        .setWBool(BoolValue.of(true))
+                                        .setWString(StringValue.of("s"))
+                                        .setWBytes(BytesValue.of(ByteString.copyFromUtf8("b")))
+                                        .build());
+
+        assertThat(get(row, "w_int32")).isEqualTo(-7L);
+        assertThat(get(row, "w_uint32")).isEqualTo(4294967295L);
+        assertThat(get(row, "w_int64")).isEqualTo(9L);
+        assertThat(get(row, "w_uint64")).isEqualTo(11L);
+        assertThat(get(row, "w_float")).isEqualTo(0.5d);
+        assertThat(get(row, "w_double")).isEqualTo(2.5d);
+        assertThat(get(row, "w_bool")).isEqualTo(true);
+        assertThat(get(row, "w_string")).isEqualTo("s");
+        assertThat(get(row, "w_bytes")).isEqualTo(ByteString.copyFromUtf8("b"));
+    }
+
+    /**
+     * The pair the whole mapping exists for. A wrapper left unset is NULL; a wrapper explicitly set
+     * to the type default is that default, not NULL — which is exactly what a bare scalar cannot
+     * say.
+     */
+    @Test
+    void distinguishesAnUnsetWrapperFromOneExplicitlySetToZero() throws Exception {
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+
+        DynamicMessage unset = converter.convert(WellKnownTypes.newBuilder().build());
+        assertThat(has(unset, "w_int64")).isFalse();
+        assertThat(has(unset, "w_bool")).isFalse();
+        assertThat(has(unset, "w_string")).isFalse();
+
+        DynamicMessage zero =
+                converter.convert(
+                        WellKnownTypes.newBuilder()
+                                .setWInt64(Int64Value.of(0L))
+                                .setWBool(BoolValue.of(false))
+                                .setWString(StringValue.of(""))
+                                .build());
+        assertThat(has(zero, "w_int64")).isTrue();
+        assertThat(get(zero, "w_int64")).isEqualTo(0L);
+        assertThat(get(zero, "w_bool")).isEqualTo(false);
+        assertThat(get(zero, "w_string")).isEqualTo("");
+    }
+
+    /** A wrapper inherits the range check of the scalar it wraps, from the very same code. */
+    @Test
+    void rejectsUnrepresentableUint64WrapperValues() throws Exception {
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+        WellKnownTypes source =
+                WellKnownTypes.newBuilder().setWUint64(UInt64Value.of(Long.MIN_VALUE)).build();
+
+        assertThatThrownBy(() -> converter.convert(source))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("w_uint64")
+                .hasMessageContaining("9223372036854775808");
+    }
+
+    /**
+     * The canonical protobuf JSON of a well-known type, not its field structure: a fallback to
+     * ordinary message printing would give {@code {"fields":{...}}} here.
+     */
+    @Test
+    void printsStructValueAndListValueAsJsonText() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWStruct(
+                                                Struct.newBuilder()
+                                                        .putFields(
+                                                                "k",
+                                                                Value.newBuilder()
+                                                                        .setNumberValue(1)
+                                                                        .build()))
+                                        .setWValue(Value.newBuilder().setStringValue("abc").build())
+                                        .setWList(
+                                                ListValue.newBuilder()
+                                                        .addValues(
+                                                                Value.newBuilder()
+                                                                        .setNumberValue(1)
+                                                                        .build())
+                                                        .addValues(
+                                                                Value.newBuilder()
+                                                                        .setBoolValue(true)
+                                                                        .build()))
+                                        .build());
+
+        assertThat(get(row, "w_struct")).isEqualTo("{\"k\":1.0}");
+        assertThat(get(row, "w_value")).isEqualTo("\"abc\"");
+        assertThat(get(row, "w_list")).isEqualTo("[1.0,true]");
+    }
+
+    /**
+     * A Value whose kind is null_value prints the JSON literal {@code null} — distinct from the
+     * field being unset, which leaves the column itself NULL.
+     */
+    @Test
+    void printsANullKindValueAsJsonNull() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWValue(
+                                                Value.newBuilder()
+                                                        .setNullValue(NullValue.NULL_VALUE)
+                                                        .build())
+                                        .build());
+
+        assertThat(has(row, "w_value")).isTrue();
+        assertThat(get(row, "w_value")).isEqualTo("null");
+    }
+
+    @Test
+    void convertsDurationToMicroseconds() throws Exception {
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+
+        assertThat(durationMicros(converter, 1L, 500_000_000)).isEqualTo(1_500_000L);
+        assertThat(durationMicros(converter, -1L, -500_000_000)).isEqualTo(-1_500_000L);
+        // Sub-microsecond digits are truncated toward zero, as they already are for TIMESTAMP.
+        assertThat(durationMicros(converter, 0L, 1_500)).isEqualTo(1L);
+        assertThat(durationMicros(converter, 0L, -1_500)).isEqualTo(-1L);
+    }
+
+    /**
+     * A row-level failure like the uint64 case, and rewrapped so the message names the field —
+     * protobuf's own names none, which for a record with several Duration columns leaves nothing to
+     * act on.
+     */
+    @Test
+    void rejectsOutOfRangeDurations() throws Exception {
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+        WellKnownTypes source =
+                WellKnownTypes.newBuilder()
+                        .setWDuration(Duration.newBuilder().setSeconds(Long.MAX_VALUE))
+                        .build();
+
+        assertThatThrownBy(() -> converter.convert(source))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("w_duration")
+                .hasMessageContaining("out of range");
+    }
+
+    /** Paths verbatim, not lowerCamelCased as protobuf's canonical JSON form would render them. */
+    @Test
+    void joinsFieldMaskPathsWithCommas() throws Exception {
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+
+        DynamicMessage row =
+                converter.convert(
+                        WellKnownTypes.newBuilder()
+                                .setWMask(
+                                        FieldMask.newBuilder()
+                                                .addPaths("user.display_name")
+                                                .addPaths("photo"))
+                                .build());
+        assertThat(get(row, "w_mask")).isEqualTo("user.display_name,photo");
+
+        DynamicMessage empty =
+                converter.convert(
+                        WellKnownTypes.newBuilder()
+                                .setWMask(FieldMask.getDefaultInstance())
+                                .build());
+        assertThat(has(empty, "w_mask")).isTrue();
+        assertThat(get(empty, "w_mask")).isEqualTo("");
+    }
+
+    @Test
+    void convertsWellKnownTypesInsideRepeatedAndMapFields() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .addWRepInt64(Int64Value.of(1L))
+                                        .addWRepInt64(Int64Value.of(2L))
+                                        .addWRepDuration(Duration.newBuilder().setSeconds(3L))
+                                        .addWRepStruct(
+                                                Struct.newBuilder()
+                                                        .putFields(
+                                                                "a",
+                                                                Value.newBuilder()
+                                                                        .setBoolValue(true)
+                                                                        .build()))
+                                        .putWMapInt64("k", Int64Value.of(4L))
+                                        .putWMapStruct("j", Struct.getDefaultInstance())
+                                        .build());
+
+        assertThat(get(row, "w_rep_int64")).isEqualTo(Arrays.asList(1L, 2L));
+        assertThat(get(row, "w_rep_duration")).isEqualTo(Arrays.asList(3_000_000L));
+        assertThat(get(row, "w_rep_struct")).isEqualTo(Arrays.asList("{\"a\":true}"));
+        assertThat(entryValue(row, "w_map_int64")).isEqualTo(4L);
+        assertThat(entryValue(row, "w_map_struct")).isEqualTo("{}");
+    }
+
+    /**
+     * The same matrix reached the way a descriptor arriving as a serialized {@code
+     * FileDescriptorSet} does: an independent pool, in which every well-known type is a fresh
+     * {@code Descriptor} instance and every value a {@link DynamicMessage}. Two things ride on
+     * this. Recognition is keyed on the type's full name, so an identity comparison would see
+     * nothing here; and the conversions that construct a well-known type to hand to {@code
+     * Durations} or {@code FieldMaskUtil} must rebuild it from sub-fields, since the value is not a
+     * generated instance to cast.
+     */
+    @Test
+    void convertsWellKnownTypesFromAnIndependentDescriptorPool() throws Exception {
+        Descriptors.Descriptor source =
+                rebuild(TestProtos.wellKnownTypes().getFile(), new HashMap<>())
+                        .findMessageTypeByName("WellKnownTypes");
+        assertThat(source).isNotSameAs(TestProtos.wellKnownTypes());
+        assertThat(source.findFieldByName("w_duration").getMessageType())
+                .isNotSameAs(Duration.getDescriptor());
+
+        DynamicMessage.Builder builder = DynamicMessage.newBuilder(source);
+        set(builder, source, "w_int64", dynamic(source, "w_int64", "value", 5L));
+        set(builder, source, "w_mask", dynamic(source, "w_mask", "paths", Arrays.asList("a", "b")));
+        set(
+                builder,
+                source,
+                "w_duration",
+                dynamic(source, "w_duration", "seconds", 2L, "nanos", 250_000_000));
+        set(
+                builder,
+                source,
+                "w_struct",
+                dynamic(
+                        source,
+                        "w_struct",
+                        "fields",
+                        Arrays.asList(structEntry(source, "k", "v"))));
+
+        DynamicMessage row =
+                new ProtoRowConverter(
+                                source,
+                                BQTableSchemaToProtoDescriptor
+                                        .convertBQTableSchemaToProtoDescriptor(
+                                                ProtoToTableSchemaConverter.convert(
+                                                        source, ProtoSchemaOptions.defaults())),
+                                ProtoSchemaOptions.defaults())
+                        .convert(builder.build());
+
+        assertThat(get(row, "w_int64")).isEqualTo(5L);
+        assertThat(get(row, "w_mask")).isEqualTo("a,b");
+        assertThat(get(row, "w_duration")).isEqualTo(2_250_000L);
+        // The canonical Struct rendering, not the {"fields":{...}} an ordinary message would give.
+        assertThat(get(row, "w_struct")).isEqualTo("{\"k\":\"v\"}");
+    }
+
+    /** Any keeps its two fields, since the payload cannot be expanded without its descriptor. */
+    @Test
+    void writesAnyAsAStruct() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWAny(
+                                                Any.newBuilder()
+                                                        .setTypeUrl("type.googleapis.com/x.Y")
+                                                        .setValue(ByteString.copyFromUtf8("p")))
+                                        .build());
+
+        DynamicMessage any = (DynamicMessage) get(row, "w_any");
+        assertThat(get(any, "type_url")).isEqualTo("type.googleapis.com/x.Y");
+        assertThat(get(any, "value")).isEqualTo(ByteString.copyFromUtf8("p"));
+    }
+
+    /**
+     * The docs say marking an {@code Any} field as a JSON column is not a way to unpack it. Pinned
+     * because that is a user-facing claim: {@code JsonFormat} cannot resolve a type URL without a
+     * {@code TypeRegistry}, so it fails on every record carrying one rather than at job start.
+     */
+    @Test
+    void failsPerRecordOnAJsonMappedAnyRatherThanUnpackingIt() throws Exception {
+        ProtoRowConverter converter =
+                wellKnownTypesConverter(
+                        ProtoSchemaOptions.builder().jsonFieldPath("w_any").build());
+
+        // An unset Any is skipped, so it is a populated one the printer cannot resolve.
+        assertThat(has(converter.convert(WellKnownTypes.newBuilder().build()), "w_any")).isFalse();
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        WellKnownTypes.newBuilder()
+                                                .setWAny(
+                                                        Any.newBuilder()
+                                                                .setTypeUrl(
+                                                                        "type.googleapis.com/x.Y"))
+                                                .build()))
+                .hasMessageContaining("Cannot find type for url");
+    }
+
+    /** Recognition is not a top-level-only rule on the value side either. */
+    @Test
+    void convertsWellKnownTypesBelowTheRootMessage() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWChild(
+                                                WellKnownTypesChild.newBuilder()
+                                                        .setCString(StringValue.of("deep"))
+                                                        .setCDuration(
+                                                                Duration.newBuilder()
+                                                                        .setSeconds(2L)))
+                                        .build());
+
+        DynamicMessage child = (DynamicMessage) get(row, "w_child");
+        assertThat(get(child, "c_string")).isEqualTo("deep");
+        assertThat(get(child, "c_duration")).isEqualTo(2_000_000L);
+    }
+
+    /**
+     * The value half of the shape check, and the half that matters: recognising a well-known type
+     * on its name alone left the {@code seconds}/{@code nanos} descriptors null and threw {@code
+     * NullPointerException} <em>per record</em>, naming no field, from inside the writers' {@code
+     * FailedRowHandler} catch — so a log-and-drop policy would have discarded the whole stream
+     * while the job stayed green. Converting the message as the ordinary struct it is removes the
+     * failure rather than relocating it.
+     */
+    @Test
+    void convertsAWellKnownTypeNameCarryingTheWrongFieldsAsAnOrdinaryStruct() throws Exception {
+        Descriptors.Descriptor source = TestProtos.collidingWellKnownType();
+        Descriptors.Descriptor durationType = source.findFieldByName("d").getMessageType();
+        DynamicMessage.Builder builder = DynamicMessage.newBuilder(source);
+        set(
+                builder,
+                source,
+                "d",
+                DynamicMessage.newBuilder(durationType)
+                        .setField(durationType.findFieldByName("millis"), 5L)
+                        .build());
+
+        DynamicMessage row =
+                converter(source, ProtoSchemaOptions.defaults()).convert(builder.build());
+
+        assertThat(get((DynamicMessage) get(row, "d"), "millis")).isEqualTo(5L);
+    }
+
+    /** The value-side half of JSON-first precedence, matching the schema side. */
+    @Test
+    void printsAJsonMappedWrapperRatherThanUnwrappingIt() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(
+                                ProtoSchemaOptions.builder().jsonFieldPath("w_int64").build())
+                        .convert(WellKnownTypes.newBuilder().setWInt64(Int64Value.of(5L)).build());
+
+        // Canonical protobuf JSON renders an int64 as a quoted string.
+        assertThat(get(row, "w_int64")).isEqualTo("\"5\"");
+    }
+
+    private static ProtoRowConverter wellKnownTypesConverter(ProtoSchemaOptions options)
+            throws Exception {
+        return converter(TestProtos.wellKnownTypes(), options);
+    }
+
+    private static long durationMicros(ProtoRowConverter converter, long seconds, int nanos)
+            throws Exception {
+        return (Long)
+                get(
+                        converter.convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWDuration(
+                                                Duration.newBuilder()
+                                                        .setSeconds(seconds)
+                                                        .setNanos(nanos))
+                                        .build()),
+                        "w_duration");
+    }
+
+    /**
+     * Rebuilds a file descriptor and everything it depends on, producing a pool that shares no
+     * {@code Descriptor} instance with the generated one — what a descriptor deserialized from a
+     * {@code FileDescriptorSet} looks like. Memoised, because the dependency graph is a DAG and
+     * {@code buildFrom} rejects two copies of one file.
+     */
+    private static Descriptors.FileDescriptor rebuild(
+            Descriptors.FileDescriptor file, Map<String, Descriptors.FileDescriptor> built)
+            throws Exception {
+        Descriptors.FileDescriptor already = built.get(file.getFullName());
+        if (already != null) {
+            return already;
+        }
+        Descriptors.FileDescriptor[] dependencies =
+                new Descriptors.FileDescriptor[file.getDependencies().size()];
+        for (int i = 0; i < dependencies.length; i++) {
+            dependencies[i] = rebuild(file.getDependencies().get(i), built);
+        }
+        Descriptors.FileDescriptor rebuilt =
+                Descriptors.FileDescriptor.buildFrom(file.toProto(), dependencies);
+        built.put(file.getFullName(), rebuilt);
+        return rebuilt;
+    }
+
+    /** Builds a one-field DynamicMessage for the well-known type carried by {@code field}. */
+    private static DynamicMessage dynamic(
+            Descriptors.Descriptor source, String field, String subField, Object value) {
+        Descriptors.Descriptor type = source.findFieldByName(field).getMessageType();
+        DynamicMessage.Builder builder = DynamicMessage.newBuilder(type);
+        if (value instanceof List) {
+            ((List<?>) value)
+                    .forEach(v -> builder.addRepeatedField(type.findFieldByName(subField), v));
+        } else {
+            builder.setField(type.findFieldByName(subField), value);
+        }
+        return builder.build();
+    }
+
+    /** The two-field form, for the {@code seconds}/{@code nanos} pair. */
+    private static DynamicMessage dynamic(
+            Descriptors.Descriptor source,
+            String field,
+            String firstName,
+            Object first,
+            String secondName,
+            Object second) {
+        Descriptors.Descriptor type = source.findFieldByName(field).getMessageType();
+        return DynamicMessage.newBuilder(type)
+                .setField(type.findFieldByName(firstName), first)
+                .setField(type.findFieldByName(secondName), second)
+                .build();
+    }
+
+    /** A {@code Struct.fields} map entry holding a string value, in the given pool. */
+    private static DynamicMessage structEntry(
+            Descriptors.Descriptor source, String key, String value) {
+        Descriptors.Descriptor structType = source.findFieldByName("w_struct").getMessageType();
+        Descriptors.Descriptor entryType = structType.findFieldByName("fields").getMessageType();
+        Descriptors.Descriptor valueType = entryType.findFieldByName("value").getMessageType();
+        return DynamicMessage.newBuilder(entryType)
+                .setField(entryType.findFieldByName("key"), key)
+                .setField(
+                        entryType.findFieldByName("value"),
+                        DynamicMessage.newBuilder(valueType)
+                                .setField(valueType.findFieldByName("string_value"), value)
+                                .build())
+                .build();
+    }
+
+    /** The {@code value} column of the single entry of a map column. */
+    private static Object entryValue(DynamicMessage row, String field) {
+        DynamicMessage entry =
+                (DynamicMessage)
+                        row.getRepeatedField(row.getDescriptorForType().findFieldByName(field), 0);
+        return get(entry, "value");
+    }
+
+    private static boolean has(DynamicMessage message, String field) {
+        return message.hasField(message.getDescriptorForType().findFieldByName(field));
     }
 
     private static ProtoRowConverter converter(

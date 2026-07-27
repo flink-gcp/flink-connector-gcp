@@ -1,0 +1,123 @@
+// Copyright 2026 laughingman7743
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package wellknown;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+option java_package = "io.github.flink.gcp.connector.bigquery.testproto";
+option java_multiple_files = true;
+// Named explicitly for the reason test.proto records: the outer class otherwise
+// takes the file name, and `WellKnownTypes` beside `Wellknown` in one package is a
+// trap rather than a compile error.
+option java_outer_classname = "WellKnownTypeSchemas";
+
+// Every well-known type the converters recognise, plus the one they deliberately
+// do not.
+//
+// "Well-known types" is protobuf's own term for the messages in
+// google/protobuf/*.proto — see
+// https://protobuf.dev/reference/protobuf/google.protobuf/ — so this message is
+// named after the vendor's vocabulary, not after anything invented here. It is a
+// noun phrase for the same reason AllTypes in test.proto is: the message is not
+// itself well-known, it *contains* every well-known type.
+message WellKnownTypes {
+  // The nine wrappers. Each is a message field, so presence is real and the
+  // column stays NULLABLE — which is the whole reason a wrapper exists rather
+  // than a bare scalar.
+  google.protobuf.Int32Value w_int32 = 1;
+  google.protobuf.UInt32Value w_uint32 = 2;
+  google.protobuf.Int64Value w_int64 = 3;
+  // uint64 is the one wrapper whose value can be unrepresentable as INT64, and
+  // the range check has to be the same one a bare uint64 gets.
+  google.protobuf.UInt64Value w_uint64 = 4;
+  google.protobuf.FloatValue w_float = 5;
+  google.protobuf.DoubleValue w_double = 6;
+  google.protobuf.BoolValue w_bool = 7;
+  google.protobuf.StringValue w_string = 8;
+  google.protobuf.BytesValue w_bytes = 9;
+
+  // Mutually recursive (Struct -> Value -> Struct), which is why a JSON column
+  // is the only shape a BigQuery schema can hold them in: expanded, they are
+  // exactly what the recursion guard rejects.
+  google.protobuf.Struct w_struct = 10;
+  google.protobuf.Value w_value = 11;
+  google.protobuf.ListValue w_list = 12;
+
+  google.protobuf.Duration w_duration = 13;
+  google.protobuf.FieldMask w_mask = 14;
+  google.protobuf.Timestamp w_ts = 15;
+
+  // No special handling on purpose: STRUCT<type_url, value> is faithful, and
+  // unpacking one needs a TypeRegistry the connector has no way to obtain.
+  google.protobuf.Any w_any = 16;
+
+  // Repeated forms: the mode decision tests repeated first, and each element
+  // converts on its own.
+  repeated google.protobuf.Int64Value w_rep_int64 = 17;
+  repeated google.protobuf.Struct w_rep_struct = 18;
+  repeated google.protobuf.Duration w_rep_duration = 19;
+
+  // A well-known type as a map value. The entry's `value` field is a message
+  // field, so it keeps presence and stays NULLABLE even where the entry's `key`
+  // becomes REQUIRED.
+  map<string, google.protobuf.Int64Value> w_map_int64 = 20;
+  map<string, google.protobuf.Struct> w_map_struct = 21;
+
+  // One level down, to pin that recognition is not a top-level-only rule.
+  WellKnownTypesChild w_child = 22;
+}
+
+// The singular well-known types on their own.
+//
+// Their own message because the BigQuery emulator (goccy 0.8.1) cannot insert
+// into a table that has an ARRAY<JSON> column at all — not even leaving it
+// empty — so an emulator write test cannot use `WellKnownTypes` above. The repeated
+// half is verified against real BigQuery instead.
+//
+// REMOVE THIS MESSAGE once the nightly real-GCP workflow lands (#28, #16): the
+// write test can then run against `WellKnownTypes` on the service, and this fixture
+// exists only to work around the emulator. It duplicates nothing else, so
+// deleting it and repointing BigQueryProtoWellKnownTypesITCase is the whole job.
+message SingularWellKnownTypes {
+  google.protobuf.Int64Value s_int64 = 1;
+  google.protobuf.BoolValue s_bool = 2;
+  google.protobuf.StringValue s_string = 3;
+  google.protobuf.Duration s_duration = 4;
+  google.protobuf.FieldMask s_mask = 5;
+  google.protobuf.Struct s_struct = 6;
+  google.protobuf.Value s_value = 7;
+  google.protobuf.ListValue s_list = 8;
+  google.protobuf.Any s_any = 9;
+}
+
+message WellKnownTypesChild {
+  google.protobuf.StringValue c_string = 1;
+  google.protobuf.Duration c_duration = 2;
+}
+
+// google.protobuf.Empty has no fields, so expanding it yields a STRUCT with no
+// columns — which the BigQuery client library rejects before a request is even
+// sent. Kept in its own message so the rest of the fixture stays usable.
+message EmptyWellKnownType {
+  google.protobuf.Empty w_empty = 1;
+}

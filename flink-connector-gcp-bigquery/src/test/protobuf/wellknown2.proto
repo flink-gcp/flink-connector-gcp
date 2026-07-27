@@ -1,0 +1,32 @@
+// Copyright 2026 laughingman7743
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto2";
+
+package wellknown2;
+
+import "google/protobuf/wrappers.proto";
+
+option java_package = "io.github.flink.gcp.connector.bigquery.testproto";
+option java_multiple_files = true;
+
+// The one documented deviation from "a well-known type column is always
+// NULLABLE": a proto2 `required` wrapper derives REQUIRED, because it *is*
+// mandatory. The rule is stated in three places and would otherwise be pinned
+// nowhere — and the optional sibling beside it is what shows the deviation is
+// about `required` and not about proto2.
+message Proto2WellKnownTypes {
+  required google.protobuf.Int64Value r_required = 1;
+  optional google.protobuf.Int64Value r_optional = 2;
+}

@@ -489,12 +489,263 @@ class ProtoToTableSchemaConverterTest {
                 .hasMessageContaining("LONG");
     }
 
+    @Test
+    void mapsWrapperTypesToTheWrappedScalar() {
+        Map<String, TableFieldSchema> fields =
+                byName(wellKnownTypesSchema(ProtoSchemaOptions.defaults()));
+
+        assertThat(fields.get("w_int32").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(fields.get("w_uint32").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(fields.get("w_int64").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(fields.get("w_uint64").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(fields.get("w_float").getType()).isEqualTo(TableFieldSchema.Type.DOUBLE);
+        assertThat(fields.get("w_double").getType()).isEqualTo(TableFieldSchema.Type.DOUBLE);
+        assertThat(fields.get("w_bool").getType()).isEqualTo(TableFieldSchema.Type.BOOL);
+        assertThat(fields.get("w_string").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(fields.get("w_bytes").getType()).isEqualTo(TableFieldSchema.Type.BYTES);
+
+        // Flattened, not expanded: a STRUCT<value> leaves every query saying `w_int64.value`.
+        assertThat(fields.get("w_int64").getFieldsList()).isEmpty();
+    }
+
+    /**
+     * A wrapper is a message field, so it has presence and stays {@code NULLABLE} — the very
+     * distinction the type exists to express. The bare scalar beside it shows the option is on.
+     */
+    @Test
+    void mapsWrapperTypesToNullableEvenWhenRequiredColumnsAreDerived() {
+        Map<String, TableFieldSchema> fields = byName(wellKnownTypesSchema(DERIVE_REQUIRED));
+
+        assertThat(fields.get("w_int64").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("w_string").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("w_duration").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("w_mask").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(fields.get("w_struct").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+
+        Map<String, TableFieldSchema> presence =
+                byName(ProtoToTableSchemaConverter.convert(TestProtos.presence(), DERIVE_REQUIRED));
+        assertThat(presence.get("p_implicit").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+    }
+
+    /**
+     * The one documented deviation from "a well-known type column is always NULLABLE". A proto2
+     * {@code required} wrapper is mandatory, so {@code REQUIRED} is faithful; the {@code optional}
+     * sibling shows the deviation is about {@code required} and not about proto2.
+     */
+    @Test
+    void derivesRequiredForAProto2RequiredWrapper() {
+        Map<String, TableFieldSchema> fields =
+                byName(
+                        ProtoToTableSchemaConverter.convert(
+                                TestProtos.proto2WellKnownTypes(), DERIVE_REQUIRED));
+
+        assertThat(fields.get("r_required").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(fields.get("r_required").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(fields.get("r_optional").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+
+        // Without the option both are NULLABLE, so the assertion above is about the option and not
+        // about proto2.
+        assertThat(
+                        byName(
+                                        ProtoToTableSchemaConverter.convert(
+                                                TestProtos.proto2WellKnownTypes(),
+                                                ProtoSchemaOptions.defaults()))
+                                .get("r_required")
+                                .getMode())
+                .isEqualTo(TableFieldSchema.Mode.NULLABLE);
+    }
+
+    /**
+     * Struct, Value and ListValue are mutually recursive, so before they were mapped to JSON the
+     * recursion guard failed the whole job at schema derivation. Nothing here may throw.
+     */
+    @Test
+    void mapsStructValueAndListValueToJsonColumns() {
+        Map<String, TableFieldSchema> fields =
+                byName(wellKnownTypesSchema(ProtoSchemaOptions.defaults()));
+
+        assertThat(fields.get("w_struct").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("w_value").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("w_list").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("w_struct").getFieldsList()).isEmpty();
+    }
+
+    @Test
+    void mapsDurationToInt64AndFieldMaskToString() {
+        Map<String, TableFieldSchema> fields =
+                byName(wellKnownTypesSchema(ProtoSchemaOptions.defaults()));
+
+        assertThat(fields.get("w_duration").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(fields.get("w_duration").getFieldsList()).isEmpty();
+        assertThat(fields.get("w_mask").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(fields.get("w_mask").getFieldsList()).isEmpty();
+        assertThat(fields.get("w_ts").getType()).isEqualTo(TableFieldSchema.Type.TIMESTAMP);
+    }
+
+    /**
+     * Any is deliberately not recognised: its payload cannot be expanded without the descriptor its
+     * type URL names. Pinned so that mapping it has to be a deliberate edit here.
+     */
+    @Test
+    void leavesAnyAsAStruct() {
+        TableFieldSchema any =
+                byName(wellKnownTypesSchema(ProtoSchemaOptions.defaults())).get("w_any");
+
+        assertThat(any.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(any.getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getType)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(
+                                "type_url", TableFieldSchema.Type.STRING),
+                        org.assertj.core.groups.Tuple.tuple("value", TableFieldSchema.Type.BYTES));
+    }
+
+    @Test
+    void mapsRepeatedWellKnownTypesToRepeatedColumns() {
+        Map<String, TableFieldSchema> fields = byName(wellKnownTypesSchema(DERIVE_REQUIRED));
+
+        assertThat(fields.get("w_rep_int64").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(fields.get("w_rep_int64").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+        assertThat(fields.get("w_rep_struct").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("w_rep_struct").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+        assertThat(fields.get("w_rep_duration").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(fields.get("w_rep_duration").getMode())
+                .isEqualTo(TableFieldSchema.Mode.REPEATED);
+    }
+
+    /**
+     * A map's value is an ordinary message field of the synthesized entry, so recognition reaches
+     * it with no map-specific rule — and it keeps presence, so it stays {@code NULLABLE} where the
+     * entry's {@code key} becomes {@code REQUIRED}.
+     */
+    @Test
+    void mapsWellKnownTypesInsideMapValues() {
+        Map<String, TableFieldSchema> fields = byName(wellKnownTypesSchema(DERIVE_REQUIRED));
+        Map<String, TableFieldSchema> intEntry = subFieldsByName(fields.get("w_map_int64"));
+
+        assertThat(intEntry.get("value").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(intEntry.get("value").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        assertThat(intEntry.get("key").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(subFieldsByName(fields.get("w_map_struct")).get("value").getType())
+                .isEqualTo(TableFieldSchema.Type.JSON);
+    }
+
+    @Test
+    void recognisesWellKnownTypesBelowTheRootMessage() {
+        TableFieldSchema child =
+                byName(wellKnownTypesSchema(ProtoSchemaOptions.defaults())).get("w_child");
+
+        assertThat(child.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(child.getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getType)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(
+                                "c_string", TableFieldSchema.Type.STRING),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "c_duration", TableFieldSchema.Type.INT64));
+    }
+
+    /**
+     * Explicit configuration wins over every well-known-type mapping, because the JSON branch
+     * returns before the message type is ever inspected. Reordering the two would unwrap a field
+     * the user asked to keep whole.
+     */
+    @Test
+    void aConfiguredJsonPathWinsOverWellKnownTypeRecognition() {
+        Map<String, TableFieldSchema> fields =
+                byName(
+                        wellKnownTypesSchema(
+                                ProtoSchemaOptions.builder()
+                                        .jsonFieldPath("w_int64")
+                                        .jsonFieldPath("w_ts")
+                                        .build()));
+
+        assertThat(fields.get("w_int64").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("w_ts").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+    }
+
+    /**
+     * Automatic JSON columns record themselves as matched paths, which must not let a genuinely
+     * unmatched configured path pass as matched.
+     */
+    @Test
+    void stillRejectsJsonPathsMatchingNoFieldBesideAutomaticJsonColumns() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().jsonFieldPath("w_nonexistent").build();
+
+        assertThatThrownBy(() -> wellKnownTypesSchema(options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("w_nonexistent");
+    }
+
+    /** A Struct is one column, so it has no navigable sub-paths left to configure. */
+    @Test
+    void rejectsJsonPathsPointingInsideAJsonMappedWellKnownType() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().jsonFieldPath("w_struct.fields").build();
+
+        assertThatThrownBy(() -> wellKnownTypesSchema(options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("w_struct.fields");
+    }
+
+    /**
+     * A message named {@code google.protobuf.Duration} without {@code seconds}/{@code nanos} is not
+     * one, whatever it is called, and is expanded as the ordinary {@code STRUCT} its author
+     * declared. Nothing reserves the {@code google.protobuf} package, so a runtime-assembled
+     * descriptor pool can carry this.
+     *
+     * <p>Recognising on the name alone derived an {@code INT64} column here and then threw {@code
+     * NullPointerException} on <em>every record</em> — from inside the writers' {@code
+     * FailedRowHandler} catch, where a log-and-drop policy would have discarded the whole stream.
+     */
+    @Test
+    void doesNotRecogniseAWellKnownTypeNameCarryingTheWrongFields() {
+        TableFieldSchema field =
+                byName(
+                                ProtoToTableSchemaConverter.convert(
+                                        TestProtos.collidingWellKnownType(),
+                                        ProtoSchemaOptions.defaults()))
+                        .get("d");
+
+        assertThat(field.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(field.getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getType)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("millis", TableFieldSchema.Type.INT64));
+    }
+
+    /**
+     * Measured: the BigQuery client library rejects a zero-sub-field RECORD itself, before a
+     * request is ever sent, with a message naming no field. Rejecting here says which field it was.
+     */
+    @Test
+    void rejectsMessagesWithNoFields() {
+        assertThatThrownBy(
+                        () ->
+                                ProtoToTableSchemaConverter.convert(
+                                        TestProtos.emptyWellKnownType(),
+                                        ProtoSchemaOptions.defaults()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("google.protobuf.Empty")
+                .hasMessageContaining("w_empty");
+    }
+
+    private static TableSchema wellKnownTypesSchema(ProtoSchemaOptions options) {
+        return ProtoToTableSchemaConverter.convert(TestProtos.wellKnownTypes(), options);
+    }
+
     private static Descriptors.Descriptor annotated(boolean throughBytes) {
         return throughBytes ? TestProtos.annotatedFromBytes() : TestProtos.annotated();
     }
 
     private static Map<String, TableFieldSchema> byName(TableSchema schema) {
         return schema.getFieldsList().stream()
+                .collect(Collectors.toMap(TableFieldSchema::getName, Function.identity()));
+    }
+
+    private static Map<String, TableFieldSchema> subFieldsByName(TableFieldSchema field) {
+        return field.getFieldsList().stream()
                 .collect(Collectors.toMap(TableFieldSchema::getName, Function.identity()));
     }
 }

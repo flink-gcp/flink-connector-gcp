@@ -121,19 +121,58 @@ message into the protobuf row the Storage Write API accepts.
 | `string` | `STRING` |
 | `bytes` | `BYTES` |
 | enum | `STRING`, the value name |
-| `google.protobuf.Timestamp` | `TIMESTAMP`, microsecond precision |
+| `google.protobuf.Timestamp` | `TIMESTAMP`, microsecond precision; anything finer is truncated |
+| `google.protobuf.Duration` | `INT64` microseconds, likewise truncated |
+| `google.protobuf.FieldMask` | `STRING`, the paths joined by commas |
+| `Int32Value`, `UInt32Value`, `Int64Value`, `UInt64Value` | `INT64`, `NULLABLE` |
+| `FloatValue`, `DoubleValue` | `DOUBLE`, `NULLABLE` |
+| `BoolValue`, `StringValue`, `BytesValue` | `BOOL` / `STRING` / `BYTES`, `NULLABLE` |
+| `google.protobuf.Struct`, `Value`, `ListValue` | `JSON`, with no configuration |
+| `google.protobuf.Any` | `STRUCT<type_url, value>`, not unpacked |
 | message | `STRUCT`, recursively |
 | `map<K, V>` | `REPEATED STRUCT<key, value>` |
 | message or string marked by `ProtoSchemaOptions` | `JSON`, see [JSON columns](#json-columns) |
 
 A recursive message is rejected — BigQuery schemas cannot represent one — as are sibling fields
 whose names differ only by case, which the Storage API cannot tell apart because it lowercases
-descriptor field names.
+descriptor field names, and a message with no fields at all, `google.protobuf.Empty` among them,
+since a BigQuery `STRUCT` must have at least one column.
 
-Well-known types other than `Timestamp` are not recognised yet: wrapper types such as `Int64Value`
-become `STRUCT<value>` rather than a nullable scalar, and `Struct`/`Value`/`ListValue` are rejected
-by the recursion guard unless marked as JSON columns. Tracked in
-[#147]({{< param BookRepo >}}/issues/147).
+### Well-known types
+
+*Well-known types* is protobuf's own term for the messages shipped in `google/protobuf/*.proto` —
+see [Protocol Buffers Well-Known Types](https://protobuf.dev/reference/protobuf/google.protobuf/).
+The connector recognises them by their fully-qualified names and uses protobuf's own grouping;
+nothing here is a name this project invented.
+
+**Wrapper types map to the scalar they wrap**, and stay `NULLABLE` even under
+[`deriveRequiredColumns()`](#nullability) — a wrapper is a message field, so it has presence. That
+is the point of the type: "unset" stays distinguishable from `0` or `""` all the way to the column,
+so an unset `Int64Value` is NULL while one explicitly set to `Int64Value.of(0)` is `0`. Otherwise a
+query would have to say `n.value` against a `STRUCT<value>`. The one exception is a proto2
+`required` wrapper, which derives `REQUIRED` — it is mandatory, so that is faithful.
+
+**`Struct`, `Value` and `ListValue` become `JSON` columns automatically.** They exist to carry
+arbitrary JSON and they are mutually recursive (`Value` → `Struct` → `map<string, Value>`), so there
+is no other shape a BigQuery schema can hold them in — before this they failed the whole job at
+schema derivation, with a message pointing at the message tree rather than at the mapping. The value
+is the type's canonical protobuf JSON, so a `Value` holding a string comes out as `"abc"` and one
+holding `null_value` as the JSON literal `null` — distinct from the field being unset, which leaves
+the column NULL. `repeated Struct` gives a `REPEATED JSON` column.
+
+**`Any` is deliberately left as `STRUCT<type_url, value>`.** Expanding the payload needs the
+descriptor its type URL names, which the connector has no way to obtain; the packed bytes are
+preserved as they are. Marking an `Any` field as a JSON column is not a way around this — the
+printer then fails on every record with `Cannot find type for url`.
+
+**Explicit configuration wins over all of the above.** A `jsonFieldPath` or field option on a
+wrapper or a `Timestamp` field gives a `JSON` column carrying that type's canonical protobuf JSON —
+so `Int64Value.of(5)` becomes the quoted string `"5"` — rather than the flattened value.
+
+A `Duration` outside protobuf's valid range is a row-level failure routed to the configured
+[`FailedRowHandler`](#error-handling), like a `uint64` too large for `INT64`. `FieldMask` paths are
+joined exactly as declared, *not* lowerCamelCased the way protobuf's canonical JSON form renders
+them, so they come back as they were written.
 
 ### Nullability
 
@@ -156,6 +195,7 @@ ProtoMessageSerializer.of(
 | proto2 `required` | `REQUIRED` |
 | proto2 `optional` | `NULLABLE` |
 | singular `JSON` column | `NULLABLE`, always |
+| singular well-known type | `NULLABLE` — a message field, so it has presence; proto2 `required` still gives `REQUIRED` |
 
 A plain proto3 scalar cannot say "unset" — an unset value is indistinguishable from the type
 default — so `REQUIRED` is the faithful mode for it, and one the value path already satisfies: such
