@@ -48,9 +48,21 @@ limitations under the License.
         <developerConnection>scm:git:https://github.com/laughingman7743/flink-connector-gcp.git</developerConnection>
     </scm>
 
+    <!-- Not decoration. The ASF parent (org.apache:apache, reached through the Flink
+         connector parent) declares its own <organization>, and maven-remote-resources-plugin
+         interpolates it into the META-INF/NOTICE it stamps into every module jar. Without
+         this block every artifact this project builds claims "Copyright 2026 The Apache
+         Software Foundation", which is both wrong and exactly the text the SQL uber-jar's
+         ApacheNoticeResourceTransformer would aggregate. -->
+    <organization>
+        <name>laughingman7743</name>
+        <url>https://github.com/laughingman7743</url>
+    </organization>
+
     <modules>
         <module>flink-connector-gcp-bigquery</module>
         <module>flink-connector-gcp-pubsub</module>
+        <module>flink-sql-connector-gcp-pubsub</module>
         <module>flink-connector-gcp-cloudtasks</module>
     </modules>
 
@@ -99,6 +111,10 @@ limitations under the License.
              guards it. -->
         <protoc.version>4.33.2</protoc.version>
         <protobuf-maven-plugin.version>5.1.7</protobuf-maven-plugin.version>
+        <!-- Resolves the licence of every bundled dependency for the shaded modules,
+             so scripts/check-notice.py can hold their generated META-INF/NOTICE and the
+             sha256-pinned licence texts to it. Not managed by any BOM. -->
+        <license-maven-plugin.version>2.7.1</license-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -238,6 +254,50 @@ limitations under the License.
     </dependencies>
 
     <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Configured here rather than in the shaded module so every
+                     flink-sql-connector-gcp-* inherits one licence vocabulary: two
+                     modules disagreeing about how to spell Apache-2.0 would produce
+                     two NOTICE styles for one repository. Declared (not just
+                     managed) by each module that ships a bundle. -->
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>license-maven-plugin</artifactId>
+                    <version>${license-maven-plugin.version}</version>
+                    <configuration>
+                        <!-- The bundle is exactly the runtime tree; Flink is provided
+                             and the connector's own artifacts are this project's. -->
+                        <excludedScopes>test,provided</excludedScopes>
+                        <excludedGroups>io.github.flink-gcp</excludedGroups>
+                        <!-- Without this the goal leaves an existing THIRD-PARTY.txt
+                             alone, so check-notice.py would validate the NOTICE against
+                             whatever the last build resolved rather than this one — the
+                             exact staleness the check exists to prevent. Found by
+                             mutating the report and watching the rebuild not undo it. -->
+                        <force>true</force>
+                        <!-- Fails when a dependency declares no licence at all, rather
+                             than reporting it as a warning and writing "Unknown license"
+                             into the report — which check-notice.py would then faithfully
+                             demand the NOTICE repeat. (`failIfWarning` covers both this
+                             and the blacklist, and is deprecated since 1.14.) -->
+                        <failOnMissing>true</failOnMissing>
+                        <!-- Artifacts spell one licence many ways: this tree alone has
+                             six spellings of Apache-2.0 and two of BSD-3-Clause. The
+                             left-hand name is what check-notice.py matches the NOTICE
+                             paragraphs against, so a new spelling shows up as a
+                             mismatch rather than as a silent extra group. -->
+                        <licenseMerges>
+                            <licenseMerge>Apache-2.0|Apache 2.0|Apache 2|Apache License V2.0|Apache License, Version 2.0|The Apache License, Version 2.0|The Apache Software License, Version 2.0</licenseMerge>
+                            <licenseMerge>BSD-3-Clause|BSD 3-clause|BSD New license</licenseMerge>
+                            <licenseMerge>BSD-2-Clause|The BSD 2-Clause License</licenseMerge>
+                            <licenseMerge>MIT|MIT license|MIT License|The MIT License</licenseMerge>
+                        </licenseMerges>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -338,6 +398,19 @@ limitations under the License.
                         <exclude>mise.local.toml</exclude>
                         <exclude>tools/japicmp-output/**</exclude>
                         <exclude>**/src/test/resources/**</exclude>
+                        <!-- The SQL uber-jar's licensing payload. Its NOTICE is a fragment
+                             the shade plugin's ApacheNoticeResourceTransformer aggregates,
+                             and the licence files are verbatim copies of third-party
+                             licences: neither can carry this project's header. The
+                             root-relative `NOTICE` exclude above is an Ant pattern that
+                             matches only the repository root, so a module path needs its
+                             own entry. -->
+                        <exclude>**/src/main/resources/META-INF/NOTICE</exclude>
+                        <exclude>**/src/main/resources/META-INF/licenses/**</exclude>
+                        <!-- The NOTICE's human-written half: a NOTICE fragment
+                             cannot carry this project's header. (The licence-source
+                             pins moved to TOML precisely so they could carry one.) -->
+                        <exclude>**/NOTICE.template</exclude>
                         <!-- Documentation site: the Go module files are rewritten by
                              `hugo mod` and would not keep a header, the chroma
                              stylesheets are verbatim `hugo gen chromastyles` output

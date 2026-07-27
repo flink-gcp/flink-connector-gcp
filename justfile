@@ -136,11 +136,48 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 # an empty string to -shellcheck disables the integration entirely, so a typo
 # here silently stops checking `run:` blocks rather than failing.
 #
-# Lint the shell scripts and the workflows.
+# ruff is pinned exactly, for the same reason as shellcheck and actionlint: a
+# linter that gains a rule fails a pull request that changed nothing. `check` and
+# `format --check` are separate goals in ruff, and running only the first would
+# leave formatting unchecked.
+#
+# Lint the shell and Python scripts, and the workflows.
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
+    mise x ruff -- ruff --version
+    mise x ruff -- ruff check scripts/
+    mise x ruff -- ruff format --check scripts/
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
+
+# Regenerates the resolved-licence report first, because the check is only as
+# current as that file — a stale one would report a bundle that no longer exists.
+# Reusable as-is by the other flink-sql-connector-gcp-* modules to come.
+#
+# A lifecycle phase with `-am`, not a bare `license:add-third-party` goal. The
+# goal form was tried and fails in CI: a goal invocation does not build reactor
+# siblings, so the module cannot resolve the connector it bundles — `-am` does not
+# change that — and it only appears to work where an earlier `install` left the
+# artifact in the local repository. A phase builds the sibling, so this is
+# self-contained. Any phase at or after `compile` would do — that is the property
+# that matters, since it is what puts the sibling's `target/classes` in front of
+# the reactor. generate-test-resources is where the licence goal is bound, beside
+# the two maven-dependency-plugin executions that feed the module's own tests.
+#
+# Does the module's generated META-INF/NOTICE still match what it bundles?
+check-notice module:
+    {{ mvn }} -pl {{ module }} -am generate-test-resources
+    scripts/check-notice.py {{ module }}
+
+# Rewrites META-INF/NOTICE from the module's NOTICE.template and the resolved
+# bundle, and re-materialises META-INF/licenses/ from the pinned sources in
+# scripts/licence-sources.toml (fetching over HTTPS where the artifact's own jar
+# ships no licence text). Run after a dependency change, review the diff, commit.
+#
+# Regenerate the module's META-INF/NOTICE and META-INF/licenses/.
+update-notice module:
+    {{ mvn }} -pl {{ module }} -am generate-test-resources
+    scripts/check-notice.py --update {{ module }}
 
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
 # into build failures.
