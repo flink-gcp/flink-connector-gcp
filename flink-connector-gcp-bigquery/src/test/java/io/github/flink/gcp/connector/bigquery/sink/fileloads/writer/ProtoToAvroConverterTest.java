@@ -141,6 +141,32 @@ class ProtoToAvroConverterTest {
         assertThat(record.get("j")).isEqualTo("{\"a\":1}");
     }
 
+    /**
+     * The staging half of what makes a marked geography column reachable: the converter has carried
+     * {@code GEOGRAPHY} since FILE_LOADS was written, but nothing derived such a column until the
+     * serializers could mark one, so this path was never exercised.
+     */
+    @Test
+    void convertsGeographyColumnsAsStrings() throws Exception {
+        Setup setup =
+                new Setup(
+                        schemaOf(
+                                field(
+                                        "g",
+                                        TableFieldSchema.Type.GEOGRAPHY,
+                                        TableFieldSchema.Mode.REQUIRED)));
+        assertThat(setup.field("g").getJavaType())
+                .isEqualTo(Descriptors.FieldDescriptor.JavaType.STRING);
+
+        GenericRecord record =
+                setup.converter.convert(
+                        DynamicMessage.newBuilder(setup.descriptor)
+                                .setField(setup.field("g"), "POINT(1 2)")
+                                .build());
+
+        assertThat(record.get("g")).isEqualTo("POINT(1 2)");
+    }
+
     @Test
     void convertsTemporalValues() throws Exception {
         Setup setup =

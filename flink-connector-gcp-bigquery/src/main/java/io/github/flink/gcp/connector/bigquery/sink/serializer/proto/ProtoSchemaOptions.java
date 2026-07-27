@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.protobuf.DescriptorProtos;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.GeneratedMessage;
@@ -32,8 +33,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Options controlling how protobuf descriptors are mapped to BigQuery schemas. Two mappings can be
- * adjusted:
+ * Options controlling how protobuf descriptors are mapped to BigQuery schemas. Three mappings can
+ * be adjusted:
  *
  * <ul>
  *   <li><b>JSON columns.</b> The Storage Write API carries a {@code JSON} column as a string, so
@@ -47,6 +48,11 @@ import java.util.Set;
  *       field options, each supplied as the generated extension or as its extension number.
  *       Everything configured is unioned, so a field marked by any of them is a {@code JSON}
  *       column.
+ *   <li><b>Geography columns.</b> The same kind of marker, for a {@code GEOGRAPHY} column: the
+ *       Storage Write API carries one as a string too, holding WKT, hex-encoded WKB or GeoJSON.
+ *       Only <b>string</b> fields can be marked — a message has no geography meaning — and only by
+ *       dotted path, there being no annotated corpus to motivate a field-option form. Also
+ *       unvalidated, so malformed geometry is a BigQuery row-level error.
  *   <li><b>Nullability.</b> Every non-repeated column is derived as {@code NULLABLE} by default.
  *       {@link Builder#deriveRequiredColumns()} reads each field's presence instead and derives
  *       {@code REQUIRED} where protobuf cannot express absence.
@@ -89,18 +95,21 @@ public final class ProtoSchemaOptions implements Serializable {
      */
     private final Map<Integer, String> jsonFieldOptions;
 
+    private final Set<String> geographyFieldPaths;
+
     private final boolean deriveRequiredColumns;
 
     private ProtoSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
         this.jsonFieldOptions =
                 Collections.unmodifiableMap(new LinkedHashMap<>(builder.jsonFieldOptions));
+        this.geographyFieldPaths =
+                Collections.unmodifiableSet(new HashSet<>(builder.geographyFieldPaths));
         this.deriveRequiredColumns = builder.deriveRequiredColumns;
     }
 
     /**
-     * Returns the default options: no JSON field mapping, every non-repeated column {@code
-     * NULLABLE}.
+     * Returns the default options: no column marked, every non-repeated column {@code NULLABLE}.
      */
     public static ProtoSchemaOptions defaults() {
         return DEFAULTS;
@@ -114,6 +123,11 @@ public final class ProtoSchemaOptions implements Serializable {
     /** Returns the dotted paths of fields mapped to BigQuery {@code JSON} columns. */
     public Set<String> getJsonFieldPaths() {
         return jsonFieldPaths;
+    }
+
+    /** Returns the dotted paths of fields mapped to BigQuery {@code GEOGRAPHY} columns. */
+    public Set<String> getGeographyFieldPaths() {
+        return geographyFieldPaths;
     }
 
     /** Returns whether column modes are derived from field presence. */
@@ -131,9 +145,7 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /**
-     * Returns whether the given field is mapped to a BigQuery {@code JSON} column. This is the
-     * single decision point consulted by both schema derivation and row conversion, so the two can
-     * never disagree on which columns are JSON.
+     * Returns whether the given field is mapped to a BigQuery {@code JSON} column.
      *
      * <p>Configured options are consulted until one matches. Each may also <em>reject</em> a field
      * whose option at that number is not a singular bool, so for a field carrying both a valid
@@ -157,12 +169,55 @@ public final class ProtoSchemaOptions implements Serializable {
         return false;
     }
 
+    /**
+     * Returns whether the field at the given dotted path is mapped to a BigQuery {@code GEOGRAPHY}
+     * column. Takes no descriptor, unlike {@link #isJsonField}, because there is nothing to consult
+     * but the configured paths: geography has no field-option form.
+     *
+     * @param path the dotted path of the field from the root message
+     * @return whether the field is written as geography
+     */
+    public boolean isGeographyField(String path) {
+        return geographyFieldPaths.contains(path);
+    }
+
+    /**
+     * Returns the BigQuery type the given field is marked with, or {@code null} where it is marked
+     * with none. Together with the automatic {@code JSON} of the well-known types — folded in by
+     * {@link ProtoToTableSchemaConverter#markedType} — this is the single decision point consulted
+     * by both schema derivation and row conversion, so the two can never disagree on which columns
+     * are marked or with what.
+     *
+     * <p>Package-private: {@link #isJsonField} and {@link #isGeographyField} are how a caller
+     * outside the connector asks, one marking at a time.
+     *
+     * @param field the field descriptor
+     * @param path the dotted path of the field from the root message
+     * @return {@code JSON}, {@code GEOGRAPHY}, or {@code null}
+     */
+    TableFieldSchema.Type markedType(Descriptors.FieldDescriptor field, String path) {
+        boolean json = isJsonField(field, path);
+        boolean geography = isGeographyField(path);
+        // A column has one type, so a field claimed by both markers is a configuration error rather
+        // than a precedence question. Checked here because this is the one place both are visible —
+        // a field option cannot be intersected with a path at build() time.
+        Preconditions.checkArgument(
+                !(json && geography),
+                "Field %s is marked as both a JSON and a GEOGRAPHY column",
+                path);
+        if (json) {
+            return TableFieldSchema.Type.JSON;
+        }
+        return geography ? TableFieldSchema.Type.GEOGRAPHY : null;
+    }
+
     /** Builder for {@link ProtoSchemaOptions}. */
     @PublicEvolving
     public static final class Builder {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();
         private final Map<Integer, String> jsonFieldOptions = new LinkedHashMap<>();
+        private final Set<String> geographyFieldPaths = new HashSet<>();
         private boolean deriveRequiredColumns;
 
         Builder() {}
@@ -186,7 +241,8 @@ public final class ProtoSchemaOptions implements Serializable {
          *   <tr><td>singular message field</td><td>{@code NULLABLE}</td></tr>
          *   <tr><td>proto2 {@code required}</td><td>{@code REQUIRED}</td></tr>
          *   <tr><td>proto2 {@code optional}</td><td>{@code NULLABLE}</td></tr>
-         *   <tr><td>singular {@code JSON} column</td><td>{@code NULLABLE}, always</td></tr>
+         *   <tr><td>singular {@code JSON} or {@code GEOGRAPHY} column</td>
+         *       <td>{@code NULLABLE}, always</td></tr>
          *   <tr><td>singular well-known type, wrappers included</td>
          *       <td>{@code NULLABLE} — a message field, so it has presence</td></tr>
          * </table>
@@ -282,6 +338,42 @@ public final class ProtoSchemaOptions implements Serializable {
         public Builder jsonFieldPaths(Collection<String> paths) {
             Preconditions.checkNotNull(paths, "paths must not be null")
                     .forEach(this::jsonFieldPath);
+            return this;
+        }
+
+        /**
+         * Maps the string field at the given dotted path to a BigQuery {@code GEOGRAPHY} column.
+         * Paths that match no field, that match a field which is not a string, or that are also
+         * marked as a {@code JSON} column are rejected when the schema is derived.
+         *
+         * <p>Only a string field can be marked, where {@link #jsonFieldPath} also accepts a
+         * message: a message has no geography meaning, there being no protobuf type BigQuery would
+         * recognise as one. The value must be one of the text forms BigQuery accepts for a
+         * geography — WKT, hex-encoded WKB or GeoJSON — and is passed through verbatim without
+         * being validated by the connector, so malformed geometry is a BigQuery row-level error
+         * routed to the configured {@code FailedRowHandler}.
+         *
+         * <p>There is deliberately no field-option form, unlike {@link #jsonFieldOption}: that one
+         * exists because a large annotated proto corpus was the case it had to serve, and no such
+         * corpus motivates this marker. Adding one later would be purely additive.
+         *
+         * @param path dotted field path from the root message, for example {@code site.boundary}
+         * @return this builder
+         */
+        public Builder geographyFieldPath(String path) {
+            this.geographyFieldPaths.add(Preconditions.checkNotNull(path, "path must not be null"));
+            return this;
+        }
+
+        /**
+         * Maps all string fields at the given dotted paths to BigQuery {@code GEOGRAPHY} columns.
+         *
+         * @param paths dotted field paths from the root message
+         * @return this builder
+         */
+        public Builder geographyFieldPaths(Collection<String> paths) {
+            Preconditions.checkNotNull(paths, "paths must not be null")
+                    .forEach(this::geographyFieldPath);
             return this;
         }
 

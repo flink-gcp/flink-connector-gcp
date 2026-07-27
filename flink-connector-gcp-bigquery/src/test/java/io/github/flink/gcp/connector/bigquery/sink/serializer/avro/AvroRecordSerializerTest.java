@@ -153,6 +153,29 @@ class AvroRecordSerializerTest {
         assertThat(copy.serialize(record("b", 2L))).isEqualTo(original.serialize(record("b", 2L)));
     }
 
+    /**
+     * The geography marker has to reach both conversion sides, exactly as the JSON one does: the
+     * derived schema says {@code GEOGRAPHY} while the value is still written through as a string.
+     */
+    @Test
+    void carriesTheGeographyMarkerThroughToBothConversionSides() throws Exception {
+        AvroRecordSerializer serializer =
+                AvroRecordSerializer.of(
+                        schema(), AvroSchemaOptions.builder().geographyFieldPath("note").build());
+
+        assertThat(serializer.getTableSchema(DESTINATION).getFields(2).getType())
+                .isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+
+        GenericRecord record = record("a", 1L);
+        record.put("note", "POINT(1 2)");
+        DynamicMessage row =
+                DynamicMessage.parseFrom(
+                        serializer.getDescriptor(DESTINATION), serializer.serialize(record));
+
+        assertThat(row.getField(row.getDescriptorForType().findFieldByName("note")))
+                .isEqualTo("POINT(1 2)");
+    }
+
     @Test
     void schemaMappingProblemsFailWhenTheSerializerIsCreated() {
         // Not on the first record: serialize() runs inside the writers' FailedRowHandler catch, so

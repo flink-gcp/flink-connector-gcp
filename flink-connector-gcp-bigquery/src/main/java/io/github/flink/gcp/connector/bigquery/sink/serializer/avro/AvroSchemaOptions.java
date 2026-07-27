@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer.avro;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
+
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
@@ -28,7 +30,7 @@ import java.util.Set;
 /**
  * Options controlling how Avro schemas are mapped to BigQuery schemas.
  *
- * <p>Two mappings can be adjusted:
+ * <p>Three mappings can be adjusted:
  *
  * <ul>
  *   <li><b>JSON columns.</b> An Avro {@code string} field selected by its dotted path becomes a
@@ -38,12 +40,15 @@ import java.util.Set;
  *       the protobuf path (see {@link
  *       io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions
  *       ProtoSchemaOptions}).
+ *   <li><b>Geography columns.</b> The same mechanism, for a {@code GEOGRAPHY} column: the Storage
+ *       Write API carries one as a string too, holding WKT, hex-encoded WKB or GeoJSON. Also
+ *       unvalidated, so malformed geometry is a BigQuery row-level error.
  *   <li><b>Nullability.</b> Every non-repeated column is derived as {@code NULLABLE} by default.
  *       {@link Builder#deriveRequiredColumns()} reads the Avro schema instead and derives {@code
  *       REQUIRED} for a field that is not a {@code ["null", T]} union — arrays and maps stay {@code
- *       REPEATED}, a {@code JSON} column stays {@code NULLABLE}, and the synthesized map {@code
- *       key} column, which corresponds to no Avro field at all, becomes {@code REQUIRED} with the
- *       rest.
+ *       REPEATED}, a marked {@code JSON} or {@code GEOGRAPHY} column stays {@code NULLABLE}, and
+ *       the synthesized map {@code key} column, which corresponds to no Avro field at all, becomes
+ *       {@code REQUIRED} with the rest.
  * </ul>
  *
  * <p>Two reasons {@code NULLABLE} is the default. {@code REQUIRED} is the mode BigQuery cannot walk
@@ -65,16 +70,18 @@ public final class AvroSchemaOptions implements Serializable {
     private static final AvroSchemaOptions DEFAULTS = new AvroSchemaOptions(new Builder());
 
     private final Set<String> jsonFieldPaths;
+    private final Set<String> geographyFieldPaths;
     private final boolean deriveRequiredColumns;
 
     private AvroSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
+        this.geographyFieldPaths =
+                Collections.unmodifiableSet(new HashSet<>(builder.geographyFieldPaths));
         this.deriveRequiredColumns = builder.deriveRequiredColumns;
     }
 
     /**
-     * Returns the default options: no JSON field mapping, every non-repeated column {@code
-     * NULLABLE}.
+     * Returns the default options: no column marked, every non-repeated column {@code NULLABLE}.
      */
     public static AvroSchemaOptions defaults() {
         return DEFAULTS;
@@ -90,6 +97,11 @@ public final class AvroSchemaOptions implements Serializable {
         return jsonFieldPaths;
     }
 
+    /** Returns the dotted paths of fields mapped to BigQuery {@code GEOGRAPHY} columns. */
+    public Set<String> getGeographyFieldPaths() {
+        return geographyFieldPaths;
+    }
+
     /** Returns whether column modes are derived from the Avro schema. */
     public boolean isDeriveRequiredColumns() {
         return deriveRequiredColumns;
@@ -97,8 +109,7 @@ public final class AvroSchemaOptions implements Serializable {
 
     /**
      * Returns whether the field at the given dotted path is mapped to a BigQuery {@code JSON}
-     * column. This is the single decision point consulted by both schema derivation and row
-     * conversion, so the two can never disagree on which columns are JSON.
+     * column.
      *
      * @param path the dotted path of the field from the root record
      * @return whether the field is written as JSON
@@ -107,11 +118,49 @@ public final class AvroSchemaOptions implements Serializable {
         return jsonFieldPaths.contains(path);
     }
 
+    /**
+     * Returns whether the field at the given dotted path is mapped to a BigQuery {@code GEOGRAPHY}
+     * column.
+     *
+     * @param path the dotted path of the field from the root record
+     * @return whether the field is written as geography
+     */
+    public boolean isGeographyField(String path) {
+        return geographyFieldPaths.contains(path);
+    }
+
+    /**
+     * Returns the BigQuery type the field at the given dotted path is marked with, or {@code null}
+     * where it is marked with none. This is the single decision point consulted by both schema
+     * derivation and row conversion, so the two can never disagree on which columns are marked.
+     *
+     * <p>Package-private: {@link #isJsonField} and {@link #isGeographyField} are how a caller
+     * outside the connector asks, one marking at a time.
+     *
+     * @param path the dotted path of the field from the root record
+     * @return {@code JSON}, {@code GEOGRAPHY}, or {@code null}
+     */
+    TableFieldSchema.Type markedType(String path) {
+        boolean json = isJsonField(path);
+        boolean geography = isGeographyField(path);
+        // A column has one type, so a path claimed by both markers is a configuration error rather
+        // than a precedence question. Checked here because this is the one place both are visible.
+        Preconditions.checkArgument(
+                !(json && geography),
+                "Field %s is marked as both a JSON and a GEOGRAPHY column",
+                path);
+        if (json) {
+            return TableFieldSchema.Type.JSON;
+        }
+        return geography ? TableFieldSchema.Type.GEOGRAPHY : null;
+    }
+
     /** Builder for {@link AvroSchemaOptions}. */
     @PublicEvolving
     public static final class Builder {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();
+        private final Set<String> geographyFieldPaths = new HashSet<>();
         private boolean deriveRequiredColumns;
 
         Builder() {}
@@ -168,6 +217,38 @@ public final class AvroSchemaOptions implements Serializable {
         public Builder jsonFieldPaths(Collection<String> paths) {
             Preconditions.checkNotNull(paths, "paths must not be null")
                     .forEach(this::jsonFieldPath);
+            return this;
+        }
+
+        /**
+         * Maps the {@code string} field at the given dotted path to a BigQuery {@code GEOGRAPHY}
+         * column. Paths that match no field, or that match a field which is not a {@code string},
+         * are rejected when the schema is derived, as is a path also marked as a {@code JSON}
+         * column.
+         *
+         * <p>The value must be one of the text forms BigQuery accepts for a geography — WKT,
+         * hex-encoded WKB or GeoJSON — and is passed through verbatim without being validated by
+         * the connector, so malformed geometry is a BigQuery row-level error routed to the
+         * configured {@code FailedRowHandler}.
+         *
+         * @param path dotted field path from the root record, for example {@code site.boundary}
+         * @return this builder
+         */
+        public Builder geographyFieldPath(String path) {
+            this.geographyFieldPaths.add(Preconditions.checkNotNull(path, "path must not be null"));
+            return this;
+        }
+
+        /**
+         * Maps all {@code string} fields at the given dotted paths to BigQuery {@code GEOGRAPHY}
+         * columns.
+         *
+         * @param paths dotted field paths from the root record
+         * @return this builder
+         */
+        public Builder geographyFieldPaths(Collection<String> paths) {
+            Preconditions.checkNotNull(paths, "paths must not be null")
+                    .forEach(this::geographyFieldPath);
             return this;
         }
 

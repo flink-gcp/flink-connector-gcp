@@ -54,12 +54,12 @@ import java.util.List;
  * scalar it holds, {@code Struct}/{@code Value}/{@code ListValue} are printed as canonical protobuf
  * JSON like any other JSON-mapped message, uint32/fixed32 are widened unsigned, uint64/fixed64
  * values above {@code Long.MAX_VALUE} are rejected, enum values become their names, JSON-mapped
- * message fields are printed as canonical protobuf JSON while JSON-mapped string fields are written
- * through verbatim (a {@code JSON} column is carried as a string, and the value is taken to be JSON
- * text already — the connector does not validate it; BigQuery rejects malformed JSON as a row-level
- * error, with the sole exception of the empty string on a field without presence, which is left
- * unset rather than written), and nested/repeated fields (including maps) are converted
- * recursively.
+ * message fields are printed as canonical protobuf JSON while marked string fields — {@code JSON}
+ * and {@code GEOGRAPHY} alike — are written through verbatim (both columns are carried as strings,
+ * and the value is taken to be JSON text or a geometry literal already; the connector does not
+ * validate either, and BigQuery rejects a malformed one as a row-level error, with the sole
+ * exception of the empty string on a field without presence, which is left unset rather than
+ * written), and nested/repeated fields (including maps) are converted recursively.
  *
  * <p>Instances hold non-serializable descriptors and must be re-created after deserialization (see
  * {@link ProtoMessageSerializer}).
@@ -146,26 +146,27 @@ public final class ProtoRowConverter {
             Descriptors.FieldDescriptor targetField,
             ProtoSchemaOptions options,
             String path) {
-        ProtoWellKnownType wellKnown = ProtoWellKnownType.of(sourceField);
-        // A JSON-mapped string already holds JSON text and its target field is a proto string, so
-        // it converts as IDENTITY; only the empty-value rule is its own, and that is decided here
-        // rather than per record. Which fields may be JSON-mapped at all is validated once, in
-        // ProtoToTableSchemaConverter, which always runs first to produce the target descriptor.
-        //
-        // This condition must stay equivalent to the one in that converter's convertField: the
-        // target field of an automatic JSON column is a string, so a plan that disagreed would ask
-        // a string field for its message type and throw at construction.
-        if (options.isJsonField(sourceField, path) || wellKnown.isJsonMapped()) {
+        // A marked string already holds the text the column wants and its target field is a proto
+        // string, so it converts as IDENTITY; only the empty-value rule is its own, and that is
+        // decided here rather than per record. Which fields may be marked at all is validated once,
+        // in ProtoToTableSchemaConverter, which always runs first to produce the target descriptor.
+        // Its markedType is called here rather than recomputed: the target field of a marked column
+        // is a string, so a plan that disagreed would ask a string field for its message type and
+        // throw at construction.
+        if (ProtoToTableSchemaConverter.markedType(sourceField, path, options) != null) {
             if (sourceField.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE) {
+                // A marked message can only be a JSON column: the geography marking accepts nothing
+                // but a string, and that converter rejected anything else before we got here.
                 return FieldPlan.json(sourceField, targetField, path);
             }
-            return FieldPlan.jsonString(sourceField, targetField, path, !sourceField.hasPresence());
+            return FieldPlan.verbatimString(
+                    sourceField, targetField, path, !sourceField.hasPresence());
         }
         if (sourceField.getJavaType() != Descriptors.FieldDescriptor.JavaType.MESSAGE) {
             return FieldPlan.scalar(sourceField, targetField, scalarKind(sourceField, path), path);
         }
         Descriptors.Descriptor messageType = sourceField.getMessageType();
-        switch (wellKnown) {
+        switch (ProtoWellKnownType.of(sourceField)) {
             case TIMESTAMP:
                 return FieldPlan.timestamp(
                         sourceField,
@@ -302,12 +303,13 @@ public final class ProtoRowConverter {
          * Whether an empty value must be left unset rather than written, decided once here so the
          * per-record path stays a flat switch.
          *
-         * <p>Only ever true for a JSON-mapped string without presence. A plain proto3 scalar has no
-         * presence, so an unset one arrives as {@code ""} — and the BigQuery row descriptor's JSON
-         * field <em>does</em> have presence, so writing it would put an explicit empty string in
-         * the column. The empty string is not valid JSON, so that could only come back as a
-         * row-level error, which for a field most records legitimately leave unset means failing on
-         * most records. Leaving the column unset (NULL) is the only outcome that can succeed.
+         * <p>Only ever true for a marked string without presence. A plain proto3 scalar has no
+         * presence, so an unset one arrives as {@code ""} — and the BigQuery row descriptor's field
+         * for a marked column <em>does</em> have presence, so writing it would put an explicit
+         * empty string in the column. The empty string is neither valid JSON nor a valid geometry,
+         * so that could only come back as a row-level error, which for a field most records
+         * legitimately leave unset means failing on most records. Leaving the column unset (NULL)
+         * is the only outcome that can succeed.
          *
          * <p>Deliberately limited to fields without presence: where the source can say "unset", an
          * explicit {@code ""} is the user's own statement and is passed through unchanged. Repeated
@@ -357,8 +359,8 @@ public final class ProtoRowConverter {
                     sourceField, targetField, Kind.JSON, path, null, null, null, null, null, false);
         }
 
-        /** A JSON-mapped string field, written through verbatim. */
-        static FieldPlan jsonString(
+        /** A marked string field — {@code JSON} or {@code GEOGRAPHY} — written through verbatim. */
+        static FieldPlan verbatimString(
                 Descriptors.FieldDescriptor sourceField,
                 Descriptors.FieldDescriptor targetField,
                 String path,

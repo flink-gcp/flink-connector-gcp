@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Arrays;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -309,6 +310,115 @@ class ProtoToTableSchemaConverterTest {
                         () -> ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("f_map");
+    }
+
+    @Test
+    void mapsConfiguredStringFieldsToGeography() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().geographyFieldPath("f_string").build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options));
+
+        assertThat(fields.get("f_string").getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+        assertThat(fields.get("f_string").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        // Nothing else moves: the marking is per field, not per type.
+        assertThat(fields.get("f_rep_string").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+    }
+
+    @Test
+    void mapsConfiguredNestedAndRepeatedFieldsToGeography() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldPaths(Arrays.asList("f_nested.s", "f_rep_string"))
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options));
+
+        assertThat(fields.get("f_nested").getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getType)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("s", TableFieldSchema.Type.GEOGRAPHY),
+                        org.assertj.core.groups.Tuple.tuple("n", TableFieldSchema.Type.INT64));
+        // A repeated marked field stays REPEATED: the mode decision tests repeated first.
+        assertThat(fields.get("f_rep_string").getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+        assertThat(fields.get("f_rep_string").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
+    }
+
+    /**
+     * The one place the geography marking is narrower than the JSON one: {@code jsonFieldPath}
+     * accepts a message and prints its canonical protobuf JSON, but no protobuf message means a
+     * geography to BigQuery, so there would be nothing to write.
+     */
+    @Test
+    void rejectsGeographyMappingOnMessageFields() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().geographyFieldPath("f_json").build();
+
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("GEOGRAPHY")
+                .hasMessageContaining("f_json");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"f_int32", "f_bytes", "f_map"})
+    void rejectsGeographyMappingOnFieldsThatAreNotStrings(String path) {
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().geographyFieldPath(path).build();
+
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(path);
+    }
+
+    @Test
+    void rejectsGeographyPathsMatchingNoField() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().geographyFieldPath("f_stringg").build();
+
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("f_stringg");
+    }
+
+    /** A column has one type, so a field claimed by both markers is a configuration error. */
+    @Test
+    void rejectsAFieldMarkedAsBothJsonAndGeography() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldPath("f_string")
+                        .geographyFieldPath("f_string")
+                        .build();
+
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("both a JSON and a GEOGRAPHY")
+                .hasMessageContaining("f_string");
+    }
+
+    /**
+     * The JSON rule stated about the marking rather than about JSON: {@code ProtoRowConverter}
+     * leaves an unset presence-less marked string unset rather than writing {@code ""} — and "no
+     * presence" is exactly what would make the column REQUIRED, so the two together would fail
+     * every record that legitimately omits the field.
+     */
+    @Test
+    void deriveRequiredColumnsLeavesGeographyColumnsNullable() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldPath("f_string")
+                        .deriveRequiredColumns()
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options));
+
+        assertThat(fields.get("f_string").getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+        assertThat(fields.get("f_string").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+        // The unmarked presence-less sibling still shows the option is on.
+        assertThat(fields.get("f_int32").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
     }
 
     @Test
@@ -662,6 +772,22 @@ class ProtoToTableSchemaConverterTest {
 
         assertThat(fields.get("w_int64").getType()).isEqualTo(TableFieldSchema.Type.JSON);
         assertThat(fields.get("w_ts").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+    }
+
+    /**
+     * A configured marking beats well-known-type recognition whatever it says, so marking a {@code
+     * Struct} as geography is a rejection rather than a silent fall back to the automatic {@code
+     * JSON}. Nobody should have to guess which of the two won.
+     */
+    @Test
+    void rejectsAGeographyPathOnAnAutomaticallyJsonMappedWellKnownType() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().geographyFieldPath("w_struct").build();
+
+        assertThatThrownBy(() -> wellKnownTypesSchema(options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("GEOGRAPHY")
+                .hasMessageContaining("w_struct");
     }
 
     /**

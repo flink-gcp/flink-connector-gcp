@@ -56,10 +56,14 @@ import java.util.Set;
  *       STRUCT<key, value>}, matching the shape proto maps already get
  *   <li>{@code string} fields selected by {@link AvroSchemaOptions#isJsonField} → {@code JSON} (the
  *       value is taken to be JSON text already and is not validated)
+ *   <li>{@code string} fields selected by {@link AvroSchemaOptions#isGeographyField} → {@code
+ *       GEOGRAPHY} (likewise taken to be WKT, hex-encoded WKB or GeoJSON already, and likewise not
+ *       validated)
  *   <li>modes: arrays and maps → {@code REPEATED}; everything else → {@code NULLABLE}, unless
  *       {@link AvroSchemaOptions#isDeriveRequiredColumns} is set, and then a field that is not a
- *       {@code ["null", T]} union → {@code REQUIRED}. A {@code JSON} column stays {@code NULLABLE}
- *       either way, as does the synthesized map {@code key} column unless the option is set
+ *       {@code ["null", T]} union → {@code REQUIRED}. A marked {@code JSON} or {@code GEOGRAPHY}
+ *       column stays {@code NULLABLE} either way, as does the synthesized map {@code key} column
+ *       unless the option is set
  * </ul>
  *
  * <p>Rejected as configuration errors, because writing something plausible instead would be worse
@@ -67,9 +71,11 @@ import java.util.Set;
  * type), a bare {@code null} field, arrays of nullable elements and arrays of arrays or maps
  * (BigQuery {@code REPEATED} fields hold no NULLs and do not nest), recursive record types, sibling
  * fields whose names differ only by case (the Storage API lowercases descriptor field names), a
- * decimal wider than {@code BIGNUMERIC}, and the logical types BigQuery cannot store without
- * silently losing information ({@code timestamp-nanos}, {@code local-timestamp-nanos}, {@code
- * duration}, {@code big-decimal}, and {@code uuid} on a {@code fixed}).
+ * decimal wider than {@code BIGNUMERIC}, the logical types BigQuery cannot store without silently
+ * losing information ({@code timestamp-nanos}, {@code local-timestamp-nanos}, {@code duration},
+ * {@code big-decimal}, and {@code uuid} on a {@code fixed}), a marker path matching no field or a
+ * field that is not a {@code string}, and a path marked as both a {@code JSON} and a {@code
+ * GEOGRAPHY} column.
  */
 @Internal
 public final class AvroToTableSchemaConverter {
@@ -108,18 +114,19 @@ public final class AvroToTableSchemaConverter {
 
         Set<String> ancestors = new HashSet<>();
         ancestors.add(avroSchema.getFullName());
-        Set<String> matchedJsonPaths = new HashSet<>();
+        Set<String> matchedMarkedPaths = new HashSet<>();
         TableSchema.Builder builder = TableSchema.newBuilder();
         checkCaseCollisions(avroSchema, "");
         for (Schema.Field field : avroSchema.getFields()) {
-            builder.addFields(convertField(field, "", options, ancestors, matchedJsonPaths));
+            builder.addFields(convertField(field, "", options, ancestors, matchedMarkedPaths));
         }
 
         Set<String> unmatched = new HashSet<>(options.getJsonFieldPaths());
-        unmatched.removeAll(matchedJsonPaths);
+        unmatched.addAll(options.getGeographyFieldPaths());
+        unmatched.removeAll(matchedMarkedPaths);
         Preconditions.checkArgument(
                 unmatched.isEmpty(),
-                "JSON field paths matching no field of %s: %s",
+                "JSON or GEOGRAPHY field paths matching no field of %s: %s",
                 avroSchema.getFullName(),
                 unmatched);
         return builder.build();
@@ -130,10 +137,10 @@ public final class AvroToTableSchemaConverter {
             String parentPath,
             AvroSchemaOptions options,
             Set<String> ancestors,
-            Set<String> matchedJsonPaths) {
+            Set<String> matchedMarkedPaths) {
         String path = parentPath.isEmpty() ? field.name() : parentPath + "." + field.name();
         return convertValue(
-                field.name(), field.schema(), path, options, ancestors, matchedJsonPaths);
+                field.name(), field.schema(), path, options, ancestors, matchedMarkedPaths);
     }
 
     private static TableFieldSchema convertValue(
@@ -142,7 +149,7 @@ public final class AvroToTableSchemaConverter {
             String path,
             AvroSchemaOptions options,
             Set<String> ancestors,
-            Set<String> matchedJsonPaths) {
+            Set<String> matchedMarkedPaths) {
         boolean nullable = false;
         Schema base = schema;
         if (schema.getType() == Schema.Type.UNION) {
@@ -157,23 +164,30 @@ public final class AvroToTableSchemaConverter {
                 // BigQuery REPEATED field is simply empty, there being no NULL array.
                 builder.setMode(TableFieldSchema.Mode.REPEATED);
                 applyType(
-                        builder, elementOf(base, path), path, options, ancestors, matchedJsonPaths);
+                        builder,
+                        elementOf(base, path),
+                        path,
+                        options,
+                        ancestors,
+                        matchedMarkedPaths);
                 break;
             case MAP:
                 // Checked here rather than left to the unmatched-path rejection: a map field does
                 // reach applyType, only under path + ".value", so a path naming the map itself
                 // would otherwise be reported as matching no field at all.
+                TableFieldSchema.Type markedMap = options.markedType(path);
                 Preconditions.checkArgument(
-                        !options.isJsonField(path),
-                        "JSON mapping requires a (possibly repeated or nullable) string field, but"
-                                + " %s is a map",
+                        markedMap == null,
+                        "%s mapping requires a (possibly repeated or nullable) string field, but %s"
+                                + " is a map",
+                        markedMap,
                         path);
                 builder.setMode(TableFieldSchema.Mode.REPEATED);
-                applyMapEntry(builder, base, path, options, ancestors, matchedJsonPaths);
+                applyMapEntry(builder, base, path, options, ancestors, matchedMarkedPaths);
                 break;
             default:
-                builder.setMode(modeOf(nullable, options, options.isJsonField(path)));
-                applyType(builder, base, path, options, ancestors, matchedJsonPaths);
+                builder.setMode(modeOf(nullable, options, options.markedType(path) != null));
+                applyType(builder, base, path, options, ancestors, matchedMarkedPaths);
                 break;
         }
         return builder.build();
@@ -188,22 +202,23 @@ public final class AvroToTableSchemaConverter {
      * come here at all — a BigQuery {@code REPEATED} column cannot be {@code NULLABLE}, so {@code
      * ARRAY} and {@code MAP} are {@code REPEATED} whatever the option says.
      *
-     * <p>A singular {@code JSON} column is never {@code REQUIRED}, matching {@link
+     * <p>A singular marked column — {@code JSON} or {@code GEOGRAPHY} — is never {@code REQUIRED},
+     * matching {@link
      * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoToTableSchemaConverter
      * ProtoToTableSchemaConverter} — the two options share a name, so they must not diverge on
      * which columns they constrain. That side needs the rule to avoid poisoning every record which
      * omits the field; here it is a plainer matter of not making a column mandatory that BigQuery
-     * cannot relax afterwards, when an empty string is a row-level error in a {@code JSON} column
-     * either way.
+     * cannot relax afterwards, when an empty string is a row-level error in either column type
+     * anyway.
      *
      * @param nullable whether the Avro schema admits null for this field
      * @param options the schema mapping options
-     * @param jsonColumn whether this column is mapped to {@code JSON}
+     * @param markedColumn whether this column is marked as {@code JSON} or {@code GEOGRAPHY}
      * @return the BigQuery mode
      */
     private static TableFieldSchema.Mode modeOf(
-            boolean nullable, AvroSchemaOptions options, boolean jsonColumn) {
-        if (!options.isDeriveRequiredColumns() || nullable || jsonColumn) {
+            boolean nullable, AvroSchemaOptions options, boolean markedColumn) {
+        if (!options.isDeriveRequiredColumns() || nullable || markedColumn) {
             return TableFieldSchema.Mode.NULLABLE;
         }
         return TableFieldSchema.Mode.REQUIRED;
@@ -243,13 +258,13 @@ public final class AvroToTableSchemaConverter {
             String path,
             AvroSchemaOptions options,
             Set<String> ancestors,
-            Set<String> matchedJsonPaths) {
+            Set<String> matchedMarkedPaths) {
         builder.setType(TableFieldSchema.Type.STRUCT)
                 .addFields(
                         TableFieldSchema.newBuilder()
                                 .setName("key")
                                 .setType(TableFieldSchema.Type.STRING)
-                                // An Avro map key is never a union and never a JSON column, so it
+                                // An Avro map key is never a union and can carry no marking, so it
                                 // is never nullable of its own accord — the option alone decides.
                                 .setMode(modeOf(false, options, false))
                                 .build())
@@ -260,7 +275,7 @@ public final class AvroToTableSchemaConverter {
                                 path + ".value",
                                 options,
                                 ancestors,
-                                matchedJsonPaths));
+                                matchedMarkedPaths));
     }
 
     private static void applyType(
@@ -269,16 +284,21 @@ public final class AvroToTableSchemaConverter {
             String path,
             AvroSchemaOptions options,
             Set<String> ancestors,
-            Set<String> matchedJsonPaths) {
-        if (options.isJsonField(path)) {
+            Set<String> matchedMarkedPaths) {
+        TableFieldSchema.Type marked = options.markedType(path);
+        if (marked != null) {
+            // Both markings accept a string and nothing else, so one check serves them: a JSON
+            // column carries its text and a GEOGRAPHY column its geometry literal, and Avro has no
+            // type either could be inferred from.
             Preconditions.checkArgument(
                     schema.getType() == Schema.Type.STRING,
-                    "JSON mapping requires a (possibly repeated or nullable) string field, but %s is"
+                    "%s mapping requires a (possibly repeated or nullable) string field, but %s is"
                             + " %s",
+                    marked,
                     path,
                     schema.getType());
-            matchedJsonPaths.add(path);
-            builder.setType(TableFieldSchema.Type.JSON);
+            matchedMarkedPaths.add(path);
+            builder.setType(marked);
             return;
         }
 
@@ -317,7 +337,7 @@ public final class AvroToTableSchemaConverter {
                 builder.setType(TableFieldSchema.Type.BOOL);
                 break;
             case RECORD:
-                applyRecord(builder, schema, path, options, ancestors, matchedJsonPaths);
+                applyRecord(builder, schema, path, options, ancestors, matchedMarkedPaths);
                 break;
             default:
                 throw new IllegalArgumentException(
@@ -374,7 +394,7 @@ public final class AvroToTableSchemaConverter {
             String path,
             AvroSchemaOptions options,
             Set<String> ancestors,
-            Set<String> matchedJsonPaths) {
+            Set<String> matchedMarkedPaths) {
         Preconditions.checkArgument(
                 !ancestors.contains(record.getFullName()),
                 "Recursive record types are not supported by BigQuery: %s (field %s)",
@@ -384,7 +404,7 @@ public final class AvroToTableSchemaConverter {
         builder.setType(TableFieldSchema.Type.STRUCT);
         checkCaseCollisions(record, path);
         for (Schema.Field field : record.getFields()) {
-            builder.addFields(convertField(field, path, options, ancestors, matchedJsonPaths));
+            builder.addFields(convertField(field, path, options, ancestors, matchedMarkedPaths));
         }
         ancestors.remove(record.getFullName());
     }

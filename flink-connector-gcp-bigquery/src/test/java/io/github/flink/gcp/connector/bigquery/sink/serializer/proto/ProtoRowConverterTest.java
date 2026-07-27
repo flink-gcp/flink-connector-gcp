@@ -435,6 +435,81 @@ class ProtoRowConverterTest {
     }
 
     @Test
+    void writesGeographyMappedStringsThroughVerbatim() throws Exception {
+        Descriptors.Descriptor source = TestProtos.allTypes();
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldPath("f_string")
+                        .geographyFieldPath("f_rep_string")
+                        .build();
+        ProtoRowConverter converter = converter(source, options);
+
+        DynamicMessage.Builder builder = DynamicMessage.newBuilder(source);
+        set(builder, source, "f_string", "POINT(1 2)");
+        builder.addRepeatedField(source.findFieldByName("f_rep_string"), "LINESTRING(0 0, 1 1)");
+        builder.addRepeatedField(
+                source.findFieldByName("f_rep_string"),
+                "{\"type\":\"Point\",\"coordinates\":[1,2]}");
+        // An element is explicit even when empty, so unlike a no-presence singular field it is not
+        // dropped — the other half of the empty-string rule.
+        builder.addRepeatedField(source.findFieldByName("f_rep_string"), "");
+        // Malformed geometry is BigQuery's to reject as a row-level error; validating every record
+        // client-side would defeat the point of a passthrough, so it must survive unchanged.
+        builder.addRepeatedField(source.findFieldByName("f_rep_string"), "not a geometry");
+
+        DynamicMessage row = converter.convert(builder.build());
+
+        // A GEOGRAPHY column travels as a string, exactly as a JSON one does, so a marked string
+        // needs no conversion at all: byte-for-byte what the record carried.
+        assertThat(get(row, "f_string")).isEqualTo("POINT(1 2)");
+        assertThat(get(row, "f_rep_string"))
+                .isEqualTo(
+                        Arrays.asList(
+                                "LINESTRING(0 0, 1 1)",
+                                "{\"type\":\"Point\",\"coordinates\":[1,2]}",
+                                "",
+                                "not a geometry"));
+    }
+
+    @Test
+    void leavesUnsetGeographyMappedStringsUnsetRatherThanWritingAnEmptyString() throws Exception {
+        // f_string is a plain proto3 scalar, so an unset value arrives as "" — which is not a valid
+        // geometry any more than it is valid JSON. Writing it would fail every record that
+        // legitimately omits the field, the row descriptor's field having presence.
+        Descriptors.Descriptor source = TestProtos.allTypes();
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder().geographyFieldPath("f_string").build();
+        ProtoRowConverter converter = converter(source, options);
+
+        DynamicMessage row = converter.convert(DynamicMessage.newBuilder(source).build());
+
+        Descriptors.Descriptor rowType = row.getDescriptorForType();
+        assertThat(rowType.findFieldByName("f_string").hasPresence()).isTrue();
+        assertThat(row.hasField(rowType.findFieldByName("f_string"))).isFalse();
+    }
+
+    /** The JSON exception above, for a geography column: the same mechanism, the same outcome. */
+    @Test
+    void keepsGeographyColumnsWritableWhenRequiredIsDerived() throws Exception {
+        Descriptors.Descriptor source = TestProtos.allTypes();
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldPath("f_string")
+                        .deriveRequiredColumns()
+                        .build();
+        ProtoRowConverter converter = converter(source, options);
+
+        DynamicMessage row = converter.convert(DynamicMessage.newBuilder(source).build());
+
+        Descriptors.Descriptor rowType = row.getDescriptorForType();
+        assertThat(rowType.findFieldByName("f_string").isRequired()).isFalse();
+        assertThat(row.hasField(rowType.findFieldByName("f_string"))).isFalse();
+        // The plain scalar beside it is REQUIRED and carries the protobuf default.
+        assertThat(rowType.findFieldByName("f_int32").isRequired()).isTrue();
+        assertThat(row.getField(rowType.findFieldByName("f_int32"))).isEqualTo(0L);
+    }
+
+    @Test
     void unwrapsWrapperTypesToTheirScalarValues() throws Exception {
         DynamicMessage row =
                 wellKnownTypesConverter(ProtoSchemaOptions.defaults())

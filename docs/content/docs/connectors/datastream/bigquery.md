@@ -132,6 +132,7 @@ message into the protobuf row the Storage Write API accepts.
 | message | `STRUCT`, recursively |
 | `map<K, V>` | `REPEATED STRUCT<key, value>` |
 | message or string marked by `ProtoSchemaOptions` | `JSON`, see [JSON columns](#json-columns) |
+| string marked by `ProtoSchemaOptions` | `GEOGRAPHY`, see [Geography columns](#geography-columns) |
 
 A recursive message is rejected — BigQuery schemas cannot represent one — as are sibling fields
 whose names differ only by case, which the Storage API cannot tell apart because it lowercases
@@ -167,7 +168,9 @@ printer then fails on every record with `Cannot find type for url`.
 
 **Explicit configuration wins over all of the above.** A `jsonFieldPath` or field option on a
 wrapper or a `Timestamp` field gives a `JSON` column carrying that type's canonical protobuf JSON —
-so `Int64Value.of(5)` becomes the quoted string `"5"` — rather than the flattened value.
+so `Int64Value.of(5)` becomes the quoted string `"5"` — rather than the flattened value. A
+[`geographyFieldPath`](#geography-columns) on one of these wins in the same way and is then rejected,
+none of them being a string: the configured marking is never quietly ignored.
 
 A `Duration` outside protobuf's valid range is a row-level failure routed to the configured
 [`FailedRowHandler`](#error-handling), like a `uint64` too large for `INT64`. `FieldMask` paths are
@@ -194,7 +197,7 @@ ProtoMessageSerializer.of(
 | singular message field | `NULLABLE` |
 | proto2 `required` | `REQUIRED` |
 | proto2 `optional` | `NULLABLE` |
-| singular `JSON` column | `NULLABLE`, always |
+| singular `JSON` or `GEOGRAPHY` column | `NULLABLE`, always |
 | singular well-known type | `NULLABLE` — a message field, so it has presence; proto2 `required` still gives `REQUIRED` |
 
 A plain proto3 scalar cannot say "unset" — an unset value is indistinguishable from the type
@@ -212,11 +215,12 @@ and stay `NULLABLE`.
 Why `NULLABLE` is the default, and why there is no inverse switch, is in
 [Column modes](#column-modes).
 
-**A `JSON` column is never `REQUIRED`.** A JSON-mapped string without presence is left unset when
-empty rather than written as `""` (see [JSON columns](#json-columns)), and "no presence" is precisely
-the condition that would otherwise make the column `REQUIRED` — the two together would fail every
-record that legitimately omits the field. Note this is the one place a presence-less field is *not*
-written: elsewhere it always reaches the column as its type default.
+**A marked column is never `REQUIRED`.** A marked string without presence is left unset when empty
+rather than written as `""` (see [JSON columns](#json-columns) and
+[Geography columns](#geography-columns)), and "no presence" is precisely the condition that would
+otherwise make the column `REQUIRED` — the two together would fail every record that legitimately
+omits the field. Note this is the one place a presence-less field is *not* written: elsewhere it
+always reaches the column as its type default.
 
 Three things to weigh before enabling it:
 
@@ -359,6 +363,63 @@ Three consequences worth knowing:
 Marking a field that is neither a message nor a string — including a proto map, whose BigQuery shape
 is `REPEATED STRUCT<key, value>` — is rejected when the schema is derived, through either mechanism.
 
+## Geography columns
+
+The Storage Write API carries a `GEOGRAPHY` column as a string too, so it needs the same
+**schema-derivation marker** a [JSON column](#json-columns) does, and for the same reason: nothing in
+a protobuf descriptor or an Avro schema says "this string is a geometry", and BigQuery's own
+documentation is explicit that schema auto-detection loads WKT as `STRING`. Both derived serializers
+take the marker by dotted path, under the same name:
+
+```java
+ProtoSchemaOptions.builder().geographyFieldPath("site.boundary").build();
+AvroSchemaOptions.builder().geographyFieldPath("site.boundary").build();
+```
+
+The value must already be one of the text forms BigQuery accepts for a geography — WKT
+(`POINT(1 2)`), hex-encoded WKB, or GeoJSON — and reaches the column verbatim. Everything the JSON
+marker says about that passthrough holds unchanged here: the connector does **not** validate the
+value, so malformed geometry is a BigQuery row-level error routed to the configured
+`FailedRowHandler` (see [Error handling](#error-handling)); an unset presence-less proto string is
+left `NULL` rather than written as `""`, which is not a valid geometry either; and a marked column is
+therefore never `REQUIRED` under [`deriveRequiredColumns()`](#column-modes). A repeated marked field
+becomes `REPEATED GEOGRAPHY`.
+
+Three differences from the JSON marker, all deliberate:
+
+- **Strings only.** `jsonFieldPath` also accepts a message and writes its canonical protobuf JSON;
+  no protobuf message means a geography to BigQuery, so there would be nothing to write. Marking a
+  message, a map, or any non-string field is rejected when the schema is derived.
+- **No field-option form.** `jsonFieldOption`/`jsonFieldOptionNumber` exist because a large
+  annotated proto corpus was the case they had to serve; no such corpus motivates this marker, and
+  the path form keeps the two serializers symmetric. Adding one later would be purely additive.
+- **A path marked both ways is an error**, not a precedence question — a column has one type. This
+  includes marking a `Struct`, `Value` or `ListValue` field, which is [automatically a `JSON`
+  column](#well-known-types): the configured marking wins, and is then rejected for not being a
+  string, rather than silently falling back.
+
+Changing an existing `STRING` column to `GEOGRAPHY` by adding the marker to a running pipeline is a
+**breaking schema change**. Schema evolution only relaxes modes and adds columns, so the union is
+rejected rather than rows being corrupted — see [Schema evolution](#schema-evolution).
+
+`FILE_LOADS` carries a `GEOGRAPHY` column as well: staged Avro files hold the text in a `string`
+field and the load job is given an explicit destination schema that types it. That pairing is
+verified end to end against real BigQuery by `BigQueryFileLoadsITCase`, BigQuery's documentation
+describing WKT loading for CSV and JSON but not for Avro.
+
+`INTERVAL` and `RANGE` remain underivable by any serializer, **considered and declined** rather than
+overlooked:
+
+- **`INTERVAL`.** Avro's `duration` logical type is a `fixed(12)` of months, days and milliseconds,
+  while BigQuery's `INTERVAL` is a year-month part plus a day-time part at microsecond precision.
+  They are not the same value space, so either direction is a lossy re-encode. `TableSchemaToAvroConverter`
+  rejects `INTERVAL` outright, so deriving one would also break the FILE_LOADS round trip
+  `AvroSchemaRoundTripTest` pins — which is why `google.protobuf.Duration` maps to `INT64`
+  microseconds rather than to `INTERVAL`.
+- **`RANGE`.** Neither Avro nor protobuf has an equivalent, so supporting it would mean reading a
+  two-field record as a range by convention. `TableSchemaToAvroConverter` rejects it too, and the
+  [JSON serializer](#json-records) rejects a supplied schema containing one.
+
 ## Avro records
 
 `AvroRecordSerializer` writes Avro records without a protobuf definition in sight. It takes
@@ -449,6 +510,12 @@ matching a field that is not a `string`, is rejected when the schema is derived.
 annotation-driven equivalent of `ProtoSchemaOptions`' field options: Avro has no standard JSON
 logical type to key off.
 
+**Geography columns.** `AvroSchemaOptions.builder().geographyFieldPath("site.boundary")` does the
+same for a [`GEOGRAPHY` column](#geography-columns), on the same terms — string fields only, the
+value passed through unvalidated, never `REQUIRED`. Here the two serializers are exactly symmetric:
+the geography marker is by path on both, so unlike JSON there is no field-option asymmetry to
+explain. A path claimed by both markers is rejected.
+
 **Rejected at job start**, because writing something plausible instead would be worse than failing
 early: unions with more than one non-null branch (BigQuery has no union type), a bare `null` field,
 arrays of nullable elements and arrays of arrays or maps (a `REPEATED` column holds no NULLs and
@@ -524,6 +591,7 @@ Conversion is the Storage Write API client's own `JsonToProtoMessage`, the same 
 | `DATE` | a `yyyy-MM-dd` string, or a number read as days since the epoch |
 | `DATETIME`, `TIME` | a string |
 | `JSON` | the JSON **text**, as a string — not a nested object |
+| `GEOGRAPHY` | a string in WKT, hex-encoded WKB or GeoJSON |
 | `BYTES` | a JSON array of byte values — not base64 |
 | `STRUCT` | an object |
 | `REPEATED` | an array |

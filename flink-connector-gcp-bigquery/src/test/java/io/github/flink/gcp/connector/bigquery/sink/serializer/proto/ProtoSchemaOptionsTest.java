@@ -22,6 +22,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Arrays;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
@@ -33,6 +35,42 @@ class ProtoSchemaOptionsTest {
     void defaultsMapNothingToJson() {
         assertThat(ProtoSchemaOptions.defaults().getJsonFieldPaths()).isEmpty();
         assertThat(ProtoSchemaOptions.defaults().getJsonFieldOptions()).isEmpty();
+    }
+
+    @Test
+    void defaultsMapNothingToGeography() {
+        assertThat(ProtoSchemaOptions.defaults().getGeographyFieldPaths()).isEmpty();
+        assertThat(ProtoSchemaOptions.defaults().isGeographyField("anything")).isFalse();
+    }
+
+    @Test
+    void geographyFieldPathsAccumulateAcrossCalls() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldPath("a")
+                        .geographyFieldPaths(Arrays.asList("b.c", "d"))
+                        .geographyFieldPath("a")
+                        .build();
+
+        assertThat(options.getGeographyFieldPaths()).containsExactlyInAnyOrder("a", "b.c", "d");
+        assertThat(options.isGeographyField("b.c")).isTrue();
+        assertThat(options.isGeographyField("b")).isFalse();
+    }
+
+    @Test
+    void returnedGeographyPathsAreUnmodifiable() {
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().geographyFieldPath("a").build();
+
+        assertThatThrownBy(() -> options.getGeographyFieldPaths().add("b"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void rejectsNullGeographyPaths() {
+        assertThatThrownBy(() -> ProtoSchemaOptions.builder().geographyFieldPath(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> ProtoSchemaOptions.builder().geographyFieldPaths(null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test
@@ -175,6 +213,7 @@ class ProtoSchemaOptionsTest {
                 ProtoSchemaOptions.builder()
                         .jsonFieldPath("payload")
                         .jsonFieldOptionNumber(50000)
+                        .geographyFieldPath("boundary")
                         .deriveRequiredColumns()
                         .build();
 
@@ -182,6 +221,7 @@ class ProtoSchemaOptionsTest {
 
         assertThat(copy.getJsonFieldPaths()).containsExactly("payload");
         assertThat(copy.getJsonFieldOptions()).containsExactly(entry(50000, null));
+        assertThat(copy.getGeographyFieldPaths()).containsExactly("boundary");
         assertThat(copy.isDeriveRequiredColumns()).isTrue();
     }
 }

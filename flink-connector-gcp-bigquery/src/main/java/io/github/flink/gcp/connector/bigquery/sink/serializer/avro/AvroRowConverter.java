@@ -109,7 +109,10 @@ public final class AvroRowConverter {
         DOUBLE,
         /** {@code boolean} to {@code bool}. */
         BOOL,
-        /** {@code string}/{@code enum}/{@code uuid} to {@code string}; also carries JSON text. */
+        /**
+         * {@code string}/{@code enum}/{@code uuid} to {@code string}; also carries the text of a
+         * marked {@code JSON} or {@code GEOGRAPHY} column.
+         */
         STRING,
         /** {@code bytes}/{@code fixed} to {@code bytes}. */
         BYTES,
@@ -248,6 +251,9 @@ public final class AvroRowConverter {
         switch (field.getType()) {
             case STRING:
             case JSON:
+            case GEOGRAPHY:
+                // All three are proto strings in the row descriptor, and a marked column's value is
+                // written through verbatim, so there is nothing to tell apart here.
                 return Kind.STRING;
             case INT64:
                 return Kind.LONG;

@@ -93,6 +93,60 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   when two extensions claim one number. The name **rules out a foreign declaration**; it cannot
   arbitrate between two rivals both present in the pool, since an unresolved option records only its
   number
+- **BigQuery geography columns** (#126): a `GEOGRAPHY` column is carried as a string by the Storage
+  Write API exactly as a `JSON` one is, so this is the same **schema-derivation marker** mechanism
+  and *nothing* on the value path — a marked string is `Kind.IDENTITY` with the #50 empty-string
+  rule, since `""` is no more a valid geometry than valid JSON. Deliberately **paths only, on both
+  serializers**: `geographyFieldPath`/`geographyFieldPaths` and no field-option form, because
+  `jsonFieldOption` exists to serve a large annotated proto corpus and no such corpus motivates this
+  one — ~200 lines of near-duplicate API, javadoc and extension-number validation for a speculative
+  case, and additive later if asked for. That also makes the two serializers exactly symmetric here,
+  which is what #124 exists to protect; the JSON asymmetry (proto has options, Avro cannot) is a
+  property of Avro having no JSON logical type, not a precedent. **Strings only**, the one place this
+  marker is *narrower* than the JSON one: `jsonFieldPath` also takes a message and prints its
+  canonical protobuf JSON, but no protobuf message means a geography to BigQuery, so there would be
+  nothing to write. Consequently `isGeographyField` takes **no `FieldDescriptor`** where
+  `isJsonField` does — an unused parameter for the sake of matching signatures would have been
+  dishonest API, and the difference says "path-only" at the call site.
+  The refactor is the point of the change as much as the feature: the JSON decision expression was
+  duplicated in `ProtoToTableSchemaConverter.convertField` and `ProtoRowConverter.buildFieldPlan`
+  with a comment in each saying it must stay identical to the other, and a second marker would have
+  doubled that hazard. It is now one package-private `ProtoToTableSchemaConverter.markedType(field,
+  path, options)` returning `JSON`, `GEOGRAPHY` or `null`, folding the automatic JSON of
+  `Struct`/`Value`/`ListValue` on top of `ProtoSchemaOptions.markedType`; the row converter calls it
+  rather than recomputing. `AvroSchemaOptions.markedType(path)` is the same shape on that side (no
+  well-known-type layer to fold). `FieldPlan.jsonString` became `verbatimString` accordingly.
+  A field claimed by **both** markers is rejected, and the check lives in `markedType` — the single
+  decision point — rather than in `Builder.build()`, even though build() would catch the
+  path-versus-path case client-side and earlier. Two reasons: a JSON *field option* cannot be
+  intersected with a geography *path* without a descriptor, so build() could never own the whole
+  rule; and every sibling rule (unmatched paths, recursion, case collisions, mappability) already
+  lives at derivation, so one early check for one rule would be its own inconsistency. That proto
+  derivation is lazy, and so reports all of these from a task manager, is pre-existing and wants its
+  own issue rather than a half-fix here. A configured marking **wins over well-known-type
+  recognition and is then rejected** for not being a string, rather than silently falling back to the
+  automatic `JSON` — nobody should have to guess which won.
+  Two things **measured**, not assumed. The goccy emulator *does* create and round-trip a
+  `GEOGRAPHY` column, unlike the `ARRAY<JSON>` it rejects outright, so the marker is covered by the
+  ordinary emulator IT (`BigQueryAvroSerializerITCase`, asserting the created column's **type**, since
+  the value path would read identically had the marker been ignored). And FILE_LOADS carries one end
+  to end: `BigQueryFileLoadsITCase` now stages a `GEOGRAPHY` column and reads it back with
+  `ST_ASTEXT` against real BigQuery. That check was worth running rather than trusting — #126's body
+  asserts the round trip works, but only our own converters were evidence for it, and BigQuery's
+  documentation describes WKT loading for CSV and JSON and *not* for Avro. `AvroRowConverter.toKind`
+  was the one exhaustive `TableFieldSchema.Type` switch without a `GEOGRAPHY` case, and its absence
+  would not have failed a schema test: the column derives correctly and then throws on the first
+  record, inside the writers' `FailedRowHandler` catch. Same rule as the Avro and #147 entries.
+  `INTERVAL` and `RANGE` stay underivable, **considered and declined**, and the docs say so:
+  Avro's `duration` is a `fixed(12)` of months/days/millis against BigQuery's year-month plus
+  microsecond day-time, so either direction is a lossy re-encode, and `TableSchemaToAvroConverter`
+  rejects both outright — deriving either would break the FILE_LOADS round trip
+  `AvroSchemaRoundTripTest` pins. That is the same reasoning that killed `Duration` → `INTERVAL` in
+  #147. `RANGE` has no Avro or protobuf equivalent at all. `JsonDocumentSerializer` needed **no
+  change** — a supplied schema already says `GEOGRAPHY` and `JsonToProtoMessage` passes the string
+  through — but that was untested, so it now is. Adding the marker to a running pipeline is a
+  **breaking schema change** (`STRING` → `GEOGRAPHY`): `SchemaUnifier` only relaxes, so it rejects
+  the union rather than corrupting rows, as it does for #147's `STRUCT` → scalar
 - **BigQuery Avro serializer** (#66, Avro half; the JSON half closes the issue in a second PR):
   `AvroRecordSerializer` is `ProtoMessageSerializer`'s shape with an Avro front end — the
   schema is held as its **JSON text** (serializable, unlike a parsed `Schema`) and the
@@ -173,9 +227,11 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   singular JSON column is never REQUIRED" rule covers it with no new clause, the recursion guard is
   never reached (these types are mutually recursive and were rejected outright before), and **a
   configured JSON marking keeps winning** — the branch returns before the message type is inspected.
-  The identical expression appears in `ProtoRowConverter.buildFieldPlan` and must stay identical: an
-  auto-JSON column's target field is a *string*, so a plan that disagreed would ask it for its
-  message type and throw at construction. And the WKT switch sits **before** the recursion guard, so
+  The identical expression used to appear in `ProtoRowConverter.buildFieldPlan` under a comment saying
+  the two must stay identical — an auto-JSON column's target field is a *string*, so a plan that
+  disagreed would ask it for its message type and throw at construction. #126 retired that hazard by
+  extracting the one `markedType` both call; the constraint is now structural, not a rule to
+  remember. And the WKT switch sits **before** the recursion guard, so
   two `Timestamp`s on one path are not a rejection. Modes need no new rule at all: these are message
   fields, so they have presence. The one deviation is deliberate — a proto2 `required` wrapper
   derives `REQUIRED`, and it is mandatory, so that is faithful.

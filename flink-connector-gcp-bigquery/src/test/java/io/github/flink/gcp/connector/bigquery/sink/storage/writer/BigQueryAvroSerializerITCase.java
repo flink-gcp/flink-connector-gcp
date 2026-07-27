@@ -21,6 +21,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
+import com.google.cloud.bigquery.LegacySQLTypeName;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.TableId;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
@@ -58,11 +59,13 @@ import static org.assertj.core.api.Assertions.tuple;
  * <p>Covers the column types the emulator round-trips faithfully — {@code REQUIRED}/{@code
  * NULLABLE} scalars, {@code TIMESTAMP}, {@code DATE}, {@code BYTES}, an Avro enum as {@code
  * STRING}, a {@code REPEATED} field, a nested {@code STRUCT}, an Avro map as {@code REPEATED
- * STRUCT<key, value>}, and a {@code JSON} column. {@code TIME}, {@code DATETIME} and {@code
- * NUMERIC} are deliberately excluded: emulator 0.8.1 implements neither the packed civil-time
- * encoding nor the decimal byte encoding, so it reads those columns back as unrelated values
- * whatever the connector writes. Their encodings are pinned by unit tests against {@code
- * CivilTimeEncoder} and {@code BigDecimalByteStringEncoder}, and belong to the real-GCP suite.
+ * STRUCT<key, value>}, and the two marked column types, {@code JSON} and {@code GEOGRAPHY} — the
+ * emulator creates and round-trips a {@code GEOGRAPHY} column, unlike the {@code ARRAY<JSON>} it
+ * rejects outright. {@code TIME}, {@code DATETIME} and {@code NUMERIC} are deliberately excluded:
+ * emulator 0.8.1 implements neither the packed civil-time encoding nor the decimal byte encoding,
+ * so it reads those columns back as unrelated values whatever the connector writes. Their encodings
+ * are pinned by unit tests against {@code CivilTimeEncoder} and {@code
+ * BigDecimalByteStringEncoder}, and belong to the real-GCP suite.
  *
  * <p>Only one flush happens here, for the emulator reason recorded on {@link
  * BigQueryDefaultStreamWriterITCase}: on a connection opened after an earlier one has closed, only
@@ -82,6 +85,7 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
                     + "{\"name\":\"level\",\"type\":{\"type\":\"enum\",\"name\":\"Level\","
                     + "\"symbols\":[\"INFO\",\"WARN\"]}},"
                     + "{\"name\":\"payload\",\"type\":\"string\"},"
+                    + "{\"name\":\"boundary\",\"type\":\"string\"},"
                     + "{\"name\":\"tags\",\"type\":{\"type\":\"array\",\"items\":\"string\"}},"
                     + "{\"name\":\"labels\",\"type\":{\"type\":\"map\",\"values\":\"string\"}},"
                     + "{\"name\":\"origin\",\"type\":{\"type\":\"record\",\"name\":\"Origin\","
@@ -103,6 +107,7 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
         event.put("blob", ByteBuffer.wrap(name.getBytes(StandardCharsets.UTF_8)));
         event.put("level", new GenericData.EnumSymbol(schema.getField("level").schema(), "WARN"));
         event.put("payload", "{\"k\":1}");
+        event.put("boundary", "POINT(1 2)");
         event.put("tags", Arrays.asList("a", "b"));
         event.put("labels", Collections.singletonMap("env", "prod"));
         event.put("origin", origin);
@@ -117,6 +122,7 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
                         schema,
                         AvroSchemaOptions.builder()
                                 .jsonFieldPath("payload")
+                                .geographyFieldPath("boundary")
                                 .deriveRequiredColumns()
                                 .build());
         createTable("avro_writes", serializer.getTableSchema(null));
@@ -139,6 +145,14 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
                         tuple("count", Field.Mode.NULLABLE),
                         tuple("tags", Field.Mode.REPEATED),
                         tuple("labels", Field.Mode.REPEATED));
+        // The marked columns, by type rather than by value: an Avro string is what both travel as,
+        // so the rows below would read the same if the markers had been ignored entirely. Both stay
+        // NULLABLE under the option, which is the carve-out those markings share.
+        assertThat(created.getFields())
+                .extracting(Field::getName, Field::getType, Field::getMode)
+                .contains(
+                        tuple("payload", LegacySQLTypeName.JSON, Field.Mode.NULLABLE),
+                        tuple("boundary", LegacySQLTypeName.GEOGRAPHY, Field.Mode.NULLABLE));
         // It recurses, into a struct and into map entry columns alike.
         assertThat(created.getFields().get("origin").getSubFields())
                 .extracting(Field::getName, Field::getMode)
@@ -170,10 +184,10 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
                 .containsExactly(
                         "alice|3|"
                                 + SEEN_AT
-                                + "|2026-07-26|alice|WARN|{\"k\":1}|a,b|env=prod|host-a",
+                                + "|2026-07-26|alice|WARN|{\"k\":1}|POINT(1 2)|a,b|env=prod|host-a",
                         "bob|null|"
                                 + SEEN_AT
-                                + "|2026-07-26|bob|WARN|{\"k\":1}|a,b|env=prod|host-b");
+                                + "|2026-07-26|bob|WARN|{\"k\":1}|POINT(1 2)|a,b|env=prod|host-b");
     }
 
     /**
@@ -187,7 +201,11 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
         Schema schema = new Schema.Parser().parse(SCHEMA_JSON);
         AvroRecordSerializer serializer =
                 AvroRecordSerializer.of(
-                        schema, AvroSchemaOptions.builder().jsonFieldPath("payload").build());
+                        schema,
+                        AvroSchemaOptions.builder()
+                                .jsonFieldPath("payload")
+                                .geographyFieldPath("boundary")
+                                .build());
         createTable("avro_default", serializer.getTableSchema(null));
 
         com.google.cloud.bigquery.Schema created =
@@ -230,10 +248,10 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
                 .containsExactly(
                         "alice|3|"
                                 + SEEN_AT
-                                + "|2026-07-26|alice|WARN|{\"k\":1}|a,b|env=prod|host-a",
+                                + "|2026-07-26|alice|WARN|{\"k\":1}|POINT(1 2)|a,b|env=prod|host-a",
                         "bob|null|"
                                 + SEEN_AT
-                                + "|2026-07-26|bob|WARN|{\"k\":1}|a,b|env=prod|host-b");
+                                + "|2026-07-26|bob|WARN|{\"k\":1}|POINT(1 2)|a,b|env=prod|host-b");
     }
 
     /** Returns one line per row, joining every column so a wrong conversion shows up. */
@@ -243,7 +261,8 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
                 .query(
                         QueryJobConfiguration.newBuilder(
                                         "SELECT name, count, seen_at, seen_on, blob, level,"
-                                                + " payload, ARRAY_TO_STRING(tags, ','),"
+                                                + " payload, boundary,"
+                                                + " ARRAY_TO_STRING(tags, ','),"
                                                 + " (SELECT STRING_AGG(CONCAT(l.key, '=', l.value),"
                                                 + " ',') FROM UNNEST(labels) AS l),"
                                                 + " origin.host FROM `"

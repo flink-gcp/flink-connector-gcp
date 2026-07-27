@@ -104,6 +104,26 @@ class ProtoMessageSerializerTest {
     }
 
     @Test
+    void carriesTheGeographyMarkerThroughToBothConversionSides() throws Exception {
+        // As above, with StringValue's single string field standing in for a column holding a
+        // geometry literal.
+        ProtoMessageSerializer<StringValue> serializer =
+                ProtoMessageSerializer.of(
+                        StringValue.class,
+                        ProtoSchemaOptions.builder().geographyFieldPath("value").build());
+
+        assertThat(serializer.getTableSchema(DESTINATION).getFields(0).getType())
+                .isEqualTo(com.google.cloud.bigquery.storage.v1.TableFieldSchema.Type.GEOGRAPHY);
+
+        DynamicMessage row =
+                DynamicMessage.parseFrom(
+                        serializer.getDescriptor(DESTINATION),
+                        serializer.serialize(StringValue.of("POINT(1 2)")));
+        assertThat(row.getField(row.getDescriptorForType().findFieldByName("value")))
+                .isEqualTo("POINT(1 2)");
+    }
+
+    @Test
     void survivesJavaSerialization() throws Exception {
         ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
         // Initialize transient state before cloning to prove it is rebuilt, not carried over.
