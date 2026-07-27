@@ -127,7 +127,7 @@ public final class LoadJobOrchestrator {
      * @param config the sink configuration
      * @param options the FILE_LOADS options
      * @param runner the job runner
-     * @param tableAdmin the table admin (pre-copy table creation and schema reconciliation)
+     * @param tableAdmin the table admin (pre-load table creation and schema reconciliation)
      * @param storage the staging storage (post-load cleanup)
      * @param flinkJobId the Flink job id (hex), scoping temporary table names and job ids
      * @param checkpointId the checkpoint whose files this run loads, or {@code null} for a batch
@@ -342,12 +342,13 @@ public final class LoadJobOrchestrator {
      * one decision shared by direct loads and the temp-table path (through {@link
      * #finalTableSchema}), so the same records cannot succeed or fail depending on partition count.
      * Creates a missing table under {@code CREATE_IF_NEEDED} with the configured
-     * partitioning/clustering (fails under {@code CREATE_NEVER}). Under {@code WRITE_TRUNCATE} the
-     * load or copy replaces the table's schema wholesale, so the serializer's schema is used as-is.
-     * Otherwise — appending, or writing into an empty table — the live schema wins: it is returned
-     * untouched when schema updates are disabled, and unioned with the serializer's when they are
-     * enabled (new {@code REQUIRED} columns arrive {@code NULLABLE}, since BigQuery cannot add
-     * {@code REQUIRED} columns), retrying lost update races.
+     * partitioning/clustering (fails under {@code CREATE_NEVER}), then re-reads it — creation
+     * swallows a lost race, so what exists may not be what was asked for. Under {@code
+     * WRITE_TRUNCATE} the load or copy replaces the table's schema wholesale, so the serializer's
+     * schema is used as-is. Otherwise — appending, or writing into an empty table — the live schema
+     * wins: it is returned untouched when schema updates are disabled, and unioned with the
+     * serializer's when they are enabled (new {@code REQUIRED} columns arrive {@code NULLABLE},
+     * since BigQuery cannot add {@code REQUIRED} columns), retrying lost update races.
      */
     private Schema ensureFinalTable(TableDestination destination) throws IOException {
         TableSchema desired = config.getSerializer().getTableSchema(destination);
@@ -363,7 +364,17 @@ public final class LoadJobOrchestrator {
                     destination,
                     desired,
                     config.getTableCreateOptionsProvider().optionsFor(destination));
-            return StorageSchemaConverter.toBigQuerySchema(desired);
+            // Creation swallows a lost race (HTTP 409 = someone else created it first), so the
+            // table's actual schema may be a concurrent creator's rather than the desired one —
+            // re-read and reconcile against what is really there instead of trusting the
+            // argument.
+            snapshot = tableAdmin.getSchema(destination);
+            if (snapshot == null) {
+                throw new IOException(
+                        "Destination table "
+                                + destination
+                                + " disappeared right after it was created.");
+            }
         }
         if (options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE) {
             return StorageSchemaConverter.toBigQuerySchema(desired);
@@ -372,13 +383,13 @@ public final class LoadJobOrchestrator {
             try {
                 SchemaUnifier.union(snapshot.getSchema(), desired, config.getSchemaUpdateOptions());
             } catch (SchemaUnifier.SchemaUnionException e) {
-                // Loads carry the live schema, and BigQuery silently ignores staged Avro fields
-                // the schema lacks (measured) — so a serializer column the table does not have is
-                // dropped, not an error. Say so once per destination per run.
+                // The union's message names the difference; the outcome depends on which kind it
+                // is. A serializer column the table lacks is silently ignored by the load
+                // (measured) — dropped data, not an error — while a type disagreement surfaces
+                // when the load runs. Either way, say what wins, once per destination per run.
                 LOG.warn(
                         "Schema updates are disabled, so the live schema of {} wins over the"
-                                + " serializer's; staged data for columns the table lacks is not"
-                                + " loaded: {}",
+                                + " serializer's: {}",
                         destination,
                         e.getMessage());
             }

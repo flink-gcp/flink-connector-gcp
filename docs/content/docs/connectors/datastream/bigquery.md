@@ -950,7 +950,8 @@ completed checkpoint in streaming. Before its first load of a run, each destinat
 from the serializer, partitioning/clustering from `tableCreateOptions(...)`; `CREATE_NEVER` fails
 with a client-side error instead), and the schema the load jobs then carry explicitly
 (`useAvroLogicalTypes`) is the live table's, unioned with the serializer's when
-schema updates are enabled (see below). One reconciliation per destination per run,
+schema updates are enabled (under `WRITE_TRUNCATE` it is the serializer's as-is — the load
+replaces the table schema wholesale; see below). One reconciliation per destination per run,
 whatever the partition count; the credentials therefore need `bigquery.tables.get` (plus
 `bigquery.tables.create` / `bigquery.tables.update` for what the configuration enables). Because
 the table is created before the load rather than by it, a load failure can leave an empty table

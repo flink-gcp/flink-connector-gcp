@@ -172,7 +172,22 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
 
     @Test
     void newColumnWithoutAllowNewFieldsIsDroppedByTheLoad() throws Exception {
-        createNameOnlyTable(STRICT_TABLE);
+        // The pre-created table also carries an INTERVAL column — a type the serializers cannot
+        // derive — because with updates disabled the load's provided schema is the live one
+        // verbatim, so it must remain loadable even when the table has columns this write method
+        // could never create. Measured here: BigQuery accepts a provided schema naming INTERVAL.
+        bigQuery()
+                .create(
+                        TableInfo.of(
+                                TableId.of(PROJECT, DATASET, STRICT_TABLE),
+                                StandardTableDefinition.of(
+                                        Schema.of(
+                                                nameField(),
+                                                Field.newBuilder(
+                                                                "span",
+                                                                StandardSQLTypeName.INTERVAL)
+                                                        .setMode(Field.Mode.NULLABLE)
+                                                        .build()))));
 
         // With updates disabled the live schema wins and the load job carries it. Measured, not
         // designed: BigQuery then ignores a staged Avro field absent from that schema, so the
@@ -184,7 +199,7 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
         assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", STRICT_TABLE)).containsExactly(2L);
         assertThat(liveSchema(STRICT_TABLE).getFields())
                 .extracting(Field::getName)
-                .containsExactly("name");
+                .containsExactly("name", "span");
     }
 
     private static void runJob(String table, SchemaUpdateOptions updateOptions) throws Exception {
@@ -219,11 +234,13 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
                 .create(
                         TableInfo.of(
                                 TableId.of(PROJECT, DATASET, table),
-                                StandardTableDefinition.of(
-                                        Schema.of(
-                                                Field.newBuilder("name", StandardSQLTypeName.STRING)
-                                                        .setMode(Field.Mode.NULLABLE)
-                                                        .build()))));
+                                StandardTableDefinition.of(Schema.of(nameField()))));
+    }
+
+    private static Field nameField() {
+        return Field.newBuilder("name", StandardSQLTypeName.STRING)
+                .setMode(Field.Mode.NULLABLE)
+                .build();
     }
 
     private static Schema liveSchema(String table) {

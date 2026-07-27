@@ -37,6 +37,12 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittabl
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.Logger;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -76,6 +82,13 @@ class LoadJobOrchestratorTest {
                                     .setName("f1")
                                     .setType(TableFieldSchema.Type.STRING)
                                     .setMode(TableFieldSchema.Mode.NULLABLE))
+                    .build();
+
+    private static final TableSchema SCHEMA_WITH_F2_REQUIRED =
+            SCHEMA.toBuilder()
+                    .setFields(
+                            1,
+                            SCHEMA.getFields(1).toBuilder().setMode(TableFieldSchema.Mode.REQUIRED))
                     .build();
 
     /** A serializer only used for its schema. */
@@ -402,17 +415,11 @@ class LoadJobOrchestratorTest {
                         FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
                         builder ->
                                 builder.schemaUpdateOptions(
-                                        SchemaUpdateOptions.builder().allowNewFields().build()));
-        // The live table only has f1; the serializer schema adds f2.
-        harness.tableAdmin.tables.put(
-                T1,
-                TableSchema.newBuilder()
-                        .addFields(
-                                TableFieldSchema.newBuilder()
-                                        .setName("f1")
-                                        .setType(TableFieldSchema.Type.STRING)
-                                        .setMode(TableFieldSchema.Mode.NULLABLE))
-                        .build());
+                                        SchemaUpdateOptions.builder().allowNewFields().build()),
+                        null,
+                        SCHEMA_WITH_F2_REQUIRED);
+        // The live table only has f1; the serializer schema adds f2 as REQUIRED.
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
         harness.tableAdmin.updateRacesToLose = 1; // First update loses a race and is retried.
         long sixTiB = 6L << 40;
 
@@ -422,9 +429,17 @@ class LoadJobOrchestratorTest {
         assertThat(harness.tableAdmin.tables.get(T1).getFieldsList())
                 .extracting(TableFieldSchema::getName)
                 .containsExactly("f1", "f2");
-        // Temp tables are loaded with the reconciled final-table schema so the copy matches.
+        // Temp tables are loaded with the reconciled final-table schema so the copy matches —
+        // reconciled, not the serializer's: the REQUIRED addition arrives demoted to NULLABLE.
         assertThat(harness.runner.loads.values())
-                .allSatisfy(spec -> assertThat(spec.getSchema().getFields()).hasSize(2));
+                .allSatisfy(
+                        spec -> {
+                            assertThat(spec.getSchema().getFields())
+                                    .extracting(Field::getName)
+                                    .containsExactly("f1", "f2");
+                            assertThat(spec.getSchema().getFields().get("f2").getMode())
+                                    .isEqualTo(Field.Mode.NULLABLE);
+                        });
         assertThat(harness.runner.copies).hasSize(1);
     }
 
@@ -441,15 +456,7 @@ class LoadJobOrchestratorTest {
                         builder ->
                                 builder.schemaUpdateOptions(
                                         SchemaUpdateOptions.builder().allowNewFields().build()));
-        harness.tableAdmin.tables.put(
-                T1,
-                TableSchema.newBuilder()
-                        .addFields(
-                                TableFieldSchema.newBuilder()
-                                        .setName("f1")
-                                        .setType(TableFieldSchema.Type.STRING)
-                                        .setMode(TableFieldSchema.Mode.NULLABLE))
-                        .build());
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
         long sixTiB = 6L << 40;
 
         harness.orchestrator.run(List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB)));
@@ -458,6 +465,67 @@ class LoadJobOrchestratorTest {
         assertThat(harness.runner.loads.values())
                 .allSatisfy(spec -> assertThat(spec.getSchema().getFields()).hasSize(2));
         assertThat(harness.runner.copies).hasSize(1);
+    }
+
+    @Test
+    void writeEmptyDirectLoadStillReconcilesWhenUpdatesEnabled() throws IOException {
+        // WRITE_EMPTY is not WRITE_TRUNCATE: the live table's schema survives the load, so the
+        // union runs on this path too — while the native schema update options stay append-only.
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(WriteDisposition.WRITE_EMPTY)
+                                .build(),
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build()));
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.tableAdmin.schemaUpdates).containsExactly(T1);
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        spec -> {
+                            assertThat(spec.getSchema().getFields())
+                                    .extracting(Field::getName)
+                                    .containsExactly("f1", "f2");
+                            assertThat(spec.getWriteDisposition())
+                                    .isEqualTo(JobInfo.WriteDisposition.WRITE_EMPTY);
+                            assertThat(spec.getSchemaUpdateOptions()).isEmpty();
+                        });
+    }
+
+    @Test
+    void updatesDisabledWarnsOncePerDestinationAboutUnappliedDifferences() throws IOException {
+        // The warn is the loud part of the silent drop: with updates disabled the live schema
+        // wins, and staged data for the serializer-only column f2 is ignored by BigQuery.
+        Harness harness = Harness.streaming(7);
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+        long sixTiB = 6L << 40;
+
+        Logger logger = (Logger) LogManager.getLogger(LoadJobOrchestrator.class);
+        CapturingAppender appender = new CapturingAppender();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            harness.orchestrator.run(
+                    List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", sixTiB)));
+        } finally {
+            logger.removeAppender(appender);
+        }
+
+        // Three direct loads, one warning (the reconciliation is memoized), naming the field.
+        assertThat(appender.warnings)
+                .singleElement()
+                .satisfies(
+                        message ->
+                                assertThat(message)
+                                        .contains("live schema")
+                                        .contains("f2")
+                                        .contains(T1.toString()));
     }
 
     @Test
@@ -470,6 +538,8 @@ class LoadJobOrchestratorTest {
 
         assertThat(harness.storage.getDeleted()).isEmpty();
         assertThat(harness.runner.deletedTables).isEmpty();
+        // The pre-load creation is not rolled back: a failed load can leave an empty table.
+        assertThat(harness.tableAdmin.created).containsExactly(T1);
     }
 
     @Test
@@ -567,13 +637,6 @@ class LoadJobOrchestratorTest {
         // pre-existing table. An unreconciled load job would be rejected at submission ("Cannot
         // add required fields to an existing schema"); the union demotes the addition to NULLABLE
         // and patches the table before the load, exactly as the temp-table path always has.
-        TableSchema serializerSchema =
-                SCHEMA.toBuilder()
-                        .setFields(
-                                1,
-                                SCHEMA.getFields(1).toBuilder()
-                                        .setMode(TableFieldSchema.Mode.REQUIRED))
-                        .build();
         Harness harness =
                 new Harness(
                         FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
@@ -581,7 +644,7 @@ class LoadJobOrchestratorTest {
                                 builder.schemaUpdateOptions(
                                         SchemaUpdateOptions.builder().allowNewFields().build()),
                         null,
-                        serializerSchema);
+                        SCHEMA_WITH_F2_REQUIRED);
         harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
 
         harness.orchestrator.run(List.of(file(T1, "a", 10)));
@@ -690,6 +753,23 @@ class LoadJobOrchestratorTest {
                                 assertThat(spec.getSchema().getFields())
                                         .extracting(Field::getName)
                                         .containsExactly("f1", "f2"));
+    }
+
+    /** Collects WARN messages logged through log4j2 while attached. */
+    private static final class CapturingAppender extends AbstractAppender {
+
+        private final List<String> warnings = new ArrayList<>();
+
+        CapturingAppender() {
+            super("capture", null, null, true, Property.EMPTY_ARRAY);
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (event.getLevel() == Level.WARN) {
+                warnings.add(event.getMessage().getFormattedMessage());
+            }
+        }
     }
 
     @Test
