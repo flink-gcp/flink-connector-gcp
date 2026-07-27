@@ -58,3 +58,28 @@ jobs:
       # so this job is safe to run on any pull request.
       - name: Build and verify
         run: just verify
+
+      # Holds each shaded module's generated META-INF/NOTICE and pinned licence
+      # texts to what Maven resolves for its bundle. A step of its own rather than part of
+      # `just verify` because the comparison is a Python script, not a Maven
+      # plugin; the resolving half *is* bound into the build, and costs almost
+      # nothing (it reads POMs Maven already resolved). The recipe re-runs that
+      # Maven half, which `just verify` above has already done — kept because a
+      # self-contained recipe is the right default locally, and the duplicated
+      # work here is a few seconds of an incremental build. python3 comes from
+      # the runner image: the script is standard-library only, so there is no
+      # version to pin (see mise.toml).
+      # The NOTICE checker reads scripts/licence-sources.toml with tomllib,
+      # stdlib since Python 3.11 — installed deliberately rather than trusted
+      # from the runner image, for the same reason shellcheck is pinned: an
+      # image migration must not change what CI runs. Keep the version in
+      # step with mise.toml’s python; both mean ">= 3.11 for tomllib". No
+      # cache option on purpose: the script has zero pip dependencies, so
+      # there is nothing to cache, and `cache: pip` without a requirements
+      # file fails the step.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Check the SQL connector NOTICE
+        run: just check-notice flink-sql-connector-gcp-pubsub

@@ -9,6 +9,11 @@ target/
 *.log
 tools/japicmp-output/
 
+# scripts/*.py. .ruff_cache/ needs no entry: ruff writes a self-ignoring
+# .gitignore inside it.
+__pycache__/
+*.pyc
+
 # Hugo documentation site build output
 docs/public/
 docs/resources/

@@ -17,6 +17,16 @@ shellcheck = "0.11.0"
 # recipe hands it an explicit path instead of trusting PATH — the runner image
 # carries its own shellcheck, and it is not this one.
 actionlint = "1.7.12"
+# Lints scripts/*.py. Exactly pinned for the same reason as the two above: a
+# linter that gains a rule fails a pull request that changed nothing.
+ruff = "0.16.0"
+# scripts/check-notice.py is standard-library only, but that standard library
+# must be 3.11+: tomllib reads scripts/licence-sources.toml. A major.minor pin,
+# not exact — the requirement is the module’s presence, and a patch release
+# cannot fail a pull request. CI does not use this entry: the build job
+# installs its own with actions/setup-python (see ci.yaml), so mise stays out
+# of the setup-java job.
+python = "3.12"
 # Task runner (justfile). A major-version specifier rather than an exact pin,
 # unlike shellcheck above: just guarantees that no 1.x release breaks an
 # existing justfile or a working command line, and that there will never be a
