@@ -30,9 +30,8 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumerato
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.junit.jupiter.api.Test;
 
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -57,7 +56,7 @@ class PubSubSourceStreamingITCase extends AbstractPubSubSourceEmulatorITCase {
         publish("streaming-a", fromFirst.toArray(new String[0]));
         publish("streaming-b", fromSecond.toArray(new String[0]));
 
-        Set<String> collected =
+        List<String> collected =
                 collect(source(first, second), fromFirst.size() + fromSecond.size());
 
         // At-least-once: a redelivery is allowed, a loss is not.
@@ -82,7 +81,7 @@ class PubSubSourceStreamingITCase extends AbstractPubSubSourceEmulatorITCase {
         List<String> published = payloads("k", 30);
         publishOrdered("streaming-ordered", "key", published.toArray(new String[0]));
 
-        Set<String> collected =
+        List<String> collected =
                 collect(
                         PubSubSource.<String>builder()
                                 .subscription(subscription)
@@ -108,14 +107,12 @@ class PubSubSourceStreamingITCase extends AbstractPubSubSourceEmulatorITCase {
     }
 
     /**
-     * Runs the source until {@code expected} <em>distinct</em> records have been collected, then
-     * cancels the job — the source is unbounded, so nothing else would ever end it.
-     *
-     * <p>Counting distinct records rather than total ones matters: the source is at-least-once, so
-     * a redelivery is legitimate, and stopping after {@code expected} total records would let one
-     * duplicate crowd out an original and fail the completeness assertion.
+     * Runs the source until {@code expected} <em>distinct</em> records have been collected or
+     * {@link #COLLECT_TIMEOUT} passes, then cancels the job — the source is unbounded, so nothing
+     * else would ever end it. The mechanics of the bounded drain and the reason records are counted
+     * distinct rather than total live on {@link #drainDistinct}.
      */
-    private static Set<String> collect(
+    private static List<String> collect(
             Source<String, SubscriptionSplit, PubSubEnumeratorState> source, int expected)
             throws Exception {
         Configuration configuration = new Configuration();
@@ -128,15 +125,11 @@ class PubSubSourceStreamingITCase extends AbstractPubSubSourceEmulatorITCase {
         // Checkpointing is what acknowledges messages; the interval is short so the run is quick.
         env.enableCheckpointing(500);
 
-        Set<String> collected = new LinkedHashSet<>();
         try (CloseableIterator<String> records =
                 env.fromSource(source, WatermarkStrategy.noWatermarks(), "pubsub")
                         .executeAndCollect()) {
-            while (collected.size() < expected && records.hasNext()) {
-                collected.add(records.next());
-            }
+            return drainDistinct(records, expected, COLLECT_TIMEOUT, Function.identity());
         }
-        return collected;
     }
 
     private static List<String> payloads(String prefix, int count) {

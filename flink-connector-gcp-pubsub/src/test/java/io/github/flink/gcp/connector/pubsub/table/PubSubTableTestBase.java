@@ -27,7 +27,6 @@ import org.apache.flink.util.CloseableIterator;
 import io.github.flink.gcp.connector.pubsub.source.AbstractPubSubSourceEmulatorITCase;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,11 +42,6 @@ import java.util.stream.Collectors;
  * factory and its {@code emulator-endpoint} option rather than a test-only factory.
  */
 abstract class PubSubTableTestBase extends AbstractPubSubSourceEmulatorITCase {
-
-    /**
-     * Comfortably inside the inherited 180 s method timeout, so a shortfall fails the assertion.
-     */
-    private static final Duration COLLECT_TIMEOUT = Duration.ofSeconds(60);
 
     static TableEnvironment streamingTableEnvironment() {
         return TableEnvironment.create(EnvironmentSettings.inStreamingMode());
@@ -71,16 +65,12 @@ abstract class PubSubTableTestBase extends AbstractPubSubSourceEmulatorITCase {
 
     /**
      * Drains rows out of an unbounded query until {@code count} <em>distinct</em> ones have arrived
-     * or the deadline passes, then closes the iterator, which cancels the job.
+     * or {@link #COLLECT_TIMEOUT} passes, then closes the iterator, which cancels the job.
      *
-     * <p>Distinct, and returning whatever did arrive rather than blocking forever, for the two
-     * reasons the DataStream harness already records: the source is at-least-once, so a redelivery
-     * is legitimate and counting total rows would let one duplicate crowd out an original; and a
-     * shortfall must fail the assertion that asked for the rows, not the class timeout, which would
-     * cost three minutes and say nothing about what did arrive.
-     *
-     * <p>Callers should assert with {@code containsAll} rather than an exact multiset, for the same
-     * reason.
+     * <p>The mechanics of the bounded drain and the reasons for its shape — distinct rows, a
+     * shortfall returned rather than blocked on — live on {@link #drainDistinct}. Callers should
+     * assert with {@code containsAll} rather than an exact multiset, because the source is
+     * at-least-once.
      *
      * @param result the query to drain
      * @param count how many distinct rows to wait for
@@ -88,15 +78,9 @@ abstract class PubSubTableTestBase extends AbstractPubSubSourceEmulatorITCase {
      */
     static List<Row> collect(TableResult result, int count, Function<Row, Object> distinguisher)
             throws Exception {
-        Map<Object, Row> rows = new LinkedHashMap<>();
-        long deadline = System.nanoTime() + COLLECT_TIMEOUT.toNanos();
         try (CloseableIterator<Row> iterator = result.collect()) {
-            while (rows.size() < count && System.nanoTime() < deadline && iterator.hasNext()) {
-                Row row = iterator.next();
-                rows.putIfAbsent(distinguisher.apply(row), row);
-            }
+            return drainDistinct(iterator, count, COLLECT_TIMEOUT, distinguisher);
         }
-        return new ArrayList<>(rows.values());
     }
 
     /**
