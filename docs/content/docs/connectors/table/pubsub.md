@@ -86,9 +86,9 @@ gRPC, protobuf and Guava this connector needs cannot collide with the ones a job
 or Flink itself brings. That is the point of the artifact: without it, a Pub/Sub job that also
 touches any other Google Cloud library becomes a version-alignment exercise.
 
-Three things are deliberately *not* relocated, and none of them can collide in a way that matters:
+Five packages are deliberately *not* relocated, and none of them can collide in a way that matters:
 `org.conscrypt`, which gRPC picks up reflectively as an optional TLS provider and does without when
-it is unusable; and the annotation-only packages `javax.annotation`, `org.jspecify`,
+it is unusable; and the annotation-only `javax.annotation`, `org.jspecify`,
 `org.codehaus.mojo.animal_sniffer` and `android.annotation`, where a duplicate class is inert
 because nothing ever invokes it.
 

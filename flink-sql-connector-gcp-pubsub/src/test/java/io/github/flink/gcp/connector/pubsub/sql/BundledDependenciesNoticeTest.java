@@ -66,6 +66,14 @@ class BundledDependenciesNoticeTest {
 
     @Test
     void theNoticeListsExactlyTheArtifactsTheJarBundles() throws IOException {
+        // Both sides are parsed with a pattern, and two empty sets would satisfy the comparison
+        // below while proving nothing. Neither list is anywhere near this small in practice, so
+        // the floor only has to be low enough never to be the thing that fails.
+        assertThat(bundledArtifacts())
+                .as("parsed from %s", RUNTIME_DEPENDENCIES)
+                .hasSizeGreaterThan(40);
+        assertThat(noticedArtifacts()).as("parsed from %s", NOTICE).hasSizeGreaterThan(40);
+
         assertThat(noticedArtifacts())
                 .as(
                         "META-INF/NOTICE must match the bundle exactly. Regenerate the lists from"

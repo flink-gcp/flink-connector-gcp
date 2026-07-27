@@ -72,3 +72,8 @@ Exception, dual-licensed (https://github.com/javaee/javax.annotation/blob/master
 See bundled license files for details.
 
 - javax.annotation:javax.annotation-api:1.3.2 (META-INF/licenses/LICENSE.javax-annotation-api)
+
+io.grpc:grpc-netty-shaded additionally redistributes native libraries built from BoringSSL and
+Apache Tomcat Native. Their license texts travel with it and are preserved in this jar under
+META-INF/license/ (note the singular directory, which is gRPC's own, distinct from the
+META-INF/licenses/ files listed above).
