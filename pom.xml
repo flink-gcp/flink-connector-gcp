@@ -48,9 +48,21 @@ limitations under the License.
         <developerConnection>scm:git:https://github.com/laughingman7743/flink-connector-gcp.git</developerConnection>
     </scm>
 
+    <!-- Not decoration. The ASF parent (org.apache:apache, reached through the Flink
+         connector parent) declares its own <organization>, and maven-remote-resources-plugin
+         interpolates it into the META-INF/NOTICE it stamps into every module jar. Without
+         this block every artifact this project builds claims "Copyright 2026 The Apache
+         Software Foundation", which is both wrong and exactly the text the SQL uber-jar's
+         ApacheNoticeResourceTransformer would aggregate. -->
+    <organization>
+        <name>laughingman7743</name>
+        <url>https://github.com/laughingman7743</url>
+    </organization>
+
     <modules>
         <module>flink-connector-gcp-bigquery</module>
         <module>flink-connector-gcp-pubsub</module>
+        <module>flink-sql-connector-gcp-pubsub</module>
         <module>flink-connector-gcp-cloudtasks</module>
     </modules>
 
@@ -338,6 +350,15 @@ limitations under the License.
                         <exclude>mise.local.toml</exclude>
                         <exclude>tools/japicmp-output/**</exclude>
                         <exclude>**/src/test/resources/**</exclude>
+                        <!-- The SQL uber-jar's licensing payload. Its NOTICE is a fragment
+                             the shade plugin's ApacheNoticeResourceTransformer aggregates,
+                             and the licence files are verbatim copies of third-party
+                             licences: neither can carry this project's header. The
+                             root-relative `NOTICE` exclude above is an Ant pattern that
+                             matches only the repository root, so a module path needs its
+                             own entry. -->
+                        <exclude>**/src/main/resources/META-INF/NOTICE</exclude>
+                        <exclude>**/src/main/resources/META-INF/licenses/**</exclude>
                         <!-- Documentation site: the Go module files are rewritten by
                              `hugo mod` and would not keep a header, the chroma
                              stylesheets are verbatim `hugo gen chromastyles` output
