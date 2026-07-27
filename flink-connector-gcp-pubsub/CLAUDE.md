@@ -184,3 +184,44 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   which is why both user-facing documents now say so outright. A sink-created topic also takes every
   `Topic` field's service default, message retention among them, so a backwards seek over it replays
   nothing that was already acknowledged (#153 again)
+- **`flink-sql-connector-gcp-pubsub`, the uber-jar** (#138) — the repository's first shaded module,
+  so what is decided here sets the shape every later `flink-sql-connector-gcp-*` will copy.
+  **Everything bundled is relocated under `io.github.flink.gcp.connector.pubsub.shaded.`, with no
+  exemption for `grpc-netty-shaded`.** The exemption is the tempting answer and was built first:
+  that artifact carries native libraries whose names netty derives from its own package, and
+  maven-shade does not rename native resources. It was rejected on a measurement rather than a
+  preference — with `io.grpc.netty.shaded` left in place the jar cannot share a classpath with
+  anything else carrying that package, failing with `ServiceConfigurationError: NettyChannelProvider
+  not a subtype`, and the *first* thing to trigger that would be a second GCP SQL connector built
+  the same way. The price is two path relocations renaming
+  `META-INF/native/(lib)?io_grpc_netty_shaded_netty*` to the relocated prefix with dots as
+  underscores; both forms are needed because Windows DLLs carry no `lib`. **That is the established
+  form and it was checked, not assumed**: identical pairs are in googleapis/java-bigtable-hbase
+  (citing netty#6995 and grpc-java#2485), Dataproc's gcs-connector, spark-bigquery, Beam's
+  `GrpcVendoring`, and the uber-jars of both Google Flink connectors — while
+  GoogleCloudDataproc/flink-bigquery-connector relocates without renaming and ships a jar whose
+  tcnative and epoll can never load. `rawString` is **not** needed (maven-shade matches resource
+  paths directly) and no surveyed project uses it. The replacement is constrained by netty's
+  `calculateMangledPackagePrefix()`: the relocated name must remain a pure *prefix* of
+  `io.netty.util.internal.NativeLibraryLoader` — Beam gets away with collapsing `io.grpc.netty
+  .shaded` to its vendor root only because what remains still satisfies that — and an underscore in
+  the prefix would have to be spelled `_1`, which is why the shaded prefix must not grow one.
+  `PubSubSqlConnectorPackagingITCase` derives the expected string from the shaded prefix rather than
+  repeating it, so config and assertion cannot drift. Untested residue, deliberately: whether the
+  renamed libraries load through JNI is only exercised on Linux with epoll or tcnative, and a wrong
+  rename degrades to NIO and JDK SSL *silently*. Still unrelocated are `org.conscrypt` (native
+  libraries too, but a reflectively-loaded optional TLS provider gRPC does without) and four
+  annotation-only packages, where a duplicate class is inert because nothing invokes it.
+  Three build traps worth not rediscovering. **Declaring a Google artifact at `test` scope in the
+  SQL module demotes it out of the bundle** — Maven's nearest-definition rule beats the transitive
+  `compile` scope — which silently cut the jar down to guava plus a few annotation jars.
+  `maven-dependency-plugin:analyze` is absent for the same reason: the scoping it would demand is
+  the scoping that breaks the bundle, so the test harness uses classes that arrive transitively and
+  declares none of them. **The enumerated `artifactSet/includes` does not make a new transitive fail
+  the build**, contrary to what #138 assumed — an unlisted one is dropped, not flagged.
+  `BundledDependenciesNoticeTest` is what fails, by diffing the NOTICE against the recorded runtime
+  tree both ways. **`ApacheNoticeResourceTransformer` needs `organizationName` and `inceptionYear`,
+  not just `projectName`**, or the aggregated NOTICE still reads "Copyright 2006-2026 The Apache
+  Software Foundation". Relatedly, the root pom now sets `<organization>`: without it the ASF
+  parent's remote-resources bundle stamped that same claim into *every* module jar this project
+  builds

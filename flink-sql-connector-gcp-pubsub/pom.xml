@@ -215,16 +215,30 @@
                                      own NativeLibraryLoader, and maven-shade does not rename
                                      native resources — so relocating those classes a second time
                                      without these two entries leaves the classes looking under
-                                     the new prefix while the files sit under the old one.
-                                     rawString makes the pattern a regex over raw jar entry names
-                                     rather than a package path, which is the only way to reach
-                                     META-INF.
+                                     the new prefix while the files sit under the old one. Both
+                                     forms are needed: Windows DLLs carry no `lib`.
 
-                                     The replacement is not free-form: it must be the relocated
-                                     package prefix with dots replaced by underscores, exactly as
-                                     netty computes it. PubSubSqlConnectorPackagingITCase derives
-                                     the same string from the shaded prefix, so the two cannot
-                                     drift apart silently.
+                                     This is the established form, not an invention. Identical
+                                     pairs appear in googleapis/java-bigtable-hbase (which cites
+                                     netty#6995 and grpc-java#2485), GoogleCloudDataproc's
+                                     gcs-connector, and the uber-jars of both Google Flink
+                                     connectors; Beam and spark-bigquery do the same thing with
+                                     their own prefixes. maven-shade matches resource paths
+                                     directly, so no `rawString` is required — and none of those
+                                     projects uses it. The counterexample is
+                                     GoogleCloudDataproc/flink-bigquery-connector, which relocates
+                                     io.grpc without renaming and ships a jar whose tcnative and
+                                     epoll libraries can never load.
+
+                                     The replacement is not free-form: netty's
+                                     calculateMangledPackagePrefix() takes its own class name
+                                     minus io.netty.util.internal.NativeLibraryLoader and maps
+                                     `_` to `_1` then `.` to `_`. So the relocated name must stay
+                                     a pure *prefix* of that suffix — collapsing the middle throws
+                                     UnsatisfiedLinkError at class init — and an underscore in the
+                                     prefix would have to be written `_1`. This prefix has none.
+                                     PubSubSqlConnectorPackagingITCase derives the same string
+                                     from the shaded prefix, so the two cannot drift apart.
 
                                      Leaving grpc-netty-shaded unrelocated was built and rejected:
                                      it makes this jar unable to share a classpath with any other
@@ -239,12 +253,10 @@
                                      the plaintext emulator test never reaches. A wrong rename
                                      degrades to NIO and JDK SSL silently rather than failing. -->
                                 <relocation>
-                                    <rawString>true</rawString>
                                     <pattern>META-INF/native/libio_grpc_netty_shaded_netty</pattern>
                                     <shadedPattern>META-INF/native/libio_github_flink_gcp_connector_pubsub_shaded_io_grpc_netty_shaded_netty</shadedPattern>
                                 </relocation>
                                 <relocation>
-                                    <rawString>true</rawString>
                                     <pattern>META-INF/native/io_grpc_netty_shaded_netty</pattern>
                                     <shadedPattern>META-INF/native/io_github_flink_gcp_connector_pubsub_shaded_io_grpc_netty_shaded_netty</shadedPattern>
                                 </relocation>
