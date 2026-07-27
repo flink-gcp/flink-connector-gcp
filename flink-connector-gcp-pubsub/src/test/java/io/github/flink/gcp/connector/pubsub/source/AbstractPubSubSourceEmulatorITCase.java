@@ -200,6 +200,11 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
         }
     }
 
+    /** Returns the topic as the service reports it. */
+    public static com.google.pubsub.v1.Topic describeTopic(String name) {
+        return topicAdminClient.getTopic(TopicName.of(PROJECT, name));
+    }
+
     /** Returns whether the subscription exists. */
     public static boolean subscriptionExists(SubscriptionDestination subscription) {
         try {

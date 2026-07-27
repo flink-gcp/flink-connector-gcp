@@ -17,12 +17,16 @@
 package io.github.flink.gcp.connector.pubsub.sink.topics;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.rpc.AlreadyExistsException;
 import com.google.cloud.pubsub.v1.TopicAdminClient;
 import com.google.cloud.pubsub.v1.TopicAdminSettings;
+import com.google.pubsub.v1.MessageStoragePolicy;
+import com.google.pubsub.v1.Topic;
 import com.google.pubsub.v1.TopicName;
+import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
@@ -31,6 +35,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.time.Duration;
 
 /**
  * Default {@link TopicAdmin} backed by the Pub/Sub {@link TopicAdminClient}.
@@ -66,16 +71,54 @@ public class PubSubTopicAdmin implements TopicAdmin {
     }
 
     @Override
-    public void createTopic(TopicDestination destination) throws IOException {
-        TopicName topicName = TopicName.of(destination.getProject(), destination.getTopic());
+    public void createTopic(TopicDestination destination, @Nullable TopicCreateOptions options)
+            throws IOException {
         try (TopicAdminClient client = newClient()) {
-            client.createTopic(topicName);
+            client.createTopic(toTopic(destination, options));
             LOG.info("Created Pub/Sub topic {}", destination);
         } catch (AlreadyExistsException e) {
             LOG.info("Pub/Sub topic {} already exists, not creating it", destination);
         } catch (RuntimeException e) {
             throw new IOException("Failed to create Pub/Sub topic " + destination, e);
         }
+    }
+
+    /**
+     * Translates the create options into the topic to create. Unset knobs leave their protobuf
+     * fields untouched, so Pub/Sub applies its own defaults.
+     */
+    @VisibleForTesting
+    static Topic toTopic(TopicDestination destination, @Nullable TopicCreateOptions options) {
+        Topic.Builder topic =
+                Topic.newBuilder()
+                        .setName(
+                                TopicName.of(destination.getProject(), destination.getTopic())
+                                        .toString());
+        if (options == null) {
+            return topic.build();
+        }
+        Duration messageRetention = options.getMessageRetention();
+        if (messageRetention != null) {
+            topic.setMessageRetentionDuration(toProtoDuration(messageRetention));
+        }
+        if (options.getKmsKeyName() != null) {
+            topic.setKmsKeyName(options.getKmsKeyName());
+        }
+        if (options.getAllowedPersistenceRegions() != null) {
+            topic.setMessageStoragePolicy(
+                    MessageStoragePolicy.newBuilder()
+                            .addAllAllowedPersistenceRegions(options.getAllowedPersistenceRegions())
+                            .setEnforceInTransit(options.isEnforceInTransit())
+                            .build());
+        }
+        return topic.build();
+    }
+
+    private static com.google.protobuf.Duration toProtoDuration(Duration duration) {
+        return com.google.protobuf.Duration.newBuilder()
+                .setSeconds(duration.getSeconds())
+                .setNanos(duration.getNano())
+                .build();
     }
 
     @Override

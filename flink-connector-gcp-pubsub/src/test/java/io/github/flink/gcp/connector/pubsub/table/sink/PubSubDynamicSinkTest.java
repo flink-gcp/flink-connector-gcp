@@ -110,7 +110,7 @@ class PubSubDynamicSinkTest {
 
     private static PubSubDynamicSink sink(PubSubPublisherOptions publisherOptions) {
         return new PubSubDynamicSink(
-                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, publisherOptions, null, null);
+                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, null, publisherOptions, null, null);
     }
 
     private static PubSubDynamicSink orderedSink() {
@@ -233,6 +233,7 @@ class PubSubDynamicSinkTest {
                                 FORMAT,
                                 TOPIC,
                                 null,
+                                null,
                                 defaults,
                                 null,
                                 null))
@@ -241,6 +242,7 @@ class PubSubDynamicSinkTest {
                                 PHYSICAL_DATA_TYPE,
                                 new ConstantEncodingFormat("format-b"),
                                 TOPIC,
+                                null,
                                 null,
                                 defaults,
                                 null,
@@ -251,6 +253,7 @@ class PubSubDynamicSinkTest {
                                 FORMAT,
                                 TopicDestination.of("my-project", "other-topic"),
                                 null,
+                                null,
                                 defaults,
                                 null,
                                 null))
@@ -260,6 +263,7 @@ class PubSubDynamicSinkTest {
                                 FORMAT,
                                 TOPIC,
                                 CreateDisposition.CREATE_NEVER,
+                                null,
                                 defaults,
                                 null,
                                 null))
@@ -270,12 +274,13 @@ class PubSubDynamicSinkTest {
                                 FORMAT,
                                 TOPIC,
                                 null,
+                                null,
                                 defaults,
                                 "localhost:8085",
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
-                                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, defaults, null, 4));
+                                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, null, defaults, null, 4));
     }
 
     @Test

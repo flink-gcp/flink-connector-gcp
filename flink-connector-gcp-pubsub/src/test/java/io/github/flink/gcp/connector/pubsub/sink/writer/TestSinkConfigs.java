@@ -23,6 +23,7 @@ import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
+import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 
@@ -42,6 +43,21 @@ final class TestSinkConfigs {
                         .topic(topic)
                         .serializer(serializer)
                         .createDisposition(disposition)
+                        .publisherOptions(options));
+    }
+
+    static PubSubSinkConfig<String> forTopic(
+            TopicDestination topic,
+            PubSubSerializationSchema<String> serializer,
+            CreateDisposition disposition,
+            TopicCreateOptions topicCreateOptions,
+            PubSubPublisherOptions options) {
+        return config(
+                PubSubSink.<String>builder()
+                        .topic(topic)
+                        .serializer(serializer)
+                        .createDisposition(disposition)
+                        .topicCreateOptions(topicCreateOptions)
                         .publisherOptions(options));
     }
 

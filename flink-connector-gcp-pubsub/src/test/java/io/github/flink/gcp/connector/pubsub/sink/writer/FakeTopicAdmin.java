@@ -16,8 +16,11 @@
 
 package io.github.flink.gcp.connector.pubsub.sink.writer;
 
+import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -27,15 +30,18 @@ import java.util.List;
 final class FakeTopicAdmin implements TopicAdmin {
 
     final List<TopicDestination> created = new ArrayList<>();
+    final List<TopicCreateOptions> createOptions = new ArrayList<>();
     IOException createFailure;
     int closeCalls;
 
     @Override
-    public void createTopic(TopicDestination destination) throws IOException {
+    public void createTopic(TopicDestination destination, @Nullable TopicCreateOptions options)
+            throws IOException {
         if (createFailure != null) {
             throw createFailure;
         }
         created.add(destination);
+        createOptions.add(options);
     }
 
     @Override

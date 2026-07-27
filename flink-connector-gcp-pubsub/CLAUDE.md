@@ -174,16 +174,32 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   than invents. `scan.` itself is not a choice — it is Flink's read-side prefix, carried by every
   source option here and by `FactoryUtil.SOURCE_PARALLELISM` (`scan.parallelism`) — and with one
   factory serving both directions it is what tells a reader which half an option belongs to.
-  **That settlement has a stated expiry**: #153 would give the sink creation *settings* for the
-  topic it creates — today it has none, while a created subscription takes nine, and that asymmetry
-  is the issue's opening argument. It would make the two sides more alike than they were when this
-  was decided, so re-open the naming there rather than assuming this answer still holds.
+  **The stated expiry of that settlement was reached and resolved in #153**, which gave the sink
+  creation settings (`TopicCreateOptions`: `messageRetention`, `kmsKeyName`, the storage policy).
+  The re-opened naming question settled as: the *settings* vocabulary aligns —
+  `sink.auto-create.*` beside `scan.auto-create.*`, one spelling where both sides carry one knob
+  (`message-retention`) — while the *gates* stay different, because the gate reasoning above is
+  about what a resource needs to exist and #153 changed nothing about that. Three sink-side facts
+  not to re-derive: the settings are additive and never authorize (the disposition still does, and
+  its default `CREATE_IF_NEEDED` means settings alone are meaningful — only an explicit
+  `CREATE_NEVER` beside them is rejected, in the builder naming methods and in the mapper naming
+  option keys); **one options object applies to every topic the sink creates**, dynamic
+  destinations included, because unlike a subscription's topic binding nothing in the settings ties
+  them to one topic — so there is no per-topic map to express; and `schemaSettings`, `labels` and
+  `tags` were considered and declined (schema validates at publish time only, re-checking what this
+  sink serialized, and is invisible to subscriptions beyond the `googclient_schema*` attributes;
+  labels/tags mirror the subscription side's omission) — all additive later. The emulator stores
+  all four knobs verbatim and returns them on `GetTopic` — measured in #153 after a first
+  measurement wrongly concluded the opposite off a one-line grep of a multi-line proto `toString`
+  — but validates nothing and shows no effect, so the ITs assert the round trip and the
+  *semantics* (real CMEK, residency, retention-driven replay) stay with the real-GCP suite (#82).
   **The source never creates a topic.** There is no `createTopic` in the `source` package, so
   `scan.auto-create.topic` names a topic that must already exist, while the sink's
   `create-if-needed` does create one — the same two words meaning opposite things across one DDL,
-  which is why both user-facing documents now say so outright. A sink-created topic also takes every
-  `Topic` field's service default, message retention among them, so a backwards seek over it replays
-  nothing that was already acknowledged (#153 again)
+  which is why both user-facing documents now say so outright. A sink-created topic without
+  creation settings still takes every `Topic` field's service default, message retention among
+  them, so a backwards seek over it replays nothing that was already acknowledged unless
+  `messageRetention` was set at creation
 - **`flink-sql-connector-gcp-pubsub`, the uber-jar** (#138) — the repository's first shaded module,
   so what is decided here sets the shape every later `flink-sql-connector-gcp-*` will copy.
   **Everything bundled is relocated under `io.github.flink.gcp.connector.pubsub.shaded.`, with no

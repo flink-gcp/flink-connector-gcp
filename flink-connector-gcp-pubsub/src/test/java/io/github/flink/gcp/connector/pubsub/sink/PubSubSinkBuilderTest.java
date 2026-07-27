@@ -104,6 +104,70 @@ class PubSubSinkBuilderTest {
     }
 
     @Test
+    void carriesTopicCreateOptionsIntoTheConfig() throws Exception {
+        TopicCreateOptions createOptions = TopicCreateOptionsTest.fullyPopulated();
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder()
+                                .topic(TOPIC)
+                                .serializer(serializer())
+                                .topicCreateOptions(createOptions)
+                                .build();
+
+        assertThat(sink.getConfig().getTopicCreateOptions()).isEqualTo(createOptions);
+
+        // The options ship in the job graph (the region list included), so they must survive
+        // Java serialization. The main round-trip test cannot carry them: it uses CREATE_NEVER,
+        // which rejects them by design.
+        PubSubPublisherSink<String> copy =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(sink), getClass().getClassLoader());
+        assertThat(copy.getConfig().getTopicCreateOptions()).isEqualTo(createOptions);
+    }
+
+    @Test
+    void topicCreateOptionsAreUnsetByDefault() {
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder().topic(TOPIC).serializer(serializer()).build();
+
+        assertThat(sink.getConfig().getTopicCreateOptions()).isNull();
+    }
+
+    @Test
+    void rejectsTopicCreateOptionsAlongsideCreateNever() {
+        // Whichever order the two are set in: the check is at build(), not in the setters.
+        assertThatThrownBy(
+                        () ->
+                                PubSubSink.<String>builder()
+                                        .topic(TOPIC)
+                                        .serializer(serializer())
+                                        .topicCreateOptions(TopicCreateOptions.builder().build())
+                                        .createDisposition(CreateDisposition.CREATE_NEVER)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("topicCreateOptions(...)")
+                .hasMessageContaining("CREATE_NEVER");
+        assertThatThrownBy(
+                        () ->
+                                PubSubSink.<String>builder()
+                                        .topic(TOPIC)
+                                        .serializer(serializer())
+                                        .createDisposition(CreateDisposition.CREATE_NEVER)
+                                        .topicCreateOptions(TopicCreateOptions.builder().build())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("CREATE_NEVER");
+    }
+
+    @Test
+    void rejectsNullTopicCreateOptions() {
+        assertThatThrownBy(() -> PubSubSink.<String>builder().topicCreateOptions(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("topicCreateOptions must not be null");
+    }
+
+    @Test
     void publisherOptionsDefaultToDefaults() {
         PubSubPublisherSink<String> sink =
                 (PubSubPublisherSink<String>)

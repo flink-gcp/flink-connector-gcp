@@ -476,7 +476,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 "A publish to Pub/Sub topic {} failed because the topic does not exist;"
                         + " creating it (CREATE_IF_NEEDED).",
                 state.destination);
-        topicAdmin.createTopic(state.destination);
+        topicAdmin.createTopic(state.destination, config.getTopicCreateOptions());
         for (int attempt = 1; ; attempt++) {
             // Keyed by publish sequence, so the batch is in the order the messages were originally
             // published however their failure mails interleaved.
