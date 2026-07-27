@@ -707,8 +707,9 @@ Schema changes are handled without a job restart. Reactive handling is always on
   serialized under the changed schema, so the first append after an evolution does not have to
   fail.
 - **Stale-stream-writer failures** (`STREAM_FINALIZED`, `STREAM_NOT_FOUND`,
-  `INVALID_STREAM_STATE`, writer-closed) are repaired by rebuilding the writer and re-appending
-  within the transient retry budget instead of failing the job.
+  `INVALID_STREAM_STATE`, writer-closed, the SDK's callback-wait watchdog timeout) are repaired
+  by rebuilding the writer and re-appending within the transient retry budget instead of failing
+  the job.
 
 **Connector-driven table schema updates** are opt-in via `schemaUpdateOptions(...)`:
 
@@ -902,7 +903,10 @@ routed to the handler** — with more machinery than the at-least-once path need
 request is rejected atomically (the offset never advances), so the writer routes the failing rows
 to the handler and replays the surviving rows plus every batch appended behind the rejected one
 at recomputed offsets. Transient failures are re-appended at their original offset
-(`OFFSET_ALREADY_EXISTS` then means the original landed). Stream-state errors mid-run
+(`OFFSET_ALREADY_EXISTS` then means the original landed); a client-side dead `StreamWriter` (the
+SDK's closed-writer error, or its callback-wait watchdog timing out a sent append after 5
+minutes without a response) is reopened on the same stream before the resend. Stream-state
+errors mid-run
 (`STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`) are terminal — the restart +
 restore protocol is the repair. Consistency guards (an acknowledged append behind a rejected one,
 an offset-echo mismatch, `OFFSET_ALREADY_EXISTS` during an offset-shifting replay) fail the job
@@ -1088,9 +1092,9 @@ Append failures are classified on the task thread and routed by class:
 | Class | Examples | Behavior |
 |---|---|---|
 | Transient | `UNAVAILABLE`, `ABORTED`, `INTERNAL`, `CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `UNKNOWN` | Retried by the SDK's in-stream retries first (500 ms initial delay, ×2 up to 30 s, 5 attempts); failures that still surface are re-appended by the writer on a rebuilt stream writer with backoff (500 ms initial, doubled up to 10 s, 10 attempts). They do not fail the job unless the retry budget is exhausted |
-| Stale stream writer | `STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`, writer closed | Repaired like transient failures: the destination's stream writer is rebuilt and the batch re-appended within the retry budget |
+| Stale stream writer | `STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`, writer closed, the SDK's callback-wait watchdog timeout (a sent append got no response within the SDK's hardcoded 5 minutes; the raw exception carries no status code) | Repaired like transient failures: the destination's stream writer is rebuilt and the batch re-appended within the retry budget |
 | Schema mismatch | `SCHEMA_MISMATCH_EXTRA_FIELDS` (rows carry fields the table does not have) | With `schemaUpdateOptions(...)` enabled: the table schema is reconciled and the batch re-appended while the update propagates (see [Schema evolution](#schema-evolution)). Otherwise terminal |
-| Terminal | `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `NOT_FOUND` under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code | Fail the ongoing write or checkpoint immediately |
+| Terminal | `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `NOT_FOUND` under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
 | Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured `FailedRowHandler`; surviving rows of the batch are re-appended |
 
 The failed-row policy is pluggable via `failedRowHandler(...)`:

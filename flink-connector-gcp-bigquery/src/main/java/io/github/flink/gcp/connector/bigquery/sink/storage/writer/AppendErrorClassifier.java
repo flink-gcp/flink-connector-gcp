@@ -151,21 +151,19 @@ public final class AppendErrorClassifier {
 
     /**
      * Returns whether the failure reports the stream writer itself as stale — finalized, unknown to
-     * the backend, in an invalid state, or closed client-side — and is cured by rebuilding the
-     * destination's writer and re-appending, rather than being terminal.
+     * the backend, in an invalid state, or dead client-side ({@link #isWriterClosed}) — and is
+     * cured by rebuilding the destination's writer and re-appending, rather than being terminal.
      *
      * @param t the failure
      * @return whether rebuilding the stream writer repairs the failure
      */
     static boolean requiresWriterRefresh(Throwable t) {
-        return ExceptionUtils.findThrowable(
+        return isWriterClosed(t)
+                || ExceptionUtils.findThrowable(
                                 t,
                                 cause ->
                                         cause instanceof Exceptions.StreamFinalizedException
-                                                || cause instanceof Exceptions.StreamNotFound
-                                                || cause
-                                                        instanceof
-                                                        Exceptions.StreamWriterClosedException)
+                                                || cause instanceof Exceptions.StreamNotFound)
                         .isPresent()
                 || hasStorageErrorCode(t, REFRESH_CODES);
     }
@@ -244,16 +242,31 @@ public final class AppendErrorClassifier {
     }
 
     /**
-     * Returns whether the failure is the SDK's client-side {@link
-     * Exceptions.StreamWriterClosedException}: the {@code StreamWriter} poisoned itself after a
-     * connection-level failure and every further append through it fails fast. The stream itself is
-     * unaffected — reopening a writer on it repairs the failure.
+     * Returns whether the failure reports the {@code StreamWriter} as dead client-side. The stream
+     * itself is unaffected — reopening a writer on it repairs the failure.
+     *
+     * <p>Two SDK exceptions mean this. {@link Exceptions.StreamWriterClosedException}: the {@code
+     * StreamWriter} poisoned itself after a connection-level failure and every further append
+     * through it fails fast. And {@link
+     * Exceptions.MaximumRequestCallbackWaitTimeExceededException}: the SDK's connection watchdog
+     * saw no response to a sent append within its hardcoded wait limit (5 minutes) and killed the
+     * connection — the first in-flight append fails with this raw exception, every other one with
+     * {@code StreamWriterClosedException}. The watchdog exception carries no gRPC status, so
+     * without this predicate status-code classification would call the one failure of the storm
+     * that reports the root cause terminal while all its siblings are repaired.
      *
      * @param t the failure
-     * @return whether the failure is a client-side closed stream writer
+     * @return whether the failure is a client-side dead stream writer
      */
     public static boolean isWriterClosed(Throwable t) {
-        return ExceptionUtils.findThrowable(t, Exceptions.StreamWriterClosedException.class)
+        return ExceptionUtils.findThrowable(
+                        t,
+                        cause ->
+                                cause instanceof Exceptions.StreamWriterClosedException
+                                        || cause
+                                                instanceof
+                                                Exceptions
+                                                        .MaximumRequestCallbackWaitTimeExceededException)
                 .isPresent();
     }
 

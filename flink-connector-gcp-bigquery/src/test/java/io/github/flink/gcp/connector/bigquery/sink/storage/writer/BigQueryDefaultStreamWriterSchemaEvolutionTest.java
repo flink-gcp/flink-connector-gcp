@@ -47,6 +47,7 @@ import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -697,6 +698,31 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(
                 storageErrorFuture(StorageError.StorageErrorCode.STREAM_FINALIZED));
+        RecordingTableAdmin admin = new RecordingTableAdmin(V1);
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(new EvolvingSerializer(V1), SchemaUpdateOptions.defaults()),
+                        factory,
+                        admin);
+
+        writer.write("aa", CONTEXT);
+
+        assertThatCode(() -> writer.flush(false)).doesNotThrowAnyException();
+        assertThat(factory.created).hasSize(2);
+        assertThat(factory.created.get(0).closed).isTrue();
+        assertThat(factory.allAppendedRows()).containsExactly("aa", "aa");
+    }
+
+    @Test
+    void callbackWaitTimeoutIsRepairedByRebuilding() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        // The SDK's connection watchdog killed the connection: the first in-flight append fails
+        // with the raw callback-wait timeout exception, which carries no gRPC status. The writer
+        // must treat it as a client-side dead writer and rebuild, not fail the job.
+        factory.scriptedResults.add(
+                ApiFutures.immediateFailedFuture(
+                        new Exceptions.MaximumRequestCallbackWaitTimeExceededException(
+                                Duration.ofMinutes(6), "writer-id", Duration.ofMinutes(5))));
         RecordingTableAdmin admin = new RecordingTableAdmin(V1);
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
