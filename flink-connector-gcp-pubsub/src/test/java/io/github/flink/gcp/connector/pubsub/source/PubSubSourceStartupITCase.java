@@ -33,8 +33,8 @@ import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdm
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
-import java.util.LinkedHashSet;
-import java.util.Set;
+import java.util.List;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -59,15 +59,13 @@ class PubSubSourceStartupITCase extends AbstractPubSubSourceEmulatorITCase {
                                 SubscriptionCreateOptions.builder().topic(topic).build())
                         .build();
 
-        Set<String> collected = new LinkedHashSet<>();
+        List<String> collected;
         try (CloseableIterator<String> records = run(source)) {
             // Nothing published before the subscription exists is retained for it, so the publish
             // has to wait for the startup check — which runs before any split is assigned.
             awaitSubscription(subscription);
             publish("startup-create-topic", "one", "two");
-            while (collected.size() < 2 && records.hasNext()) {
-                collected.add(records.next());
-            }
+            collected = drainDistinct(records, 2, COLLECT_TIMEOUT, Function.identity());
         }
 
         assertThat(collected).containsExactlyInAnyOrder("one", "two");
@@ -171,18 +169,15 @@ class PubSubSourceStartupITCase extends AbstractPubSubSourceEmulatorITCase {
     }
 
     /**
-     * Runs the source until it has produced {@code expected} distinct records, then stops it.
-     * Distinct, because the source is at-least-once and a duplicate must not crowd out an original.
+     * Runs the source until it has produced {@code expected} distinct records or {@link
+     * #COLLECT_TIMEOUT} passes, then stops it. The mechanics of the bounded drain and the reason
+     * records are counted distinct live on {@link #drainDistinct}.
      */
-    private static Set<String> collect(
+    private static List<String> collect(
             Source<String, SubscriptionSplit, PubSubEnumeratorState> source, int expected)
             throws Exception {
-        Set<String> collected = new LinkedHashSet<>();
         try (CloseableIterator<String> records = run(source)) {
-            while (collected.size() < expected && records.hasNext()) {
-                collected.add(records.next());
-            }
+            return drainDistinct(records, expected, COLLECT_TIMEOUT, Function.identity());
         }
-        return collected;
     }
 }
