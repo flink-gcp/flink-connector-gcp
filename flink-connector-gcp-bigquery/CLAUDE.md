@@ -133,7 +133,15 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   under `tr_TR` a column named `ID` becomes the proto field `ıd`, which no `Locale.ROOT` key
   matches. Position is exact here precisely because the descriptor is always derived from the table
   schema this connector just produced
-- **BigQuery protobuf well-known types** (#147, which is #124 Part 2): recognition lives in a
+- **BigQuery protobuf well-known types** (#147, which is #124 Part 2): the vocabulary is
+  **protobuf's, not this project's** — *well-known types* names the messages in
+  `google/protobuf/*.proto` (protobuf.dev/reference/protobuf/google.protobuf/), and the enum's
+  grouping is Google's own (wrappers / the temporal pair / the structural trio). Same rule as #121's
+  `sink.storage`: spell it the way the vendor spells it, and say in the javadoc that it is the
+  vendor's word, so nobody later "improves" it into a local coinage. The test fixture follows suit —
+  `WellKnownTypes` is a **noun phrase like its sibling `AllTypes`**, because the message is not
+  itself well-known, it *contains* every well-known type; `WellKnown` alone was an adjective and was
+  renamed for that reason. Recognition lives in a
   package-private `ProtoWellKnownType` enum keyed on **full name** — a descriptor built from a
   serialized `FileDescriptorSet` carries its own copy of `wrappers.proto`, so identity comparison
   would miss every one — replacing `ProtoToTableSchemaConverter.isTimestampMessage`, which was a

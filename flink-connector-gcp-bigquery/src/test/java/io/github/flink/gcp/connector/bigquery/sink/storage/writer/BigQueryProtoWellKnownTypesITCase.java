@@ -42,8 +42,8 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessage
 import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
-import io.github.flink.gcp.connector.bigquery.testproto.WellKnown;
-import io.github.flink.gcp.connector.bigquery.testproto.WellKnownSingular;
+import io.github.flink.gcp.connector.bigquery.testproto.SingularWellKnownTypes;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -67,20 +67,20 @@ import static org.assertj.core.api.Assertions.tuple;
  * <p>The two halves use different fixtures on purpose. Emulator 0.8.1 rejects <em>every</em> insert
  * into a table carrying an {@code ARRAY<JSON>} column, populated or empty alike ({@code "Value has
  * type JSON which cannot be inserted into column w_rep_struct, which has type ARRAY<JSON>"}), so
- * the write half uses {@code WellKnownSingular}. Creating such a table works, which is why the
+ * the write half uses {@code SingularWellKnownTypes}. Creating such a table works, which is why the
  * schema half still uses the full matrix; writing into one is verified against real BigQuery by
  * {@link BigQueryProtoRepeatedJsonITCase}.
  *
  * <p><b>Revisit when the nightly real-GCP workflow lands (#28, #16):</b> the write half should then
- * run against the full {@code WellKnown} fixture on the service, and {@code WellKnownSingular} —
- * which exists for no reason but this emulator limitation — can be deleted along with {@link
- * BigQueryProtoRepeatedJsonITCase}, whose coverage it would subsume.
+ * run against the full {@code WellKnownTypes} fixture on the service, and {@code
+ * SingularWellKnownTypes} — which exists for no reason but this emulator limitation — can be
+ * deleted along with {@link BigQueryProtoRepeatedJsonITCase}, whose coverage it would subsume.
  *
  * <p>Only one flush happens per table, for the emulator reason recorded on {@link
  * BigQueryDefaultStreamWriterITCase}: on a connection opened after an earlier one has closed, only
  * the first {@code AppendRows} request is durably applied.
  */
-class BigQueryProtoWellKnownITCase extends AbstractBigQueryEmulatorITCase {
+class BigQueryProtoWellKnownTypesITCase extends AbstractBigQueryEmulatorITCase {
 
     private static final String TABLE = "proto_wellknown";
     private static final String SINGULAR_TABLE = "proto_wellknown_singular";
@@ -90,7 +90,7 @@ class BigQueryProtoWellKnownITCase extends AbstractBigQueryEmulatorITCase {
     void derivesACreatableTableForEveryWellKnownType() {
         createTable(
                 TABLE,
-                ProtoMessageSerializer.of(WellKnown.class, ProtoSchemaOptions.defaults())
+                ProtoMessageSerializer.of(WellKnownTypes.class, ProtoSchemaOptions.defaults())
                         .getTableSchema(null));
 
         Schema created = schemaOf(TABLE);
@@ -119,23 +119,24 @@ class BigQueryProtoWellKnownITCase extends AbstractBigQueryEmulatorITCase {
 
     @Test
     void writesSingularWellKnownTypesAsScalarAndJsonColumns() throws Exception {
-        ProtoMessageSerializer<WellKnownSingular> serializer =
-                ProtoMessageSerializer.of(WellKnownSingular.class, ProtoSchemaOptions.defaults());
+        ProtoMessageSerializer<SingularWellKnownTypes> serializer =
+                ProtoMessageSerializer.of(
+                        SingularWellKnownTypes.class, ProtoSchemaOptions.defaults());
         createTable(SINGULAR_TABLE, serializer.getTableSchema(null));
 
-        BigQueryDefaultStreamSink<WellKnownSingular> sink =
-                (BigQueryDefaultStreamSink<WellKnownSingular>)
-                        BigQuerySink.<WellKnownSingular>builder()
+        BigQueryDefaultStreamSink<SingularWellKnownTypes> sink =
+                (BigQueryDefaultStreamSink<SingularWellKnownTypes>)
+                        BigQuerySink.<SingularWellKnownTypes>builder()
                                 .destination(TableDestination.of(PROJECT, DATASET, SINGULAR_TABLE))
                                 .serializer(serializer)
                                 .build();
-        SinkWriter<WellKnownSingular> writer =
+        SinkWriter<SingularWellKnownTypes> writer =
                 sink.createWriter(
                         new EmulatorAppenderFactory(grpcEndpoint()),
                         new BigQueryTableAdmin(restClient));
         try {
             writer.write(
-                    WellKnownSingular.newBuilder()
+                    SingularWellKnownTypes.newBuilder()
                             .setSString(StringValue.of("set"))
                             // Explicitly set to the type default: must not read back as NULL.
                             .setSInt64(Int64Value.of(0L))
@@ -167,7 +168,7 @@ class BigQueryProtoWellKnownITCase extends AbstractBigQueryEmulatorITCase {
                     CONTEXT);
             // Every wrapper left unset: those columns must be NULL, not 0 / "" / false.
             writer.write(
-                    WellKnownSingular.newBuilder().setSString(StringValue.of("unset")).build(),
+                    SingularWellKnownTypes.newBuilder().setSString(StringValue.of("unset")).build(),
                     CONTEXT);
             writer.flush(true);
         } finally {

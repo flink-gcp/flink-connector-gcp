@@ -26,7 +26,7 @@ option java_multiple_files = true;
 // mandatory. The rule is stated in three places and would otherwise be pinned
 // nowhere — and the optional sibling beside it is what shows the deviation is
 // about `required` and not about proto2.
-message Proto2WellKnown {
+message Proto2WellKnownTypes {
   required google.protobuf.Int64Value r_required = 1;
   optional google.protobuf.Int64Value r_optional = 2;
 }

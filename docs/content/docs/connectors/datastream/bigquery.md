@@ -140,6 +140,11 @@ since a BigQuery `STRUCT` must have at least one column.
 
 ### Well-known types
 
+*Well-known types* is protobuf's own term for the messages shipped in `google/protobuf/*.proto` —
+see [Protocol Buffers Well-Known Types](https://protobuf.dev/reference/protobuf/google.protobuf/).
+The connector recognises them by their fully-qualified names and uses protobuf's own grouping;
+nothing here is a name this project invented.
+
 **Wrapper types map to the scalar they wrap**, and stay `NULLABLE` however
 [nullability](#nullability) is configured. A wrapper exists precisely so that "unset" is
 distinguishable from `0` or `""`, and that distinction reaches the column: an unset `Int64Value` is

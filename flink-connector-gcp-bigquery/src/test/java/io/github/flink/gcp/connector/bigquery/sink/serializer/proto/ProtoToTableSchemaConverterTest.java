@@ -491,7 +491,8 @@ class ProtoToTableSchemaConverterTest {
 
     @Test
     void mapsWrapperTypesToTheWrappedScalar() {
-        Map<String, TableFieldSchema> fields = byName(wellKnown(ProtoSchemaOptions.defaults()));
+        Map<String, TableFieldSchema> fields =
+                byName(wellKnownTypes(ProtoSchemaOptions.defaults()));
 
         assertThat(fields.get("w_int32").getType()).isEqualTo(TableFieldSchema.Type.INT64);
         assertThat(fields.get("w_uint32").getType()).isEqualTo(TableFieldSchema.Type.INT64);
@@ -513,7 +514,7 @@ class ProtoToTableSchemaConverterTest {
      */
     @Test
     void mapsWrapperTypesToNullableEvenWhenRequiredColumnsAreDerived() {
-        Map<String, TableFieldSchema> fields = byName(wellKnown(DERIVE_REQUIRED));
+        Map<String, TableFieldSchema> fields = byName(wellKnownTypes(DERIVE_REQUIRED));
 
         assertThat(fields.get("w_int64").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
         assertThat(fields.get("w_string").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
@@ -536,7 +537,7 @@ class ProtoToTableSchemaConverterTest {
         Map<String, TableFieldSchema> fields =
                 byName(
                         ProtoToTableSchemaConverter.convert(
-                                TestProtos.proto2WellKnown(), DERIVE_REQUIRED));
+                                TestProtos.proto2WellKnownTypes(), DERIVE_REQUIRED));
 
         assertThat(fields.get("r_required").getType()).isEqualTo(TableFieldSchema.Type.INT64);
         assertThat(fields.get("r_required").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
@@ -547,7 +548,7 @@ class ProtoToTableSchemaConverterTest {
         assertThat(
                         byName(
                                         ProtoToTableSchemaConverter.convert(
-                                                TestProtos.proto2WellKnown(),
+                                                TestProtos.proto2WellKnownTypes(),
                                                 ProtoSchemaOptions.defaults()))
                                 .get("r_required")
                                 .getMode())
@@ -560,7 +561,8 @@ class ProtoToTableSchemaConverterTest {
      */
     @Test
     void mapsStructValueAndListValueToJsonColumns() {
-        Map<String, TableFieldSchema> fields = byName(wellKnown(ProtoSchemaOptions.defaults()));
+        Map<String, TableFieldSchema> fields =
+                byName(wellKnownTypes(ProtoSchemaOptions.defaults()));
 
         assertThat(fields.get("w_struct").getType()).isEqualTo(TableFieldSchema.Type.JSON);
         assertThat(fields.get("w_value").getType()).isEqualTo(TableFieldSchema.Type.JSON);
@@ -570,7 +572,8 @@ class ProtoToTableSchemaConverterTest {
 
     @Test
     void mapsDurationToInt64AndFieldMaskToString() {
-        Map<String, TableFieldSchema> fields = byName(wellKnown(ProtoSchemaOptions.defaults()));
+        Map<String, TableFieldSchema> fields =
+                byName(wellKnownTypes(ProtoSchemaOptions.defaults()));
 
         assertThat(fields.get("w_duration").getType()).isEqualTo(TableFieldSchema.Type.INT64);
         assertThat(fields.get("w_duration").getFieldsList()).isEmpty();
@@ -585,7 +588,7 @@ class ProtoToTableSchemaConverterTest {
      */
     @Test
     void leavesAnyAsAStruct() {
-        TableFieldSchema any = byName(wellKnown(ProtoSchemaOptions.defaults())).get("w_any");
+        TableFieldSchema any = byName(wellKnownTypes(ProtoSchemaOptions.defaults())).get("w_any");
 
         assertThat(any.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
         assertThat(any.getFieldsList())
@@ -598,7 +601,7 @@ class ProtoToTableSchemaConverterTest {
 
     @Test
     void mapsRepeatedWellKnownTypesToRepeatedColumns() {
-        Map<String, TableFieldSchema> fields = byName(wellKnown(DERIVE_REQUIRED));
+        Map<String, TableFieldSchema> fields = byName(wellKnownTypes(DERIVE_REQUIRED));
 
         assertThat(fields.get("w_rep_int64").getType()).isEqualTo(TableFieldSchema.Type.INT64);
         assertThat(fields.get("w_rep_int64").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
@@ -616,7 +619,7 @@ class ProtoToTableSchemaConverterTest {
      */
     @Test
     void mapsWellKnownTypesInsideMapValues() {
-        Map<String, TableFieldSchema> fields = byName(wellKnown(DERIVE_REQUIRED));
+        Map<String, TableFieldSchema> fields = byName(wellKnownTypes(DERIVE_REQUIRED));
         Map<String, TableFieldSchema> intEntry = subFieldsByName(fields.get("w_map_int64"));
 
         assertThat(intEntry.get("value").getType()).isEqualTo(TableFieldSchema.Type.INT64);
@@ -628,7 +631,8 @@ class ProtoToTableSchemaConverterTest {
 
     @Test
     void recognisesWellKnownTypesBelowTheRootMessage() {
-        TableFieldSchema child = byName(wellKnown(ProtoSchemaOptions.defaults())).get("w_child");
+        TableFieldSchema child =
+                byName(wellKnownTypes(ProtoSchemaOptions.defaults())).get("w_child");
 
         assertThat(child.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
         assertThat(child.getFieldsList())
@@ -649,7 +653,7 @@ class ProtoToTableSchemaConverterTest {
     void aConfiguredJsonPathWinsOverWellKnownTypeRecognition() {
         Map<String, TableFieldSchema> fields =
                 byName(
-                        wellKnown(
+                        wellKnownTypes(
                                 ProtoSchemaOptions.builder()
                                         .jsonFieldPath("w_int64")
                                         .jsonFieldPath("w_ts")
@@ -668,7 +672,7 @@ class ProtoToTableSchemaConverterTest {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder().jsonFieldPath("w_nonexistent").build();
 
-        assertThatThrownBy(() -> wellKnown(options))
+        assertThatThrownBy(() -> wellKnownTypes(options))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("w_nonexistent");
     }
@@ -679,7 +683,7 @@ class ProtoToTableSchemaConverterTest {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder().jsonFieldPath("w_struct.fields").build();
 
-        assertThatThrownBy(() -> wellKnown(options))
+        assertThatThrownBy(() -> wellKnownTypes(options))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("w_struct.fields");
     }
@@ -693,14 +697,15 @@ class ProtoToTableSchemaConverterTest {
         assertThatThrownBy(
                         () ->
                                 ProtoToTableSchemaConverter.convert(
-                                        TestProtos.wellKnownEmpty(), ProtoSchemaOptions.defaults()))
+                                        TestProtos.emptyWellKnownType(),
+                                        ProtoSchemaOptions.defaults()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("google.protobuf.Empty")
                 .hasMessageContaining("w_empty");
     }
 
-    private static TableSchema wellKnown(ProtoSchemaOptions options) {
-        return ProtoToTableSchemaConverter.convert(TestProtos.wellKnown(), options);
+    private static TableSchema wellKnownTypes(ProtoSchemaOptions options) {
+        return ProtoToTableSchemaConverter.convert(TestProtos.wellKnownTypes(), options);
     }
 
     private static Descriptors.Descriptor annotated(boolean throughBytes) {

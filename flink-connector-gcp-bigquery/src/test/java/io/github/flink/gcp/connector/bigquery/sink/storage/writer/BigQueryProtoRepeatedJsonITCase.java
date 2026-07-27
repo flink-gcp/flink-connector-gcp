@@ -35,7 +35,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaO
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
-import io.github.flink.gcp.connector.bigquery.testproto.WellKnown;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * insert into an {@code ARRAY<JSON>} column — populated or empty alike, so it is the column type it
  * cannot handle and not the data — with {@code "Value has type JSON which cannot be inserted into
  * column w_rep_struct, which has type ARRAY<JSON>"}. Everything else is covered by {@link
- * BigQueryProtoWellKnownITCase} on the emulator.
+ * BigQueryProtoWellKnownTypesITCase} on the emulator.
  *
  * <p>{@code repeated google.protobuf.Struct} has no other representable shape — a {@code Struct} is
  * mutually recursive, so it cannot be expanded into a {@code STRUCT} — which is why this is worth a
@@ -64,7 +64,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * exist in a per-PR worktree, where this test therefore skips silently. Supply them explicitly
  * there; #156 is about making that skip visible rather than green.
  *
- * <p><b>Fold this into {@link BigQueryProtoWellKnownITCase} when the nightly real-GCP workflow
+ * <p><b>Fold this into {@link BigQueryProtoWellKnownTypesITCase} when the nightly real-GCP workflow
  * lands (#28, #16):</b> once that test's write half can run against the service it covers the
  * repeated columns too, and this class has no separate reason to exist.
  */
@@ -101,8 +101,8 @@ class BigQueryProtoRepeatedJsonITCase {
 
     @Test
     void writesRepeatedStructsIntoARepeatedJsonColumn() throws Exception {
-        ProtoMessageSerializer<WellKnown> serializer =
-                ProtoMessageSerializer.of(WellKnown.class, ProtoSchemaOptions.defaults());
+        ProtoMessageSerializer<WellKnownTypes> serializer =
+                ProtoMessageSerializer.of(WellKnownTypes.class, ProtoSchemaOptions.defaults());
         CLIENT.create(
                 TableInfo.newBuilder(
                                 TableId.of(PROJECT, DATASET, TABLE),
@@ -113,17 +113,17 @@ class BigQueryProtoRepeatedJsonITCase {
                                         .build())
                         .build());
 
-        BigQueryDefaultStreamSink<WellKnown> sink =
-                (BigQueryDefaultStreamSink<WellKnown>)
-                        BigQuerySink.<WellKnown>builder()
+        BigQueryDefaultStreamSink<WellKnownTypes> sink =
+                (BigQueryDefaultStreamSink<WellKnownTypes>)
+                        BigQuerySink.<WellKnownTypes>builder()
                                 .destination(TableDestination.of(PROJECT, DATASET, TABLE))
                                 .serializer(serializer)
                                 .build();
-        SinkWriter<WellKnown> writer =
+        SinkWriter<WellKnownTypes> writer =
                 sink.createWriter(new StreamWriterRowAppenderFactory(), new BigQueryTableAdmin());
         try {
             writer.write(
-                    WellKnown.newBuilder()
+                    WellKnownTypes.newBuilder()
                             .setWString(StringValue.of("populated"))
                             .addWRepStruct(
                                     Struct.newBuilder()
@@ -136,7 +136,8 @@ class BigQueryProtoRepeatedJsonITCase {
             // The empty case separately: an empty ARRAY<JSON> is what the emulator chokes on even
             // when nothing is written to it.
             writer.write(
-                    WellKnown.newBuilder().setWString(StringValue.of("empty")).build(), CONTEXT);
+                    WellKnownTypes.newBuilder().setWString(StringValue.of("empty")).build(),
+                    CONTEXT);
             writer.flush(true);
         } finally {
             writer.close();

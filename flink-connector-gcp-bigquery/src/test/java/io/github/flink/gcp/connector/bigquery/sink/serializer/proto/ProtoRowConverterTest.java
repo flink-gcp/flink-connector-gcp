@@ -43,8 +43,8 @@ import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.PresenceChild;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Child;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
-import io.github.flink.gcp.connector.bigquery.testproto.WellKnown;
-import io.github.flink.gcp.connector.bigquery.testproto.WellKnownChild;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypesChild;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -437,9 +437,9 @@ class ProtoRowConverterTest {
     @Test
     void unwrapsWrapperTypesToTheirScalarValues() throws Exception {
         DynamicMessage row =
-                wellKnownConverter(ProtoSchemaOptions.defaults())
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
                         .convert(
-                                WellKnown.newBuilder()
+                                WellKnownTypes.newBuilder()
                                         .setWInt32(Int32Value.of(-7))
                                         .setWUint32(UInt32Value.of(-1)) // 4294967295 unsigned
                                         .setWInt64(Int64Value.of(9L))
@@ -469,16 +469,16 @@ class ProtoRowConverterTest {
      */
     @Test
     void distinguishesAnUnsetWrapperFromOneExplicitlySetToZero() throws Exception {
-        ProtoRowConverter converter = wellKnownConverter(ProtoSchemaOptions.defaults());
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
 
-        DynamicMessage unset = converter.convert(WellKnown.newBuilder().build());
+        DynamicMessage unset = converter.convert(WellKnownTypes.newBuilder().build());
         assertThat(has(unset, "w_int64")).isFalse();
         assertThat(has(unset, "w_bool")).isFalse();
         assertThat(has(unset, "w_string")).isFalse();
 
         DynamicMessage zero =
                 converter.convert(
-                        WellKnown.newBuilder()
+                        WellKnownTypes.newBuilder()
                                 .setWInt64(Int64Value.of(0L))
                                 .setWBool(BoolValue.of(false))
                                 .setWString(StringValue.of(""))
@@ -492,9 +492,9 @@ class ProtoRowConverterTest {
     /** A wrapper inherits the range check of the scalar it wraps, from the very same code. */
     @Test
     void rejectsUnrepresentableUint64WrapperValues() throws Exception {
-        ProtoRowConverter converter = wellKnownConverter(ProtoSchemaOptions.defaults());
-        WellKnown source =
-                WellKnown.newBuilder().setWUint64(UInt64Value.of(Long.MIN_VALUE)).build();
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+        WellKnownTypes source =
+                WellKnownTypes.newBuilder().setWUint64(UInt64Value.of(Long.MIN_VALUE)).build();
 
         assertThatThrownBy(() -> converter.convert(source))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -509,9 +509,9 @@ class ProtoRowConverterTest {
     @Test
     void printsStructValueAndListValueAsJsonText() throws Exception {
         DynamicMessage row =
-                wellKnownConverter(ProtoSchemaOptions.defaults())
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
                         .convert(
-                                WellKnown.newBuilder()
+                                WellKnownTypes.newBuilder()
                                         .setWStruct(
                                                 Struct.newBuilder()
                                                         .putFields(
@@ -544,9 +544,9 @@ class ProtoRowConverterTest {
     @Test
     void printsANullKindValueAsJsonNull() throws Exception {
         DynamicMessage row =
-                wellKnownConverter(ProtoSchemaOptions.defaults())
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
                         .convert(
-                                WellKnown.newBuilder()
+                                WellKnownTypes.newBuilder()
                                         .setWValue(
                                                 Value.newBuilder()
                                                         .setNullValue(NullValue.NULL_VALUE)
@@ -559,7 +559,7 @@ class ProtoRowConverterTest {
 
     @Test
     void convertsDurationToMicroseconds() throws Exception {
-        ProtoRowConverter converter = wellKnownConverter(ProtoSchemaOptions.defaults());
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
 
         assertThat(durationMicros(converter, 1L, 500_000_000)).isEqualTo(1_500_000L);
         assertThat(durationMicros(converter, -1L, -500_000_000)).isEqualTo(-1_500_000L);
@@ -575,9 +575,9 @@ class ProtoRowConverterTest {
      */
     @Test
     void rejectsOutOfRangeDurations() throws Exception {
-        ProtoRowConverter converter = wellKnownConverter(ProtoSchemaOptions.defaults());
-        WellKnown source =
-                WellKnown.newBuilder()
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+        WellKnownTypes source =
+                WellKnownTypes.newBuilder()
                         .setWDuration(Duration.newBuilder().setSeconds(Long.MAX_VALUE))
                         .build();
 
@@ -590,11 +590,11 @@ class ProtoRowConverterTest {
     /** Paths verbatim, not lowerCamelCased as protobuf's canonical JSON form would render them. */
     @Test
     void joinsFieldMaskPathsWithCommas() throws Exception {
-        ProtoRowConverter converter = wellKnownConverter(ProtoSchemaOptions.defaults());
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
 
         DynamicMessage row =
                 converter.convert(
-                        WellKnown.newBuilder()
+                        WellKnownTypes.newBuilder()
                                 .setWMask(
                                         FieldMask.newBuilder()
                                                 .addPaths("user.display_name")
@@ -604,7 +604,9 @@ class ProtoRowConverterTest {
 
         DynamicMessage empty =
                 converter.convert(
-                        WellKnown.newBuilder().setWMask(FieldMask.getDefaultInstance()).build());
+                        WellKnownTypes.newBuilder()
+                                .setWMask(FieldMask.getDefaultInstance())
+                                .build());
         assertThat(has(empty, "w_mask")).isTrue();
         assertThat(get(empty, "w_mask")).isEqualTo("");
     }
@@ -612,9 +614,9 @@ class ProtoRowConverterTest {
     @Test
     void convertsWellKnownTypesInsideRepeatedAndMapFields() throws Exception {
         DynamicMessage row =
-                wellKnownConverter(ProtoSchemaOptions.defaults())
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
                         .convert(
-                                WellKnown.newBuilder()
+                                WellKnownTypes.newBuilder()
                                         .addWRepInt64(Int64Value.of(1L))
                                         .addWRepInt64(Int64Value.of(2L))
                                         .addWRepDuration(Duration.newBuilder().setSeconds(3L))
@@ -648,9 +650,9 @@ class ProtoRowConverterTest {
     @Test
     void convertsWellKnownTypesFromAnIndependentDescriptorPool() throws Exception {
         Descriptors.Descriptor source =
-                rebuild(TestProtos.wellKnown().getFile(), new HashMap<>())
-                        .findMessageTypeByName("WellKnown");
-        assertThat(source).isNotSameAs(TestProtos.wellKnown());
+                rebuild(TestProtos.wellKnownTypes().getFile(), new HashMap<>())
+                        .findMessageTypeByName("WellKnownTypes");
+        assertThat(source).isNotSameAs(TestProtos.wellKnownTypes());
         assertThat(source.findFieldByName("w_duration").getMessageType())
                 .isNotSameAs(Duration.getDescriptor());
 
@@ -693,9 +695,9 @@ class ProtoRowConverterTest {
     @Test
     void writesAnyAsAStruct() throws Exception {
         DynamicMessage row =
-                wellKnownConverter(ProtoSchemaOptions.defaults())
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
                         .convert(
-                                WellKnown.newBuilder()
+                                WellKnownTypes.newBuilder()
                                         .setWAny(
                                                 Any.newBuilder()
                                                         .setTypeUrl("type.googleapis.com/x.Y")
@@ -715,14 +717,15 @@ class ProtoRowConverterTest {
     @Test
     void failsPerRecordOnAJsonMappedAnyRatherThanUnpackingIt() throws Exception {
         ProtoRowConverter converter =
-                wellKnownConverter(ProtoSchemaOptions.builder().jsonFieldPath("w_any").build());
+                wellKnownTypesConverter(
+                        ProtoSchemaOptions.builder().jsonFieldPath("w_any").build());
 
         // An unset Any is skipped, so it is a populated one the printer cannot resolve.
-        assertThat(has(converter.convert(WellKnown.newBuilder().build()), "w_any")).isFalse();
+        assertThat(has(converter.convert(WellKnownTypes.newBuilder().build()), "w_any")).isFalse();
         assertThatThrownBy(
                         () ->
                                 converter.convert(
-                                        WellKnown.newBuilder()
+                                        WellKnownTypes.newBuilder()
                                                 .setWAny(
                                                         Any.newBuilder()
                                                                 .setTypeUrl(
@@ -735,11 +738,11 @@ class ProtoRowConverterTest {
     @Test
     void convertsWellKnownTypesBelowTheRootMessage() throws Exception {
         DynamicMessage row =
-                wellKnownConverter(ProtoSchemaOptions.defaults())
+                wellKnownTypesConverter(ProtoSchemaOptions.defaults())
                         .convert(
-                                WellKnown.newBuilder()
+                                WellKnownTypes.newBuilder()
                                         .setWChild(
-                                                WellKnownChild.newBuilder()
+                                                WellKnownTypesChild.newBuilder()
                                                         .setCString(StringValue.of("deep"))
                                                         .setCDuration(
                                                                 Duration.newBuilder()
@@ -755,16 +758,17 @@ class ProtoRowConverterTest {
     @Test
     void printsAJsonMappedWrapperRatherThanUnwrappingIt() throws Exception {
         DynamicMessage row =
-                wellKnownConverter(ProtoSchemaOptions.builder().jsonFieldPath("w_int64").build())
-                        .convert(WellKnown.newBuilder().setWInt64(Int64Value.of(5L)).build());
+                wellKnownTypesConverter(
+                                ProtoSchemaOptions.builder().jsonFieldPath("w_int64").build())
+                        .convert(WellKnownTypes.newBuilder().setWInt64(Int64Value.of(5L)).build());
 
         // Canonical protobuf JSON renders an int64 as a quoted string.
         assertThat(get(row, "w_int64")).isEqualTo("\"5\"");
     }
 
-    private static ProtoRowConverter wellKnownConverter(ProtoSchemaOptions options)
+    private static ProtoRowConverter wellKnownTypesConverter(ProtoSchemaOptions options)
             throws Exception {
-        return converter(TestProtos.wellKnown(), options);
+        return converter(TestProtos.wellKnownTypes(), options);
     }
 
     private static long durationMicros(ProtoRowConverter converter, long seconds, int nanos)
@@ -772,7 +776,7 @@ class ProtoRowConverterTest {
         return (Long)
                 get(
                         converter.convert(
-                                WellKnown.newBuilder()
+                                WellKnownTypes.newBuilder()
                                         .setWDuration(
                                                 Duration.newBuilder()
                                                         .setSeconds(seconds)

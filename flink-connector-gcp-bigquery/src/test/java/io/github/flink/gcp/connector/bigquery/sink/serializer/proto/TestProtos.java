@@ -22,12 +22,12 @@ import com.google.protobuf.GeneratedMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.UnknownFieldSet;
 import io.github.flink.gcp.connector.bigquery.testproto.AllTypes;
+import io.github.flink.gcp.connector.bigquery.testproto.EmptyWellKnownType;
 import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
-import io.github.flink.gcp.connector.bigquery.testproto.Proto2WellKnown;
+import io.github.flink.gcp.connector.bigquery.testproto.Proto2WellKnownTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.Recursive;
-import io.github.flink.gcp.connector.bigquery.testproto.WellKnown;
-import io.github.flink.gcp.connector.bigquery.testproto.WellKnownEmpty;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -111,16 +111,16 @@ final class TestProtos {
      * Every well-known type the converters recognise, plus {@code Any}, which they deliberately do
      * not. From {@code src/test/protobuf/wellknown.proto}.
      */
-    static Descriptors.Descriptor wellKnown() {
-        return WellKnown.getDescriptor();
+    static Descriptors.Descriptor wellKnownTypes() {
+        return WellKnownTypes.getDescriptor();
     }
 
     /**
      * A {@code google.protobuf.Empty} field: a message with no fields, and so a {@code STRUCT} with
      * no columns, which BigQuery cannot represent.
      */
-    static Descriptors.Descriptor wellKnownEmpty() {
-        return WellKnownEmpty.getDescriptor();
+    static Descriptors.Descriptor emptyWellKnownType() {
+        return EmptyWellKnownType.getDescriptor();
     }
 
     /**
@@ -128,8 +128,8 @@ final class TestProtos {
      * "a well-known type column is always NULLABLE". From {@code
      * src/test/protobuf/wellknown2.proto}.
      */
-    static Descriptors.Descriptor proto2WellKnown() {
-        return Proto2WellKnown.getDescriptor();
+    static Descriptors.Descriptor proto2WellKnownTypes() {
+        return Proto2WellKnownTypes.getDescriptor();
     }
 
     /**

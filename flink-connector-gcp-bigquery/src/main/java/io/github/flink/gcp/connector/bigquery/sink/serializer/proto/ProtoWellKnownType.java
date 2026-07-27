@@ -43,6 +43,15 @@ import java.util.Map;
  * ProtoRowConverter}, so schema derivation and value conversion cannot disagree about what a field
  * means — and adding a constant here forces a compile-visible decision in both.
  *
+ * <p><em>Well-known types</em> is protobuf's own term, not one coined here: it names the messages
+ * shipped in {@code google/protobuf/*.proto} and documented under <a
+ * href="https://protobuf.dev/reference/protobuf/google.protobuf/">Protocol Buffers Well-Known
+ * Types</a>. The grouping below follows that reference too — wrappers, the temporal pair ({@code
+ * Timestamp}, {@code Duration}) and the structural trio ({@code Struct}, {@code ListValue}, {@code
+ * Value}) are Google's categories, so a reader who knows protobuf already knows what this enum
+ * partitions. Names are taken from the vendor wherever the vendor has one, as {@code sink.storage}
+ * is spelled after {@code com.google.cloud.bigquery.storage.v1}.
+ *
  * <p>A classification by <em>behaviour</em> rather than by type: the nine wrapper types share one
  * constant because everything either converter needs about a wrapper — its BigQuery column type,
  * its value conversion — is derived from the wrapper's {@code value} sub-field by the very code

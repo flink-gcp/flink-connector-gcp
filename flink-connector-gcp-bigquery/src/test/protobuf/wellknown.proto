@@ -27,13 +27,20 @@ import "google/protobuf/wrappers.proto";
 option java_package = "io.github.flink.gcp.connector.bigquery.testproto";
 option java_multiple_files = true;
 // Named explicitly for the reason test.proto records: the outer class otherwise
-// takes the file name, and `WellKnown` beside `Wellknown` in one package is a
+// takes the file name, and `WellKnownTypes` beside `Wellknown` in one package is a
 // trap rather than a compile error.
-option java_outer_classname = "WellKnownSchemas";
+option java_outer_classname = "WellKnownTypeSchemas";
 
 // Every well-known type the converters recognise, plus the one they deliberately
 // do not.
-message WellKnown {
+//
+// "Well-known types" is protobuf's own term for the messages in
+// google/protobuf/*.proto — see
+// https://protobuf.dev/reference/protobuf/google.protobuf/ — so this message is
+// named after the vendor's vocabulary, not after anything invented here. It is a
+// noun phrase for the same reason AllTypes in test.proto is: the message is not
+// itself well-known, it *contains* every well-known type.
+message WellKnownTypes {
   // The nine wrappers. Each is a message field, so presence is real and the
   // column stays NULLABLE — which is the whole reason a wrapper exists rather
   // than a bare scalar.
@@ -77,21 +84,21 @@ message WellKnown {
   map<string, google.protobuf.Struct> w_map_struct = 21;
 
   // One level down, to pin that recognition is not a top-level-only rule.
-  WellKnownChild w_child = 22;
+  WellKnownTypesChild w_child = 22;
 }
 
 // The singular well-known types on their own.
 //
 // Their own message because the BigQuery emulator (goccy 0.8.1) cannot insert
 // into a table that has an ARRAY<JSON> column at all — not even leaving it
-// empty — so an emulator write test cannot use `WellKnown` above. The repeated
+// empty — so an emulator write test cannot use `WellKnownTypes` above. The repeated
 // half is verified against real BigQuery instead.
 //
 // REMOVE THIS MESSAGE once the nightly real-GCP workflow lands (#28, #16): the
-// write test can then run against `WellKnown` on the service, and this fixture
+// write test can then run against `WellKnownTypes` on the service, and this fixture
 // exists only to work around the emulator. It duplicates nothing else, so
-// deleting it and repointing BigQueryProtoWellKnownITCase is the whole job.
-message WellKnownSingular {
+// deleting it and repointing BigQueryProtoWellKnownTypesITCase is the whole job.
+message SingularWellKnownTypes {
   google.protobuf.Int64Value s_int64 = 1;
   google.protobuf.BoolValue s_bool = 2;
   google.protobuf.StringValue s_string = 3;
@@ -103,7 +110,7 @@ message WellKnownSingular {
   google.protobuf.Any s_any = 9;
 }
 
-message WellKnownChild {
+message WellKnownTypesChild {
   google.protobuf.StringValue c_string = 1;
   google.protobuf.Duration c_duration = 2;
 }
@@ -111,6 +118,6 @@ message WellKnownChild {
 // google.protobuf.Empty has no fields, so expanding it yields a STRUCT with no
 // columns — which the BigQuery client library rejects before a request is even
 // sent. Kept in its own message so the rest of the fixture stays usable.
-message WellKnownEmpty {
+message EmptyWellKnownType {
   google.protobuf.Empty w_empty = 1;
 }
