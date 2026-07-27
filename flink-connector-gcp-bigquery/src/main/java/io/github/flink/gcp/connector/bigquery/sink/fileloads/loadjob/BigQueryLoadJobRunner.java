@@ -102,12 +102,6 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         if (!spec.getSchemaUpdateOptions().isEmpty()) {
             load.setSchemaUpdateOptions(spec.getSchemaUpdateOptions());
         }
-        if (spec.getTimePartitioning() != null) {
-            load.setTimePartitioning(spec.getTimePartitioning());
-        }
-        if (spec.getClustering() != null) {
-            load.setClustering(spec.getClustering());
-        }
         submitOrAttach(jobId, load.build(), spec.toString());
     }
 

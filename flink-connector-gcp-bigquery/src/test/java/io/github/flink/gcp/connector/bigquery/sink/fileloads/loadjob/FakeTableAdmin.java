@@ -32,7 +32,9 @@ public final class FakeTableAdmin implements TableAdmin {
 
     public final Map<TableDestination, TableSchema> tables = new HashMap<>();
     public final List<TableDestination> created = new ArrayList<>();
+    public final Map<TableDestination, TableCreateOptions> createOptions = new HashMap<>();
     public final List<TableDestination> schemaUpdates = new ArrayList<>();
+    public int schemaReads;
     public int updateRacesToLose;
 
     @Override
@@ -40,10 +42,12 @@ public final class FakeTableAdmin implements TableAdmin {
             TableDestination destination, TableSchema schema, TableCreateOptions options) {
         tables.putIfAbsent(destination, schema);
         created.add(destination);
+        createOptions.put(destination, options);
     }
 
     @Override
     public TableSchemaSnapshot getSchema(TableDestination destination) {
+        schemaReads++;
         TableSchema schema = tables.get(destination);
         return schema == null ? null : TableSchemaSnapshot.of(schema, null);
     }
