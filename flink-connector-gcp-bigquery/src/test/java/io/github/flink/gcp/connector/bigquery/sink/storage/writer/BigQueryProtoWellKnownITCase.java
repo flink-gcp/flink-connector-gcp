@@ -71,6 +71,11 @@ import static org.assertj.core.api.Assertions.tuple;
  * schema half still uses the full matrix; writing into one is verified against real BigQuery by
  * {@link BigQueryProtoRepeatedJsonITCase}.
  *
+ * <p><b>Revisit when the nightly real-GCP workflow lands (#28, #16):</b> the write half should then
+ * run against the full {@code WellKnown} fixture on the service, and {@code WellKnownSingular} —
+ * which exists for no reason but this emulator limitation — can be deleted along with {@link
+ * BigQueryProtoRepeatedJsonITCase}, whose coverage it would subsume.
+ *
  * <p>Only one flush happens per table, for the emulator reason recorded on {@link
  * BigQueryDefaultStreamWriterITCase}: on a connection opened after an earlier one has closed, only
  * the first {@code AppendRows} request is durably applied.

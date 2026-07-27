@@ -59,8 +59,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * mutually recursive, so it cannot be expanded into a {@code STRUCT} — which is why this is worth a
  * test against the service rather than a documented assumption.
  *
- * <p>Skipped unless {@code BQ_IT_PROJECT} and {@code BQ_IT_DATASET} are set. The destination table
- * is created up front and deleted afterwards.
+ * <p>Skipped unless {@code BQ_IT_PROJECT} and {@code BQ_IT_DATASET} are set. Note those come from
+ * {@code .env} via {@code mise.toml}, and {@code .env} is gitignored — so it does <em>not</em>
+ * exist in a per-PR worktree, where this test therefore skips silently. Supply them explicitly
+ * there; #156 is about making that skip visible rather than green.
+ *
+ * <p><b>Fold this into {@link BigQueryProtoWellKnownITCase} when the nightly real-GCP workflow
+ * lands (#28, #16):</b> once that test's write half can run against the service it covers the
+ * repeated columns too, and this class has no separate reason to exist.
  */
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")

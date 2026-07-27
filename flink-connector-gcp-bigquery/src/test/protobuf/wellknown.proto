@@ -86,6 +86,11 @@ message WellKnown {
 // into a table that has an ARRAY<JSON> column at all — not even leaving it
 // empty — so an emulator write test cannot use `WellKnown` above. The repeated
 // half is verified against real BigQuery instead.
+//
+// REMOVE THIS MESSAGE once the nightly real-GCP workflow lands (#28, #16): the
+// write test can then run against `WellKnown` on the service, and this fixture
+// exists only to work around the emulator. It duplicates nothing else, so
+// deleting it and repointing BigQueryProtoWellKnownITCase is the whole job.
 message WellKnownSingular {
   google.protobuf.Int64Value s_int64 = 1;
   google.protobuf.BoolValue s_bool = 2;
