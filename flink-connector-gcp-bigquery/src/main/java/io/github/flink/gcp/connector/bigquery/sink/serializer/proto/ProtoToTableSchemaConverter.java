@@ -141,14 +141,14 @@ public final class ProtoToTableSchemaConverter {
         // file-dependency graph for every configured option, and it decides the mode as well as
         // the type.
         //
-        // Struct/Value/ListValue join it here rather than in convertMessageField below, and that
-        // placement does three things with no second branch: modeOf's "a singular JSON column is
-        // never REQUIRED" rule covers them as written; the recursion guard is never reached, which
-        // is the whole point, since they are mutually recursive; and an explicitly configured JSON
-        // marking keeps winning over every well-known-type mapping, because this branch returns
-        // before the switch below ever asks what the message type is.
-        boolean jsonColumn =
-                options.isJsonField(field, path) || ProtoWellKnownType.of(field).isJsonMapped();
+        // Struct/Value/ListValue join it here, and that placement does three things with no second
+        // branch: modeOf's "a singular JSON column is never REQUIRED" rule covers them as written;
+        // the recursion guard is never reached, which is the whole point, since they are mutually
+        // recursive; and an explicitly configured JSON marking keeps winning over every
+        // well-known-type mapping, because this branch returns before the switch below ever asks
+        // what the message type is.
+        ProtoWellKnownType wellKnown = ProtoWellKnownType.of(field);
+        boolean jsonColumn = options.isJsonField(field, path) || wellKnown.isJsonMapped();
         TableFieldSchema.Builder builder =
                 TableFieldSchema.newBuilder()
                         .setName(field.getName())
@@ -165,8 +165,31 @@ public final class ProtoToTableSchemaConverter {
             return builder.setType(TableFieldSchema.Type.JSON).build();
         }
 
+        // The well-known types that become one flat column are settled here rather than inside
+        // message expansion, so the classification is consulted once and every branch that
+        // consumes it sits within a few lines of it. Reaching expansion at all therefore means an
+        // ordinary message: no case for JSON is possible below, because the branch above already
+        // returned for it.
+        switch (wellKnown) {
+            case TIMESTAMP:
+                return builder.setType(TableFieldSchema.Type.TIMESTAMP).build();
+            case DURATION:
+                return builder.setType(TableFieldSchema.Type.INT64).build();
+            case FIELD_MASK:
+                return builder.setType(TableFieldSchema.Type.STRING).build();
+            case WRAPPER:
+                // The wrapped scalar decides the column type, through the same function a bare
+                // scalar of that type goes through, so the two cannot drift.
+                return builder.setType(
+                                scalarType(field.getMessageType().findFieldByName("value"), path))
+                        .build();
+            case NONE:
+            default:
+                break;
+        }
+
         if (field.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE) {
-            convertMessageField(field, path, options, ancestors, matchedJsonPaths, builder);
+            expandMessageField(field, path, options, ancestors, matchedJsonPaths, builder);
         } else {
             builder.setType(scalarType(field, path));
         }
@@ -241,7 +264,16 @@ public final class ProtoToTableSchemaConverter {
                 : TableFieldSchema.Mode.NULLABLE;
     }
 
-    private static void convertMessageField(
+    /**
+     * Expands an ordinary message field into a {@code STRUCT}, recursively.
+     *
+     * <p>Only ever reached for a message that is <em>not</em> a recognised well-known type: {@link
+     * #convertField} settles those before calling this, so none of the guards below can fire on
+     * one. That ordering is deliberate — a well-known type is never expanded, so it can neither
+     * recurse nor collide by case, and checking here instead would reject a message carrying two
+     * {@code Timestamp}s on one path.
+     */
+    private static void expandMessageField(
             Descriptors.FieldDescriptor field,
             String path,
             ProtoSchemaOptions options,
@@ -249,34 +281,6 @@ public final class ProtoToTableSchemaConverter {
             Set<String> matchedJsonPaths,
             TableFieldSchema.Builder builder) {
         Descriptors.Descriptor messageType = field.getMessageType();
-        // Before the recursion guard on purpose, and not to be moved below it: a recognised
-        // well-known type is never expanded, so it can neither recurse nor collide by case, while
-        // moving this down would reject a message carrying two Timestamps on one path.
-        switch (ProtoWellKnownType.of(field)) {
-            case TIMESTAMP:
-                builder.setType(TableFieldSchema.Type.TIMESTAMP);
-                return;
-            case DURATION:
-                builder.setType(TableFieldSchema.Type.INT64);
-                return;
-            case FIELD_MASK:
-                builder.setType(TableFieldSchema.Type.STRING);
-                return;
-            case WRAPPER:
-                // The wrapped scalar decides the column type, through the same function a bare
-                // scalar of that type goes through, so the two cannot drift.
-                builder.setType(scalarType(messageType.findFieldByName("value"), path));
-                return;
-            case JSON:
-                throw new IllegalStateException(
-                        "Struct, Value and ListValue are mapped to JSON in convertField and must"
-                                + " never reach message expansion, but "
-                                + path
-                                + " did");
-            case NONE:
-            default:
-                break;
-        }
         // A sibling of the recursion rejection below, and stated about columns rather than about
         // google.protobuf.Empty, because any zero-field message reaches it. Measured: the BigQuery
         // client library rejects such a column itself ("The RECORD field must have at least one

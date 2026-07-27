@@ -189,13 +189,9 @@ public final class ProtoRowConverter {
                 Descriptors.FieldDescriptor valueField = messageType.findFieldByName("value");
                 return FieldPlan.wrapper(
                         sourceField, targetField, path, scalarKind(valueField, path), valueField);
-            case JSON:
-                throw new IllegalStateException(
-                        "Struct, Value and ListValue are handled by the JSON branch above, but "
-                                + path
-                                + " reached message planning");
             case NONE:
             default:
+                // JSON cannot arrive here: the branch above returns for it, in this same method.
                 return FieldPlan.struct(
                         sourceField,
                         targetField,
