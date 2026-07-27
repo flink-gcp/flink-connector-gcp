@@ -112,12 +112,13 @@ class PubSubSqlConnectorPackagingITCase {
     /**
      * Every artifact on the runtime classpath actually contributed its classes to the jar.
      *
-     * <p>The counterpart to {@code BundledDependenciesNoticeTest}, and the reason that one is not
-     * enough: the NOTICE diff compares the dependency <em>tree</em> against a text file, and an
-     * artifact left out of {@code artifactSet/includes} is missing from neither — only from the
-     * jar. Dropping {@code io.grpc:grpc-xds} from that list removes 4143 classes while leaving
-     * every other assertion here green, because they all check that nothing extra is present, not
-     * that anything in particular is.
+     * <p>With {@code artifactSet} at {@code *:*} the bundle tracks the runtime classpath by
+     * construction, so this is a guard against regression rather than against routine drift: a
+     * reintroduced include list, or a shade filter broad enough to swallow an artifact whole, fails
+     * here with the artifact's name. When it was an enumerated list, dropping {@code
+     * io.grpc:grpc-xds} removed 4143 classes while every other assertion stayed green — they all
+     * check that nothing extra is present, not that anything in particular is — which is why this
+     * test exists and why the list does not.
      *
      * <p>Checked by sampling one class per artifact and looking for it at its relocated name, or at
      * its original name when its package is on the allow-list above.

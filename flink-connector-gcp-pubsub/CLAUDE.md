@@ -217,10 +217,15 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `compile` scope — which silently cut the jar down to guava plus a few annotation jars.
   `maven-dependency-plugin:analyze` is absent for the same reason: the scoping it would demand is
   the scoping that breaks the bundle, so the test harness uses classes that arrive transitively and
-  declares none of them. **The enumerated `artifactSet/includes` does not make a new transitive fail
-  the build**, contrary to what #138 assumed — an unlisted one is dropped, not flagged.
-  `BundledDependenciesNoticeTest` is what fails, by diffing the NOTICE against the recorded runtime
-  tree both ways. **`ApacheNoticeResourceTransformer` needs `organizationName` and `inceptionYear`,
+  declares none of them. **`artifactSet` is `*:*`, and the enumerated include list it replaced should not come back.**
+  The list's justifications each died when measured: an unlisted new transitive does *not* fail the
+  build, contrary to what #138 assumed — it is silently dropped from the jar, the worst available
+  outcome — and "readable beside the NOTICE" ended when the NOTICE became generated. With the
+  wildcard a new dependency is bundled automatically; what remains human is relocating a genuinely
+  new package root (a real decision — conscrypt must *not* be, and commons-lang3 under
+  `org.apache.commons` would arrive unrelocated because only `commons.codec` is mapped, measured),
+  and the packaging tests fail with the artifact's name until it is made.
+  `BundledDependenciesNoticeTest` diffs the NOTICE against the recorded runtime tree both ways. **`ApacheNoticeResourceTransformer` needs `organizationName` and `inceptionYear`,
   not just `projectName`**, or the aggregated NOTICE still reads "Copyright 2006-2026 The Apache
   Software Foundation". Relatedly, the root pom now sets `<organization>`: without it the ASF
   parent's remote-resources bundle stamped that same claim into *every* module jar this project
@@ -239,9 +244,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   often HTML pages or bare templates, and the script rejects HTML outright). A fetch that stops
   hashing to its pin fails: upstream changed, a human reviews. This replaced an earlier state
   where five texts had been curl'd from repository heads chosen by hand — wrong provenance, and
-  the reason the pin exists. **Curating a new entry is judgment, not scripting**: check the jar
-  first, then find the publisher's own text at the bundled version, and record the reasoning in
-  the entry's note. Measured before any of this was built: the plugin's classification matched
+  the reason the pin exists. **Curating a new entry follows a fixed fallback ladder** (also printed by the failure
+  message): (1) a licence file inside the artifact's own jar; (2) the publisher's repository at
+  the tag matching the bundled version; (3) the publisher's repository head only when it is
+  frozen (archived) or no version tag exists, with the reason in the note; and there is no rung
+  4 — a generic template is not the project's text, since the copyright line is part of a BSD or
+  MIT licence, so an artifact with no pinnable publisher text is a reason to question the
+  dependency, not to substitute one. The curation itself is judgment; everything after the pin
+  is mechanical. Measured before any of this was built: the plugin's classification matched
   the hand grouping on **all 52 artifacts**, including the two that inherit `<licenses>` from a
   parent pom (guava, animal-sniffer), the dual-licensed `javax.annotation-api`, and re2j's
   non-SPDX "Go License". `licenseMerges` in the root pom's `pluginManagement` is what makes the

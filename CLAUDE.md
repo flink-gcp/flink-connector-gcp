@@ -233,6 +233,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   google/flink-connector-gcp, java-bigquerystorage, apache/flink-connector-gcp-pubsub):
   record the provenance in the module README and the repository `NOTICE`, and keep original
   headers where applicable. Keep each module README's "no code copied" claim accurate
+- **This project is Apache-2.0 with no usage restrictions, and its dependencies must be too.**
+  A library under a restrictive licence — the GPL family, or the newer source-available and
+  non-commercial ones (SSPL, BUSL, Commons Clause, …) — is normally rejected outright rather than
+  recorded in a NOTICE; adoption of one would be a project discussion, not a licensing entry.
+  `scripts/check-notice.py` enforces this for the shaded modules (decided with the user on #138;
+  the one standing exemption is `javax.annotation-api`, dual-licensed and taken under CDDL with
+  the classpath exception)
 - Never open or reference the private in-house implementation this project supersedes; design
   references must be public OSS or official documentation only
 

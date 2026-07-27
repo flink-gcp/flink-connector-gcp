@@ -73,6 +73,25 @@ PLACEHOLDER = re.compile(r"^\{\{(?P<group>.+)\}\}$")
 # Every group except this one must carry licence texts in META-INF/licenses/.
 TEXT_EXEMPT_GROUP = "Apache-2.0"
 
+# This project is Apache-2.0 with no usage restrictions of its own, so a
+# dependency under a restrictive licence — the GPL family, or the newer
+# source-available and non-commercial ones — is normally not adopted at all
+# rather than recorded in a NOTICE. This gate exists to force that discussion,
+# not to encode its outcome: it fails before anyone can write a template
+# paragraph, and the message says to decide adoption first. Matched against the
+# resolved licence names (post-merge). A licence name this misses is still
+# caught structurally — no template paragraph, hard failure — this is the
+# sharper message for the families known to be a problem. The one exemption is
+# dual-licensed *with the classpath exception*, taken under CDDL: the
+# combination deliberately in the bundle today.
+RESTRICTED = re.compile(
+    r"\b(GPL|AGPL|LGPL|SSPL|BUSL|RSAL)\b"
+    r"|Business Source|Commons Clause|Elastic License|Server Side Public"
+    r"|Non-?Commercial",
+    re.IGNORECASE,
+)
+RESTRICTED_EXEMPT = {"CDDL + GPLv2 with classpath exception"}
+
 
 def fail(message: str) -> "sys.NoReturn":
     print(message, file=sys.stderr)
@@ -150,10 +169,17 @@ def render_notice(
             elif owner is None:
                 fail(
                     f"{gav} is bundled under '{group}', which requires its licence "
-                    f"text in META-INF/licenses/ — but no entry in {SOURCES} covers "
-                    f"{ga}. Curate one: prefer a licence file inside the artifact's "
-                    f"own jar; otherwise pin a URL whose ref matches the bundled "
-                    f"version and record why it is the right one."
+                    f"text in META-INF/licenses/ — no entry in {SOURCES} covers "
+                    f"{ga}. Curate one, in this order:\n"
+                    f"  1. a licence file inside the artifact's own jar (jar:)\n"
+                    f"  2. the publisher's repository at the tag matching the "
+                    f"bundled version\n"
+                    f"  3. the publisher's repository head, only if it is frozen "
+                    f"(archived) or no version tag exists — record why in the note\n"
+                    f"  4. there is no rung 4. A generic template is not this "
+                    f"project's text (the copyright line is part of a BSD or MIT "
+                    f"licence), so if no publisher-provided text can be pinned, "
+                    f"question the dependency itself rather than substitute one."
                 )
             else:
                 lines.append(f"- {gav} (META-INF/licenses/{owner})")
@@ -246,6 +272,15 @@ def main() -> int:
         fail(f"{template} does not exist.")
 
     resolved = read_resolved(module)
+    for licence in sorted(set(resolved.values()) - RESTRICTED_EXEMPT):
+        if RESTRICTED.search(licence):
+            offenders = sorted(g for g, lic in resolved.items() if lic == licence)
+            fail(
+                f"'{licence}' resolved for {offenders}. This project is Apache-2.0 "
+                f"with no usage restrictions, so a restrictively-licensed dependency "
+                f"is normally rejected outright rather than recorded — discuss "
+                f"adoption first, and only then teach this script about it."
+            )
     files = load_sources()
     # Only the entries whose artifacts this module actually bundles.
     bundled_ga = {gav.rsplit(":", 1)[0] for gav in resolved}

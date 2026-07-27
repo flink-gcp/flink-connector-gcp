@@ -550,7 +550,6 @@ The uber-jar is covered separately, in `flink-sql-connector-gcp-pubsub`.
   the *stock*, unrelocated admin client, so the two coexisting on one classpath is itself part of
   what is asserted.
 - `BundledDependenciesNoticeTest` diffs `META-INF/NOTICE` against the runtime dependency tree
-  recorded during the build, in both directions. The shade configuration's enumerated
-  `artifactSet` does not catch a new transitive — an unlisted one is silently dropped from the jar
-  and surfaces as a `NoClassDefFoundError` much later — so this is what makes a `libraries-bom`
-  bump fail the build instead.
+  recorded during the build, in both directions. The `artifactSet` is `*:*`, so a new transitive is
+  bundled automatically; this test is what makes it fail the build until the NOTICE is regenerated
+  to record it.

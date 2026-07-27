@@ -35,12 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Keeps {@code META-INF/NOTICE} honest: it must list every artifact the uber-jar bundles, and
  * nothing it does not.
  *
- * <p>This is the check that makes a {@code libraries-bom} bump fail the build. The shade
- * configuration's enumerated {@code artifactSet/includes} does not, despite being the obvious place
- * to look: an artifact that appears in the dependency tree but not in that list is silently
- * <em>dropped</em> from the jar, and surfaces much later as a {@code NoClassDefFoundError} in
- * somebody's job. Both failure directions — an undeclared bundled dependency and a stale NOTICE
- * entry for something no longer bundled — are caught here instead.
+ * <p>This is the check that makes a {@code libraries-bom} bump fail the build: {@code artifactSet}
+ * is {@code *:*}, so a new transitive is bundled automatically and the only thing that can go
+ * unrecorded is the paperwork. Both failure directions — an undeclared bundled dependency and a
+ * stale NOTICE entry for something no longer bundled — are caught here.
  *
  * <p>Reads the dependency list {@code maven-dependency-plugin} records at {@code
  * generate-test-resources}, so it describes this build rather than a remembered one.
