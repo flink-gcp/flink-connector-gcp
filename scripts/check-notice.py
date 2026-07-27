@@ -55,7 +55,7 @@ LICENCE_GROUPS = {
     "Apache-2.0": "Apache Software License 2.0",
     "BSD-3-Clause": "BSD 3-Clause",
     "Go License": "Go License",
-    "MIT license": "MIT License",
+    "MIT": "MIT License",
     "CDDL + GPLv2 with classpath exception": "CDDL 1.0",
 }
 
@@ -64,8 +64,19 @@ THIRD_PARTY_LINE = re.compile(
     r"^\s+\((?P<licence>.+?)\)\s+.*\((?P<ga>[\w.\-]+:[\w.\-]+):(?P<version>[\w.+\-]+)\s"
 )
 
+# The report's own header: `Lists of 52 third-party dependencies.` Compared against
+# the number of lines actually parsed, because a *partial* parse is the dangerous
+# one — an artifact the regex cannot read is simply absent, and nothing then
+# demands the NOTICE mention it. That is exactly the new-dependency case this
+# script exists to catch, and it is the direction that would otherwise be silent
+# (an artifact in the NOTICE but not parsed is loud already). A classifier in the
+# coordinates is one real way to trip it.
+THIRD_PARTY_COUNT = re.compile(r"^Lists of (?P<count>\d+) third-party dependencies")
+
 NOTICE_HEADING = "This project bundles"
 NOTICE_BULLET = "- "
+# Marks a paragraph that promises a licence file for each of its entries.
+NOTICE_PROMISES_FILES = "See bundled license files"
 
 
 def read_resolved(module: Path) -> dict[str, str]:
@@ -77,39 +88,76 @@ def read_resolved(module: Path) -> dict[str, str]:
             f"regenerates it before calling this script."
         )
     resolved = {}
+    declared = None
     for line in report.read_text(encoding="utf-8").splitlines():
+        header = THIRD_PARTY_COUNT.match(line)
+        if header:
+            declared = int(header["count"])
         match = THIRD_PARTY_LINE.match(line)
         if match:
             gav = f"{match['ga']}:{match['version']}"
             resolved[gav] = match["licence"]
-    if not resolved:
-        sys.exit(f"Parsed no artifacts out of {report}; its format has changed.")
+    if declared is None:
+        sys.exit(f"Found no dependency count in {report}; its format has changed.")
+    if declared != len(resolved):
+        sys.exit(
+            f"{report} says {declared} dependencies but {len(resolved)} could be "
+            f"parsed. Every unparsed one is an artifact nothing would require "
+            f"META-INF/NOTICE to list, so this is a hard failure rather than a "
+            f"partial check. Widen THIRD_PARTY_LINE in {Path(__file__).name}."
+        )
     return resolved
 
 
-def read_notice(notice: Path) -> tuple[dict[str, str], dict[str, str]]:
-    """Return ({gav -> licence}, {gav -> licence file}) from a hand-written NOTICE."""
-    listed: dict[str, str] = {}
-    pointers: dict[str, str] = {}
+class Notice:
+    """What a hand-written META-INF/NOTICE claims."""
+
+    def __init__(self) -> None:
+        self.listed: dict[str, str] = {}  # gav -> licence group
+        self.pointers: dict[str, str] = {}  # gav -> licence file path, as written
+        self.duplicates: list[str] = []  # gav listed by more than one bullet
+        self.missing_pointers: list[str] = []  # gav in a group that promises a file
+
+
+def read_notice(notice: Path) -> Notice:
+    """Parse a hand-written NOTICE into the claims this script can check."""
+    parsed = Notice()
     group = None
+    promises_file = False
     for line in notice.read_text(encoding="utf-8").splitlines():
         if line.startswith(NOTICE_HEADING):
-            group = next(
-                (name for name, phrase in LICENCE_GROUPS.items() if phrase in line),
-                None,
-            )
-            if group is None:
+            # All matches, not the first: a heading naming two licences this script
+            # knows would otherwise be filed under whichever appears earlier in
+            # LICENCE_GROUPS, silently.
+            matches = [n for n, phrase in LICENCE_GROUPS.items() if phrase in line]
+            if len(matches) != 1:
                 sys.exit(
-                    f"{notice} has a licence paragraph this script does not know:\n"
-                    f"  {line}\nAdd it to LICENCE_GROUPS in {Path(__file__).name}."
+                    f"{notice} has a licence paragraph matching {len(matches)} known "
+                    f"licences ({', '.join(matches) or 'none'}):\n  {line}\n"
+                    f"Adjust LICENCE_GROUPS in {Path(__file__).name} so it matches "
+                    f"exactly one."
                 )
+            group = matches[0]
+            promises_file = False
+        elif line.startswith(NOTICE_PROMISES_FILES):
+            promises_file = True
         elif line.startswith(NOTICE_BULLET) and group:
             # `- groupId:artifactId:version` optionally followed by `(path)`.
             fields = line[len(NOTICE_BULLET) :].split()
-            listed[fields[0]] = group
+            if not fields:
+                sys.exit(f"{notice} has a bullet with no coordinate:\n  {line}")
+            gav = fields[0]
+            if gav in parsed.listed:
+                parsed.duplicates.append(gav)
+            parsed.listed[gav] = group
             if len(fields) > 1:
-                pointers[fields[0]] = fields[1].strip("()")
-    return listed, pointers
+                parsed.pointers[gav] = fields[1].strip("()")
+            elif promises_file:
+                # The paragraph says "See bundled license files for details" and this
+                # entry names none. The orphan check below cannot notice, because a
+                # licence file shared with a sibling entry is still referenced.
+                parsed.missing_pointers.append(gav)
+    return parsed
 
 
 def report(title: str, entries: list[str]) -> bool:
@@ -131,8 +179,27 @@ def main() -> int:
         sys.exit(f"{notice} does not exist.")
 
     resolved = read_resolved(module)
-    listed, pointers = read_notice(notice)
-    on_disk = {p.name for p in licence_dir.iterdir()} if licence_dir.is_dir() else set()
+    notice_claims = read_notice(notice)
+    listed, pointers = notice_claims.listed, notice_claims.pointers
+    # Pointers are jar paths (`META-INF/licenses/LICENSE.x`), so they resolve against
+    # the resource root, not the licence directory. Checking the whole path rather
+    # than the basename is what distinguishes META-INF/licenses/ from gRPC's own
+    # META-INF/license/ — a confusion this NOTICE has a paragraph warning about, and
+    # which a basename check cannot see.
+    resource_root = notice.parent.parent
+    # Regular files only, and no dotfiles: macOS drops a .DS_Store into any directory
+    # Finder visits, which would otherwise be reported as an unreferenced licence file
+    # and fail the check on a developer's machine but never in CI. The repository's
+    # apache-rat configuration excludes `**/.*` for the same reason.
+    on_disk = (
+        {
+            p.name
+            for p in licence_dir.iterdir()
+            if p.is_file() and not p.name.startswith(".")
+        }
+        if licence_dir.is_dir()
+        else set()
+    )
 
     failed = False
     failed |= report(
@@ -155,12 +222,20 @@ def main() -> int:
         [
             f"{gav} -> {path}"
             for gav, path in pointers.items()
-            if Path(path).name not in on_disk
+            if not (resource_root / path).is_file()
         ],
     )
     failed |= report(
         "Licence file present but referenced by nothing in META-INF/NOTICE:",
         sorted(on_disk - {Path(p).name for p in pointers.values()}),
+    )
+    failed |= report(
+        "Listed under a licence that promises a file, but naming none:",
+        notice_claims.missing_pointers,
+    )
+    failed |= report(
+        "Listed by more than one bullet in META-INF/NOTICE:",
+        notice_claims.duplicates,
     )
 
     if failed:

@@ -63,8 +63,11 @@ jobs:
       # Maven resolves for its bundle. A step of its own rather than part of
       # `just verify` because the comparison is a Python script, not a Maven
       # plugin; the resolving half *is* bound into the build, and costs almost
-      # nothing (it reads POMs Maven already resolved). python3 comes from the
-      # runner image: the script is standard-library only, so there is no
+      # nothing (it reads POMs Maven already resolved). The recipe re-runs that
+      # Maven half, which `just verify` above has already done — kept because a
+      # self-contained recipe is the right default locally, and the duplicated
+      # work here is a few seconds of an incremental build. python3 comes from
+      # the runner image: the script is standard-library only, so there is no
       # version to pin (see mise.toml).
       - name: Check the SQL connector NOTICE
         run: just check-notice flink-sql-connector-gcp-pubsub

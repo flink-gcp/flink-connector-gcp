@@ -47,10 +47,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>{@code scripts/check-notice.py} checks this same property and more — it also compares the
  * licence each artifact is filed under against the one its POM declares, and verifies the {@code
- * META-INF/licenses/} files. The overlap is deliberate rather than an oversight: that script has to
- * resolve licences over the network, so it runs as its own CI step and not inside {@code just
- * verify}. This test is the offline half, and it is the one a developer sees immediately when a
- * dependency change lands.
+ * META-INF/licenses/} files. The overlap is deliberate: that comparison is a Python script rather
+ * than a Maven plugin, so it runs as its own CI step, and this test is what makes the same drift
+ * fail inside {@code just verify}, where a developer sees it immediately. (The half that *resolves*
+ * the licences is bound into the build, so both are current for the same commit.)
  */
 class BundledDependenciesNoticeTest {
 

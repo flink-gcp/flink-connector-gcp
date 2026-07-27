@@ -270,6 +270,12 @@ limitations under the License.
                              and the connector's own artifacts are this project's. -->
                         <excludedScopes>test,provided</excludedScopes>
                         <excludedGroups>io.github.flink-gcp</excludedGroups>
+                        <!-- Without this the goal leaves an existing THIRD-PARTY.txt
+                             alone, so check-notice.py would validate the NOTICE against
+                             whatever the last build resolved rather than this one — the
+                             exact staleness the check exists to prevent. Found by
+                             mutating the report and watching the rebuild not undo it. -->
+                        <force>true</force>
                         <!-- Fails when a dependency declares no licence at all, rather
                              than reporting it as a warning and writing "Unknown license"
                              into the report — which check-notice.py would then faithfully
@@ -282,8 +288,10 @@ limitations under the License.
                              paragraphs against, so a new spelling shows up as a
                              mismatch rather than as a silent extra group. -->
                         <licenseMerges>
-                            <licenseMerge>Apache-2.0|Apache 2.0|Apache 2|Apache License, Version 2.0|The Apache License, Version 2.0|The Apache Software License, Version 2.0</licenseMerge>
-                            <licenseMerge>BSD-3-Clause|BSD New license</licenseMerge>
+                            <licenseMerge>Apache-2.0|Apache 2.0|Apache 2|Apache License V2.0|Apache License, Version 2.0|The Apache License, Version 2.0|The Apache Software License, Version 2.0</licenseMerge>
+                            <licenseMerge>BSD-3-Clause|BSD 3-clause|BSD New license</licenseMerge>
+                            <licenseMerge>BSD-2-Clause|The BSD 2-Clause License</licenseMerge>
+                            <licenseMerge>MIT|MIT license|MIT License|The MIT License</licenseMerge>
                         </licenseMerges>
                     </configuration>
                 </plugin>

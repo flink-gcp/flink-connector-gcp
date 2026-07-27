@@ -145,6 +145,7 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
+    mise x ruff -- ruff --version
     mise x ruff -- ruff check scripts/
     mise x ruff -- ruff format --check scripts/
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
@@ -158,8 +159,10 @@ lint:
 # siblings, so the module cannot resolve the connector it bundles — `-am` does not
 # change that — and it only appears to work where an earlier `install` left the
 # artifact in the local repository. A phase builds the sibling, so this is
-# self-contained. generate-test-resources is the earliest phase that runs after
-# the sibling is compiled and that the plugin is bound to.
+# self-contained. Any phase at or after `compile` would do — that is the property
+# that matters, since it is what puts the sibling's `target/classes` in front of
+# the reactor. generate-test-resources is where the licence goal is bound, beside
+# the two maven-dependency-plugin executions that feed the module's own tests.
 #
 # Does the module's hand-written META-INF/NOTICE still match what it bundles?
 check-notice module:

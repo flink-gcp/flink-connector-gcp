@@ -226,7 +226,8 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   parent's remote-resources bundle stamped that same claim into *every* module jar this project
   builds.
   **The NOTICE is hand-written and validated, never generated.** `just check-notice <module>` runs
-  `license-maven-plugin:add-third-party` then `scripts/check-notice.py`, failing on a missing or
+  `generate-test-resources` (which the `add-third-party` execution is bound to) then
+  `scripts/check-notice.py`, failing on a missing or
   extra artifact, a wrong licence group, a dangling `META-INF/licenses/` pointer, or an unreferenced
   licence file — the middle three were all invisible before. Measured before it was built: the
   plugin's classification matched the hand-written grouping on **all 52 artifacts**, including the
@@ -234,10 +235,22 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `javax.annotation-api`, and re2j's non-SPDX "Go License". `licenseMerges` in the root pom's
   `pluginManagement` is what makes the two comparable — this tree alone spells Apache-2.0 six ways —
   and it lives there so a sibling SQL module inherits one vocabulary rather than inventing a second.
+  **What a sibling actually costs, measured against the BigQuery module's 113-artifact tree**: the
+  plugin block and one execution in its pom, a CI step, and *two* new `LICENCE_GROUPS` keys in the
+  script (`BSD-2-Clause`, `Public Domain`). No new `licenseMerges` — that list was extended here,
+  once, to cover the spellings that tree adds (`Apache License V2.0`, `BSD 3-clause`, `MIT License`,
+  `The MIT License`, `The BSD 2-Clause License`), and `failOnMissing` does not fire on it. So
+  "reused unchanged" was never quite true; "reused without re-deriving the vocabulary" is.
   **`download-licenses` must not be used for the licence texts**: it names files after the *licence*,
   so protobuf, gax, google-auth and threetenbp collapse into one BSD-3-Clause file and the last
   download wins. Measured — it left ThreeTen's copyright line standing for Google's code, and the
   copyright holder is part of a BSD or MIT text. Those files stay hand-collected from each project's
-  own LICENSE. `BundledDependenciesNoticeTest` overlaps the script's first check deliberately: the
-  script resolves licences over the network so it is a CI step of its own, and the test is the
-  offline half that runs inside `just verify`
+  own LICENSE. **Invoke the goal through a phase, never as a bare `license:add-third-party`** — a
+  CLI goal invocation selects reactor modules but does not build them, so `-pl` cannot resolve the
+  connector the module bundles, not even with `-am`, unless an earlier `install` happened to leave
+  it in the local repository. That failed in CI and passed locally twice for exactly that reason.
+  It costs nothing to bind: the goal reads POMs Maven has already resolved and fetches nothing —
+  the network-using goal is `download-licenses`, which is the one not used here.
+  `BundledDependenciesNoticeTest` overlaps the script's first check deliberately: the comparison is
+  a Python script rather than a Maven plugin, so it is a CI step of its own, and the test is what
+  makes the same drift fail inside `just verify`
