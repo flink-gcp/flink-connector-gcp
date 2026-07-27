@@ -183,7 +183,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   RECORD field must have at least one sub-field") before a request is ever sent, with a message
   naming no field. And `REPEATED JSON` works on **real** BigQuery but not on the goccy emulator,
   which rejects every insert into a table carrying an `ARRAY<JSON>` column, empty or populated —
-  hence the fixture's `WellKnownSingular` for the emulator write test and
+  hence the fixture's `SingularWellKnownTypes` for the emulator write test and
   `BigQueryProtoRepeatedJsonITCase`, gated on `BQ_IT_PROJECT`, for the repeated half. This is a
   **breaking schema change** for any existing table (`STRUCT` → scalar): `SchemaUnifier` rejects the
   union rather than corrupting rows
