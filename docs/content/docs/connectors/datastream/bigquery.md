@@ -390,9 +390,21 @@ Three differences from the JSON marker, all deliberate:
 - **Strings only.** `jsonFieldPath` also accepts a message and writes its canonical protobuf JSON;
   no protobuf message means a geography to BigQuery, so there would be nothing to write. Marking a
   message, a map, or any non-string field is rejected when the schema is derived.
-- **No field-option form.** `jsonFieldOption`/`jsonFieldOptionNumber` exist because a large
-  annotated proto corpus was the case they had to serve; no such corpus motivates this marker, and
-  the path form keeps the two serializers symmetric. Adding one later would be purely additive.
+- **The field-option form is protobuf-only**, as it is for JSON: `geographyFieldOption(...)` and
+  `geographyFieldOptionNumber(...)` mark by annotation instead of by path, and are unioned with it.
+  Declared exactly like a JSON option — a `bool` extension of `google.protobuf.FieldOptions` — and
+  subject to the same caveats, including that a number matching no field is deliberately not an
+  error. `AvroSchemaOptions` has no equivalent, because Avro has no annotation mechanism to key off.
+
+  ```proto
+  extend google.protobuf.FieldOptions {
+    optional bool geography = 50006;
+  }
+
+  message Site {
+    string boundary = 1 [(geography) = true];
+  }
+  ```
 - **A field marked both ways is an error**, not a precedence question — a column has one type. By
   path on either serializer, and on the protobuf side a `jsonFieldOption` against a
   `geographyFieldPath` as well, which is why the check lives where both mechanisms are visible rather
@@ -515,9 +527,9 @@ logical type to key off.
 
 **Geography columns.** `AvroSchemaOptions.builder().geographyFieldPath("site.boundary")` does the
 same for a [`GEOGRAPHY` column](#geography-columns), on the same terms — string fields only, the
-value passed through unvalidated, never `REQUIRED`. Here the two serializers are exactly symmetric:
-the geography marker is by path on both, so unlike JSON there is no field-option asymmetry to
-explain. A path claimed by both markers is rejected.
+value passed through unvalidated, never `REQUIRED`. As with JSON columns there is no
+annotation-driven equivalent of `ProtoSchemaOptions`' field options, for the same reason: Avro has no
+field-option mechanism to key off. A path claimed by both markers is rejected.
 
 **Rejected at job start**, because writing something plausible instead would be worse than failing
 early: unions with more than one non-null branch (BigQuery has no union type), a bare `null` field,

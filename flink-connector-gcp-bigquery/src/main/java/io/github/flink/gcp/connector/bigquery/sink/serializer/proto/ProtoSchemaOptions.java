@@ -50,9 +50,10 @@ import java.util.Set;
  *       column.
  *   <li><b>Geography columns.</b> The same kind of marker, for a {@code GEOGRAPHY} column: the
  *       Storage Write API carries one as a string too, holding WKT, hex-encoded WKB or GeoJSON.
- *       Only <b>string</b> fields can be marked — a message has no geography meaning — and only by
- *       dotted path, there being no annotated corpus to motivate a field-option form. Also
- *       unvalidated, so malformed geometry is a BigQuery row-level error.
+ *       Selected by dotted path or by boolean field option, exactly as a JSON column is, and
+ *       unioned the same way. Only <b>string</b> fields can be marked — a message has no geography
+ *       meaning — which is the one way this marker is narrower than the JSON one. Also unvalidated,
+ *       so malformed geometry is a BigQuery row-level error.
  *   <li><b>Nullability.</b> Every non-repeated column is derived as {@code NULLABLE} by default.
  *       {@link Builder#deriveRequiredColumns()} reads each field's presence instead and derives
  *       {@code REQUIRED} where protobuf cannot express absence.
@@ -97,6 +98,9 @@ public final class ProtoSchemaOptions implements Serializable {
 
     private final Set<String> geographyFieldPaths;
 
+    /** As {@link #jsonFieldOptions}, for {@code GEOGRAPHY} columns. */
+    private final Map<Integer, String> geographyFieldOptions;
+
     private final boolean deriveRequiredColumns;
 
     private ProtoSchemaOptions(Builder builder) {
@@ -105,6 +109,8 @@ public final class ProtoSchemaOptions implements Serializable {
                 Collections.unmodifiableMap(new LinkedHashMap<>(builder.jsonFieldOptions));
         this.geographyFieldPaths =
                 Collections.unmodifiableSet(new HashSet<>(builder.geographyFieldPaths));
+        this.geographyFieldOptions =
+                Collections.unmodifiableMap(new LinkedHashMap<>(builder.geographyFieldOptions));
         this.deriveRequiredColumns = builder.deriveRequiredColumns;
     }
 
@@ -136,35 +142,32 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /**
-     * Returns the configured field options: extension number to the option's full name, or {@code
-     * null} where it was configured by number alone. Package-private: {@link #isJsonField} is the
-     * supported way to ask, and the sibling options classes expose only what the sink reads back.
+     * Returns the configured JSON field options: extension number to the option's full name, or
+     * {@code null} where it was configured by number alone. Package-private: {@link #isJsonField}
+     * is the supported way to ask, and the sibling options classes expose only what the sink reads
+     * back.
      */
     Map<Integer, String> getJsonFieldOptions() {
         return jsonFieldOptions;
     }
 
+    /** As {@link #getJsonFieldOptions}, for {@code GEOGRAPHY} columns. */
+    Map<Integer, String> getGeographyFieldOptions() {
+        return geographyFieldOptions;
+    }
+
     /**
-     * Returns whether the given field is mapped to a BigQuery {@code JSON} column <em>by this
-     * configuration</em>. A {@code Struct}, {@code Value} or {@code ListValue} field becomes a
-     * {@code JSON} column with no configuration at all, and is not reported here; {@code
-     * BigQueryProtoSerializer#getTableSchema} is the derived truth.
+     * Returns whether any of the given options is set to {@code true} on the field.
      *
-     * <p>Configured options are consulted until one matches. Each may also <em>reject</em> a field
-     * whose option at that number is not a singular bool, so for a field carrying both a valid
-     * option and a malformed one the registration order decides between a JSON column and a
-     * failure. Reaching that needs a number registered for an option that is not a bool, which is
-     * already a misconfiguration.
-     *
-     * @param field the field descriptor
-     * @param path the dotted path of the field from the root message
-     * @return whether the field is written as JSON
+     * <p>Shared by both markers so they cannot drift on what "carries this option" means. Each
+     * entry may also <em>reject</em> a field whose option at that number is not a singular bool, so
+     * for a field carrying both a valid option and a malformed one the registration order decides
+     * between a marked column and a failure. Reaching that needs a number registered for an option
+     * that is not a bool, which is already a misconfiguration.
      */
-    public boolean isJsonField(Descriptors.FieldDescriptor field, String path) {
-        if (jsonFieldPaths.contains(path)) {
-            return true;
-        }
-        for (Map.Entry<Integer, String> option : jsonFieldOptions.entrySet()) {
+    private static boolean carriesAnyOption(
+            Descriptors.FieldDescriptor field, Map<Integer, String> options) {
+        for (Map.Entry<Integer, String> option : options.entrySet()) {
             if (BoolFieldOptionReader.isSetToTrue(field, option.getKey(), option.getValue())) {
                 return true;
             }
@@ -173,15 +176,33 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /**
-     * Returns whether the field at the given dotted path is mapped to a BigQuery {@code GEOGRAPHY}
-     * column. Takes no descriptor, unlike {@link #isJsonField}, because there is nothing to consult
-     * but the configured paths: geography has no field-option form.
+     * Returns whether the given field is mapped to a BigQuery {@code JSON} column <em>by this
+     * configuration</em>. A {@code Struct}, {@code Value} or {@code ListValue} field becomes a
+     * {@code JSON} column with no configuration at all, and is not reported here; {@code
+     * BigQueryProtoSerializer#getTableSchema} is the derived truth.
      *
+     * <p>The configured path and every configured field option are consulted, and a field selected
+     * by any of them is a JSON column (see {@link #carriesAnyOption} for what an option match
+     * involves).
+     *
+     * @param field the field descriptor
+     * @param path the dotted path of the field from the root message
+     * @return whether the field is written as JSON
+     */
+    public boolean isJsonField(Descriptors.FieldDescriptor field, String path) {
+        return jsonFieldPaths.contains(path) || carriesAnyOption(field, jsonFieldOptions);
+    }
+
+    /**
+     * Returns whether the given field is mapped to a BigQuery {@code GEOGRAPHY} column. Selected by
+     * dotted path or by field option exactly as {@link #isJsonField} is, and unioned the same way.
+     *
+     * @param field the field descriptor
      * @param path the dotted path of the field from the root message
      * @return whether the field is written as geography
      */
-    public boolean isGeographyField(String path) {
-        return geographyFieldPaths.contains(path);
+    public boolean isGeographyField(Descriptors.FieldDescriptor field, String path) {
+        return geographyFieldPaths.contains(path) || carriesAnyOption(field, geographyFieldOptions);
     }
 
     /**
@@ -201,10 +222,11 @@ public final class ProtoSchemaOptions implements Serializable {
      */
     TableFieldSchema.Type configuredMarkedType(Descriptors.FieldDescriptor field, String path) {
         boolean json = isJsonField(field, path);
-        boolean geography = isGeographyField(path);
+        boolean geography = isGeographyField(field, path);
         // A column has one type, so a field claimed by both markers is a configuration error rather
         // than a precedence question. Checked here because this is the one place both are visible —
-        // a field option cannot be intersected with a path at build() time.
+        // two annotation vocabularies cannot be intersected at build() time, and neither can an
+        // option be intersected with a path.
         Preconditions.checkArgument(
                 !(json && geography),
                 "Field %s is marked as both a JSON and a GEOGRAPHY column",
@@ -222,6 +244,7 @@ public final class ProtoSchemaOptions implements Serializable {
         private final Set<String> jsonFieldPaths = new HashSet<>();
         private final Map<Integer, String> jsonFieldOptions = new LinkedHashMap<>();
         private final Set<String> geographyFieldPaths = new HashSet<>();
+        private final Map<Integer, String> geographyFieldOptions = new LinkedHashMap<>();
         private boolean deriveRequiredColumns;
 
         Builder() {}
@@ -357,9 +380,8 @@ public final class ProtoSchemaOptions implements Serializable {
          * being validated by the connector, so malformed geometry is a BigQuery row-level error
          * routed to the configured {@code FailedRowHandler}.
          *
-         * <p>There is deliberately no field-option form, unlike {@link #jsonFieldOption}: that one
-         * exists because a large annotated proto corpus was the case it had to serve, and no such
-         * corpus motivates this marker. Adding one later would be purely additive.
+         * <p>Where the mapping is a property of the schema rather than of the pipeline, {@link
+         * #geographyFieldOption} marks the same columns by annotation instead; the two are unioned.
          *
          * @param path dotted field path from the root message, for example {@code site.boundary}
          * @return this builder
@@ -378,6 +400,71 @@ public final class ProtoSchemaOptions implements Serializable {
         public Builder geographyFieldPaths(Collection<String> paths) {
             Preconditions.checkNotNull(paths, "paths must not be null")
                     .forEach(this::geographyFieldPath);
+            return this;
+        }
+
+        /**
+         * Maps every string field carrying the given boolean field option, set to {@code true}, to
+         * a BigQuery {@code GEOGRAPHY} column — wherever it appears in the message tree, at any
+         * nesting depth.
+         *
+         * <p>The geography counterpart of {@link #jsonFieldOption}, with the same mechanics,
+         * guarantees and caveats: prefer it over {@link #geographyFieldOptionNumber} whenever the
+         * generated extension class is on the classpath, since the compiler enforces that the
+         * option really is a {@code bool} and the option's full name is captured so an unrelated
+         * option sharing the number is ignored wherever the declaration can be resolved. The
+         * extension itself is not retained (it holds a descriptor and is not Java-serializable,
+         * while these options travel in the job graph) — only its number and name. Additive, and
+         * where two extensions claim one number the last call wins.
+         *
+         * <pre>{@code
+         * ProtoSchemaOptions.builder().geographyFieldOption(MyAnnotations.geography).build();
+         * }</pre>
+         *
+         * <p>The option is declared exactly as a JSON one is — a {@code bool} extension of {@code
+         * google.protobuf.FieldOptions}. What differs is the field it may mark: a string and
+         * nothing else, protobuf having no geometry type for a message to be.
+         *
+         * @param extension the generated extension for a {@code bool} option on {@code
+         *     google.protobuf.FieldOptions}
+         * @return this builder
+         */
+        public Builder geographyFieldOption(
+                GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean>
+                        extension) {
+            Descriptors.FieldDescriptor descriptor =
+                    Preconditions.checkNotNull(extension, "extension must not be null")
+                            .getDescriptor();
+            checkExtensionNumber(descriptor.getNumber());
+            // A name always wins over a bare number for the same option.
+            this.geographyFieldOptions.put(descriptor.getNumber(), descriptor.getFullName());
+            return this;
+        }
+
+        /**
+         * Maps every string field carrying the given boolean {@code google.protobuf.FieldOptions}
+         * extension, set to {@code true}, to a BigQuery {@code GEOGRAPHY} column — wherever it
+         * appears in the message tree, at any nesting depth.
+         *
+         * <p>The geography counterpart of {@link #jsonFieldOptionNumber}, with the same mechanics
+         * and the same two caveats. The number alone is not an identity, protobuf's private
+         * extension range having no registry. And unlike {@link #geographyFieldPath}, a number
+         * matching no field is <em>not</em> an error — one configuration is meant to serve every
+         * message type a job writes, and a message legitimately need not have geography columns —
+         * so a mistyped number yields {@code STRING} columns instead of failing. Check the outcome
+         * with {@code BigQueryProtoSerializer#getTableSchema}.
+         *
+         * @param extensionNumber the extension number of the option within {@code
+         *     google.protobuf.FieldOptions}
+         * @return this builder
+         */
+        public Builder geographyFieldOptionNumber(int extensionNumber) {
+            checkExtensionNumber(extensionNumber);
+            // containsKey, not putIfAbsent: a bare number is stored as a null value, which both
+            // putIfAbsent and computeIfAbsent key off. See jsonFieldOptionNumber.
+            if (!this.geographyFieldOptions.containsKey(extensionNumber)) {
+                this.geographyFieldOptions.put(extensionNumber, null);
+            }
             return this;
         }
 
@@ -428,7 +515,7 @@ public final class ProtoSchemaOptions implements Serializable {
                             && extensionNumber <= MAX_EXTENSION_NUMBER
                             && (extensionNumber < FIRST_RESERVED_NUMBER
                                     || extensionNumber > LAST_RESERVED_NUMBER),
-                    "A JSON field option number must be a google.protobuf.FieldOptions extension"
+                    "A field option number must be a google.protobuf.FieldOptions extension"
                             + " number in [%s, %s] and outside protobuf's reserved range [%s, %s],"
                             + " but was %s",
                     MIN_EXTENSION_NUMBER,

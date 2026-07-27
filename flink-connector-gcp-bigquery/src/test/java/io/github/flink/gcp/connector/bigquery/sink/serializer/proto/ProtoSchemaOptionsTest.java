@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.protobuf.Descriptors;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -31,6 +32,11 @@ import static org.assertj.core.api.Assertions.entry;
 /** Tests for {@link ProtoSchemaOptions}. */
 class ProtoSchemaOptionsTest {
 
+    /** An unannotated string field, so only a configured path can select it. */
+    private static Descriptors.FieldDescriptor aField() {
+        return TestProtos.allTypes().findFieldByName("f_string");
+    }
+
     @Test
     void defaultsMapNothingToJson() {
         assertThat(ProtoSchemaOptions.defaults().getJsonFieldPaths()).isEmpty();
@@ -40,7 +46,8 @@ class ProtoSchemaOptionsTest {
     @Test
     void defaultsMapNothingToGeography() {
         assertThat(ProtoSchemaOptions.defaults().getGeographyFieldPaths()).isEmpty();
-        assertThat(ProtoSchemaOptions.defaults().isGeographyField("anything")).isFalse();
+        assertThat(ProtoSchemaOptions.defaults().getGeographyFieldOptions()).isEmpty();
+        assertThat(ProtoSchemaOptions.defaults().isGeographyField(aField(), "anything")).isFalse();
     }
 
     @Test
@@ -53,8 +60,24 @@ class ProtoSchemaOptionsTest {
                         .build();
 
         assertThat(options.getGeographyFieldPaths()).containsExactlyInAnyOrder("a", "b.c", "d");
-        assertThat(options.isGeographyField("b.c")).isTrue();
-        assertThat(options.isGeographyField("b")).isFalse();
+        assertThat(options.isGeographyField(aField(), "b.c")).isTrue();
+        assertThat(options.isGeographyField(aField(), "b")).isFalse();
+    }
+
+    @Test
+    void geographyFieldOptionsAccumulateAndKeepTheNamedEntry() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
+                        .geographyFieldOptionNumber(TestProtos.OTHER_OPTION_NUMBER)
+                        .build();
+
+        assertThat(options.getGeographyFieldOptions())
+                .containsOnly(
+                        entry(TestProtos.GEOGRAPHY_OPTION_NUMBER, null),
+                        entry(TestProtos.OTHER_OPTION_NUMBER, null));
+        // The two markers keep separate registries: configuring one must not select the other.
+        assertThat(options.getJsonFieldOptions()).isEmpty();
     }
 
     @Test
@@ -145,10 +168,17 @@ class ProtoSchemaOptionsTest {
     // "extensions 1000 to max".
     @ValueSource(ints = {0, -1, 1, 999, 536870912, 19000, 19999})
     void rejectsFieldOptionNumbersProtobufCannotUse(int extensionNumber) {
+        // The check is shared by both markers, so its message names neither.
         assertThatThrownBy(
                         () -> ProtoSchemaOptions.builder().jsonFieldOptionNumber(extensionNumber))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("JSON field option number")
+                .hasMessageContaining("field option number")
+                .hasMessageContaining(String.valueOf(extensionNumber));
+        assertThatThrownBy(
+                        () ->
+                                ProtoSchemaOptions.builder()
+                                        .geographyFieldOptionNumber(extensionNumber))
+                .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(String.valueOf(extensionNumber));
     }
 
@@ -214,6 +244,7 @@ class ProtoSchemaOptionsTest {
                         .jsonFieldPath("payload")
                         .jsonFieldOptionNumber(50000)
                         .geographyFieldPath("boundary")
+                        .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
                         .deriveRequiredColumns()
                         .build();
 
@@ -222,6 +253,8 @@ class ProtoSchemaOptionsTest {
         assertThat(copy.getJsonFieldPaths()).containsExactly("payload");
         assertThat(copy.getJsonFieldOptions()).containsExactly(entry(50000, null));
         assertThat(copy.getGeographyFieldPaths()).containsExactly("boundary");
+        assertThat(copy.getGeographyFieldOptions())
+                .containsExactly(entry(TestProtos.GEOGRAPHY_OPTION_NUMBER, null));
         assertThat(copy.isDeriveRequiredColumns()).isTrue();
     }
 }

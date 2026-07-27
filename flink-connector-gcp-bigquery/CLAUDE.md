@@ -98,18 +98,25 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
 - **BigQuery geography columns** (#126): a `GEOGRAPHY` column is carried as a string by the Storage
   Write API exactly as a `JSON` one is, so this is the same **schema-derivation marker** mechanism
   and *nothing* on the value path — a marked string is `Kind.IDENTITY` with the #50 empty-string
-  rule, since `""` is no more a valid geometry than valid JSON. Deliberately **paths only, on both
-  serializers**: `geographyFieldPath`/`geographyFieldPaths` and no field-option form, because
-  `jsonFieldOption` exists to serve a large annotated proto corpus and no such corpus motivates this
-  one — ~200 lines of near-duplicate API, javadoc and extension-number validation for a speculative
-  case, and additive later if asked for. That also makes the two serializers exactly symmetric here,
-  which is what #124 exists to protect; the JSON asymmetry (proto has options, Avro cannot) is a
-  property of Avro having no JSON logical type, not a precedent. **Strings only**, the one place this
-  marker is *narrower* than the JSON one: `jsonFieldPath` also takes a message and prints its
+  rule, since `""` is no more a valid geometry than valid JSON. **The marker mirrors the JSON one
+  exactly**: `geographyFieldPath`/`geographyFieldPaths` on both serializers, plus
+  `geographyFieldOption`/`geographyFieldOptionNumber` on the protobuf one, unioned the same way.
+  Paths-only was the first decision and it was **reversed on measurement**: the estimate behind it
+  ("~200 lines of near-duplicate API, javadoc and extension-number validation") was wrong, because
+  `checkExtensionNumber` and `BoolFieldOptionReader` are already static and shared — the real cost was
+  ~80 lines, mostly javadoc that cross-references the JSON methods. Quantify before pricing a decline;
+  the symmetry argument offered alongside it was weak anyway, since the JSON marker is *already*
+  asymmetric (Avro has no annotation mechanism at all) so an option form adds no new kind of
+  asymmetry. `isGeographyField` therefore takes a `FieldDescriptor` again, which the paths-only
+  version had dropped as an unused parameter — the argument did not fail, its premise changed. Both
+  predicates now share one `carriesAnyOption` so they cannot drift on what "carries this option"
+  means, and the shared number check's message names neither marker. **Strings only**, the one place
+  this marker is *narrower* than the JSON one: `jsonFieldPath` also takes a message and prints its
   canonical protobuf JSON, but no protobuf message means a geography to BigQuery, so there would be
-  nothing to write. Consequently `isGeographyField` takes **no `FieldDescriptor`** where
-  `isJsonField` does — an unused parameter for the sake of matching signatures would have been
-  dishonest API, and the difference says "path-only" at the call site.
+  nothing to write. That rejection is stated about the *field's type*, so it fires however the field
+  was selected — a message carrying the geography annotation is rejected exactly as a marked path to
+  one is, which is why the fixture keeps it in its own `AnnotatedGeographyBadType` message rather
+  than as a field of `Annotated` (there it would fail every other test's conversion).
   The refactor is the point of the change as much as the feature: the JSON decision expression was
   duplicated in `ProtoToTableSchemaConverter.convertField` and `ProtoRowConverter.buildFieldPlan`
   with a comment in each saying it must stay identical to the other, and a second marker would have

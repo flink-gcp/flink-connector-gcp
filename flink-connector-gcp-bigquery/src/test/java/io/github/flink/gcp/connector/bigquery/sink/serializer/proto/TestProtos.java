@@ -81,6 +81,12 @@ final class TestProtos {
     /** Full name of the scoped option: note the {@code Scope} segment. */
     static final String SCOPED_OPTION_FULL_NAME = "annot.Scope.scoped_json";
 
+    /** A bool field option marking a field as a BigQuery {@code GEOGRAPHY} column. */
+    static final int GEOGRAPHY_OPTION_NUMBER = 50006;
+
+    /** Full name of the geography option. */
+    static final String GEOGRAPHY_OPTION_FULL_NAME = "annot.geography";
+
     /**
      * A <em>different</em> annotations proto claiming the same number as {@link
      * #JSON_OPTION_NUMBER}, as two teams picking from protobuf's unregistered private range would.
@@ -238,6 +244,11 @@ final class TestProtos {
     /** A message whose option-marked field is neither a message nor a string. */
     static Descriptors.Descriptor annotatedBadType() {
         return annotatedFile(false).findMessageTypeByName("AnnotatedBadType");
+    }
+
+    /** A message field carrying the geography annotation, which no message may. */
+    static Descriptors.Descriptor annotatedGeographyBadType() {
+        return annotatedFile(false).findMessageTypeByName("AnnotatedGeographyBadType");
     }
 
     /**
@@ -549,6 +560,35 @@ final class TestProtos {
                                                 DescriptorProtos.FieldDescriptorProto.Type
                                                         .TYPE_STRING),
                                         repeatedVarintOnTheWire(JSON_OPTION_NUMBER, 1L, 1L)))
+                        .addField(
+                                withOptions(
+                                        scalar(
+                                                "a_geo",
+                                                15,
+                                                DescriptorProtos.FieldDescriptorProto.Type
+                                                        .TYPE_STRING),
+                                        boolOption(GEOGRAPHY_OPTION_NUMBER, true)))
+                        // Both annotations on one field — the collision no build()-time
+                        // intersection could ever see, since neither is a path.
+                        .addField(
+                                withOptions(
+                                        scalar(
+                                                "a_both",
+                                                17,
+                                                DescriptorProtos.FieldDescriptorProto.Type
+                                                        .TYPE_STRING),
+                                        boolOptions(JSON_OPTION_NUMBER, GEOGRAPHY_OPTION_NUMBER)))
+                        .build();
+
+        // Its own message, not a field of Annotated: configuring the geography option would
+        // otherwise make every conversion of Annotated fail on this one field.
+        DescriptorProtos.DescriptorProto geoBadType =
+                DescriptorProtos.DescriptorProto.newBuilder()
+                        .setName("AnnotatedGeographyBadType")
+                        .addField(
+                                withOptions(
+                                        message("g_message", 1, ".annotated.APayload", false),
+                                        boolOption(GEOGRAPHY_OPTION_NUMBER, true)))
                         .build();
 
         DescriptorProtos.DescriptorProto badType =
@@ -573,6 +613,7 @@ final class TestProtos {
                 .addMessageType(annotatedNested)
                 .addMessageType(annotated)
                 .addMessageType(badType)
+                .addMessageType(geoBadType)
                 .build();
     }
 
@@ -637,6 +678,11 @@ final class TestProtos {
                                 DescriptorProtos.FieldDescriptorProto.Type.TYPE_BOOL))
                 .addExtension(
                         fieldOption(
+                                "geography",
+                                GEOGRAPHY_OPTION_NUMBER,
+                                DescriptorProtos.FieldDescriptorProto.Type.TYPE_BOOL))
+                .addExtension(
+                        fieldOption(
                                 "label",
                                 NON_BOOL_OPTION_NUMBER,
                                 DescriptorProtos.FieldDescriptorProto.Type.TYPE_STRING))
@@ -678,6 +724,14 @@ final class TestProtos {
     private static DescriptorProtos.FieldOptions boolOption(int number, boolean value) {
         return DescriptorProtos.FieldOptions.newBuilder()
                 .setField(extension(number), value)
+                .build();
+    }
+
+    /** Two bool options on one field, which is how a marker collision by annotation is built. */
+    private static DescriptorProtos.FieldOptions boolOptions(int first, int second) {
+        return DescriptorProtos.FieldOptions.newBuilder()
+                .setField(extension(first), true)
+                .setField(extension(second), true)
                 .build();
     }
 

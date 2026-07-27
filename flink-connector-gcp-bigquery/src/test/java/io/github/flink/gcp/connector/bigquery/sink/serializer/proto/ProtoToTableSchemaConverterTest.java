@@ -399,6 +399,82 @@ class ProtoToTableSchemaConverterTest {
                 .hasMessageContaining("f_string");
     }
 
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void mapsOptionMarkedFieldsToGeography(boolean throughBytes) {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(
+                        ProtoToTableSchemaConverter.convert(
+                                throughBytes
+                                        ? TestProtos.annotatedFromBytes()
+                                        : TestProtos.annotated(),
+                                options));
+
+        assertThat(fields.get("a_geo").getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+        // The JSON annotation is a different vocabulary: configuring one must not select the other.
+        assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+    }
+
+    /**
+     * A message carrying the geography annotation. The rejection is about the field's type, so it
+     * has to fire however the field was selected — by path or, as here, by annotation.
+     */
+    @Test
+    void rejectsAnOptionMarkedGeographyMessageField() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                ProtoToTableSchemaConverter.convert(
+                                        TestProtos.annotatedGeographyBadType(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("GEOGRAPHY")
+                .hasMessageContaining("g_message");
+    }
+
+    /**
+     * Two annotations on one field — the collision no {@code build()}-time intersection could ever
+     * see, since neither marker is a path. This is the case that makes the check's placement at the
+     * decision point necessary rather than merely tidy.
+     */
+    @Test
+    void rejectsAFieldCarryingBothAJsonAndAGeographyOption() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
+                        .build();
+
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.annotated(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("both a JSON and a GEOGRAPHY")
+                .hasMessageContaining("a_both");
+    }
+
+    /**
+     * A geography option number matching no field is deliberately not an error, unlike a path: one
+     * configuration is meant to serve every message type a job writes.
+     */
+    @Test
+    void aGeographyOptionNumberMatchingNoFieldIsNotAnError() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options));
+
+        assertThat(fields.get("f_string").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+    }
+
     /**
      * The collision the rejection's <em>placement</em> exists for: a JSON field option against a
      * geography path cannot be intersected without a descriptor, so {@code Builder.build()} could
