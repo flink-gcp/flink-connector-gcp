@@ -708,7 +708,10 @@ created with its own settings, no seek issued when a rejection is coming, and th
 running exactly once and never on a restore. The subscription-create options, the start position and
 the option-to-protobuf translation are unit-tested on their own. Emulator integration tests run the
 production subscriber factory against the emulator and cover the acknowledgement round trip,
-nack-on-close producing immediate redelivery, and one reader consuming several subscriptions; they
+nack-on-close (the nacks counted on the reader's own metric, and the messages redelivered rather
+than lost — redelivery *promptness* is a service-timing property the emulator does not specify, so
+asserting it belongs to the real-GCP suite planned in [#82]({{< param BookRepo >}}/issues/82); see
+[#118]({{< param BookRepo >}}/issues/118)), and one reader consuming several subscriptions; they
 also drive the production subscription admin (creation with settings read back, `ALREADY_EXISTS`
 leaving an existing subscription alone, and seek-to-timestamp replaying acknowledged messages).
 MiniCluster tests drive the source through the public builder over two subscriptions under real
