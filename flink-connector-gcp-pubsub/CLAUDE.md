@@ -187,8 +187,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   destinations included, because unlike a subscription's topic binding nothing in the settings ties
   them to one topic — so there is no per-topic map to express; and `schemaSettings`, `labels` and
   `tags` were considered and declined (schema validates at publish time only, re-checking what this
-  sink serialized, and is invisible to subscriptions beyond the `googclient_schema*` attributes;
-  labels/tags mirror the subscription side's omission) — all additive later. The emulator stores
+  sink serialized, and is invisible to subscriptions beyond the `googclient_schema*` attributes —
+  its payoff accrues to GCP-managed consumers like BigQuery export subscriptions, not to the Flink
+  pipeline, and its evolution model, single-file Avro/proto definitions with a bounded revision
+  range managed through topic updates, means support would not end at creation; labels/tags mirror
+  the subscription side's omission) — all additive later. **Deliberately no follow-up issue for
+  schema support** (decided with the user on #153): the declined record here and on the docs page
+  is the anchor, and a future issue needs a real consumer-side use case, not a speculative
+  placeholder. The emulator stores
   all four knobs verbatim and returns them on `GetTopic` — measured in #153 after a first
   measurement wrongly concluded the opposite off a one-line grep of a multi-line proto `toString`
   — but validates nothing and shows no effect, so the ITs assert the round trip and the

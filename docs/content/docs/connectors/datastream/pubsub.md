@@ -226,8 +226,12 @@ these are neither applied to it nor compared against it.
 Considered and declined: `schemaSettings` — topic-side validation would re-check what this sink
 itself serialized, the schema resource is provisioned out of band anyway, and it changes nothing
 for a subscriber (validation happens at publish time only; subscribers just see the
-`googclient_schema*` attributes) — and `labels`/`tags`, unexposed on the subscription side too.
-All are additive if a need appears.
+`googclient_schema*` attributes). Its payoff accrues to GCP-managed consumers (a BigQuery export
+subscription deriving columns from the topic schema, say), not to the Flink pipeline — and
+supporting it would not end at creation, because Pub/Sub's schema evolution is its own constrained
+machinery (single-file Avro or Protocol Buffer definitions, a bounded revision range per topic
+managed through topic updates). Also declined: `labels`/`tags`, unexposed on the subscription side
+too. All are additive if a need with a real consumer appears.
 
 The emulator stores all four knobs verbatim and returns them on `GetTopic`, so the emulator ITs
 verify the settings reach the created topic — but it validates nothing (a KMS key that does not
