@@ -118,6 +118,42 @@ class PubSubTableSinkITCase extends PubSubTableTestBase {
     }
 
     @Test
+    void createsTheTopicWithTheConfiguredSettings() throws Exception {
+        // SQL to service, end to end: the sink.auto-create.* options must survive the mapper, the
+        // dynamic sink, the builder and the writer's repair, and read back off the created topic.
+        String name = "table-sink-autocreate-settings";
+        assertThat(topicExists(name)).isFalse();
+        TableEnvironment tEnv = streamingTableEnvironment();
+
+        tEnv.executeSql(
+                "CREATE TABLE configured (id STRING) "
+                        + withOptions(
+                                "topic",
+                                name,
+                                "format",
+                                "json",
+                                "sink.auto-create.message-retention",
+                                "2 h",
+                                "sink.auto-create.kms-key-name",
+                                "projects/p/locations/l/keyRings/r/cryptoKeys/k",
+                                "sink.auto-create.storage-policy.allowed-regions",
+                                "us-central1",
+                                "sink.auto-create.storage-policy.enforce-in-transit",
+                                "true"));
+
+        tEnv.executeSql("INSERT INTO configured VALUES ('a')").await();
+
+        com.google.pubsub.v1.Topic created = describeTopic(name);
+        assertThat(created.getMessageRetentionDuration().getSeconds())
+                .isEqualTo(Duration.ofHours(2).getSeconds());
+        assertThat(created.getKmsKeyName())
+                .isEqualTo("projects/p/locations/l/keyRings/r/cryptoKeys/k");
+        assertThat(created.getMessageStoragePolicy().getAllowedPersistenceRegionsList())
+                .containsExactly("us-central1");
+        assertThat(created.getMessageStoragePolicy().getEnforceInTransit()).isTrue();
+    }
+
+    @Test
     void refusesToCreateTheTopicUnderCreateNever() {
         String name = "table-sink-create-never";
         TableEnvironment tEnv = streamingTableEnvironment();

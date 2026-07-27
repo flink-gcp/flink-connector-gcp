@@ -18,7 +18,10 @@ package io.github.flink.gcp.connector.pubsub.sink.topics;
 
 import org.apache.flink.annotation.Internal;
 
+import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 
@@ -35,15 +38,17 @@ import java.io.IOException;
 public interface TopicAdmin extends AutoCloseable {
 
     /**
-     * Creates the given topic with default topic settings. Idempotent: creating a topic that
-     * already exists (for example because a parallel subtask won the creation race) succeeds
-     * silently.
+     * Creates the given topic. Idempotent: creating a topic that already exists (for example
+     * because a parallel subtask won the creation race) succeeds silently — and in that case the
+     * options are <em>not</em> applied to the existing topic.
      *
      * @param destination the topic to create
+     * @param options the settings to create the topic with, or {@code null} for service defaults
      * @throws IOException if the creation fails for any reason other than the topic already
      *     existing
      */
-    void createTopic(TopicDestination destination) throws IOException;
+    void createTopic(TopicDestination destination, @Nullable TopicCreateOptions options)
+            throws IOException;
 
     @Override
     void close() throws Exception;

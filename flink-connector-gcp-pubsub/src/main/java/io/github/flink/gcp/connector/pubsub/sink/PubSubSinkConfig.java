@@ -37,6 +37,7 @@ public final class PubSubSinkConfig<T> implements Serializable {
     private final DestinationResolver<? super T> destinationResolver;
     private final PubSubSerializationSchema<? super T> serializer;
     private final CreateDisposition createDisposition;
+    @Nullable private final TopicCreateOptions topicCreateOptions;
     private final PubSubPublisherOptions publisherOptions;
     @Nullable private final String emulatorEndpoint;
 
@@ -44,11 +45,13 @@ public final class PubSubSinkConfig<T> implements Serializable {
             DestinationResolver<? super T> destinationResolver,
             PubSubSerializationSchema<? super T> serializer,
             CreateDisposition createDisposition,
+            @Nullable TopicCreateOptions topicCreateOptions,
             PubSubPublisherOptions publisherOptions,
             @Nullable String emulatorEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.createDisposition = createDisposition;
+        this.topicCreateOptions = topicCreateOptions;
         this.publisherOptions = publisherOptions;
         this.emulatorEndpoint = emulatorEndpoint;
     }
@@ -66,6 +69,15 @@ public final class PubSubSinkConfig<T> implements Serializable {
     /** Returns whether the sink may create destination topics that do not exist. */
     public CreateDisposition getCreateDisposition() {
         return createDisposition;
+    }
+
+    /**
+     * Returns the settings applied to topics the sink creates, or {@code null} for service
+     * defaults.
+     */
+    @Nullable
+    public TopicCreateOptions getTopicCreateOptions() {
+        return topicCreateOptions;
     }
 
     /** Returns the publisher and writer tuning options. */

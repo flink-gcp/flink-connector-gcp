@@ -27,6 +27,7 @@ import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
+import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.grpc.Status;
@@ -160,10 +161,37 @@ class PubSubWriterAutoCreationTest {
         writer.write("second", CONTEXT);
 
         assertThat(admin.created).containsExactly(TOPIC);
+        // The default config carries no creation settings, so the repair passes none.
+        assertThat(admin.createOptions).containsExactly((TopicCreateOptions) null);
         assertThat(publishedPayloads()).containsExactly("first", "first", "second");
         mailbox.drain();
         assertThat(writer.getInFlightMessages()).isZero();
         assertThat(writer.getInFlightBytes()).isZero();
+    }
+
+    @Test
+    void theRepairCreatesTheTopicWithTheConfiguredCreateOptions() throws Exception {
+        TopicCreateOptions createOptions =
+                TopicCreateOptions.builder().messageRetention(java.time.Duration.ofDays(7)).build();
+        PubSubWriter<String> writer =
+                new PubSubWriter<>(
+                        TestSinkConfigs.forTopic(
+                                TOPIC,
+                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                CreateDisposition.CREATE_IF_NEEDED,
+                                createOptions,
+                                PubSubPublisherOptions.defaults()),
+                        factory,
+                        admin,
+                        mailbox,
+                        FAST_SCHEDULE);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+
+        writer.write("first", CONTEXT);
+        writer.flush(false);
+
+        assertThat(admin.created).containsExactly(TOPIC);
+        assertThat(admin.createOptions).containsExactly(createOptions);
     }
 
     @Test

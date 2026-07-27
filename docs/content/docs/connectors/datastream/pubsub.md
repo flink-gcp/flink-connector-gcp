@@ -173,7 +173,8 @@ acceptable at moderate parallelism; gRPC channels are multiplexed inside the SDK
 
 Under `createDisposition(CreateDisposition.CREATE_IF_NEEDED)` — the default — publishes that
 fail with `NOT_FOUND` are recovered reactively on the task thread: the failed messages are
-parked per destination, the topic is created with default topic settings, and the messages are
+parked per destination, the topic is created with the configured `TopicCreateOptions` (every
+field at its service default when none are set), and the messages are
 republished under a bounded backoff budget (`recoveryInitialBackoff` doubling to
 `recoveryMaxBackoff` over `recoveryMaxAttempts`; by default 500 ms → 10 s, 10 attempts,
 ~1 minute **per destination**) covering topic-metadata propagation. Existing topics cost nothing: no
@@ -188,6 +189,55 @@ auto-creation may trigger.
 
 `createDisposition(CreateDisposition.CREATE_NEVER)` disables auto-creation: a `NOT_FOUND`
 publish fails the job immediately with a message naming the disposition.
+
+### Topic creation settings
+
+`topicCreateOptions(...)` configures the topics the sink creates ([#153]({{< param BookRepo >}}/issues/153)). Unlike the source's
+subscription-creation settings, supplying them is *not* what authorises creation — the disposition
+is, because a topic (unlike a subscription) can meaningfully be created with defaults. The settings
+are purely additive, and combining them with `CREATE_NEVER` is rejected at graph construction,
+since they would configure a topic the sink never creates.
+
+```java
+PubSubSink.<String>builder()
+        .topic(TopicDestination.of("my-project", "orders-topic"))
+        .topicCreateOptions(
+                TopicCreateOptions.builder()
+                        .messageRetention(Duration.ofDays(7))
+                        .kmsKeyName("projects/p/locations/l/keyRings/r/cryptoKeys/k")
+                        .allowedPersistenceRegions(List.of("europe-west1", "europe-west4"))
+                        .enforceInTransit(true)
+                        .build())
+        .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+        .build();
+```
+
+Knobs: `messageRetention` (topic-level retention, acknowledged or not — what lets a subscription
+created *later*, or a backwards seek, reach messages published before it existed),
+`kmsKeyName` (customer-managed encryption; the key must exist and the Pub/Sub service account
+needs encrypt/decrypt on it, or publishes to the created topic fail) and the message storage
+policy — `allowedPersistenceRegions` plus `enforceInTransit`, which requires the regions. Every
+knob is optional, and unset leaves Pub/Sub's own default. **One options object applies to every
+topic the sink creates**: with dynamic destinations each missing topic is created with the same
+settings, because unlike a subscription's topic binding, nothing in them ties them to one topic.
+As on the source side, creation is not an update — an existing topic keeps its own settings, and
+these are neither applied to it nor compared against it.
+
+Considered and declined: `schemaSettings` — topic-side validation would re-check what this sink
+itself serialized, the schema resource is provisioned out of band anyway, and it changes nothing
+for a subscriber (validation happens at publish time only; subscribers just see the
+`googclient_schema*` attributes). Its payoff accrues to GCP-managed consumers (a BigQuery export
+subscription deriving columns from the topic schema, say), not to the Flink pipeline — and
+supporting it would not end at creation, because Pub/Sub's schema evolution is its own constrained
+machinery (single-file Avro or Protocol Buffer definitions, a bounded revision range per topic
+managed through topic updates). Also declined: `labels`/`tags`, unexposed on the subscription side
+too. All are additive if a need with a real consumer appears.
+
+The emulator stores all four knobs verbatim and returns them on `GetTopic`, so the emulator ITs
+verify the settings reach the created topic — but it validates nothing (a KMS key that does not
+exist is accepted) and cannot show the settings' *effect*: actual CMEK encryption, residency
+enforcement, and retention-driven replay belong to the real-GCP suite
+([#82]({{< param BookRepo >}}/issues/82)).
 
 With message ordering enabled, the repair preserves per-key order: after a per-key failure the
 SDK publisher pauses the key and cancels its queued publishes; those cascade cancellations are
@@ -216,9 +266,11 @@ Caveats: without ordering keys, repaired messages are republished after later wr
 published (no guarantee regression — the sink is at-least-once); a repair inside `flush()`
 extends the checkpoint duration by up to the backoff budget of each repaired destination;
 auto-created topics start with **no subscriptions**, so messages published before a
-subscription exists are not retained for anyone — auto-creation suits pipelines whose
-consumers create their own subscriptions or attach them promptly (`CREATE_NEVER` restores
-fail-fast behavior for pipelines where a missing topic signals a routing bug).
+subscription exists are not retained for anyone — unless the creation settings set
+`messageRetention`, which makes the topic itself keep them — so auto-creation without it suits
+pipelines whose consumers create their own subscriptions or attach them promptly
+(`CREATE_NEVER` restores fail-fast behavior for pipelines where a missing topic signals a
+routing bug).
 
 ## Error handling
 
@@ -677,7 +729,9 @@ does, so a broken in-flight predicate hangs rather than fails, and the timeout t
 into a test failure. Emulator
 integration tests (testcontainers `PubSubEmulatorContainer`) run the production publisher
 factory and topic admin in their emulator-endpoint mode and cover topic auto-creation
-end-to-end, attributes and per-key ordered delivery (including ordering across the auto-creation
+end-to-end (a fully-populated `TopicCreateOptions` reading back field for field off the created
+topic — from the SQL DDL too — with the option-to-protobuf translation also unit-tested on its
+own), attributes and per-key ordered delivery (including ordering across the auto-creation
 repair), publishing under overridden batching settings, dynamic destinations fanning out to
 several topics (including auto-creating them), and the checkpoint flush (batching thresholds
 set so high that only `flush` can drive delivery, which must also drain the in-flight count —

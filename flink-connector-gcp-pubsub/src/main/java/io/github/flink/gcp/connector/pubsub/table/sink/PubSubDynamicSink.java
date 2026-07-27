@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder;
+import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
@@ -61,6 +62,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
     private final EncodingFormat<SerializationSchema<RowData>> encodingFormat;
     private final TopicDestination topic;
     @Nullable private final CreateDisposition createDisposition;
+    @Nullable private final TopicCreateOptions topicCreateOptions;
     private final PubSubPublisherOptions publisherOptions;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
@@ -79,6 +81,8 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
      * @param topic the destination topic
      * @param createDisposition whether a missing topic may be created, or {@code null} to leave the
      *     sink's own default
+     * @param topicCreateOptions the settings a created topic takes, or {@code null} for service
+     *     defaults
      * @param publisherOptions the publisher and writer tuning
      * @param emulatorEndpoint the emulator to use instead of the service, or {@code null}
      * @param parallelism the sink operator's parallelism, or {@code null} for the job's
@@ -88,6 +92,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
             EncodingFormat<SerializationSchema<RowData>> encodingFormat,
             TopicDestination topic,
             @Nullable CreateDisposition createDisposition,
+            @Nullable TopicCreateOptions topicCreateOptions,
             PubSubPublisherOptions publisherOptions,
             @Nullable String emulatorEndpoint,
             @Nullable Integer parallelism) {
@@ -97,6 +102,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
                 Preconditions.checkNotNull(encodingFormat, "encodingFormat must not be null");
         this.topic = Preconditions.checkNotNull(topic, "topic must not be null");
         this.createDisposition = createDisposition;
+        this.topicCreateOptions = topicCreateOptions;
         this.publisherOptions =
                 Preconditions.checkNotNull(publisherOptions, "publisherOptions must not be null");
         this.emulatorEndpoint = emulatorEndpoint;
@@ -148,6 +154,9 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
         if (createDisposition != null) {
             builder.createDisposition(createDisposition);
         }
+        if (topicCreateOptions != null) {
+            builder.topicCreateOptions(topicCreateOptions);
+        }
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
@@ -163,6 +172,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
                         encodingFormat,
                         topic,
                         createDisposition,
+                        topicCreateOptions,
                         publisherOptions,
                         emulatorEndpoint,
                         parallelism);
@@ -188,6 +198,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
                 && encodingFormat.equals(that.encodingFormat)
                 && topic.equals(that.topic)
                 && createDisposition == that.createDisposition
+                && Objects.equals(topicCreateOptions, that.topicCreateOptions)
                 && publisherOptions.equals(that.publisherOptions)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
@@ -201,6 +212,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
                 encodingFormat,
                 topic,
                 createDisposition,
+                topicCreateOptions,
                 publisherOptions,
                 emulatorEndpoint,
                 parallelism,

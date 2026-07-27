@@ -189,6 +189,12 @@ abstract class AbstractPubSubEmulatorITCase {
         }
     }
 
+    /** Returns the topic as the service reports it. */
+    static com.google.pubsub.v1.Topic describeTopic(TopicDestination destination) {
+        return topicAdminClient.getTopic(
+                TopicName.of(destination.getProject(), destination.getTopic()));
+    }
+
     static void createSubscription(TopicDestination topic, String subscriptionId) {
         subscriptionAdminClient.createSubscription(
                 SubscriptionName.of(PROJECT, subscriptionId),

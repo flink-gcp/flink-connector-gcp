@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
 import io.github.flink.gcp.connector.pubsub.table.sink.PublisherOptionsMapper;
+import io.github.flink.gcp.connector.pubsub.table.sink.TopicCreateOptionsMapper;
 import io.github.flink.gcp.connector.pubsub.table.source.PubSubDynamicSource;
 import io.github.flink.gcp.connector.pubsub.table.source.StartPositionMapper;
 import io.github.flink.gcp.connector.pubsub.table.source.SubscriberOptionsMapper;
@@ -106,6 +107,10 @@ public class PubSubDynamicTableFactory
                         FactoryUtil.SOURCE_PARALLELISM,
                         PubSubConnectorOptions.TOPIC,
                         PubSubConnectorOptions.SINK_CREATE_DISPOSITION,
+                        PubSubConnectorOptions.SINK_AUTO_CREATE_MESSAGE_RETENTION,
+                        PubSubConnectorOptions.SINK_AUTO_CREATE_KMS_KEY_NAME,
+                        PubSubConnectorOptions.SINK_AUTO_CREATE_STORAGE_POLICY_ALLOWED_REGIONS,
+                        PubSubConnectorOptions.SINK_AUTO_CREATE_STORAGE_POLICY_ENFORCE_IN_TRANSIT,
                         PubSubConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
                         PubSubConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD,
                         PubSubConnectorOptions.SINK_BATCHING_DELAY_THRESHOLD,
@@ -149,6 +154,7 @@ public class PubSubDynamicTableFactory
                 encodingFormat,
                 TopicDestination.of(config.get(PubSubConnectorOptions.PROJECT), topic),
                 config.getOptional(PubSubConnectorOptions.SINK_CREATE_DISPOSITION).orElse(null),
+                TopicCreateOptionsMapper.map(config),
                 PublisherOptionsMapper.map(config),
                 config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null));

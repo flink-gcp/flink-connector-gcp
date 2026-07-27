@@ -18,14 +18,18 @@ package io.github.flink.gcp.connector.pubsub.sink.writer;
 
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
+import com.google.pubsub.v1.Topic;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
+import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -44,6 +48,18 @@ class PubSubTopicAutoCreationITCase extends AbstractPubSubEmulatorITCase {
                         destination,
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
                         disposition,
+                        PubSubPublisherOptions.defaults()),
+                new FakeMailboxExecutor());
+    }
+
+    private static PubSubWriter<String> writerWithCreateOptions(
+            TopicDestination destination, TopicCreateOptions createOptions) {
+        return newWriter(
+                TestSinkConfigs.forTopic(
+                        destination,
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        createOptions,
                         PubSubPublisherOptions.defaults()),
                 new FakeMailboxExecutor());
     }
@@ -89,12 +105,50 @@ class PubSubTopicAutoCreationITCase extends AbstractPubSubEmulatorITCase {
         assertThat(topicExists(destination)).isFalse();
     }
 
+    /**
+     * End to end through the writer's repair path: a fully-populated {@link TopicCreateOptions}
+     * reaches the created topic and reads back field for field. The emulator (google-cloud-cli
+     * 441.0.0) stores all four knobs verbatim — what it cannot show is their <em>effect</em>
+     * (actual CMEK encryption, residency enforcement, retention-driven replay), and it validates
+     * nothing (the KMS key here does not exist); those semantics belong to the real-GCP suite
+     * (issue #82).
+     */
+    @Test
+    void theRepairCreatesTheTopicWithTheConfiguredSettings() throws Exception {
+        TopicDestination destination = TopicDestination.of(PROJECT, "created-with-settings");
+        TopicCreateOptions options =
+                TopicCreateOptions.builder()
+                        .messageRetention(Duration.ofHours(2))
+                        .kmsKeyName("projects/p/locations/l/keyRings/r/cryptoKeys/k")
+                        .allowedPersistenceRegions(Arrays.asList("us-central1"))
+                        .enforceInTransit(true)
+                        .build();
+        PubSubWriter<String> writer = writerWithCreateOptions(destination, options);
+        try {
+            writer.write("first", CONTEXT);
+            writer.flush(false);
+        } finally {
+            writer.close();
+        }
+
+        Topic created = describeTopic(destination);
+        assertThat(created.getName())
+                .isEqualTo("projects/" + PROJECT + "/topics/" + destination.getTopic());
+        assertThat(created.getMessageRetentionDuration().getSeconds())
+                .isEqualTo(Duration.ofHours(2).getSeconds());
+        assertThat(created.getKmsKeyName())
+                .isEqualTo("projects/p/locations/l/keyRings/r/cryptoKeys/k");
+        assertThat(created.getMessageStoragePolicy().getAllowedPersistenceRegionsList())
+                .containsExactly("us-central1");
+        assertThat(created.getMessageStoragePolicy().getEnforceInTransit()).isTrue();
+    }
+
     @Test
     void createTopicIsIdempotentForExistingTopic() throws Exception {
         TopicDestination destination = TopicDestination.of(PROJECT, "idempotent-topic");
         try (TopicAdmin admin = newTopicAdmin()) {
-            admin.createTopic(destination);
-            admin.createTopic(destination);
+            admin.createTopic(destination, null);
+            admin.createTopic(destination, null);
         }
 
         assertThat(topicExists(destination)).isTrue();

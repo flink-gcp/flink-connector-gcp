@@ -198,15 +198,25 @@ the DataStream API does. Making them configurable is tracked in
 
 ### Sink
 
-Every option maps onto one setter of `PubSubSinkBuilder` or `PubSubPublisherOptions.Builder`, named
-in the last column. An option left out of the DDL leaves that setter uncalled, so its default is
-whatever the connector or the SDK already uses — the default is never restated here, and there is
-no third state between "configured" and "default".
+Every option maps onto one setter of `PubSubSinkBuilder`, `PubSubPublisherOptions.Builder` or
+`TopicCreateOptions.Builder`, named in the last column. An option left out of the DDL leaves that
+setter uncalled, so its default is whatever the connector or the SDK already uses — the default is
+never restated here, and there is no third state between "configured" and "default".
+
+The `sink.auto-create.*` options configure the topic that `sink.create-disposition` =
+`create-if-needed` (the default) creates — they are additive settings, not an authorization, and
+setting any of them alongside an explicit `create-never` is rejected.
+`sink.auto-create.storage-policy.enforce-in-transit` requires
+`sink.auto-create.storage-policy.allowed-regions`.
 
 | Option | Type | Maps to |
 |---|---|---|
 | `topic` | String, required to write | `topic(...)` |
 | `sink.create-disposition` | `create-if-needed` \| `create-never` | `createDisposition` |
+| `sink.auto-create.message-retention` | Duration | `TopicCreateOptions` `messageRetention` |
+| `sink.auto-create.kms-key-name` | String | `TopicCreateOptions` `kmsKeyName` |
+| `sink.auto-create.storage-policy.allowed-regions` | String list | `TopicCreateOptions` `allowedPersistenceRegions` |
+| `sink.auto-create.storage-policy.enforce-in-transit` | Boolean | `TopicCreateOptions` `enforceInTransit` |
 | `sink.batching.element-count-threshold` | Long | `batchElementCountThreshold` |
 | `sink.batching.request-byte-threshold` | MemorySize | `batchRequestByteThreshold` |
 | `sink.batching.delay-threshold` | Duration | `batchDelayThreshold` |
@@ -314,11 +324,11 @@ of this option: already-acknowledged messages are replayable only if the subscri
 backwards seek recovers only what was never acknowledged.
 
 That is worth checking when the topic was created by `sink.create-disposition` =
-`create-if-needed`, which creates it with **service defaults and no message retention** — so a
-backwards seek over such a topic recovers only the unacknowledged backlog unless the subscription
-itself sets `scan.auto-create.retain-acked-messages`. A created topic cannot be configured at all
-today, unlike a created subscription; that asymmetry is
-[#153]({{< param BookRepo >}}/issues/153).
+`create-if-needed`, which without further options creates it with **service defaults and no
+message retention** — so a backwards seek over such a topic recovers only the unacknowledged
+backlog unless the subscription itself sets `scan.auto-create.retain-acked-messages`, or the
+sink's table set `sink.auto-create.message-retention` when it created the topic
+([#153]({{< param BookRepo >}}/issues/153)).
 
 ### Subscription auto-creation covers one subscription
 
@@ -461,12 +471,19 @@ duplication hazard inexpressible. Lifting it needs a map option, and the DDL tha
 configuration file rather than SQL; deferred to
 [#152]({{< param BookRepo >}}/issues/152).
 
-**The two directions spell resource creation differently, and that is not an oversight.** The sink
+**The two directions gate resource creation differently, and that is not an oversight.** The sink
 gates topic creation with `sink.create-disposition`, an enum; the source has no disposition option
 at all, and the presence of `scan.auto-create.topic` is the authorization. A topic needs no
 configuration to exist, so "create with defaults" means something for it; a subscription without a
-topic binding is not a subscription, so it cannot. Spelling both `create` would put one vocabulary
-over a difference the DataStream API makes on purpose.
+topic binding is not a subscription, so it cannot. The creation *settings*, on the other hand, are
+spelled alike on purpose — `sink.auto-create.*` beside `scan.auto-create.*`
+([#153]({{< param BookRepo >}}/issues/153) re-opened the naming that
+[#137]({{< param BookRepo >}}/issues/137) settled for the gates): a setting is a setting whichever
+side creates the resource, and where both sides carry one it keeps one key
+(`message-retention` on both). The gate difference survives inside that alignment: the sink's
+settings do not authorize anything — the disposition still does, it defaults to
+`create-if-needed`, and combining settings with an explicit `create-never` is rejected, since
+they would configure a topic the table never creates.
 
 **The uber-jar relocates `grpc-netty-shaded` rather than exempting it.** The exemption is the
 tempting answer, because that artifact carries native libraries whose names netty derives from its

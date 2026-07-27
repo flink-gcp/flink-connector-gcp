@@ -342,6 +342,51 @@ public final class PubSubConnectorOptions {
                             "Whether the sink may create the topic when it does not exist.");
 
     // ------------------------------------------------------------------------
+    //  Sink — topic auto-creation settings
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<Duration> SINK_AUTO_CREATE_MESSAGE_RETENTION =
+            ConfigOptions.key("sink.auto-create.message-retention")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a created topic retains published messages, acknowledged or"
+                                    + " not. Without it a message survives only as long as some"
+                                    + " subscription's own retention covers it, so a subscription"
+                                    + " created later — or a backwards seek — cannot reach it.");
+
+    public static final ConfigOption<String> SINK_AUTO_CREATE_KMS_KEY_NAME =
+            ConfigOptions.key("sink.auto-create.kms-key-name")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Cloud KMS key a created topic encrypts messages with"
+                                    + " (customer-managed encryption), as a full key resource name."
+                                    + " The key must exist and the Pub/Sub service account needs"
+                                    + " encrypt/decrypt on it, or publishes to the created topic"
+                                    + " fail.");
+
+    public static final ConfigOption<List<String>> SINK_AUTO_CREATE_STORAGE_POLICY_ALLOWED_REGIONS =
+            ConfigOptions.key("sink.auto-create.storage-policy.allowed-regions")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Cloud regions a created topic may persist messages in (its message"
+                                    + " storage policy). Without it the project's organization"
+                                    + " policy decides.");
+
+    public static final ConfigOption<Boolean> SINK_AUTO_CREATE_STORAGE_POLICY_ENFORCE_IN_TRANSIT =
+            ConfigOptions.key("sink.auto-create.storage-policy.enforce-in-transit")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether a created topic also rejects publishes travelling through"
+                                    + " regions outside the allowed ones, instead of only"
+                                    + " restricting where messages are stored. Requires"
+                                    + " 'sink.auto-create.storage-policy.allowed-regions'.");
+
+    // ------------------------------------------------------------------------
     //  Sink — publisher batching
     // ------------------------------------------------------------------------
 

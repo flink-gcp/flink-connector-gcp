@@ -40,6 +40,7 @@ public class PubSubSinkBuilder<T> {
     private DestinationResolver<? super T> destinationResolver;
     private PubSubSerializationSchema<? super T> serializer;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
+    @Nullable private TopicCreateOptions topicCreateOptions;
     private PubSubPublisherOptions publisherOptions = PubSubPublisherOptions.defaults();
     @Nullable private String emulatorEndpoint;
 
@@ -99,6 +100,24 @@ public class PubSubSinkBuilder<T> {
     }
 
     /**
+     * Sets the settings applied to topics the sink creates under {@link
+     * CreateDisposition#CREATE_IF_NEEDED} — message retention, a customer-managed encryption key
+     * and the message storage policy. Optional: without it a created topic takes every field's
+     * service default. One options object applies to every topic the sink creates, including each
+     * one a {@link DestinationResolver} resolves. Rejected together with {@link
+     * CreateDisposition#CREATE_NEVER}, which never creates a topic these settings could apply to.
+     *
+     * @param topicCreateOptions the creation settings
+     * @return this builder
+     */
+    public PubSubSinkBuilder<T> topicCreateOptions(TopicCreateOptions topicCreateOptions) {
+        this.topicCreateOptions =
+                Preconditions.checkNotNull(
+                        topicCreateOptions, "topicCreateOptions must not be null");
+        return this;
+    }
+
+    /**
      * Sets the publisher and writer tuning options (batching, publish retries, message ordering,
      * the in-flight caps and the topic auto-creation recovery backoff). Optional; defaults to
      * {@link PubSubPublisherOptions#defaults()}.
@@ -140,11 +159,17 @@ public class PubSubSinkBuilder<T> {
         Preconditions.checkState(
                 destinationResolver != null,
                 "A destination is required: set topic(...) or destinationResolver(...).");
+        Preconditions.checkState(
+                topicCreateOptions == null || createDisposition != CreateDisposition.CREATE_NEVER,
+                "topicCreateOptions(...) configures topics the sink creates, but"
+                        + " createDisposition(CREATE_NEVER) never creates one. Remove the options"
+                        + " or use CREATE_IF_NEEDED.");
         return new PubSubPublisherSink<>(
                 new PubSubSinkConfig<>(
                         destinationResolver,
                         serializer,
                         createDisposition,
+                        topicCreateOptions,
                         publisherOptions,
                         emulatorEndpoint));
     }
