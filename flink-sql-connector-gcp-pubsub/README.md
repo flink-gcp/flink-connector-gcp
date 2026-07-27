@@ -32,9 +32,10 @@ CREATE TABLE orders (
 
 The jar redistributes third-party binaries. `META-INF/NOTICE` inside it enumerates every bundled
 artifact grouped by licence, and `META-INF/licenses/` carries the text of each non-Apache-2.0
-licence. Both are checked into this module under `src/main/resources/`, and a test asserts the
-NOTICE matches the build's actual runtime dependency tree in both directions — so a dependency
-added or removed upstream fails the build rather than shipping unrecorded.
+licence. Both are checked in under `src/main/resources/` and both are held to the build: the
+NOTICE's artifact lists are generated from what Maven actually resolves (the prose lives in
+`NOTICE.template`), each licence text is pinned by sha256 to a recorded source, and CI fails on any
+drift — a dependency added, removed or re-licensed upstream cannot ship unrecorded.
 
 ## Provenance and attribution
 

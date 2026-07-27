@@ -225,27 +225,40 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   Software Foundation". Relatedly, the root pom now sets `<organization>`: without it the ASF
   parent's remote-resources bundle stamped that same claim into *every* module jar this project
   builds.
-  **The NOTICE is hand-written and validated, never generated.** `just check-notice <module>` runs
-  `generate-test-resources` (which the `add-third-party` execution is bound to) then
-  `scripts/check-notice.py`, failing on a missing or
-  extra artifact, a wrong licence group, a dangling `META-INF/licenses/` pointer, or an unreferenced
-  licence file — the middle three were all invisible before. Measured before it was built: the
-  plugin's classification matched the hand-written grouping on **all 52 artifacts**, including the
-  two that inherit `<licenses>` from a parent pom (guava, animal-sniffer), the dual-licensed
-  `javax.annotation-api`, and re2j's non-SPDX "Go License". `licenseMerges` in the root pom's
-  `pluginManagement` is what makes the two comparable — this tree alone spells Apache-2.0 six ways —
-  and it lives there so a sibling SQL module inherits one vocabulary rather than inventing a second.
+  **The NOTICE's prose is hand-written; everything mechanical is generated and pinned.** The split
+  is `NOTICE.template` (module root): human paragraphs plus one `{{Licence}}` placeholder per
+  group, which `scripts/check-notice.py --update` fills from what license-maven-plugin resolved —
+  so a wrong group, a duplicate bullet or a stale version is not a checkable mistake but an
+  *inexpressible* one. `just update-notice <module>` regenerates; `just check-notice <module>`
+  (CI) re-renders in memory and fails on any drift, offline. Licence *texts* come only from
+  `scripts/licence-sources.json`, each entry pinned by **sha256** with its provenance recorded:
+  the artifact's own jar where one ships a text (threetenbp, javax.annotation-api — best
+  provenance, version-exact), otherwise a curated URL whose ref matches the bundled version and
+  whose note says why (protobuf's Java 4.33.x maps to core tag v33.x; gax and google-auth live in
+  *archived* — hence frozen — repositories with no tag for these versions; POM-declared URLs are
+  often HTML pages or bare templates, and the script rejects HTML outright). A fetch that stops
+  hashing to its pin fails: upstream changed, a human reviews. This replaced an earlier state
+  where five texts had been curl'd from repository heads chosen by hand — wrong provenance, and
+  the reason the pin exists. **Curating a new entry is judgment, not scripting**: check the jar
+  first, then find the publisher's own text at the bundled version, and record the reasoning in
+  the entry's note. Measured before any of this was built: the plugin's classification matched
+  the hand grouping on **all 52 artifacts**, including the two that inherit `<licenses>` from a
+  parent pom (guava, animal-sniffer), the dual-licensed `javax.annotation-api`, and re2j's
+  non-SPDX "Go License". `licenseMerges` in the root pom's `pluginManagement` is what makes the
+  vocabulary stable — this tree alone spells Apache-2.0 six ways — and it lives there so a
+  sibling SQL module inherits one vocabulary rather than inventing a second.
   **What a sibling actually costs, measured against the BigQuery module's 113-artifact tree**: the
-  plugin block and one execution in its pom, a CI step, and *two* new `LICENCE_GROUPS` keys in the
-  script (`BSD-2-Clause`, `Public Domain`). No new `licenseMerges` — that list was extended here,
-  once, to cover the spellings that tree adds (`Apache License V2.0`, `BSD 3-clause`, `MIT License`,
-  `The MIT License`, `The BSD 2-Clause License`), and `failOnMissing` does not fire on it. So
-  "reused unchanged" was never quite true; "reused without re-deriving the vocabulary" is.
+  plugin block and one execution in its pom, its own `NOTICE.template`, a CI step, and
+  `licence-sources.json` entries for its non-Apache artifacts (the file and its pins are shared, so
+  overlapping dependencies cost nothing twice). No new `licenseMerges` — that list was extended
+  here, once, to cover the spellings that tree adds (`Apache License V2.0`, `BSD 3-clause`,
+  `MIT License`, `The MIT License`, `The BSD 2-Clause License`), and `failOnMissing` does not fire
+  on it.
   **`download-licenses` must not be used for the licence texts**: it names files after the *licence*,
   so protobuf, gax, google-auth and threetenbp collapse into one BSD-3-Clause file and the last
   download wins. Measured — it left ThreeTen's copyright line standing for Google's code, and the
-  copyright holder is part of a BSD or MIT text. Those files stay hand-collected from each project's
-  own LICENSE. **Invoke the goal through a phase, never as a bare `license:add-third-party`** — a
+  copyright holder is part of a BSD or MIT text.
+  **Invoke the goal through a phase, never as a bare `license:add-third-party`** — a
   CLI goal invocation selects reactor modules but does not build them, so `-pl` cannot resolve the
   connector the module bundles, not even with `-am`, unless an earlier `install` happened to leave
   it in the local repository. That failed in CI and passed locally twice for exactly that reason.

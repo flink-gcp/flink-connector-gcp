@@ -105,13 +105,15 @@ is the first thing a second GCP SQL connector would do.
 `META-INF/licenses/` carries the full text of each non-Apache-2.0 one — protobuf, gax, the Google
 auth library, ThreeTen backport, RE2/J, animal-sniffer and the javax annotation API.
 
-Both are hand-written, because a NOTICE is a legal statement rather than a build artifact. What is
-automated is holding them to the bundle: `just check-notice <module>` resolves every bundled
-dependency's declared licence and fails if the NOTICE lists an artifact that is not bundled, omits
-one that is, files one under the wrong licence, points at a licence file that does not exist, or
-leaves a licence file unreferenced. The licence *texts* are deliberately not fetched automatically —
-tooling that names files after the licence collapses artifacts that share one, and the copyright
-holder is part of a BSD or MIT text.
+The prose of the NOTICE is human-written, in the module's `NOTICE.template`; the artifact lists are
+generated into it from what Maven actually resolves, so a wrong licence grouping or a stale version
+cannot be written at all. Each licence text has a pinned source — the artifact's own jar where one
+ships a text, otherwise a curated URL matched to the bundled version — recorded with its sha256, so
+a text that changes upstream fails the build instead of being shipped unreviewed. `just
+update-notice <module>` regenerates both after a dependency change; `just check-notice <module>`
+verifies, offline, that what is checked in still matches the bundle and the pins. Generic
+licence-name URLs (`opensource.org`, `spdx.org`) are rejected as sources: they serve HTML pages or
+bare templates, and the copyright holder is part of a BSD or MIT text.
 
 ## The payload and the rest of the message
 

@@ -407,6 +407,11 @@ limitations under the License.
                              own entry. -->
                         <exclude>**/src/main/resources/META-INF/NOTICE</exclude>
                         <exclude>**/src/main/resources/META-INF/licenses/**</exclude>
+                        <!-- The NOTICE's human-written half and the pinned licence
+                             sources: a NOTICE fragment cannot carry this project's
+                             header, and JSON has no comment syntax rat accepts. -->
+                        <exclude>**/NOTICE.template</exclude>
+                        <exclude>scripts/licence-sources.json</exclude>
                         <!-- Documentation site: the Go module files are rewritten by
                              `hugo mod` and would not keep a header, the chroma
                              stylesheets are verbatim `hugo gen chromastyles` output

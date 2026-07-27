@@ -1,0 +1,68 @@
+{
+  "_comment": [
+    "Where each bundled licence text comes from, pinned by sha256. Consumed by",
+    "scripts/check-notice.py: --update fetches/extracts these into the module's",
+    "META-INF/licenses/, the default check verifies the checked-in files still",
+    "hash to the recorded values. A fetch whose content does not match its",
+    "recorded sha256 fails -- upstream changed, and a human decides.",
+    "",
+    "Every artifact whose (merged) licence is not Apache-2.0 must appear in",
+    "exactly one entry's artifacts list; check-notice.py fails otherwise, which",
+    "is the prompt to curate a new entry here. Artifacts are named as",
+    "groupId:artifactId, shared across modules and versions -- the sha pin is",
+    "what detects an upstream text change, not the version.",
+    "",
+    "source.jar takes the text out of the bundled artifact's own jar (best",
+    "provenance: version-exact, publisher-shipped). source.url fetches over",
+    "HTTPS; a GITHUB_TOKEN env var or `gh auth token` is sent when present,",
+    "though raw.githubusercontent.com needs neither. Each url entry's note says",
+    "why that ref is the right one, because none of these five artifacts ships",
+    "its licence text in any jar (main jar and sources jar both checked), and",
+    "several POM-declared licence URLs point at HTML pages or bare licence",
+    "templates without the copyright line."
+  ],
+  "files": {
+    "LICENSE.protobuf": {
+      "artifacts": ["com.google.protobuf:protobuf-java", "com.google.protobuf:protobuf-java-util"],
+      "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/v33.2/LICENSE",
+      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d",
+      "note": "Tag v33.2 is the release Java artifact 4.33.2 ships from (Java majors are offset by 4). The POM-declared URL is opensource.org, which serves an HTML page."
+    },
+    "LICENSE.gax": {
+      "artifacts": ["com.google.api:api-common", "com.google.api:gax", "com.google.api:gax-grpc", "com.google.api:gax-httpjson"],
+      "url": "https://raw.githubusercontent.com/googleapis/gax-java/master/LICENSE",
+      "sha256": "f3096c48a05a56e6c4f85ea75d4784fe32954768473eae3c33df6714257fbd4d",
+      "note": "The POM-declared repository. Archived, hence frozen -- which makes it a stable source; no per-version tag exists for these versions anywhere fetchable (sdk-platform-java main carries older gax than this BOM resolves)."
+    },
+    "LICENSE.google-auth-library": {
+      "artifacts": ["com.google.auth:google-auth-library-credentials", "com.google.auth:google-auth-library-oauth2-http"],
+      "url": "https://raw.githubusercontent.com/googleapis/google-auth-library-java/master/LICENSE",
+      "sha256": "b42ab23e81b855c025453a25d1f1eab7387839b0fcbb153921fd858cde4a7c53",
+      "note": "The project's repository, archived and frozen; it has no tag for this version (released after the move) and the POM-declared URL is opensource.org's HTML page."
+    },
+    "LICENSE.re2j": {
+      "artifacts": ["com.google.re2j:re2j"],
+      "url": "https://raw.githubusercontent.com/google/re2j/re2j-1.8/LICENSE",
+      "sha256": "26a6133577cc8e48d7c002ac4d4a554786e7c0e1732e10f2db205e5e494c411b",
+      "note": "The release tag for the bundled 1.8. The POM-declared URL is golang.org/LICENSE, which serves an HTML page."
+    },
+    "LICENSE.animal-sniffer": {
+      "artifacts": ["org.codehaus.mojo:animal-sniffer-annotations"],
+      "url": "https://raw.githubusercontent.com/mojohaus/animal-sniffer/animal-sniffer-1.27/LICENSE",
+      "sha256": "0d17e86dbd1f3504cfa311e67827e1569ad27bbfff29cc405194e4a2549e9df8",
+      "note": "The release tag for the bundled 1.27. The POM-declared URL is spdx.org's bare MIT template, which lacks the copyright line."
+    },
+    "LICENSE.threetenbp": {
+      "artifacts": ["org.threeten:threetenbp"],
+      "jar": "META-INF/LICENSE.txt",
+      "sha256": "f046720e38f8b071dbd0656ded91ad6e9328a4bb48bd50632f185598885b9cdd",
+      "note": "Shipped inside the artifact's own jar."
+    },
+    "LICENSE.javax-annotation-api": {
+      "artifacts": ["javax.annotation:javax.annotation-api"],
+      "jar": "META-INF/LICENSE.txt",
+      "sha256": "a4c80869daf4350b6773bd5e6ee1d0a6cc52b63db3a3d2dc20961b0cdd272a5c",
+      "note": "Shipped inside the artifact's own jar."
+    }
+  }
+}

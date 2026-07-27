@@ -164,10 +164,20 @@ lint:
 # the reactor. generate-test-resources is where the licence goal is bound, beside
 # the two maven-dependency-plugin executions that feed the module's own tests.
 #
-# Does the module's hand-written META-INF/NOTICE still match what it bundles?
+# Does the module's generated META-INF/NOTICE still match what it bundles?
 check-notice module:
     {{ mvn }} -pl {{ module }} -am generate-test-resources
     scripts/check-notice.py {{ module }}
+
+# Rewrites META-INF/NOTICE from the module's NOTICE.template and the resolved
+# bundle, and re-materialises META-INF/licenses/ from the pinned sources in
+# scripts/licence-sources.json (fetching over HTTPS where the artifact's own jar
+# ships no licence text). Run after a dependency change, review the diff, commit.
+#
+# Regenerate the module's META-INF/NOTICE and META-INF/licenses/.
+update-notice module:
+    {{ mvn }} -pl {{ module }} -am generate-test-resources
+    scripts/check-notice.py --update {{ module }}
 
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
 # into build failures.

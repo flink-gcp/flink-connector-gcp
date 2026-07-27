@@ -13,81 +13,81 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Check a shaded module's hand-written META-INF/NOTICE against what Maven resolved.
+"""Generate and verify a shaded module's META-INF/NOTICE and META-INF/licenses/.
 
-The NOTICE of an uber-jar is a legal statement, so it stays hand-written and
-human-reviewed rather than generated. What is mechanical is whether it still
-*matches* the bundle, and that is what this checks:
+The prose of a NOTICE is human-written and lives in the module's NOTICE.template;
+everything mechanical is generated from it:
 
-  1. every bundled artifact is listed, and nothing else is;
-  2. each one is listed under the licence its own POM declares;
-  3. every META-INF/licenses/ file the NOTICE points at exists;
-  4. no licence file sits there unreferenced.
+  - each `{{Licence Name}}` placeholder becomes the sorted bullet list of the
+    bundled artifacts license-maven-plugin resolved to that licence (names as
+    normalised by the licenseMerges in the root POM);
+  - every artifact whose licence is not Apache-2.0 must have an entry in
+    scripts/licence-sources.json, which pins where its licence text comes from
+    (the artifact's own jar where it ships one, an https URL otherwise) and the
+    sha256 of that text. --update materialises those files; the check verifies
+    the checked-in files still hash to the recorded values.
 
-Only (1) had a guard before; a dependency changing its licence between versions
-was invisible.
+Modes:
+    check-notice.py <module>            offline check (CI): regenerate the NOTICE
+                                        in memory and fail on any difference from
+                                        the checked-in one, or on any licence file
+                                        missing, unpinned, tampered or orphaned
+    check-notice.py --update <module>   rewrite META-INF/NOTICE and
+                                        META-INF/licenses/ (fetches url sources)
 
-Deliberately not automated: the licence *texts* under META-INF/licenses/.
-license-maven-plugin's download-licenses names files after the licence, so
-several artifacts sharing one licence collapse into a single file and the last
-download wins. In this bundle that put ThreeTen's copyright line in the file
-covering protobuf, gax and google-auth as well — wrong, since the copyright
-holder is part of a BSD or MIT text. Those files are collected by hand from each
-project's own LICENSE.
+Both read target/generated-sources/license/THIRD-PARTY.txt, which the
+`just check-notice` / `just update-notice` recipes regenerate first.
 
-Usage:  check-notice.py <module-directory>
+A fetched text must hash to the pinned sha256 — an upstream edit is a failure a
+human reviews, never something silently shipped. HTML responses are rejected
+outright: several POM-declared licence URLs serve web pages, which is how
+unreviewed content would otherwise sneak in. GITHUB_TOKEN (or `gh auth token`)
+is sent when available; raw.githubusercontent.com needs neither.
 
-Reads target/generated-sources/license/THIRD-PARTY.txt, which `just check-notice`
-regenerates first. Standard library only, by design: nothing here needs a
-dependency, and adding one would mean a package manager for a single script.
+Standard library only, deliberately: nothing here justifies a package manager.
 """
 
+import argparse
+import hashlib
+import json
 import re
+import subprocess
 import sys
+import urllib.request
+import zipfile
 from pathlib import Path
 
-# license-maven-plugin's normalised names (see licenseMerges in the root POM)
-# mapped to a phrase that identifies the matching NOTICE paragraph. This table is
-# the seam between machine output and human prose, so it is the one place a new
-# licence group has to be registered — the check fails loudly rather than
-# silently skipping if a group appears that is not here.
-LICENCE_GROUPS = {
-    "Apache-2.0": "Apache Software License 2.0",
-    "BSD-3-Clause": "BSD 3-Clause",
-    "Go License": "Go License",
-    "MIT": "MIT License",
-    "CDDL + GPLv2 with classpath exception": "CDDL 1.0",
-}
+SOURCES = Path(__file__).parent / "licence-sources.json"
 
 # `    (Licence Name) Artifact Description (groupId:artifactId:version - url)`
 THIRD_PARTY_LINE = re.compile(
     r"^\s+\((?P<licence>.+?)\)\s+.*\((?P<ga>[\w.\-]+:[\w.\-]+):(?P<version>[\w.+\-]+)\s"
 )
-
-# The report's own header: `Lists of 52 third-party dependencies.` Compared against
-# the number of lines actually parsed, because a *partial* parse is the dangerous
-# one — an artifact the regex cannot read is simply absent, and nothing then
-# demands the NOTICE mention it. That is exactly the new-dependency case this
-# script exists to catch, and it is the direction that would otherwise be silent
-# (an artifact in the NOTICE but not parsed is loud already). A classifier in the
-# coordinates is one real way to trip it.
+# The report's own count. Compared against what parsed, because a *partial*
+# parse is the dangerous direction: an artifact the regex cannot read is simply
+# absent, and nothing then demands the NOTICE mention it.
 THIRD_PARTY_COUNT = re.compile(r"^Lists of (?P<count>\d+) third-party dependencies")
 
-NOTICE_HEADING = "This project bundles"
-NOTICE_BULLET = "- "
-# Marks a paragraph that promises a licence file for each of its entries.
-NOTICE_PROMISES_FILES = "See bundled license files"
+PLACEHOLDER = re.compile(r"^\{\{(?P<group>.+)\}\}$")
+
+# Every group except this one must carry licence texts in META-INF/licenses/.
+TEXT_EXEMPT_GROUP = "Apache-2.0"
+
+
+def fail(message: str) -> "sys.NoReturn":
+    print(message, file=sys.stderr)
+    sys.exit(1)
 
 
 def read_resolved(module: Path) -> dict[str, str]:
-    """Return {groupId:artifactId:version -> licence} from license-maven-plugin."""
+    """Return {groupId:artifactId:version -> merged licence name} from the report."""
     report = module / "target" / "generated-sources" / "license" / "THIRD-PARTY.txt"
     if not report.is_file():
-        sys.exit(
-            f"{report} is missing. Run `just check-notice {module.name}`, which "
-            f"regenerates it before calling this script."
+        fail(
+            f"{report} is missing. Run `just check-notice {module.name}` (or "
+            f"`just update-notice`), which regenerates it first."
         )
-    resolved = {}
+    resolved: dict[str, str] = {}
     declared = None
     for line in report.read_text(encoding="utf-8").splitlines():
         header = THIRD_PARTY_COUNT.match(line)
@@ -95,12 +95,11 @@ def read_resolved(module: Path) -> dict[str, str]:
             declared = int(header["count"])
         match = THIRD_PARTY_LINE.match(line)
         if match:
-            gav = f"{match['ga']}:{match['version']}"
-            resolved[gav] = match["licence"]
+            resolved[f"{match['ga']}:{match['version']}"] = match["licence"]
     if declared is None:
-        sys.exit(f"Found no dependency count in {report}; its format has changed.")
+        fail(f"Found no dependency count in {report}; its format has changed.")
     if declared != len(resolved):
-        sys.exit(
+        fail(
             f"{report} says {declared} dependencies but {len(resolved)} could be "
             f"parsed. Every unparsed one is an artifact nothing would require "
             f"META-INF/NOTICE to list, so this is a hard failure rather than a "
@@ -109,149 +108,212 @@ def read_resolved(module: Path) -> dict[str, str]:
     return resolved
 
 
-class Notice:
-    """What a hand-written META-INF/NOTICE claims."""
+def load_sources() -> dict[str, dict]:
+    files = json.loads(SOURCES.read_text(encoding="utf-8"))["files"]
+    owners: dict[str, str] = {}
+    for name, entry in files.items():
+        for ga in entry["artifacts"]:
+            if ga in owners:
+                fail(f"{SOURCES}: {ga} appears under both {owners[ga]} and {name}.")
+            owners[ga] = name
+    return files
 
-    def __init__(self) -> None:
-        self.listed: dict[str, str] = {}  # gav -> licence group
-        self.pointers: dict[str, str] = {}  # gav -> licence file path, as written
-        self.duplicates: list[str] = []  # gav listed by more than one bullet
-        self.missing_pointers: list[str] = []  # gav in a group that promises a file
 
+def render_notice(
+    template: Path, resolved: dict[str, str], files: dict[str, dict]
+) -> str:
+    """Fill each {{Licence}} placeholder with its sorted, pointered bullet list."""
+    owners = {ga: name for name, entry in files.items() for ga in entry["artifacts"]}
+    by_group: dict[str, list[str]] = {}
+    for gav, licence in resolved.items():
+        by_group.setdefault(licence, []).append(gav)
 
-def read_notice(notice: Path) -> Notice:
-    """Parse a hand-written NOTICE into the claims this script can check."""
-    parsed = Notice()
-    group = None
-    promises_file = False
-    for line in notice.read_text(encoding="utf-8").splitlines():
-        if line.startswith(NOTICE_HEADING):
-            # All matches, not the first: a heading naming two licences this script
-            # knows would otherwise be filed under whichever appears earlier in
-            # LICENCE_GROUPS, silently.
-            matches = [n for n, phrase in LICENCE_GROUPS.items() if phrase in line]
-            if len(matches) != 1:
-                sys.exit(
-                    f"{notice} has a licence paragraph matching {len(matches)} known "
-                    f"licences ({', '.join(matches) or 'none'}):\n  {line}\n"
-                    f"Adjust LICENCE_GROUPS in {Path(__file__).name} so it matches "
-                    f"exactly one."
+    lines: list[str] = []
+    rendered_groups: set[str] = set()
+    for line in template.read_text(encoding="utf-8").splitlines():
+        match = PLACEHOLDER.match(line.strip())
+        if not match:
+            lines.append(line)
+            continue
+        group = match["group"]
+        if group not in by_group:
+            fail(
+                f"{template} has a paragraph for '{group}' but no bundled artifact "
+                f"resolves to it. Remove the paragraph, or fix licenseMerges."
+            )
+        rendered_groups.add(group)
+        for gav in sorted(by_group[group]):
+            ga = gav.rsplit(":", 1)[0]
+            owner = owners.get(ga)
+            if group == TEXT_EXEMPT_GROUP:
+                lines.append(f"- {gav}")
+            elif owner is None:
+                fail(
+                    f"{gav} is bundled under '{group}', which requires its licence "
+                    f"text in META-INF/licenses/ — but no entry in {SOURCES} covers "
+                    f"{ga}. Curate one: prefer a licence file inside the artifact's "
+                    f"own jar; otherwise pin a URL whose ref matches the bundled "
+                    f"version and record why it is the right one."
                 )
-            group = matches[0]
-            promises_file = False
-        elif line.startswith(NOTICE_PROMISES_FILES):
-            promises_file = True
-        elif line.startswith(NOTICE_BULLET) and group:
-            # `- groupId:artifactId:version` optionally followed by `(path)`.
-            fields = line[len(NOTICE_BULLET) :].split()
-            if not fields:
-                sys.exit(f"{notice} has a bullet with no coordinate:\n  {line}")
-            gav = fields[0]
-            if gav in parsed.listed:
-                parsed.duplicates.append(gav)
-            parsed.listed[gav] = group
-            if len(fields) > 1:
-                parsed.pointers[gav] = fields[1].strip("()")
-            elif promises_file:
-                # The paragraph says "See bundled license files for details" and this
-                # entry names none. The orphan check below cannot notice, because a
-                # licence file shared with a sibling entry is still referenced.
-                parsed.missing_pointers.append(gav)
-    return parsed
+            else:
+                lines.append(f"- {gav} (META-INF/licenses/{owner})")
+
+    missing = set(by_group) - rendered_groups
+    if missing:
+        fail(
+            f"Bundled artifacts resolve to licences the template has no paragraph "
+            f"for: {sorted(missing)}. Add a paragraph with a "
+            f"{{{{placeholder}}}} to {template}."
+        )
+    return "\n".join(lines) + "\n"
 
 
-def report(title: str, entries: list[str]) -> bool:
-    if entries:
-        print(f"\n{title}", file=sys.stderr)
-        for entry in sorted(entries):
-            print(f"  {entry}", file=sys.stderr)
-    return bool(entries)
+def github_token() -> str | None:
+    import os
+
+    if os.environ.get("GITHUB_TOKEN"):
+        return os.environ["GITHUB_TOKEN"]
+    try:
+        out = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        return out.stdout.strip() or None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def obtain_text(name: str, entry: dict, module: Path) -> bytes:
+    """Fetch or extract one licence text and verify it against its pinned sha256."""
+    if "jar" in entry:
+        classpath = module / "target" / "runtime-classpath.txt"
+        if not classpath.is_file():
+            fail(f"{classpath} is missing; run the build first.")
+        ga = entry["artifacts"][0]
+        artifact_id = ga.split(":")[1]
+        jars = [
+            p
+            for p in classpath.read_text(encoding="utf-8").strip().split(":")
+            if Path(p).name.startswith(artifact_id + "-")
+        ]
+        if len(jars) != 1:
+            fail(
+                f"{name}: expected one jar for {ga} on the runtime classpath, found {jars}"
+            )
+        body = zipfile.ZipFile(jars[0]).read(entry["jar"])
+    else:
+        request = urllib.request.Request(
+            entry["url"], headers={"User-Agent": "flink-connector-gcp-notice"}
+        )
+        token = github_token()
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
+        body = urllib.request.urlopen(request, timeout=30).read()
+        if b"<html" in body[:400].lower() or b"<!doctype" in body[:400].lower():
+            fail(
+                f"{name}: {entry['url']} served an HTML page, not a licence text. "
+                f"Several POM-declared licence URLs do this; pin a raw text URL."
+            )
+    digest = hashlib.sha256(body).hexdigest()
+    if digest != entry["sha256"]:
+        fail(
+            f"{name}: content hash {digest} does not match the pin in {SOURCES}. "
+            f"The source changed. Review the new text, and update the pin only "
+            f"if the change is legitimate."
+        )
+    return body
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        sys.exit(f"usage: {Path(__file__).name} <module-directory>")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("module", type=Path)
+    parser.add_argument(
+        "-u",
+        "--update",
+        action="store_true",
+        help="rewrite META-INF/NOTICE and META-INF/licenses/ instead of checking",
+    )
+    args = parser.parse_args()
 
-    module = Path(sys.argv[1])
+    module: Path = args.module
+    template = module / "NOTICE.template"
     notice = module / "src" / "main" / "resources" / "META-INF" / "NOTICE"
     licence_dir = notice.parent / "licenses"
-    if not notice.is_file():
-        sys.exit(f"{notice} does not exist.")
+    if not template.is_file():
+        fail(f"{template} does not exist.")
 
     resolved = read_resolved(module)
-    notice_claims = read_notice(notice)
-    listed, pointers = notice_claims.listed, notice_claims.pointers
-    # Pointers are jar paths (`META-INF/licenses/LICENSE.x`), so they resolve against
-    # the resource root, not the licence directory. Checking the whole path rather
-    # than the basename is what distinguishes META-INF/licenses/ from gRPC's own
-    # META-INF/license/ — a confusion this NOTICE has a paragraph warning about, and
-    # which a basename check cannot see.
-    resource_root = notice.parent.parent
-    # Regular files only, and no dotfiles: macOS drops a .DS_Store into any directory
-    # Finder visits, which would otherwise be reported as an unreferenced licence file
-    # and fail the check on a developer's machine but never in CI. The repository's
-    # apache-rat configuration excludes `**/.*` for the same reason.
-    on_disk = (
-        {
-            p.name
-            for p in licence_dir.iterdir()
-            if p.is_file() and not p.name.startswith(".")
-        }
-        if licence_dir.is_dir()
-        else set()
-    )
+    files = load_sources()
+    # Only the entries whose artifacts this module actually bundles.
+    bundled_ga = {gav.rsplit(":", 1)[0] for gav in resolved}
+    relevant = {
+        name: entry
+        for name, entry in files.items()
+        if any(ga in bundled_ga for ga in entry["artifacts"])
+    }
+    expected_notice = render_notice(template, resolved, files)
 
-    failed = False
-    failed |= report(
-        "Bundled but missing from META-INF/NOTICE:", sorted(set(resolved) - set(listed))
-    )
-    failed |= report(
-        "Listed in META-INF/NOTICE but not bundled:",
-        sorted(set(listed) - set(resolved)),
-    )
-    failed |= report(
-        "Listed under the wrong licence (POM says / NOTICE says):",
-        [
-            f"{gav}: {licence} / {listed[gav]}"
-            for gav, licence in resolved.items()
-            if gav in listed and licence != listed[gav]
-        ],
-    )
-    failed |= report(
-        "META-INF/NOTICE points at a licence file that does not exist:",
-        [
-            f"{gav} -> {path}"
-            for gav, path in pointers.items()
-            if not (resource_root / path).is_file()
-        ],
-    )
-    failed |= report(
-        "Licence file present but referenced by nothing in META-INF/NOTICE:",
-        sorted(on_disk - {Path(p).name for p in pointers.values()}),
-    )
-    failed |= report(
-        "Listed under a licence that promises a file, but naming none:",
-        notice_claims.missing_pointers,
-    )
-    failed |= report(
-        "Listed by more than one bullet in META-INF/NOTICE:",
-        notice_claims.duplicates,
-    )
-
-    if failed:
+    if args.update:
+        notice.write_text(expected_notice, encoding="utf-8")
+        licence_dir.mkdir(parents=True, exist_ok=True)
+        for name, entry in relevant.items():
+            (licence_dir / name).write_bytes(obtain_text(name, entry, module))
+        for stray in licence_dir.iterdir():
+            if (
+                stray.is_file()
+                and not stray.name.startswith(".")
+                and stray.name not in relevant
+            ):
+                stray.unlink()
+                print(f"removed {stray} (no longer in {SOURCES.name})")
         print(
-            f"\n{module.name}: META-INF/NOTICE does not match the resolved bundle.\n"
-            "Fix the NOTICE, and for a newly added artifact confirm its licence "
-            "against its own POM before grouping it — the generated "
-            "META-INF/DEPENDENCIES lists licences pre-mediation, so its versions "
-            "can differ from what actually resolves.",
-            file=sys.stderr,
+            f"{module.name}: wrote META-INF/NOTICE ({len(resolved)} artifacts) "
+            f"and {len(relevant)} licence files."
         )
-        return 1
+        return 0
 
+    # ---- offline check ----
+    problems: list[str] = []
+    actual = notice.read_text(encoding="utf-8") if notice.is_file() else ""
+    if actual != expected_notice:
+        problems.append(
+            "META-INF/NOTICE differs from what NOTICE.template + the resolved "
+            "bundle generate. Run `just update-notice` and commit the result."
+        )
+    for name, entry in relevant.items():
+        path = licence_dir / name
+        if not path.is_file():
+            problems.append(
+                f"META-INF/licenses/{name} is missing; run `just update-notice`."
+            )
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
+            problems.append(
+                f"META-INF/licenses/{name} does not hash to the pin in "
+                f"{SOURCES.name} — edited by hand, or the pin moved without "
+                f"regenerating. Run `just update-notice`."
+            )
+    if licence_dir.is_dir():
+        for stray in licence_dir.iterdir():
+            if (
+                stray.is_file()
+                and not stray.name.startswith(".")
+                and stray.name not in relevant
+            ):
+                problems.append(
+                    f"META-INF/licenses/{stray.name} is referenced by nothing in "
+                    f"{SOURCES.name}; run `just update-notice` to remove it."
+                )
+
+    if problems:
+        for p in problems:
+            print(f"  {p}", file=sys.stderr)
+        fail(f"\n{module.name}: NOTICE/licences are stale relative to the bundle.")
     print(
-        f"{module.name}: {len(resolved)} bundled artifacts, "
-        f"{len(on_disk)} licence files, all accounted for."
+        f"{module.name}: NOTICE matches the bundle ({len(resolved)} artifacts, "
+        f"{len(relevant)} licence files, all hashes pinned)."
     )
     return 0
 

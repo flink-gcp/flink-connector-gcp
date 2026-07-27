@@ -23,9 +23,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   passing nothing means the version pinned in the pom
 - `just binary-compat 2.3.0` — the floor-build/fingerprint/ceiling-rerun/diff sequence, whose
   order is load-bearing. Reproducing a red weekly `binary_compat` is what it is for
-- `just check-notice <module>` — holds a shaded module's hand-written `META-INF/NOTICE` to the
-  licences Maven resolves for its bundle, and checks the `META-INF/licenses/` files it points at.
-  Takes the module as an argument, so the SQL uber-jars to come reuse it. **Invoke the licence goal
+- `just check-notice <module>` / `just update-notice <module>` — a shaded module's
+  `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
+  what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
+  `scripts/licence-sources.json`. `update-notice` regenerates after a dependency change;
+  `check-notice` verifies offline in CI. Both take the module as an argument, so the SQL uber-jars
+  to come reuse them. **Invoke the licence goal
   through a phase, never as a bare `license:add-third-party`**: a CLI goal invocation selects
   reactor modules without building them, so the module cannot resolve the connector it bundles —
   `-am` does not change that, and it only appears to work against a local repository some earlier
