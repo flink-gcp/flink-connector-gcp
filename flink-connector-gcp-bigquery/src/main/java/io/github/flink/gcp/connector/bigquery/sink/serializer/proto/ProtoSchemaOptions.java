@@ -224,9 +224,12 @@ public final class ProtoSchemaOptions implements Serializable {
         boolean json = isJsonField(field, path);
         boolean geography = isGeographyField(field, path);
         // A column has one type, so a field claimed by both markers is a configuration error rather
-        // than a precedence question. Checked here because this is the one place both are visible —
-        // two annotation vocabularies cannot be intersected at build() time, and neither can an
-        // option be intersected with a path.
+        // than a precedence question. Checked here because this is the one place both are visible:
+        // an
+        // option cannot be intersected with a path without a descriptor, and neither can two
+        // *different* option numbers that happen to meet on one field. One number registered as
+        // both
+        // markers needs no descriptor and is rejected earlier, in build().
         Preconditions.checkArgument(
                 !(json && geography),
                 "Field %s is marked as both a JSON and a GEOGRAPHY column",
@@ -423,7 +426,10 @@ public final class ProtoSchemaOptions implements Serializable {
          *
          * <p>The option is declared exactly as a JSON one is — a {@code bool} extension of {@code
          * google.protobuf.FieldOptions}. What differs is the field it may mark: a string and
-         * nothing else, protobuf having no geometry type for a message to be.
+         * nothing else, protobuf having no geometry type for a message to be. A non-string field
+         * carrying the option is <b>rejected</b> when the schema is derived, not skipped — which
+         * matters more here than for a path, since an annotation applied across a corpus selects
+         * fields you did not enumerate, and one landing on a message field fails the job.
          *
          * @param extension the generated extension for a {@code bool} option on {@code
          *     google.protobuf.FieldOptions}
@@ -447,12 +453,14 @@ public final class ProtoSchemaOptions implements Serializable {
          * appears in the message tree, at any nesting depth.
          *
          * <p>The geography counterpart of {@link #jsonFieldOptionNumber}, with the same mechanics
-         * and the same two caveats. The number alone is not an identity, protobuf's private
-         * extension range having no registry. And unlike {@link #geographyFieldPath}, a number
-         * matching no field is <em>not</em> an error — one configuration is meant to serve every
-         * message type a job writes, and a message legitimately need not have geography columns —
-         * so a mistyped number yields {@code STRING} columns instead of failing. Check the outcome
-         * with {@code BigQueryProtoSerializer#getTableSchema}.
+         * and caveats — including that it is additive, and that a number {@link
+         * #geographyFieldOption} already supplied a name for keeps the name. Two are worth
+         * restating here. The number alone is not an identity, protobuf's private extension range
+         * having no registry. And unlike {@link #geographyFieldPath}, a number matching no field is
+         * <em>not</em> an error — one configuration is meant to serve every message type a job
+         * writes, and a message legitimately need not have geography columns — so a mistyped number
+         * yields {@code STRING} columns instead of failing. Check the outcome with {@code
+         * BigQueryProtoSerializer#getTableSchema}.
          *
          * @param extensionNumber the extension number of the option within {@code
          *     google.protobuf.FieldOptions}
@@ -525,8 +533,24 @@ public final class ProtoSchemaOptions implements Serializable {
                     extensionNumber);
         }
 
-        /** Builds the options. */
+        /**
+         * Builds the options, rejecting one extension number registered as <em>both</em> a JSON and
+         * a geography option.
+         *
+         * <p>That is the one marker contradiction visible without a descriptor: it says every field
+         * carrying that annotation is both kinds of column at once, so it is broken for every
+         * message rather than for some. The collision that needs a descriptor — two
+         * <em>different</em> numbers, or an option against a path, meeting on one field — is
+         * rejected at schema derivation instead, where both are visible. Two checks, because they
+         * are two rules.
+         */
         public ProtoSchemaOptions build() {
+            Set<Integer> both = new HashSet<>(jsonFieldOptions.keySet());
+            both.retainAll(geographyFieldOptions.keySet());
+            Preconditions.checkArgument(
+                    both.isEmpty(),
+                    "Field option numbers registered as both a JSON and a GEOGRAPHY option: %s",
+                    both);
             return new ProtoSchemaOptions(this);
         }
     }

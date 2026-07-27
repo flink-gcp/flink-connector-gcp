@@ -168,9 +168,9 @@ printer then fails on every record with `Cannot find type for url`.
 
 **Explicit configuration wins over all of the above.** A `jsonFieldPath` or field option on a
 wrapper or a `Timestamp` field gives a `JSON` column carrying that type's canonical protobuf JSON —
-so `Int64Value.of(5)` becomes the quoted string `"5"` — rather than the flattened value. A
-[`geographyFieldPath`](#geography-columns) on one of these wins in the same way and is then rejected,
-none of them being a string: the configured marking is never quietly ignored.
+so `Int64Value.of(5)` becomes the quoted string `"5"` — rather than the flattened value. Marking
+one [as geography](#geography-columns), by path or by field option, wins in the same way and is then
+rejected, none of them being a string: the configured marking is never quietly ignored.
 
 A `Duration` outside protobuf's valid range is a row-level failure routed to the configured
 [`FailedRowHandler`](#error-handling), like a `uint64` too large for `INT64`. `FieldMask` paths are
@@ -368,13 +368,43 @@ is `REPEATED STRUCT<key, value>` — is rejected when the schema is derived, thr
 The Storage Write API carries a `GEOGRAPHY` column as a string too, so it needs the same
 **schema-derivation marker** a [JSON column](#json-columns) does, and for the same reason: nothing in
 a protobuf descriptor or an Avro schema says "this string is a geometry", and BigQuery's own
-documentation is explicit that schema auto-detection loads WKT as `STRING`. Both derived serializers
-take the marker by dotted path, under the same name:
+documentation is explicit that schema auto-detection loads WKT as `STRING`.
+
+**By dotted field path**, on both derived serializers, under the same name:
 
 ```java
 ProtoSchemaOptions.builder().geographyFieldPath("site.boundary").build();
 AvroSchemaOptions.builder().geographyFieldPath("site.boundary").build();
 ```
+
+**By protobuf field option**, when the mapping is a property of the schema rather than of the
+pipeline — the same trade-off as for [JSON columns](#json-columns), and the same mechanism, so a
+`bool` extension of `google.protobuf.FieldOptions` marks the fields wherever they appear:
+
+```proto
+// your existing annotations proto — nothing here has to change
+extend google.protobuf.FieldOptions {
+  optional bool geography = 50006;
+}
+
+message Site {
+  string boundary = 1 [(geography) = true];
+}
+```
+
+```java
+ProtoSchemaOptions.builder().geographyFieldOption(MyAnnotations.geography).build();
+// or, when only the number is available:
+ProtoSchemaOptions.builder().geographyFieldOptionNumber(50006).build();
+```
+
+Everything configured is unioned, so a field selected any of those ways is a `GEOGRAPHY` column. As
+with JSON, a field option **number matching no field is deliberately not an error** — one
+configuration is meant to serve every message type a job writes — so a mistyped number yields
+`STRING` columns silently, and under `CreateDisposition.CREATE_IF_NEEDED` that mistake becomes
+durable in the auto-created table. Check the derived schema with
+`serializer.getTableSchema(destination)` when adopting a number. `AvroSchemaOptions` has no
+annotation-driven form, because Avro has no field-option mechanism to key off.
 
 The value must already be one of the text forms BigQuery accepts for a geography — WKT
 (`POINT(1 2)`), hex-encoded WKB, or GeoJSON — and reaches the column verbatim. Everything the JSON
@@ -385,30 +415,18 @@ left `NULL` rather than written as `""`, which is not a valid geometry either; a
 therefore never `REQUIRED` under [`deriveRequiredColumns()`](#nullability). A repeated marked field
 becomes `REPEATED GEOGRAPHY`.
 
-Three differences from the JSON marker, all deliberate:
+Two differences from the JSON marker, both deliberate:
 
 - **Strings only.** `jsonFieldPath` also accepts a message and writes its canonical protobuf JSON;
   no protobuf message means a geography to BigQuery, so there would be nothing to write. Marking a
-  message, a map, or any non-string field is rejected when the schema is derived.
-- **The field-option form is protobuf-only**, as it is for JSON: `geographyFieldOption(...)` and
-  `geographyFieldOptionNumber(...)` mark by annotation instead of by path, and are unioned with it.
-  Declared exactly like a JSON option — a `bool` extension of `google.protobuf.FieldOptions` — and
-  subject to the same caveats, including that a number matching no field is deliberately not an
-  error. `AvroSchemaOptions` has no equivalent, because Avro has no annotation mechanism to key off.
-
-  ```proto
-  extend google.protobuf.FieldOptions {
-    optional bool geography = 50006;
-  }
-
-  message Site {
-    string boundary = 1 [(geography) = true];
-  }
-  ```
-- **A field marked both ways is an error**, not a precedence question — a column has one type. By
-  path on either serializer, and on the protobuf side a `jsonFieldOption` against a
-  `geographyFieldPath` as well, which is why the check lives where both mechanisms are visible rather
-  than in `build()`. It also covers marking a `Struct`, `Value` or `ListValue` field, which is
+  message, a map, or any non-string field is rejected when the schema is derived — including by
+  annotation, where you do not choose which fields are selected, so one annotation landing on a
+  message field fails the job rather than skipping that field.
+- **A field marked both ways is an error**, not a precedence question — a column has one type. One
+  extension number registered as *both* a JSON and a geography option is rejected by `build()`, since
+  it is broken for every message rather than for some. Every other collision — an option against a
+  path, or two different numbers meeting on one field — needs a descriptor and so is rejected when the
+  schema is derived. It also covers marking a `Struct`, `Value` or `ListValue` field, which is
   [automatically a `JSON` column](#well-known-types): the configured marking wins, and is then
   rejected for not being a
   string, rather than silently falling back.
@@ -521,15 +539,16 @@ table's columns once with `schemaUpdateOptions(SchemaUpdateOptions.builder().all
 field at that dotted path as a [`JSON` column](#json-columns) instead of `STRING`. As on the
 protobuf path the value is passed through verbatim and is *not* validated — malformed JSON is a
 BigQuery row-level error, routed to the configured `FailedRowHandler`. A path matching no field, or
-matching a field that is not a `string`, is rejected when the schema is derived. There is no
-annotation-driven equivalent of `ProtoSchemaOptions`' field options: Avro has no standard JSON
-logical type to key off.
+matching a field that is not a `string`, is rejected when the schema is derived. A marker is needed
+at all because Avro has no standard JSON logical type to infer the column from; there is no
+annotation-driven equivalent of `ProtoSchemaOptions`' field options for a different reason, that Avro
+has no field-option mechanism to key off.
 
 **Geography columns.** `AvroSchemaOptions.builder().geographyFieldPath("site.boundary")` does the
 same for a [`GEOGRAPHY` column](#geography-columns), on the same terms — string fields only, the
 value passed through unvalidated, never `REQUIRED`. As with JSON columns there is no
-annotation-driven equivalent of `ProtoSchemaOptions`' field options, for the same reason: Avro has no
-field-option mechanism to key off. A path claimed by both markers is rejected.
+annotation-driven equivalent of `ProtoSchemaOptions`' field options: Avro has no field-option
+mechanism to key off, which is the reason for both. A path claimed by both markers is rejected.
 
 **Rejected at job start**, because writing something plausible instead would be worse than failing
 early: unions with more than one non-null branch (BigQuery has no union type), a bare `null` field,

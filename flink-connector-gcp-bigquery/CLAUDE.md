@@ -110,7 +110,13 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   asymmetry. `isGeographyField` therefore takes a `FieldDescriptor` again, which the paths-only
   version had dropped as an unused parameter — the argument did not fail, its premise changed. Both
   predicates now share one `carriesAnyOption` so they cannot drift on what "carries this option"
-  means, and the shared number check's message names neither marker. **Strings only**, the one place
+  means, and the shared number check's message names neither marker — nor does
+  `BoolFieldOptionReader`'s, which said "a JSON field option must be declared as…" to a user who had
+  configured a geography one until self-review caught it. **One extension number registered as both
+  markers is rejected in `build()`**, being broken for every message rather than for some; every other
+  collision needs a descriptor (an option against a path, or two different numbers meeting on one
+  field) and stays at derivation. Two checks because they are two rules — the first draft's comment
+  claimed no vocabulary intersection was computable at build() time, which was simply false. **Strings only**, the one place
   this marker is *narrower* than the JSON one: `jsonFieldPath` also takes a message and prints its
   canonical protobuf JSON, but no protobuf message means a geography to BigQuery, so there would be
   nothing to write. That rejection is stated about the *field's type*, so it fires however the field
@@ -183,9 +189,10 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   only**, leaves `REPEATED` alone (a BigQuery `REPEATED` column cannot be `NULLABLE`) and recurses
   into nested structs and map entry columns; Avro `map<string,V>` →
   `REPEATED STRUCT<key,value>` rather than rejected as the Dataproc connector does, because the
-  proto path already gives proto maps that shape; JSON columns are marked by **dotted path only**
-  (Avro has no standard JSON logical type to key off, so `ProtoSchemaOptions`' field-option
-  mechanism has no analogue); and the logical types BigQuery cannot store faithfully
+  proto path already gives proto maps that shape; JSON and geography columns are marked by **dotted path
+  only** (Avro has no field-option mechanism, so `ProtoSchemaOptions`' annotation form has no
+  analogue — a separate fact from Avro having no JSON logical type, which is why a marker is needed at
+  all); and the logical types BigQuery cannot store faithfully
   (`timestamp-nanos`, `local-timestamp-nanos`, `duration`, `big-decimal`, `uuid` on a `fixed`) are
   **rejected at job start** rather than silently falling back to the base type — literally at job
   start, because the schema is derived in `AvroRecordSerializer.of(...)` rather than lazily: the

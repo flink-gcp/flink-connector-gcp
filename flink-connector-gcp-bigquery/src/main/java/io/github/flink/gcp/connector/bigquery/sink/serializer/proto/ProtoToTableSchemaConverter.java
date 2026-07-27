@@ -81,8 +81,8 @@ import java.util.Set;
  * fields whose names differ only by case (the Storage API lowercases descriptor field names) and
  * messages with no fields at all, {@code google.protobuf.Empty} among them (a BigQuery {@code
  * STRUCT} must have at least one column). Configured JSON and geography field paths that match no
- * field are rejected, as is a field marked as both; a configured JSON field option number that
- * matches no field is not, since a message need not have JSON columns.
+ * field are rejected, as is a field marked as both; a configured JSON or geography field option
+ * number that matches no field is not, since a message need not have columns of either kind.
  */
 @Internal
 public final class ProtoToTableSchemaConverter {
@@ -101,8 +101,8 @@ public final class ProtoToTableSchemaConverter {
      * would ask a string field for its message type and throw at construction.
      *
      * <p>A configured marking wins over the automatic one, which matters where both could apply: a
-     * {@code Struct} field named by {@code jsonFieldPath} is JSON either way, but one named by
-     * {@code geographyFieldPath} is rejected below rather than quietly staying JSON.
+     * {@code Struct} field marked as JSON is JSON either way, but one marked as geography — by path
+     * or by field option — is rejected below rather than quietly staying JSON.
      *
      * <p>Takes the field rather than a pre-computed {@link ProtoWellKnownType}, so neither caller
      * can hand it the wrong one — which is the whole point of there being a single one of these.
@@ -183,7 +183,7 @@ public final class ProtoToTableSchemaConverter {
             Set<String> matchedMarkedPaths) {
         String path = parentPath.isEmpty() ? field.getName() : parentPath + "." + field.getName();
         // Asked once and reused: the single marker decision point. It walks the descriptor's
-        // file-dependency graph for every configured JSON option, and it decides the mode as well
+        // file-dependency graph for every configured field option, and it decides the mode as well
         // as the type.
         //
         // Struct/Value/ListValue join it here, and that placement does three things with no second

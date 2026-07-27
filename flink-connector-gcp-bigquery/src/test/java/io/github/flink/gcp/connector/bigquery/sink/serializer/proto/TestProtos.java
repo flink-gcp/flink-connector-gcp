@@ -342,6 +342,17 @@ final class TestProtos {
         return extension;
     }
 
+    /**
+     * The geography option as a {@code GeneratedExtension}, built as {@link #jsonOptionExtension}.
+     */
+    static GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean>
+            geographyOptionExtension() {
+        GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean> extension =
+                GeneratedMessage.newFileScopedGeneratedExtension(Boolean.class, null);
+        extension.internalInit(extension(GEOGRAPHY_OPTION_NUMBER));
+        return extension;
+    }
+
     /** The rival annotations proto's option at the same number, as a {@code GeneratedExtension}. */
     static GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean>
             collidingOptionExtension() {
@@ -574,7 +585,7 @@ final class TestProtos {
                                 withOptions(
                                         scalar(
                                                 "a_both",
-                                                17,
+                                                16,
                                                 DescriptorProtos.FieldDescriptorProto.Type
                                                         .TYPE_STRING),
                                         boolOptions(JSON_OPTION_NUMBER, GEOGRAPHY_OPTION_NUMBER)))

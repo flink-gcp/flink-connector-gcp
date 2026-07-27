@@ -407,16 +407,13 @@ class ProtoToTableSchemaConverterTest {
                         .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
                         .build();
         Map<String, TableFieldSchema> fields =
-                byName(
-                        ProtoToTableSchemaConverter.convert(
-                                throughBytes
-                                        ? TestProtos.annotatedFromBytes()
-                                        : TestProtos.annotated(),
-                                options));
+                byName(ProtoToTableSchemaConverter.convert(annotated(throughBytes), options));
 
         assertThat(fields.get("a_geo").getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+        assertThat(fields.get("a_geo").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
         // The JSON annotation is a different vocabulary: configuring one must not select the other.
         assertThat(fields.get("a_string").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(fields.get("a_plain").getType()).isEqualTo(TableFieldSchema.Type.STRING);
     }
 
     /**
@@ -444,8 +441,9 @@ class ProtoToTableSchemaConverterTest {
      * see, since neither marker is a path. This is the case that makes the check's placement at the
      * decision point necessary rather than merely tidy.
      */
-    @Test
-    void rejectsAFieldCarryingBothAJsonAndAGeographyOption() {
+    @ParameterizedTest(name = "throughBytes={0}")
+    @ValueSource(booleans = {false, true})
+    void rejectsAFieldCarryingBothAJsonAndAGeographyOption(boolean throughBytes) {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder()
                         .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
@@ -453,10 +451,44 @@ class ProtoToTableSchemaConverterTest {
                         .build();
 
         assertThatThrownBy(
-                        () -> ProtoToTableSchemaConverter.convert(TestProtos.annotated(), options))
+                        () -> ProtoToTableSchemaConverter.convert(annotated(throughBytes), options))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("both a JSON and a GEOGRAPHY")
                 .hasMessageContaining("a_both");
+    }
+
+    /**
+     * {@code BoolFieldOptionReader} is shared by both markers, so its rejection must not tell a
+     * user who configured a geography option to declare a JSON one. It did, until self-review
+     * caught it.
+     */
+    @Test
+    void aMalformedGeographyOptionIsReportedWithoutMentioningJson() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOptionNumber(TestProtos.NON_BOOL_OPTION_NUMBER)
+                        .build();
+
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.annotated(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("is not a singular bool")
+                .hasMessageNotContaining("JSON");
+
+        // And on the other path, where the annotations proto is absent so only the wire encoding
+        // can stand in for the declared type. It has its own message, and its own way to be stale.
+        ProtoSchemaOptions byEncoding =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldOptionNumber(TestProtos.NON_BOOL_VARINT_OPTION_NUMBER)
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                ProtoToTableSchemaConverter.convert(
+                                        TestProtos.annotatedWithoutAnnotationsProto(), byEncoding))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("is not encoded as a singular bool")
+                .hasMessageNotContaining("JSON");
     }
 
     /**
@@ -469,10 +501,10 @@ class ProtoToTableSchemaConverterTest {
                 ProtoSchemaOptions.builder()
                         .geographyFieldOptionNumber(TestProtos.GEOGRAPHY_OPTION_NUMBER)
                         .build();
-        Map<String, TableFieldSchema> fields =
-                byName(ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options));
+        TableSchema schema = ProtoToTableSchemaConverter.convert(TestProtos.allTypes(), options);
 
-        assertThat(fields.get("f_string").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+        assertThat(schema.getFieldsList())
+                .noneMatch(field -> field.getType() == TableFieldSchema.Type.GEOGRAPHY);
     }
 
     /**
