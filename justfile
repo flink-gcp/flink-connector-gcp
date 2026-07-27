@@ -153,14 +153,17 @@ lint:
 # current as that file — a stale one would report a bundle that no longer exists.
 # Reusable as-is by the other flink-sql-connector-gcp-* modules to come.
 #
-# `-am` is load-bearing, not caution: the bundled connector is a reactor sibling,
-# and `just verify` does not install it, so resolving this module alone would
-# fail against a repository that has never seen the version being built. That is
-# the state CI is in when this runs.
+# A lifecycle phase with `-am`, not a bare `license:add-third-party` goal. The
+# goal form was tried and fails in CI: a goal invocation does not build reactor
+# siblings, so the module cannot resolve the connector it bundles — `-am` does not
+# change that — and it only appears to work where an earlier `install` left the
+# artifact in the local repository. A phase builds the sibling, so this is
+# self-contained. generate-test-resources is the earliest phase that runs after
+# the sibling is compiled and that the plugin is bound to.
 #
 # Does the module's hand-written META-INF/NOTICE still match what it bundles?
 check-notice module:
-    {{ mvn }} -pl {{ module }} -am license:add-third-party
+    {{ mvn }} -pl {{ module }} -am generate-test-resources
     scripts/check-notice.py {{ module }}
 
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes

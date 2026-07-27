@@ -60,9 +60,11 @@ jobs:
         run: just verify
 
       # Holds each shaded module's hand-written META-INF/NOTICE to the licences
-      # Maven resolves for its bundle. Separate from `just verify` because it
-      # resolves dependency licences over the network, which the ordinary build
-      # should not pay for. python3 comes from the runner image: the script is
-      # standard-library only, so there is no version to pin (see mise.toml).
+      # Maven resolves for its bundle. A step of its own rather than part of
+      # `just verify` because the comparison is a Python script, not a Maven
+      # plugin; the resolving half *is* bound into the build, and costs almost
+      # nothing (it reads POMs Maven already resolved). python3 comes from the
+      # runner image: the script is standard-library only, so there is no
+      # version to pin (see mise.toml).
       - name: Check the SQL connector NOTICE
         run: just check-notice flink-sql-connector-gcp-pubsub

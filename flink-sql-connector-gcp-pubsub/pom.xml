@@ -368,12 +368,26 @@
                  configuration is inherited from the root pom's pluginManagement, so a
                  sibling SQL module needs exactly this much.
 
-                 Not bound to a lifecycle phase: it resolves dependencies over the
-                 network, and `just verify` should not pay for that on every build. The
-                 `just check-notice` recipe invokes the goal directly. -->
+                 Bound to a phase rather than invoked as a bare goal, which was tried
+                 and fails in CI: a goal invocation does not build reactor siblings, so
+                 `-pl` here cannot resolve the connector — not even with `-am` — unless
+                 a previous `install` happened to leave it in the local repository. A
+                 phase builds them. It costs almost nothing to run every time: the goal
+                 reads POMs Maven has already resolved and does not fetch licence texts
+                 (that is `download-licenses`, which this project deliberately does not
+                 use — see scripts/check-notice.py). -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>license-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>record-resolved-licences</id>
+                        <phase>generate-test-resources</phase>
+                        <goals>
+                            <goal>add-third-party</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
 
             <plugin>
