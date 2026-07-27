@@ -127,9 +127,13 @@ class PubSubSubscriptionAdminITCase extends AbstractPubSubSourceEmulatorITCase {
                             .build());
 
             publish("admin-seek-topic", "one", "two", "three");
+            // After this the backlog is empty by construction — exactly three messages were
+            // published and pullAndAckUntil returns only once it has acknowledged three distinct
+            // ones — so the post-seek pull can only be satisfied by a replay. Confirming the
+            // emptiness with another pull would long-poll an empty subscription for about a
+            // minute to re-assert something already known (issue #151).
             assertThat(pullAndAckUntil(subscription, 3, PULL_TIMEOUT))
                     .containsExactlyInAnyOrder("one", "two", "three");
-            assertThat(pullAndAck(subscription, 10)).isEmpty();
 
             admin.seek(subscription, Instant.EPOCH);
 
