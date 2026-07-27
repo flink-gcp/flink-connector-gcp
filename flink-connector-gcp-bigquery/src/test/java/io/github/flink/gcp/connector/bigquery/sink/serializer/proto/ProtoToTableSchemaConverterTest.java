@@ -527,6 +527,34 @@ class ProtoToTableSchemaConverterTest {
     }
 
     /**
+     * The one documented deviation from "a well-known type column is always NULLABLE". A proto2
+     * {@code required} wrapper is mandatory, so {@code REQUIRED} is faithful; the {@code optional}
+     * sibling shows the deviation is about {@code required} and not about proto2.
+     */
+    @Test
+    void derivesRequiredForAProto2RequiredWrapper() {
+        Map<String, TableFieldSchema> fields =
+                byName(
+                        ProtoToTableSchemaConverter.convert(
+                                TestProtos.proto2WellKnown(), DERIVE_REQUIRED));
+
+        assertThat(fields.get("r_required").getType()).isEqualTo(TableFieldSchema.Type.INT64);
+        assertThat(fields.get("r_required").getMode()).isEqualTo(TableFieldSchema.Mode.REQUIRED);
+        assertThat(fields.get("r_optional").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
+
+        // Without the option both are NULLABLE, so the assertion above is about the option and not
+        // about proto2.
+        assertThat(
+                        byName(
+                                        ProtoToTableSchemaConverter.convert(
+                                                TestProtos.proto2WellKnown(),
+                                                ProtoSchemaOptions.defaults()))
+                                .get("r_required")
+                                .getMode())
+                .isEqualTo(TableFieldSchema.Mode.NULLABLE);
+    }
+
+    /**
      * Struct, Value and ListValue are mutually recursive, so before they were mapped to JSON the
      * recursion guard failed the whole job at schema derivation. Nothing here may throw.
      */

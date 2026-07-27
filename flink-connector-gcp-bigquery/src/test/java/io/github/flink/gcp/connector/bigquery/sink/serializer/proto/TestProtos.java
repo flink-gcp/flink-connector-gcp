@@ -24,6 +24,7 @@ import com.google.protobuf.UnknownFieldSet;
 import io.github.flink.gcp.connector.bigquery.testproto.AllTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
+import io.github.flink.gcp.connector.bigquery.testproto.Proto2WellKnown;
 import io.github.flink.gcp.connector.bigquery.testproto.Recursive;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnown;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnownEmpty;
@@ -120,6 +121,15 @@ final class TestProtos {
      */
     static Descriptors.Descriptor wellKnownEmpty() {
         return WellKnownEmpty.getDescriptor();
+    }
+
+    /**
+     * proto2 wrappers, one {@code required} and one {@code optional}: the documented deviation from
+     * "a well-known type column is always NULLABLE". From {@code
+     * src/test/protobuf/wellknown2.proto}.
+     */
+    static Descriptors.Descriptor proto2WellKnown() {
+        return Proto2WellKnown.getDescriptor();
     }
 
     /**

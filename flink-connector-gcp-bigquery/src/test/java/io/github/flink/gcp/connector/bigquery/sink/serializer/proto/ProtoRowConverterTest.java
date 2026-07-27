@@ -44,6 +44,7 @@ import io.github.flink.gcp.connector.bigquery.testproto.PresenceChild;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Child;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnown;
+import io.github.flink.gcp.connector.bigquery.testproto.WellKnownChild;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -704,6 +705,50 @@ class ProtoRowConverterTest {
         DynamicMessage any = (DynamicMessage) get(row, "w_any");
         assertThat(get(any, "type_url")).isEqualTo("type.googleapis.com/x.Y");
         assertThat(get(any, "value")).isEqualTo(ByteString.copyFromUtf8("p"));
+    }
+
+    /**
+     * The docs say marking an {@code Any} field as a JSON column is not a way to unpack it. Pinned
+     * because that is a user-facing claim: {@code JsonFormat} cannot resolve a type URL without a
+     * {@code TypeRegistry}, so it fails on every record carrying one rather than at job start.
+     */
+    @Test
+    void failsPerRecordOnAJsonMappedAnyRatherThanUnpackingIt() throws Exception {
+        ProtoRowConverter converter =
+                wellKnownConverter(ProtoSchemaOptions.builder().jsonFieldPath("w_any").build());
+
+        // An unset Any is skipped, so it is a populated one the printer cannot resolve.
+        assertThat(has(converter.convert(WellKnown.newBuilder().build()), "w_any")).isFalse();
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        WellKnown.newBuilder()
+                                                .setWAny(
+                                                        Any.newBuilder()
+                                                                .setTypeUrl(
+                                                                        "type.googleapis.com/x.Y"))
+                                                .build()))
+                .hasMessageContaining("Cannot find type for url");
+    }
+
+    /** Recognition is not a top-level-only rule on the value side either. */
+    @Test
+    void convertsWellKnownTypesBelowTheRootMessage() throws Exception {
+        DynamicMessage row =
+                wellKnownConverter(ProtoSchemaOptions.defaults())
+                        .convert(
+                                WellKnown.newBuilder()
+                                        .setWChild(
+                                                WellKnownChild.newBuilder()
+                                                        .setCString(StringValue.of("deep"))
+                                                        .setCDuration(
+                                                                Duration.newBuilder()
+                                                                        .setSeconds(2L)))
+                                        .build());
+
+        DynamicMessage child = (DynamicMessage) get(row, "w_child");
+        assertThat(get(child, "c_string")).isEqualTo("deep");
+        assertThat(get(child, "c_duration")).isEqualTo(2_000_000L);
     }
 
     /** The value-side half of JSON-first precedence, matching the schema side. */
