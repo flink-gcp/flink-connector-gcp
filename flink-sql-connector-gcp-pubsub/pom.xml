@@ -126,78 +126,21 @@
                     <execution>
                         <id>shade-flink</id>
                         <configuration>
-                            <!-- Enumerated rather than `*:*`. Flink is `provided`, so a
-                                 wildcard would technically be correct and self-maintaining,
-                                 but META-INF/NOTICE has to list the bundle by hand anyway and
-                                 an explicit set keeps the two readable side by side. Note this
-                                 list alone does NOT make a new transitive fail the build — an
-                                 unlisted one is silently dropped, surfacing at runtime. Two tests
-                                 close that: BundledDependenciesNoticeTest diffs the recorded
-                                 runtime tree against the NOTICE, and
-                                 PubSubSqlConnectorPackagingITCase's
-                                 everyRuntimeDependencyContributedItsClassesToTheJar opens each
-                                 artifact and looks for its classes in the jar. The second is the
-                                 one that catches a drop, because adding the artifact to the
-                                 NOTICE alone would satisfy the first. -->
+                            <!-- `*:*`: everything on the runtime classpath, which is the
+                                 bundle by definition — Flink is `provided` and test scope never
+                                 reaches shade, so nothing else can match. This replaced an
+                                 enumerated include list whose justifications died one by one,
+                                 each measured: an unlisted new transitive does NOT fail the
+                                 build (it is silently dropped, the worst outcome available),
+                                 and "keeps the NOTICE readable beside it" ended when the NOTICE
+                                 became generated from the resolved tree. With the wildcard a
+                                 new dependency lands in the jar automatically; what still needs
+                                 a human is the licensing gate (`just update-notice`) and, for a
+                                 genuinely new package root, the relocation list — and the
+                                 packaging tests fail with the artifact's name for both. -->
                             <artifactSet>
                                 <includes>
-                                    <include>io.github.flink-gcp:flink-connector-gcp-pubsub</include>
-
-                                    <include>com.google.cloud:google-cloud-pubsub</include>
-                                    <include>com.google.api.grpc:proto-google-cloud-pubsub-v1</include>
-                                    <include>com.google.api.grpc:proto-google-common-protos</include>
-                                    <include>com.google.api.grpc:proto-google-iam-v1</include>
-                                    <include>com.google.api:api-common</include>
-                                    <include>com.google.api:gax</include>
-                                    <include>com.google.api:gax-grpc</include>
-                                    <include>com.google.api:gax-httpjson</include>
-                                    <include>com.google.auth:google-auth-library-credentials</include>
-                                    <include>com.google.auth:google-auth-library-oauth2-http</include>
-                                    <include>com.google.http-client:google-http-client</include>
-                                    <include>com.google.http-client:google-http-client-gson</include>
-                                    <include>com.google.protobuf:protobuf-java</include>
-                                    <include>com.google.protobuf:protobuf-java-util</include>
-                                    <include>com.google.guava:guava</include>
-                                    <include>com.google.guava:failureaccess</include>
-                                    <include>com.google.guava:listenablefuture</include>
-                                    <include>com.google.code.gson:gson</include>
-                                    <include>com.google.code.findbugs:jsr305</include>
-                                    <include>com.google.errorprone:error_prone_annotations</include>
-                                    <include>com.google.j2objc:j2objc-annotations</include>
-                                    <include>com.google.auto.value:auto-value-annotations</include>
-                                    <include>com.google.android:annotations</include>
-                                    <include>com.google.re2j:re2j</include>
-
-                                    <include>io.grpc:grpc-alts</include>
-                                    <include>io.grpc:grpc-api</include>
-                                    <include>io.grpc:grpc-auth</include>
-                                    <include>io.grpc:grpc-context</include>
-                                    <include>io.grpc:grpc-core</include>
-                                    <include>io.grpc:grpc-googleapis</include>
-                                    <include>io.grpc:grpc-inprocess</include>
-                                    <include>io.grpc:grpc-netty-shaded</include>
-                                    <include>io.grpc:grpc-protobuf</include>
-                                    <include>io.grpc:grpc-protobuf-lite</include>
-                                    <include>io.grpc:grpc-services</include>
-                                    <include>io.grpc:grpc-stub</include>
-                                    <include>io.grpc:grpc-util</include>
-                                    <include>io.grpc:grpc-xds</include>
-
-                                    <include>io.opencensus:opencensus-api</include>
-                                    <include>io.opencensus:opencensus-contrib-http-util</include>
-                                    <include>io.opentelemetry:opentelemetry-api</include>
-                                    <include>io.opentelemetry:opentelemetry-common</include>
-                                    <include>io.opentelemetry:opentelemetry-context</include>
-                                    <include>io.perfmark:perfmark-api</include>
-
-                                    <include>org.apache.httpcomponents:httpclient</include>
-                                    <include>org.apache.httpcomponents:httpcore</include>
-                                    <include>commons-codec:commons-codec</include>
-                                    <include>org.conscrypt:conscrypt-openjdk-uber</include>
-                                    <include>org.threeten:threetenbp</include>
-                                    <include>org.codehaus.mojo:animal-sniffer-annotations</include>
-                                    <include>org.jspecify:jspecify</include>
-                                    <include>javax.annotation:javax.annotation-api</include>
+                                    <include>*:*</include>
                                 </includes>
                             </artifactSet>
 

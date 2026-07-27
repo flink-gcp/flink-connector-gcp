@@ -59,8 +59,8 @@ jobs:
       - name: Build and verify
         run: just verify
 
-      # Holds each shaded module's hand-written META-INF/NOTICE to the licences
-      # Maven resolves for its bundle. A step of its own rather than part of
+      # Holds each shaded module's generated META-INF/NOTICE and pinned licence
+      # texts to what Maven resolves for its bundle. A step of its own rather than part of
       # `just verify` because the comparison is a Python script, not a Maven
       # plugin; the resolving half *is* bound into the build, and costs almost
       # nothing (it reads POMs Maven already resolved). The recipe re-runs that

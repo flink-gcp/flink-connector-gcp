@@ -84,12 +84,21 @@ TEXT_EXEMPT_GROUP = "Apache-2.0"
 # sharper message for the families known to be a problem. The one exemption is
 # dual-licensed *with the classpath exception*, taken under CDDL: the
 # combination deliberately in the bundle today.
+# The token alternation deliberately does not end at a word boundary: Maven's
+# most common spellings are `GPLv2`/`LGPLv3`, where a trailing \b never matches
+# (the next character is a word character), and the spelled-out names carry no
+# GPL token at all — both misses were measured against real licence strings.
 RESTRICTED = re.compile(
-    r"\b(GPL|AGPL|LGPL|SSPL|BUSL|RSAL)\b"
+    r"General Public License"  # GNU GPL/LGPL/AGPL spelled out
+    r"|\b(GPL|AGPL|LGPL|SSPL|BUSL|RSAL)"  # tokens, incl. GPLv2 / GPL-2.0 / GPL 2
     r"|Business Source|Commons Clause|Elastic License|Server Side Public"
     r"|Non-?Commercial",
     re.IGNORECASE,
 )
+# Keyed by the merged licence *name*, which means any artifact resolving to this
+# exact dual-licence string rides the exemption — acceptable because the string
+# itself names the terms (classpath exception, CDDL alternative), and a second
+# artifact under the same terms would get the same answer.
 RESTRICTED_EXEMPT = {"CDDL + GPLv2 with classpath exception"}
 
 
@@ -160,6 +169,8 @@ def render_notice(
                 f"{template} has a paragraph for '{group}' but no bundled artifact "
                 f"resolves to it. Remove the paragraph, or fix licenseMerges."
             )
+        if group in rendered_groups:
+            fail(f"{template} has two paragraphs for '{group}'; merge them.")
         rendered_groups.add(group)
         for gav in sorted(by_group[group]):
             ga = gav.rsplit(":", 1)[0]
@@ -220,10 +231,16 @@ def obtain_text(name: str, entry: dict, module: Path) -> bytes:
             fail(f"{classpath} is missing; run the build first.")
         ga = entry["artifacts"][0]
         artifact_id = ga.split(":")[1]
+        # Matched on the repository layout (…/<artifactId>/<version>/<artifactId>-….jar),
+        # not on the file-name prefix alone: `gax-` as a prefix also matches
+        # gax-grpc-*.jar and gax-httpjson-*.jar (measured), so a prefix match would
+        # trip its own uniqueness guard the day a gax-family entry uses jar:.
         jars = [
             p
-            for p in classpath.read_text(encoding="utf-8").strip().split(":")
-            if Path(p).name.startswith(artifact_id + "-")
+            for p in map(Path, classpath.read_text(encoding="utf-8").strip().split(":"))
+            if p.suffix == ".jar"
+            and p.parent.parent.name == artifact_id
+            and p.name.startswith(artifact_id + "-")
         ]
         if len(jars) != 1:
             fail(
@@ -282,6 +299,15 @@ def main() -> int:
                 f"adoption first, and only then teach this script about it."
             )
     files = load_sources()
+    for name, entry in files.items():
+        for ga in entry["artifacts"]:
+            for gav, licence in resolved.items():
+                if gav.rsplit(":", 1)[0] == ga and licence == TEXT_EXEMPT_GROUP:
+                    fail(
+                        f"{SOURCES}: {ga} resolves to {TEXT_EXEMPT_GROUP}, whose "
+                        f"artifacts carry no licence file — this entry would be "
+                        f"materialised but referenced by nothing. Remove it."
+                    )
     # Only the entries whose artifacts this module actually bundles.
     bundled_ga = {gav.rsplit(":", 1)[0] for gav in resolved}
     relevant = {

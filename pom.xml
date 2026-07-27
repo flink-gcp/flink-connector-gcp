@@ -112,8 +112,8 @@ limitations under the License.
         <protoc.version>4.33.2</protoc.version>
         <protobuf-maven-plugin.version>5.1.7</protobuf-maven-plugin.version>
         <!-- Resolves the licence of every bundled dependency for the shaded modules,
-             so scripts/check-notice.py can hold their hand-written META-INF/NOTICE to
-             it. Not managed by any BOM. -->
+             so scripts/check-notice.py can hold their generated META-INF/NOTICE and the
+             sha256-pinned licence texts to it. Not managed by any BOM. -->
         <license-maven-plugin.version>2.7.1</license-maven-plugin.version>
     </properties>
 
