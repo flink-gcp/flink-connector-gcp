@@ -338,6 +338,35 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
         assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
     }
 
+    @Test
+    void callbackWaitTimeoutIsRepairedByReopeningTheWriter() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        // The SDK's connection watchdog killed the connection: the first in-flight append fails
+        // with the raw callback-wait timeout exception, which carries no gRPC status; the poisoned
+        // writer then fails the first resend fast with the closed-writer error. The writer must
+        // treat the timeout as a client-side dead writer — resend at the same offset, reopening an
+        // appender on the same stream — not as a terminal failure.
+        service.appendResults.add(
+                FakeBufferedStreamService.failure(
+                        new Exceptions.MaximumRequestCallbackWaitTimeExceededException(
+                                Duration.ofMinutes(6), "writer-id", Duration.ofMinutes(5))));
+        service.appendResults.add(FakeBufferedStreamService.failure(writerClosed()));
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+
+        writer.write("a", CONTEXT);
+        writer.flush(false);
+
+        assertThat(service.openedAppenders).hasSize(2);
+        assertThat(service.appends).hasSize(3);
+        assertThat(service.appends.get(2).offset).isEqualTo(0);
+        assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
+    }
+
     /** The SDK's constructor is protected in a final class; tests synthesize via reflection. */
     private static Exceptions.StreamWriterClosedException writerClosed() throws Exception {
         java.lang.reflect.Constructor<Exceptions.StreamWriterClosedException> constructor =

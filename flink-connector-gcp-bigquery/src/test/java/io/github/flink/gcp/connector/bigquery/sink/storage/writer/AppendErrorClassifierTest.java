@@ -29,6 +29,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
@@ -229,6 +230,21 @@ class AppendErrorClassifierTest {
                                 Status.Code.INVALID_ARGUMENT,
                                 StorageError.StorageErrorCode.INVALID_STREAM_STATE));
         assertThat(AppendErrorClassifier.requiresWriterRefresh(invalidState)).isTrue();
+    }
+
+    @Test
+    void callbackWaitTimeoutIsAClientSideDeadWriter() {
+        Exceptions.MaximumRequestCallbackWaitTimeExceededException timeout =
+                new Exceptions.MaximumRequestCallbackWaitTimeExceededException(
+                        Duration.ofMinutes(6), "writer-id", Duration.ofMinutes(5));
+        assertThat(AppendErrorClassifier.isWriterClosed(timeout)).isTrue();
+        assertThat(AppendErrorClassifier.isWriterClosed(new IOException("wrapper", timeout)))
+                .isTrue();
+        assertThat(AppendErrorClassifier.requiresWriterRefresh(timeout)).isTrue();
+        // The raw exception carries no gRPC status, so plain status-code classification calls it
+        // terminal — the writers reach the repair only through the predicates above.
+        assertThat(AppendErrorClassifier.classify(timeout))
+                .isEqualTo(AppendErrorClassifier.Kind.TERMINAL);
     }
 
     @Test

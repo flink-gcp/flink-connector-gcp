@@ -15,7 +15,20 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   interface is an experimental stub; lifecycle and shared-module extraction are decided in #37).
   `FailedRow` carries serialized protobuf bytes, not the original record (the writer is
   stateless). SDK in-stream retry settings are hardcoded in `StreamWriterRowAppenderFactory`;
-  exposing them is deferred until a real-world need shows which knobs matter
+  exposing them is deferred until a real-world need shows which knobs matter. The SDK's
+  callback-wait watchdog timeout (#163) — `MaximumRequestCallbackWaitTimeExceededException`,
+  thrown when a sent append gets no response for the SDK's hardcoded 5 minutes — is a plain
+  `RuntimeException` with no gRPC status, and only the **first** future of a dead-connection
+  storm carries it raw (siblings get `StreamWriterClosedException`), so status-code
+  classification alone would fail the job on exactly the failure that names the root cause.
+  `AppendErrorClassifier.isWriterClosed` therefore matches both exceptions ("client-side dead
+  writer, stream unaffected") and `requiresWriterRefresh` delegates to it; both storage writers
+  repair in place through their existing paths. A bounded `future.get(timeout)` as further
+  defense was **considered and declined** on #163: the watchdog's coverage was verified against
+  SDK 3.30.0 (requeued-on-reconnect requests are re-timestamped and resent in the same append-
+  loop iteration, so "never sent, never checked" is not a real window), the residual SDK-bug
+  hang is already bounded by Flink's checkpoint timeout → failover, and a second timeout would
+  race the SDK's hardcoded 5 minutes and could tear down slow-but-progressing appends
 - **BigQuery FILE_LOADS** (#14, load stage revised in #69): exactly-once via deterministic
   BigQuery job ids (hash of destination + sorted staged URIs) with get-then-submit re-attach.
   Avro-only staging in v0.1, written with the `google-cloud-storage` client directly (no Flink
