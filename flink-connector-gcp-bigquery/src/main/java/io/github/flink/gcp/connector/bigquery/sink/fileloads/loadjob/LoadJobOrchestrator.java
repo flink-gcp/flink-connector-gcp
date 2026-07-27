@@ -369,6 +369,19 @@ public final class LoadJobOrchestrator {
             return StorageSchemaConverter.toBigQuerySchema(desired);
         }
         if (!config.getSchemaUpdateOptions().isEnabled()) {
+            try {
+                SchemaUnifier.union(snapshot.getSchema(), desired, config.getSchemaUpdateOptions());
+            } catch (SchemaUnifier.SchemaUnionException e) {
+                // Loads carry the live schema, and BigQuery silently ignores staged Avro fields
+                // the schema lacks (measured) — so a serializer column the table does not have is
+                // dropped, not an error. Say so once per destination per run.
+                LOG.warn(
+                        "Schema updates are disabled, so the live schema of {} wins over the"
+                                + " serializer's; staged data for columns the table lacks is not"
+                                + " loaded: {}",
+                        destination,
+                        e.getMessage());
+            }
             return StorageSchemaConverter.toBigQuerySchema(snapshot.getSchema());
         }
         for (int attempt = 1; attempt <= SCHEMA_UPDATE_SCHEDULE.maxAttempts(); attempt++) {
