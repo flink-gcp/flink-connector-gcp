@@ -124,9 +124,9 @@ message into the protobuf row the Storage Write API accepts.
 | `google.protobuf.Timestamp` | `TIMESTAMP`, microsecond precision; anything finer is truncated |
 | `google.protobuf.Duration` | `INT64` microseconds, likewise truncated |
 | `google.protobuf.FieldMask` | `STRING`, the paths joined by commas |
-| `Int32Value`, `UInt32Value`, `Int64Value`, `UInt64Value` | `INT64`, always `NULLABLE` |
-| `FloatValue`, `DoubleValue` | `DOUBLE`, always `NULLABLE` |
-| `BoolValue`, `StringValue`, `BytesValue` | `BOOL` / `STRING` / `BYTES`, always `NULLABLE` |
+| `Int32Value`, `UInt32Value`, `Int64Value`, `UInt64Value` | `INT64`, `NULLABLE` |
+| `FloatValue`, `DoubleValue` | `DOUBLE`, `NULLABLE` |
+| `BoolValue`, `StringValue`, `BytesValue` | `BOOL` / `STRING` / `BYTES`, `NULLABLE` |
 | `google.protobuf.Struct`, `Value`, `ListValue` | `JSON`, with no configuration |
 | `google.protobuf.Any` | `STRUCT<type_url, value>`, not unpacked |
 | message | `STRUCT`, recursively |
@@ -145,11 +145,12 @@ see [Protocol Buffers Well-Known Types](https://protobuf.dev/reference/protobuf/
 The connector recognises them by their fully-qualified names and uses protobuf's own grouping;
 nothing here is a name this project invented.
 
-**Wrapper types map to the scalar they wrap**, and stay `NULLABLE` however
-[nullability](#nullability) is configured. A wrapper exists precisely so that "unset" is
-distinguishable from `0` or `""`, and that distinction reaches the column: an unset `Int64Value` is
-NULL, while one explicitly set to `Int64Value.of(0)` is `0`. Otherwise a query would have to say
-`n.value` against a `STRUCT<value>`.
+**Wrapper types map to the scalar they wrap**, and stay `NULLABLE` even under
+[`deriveRequiredColumns()`](#nullability) — a wrapper is a message field, so it has presence. That
+is the point of the type: "unset" stays distinguishable from `0` or `""` all the way to the column,
+so an unset `Int64Value` is NULL while one explicitly set to `Int64Value.of(0)` is `0`. Otherwise a
+query would have to say `n.value` against a `STRUCT<value>`. The one exception is a proto2
+`required` wrapper, which derives `REQUIRED` — it is mandatory, so that is faithful.
 
 **`Struct`, `Value` and `ListValue` become `JSON` columns automatically.** They exist to carry
 arbitrary JSON and they are mutually recursive (`Value` → `Struct` → `map<string, Value>`), so there
@@ -194,7 +195,7 @@ ProtoMessageSerializer.of(
 | proto2 `required` | `REQUIRED` |
 | proto2 `optional` | `NULLABLE` |
 | singular `JSON` column | `NULLABLE`, always |
-| singular well-known type | `NULLABLE` — it is a message field, so it has presence |
+| singular well-known type | `NULLABLE` — a message field, so it has presence; proto2 `required` still gives `REQUIRED` |
 
 A plain proto3 scalar cannot say "unset" — an unset value is indistinguishable from the type
 default — so `REQUIRED` is the faithful mode for it, and one the value path already satisfies: such

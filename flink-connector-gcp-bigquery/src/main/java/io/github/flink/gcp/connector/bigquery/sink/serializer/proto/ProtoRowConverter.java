@@ -152,9 +152,9 @@ public final class ProtoRowConverter {
         // rather than per record. Which fields may be JSON-mapped at all is validated once, in
         // ProtoToTableSchemaConverter, which always runs first to produce the target descriptor.
         //
-        // The condition is character-for-character the one in that converter's convertField, and
-        // has to be: the target field of an automatic JSON column is a string, so a plan that
-        // disagreed would ask a string field for its message type and throw at construction.
+        // This condition must stay equivalent to the one in that converter's convertField: the
+        // target field of an automatic JSON column is a string, so a plan that disagreed would ask
+        // a string field for its message type and throw at construction.
         if (options.isJsonField(sourceField, path) || wellKnown.isJsonMapped()) {
             if (sourceField.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE) {
                 return FieldPlan.json(sourceField, targetField, path);
