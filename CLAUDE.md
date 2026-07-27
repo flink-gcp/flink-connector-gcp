@@ -325,7 +325,8 @@ reasoning about a module without them is how a settled decision gets re-argued. 
 are the trigger; they are not a summary, and none of them is safe to answer from:
 
 - `flink-connector-gcp-bigquery/CLAUDE.md` — facade and serializer SPI, error handling (#13),
-  FILE_LOADS (#14) and its streaming form (#69), STORAGE_API_EXACTLY_ONCE (#30), per-write-method
+  FILE_LOADS (#14), its streaming form (#69) and its live-table reconciliation (#142),
+  STORAGE_API_EXACTLY_ONCE (#30), per-write-method
   option scoping, JSON columns (#49/#50), geography columns (#126), Avro and JSON serializers (#66),
   column modes (#124/#145), protobuf well-known types (#147), deferred `location()` (#10)
 - `flink-connector-gcp-pubsub/CLAUDE.md` — vendoring provenance (#17/#31), sink (#18), topic

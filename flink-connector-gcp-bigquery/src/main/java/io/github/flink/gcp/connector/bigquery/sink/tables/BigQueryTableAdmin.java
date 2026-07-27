@@ -258,7 +258,7 @@ public class BigQueryTableAdmin implements TableAdmin {
      * @param options the creation options
      * @return the partitioning, or {@code null} when none is configured
      */
-    public static TimePartitioning toTimePartitioning(TableCreateOptions options) {
+    private static TimePartitioning toTimePartitioning(TableCreateOptions options) {
         if (options.getTimePartitioningType() == null) {
             return null;
         }
@@ -280,7 +280,7 @@ public class BigQueryTableAdmin implements TableAdmin {
      * @param options the creation options
      * @return the clustering, or {@code null} when none is configured
      */
-    public static Clustering toClustering(TableCreateOptions options) {
+    private static Clustering toClustering(TableCreateOptions options) {
         if (options.getClusteredFields().isEmpty()) {
             return null;
         }

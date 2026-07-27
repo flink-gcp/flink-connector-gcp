@@ -945,9 +945,18 @@ committables to a single committer subtask (in streaming through a stage that st
 committable with its checkpoint id), and that committer — the actual commit — groups the staged
 files by destination table and runs **one load job per table** (all jobs submitted first, then
 awaited — BigQuery runs them concurrently server-side): once at end of input in batch, once per
-completed checkpoint in streaming. Load jobs carry the serializer's schema explicitly
-(`useAvroLogicalTypes`), plus the partitioning/clustering from `tableCreateOptions(...)` for
-tables created under `CREATE_IF_NEEDED`. Loading in the committer (rather than a post-commit
+completed checkpoint in streaming. Before its first load of a run, each destination is
+**reconciled against the live table** through the REST API — a missing table is created (schema
+from the serializer, partitioning/clustering from `tableCreateOptions(...)`; `CREATE_NEVER` fails
+with a client-side error instead), and the schema the load jobs then carry explicitly
+(`useAvroLogicalTypes`) is the live table's, unioned with the serializer's when
+schema updates are enabled (under `WRITE_TRUNCATE` it is the serializer's as-is — the load
+replaces the table schema wholesale; see below). One reconciliation per destination per run,
+whatever the partition count; the credentials therefore need `bigquery.tables.get` (plus
+`bigquery.tables.create` / `bigquery.tables.update` for what the configuration enables). Because
+the table is created before the load rather than by it, a load failure can leave an empty table
+behind — as a schema union applied before a failed load also persists, columns being permanent
+either way. Loading in the committer (rather than a post-commit
 topology, where the [#14]({{< param BookRepo >}}/issues/14) batch implementation originally ran it) is deliberate: committables ride
 in Flink's committer state until their loads succeed, and the final batch of a streaming job is
 committed during task shutdown's final-checkpoint wait — records emitted to a post-commit
@@ -1003,15 +1012,26 @@ server-side, which can duplicate rows under `WRITE_APPEND`.
 so retries are idempotent) and appended to the final table with one atomic copy job. Temporary
 tables go to the destination's dataset by default, or to `tempDataset(...)` — a dedicated dataset
 with a default table expiration is recommended so tables orphaned by hard failures are
-garbage-collected. Copy jobs support no schema update options, so on this path the final table is
-created/schema-unioned via the REST API before the copy (same union rules as
-[Schema evolution](#schema-evolution)). In streaming there is no temporary-table path: an
+garbage-collected. Copy jobs support no schema update options and require matching schemas, so
+the temporary tables are loaded with the reconciled schema — the same one every load of the run
+carries. In streaming there is no temporary-table path: an
 oversized checkpoint × table submits multiple direct append jobs (deterministic per-partition
 ids keep exactly-once; only that checkpoint's atomic visibility is lost).
 
-**Schema evolution.** The same `schemaUpdateOptions(...)` flags map to the load jobs' native
-`ALLOW_FIELD_ADDITION`/`ALLOW_FIELD_RELAXATION` options. BigQuery honors them only for
-`WRITE_APPEND` loads; with `WRITE_TRUNCATE` the loaded schema replaces the table schema anyway.
+**Schema evolution.** The `schemaUpdateOptions(...)` flags drive the pre-load reconciliation:
+when they allow it, the live schema is unioned with the serializer's and the table updated via
+the REST API before any load — the same union rules as [Schema evolution](#schema-evolution) on
+the Storage Write API path (new columns arrive `NULLABLE`, relaxation needs
+`allowFieldRelaxation()`, retried etag-conditioned updates). The load jobs then carry the already
+reconciled schema; on `WRITE_APPEND` jobs the native
+`ALLOW_FIELD_ADDITION`/`ALLOW_FIELD_RELAXATION` options are still set as belt-and-braces against
+schema changes made externally mid-run. With `WRITE_TRUNCATE` there is nothing to reconcile — the
+loaded schema replaces the table schema wholesale. With updates **disabled**, the live table's
+schema wins outright: the serializer's differences are not applied, and — measured against real
+BigQuery — a staged Avro field the table lacks is then **silently ignored by the load**, the
+remaining columns loading normally (the committer logs a warning naming the field, once per
+destination per run; before [#142]({{< param BookRepo >}}/issues/142) the same configuration
+failed the whole job at submission with *"Cannot add fields"* whenever the run fit one load job).
 
 **`REQUIRED` columns and load jobs.** A load job carries a schema of its own, so what BigQuery does
 when that schema disagrees with the destination table matters here in a way it does not for the
@@ -1022,16 +1042,17 @@ Storage Write API. Measured against real BigQuery:
 | an existing column declared `REQUIRED` where the table has it `NULLABLE` | accepted; the tightening is silently ignored and the column stays `NULLABLE` |
 | a **new** column declared `REQUIRED`, with `allowNewFields()` | the job is **rejected at submission** — *"Cannot add required fields to an existing schema"* |
 
-The second row is a real defect on the single-load path, tracked in
-[#142]({{< param BookRepo >}}/issues/142): a direct load builds its schema from the serializer alone,
-while the temp-table path reconciles against the live table and demotes new `REQUIRED` columns to
-`NULLABLE` first. Until it is fixed, a job that asks for `REQUIRED` columns — either serializer under
-`deriveRequiredColumns()` — can fail a whole load job when its schema grows a new column against a
-pre-existing table. **A default-configured job cannot reach it**, since no derived column is
-`REQUIRED` unless asked for; that was not true while the Avro serializer defaulted to `REQUIRED`, and
-is one reason it no longer does (see [Column modes](#column-modes)). A load job is all-or-nothing, so
-there is no
-row-level policy to catch it.
+The second row is why no load is submitted with an unreconciled schema. It used to be reachable —
+a direct load once built its schema from the serializer alone, so a job asking for `REQUIRED`
+columns (either serializer under `deriveRequiredColumns()`) failed outright when its schema grew a
+new column against a pre-existing table, but only when the run fit a single load job; fixed in
+[#142]({{< param BookRepo >}}/issues/142) by giving direct loads the reconciliation the temp-table
+path always had. Now a new `REQUIRED` column reaches a pre-existing table as `NULLABLE` under
+`allowNewFields()` — the union's demotion, applied to the table before the job is submitted — and
+whether a run fits one partition no longer decides whether its records load
+(`BigQueryFileLoadsSchemaEvolutionITCase` pins both this and the updates-disabled row above
+against real BigQuery). The first row never comes up anymore for the same reason: with updates
+disabled the provided schema *is* the table's, so no tightening is ever sent.
 
 **Staging cleanup.** Staged files are deleted after a successful load — best-effort; on failure
 they are deliberately kept so a Flink restart retries deterministically. Point `stagingPath` at a
@@ -1052,7 +1073,9 @@ precision/scale respected), `JSON`/`GEOGRAPHY` as strings, `STRUCT`/`REPEATED` n
 `INTERVAL` and `RANGE` columns are not supported by this write method.
 
 The integration tests (`BigQueryFileLoadsITCase` for batch, `BigQueryFileLoadsStreamingITCase`
-for checkpoint-triggered streaming loads) run real jobs against BigQuery and GCS and are gated on
+for checkpoint-triggered streaming loads, `BigQueryFileLoadsSchemaEvolutionITCase` for loads
+against a pre-existing table whose schema the serializer's extends) run real jobs against
+BigQuery and GCS and are gated on
 `BQ_IT_PROJECT`, `BQ_IT_DATASET` and `BQ_IT_GCS_BUCKET` (application-default credentials); they
 are skipped when the variables are unset, keeping `./mvnw verify` credential-free. For local
 runs, put the variables (plus `GOOGLE_APPLICATION_CREDENTIALS` if not using the default ADC

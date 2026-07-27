@@ -20,22 +20,18 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.StringUtils;
 
-import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.Schema;
-import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
-import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStorage;
-import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.SchemaUnifier;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -61,20 +57,27 @@ import java.util.TreeMap;
  * into BigQuery load jobs: groups files per destination table, bin-packs each table's files against
  * the per-load-job limits, and executes the resulting jobs through a {@link LoadJobRunner}.
  *
+ * <p><b>Every load consults the live table first.</b> The destination is reconciled through one
+ * shared decision ({@link #ensureFinalTable}, memoized once per destination per run): a missing
+ * table is created via {@link TableAdmin} with the configured partitioning/clustering, and — gated
+ * by {@link SchemaUpdateOptions} — the live schema is unioned with the serializer's via {@link
+ * SchemaUnifier}, which demotes a new {@code REQUIRED} column to {@code NULLABLE} because BigQuery
+ * cannot add {@code REQUIRED} columns to an existing table. A load job supplying an unreconciled
+ * schema would be rejected at submission for exactly that case, and whether a run fits one
+ * partition must not decide whether its records load.
+ *
  * <p><b>Common case — one partition.</b> A table whose files fit one load job is loaded directly:
- * the load job carries the serializer's schema, the configured dispositions, the partitioning and
- * clustering of an auto-created table, and — gated by {@link SchemaUpdateOptions} — the native
- * {@code ALLOW_FIELD_ADDITION}/{@code ALLOW_FIELD_RELAXATION} schema update options. (BigQuery only
- * honors schema update options on {@code WRITE_APPEND} jobs; with other dispositions they are
- * omitted — {@code WRITE_TRUNCATE} replaces the schema wholesale anyway.)
+ * the load job carries the reconciled schema, the configured dispositions, and — belt-and-braces
+ * against external mid-run schema changes — the native {@code ALLOW_FIELD_ADDITION}/{@code
+ * ALLOW_FIELD_RELAXATION} schema update options. (BigQuery only honors schema update options on
+ * {@code WRITE_APPEND} jobs; with other dispositions they are omitted — {@code WRITE_TRUNCATE}
+ * replaces the schema wholesale anyway.)
  *
  * <p><b>Overflow, batch — temporary tables plus one copy job.</b> A table exceeding the limits is
  * loaded partition-by-partition into temporary tables ({@code WRITE_TRUNCATE} + {@code
  * CREATE_IF_NEEDED}, so a retried partition load is idempotent), then appended to the final table
- * with a single atomic copy job. Copy jobs support no schema update options, so the final table is
- * reconciled <em>before</em> the copy: created via {@link TableAdmin} when missing (with the
- * configured partitioning/clustering), or schema-unioned via {@link SchemaUnifier} when updates are
- * enabled.
+ * with a single atomic copy job. Copy jobs support no schema update options and require matching
+ * schemas, so the temporary tables are loaded with the reconciled schema.
  *
  * <p><b>Overflow, streaming — multiple direct loads.</b> A streaming run (one with a checkpoint id)
  * skips the temporary-table path and submits one direct append job per partition instead:
@@ -115,8 +118,8 @@ public final class LoadJobOrchestrator {
     private final String flinkJobId;
     @Nullable private final Long checkpointId;
 
-    /** Whether a destination table was missing when first checked; see {@link #mayCreate}. */
-    private final Map<TableDestination, Boolean> missingTables = new HashMap<>();
+    /** Per-run memo of {@link #ensureFinalTable}; see {@link #finalTableSchema}. */
+    private final Map<TableDestination, Schema> finalTableSchemas = new HashMap<>();
 
     /**
      * Creates an orchestrator.
@@ -124,7 +127,7 @@ public final class LoadJobOrchestrator {
      * @param config the sink configuration
      * @param options the FILE_LOADS options
      * @param runner the job runner
-     * @param tableAdmin the table admin (pre-copy table creation and schema reconciliation)
+     * @param tableAdmin the table admin (pre-load table creation and schema reconciliation)
      * @param storage the staging storage (post-load cleanup)
      * @param flinkJobId the Flink job id (hex), scoping temporary table names and job ids
      * @param checkpointId the checkpoint whose files this run loads, or {@code null} for a batch
@@ -247,17 +250,17 @@ public final class LoadJobOrchestrator {
             // Streaming overflow: no temporary tables — one direct append job per partition.
             // Only the checkpoint's atomic visibility is lost; deterministic per-partition ids
             // keep retries exactly-once. The partitions run sequentially (each awaited before
-            // the next is submitted) so schema-update options cannot race each other on the
-            // destination table the way concurrent ALLOW_FIELD_ADDITION jobs would.
+            // the next is submitted): the schema is reconciled once up front, but the jobs still
+            // carry schema-update options, which must not race each other on the destination
+            // table the way concurrent ALLOW_FIELD_ADDITION jobs would.
             for (int i = 0; i < load.partitions.size(); i++) {
                 runner.awaitJob(submitDirectLoad(destination, load.partitions.get(i), "p" + i));
             }
             return;
         }
         // Copy jobs require matching schemas, so temp tables are loaded with the final table's
-        // schema, reconciled up front (a table-only column would otherwise fail the copy while
-        // the same rows load fine on the single-job path).
-        Schema schema = ensureFinalTable(destination);
+        // reconciled schema.
+        Schema schema = finalTableSchema(destination);
         for (int i = 0; i < load.partitions.size(); i++) {
             List<String> uris = urisOf(load.partitions.get(i));
             TableDestination tempTable = tempTable(destination, i);
@@ -273,24 +276,21 @@ public final class LoadJobOrchestrator {
                             JobInfo.CreateDisposition.CREATE_IF_NEEDED,
                             // Truncating makes a retried partition load idempotent.
                             JobInfo.WriteDisposition.WRITE_TRUNCATE,
-                            List.of(),
-                            null,
-                            null));
+                            List.of()));
         }
     }
 
     /**
-     * Submits one load job straight into the destination table with the configured dispositions and
-     * returns its job id (not yet awaited).
+     * Submits one load job straight into the destination table — reconciled first, so the job
+     * carries the live table's schema — with the configured dispositions, and returns its job id
+     * (not yet awaited).
      */
     private String submitDirectLoad(
             TableDestination destination,
             List<FileLoadsCommittable> partition,
             @Nullable String suffix)
             throws IOException {
-        Schema schema =
-                StorageSchemaConverter.toBigQuerySchema(
-                        config.getSerializer().getTableSchema(destination));
+        Schema schema = finalTableSchema(destination);
         List<String> uris = urisOf(partition);
         String jobId = jobId("flink-bq-load", destination, uris, suffix);
         runner.submitLoad(
@@ -301,44 +301,8 @@ public final class LoadJobOrchestrator {
                         schema,
                         toCreateDisposition(config.getCreateDisposition()),
                         toWriteDisposition(options.getWriteDisposition()),
-                        schemaUpdateOptions(),
-                        creationTimePartitioning(destination),
-                        creationClustering(destination)));
+                        schemaUpdateOptions()));
         return jobId;
-    }
-
-    /**
-     * Returns the partitioning a load job may create the destination table with: the configured
-     * one, but only when the table does not exist yet — a load job carrying a partitioning spec
-     * against an existing, differently-laid-out table fails, whereas creation options are defined
-     * to apply at creation time only.
-     */
-    private TimePartitioning creationTimePartitioning(TableDestination destination)
-            throws IOException {
-        TableCreateOptions createOptions =
-                config.getTableCreateOptionsProvider().optionsFor(destination);
-        TimePartitioning partitioning = BigQueryTableAdmin.toTimePartitioning(createOptions);
-        return partitioning != null && mayCreate(destination) ? partitioning : null;
-    }
-
-    /** See {@link #creationTimePartitioning}. */
-    private Clustering creationClustering(TableDestination destination) throws IOException {
-        TableCreateOptions createOptions =
-                config.getTableCreateOptionsProvider().optionsFor(destination);
-        Clustering clustering = BigQueryTableAdmin.toClustering(createOptions);
-        return clustering != null && mayCreate(destination) ? clustering : null;
-    }
-
-    private boolean mayCreate(TableDestination destination) throws IOException {
-        if (config.getCreateDisposition() != CreateDisposition.CREATE_IF_NEEDED) {
-            return false;
-        }
-        Boolean missing = missingTables.get(destination);
-        if (missing == null) {
-            missing = tableAdmin.getSchema(destination) == null;
-            missingTables.put(destination, missing);
-        }
-        return missing;
     }
 
     private void submitCopyIfNeeded(DestinationLoad load) throws IOException {
@@ -360,13 +324,31 @@ public final class LoadJobOrchestrator {
     }
 
     /**
-     * Makes the final table ready for the copy job — which can neither create it with
-     * partitioning/clustering nor update its schema — and returns the schema temporary tables must
-     * be loaded with so the copy's schemas match: creates a missing table under {@code
-     * CREATE_IF_NEEDED} (fails under {@code CREATE_NEVER}), and — when schema updates are enabled
-     * and rows will be appended — unions the live schema with the serializer's, retrying lost
-     * update races. Under {@code WRITE_TRUNCATE} the copy replaces the final table's schema
-     * wholesale, so no union is needed and the serializer's schema is used as-is.
+     * Memoizing wrapper around {@link #ensureFinalTable}: the reconciliation and its create/update
+     * side effects run once per destination per run, however many loads the destination receives
+     * (streaming overflow submits one per partition).
+     */
+    private Schema finalTableSchema(TableDestination destination) throws IOException {
+        Schema schema = finalTableSchemas.get(destination);
+        if (schema == null) {
+            schema = ensureFinalTable(destination);
+            finalTableSchemas.put(destination, schema);
+        }
+        return schema;
+    }
+
+    /**
+     * Reconciles the destination table and returns the schema every load of this run carries — the
+     * one decision shared by direct loads and the temp-table path (through {@link
+     * #finalTableSchema}), so the same records cannot succeed or fail depending on partition count.
+     * Creates a missing table under {@code CREATE_IF_NEEDED} with the configured
+     * partitioning/clustering (fails under {@code CREATE_NEVER}), then re-reads it — creation
+     * swallows a lost race, so what exists may not be what was asked for. Under {@code
+     * WRITE_TRUNCATE} the load or copy replaces the table's schema wholesale, so the serializer's
+     * schema is used as-is. Otherwise — appending, or writing into an empty table — the live schema
+     * wins: it is returned untouched when schema updates are disabled, and unioned with the
+     * serializer's when they are enabled (new {@code REQUIRED} columns arrive {@code NULLABLE},
+     * since BigQuery cannot add {@code REQUIRED} columns), retrying lost update races.
      */
     private Schema ensureFinalTable(TableDestination destination) throws IOException {
         TableSchema desired = config.getSerializer().getTableSchema(destination);
@@ -382,12 +364,35 @@ public final class LoadJobOrchestrator {
                     destination,
                     desired,
                     config.getTableCreateOptionsProvider().optionsFor(destination));
-            return StorageSchemaConverter.toBigQuerySchema(desired);
+            // Creation swallows a lost race (HTTP 409 = someone else created it first), so the
+            // table's actual schema may be a concurrent creator's rather than the desired one —
+            // re-read and reconcile against what is really there instead of trusting the
+            // argument.
+            snapshot = tableAdmin.getSchema(destination);
+            if (snapshot == null) {
+                throw new IOException(
+                        "Destination table "
+                                + destination
+                                + " disappeared right after it was created.");
+            }
         }
         if (options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE) {
             return StorageSchemaConverter.toBigQuerySchema(desired);
         }
         if (!config.getSchemaUpdateOptions().isEnabled()) {
+            try {
+                SchemaUnifier.union(snapshot.getSchema(), desired, config.getSchemaUpdateOptions());
+            } catch (SchemaUnifier.SchemaUnionException e) {
+                // The union's message names the difference; the outcome depends on which kind it
+                // is. A serializer column the table lacks is silently ignored by the load
+                // (measured) — dropped data, not an error — while a type disagreement surfaces
+                // when the load runs. Either way, say what wins, once per destination per run.
+                LOG.warn(
+                        "Schema updates are disabled, so the live schema of {} wins over the"
+                                + " serializer's: {}",
+                        destination,
+                        e.getMessage());
+            }
             return StorageSchemaConverter.toBigQuerySchema(snapshot.getSchema());
         }
         for (int attempt = 1; attempt <= SCHEMA_UPDATE_SCHEDULE.maxAttempts(); attempt++) {

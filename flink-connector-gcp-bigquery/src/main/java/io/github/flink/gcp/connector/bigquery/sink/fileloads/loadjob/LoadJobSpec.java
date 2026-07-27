@@ -18,13 +18,9 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.Schema;
-import com.google.cloud.bigquery.TimePartitioning;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-
-import javax.annotation.Nullable;
 
 import java.util.List;
 
@@ -38,8 +34,6 @@ public final class LoadJobSpec {
     private final JobInfo.CreateDisposition createDisposition;
     private final JobInfo.WriteDisposition writeDisposition;
     private final List<JobInfo.SchemaUpdateOption> schemaUpdateOptions;
-    @Nullable private final TimePartitioning timePartitioning;
-    @Nullable private final Clustering clustering;
 
     LoadJobSpec(
             TableDestination destination,
@@ -47,17 +41,13 @@ public final class LoadJobSpec {
             Schema schema,
             JobInfo.CreateDisposition createDisposition,
             JobInfo.WriteDisposition writeDisposition,
-            List<JobInfo.SchemaUpdateOption> schemaUpdateOptions,
-            @Nullable TimePartitioning timePartitioning,
-            @Nullable Clustering clustering) {
+            List<JobInfo.SchemaUpdateOption> schemaUpdateOptions) {
         this.destination = destination;
         this.sourceUris = List.copyOf(sourceUris);
         this.schema = schema;
         this.createDisposition = createDisposition;
         this.writeDisposition = writeDisposition;
         this.schemaUpdateOptions = List.copyOf(schemaUpdateOptions);
-        this.timePartitioning = timePartitioning;
-        this.clustering = clustering;
     }
 
     /** Returns the destination table. */
@@ -88,18 +78,6 @@ public final class LoadJobSpec {
     /** Returns the schema update options, possibly empty. */
     public List<JobInfo.SchemaUpdateOption> getSchemaUpdateOptions() {
         return schemaUpdateOptions;
-    }
-
-    /** Returns the partitioning of an auto-created destination table, or {@code null}. */
-    @Nullable
-    public TimePartitioning getTimePartitioning() {
-        return timePartitioning;
-    }
-
-    /** Returns the clustering of an auto-created destination table, or {@code null}. */
-    @Nullable
-    public Clustering getClustering() {
-        return clustering;
     }
 
     @Override

@@ -41,6 +41,34 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   and checkpoints-after-tasks-finish (the final batch rides the post-finish checkpoint). Quota
   guard at graph construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5
   min warns (1,500 load jobs/table/day), plus a runtime cadence warning in the committer
+- **BigQuery FILE_LOADS live-table reconciliation** (#142): `ensureFinalTable` is the shared
+  entry point for **every** load — direct and temp-table alike — memoized once per destination per
+  run (`finalTableSchema`; the orchestrator is constructed per commit, so the memo is naturally
+  per-run and streaming overflow's sequential per-partition direct loads reconcile once). The
+  defect it fixes was measured on real BigQuery: a load job *adding* a `REQUIRED` column is
+  rejected at submission even under `ALLOW_FIELD_ADDITION`, so the old direct path — serializer
+  schema, unreconciled — failed the whole job under `allowNewFields()` exactly when the run fit
+  one partition, while the temp-table path demoted the addition to `NULLABLE` and succeeded
+  (tightening an *existing* column's mode, the other measured row, is silently ignored and was
+  never a problem). Consequences that are decisions, not accidents: missing tables are created via
+  `TableAdmin` (with `TableCreateOptions`) before the load, retiring the load-job-driven creation
+  machinery (`mayCreate`/`missingTables`) and `LoadJobSpec`'s partitioning/clustering fields — so
+  a failed load can leave an empty table or an applied schema union behind, as the temp path
+  always could, columns being irreversible anyway; `CREATE_NEVER` + missing table is a client-side
+  `IOException` before anything is submitted; and `bigquery.tables.get` became an unconditional
+  FILE_LOADS requirement (one read per destination per run — previously the default config made no
+  TableAdmin call on the direct path). The native `ALLOW_FIELD_ADDITION`/`ALLOW_FIELD_RELAXATION`
+  options are **kept** on `WRITE_APPEND` jobs — asked, and the user chose keeping them
+  (2026-07-27) as belt-and-braces against external mid-run schema changes — even though a
+  reconciled provided schema makes them no-ops otherwise; do not drop them as "dead" in a cleanup.
+  With updates **disabled** the live schema wins outright, and — measured — BigQuery silently
+  ignores a staged Avro field the provided schema lacks: the rows load and that column's data is
+  dropped, where the unreconciled direct path had failed loudly at submission ("Cannot add
+  fields"). The orchestrator warns once per destination by probing the union with the disabled
+  options and catching `SchemaUnionException` — that warn is what remains of the old loudness, so
+  it is load-bearing, not a simplification target. `WRITE_EMPTY` + updates enabled now unions on
+  the direct path too (batch-only; streaming rejects non-append). Both measured rows are pinned
+  against real BigQuery by `BigQueryFileLoadsSchemaEvolutionITCase`
 - **BigQuery STORAGE_API_EXACTLY_ONCE** (#30): buffered streams + 2PC on checkpoints. **One
   stream per writer subtask, reused across checkpoints and tracked in Flink writer state**
   (Dataproc-connector style; stream-per-checkpoint explicitly rejected — GCP support told the

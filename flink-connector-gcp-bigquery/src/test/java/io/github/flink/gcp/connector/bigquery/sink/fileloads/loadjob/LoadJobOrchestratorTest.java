@@ -16,8 +16,8 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
+import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.JobInfo;
-import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
@@ -37,6 +37,12 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittabl
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.Logger;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -46,6 +52,7 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.groups.Tuple.tuple;
 
 /** Tests for {@link LoadJobOrchestrator} against recording fakes. */
 class LoadJobOrchestratorTest {
@@ -68,13 +75,35 @@ class LoadJobOrchestratorTest {
                                     .setMode(TableFieldSchema.Mode.NULLABLE))
                     .build();
 
+    private static final TableSchema LIVE_F1_ONLY =
+            TableSchema.newBuilder()
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("f1")
+                                    .setType(TableFieldSchema.Type.STRING)
+                                    .setMode(TableFieldSchema.Mode.NULLABLE))
+                    .build();
+
+    private static final TableSchema SCHEMA_WITH_F2_REQUIRED =
+            SCHEMA.toBuilder()
+                    .setFields(
+                            1,
+                            SCHEMA.getFields(1).toBuilder().setMode(TableFieldSchema.Mode.REQUIRED))
+                    .build();
+
     /** A serializer only used for its schema. */
     private static final class SchemaOnlySerializer extends BigQueryProtoSerializer<Object> {
         private static final long serialVersionUID = 1L;
 
+        private final TableSchema schema;
+
+        SchemaOnlySerializer(TableSchema schema) {
+            this.schema = schema;
+        }
+
         @Override
         public TableSchema getTableSchema(TableDestination destination) {
-            return SCHEMA;
+            return schema;
         }
 
         @Override
@@ -109,11 +138,19 @@ class LoadJobOrchestratorTest {
                 FileLoadsOptions options,
                 Consumer<BigQuerySinkBuilder<Object>> customizer,
                 Long checkpointId) {
+            this(options, customizer, checkpointId, SCHEMA);
+        }
+
+        Harness(
+                FileLoadsOptions options,
+                Consumer<BigQuerySinkBuilder<Object>> customizer,
+                Long checkpointId,
+                TableSchema serializerSchema) {
             BigQuerySinkBuilder<Object> builder =
                     BigQuerySink.builder()
                             .writeMethod(WriteMethod.FILE_LOADS)
                             .destination(T1)
-                            .serializer(new SchemaOnlySerializer())
+                            .serializer(new SchemaOnlySerializer(serializerSchema))
                             .fileLoadsOptions(options);
             customizer.accept(builder);
             BigQuerySinkConfig<Object> config =
@@ -168,8 +205,9 @@ class LoadJobOrchestratorTest {
                 .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
         assertThat(t1Spec.getWriteDisposition()).isEqualTo(JobInfo.WriteDisposition.WRITE_APPEND);
         assertThat(t1Spec.getSchemaUpdateOptions()).isEmpty(); // Updates disabled by default.
-        assertThat(t1Spec.getTimePartitioning()).isNull();
-        assertThat(t1Spec.getClustering()).isNull();
+
+        // The missing destination tables were created before the loads were submitted.
+        assertThat(harness.tableAdmin.created).containsExactlyInAnyOrder(T1, T2);
 
         // Every load was awaited and all staged files were cleaned up afterwards.
         assertThat(harness.runner.awaited)
@@ -249,7 +287,7 @@ class LoadJobOrchestratorTest {
     }
 
     @Test
-    void partitioningAndClusteringArePassedToDirectLoads() throws IOException {
+    void missingTableIsCreatedWithConfiguredCreateOptionsBeforeADirectLoad() throws IOException {
         Harness harness =
                 new Harness(
                         FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
@@ -264,23 +302,18 @@ class LoadJobOrchestratorTest {
 
         harness.orchestrator.run(List.of(file(T1, "a", 10)));
 
-        assertThat(harness.runner.loads.values())
-                .singleElement()
-                .satisfies(
-                        spec -> {
-                            assertThat(spec.getTimePartitioning())
-                                    .isEqualTo(
-                                            TimePartitioning.newBuilder(TimePartitioning.Type.DAY)
-                                                    .setField("f1")
-                                                    .build());
-                            assertThat(spec.getClustering().getFields()).containsExactly("f2");
-                        });
+        assertThat(harness.tableAdmin.created).containsExactly(T1);
+        TableCreateOptions options = harness.tableAdmin.createOptions.get(T1);
+        assertThat(options.getTimePartitioningType())
+                .isEqualTo(TableCreateOptions.TimePartitioningType.DAY);
+        assertThat(options.getTimePartitioningField()).isEqualTo("f1");
+        assertThat(options.getClusteredFields()).containsExactly("f2");
     }
 
     @Test
-    void partitioningIsOmittedWhenTheTableAlreadyExists() throws IOException {
-        // Creation options apply at creation time only; a partitioning spec against an existing,
-        // differently-laid-out table would fail the load job.
+    void existingTableIsNotRecreatedByADirectLoad() throws IOException {
+        // Creation options apply at creation time only; the reconciliation must not try to
+        // re-create (or re-lay-out) a table that already exists.
         Harness harness =
                 new Harness(
                         FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
@@ -296,13 +329,8 @@ class LoadJobOrchestratorTest {
 
         harness.orchestrator.run(List.of(file(T1, "a", 10)));
 
-        assertThat(harness.runner.loads.values())
-                .singleElement()
-                .satisfies(
-                        spec -> {
-                            assertThat(spec.getTimePartitioning()).isNull();
-                            assertThat(spec.getClustering()).isNull();
-                        });
+        assertThat(harness.runner.loads).hasSize(1);
+        assertThat(harness.tableAdmin.created).isEmpty();
     }
 
     @Test
@@ -387,17 +415,11 @@ class LoadJobOrchestratorTest {
                         FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
                         builder ->
                                 builder.schemaUpdateOptions(
-                                        SchemaUpdateOptions.builder().allowNewFields().build()));
-        // The live table only has f1; the serializer schema adds f2.
-        harness.tableAdmin.tables.put(
-                T1,
-                TableSchema.newBuilder()
-                        .addFields(
-                                TableFieldSchema.newBuilder()
-                                        .setName("f1")
-                                        .setType(TableFieldSchema.Type.STRING)
-                                        .setMode(TableFieldSchema.Mode.NULLABLE))
-                        .build());
+                                        SchemaUpdateOptions.builder().allowNewFields().build()),
+                        null,
+                        SCHEMA_WITH_F2_REQUIRED);
+        // The live table only has f1; the serializer schema adds f2 as REQUIRED.
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
         harness.tableAdmin.updateRacesToLose = 1; // First update loses a race and is retried.
         long sixTiB = 6L << 40;
 
@@ -407,9 +429,17 @@ class LoadJobOrchestratorTest {
         assertThat(harness.tableAdmin.tables.get(T1).getFieldsList())
                 .extracting(TableFieldSchema::getName)
                 .containsExactly("f1", "f2");
-        // Temp tables are loaded with the reconciled final-table schema so the copy matches.
+        // Temp tables are loaded with the reconciled final-table schema so the copy matches —
+        // reconciled, not the serializer's: the REQUIRED addition arrives demoted to NULLABLE.
         assertThat(harness.runner.loads.values())
-                .allSatisfy(spec -> assertThat(spec.getSchema().getFields()).hasSize(2));
+                .allSatisfy(
+                        spec -> {
+                            assertThat(spec.getSchema().getFields())
+                                    .extracting(Field::getName)
+                                    .containsExactly("f1", "f2");
+                            assertThat(spec.getSchema().getFields().get("f2").getMode())
+                                    .isEqualTo(Field.Mode.NULLABLE);
+                        });
         assertThat(harness.runner.copies).hasSize(1);
     }
 
@@ -426,15 +456,7 @@ class LoadJobOrchestratorTest {
                         builder ->
                                 builder.schemaUpdateOptions(
                                         SchemaUpdateOptions.builder().allowNewFields().build()));
-        harness.tableAdmin.tables.put(
-                T1,
-                TableSchema.newBuilder()
-                        .addFields(
-                                TableFieldSchema.newBuilder()
-                                        .setName("f1")
-                                        .setType(TableFieldSchema.Type.STRING)
-                                        .setMode(TableFieldSchema.Mode.NULLABLE))
-                        .build());
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
         long sixTiB = 6L << 40;
 
         harness.orchestrator.run(List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB)));
@@ -443,6 +465,67 @@ class LoadJobOrchestratorTest {
         assertThat(harness.runner.loads.values())
                 .allSatisfy(spec -> assertThat(spec.getSchema().getFields()).hasSize(2));
         assertThat(harness.runner.copies).hasSize(1);
+    }
+
+    @Test
+    void writeEmptyDirectLoadStillReconcilesWhenUpdatesEnabled() throws IOException {
+        // WRITE_EMPTY is not WRITE_TRUNCATE: the live table's schema survives the load, so the
+        // union runs on this path too — while the native schema update options stay append-only.
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(WriteDisposition.WRITE_EMPTY)
+                                .build(),
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build()));
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.tableAdmin.schemaUpdates).containsExactly(T1);
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        spec -> {
+                            assertThat(spec.getSchema().getFields())
+                                    .extracting(Field::getName)
+                                    .containsExactly("f1", "f2");
+                            assertThat(spec.getWriteDisposition())
+                                    .isEqualTo(JobInfo.WriteDisposition.WRITE_EMPTY);
+                            assertThat(spec.getSchemaUpdateOptions()).isEmpty();
+                        });
+    }
+
+    @Test
+    void updatesDisabledWarnsOncePerDestinationAboutUnappliedDifferences() throws IOException {
+        // The warn is the loud part of the silent drop: with updates disabled the live schema
+        // wins, and staged data for the serializer-only column f2 is ignored by BigQuery.
+        Harness harness = Harness.streaming(7);
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+        long sixTiB = 6L << 40;
+
+        Logger logger = (Logger) LogManager.getLogger(LoadJobOrchestrator.class);
+        CapturingAppender appender = new CapturingAppender();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            harness.orchestrator.run(
+                    List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", sixTiB)));
+        } finally {
+            logger.removeAppender(appender);
+        }
+
+        // Three direct loads, one warning (the reconciliation is memoized), naming the field.
+        assertThat(appender.warnings)
+                .singleElement()
+                .satisfies(
+                        message ->
+                                assertThat(message)
+                                        .contains("live schema")
+                                        .contains("f2")
+                                        .contains(T1.toString()));
     }
 
     @Test
@@ -455,6 +538,8 @@ class LoadJobOrchestratorTest {
 
         assertThat(harness.storage.getDeleted()).isEmpty();
         assertThat(harness.runner.deletedTables).isEmpty();
+        // The pre-load creation is not rolled back: a failed load can leave an empty table.
+        assertThat(harness.tableAdmin.created).containsExactly(T1);
     }
 
     @Test
@@ -541,8 +626,150 @@ class LoadJobOrchestratorTest {
                         });
         assertThat(harness.runner.copies).isEmpty();
         assertThat(harness.runner.deletedTables).isEmpty();
-        assertThat(harness.tableAdmin.created).isEmpty();
+        // The missing table is created once, not once per partition (memoized reconciliation).
+        assertThat(harness.tableAdmin.created).containsExactly(T1);
         assertThat(harness.storage.getDeleted()).hasSize(3);
+    }
+
+    @Test
+    void directLoadDemotesANewRequiredColumnToNullable() throws IOException {
+        // The #142 regression: the serializer's derived schema gains a REQUIRED column against a
+        // pre-existing table. An unreconciled load job would be rejected at submission ("Cannot
+        // add required fields to an existing schema"); the union demotes the addition to NULLABLE
+        // and patches the table before the load, exactly as the temp-table path always has.
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build()),
+                        null,
+                        SCHEMA_WITH_F2_REQUIRED);
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.tableAdmin.schemaUpdates).containsExactly(T1);
+        assertThat(harness.tableAdmin.tables.get(T1).getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getMode)
+                .containsExactly(
+                        tuple("f1", TableFieldSchema.Mode.NULLABLE),
+                        tuple("f2", TableFieldSchema.Mode.NULLABLE));
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        spec -> {
+                            assertThat(spec.getSchema().getFields())
+                                    .extracting(Field::getName)
+                                    .containsExactly("f1", "f2");
+                            assertThat(spec.getSchema().getFields().get("f2").getMode())
+                                    .isEqualTo(Field.Mode.NULLABLE);
+                        });
+    }
+
+    @Test
+    void directLoadUsesTheLiveSchemaWhenUpdatesAreDisabled() throws IOException {
+        // Without schemaUpdateOptions the live table's schema wins over the serializer's wider
+        // one; the table is never patched.
+        Harness harness = Harness.plain();
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.tableAdmin.schemaUpdates).isEmpty();
+        assertThat(harness.tableAdmin.created).isEmpty();
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        spec ->
+                                assertThat(spec.getSchema().getFields())
+                                        .extracting(Field::getName)
+                                        .containsExactly("f1"));
+    }
+
+    @Test
+    void streamingOverflowReconcilesOncePerDestination() throws IOException {
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build()),
+                        7L);
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+        long sixTiB = 6L << 40;
+
+        harness.orchestrator.run(
+                List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", sixTiB)));
+
+        // Three direct loads, but the live table was read and patched exactly once.
+        assertThat(harness.runner.loads).hasSize(3);
+        assertThat(harness.tableAdmin.schemaReads).isEqualTo(1);
+        assertThat(harness.tableAdmin.schemaUpdates).containsExactly(T1);
+        assertThat(harness.runner.loads.values())
+                .allSatisfy(
+                        spec ->
+                                assertThat(spec.getSchema().getFields())
+                                        .extracting(Field::getName)
+                                        .containsExactly("f1", "f2"));
+    }
+
+    @Test
+    void directLoadIntoMissingTableFailsUnderCreateNever() {
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        builder -> builder.createDisposition(CreateDisposition.CREATE_NEVER));
+
+        assertThatThrownBy(() -> harness.orchestrator.run(List.of(file(T1, "a", 10))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("CREATE_NEVER");
+        assertThat(harness.runner.loads).isEmpty();
+        assertThat(harness.storage.getDeleted()).isEmpty();
+    }
+
+    @Test
+    void truncatingDirectLoadSkipsSchemaReconciliation() throws IOException {
+        // WRITE_TRUNCATE replaces the table's schema wholesale, so the serializer's schema is
+        // used as-is and the live table is never patched.
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(WriteDisposition.WRITE_TRUNCATE)
+                                .build(),
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build()));
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.tableAdmin.schemaUpdates).isEmpty();
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        spec ->
+                                assertThat(spec.getSchema().getFields())
+                                        .extracting(Field::getName)
+                                        .containsExactly("f1", "f2"));
+    }
+
+    /** Collects WARN messages logged through log4j2 while attached. */
+    private static final class CapturingAppender extends AbstractAppender {
+
+        private final List<String> warnings = new ArrayList<>();
+
+        CapturingAppender() {
+            super("capture", null, null, true, Property.EMPTY_ARRAY);
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (event.getLevel() == Level.WARN) {
+                warnings.add(event.getMessage().getFormattedMessage());
+            }
+        }
     }
 
     @Test
