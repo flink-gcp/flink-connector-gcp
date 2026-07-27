@@ -754,6 +754,33 @@ class ProtoRowConverterTest {
         assertThat(get(child, "c_duration")).isEqualTo(2_000_000L);
     }
 
+    /**
+     * The value half of the shape check, and the half that matters: recognising a well-known type
+     * on its name alone left the {@code seconds}/{@code nanos} descriptors null and threw {@code
+     * NullPointerException} <em>per record</em>, naming no field, from inside the writers' {@code
+     * FailedRowHandler} catch — so a log-and-drop policy would have discarded the whole stream
+     * while the job stayed green. Converting the message as the ordinary struct it is removes the
+     * failure rather than relocating it.
+     */
+    @Test
+    void convertsAWellKnownTypeNameCarryingTheWrongFieldsAsAnOrdinaryStruct() throws Exception {
+        Descriptors.Descriptor source = TestProtos.collidingWellKnownType();
+        Descriptors.Descriptor durationType = source.findFieldByName("d").getMessageType();
+        DynamicMessage.Builder builder = DynamicMessage.newBuilder(source);
+        set(
+                builder,
+                source,
+                "d",
+                DynamicMessage.newBuilder(durationType)
+                        .setField(durationType.findFieldByName("millis"), 5L)
+                        .build());
+
+        DynamicMessage row =
+                converter(source, ProtoSchemaOptions.defaults()).convert(builder.build());
+
+        assertThat(get((DynamicMessage) get(row, "d"), "millis")).isEqualTo(5L);
+    }
+
     /** The value-side half of JSON-first precedence, matching the schema side. */
     @Test
     void printsAJsonMappedWrapperRatherThanUnwrappingIt() throws Exception {

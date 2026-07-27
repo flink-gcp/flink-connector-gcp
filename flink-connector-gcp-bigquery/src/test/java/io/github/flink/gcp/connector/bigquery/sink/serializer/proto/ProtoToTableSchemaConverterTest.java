@@ -690,6 +690,32 @@ class ProtoToTableSchemaConverterTest {
     }
 
     /**
+     * A message named {@code google.protobuf.Duration} without {@code seconds}/{@code nanos} is not
+     * one, whatever it is called, and is expanded as the ordinary {@code STRUCT} its author
+     * declared. Nothing reserves the {@code google.protobuf} package, so a runtime-assembled
+     * descriptor pool can carry this.
+     *
+     * <p>Recognising on the name alone derived an {@code INT64} column here and then threw {@code
+     * NullPointerException} on <em>every record</em> — from inside the writers' {@code
+     * FailedRowHandler} catch, where a log-and-drop policy would have discarded the whole stream.
+     */
+    @Test
+    void doesNotRecogniseAWellKnownTypeNameCarryingTheWrongFields() {
+        TableFieldSchema field =
+                byName(
+                                ProtoToTableSchemaConverter.convert(
+                                        TestProtos.collidingWellKnownType(),
+                                        ProtoSchemaOptions.defaults()))
+                        .get("d");
+
+        assertThat(field.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(field.getFieldsList())
+                .extracting(TableFieldSchema::getName, TableFieldSchema::getType)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("millis", TableFieldSchema.Type.INT64));
+    }
+
+    /**
      * Measured: the BigQuery client library rejects a zero-sub-field RECORD itself, before a
      * request is ever sent, with a message naming no field. Rejecting here says which field it was.
      */

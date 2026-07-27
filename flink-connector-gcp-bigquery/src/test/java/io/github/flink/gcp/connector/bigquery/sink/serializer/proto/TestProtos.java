@@ -133,6 +133,59 @@ final class TestProtos {
     }
 
     /**
+     * A message whose field is typed {@code google.protobuf.Duration} but carries a single {@code
+     * millis} field instead of {@code seconds}/{@code nanos}.
+     *
+     * <p>Hand-built, and necessarily so: protoc compiles every file under {@code src/test/protobuf}
+     * in one invocation, so a second definition of {@code google.protobuf.Duration} there would
+     * collide with the real one {@code wellknown.proto} imports. Nothing reserves the {@code
+     * google.protobuf} package, though, so a descriptor pool assembled at runtime can carry exactly
+     * this — which is why recognition checks the shape and not only the name.
+     */
+    static Descriptors.Descriptor collidingWellKnownType() {
+        DescriptorProtos.FileDescriptorProto fake =
+                DescriptorProtos.FileDescriptorProto.newBuilder()
+                        .setName("colliding_duration.proto")
+                        .setPackage("google.protobuf")
+                        .setSyntax("proto3")
+                        .addMessageType(
+                                DescriptorProtos.DescriptorProto.newBuilder()
+                                        .setName("Duration")
+                                        .addField(
+                                                scalar(
+                                                        "millis",
+                                                        1,
+                                                        DescriptorProtos.FieldDescriptorProto.Type
+                                                                .TYPE_INT64)))
+                        .build();
+        DescriptorProtos.FileDescriptorProto holder =
+                DescriptorProtos.FileDescriptorProto.newBuilder()
+                        .setName("colliding_holder.proto")
+                        .setPackage("colliding")
+                        .setSyntax("proto3")
+                        .addDependency("colliding_duration.proto")
+                        .addMessageType(
+                                DescriptorProtos.DescriptorProto.newBuilder()
+                                        .setName("Holder")
+                                        .addField(
+                                                message(
+                                                        "d",
+                                                        1,
+                                                        ".google.protobuf.Duration",
+                                                        false)))
+                        .build();
+        try {
+            Descriptors.FileDescriptor fakeFile =
+                    Descriptors.FileDescriptor.buildFrom(fake, new Descriptors.FileDescriptor[0]);
+            return Descriptors.FileDescriptor.buildFrom(
+                            holder, new Descriptors.FileDescriptor[] {fakeFile})
+                    .findMessageTypeByName("Holder");
+        } catch (Descriptors.DescriptorValidationException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    /**
      * proto2, where a {@code required} field has presence and is mandatory all the same — the case
      * a presence test alone gets wrong. From {@code src/test/protobuf/presence2.proto}.
      */

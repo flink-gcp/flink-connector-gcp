@@ -145,7 +145,18 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   package-private `ProtoWellKnownType` enum keyed on **full name** — a descriptor built from a
   serialized `FileDescriptorSet` carries its own copy of `wrappers.proto`, so identity comparison
   would miss every one — replacing `ProtoToTableSchemaConverter.isTimestampMessage`, which was a
-  boolean only because n was 1. **Six constants, not sixteen**: the nine wrappers share one, because
+  boolean only because n was 1. **The name is necessary but not sufficient**: `of()` also checks the
+  message really has the sub-fields the conversions read (`seconds`+`nanos`, `paths`, `value`), and
+  answers `NONE` when it does not, so the message expands as the ordinary `STRUCT` its author
+  declared. Nothing reserves the `google.protobuf` package — `package google.protobuf; message
+  Duration { int64 millis = 1; }` is legal — and on the name alone that derived an `INT64` column
+  and then threw a field-less `NullPointerException` on **every record**, from inside the writers'
+  `FailedRowHandler` catch, where log-and-drop would swallow the stream. Measured, and it is the
+  same rule the Avro entry above states: **a schema problem must not surface from `serialize()`**.
+  Answering `NONE` rather than throwing is deliberate — there is nothing to reject, only a name that
+  did not mean what it usually does. Note this could not be relocated with a `checkArgument`:
+  `ProtoMessageSerializer` builds its state lazily, so on a task manager even plan construction
+  happens inside that catch; the failure had to be *removed*, not moved. **Six constants, not sixteen**: the nine wrappers share one, because
   both the column type and the conversion kind come from the wrapper's `value` sub-field through the
   *same* `scalarType`/`scalarKind` functions a bare scalar goes through, so a `UInt64Value` inherits
   the `uint64` range check with no second table to keep in sync. Mappings: wrappers → the wrapped

@@ -96,7 +96,60 @@ enum ProtoWellKnownType {
         if (field.getJavaType() != Descriptors.FieldDescriptor.JavaType.MESSAGE) {
             return NONE;
         }
-        return BY_FULL_NAME.getOrDefault(field.getMessageType().getFullName(), NONE);
+        Descriptors.Descriptor messageType = field.getMessageType();
+        ProtoWellKnownType candidate = BY_FULL_NAME.getOrDefault(messageType.getFullName(), NONE);
+        return candidate.hasExpectedShape(messageType) ? candidate : NONE;
+    }
+
+    /**
+     * Returns whether the given message really has the sub-fields this type's conversions read.
+     *
+     * <p>The name alone is not proof. {@code package google.protobuf; message Duration { int64
+     * millis = 1; }} is legal protobuf that any descriptor pool can carry — nothing reserves the
+     * package — and before this check it derived an {@code INT64} column and then threw {@code
+     * NullPointerException: ... because "field" is null} on <em>every record</em>, from inside the
+     * writers' {@code FailedRowHandler} catch, where a log-and-drop policy would discard the whole
+     * stream. Measured, not supposed.
+     *
+     * <p>Answering {@link #NONE} rather than throwing is deliberate: such a message is expanded as
+     * the ordinary {@code STRUCT} its fields describe, which is exactly what its author declared.
+     * There is nothing to reject — only a name that turned out not to mean what it usually does.
+     *
+     * <p>{@link #JSON} needs no entry: no sub-field of a {@code Struct}, {@code Value} or {@code
+     * ListValue} is ever dereferenced here, since {@code JsonFormat} prints them whole.
+     */
+    private boolean hasExpectedShape(Descriptors.Descriptor messageType) {
+        switch (this) {
+            case TIMESTAMP:
+            case DURATION:
+                return isSingular(messageType, "seconds", Descriptors.FieldDescriptor.JavaType.LONG)
+                        && isSingular(
+                                messageType, "nanos", Descriptors.FieldDescriptor.JavaType.INT);
+            case FIELD_MASK:
+                Descriptors.FieldDescriptor paths = messageType.findFieldByName("paths");
+                return paths != null
+                        && paths.isRepeated()
+                        && paths.getJavaType() == Descriptors.FieldDescriptor.JavaType.STRING;
+            case WRAPPER:
+                // Any scalar will do: scalarType/scalarKind map whatever it is, and a message-typed
+                // `value` is the one thing they cannot.
+                Descriptors.FieldDescriptor value = messageType.findFieldByName("value");
+                return value != null
+                        && !value.isRepeated()
+                        && value.getJavaType() != Descriptors.FieldDescriptor.JavaType.MESSAGE;
+            case JSON:
+            case NONE:
+            default:
+                return true;
+        }
+    }
+
+    private static boolean isSingular(
+            Descriptors.Descriptor messageType,
+            String name,
+            Descriptors.FieldDescriptor.JavaType javaType) {
+        Descriptors.FieldDescriptor field = messageType.findFieldByName(name);
+        return field != null && !field.isRepeated() && field.getJavaType() == javaType;
     }
 
     /**
