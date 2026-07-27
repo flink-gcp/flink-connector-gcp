@@ -375,6 +375,16 @@ class JsonDocumentSerializerTest {
 
         assertThat(value(row(serializer, "{\"boundary\":\"POINT(1 2)\"}"), "boundary"))
                 .isEqualTo("POINT(1 2)");
+
+        // Pinned for the same reason as the JSON column above, and the trap is sharper here: the
+        // accepted forms include GeoJSON, so nesting the object is the obvious thing to write in a
+        // JSON document — and it is not what the column takes.
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        "{\"boundary\":{\"type\":\"Point\",\"coordinates\":[1,2]}}"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("root.boundary");
     }
 
     @Test

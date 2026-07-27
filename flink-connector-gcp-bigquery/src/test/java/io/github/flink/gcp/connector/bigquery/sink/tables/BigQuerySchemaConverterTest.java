@@ -123,6 +123,22 @@ class BigQuerySchemaConverterTest {
                                                         .setName("city")
                                                         .setType(TableFieldSchema.Type.STRING)
                                                         .setMode(TableFieldSchema.Mode.NULLABLE)))
+                        // The two types a serializer produces only when marked. The
+                        // read-back direction matters on a pipeline's second run:
+                        // schema reconciliation reads the live table through this
+                        // converter and hands it to SchemaUnifier, so a wrong mapping
+                        // here is a terminal "the type changed" failure against a
+                        // table whose type did not change.
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("payload")
+                                        .setType(TableFieldSchema.Type.JSON)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE))
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("boundary")
+                                        .setType(TableFieldSchema.Type.GEOGRAPHY)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE))
                         .build();
 
         TableSchema roundTripped =

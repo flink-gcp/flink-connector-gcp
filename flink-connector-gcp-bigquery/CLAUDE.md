@@ -75,7 +75,9 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   malformed JSON is a BigQuery row-level error, routed to `FailedRowHandler`). #50's issue text
   says message-only; that was widened in the implementing PR because the corpus the feature exists
   to migrate annotates **string** fields, so option selection alone would have delivered nothing.
-  `isJsonField(field, path)` is the single decision point both converters consult. Consequences not
+  `isJsonField(field, path)` decides the configured JSON marking; #126 made
+  `ProtoToTableSchemaConverter.markedType` the single decision point both converters consult (see the
+  geography entry below). Consequences not
   to re-litigate: an unset plain proto3 string is **left unset rather than written as `""`** (the
   row descriptor's JSON field has presence, and `""` is not valid JSON, so writing it would fail
   every record that omits the field) — limited to fields without presence, since elsewhere `""` is
@@ -121,9 +123,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   path-versus-path case client-side and earlier. Two reasons: a JSON *field option* cannot be
   intersected with a geography *path* without a descriptor, so build() could never own the whole
   rule; and every sibling rule (unmatched paths, recursion, case collisions, mappability) already
-  lives at derivation, so one early check for one rule would be its own inconsistency. That proto
-  derivation is lazy, and so reports all of these from a task manager, is pre-existing and wants its
-  own issue rather than a half-fix here. A configured marking **wins over well-known-type
+  lives at derivation, so one early check for one rule would be its own inconsistency. Derivation is
+  the right place **because `ProtoMessageSerializer` now derives eagerly in its constructor**, which
+  #126 fixed as part of the change: it did not, so every proto schema misconfiguration — the JSON ones
+  included — was reported from `serialize()`, inside the writers' `FailedRowHandler` catch, where
+  log-and-drop swallows it once per record for the life of the job and leaves the table empty with the
+  job green. The deferral first written here ("pre-existing, wants its own issue") understated it by
+  saying "from a task manager": the failure went through the *row-failure* path, not merely a remote
+  one, and the fix was the one line `AvroRecordSerializer` had carried all along. A configured marking **wins over well-known-type
   recognition and is then rejected** for not being a string, rather than silently falling back to the
   automatic `JSON` — nobody should have to guess which won.
   Two things **measured**, not assumed. The goccy emulator *does* create and round-trip a
@@ -222,9 +229,10 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `TableSchemaToAvroConverter` rejects it and would break the FILE_LOADS round trip (#126), and
   `REPEATED STRING` for `FieldMask` because a *repeated* `FieldMask` cannot be flattened, so singular
   and repeated would map differently.
-  Two placements are load-bearing. Auto-JSON is folded into the **existing `jsonColumn` flag** in
-  `convertField` rather than added as a branch in `convertMessageField`: that way `modeOf`'s "a
-  singular JSON column is never REQUIRED" rule covers it with no new clause, the recursion guard is
+  Two placements are load-bearing. Auto-JSON is folded into the **existing marking branch** in
+  `convertField` rather than added as a branch in `convertMessageField` (the `jsonColumn` boolean it
+  was folded into is now the `marked` type `markedType` returns, since #126): that way `modeOf`'s "a
+  singular marked column is never REQUIRED" rule covers it with no new clause, the recursion guard is
   never reached (these types are mutually recursive and were rejected outright before), and **a
   configured JSON marking keeps winning** — the branch returns before the message type is inspected.
   The identical expression used to appear in `ProtoRowConverter.buildFieldPlan` under a comment saying
@@ -287,9 +295,11 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   || containingOneof != null || fieldPresence != IMPLICIT`, guarded by `!isRepeated()` — write it out
   when reasoning, because the `MESSAGE` clause is the one that gets forgotten, and #124 Part 2 is
   entirely about message types) — presence alone would map the one unambiguous case to
-  `NULLABLE`. `isRepeated()` is tested **first**, so a repeated JSON-marked field stays
-  `REPEATED JSON`; a mutant reordering those two lines fails seven tests. **A singular `JSON`
-  column is never `REQUIRED`**, stated about JSON rather than about presence: `ProtoRowConverter`'s
+  `NULLABLE`. `isRepeated()` is tested **first**, so a repeated marked field stays
+  `REPEATED JSON` (or `REPEATED GEOGRAPHY`, since #126); a mutant reordering those two lines fails
+  seven tests. **A singular marked column is never `REQUIRED`** — the rule was stated about JSON
+  before #126 generalised the wording to the marking, but it is the same rule and the same reason —
+  stated about the marking rather than about presence: `ProtoRowConverter`'s
   `omitEmptyString` (the #50 rule) is set to `!hasPresence()`, *identical* to the `REQUIRED`
   trigger, and `BQTableSchemaToProtoDescriptor` builds its row descriptor with **no syntax** →
   proto2 → `LABEL_REQUIRED` is enforced by `build()`, so the pair would throw

@@ -39,9 +39,9 @@ import java.io.IOException;
  * Struct}/{@code Value}/{@code ListValue} a {@code JSON} column) and enums become their value
  * names.
  *
- * <p>{@link ProtoSchemaOptions} adjusts two things about the derived schema: which fields become
- * {@code JSON} columns, and whether column modes come from field presence instead of every
- * non-repeated column being {@code NULLABLE} (see {@link
+ * <p>{@link ProtoSchemaOptions} adjusts three things about the derived schema: which fields become
+ * {@code JSON} columns, which become {@code GEOGRAPHY} columns, and whether column modes come from
+ * field presence instead of every non-repeated column being {@code NULLABLE} (see {@link
  * ProtoSchemaOptions.Builder#deriveRequiredColumns()}).
  *
  * <p>All destinations share the schema of {@code T}; the message class (not its non-serializable
@@ -64,6 +64,16 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
         this.messageClass =
                 Preconditions.checkNotNull(messageClass, "messageClass must not be null");
         this.options = Preconditions.checkNotNull(options, "options must not be null");
+        // Derived here so an unmappable descriptor or a bad marker configuration fails while the
+        // job
+        // graph is built, as it already did on the Avro side. Left to the lazy path it would first
+        // be
+        // derived from serialize(), whose exceptions the writers route to the FailedRowHandler: one
+        // misconfiguration would look like a poison record, and a log-and-drop or DLQ policy would
+        // swallow it once per record for the life of the job, leaving the table empty and the job
+        // green. The state is transient, so a task manager rebuilds it after deserialization
+        // regardless — but by then the same configuration has already been proven to derive.
+        state();
     }
 
     /**

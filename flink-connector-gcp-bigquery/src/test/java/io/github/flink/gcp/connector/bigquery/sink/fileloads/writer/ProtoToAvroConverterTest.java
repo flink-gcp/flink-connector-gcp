@@ -148,13 +148,15 @@ class ProtoToAvroConverterTest {
      */
     @Test
     void convertsGeographyColumnsAsStrings() throws Exception {
+        // NULLABLE, not REQUIRED: a marked column is never REQUIRED, so this is the only mode a
+        // geography column reaching FILE_LOADS staging can have.
         Setup setup =
                 new Setup(
                         schemaOf(
                                 field(
                                         "g",
                                         TableFieldSchema.Type.GEOGRAPHY,
-                                        TableFieldSchema.Mode.REQUIRED)));
+                                        TableFieldSchema.Mode.NULLABLE)));
         assertThat(setup.field("g").getJavaType())
                 .isEqualTo(Descriptors.FieldDescriptor.JavaType.STRING);
 
@@ -165,6 +167,12 @@ class ProtoToAvroConverterTest {
                                 .build());
 
         assertThat(record.get("g")).isEqualTo("POINT(1 2)");
+
+        // An unset one stages as null, which is what the NULL geography in BigQueryFileLoadsITCase
+        // exercises against the real load job.
+        GenericRecord empty =
+                setup.converter.convert(DynamicMessage.newBuilder(setup.descriptor).build());
+        assertThat(empty.get("g")).isNull();
     }
 
     @Test

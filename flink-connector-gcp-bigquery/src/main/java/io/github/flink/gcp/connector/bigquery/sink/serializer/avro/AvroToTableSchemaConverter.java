@@ -158,6 +158,11 @@ public final class AvroToTableSchemaConverter {
         }
 
         TableFieldSchema.Builder builder = TableFieldSchema.newBuilder().setName(name);
+        // A marking is a property of the path, so it is resolved once here and handed to whichever
+        // branch runs — which also means the both-markers rejection inside it fires exactly once
+        // per field. The proto converter resolves its marking once in convertField for the same
+        // reason.
+        TableFieldSchema.Type marked = options.markedType(path);
         switch (base.getType()) {
             case ARRAY:
                 // A collection is REPEATED whether or not the union around it admitted null: a
@@ -167,6 +172,7 @@ public final class AvroToTableSchemaConverter {
                         builder,
                         elementOf(base, path),
                         path,
+                        marked,
                         options,
                         ancestors,
                         matchedMarkedPaths);
@@ -175,19 +181,18 @@ public final class AvroToTableSchemaConverter {
                 // Checked here rather than left to the unmatched-path rejection: a map field does
                 // reach applyType, only under path + ".value", so a path naming the map itself
                 // would otherwise be reported as matching no field at all.
-                TableFieldSchema.Type markedMap = options.markedType(path);
                 Preconditions.checkArgument(
-                        markedMap == null,
+                        marked == null,
                         "%s mapping requires a (possibly repeated or nullable) string field, but %s"
                                 + " is a map",
-                        markedMap,
+                        marked,
                         path);
                 builder.setMode(TableFieldSchema.Mode.REPEATED);
                 applyMapEntry(builder, base, path, options, ancestors, matchedMarkedPaths);
                 break;
             default:
-                builder.setMode(modeOf(nullable, options, options.markedType(path) != null));
-                applyType(builder, base, path, options, ancestors, matchedMarkedPaths);
+                builder.setMode(modeOf(nullable, options, marked != null));
+                applyType(builder, base, path, marked, options, ancestors, matchedMarkedPaths);
                 break;
         }
         return builder.build();
@@ -282,10 +287,10 @@ public final class AvroToTableSchemaConverter {
             TableFieldSchema.Builder builder,
             Schema schema,
             String path,
+            TableFieldSchema.Type marked,
             AvroSchemaOptions options,
             Set<String> ancestors,
             Set<String> matchedMarkedPaths) {
-        TableFieldSchema.Type marked = options.markedType(path);
         if (marked != null) {
             // Both markings accept a string and nothing else, so one check serves them: a JSON
             // column carries its text and a GEOGRAPHY column its geometry literal, and Avro has no

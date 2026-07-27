@@ -145,7 +145,10 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /**
-     * Returns whether the given field is mapped to a BigQuery {@code JSON} column.
+     * Returns whether the given field is mapped to a BigQuery {@code JSON} column <em>by this
+     * configuration</em>. A {@code Struct}, {@code Value} or {@code ListValue} field becomes a
+     * {@code JSON} column with no configuration at all, and is not reported here; {@code
+     * BigQueryProtoSerializer#getTableSchema} is the derived truth.
      *
      * <p>Configured options are consulted until one matches. Each may also <em>reject</em> a field
      * whose option at that number is not a singular bool, so for a field carrying both a valid
@@ -182,20 +185,21 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /**
-     * Returns the BigQuery type the given field is marked with, or {@code null} where it is marked
-     * with none. Together with the automatic {@code JSON} of the well-known types — folded in by
-     * {@link ProtoToTableSchemaConverter#markedType} — this is the single decision point consulted
-     * by both schema derivation and row conversion, so the two can never disagree on which columns
-     * are marked or with what.
+     * Returns the BigQuery type the given field is <em>configured</em> as being marked with, or
+     * {@code null} where it is marked with none, and rejects a field claimed by both markers.
      *
-     * <p>Package-private: {@link #isJsonField} and {@link #isGeographyField} are how a caller
-     * outside the connector asks, one marking at a time.
+     * <p>Deliberately <b>not</b> the whole answer, and named so: the automatic {@code JSON} of
+     * {@code Struct}, {@code Value} and {@code ListValue} is not configuration and is folded on top
+     * by {@link ProtoToTableSchemaConverter#markedType}, which <em>is</em> the single decision
+     * point both schema derivation and row conversion consult. Calling this one where that one
+     * belongs would silently miss those columns and bring back the disagreement between the derived
+     * schema and the row plan that having one decision point exists to prevent.
      *
      * @param field the field descriptor
      * @param path the dotted path of the field from the root message
      * @return {@code JSON}, {@code GEOGRAPHY}, or {@code null}
      */
-    TableFieldSchema.Type markedType(Descriptors.FieldDescriptor field, String path) {
+    TableFieldSchema.Type configuredMarkedType(Descriptors.FieldDescriptor field, String path) {
         boolean json = isJsonField(field, path);
         boolean geography = isGeographyField(path);
         // A column has one type, so a field claimed by both markers is a configuration error rather

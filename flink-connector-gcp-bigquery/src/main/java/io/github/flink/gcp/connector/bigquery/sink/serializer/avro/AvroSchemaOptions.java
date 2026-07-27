@@ -131,11 +131,14 @@ public final class AvroSchemaOptions implements Serializable {
 
     /**
      * Returns the BigQuery type the field at the given dotted path is marked with, or {@code null}
-     * where it is marked with none. This is the single decision point consulted by both schema
-     * derivation and row conversion, so the two can never disagree on which columns are marked.
+     * where it is marked with none, and rejects a path claimed by both markers. Every marking
+     * decision on this path goes through here, so it is also the only place they can conflict.
      *
-     * <p>Package-private: {@link #isJsonField} and {@link #isGeographyField} are how a caller
-     * outside the connector asks, one marking at a time.
+     * <p>Row conversion never consults these options at all — unlike the protobuf side, {@link
+     * AvroRowConverter} reads each column's type off the {@code TableSchema} derived here — so the
+     * schema and the values cannot disagree about which columns are marked. The cost of that shape
+     * is that {@code AvroRowConverter} needs a case for every type this converter can emit, and a
+     * missing one surfaces per record rather than at derivation.
      *
      * @param path the dotted path of the field from the root record
      * @return {@code JSON}, {@code GEOGRAPHY}, or {@code null}

@@ -400,6 +400,27 @@ class ProtoToTableSchemaConverterTest {
     }
 
     /**
+     * The collision the rejection's <em>placement</em> exists for: a JSON field option against a
+     * geography path cannot be intersected without a descriptor, so {@code Builder.build()} could
+     * never catch it. Without this test the check could be moved there — catching only path against
+     * path — and the suite would stay green.
+     */
+    @Test
+    void rejectsAFieldMarkedByAJsonFieldOptionAndAGeographyPath() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .jsonFieldOptionNumber(TestProtos.JSON_OPTION_NUMBER)
+                        .geographyFieldPath("a_string")
+                        .build();
+
+        assertThatThrownBy(
+                        () -> ProtoToTableSchemaConverter.convert(TestProtos.annotated(), options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("both a JSON and a GEOGRAPHY")
+                .hasMessageContaining("a_string");
+    }
+
+    /**
      * The JSON rule stated about the marking rather than about JSON: {@code ProtoRowConverter}
      * leaves an unset presence-less marked string unset rather than writing {@code ""} — and "no
      * presence" is exactly what would make the column REQUIRED, so the two together would fail
@@ -779,15 +800,37 @@ class ProtoToTableSchemaConverterTest {
      * Struct} as geography is a rejection rather than a silent fall back to the automatic {@code
      * JSON}. Nobody should have to guess which of the two won.
      */
-    @Test
-    void rejectsAGeographyPathOnAnAutomaticallyJsonMappedWellKnownType() {
-        ProtoSchemaOptions options =
-                ProtoSchemaOptions.builder().geographyFieldPath("w_struct").build();
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"w_struct", "w_string"})
+    void rejectsAGeographyPathOnAnAutomaticallyMappedWellKnownType(String path) {
+        // w_string is a StringValue — a nullable string, and so the plausible way to model a
+        // nullable geography. It is a message field all the same, so it is rejected like the rest;
+        // this test is what makes any later decision to unwrap it a deliberate one.
+        ProtoSchemaOptions options = ProtoSchemaOptions.builder().geographyFieldPath(path).build();
 
         assertThatThrownBy(() -> wellKnownTypesSchema(options))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("GEOGRAPHY")
-                .hasMessageContaining("w_struct");
+                .hasMessageContaining(path);
+    }
+
+    /**
+     * The one case the never-{@code REQUIRED} carve-out is a deliberate <em>infidelity</em> rather
+     * than a necessity: a proto2 {@code required} field is mandatory, so {@code REQUIRED} would be
+     * correct here — the broader rule is worth one clause.
+     */
+    @Test
+    void deriveRequiredColumnsLeavesAProto2RequiredGeographyColumnNullable() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .geographyFieldPath("q_required")
+                        .deriveRequiredColumns()
+                        .build();
+        Map<String, TableFieldSchema> fields =
+                byName(ProtoToTableSchemaConverter.convert(TestProtos.proto2Presence(), options));
+
+        assertThat(fields.get("q_required").getType()).isEqualTo(TableFieldSchema.Type.GEOGRAPHY);
+        assertThat(fields.get("q_required").getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE);
     }
 
     /**

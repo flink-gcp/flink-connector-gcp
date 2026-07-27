@@ -103,10 +103,17 @@ public final class ProtoToTableSchemaConverter {
      * <p>A configured marking wins over the automatic one, which matters where both could apply: a
      * {@code Struct} field named by {@code jsonFieldPath} is JSON either way, but one named by
      * {@code geographyFieldPath} is rejected below rather than quietly staying JSON.
+     *
+     * <p>Takes the field rather than a pre-computed {@link ProtoWellKnownType}, so neither caller
+     * can hand it the wrong one — which is the whole point of there being a single one of these.
+     * The cost is that {@code ProtoWellKnownType.of} runs twice per message field, once here and
+     * once in the caller's own switch; it is a name-and-shape lookup, it runs at schema derivation
+     * rather than per record, and buying it back would mean re-introducing the parameter this
+     * signature refuses.
      */
     static TableFieldSchema.Type markedType(
             Descriptors.FieldDescriptor field, String path, ProtoSchemaOptions options) {
-        TableFieldSchema.Type configured = options.markedType(field, path);
+        TableFieldSchema.Type configured = options.configuredMarkedType(field, path);
         if (configured != null) {
             return configured;
         }
@@ -124,20 +131,18 @@ public final class ProtoToTableSchemaConverter {
      */
     private static void checkMarkable(
             Descriptors.FieldDescriptor field, String path, TableFieldSchema.Type marked) {
-        boolean markable;
-        if (marked == TableFieldSchema.Type.GEOGRAPHY) {
-            markable = field.getJavaType() == Descriptors.FieldDescriptor.JavaType.STRING;
-        } else {
-            markable =
-                    field.getJavaType() == Descriptors.FieldDescriptor.JavaType.STRING
-                            || (field.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE
-                                    && !field.isMapField());
-        }
+        // A string is markable as anything; the message case is JSON's alone, so it is spelled as
+        // the exception rather than as the fall-through — a third marker would otherwise inherit
+        // JSON's laxer rule by default.
+        boolean string = field.getJavaType() == Descriptors.FieldDescriptor.JavaType.STRING;
+        boolean nonMapMessage =
+                field.getJavaType() == Descriptors.FieldDescriptor.JavaType.MESSAGE
+                        && !field.isMapField();
         Preconditions.checkArgument(
-                markable,
+                string || (marked == TableFieldSchema.Type.JSON && nonMapMessage),
                 "%s mapping requires a (possibly repeated) %s field, but %s is %s",
                 marked,
-                marked == TableFieldSchema.Type.GEOGRAPHY ? "string" : "message or string",
+                marked == TableFieldSchema.Type.JSON ? "message or string" : "string",
                 path,
                 field.isMapField() ? "a map field" : field.getJavaType().toString());
     }
@@ -177,19 +182,16 @@ public final class ProtoToTableSchemaConverter {
             Set<String> ancestors,
             Set<String> matchedMarkedPaths) {
         String path = parentPath.isEmpty() ? field.getName() : parentPath + "." + field.getName();
-        // Asked once and reused: this is the single marker decision point, it walks the
-        // descriptor's
+        // Asked once and reused: the single marker decision point. It walks the descriptor's
         // file-dependency graph for every configured JSON option, and it decides the mode as well
-        // as
-        // the type.
+        // as the type.
         //
         // Struct/Value/ListValue join it here, and that placement does three things with no second
         // branch: modeOf's "a singular marked column is never REQUIRED" rule covers them as
-        // written;
-        // the recursion guard is never reached, which is the whole point, since they are mutually
-        // recursive; and an explicitly configured marking keeps winning over every well-known-type
-        // mapping, because this branch returns before the switch below ever asks what the message
-        // type is.
+        // written; the recursion guard is never reached, which is the whole point, since they are
+        // mutually recursive; and an explicitly configured marking keeps winning over every
+        // well-known-type mapping, because this branch returns before the switch below ever asks
+        // what the message type is.
         TableFieldSchema.Type marked = markedType(field, path, options);
         TableFieldSchema.Builder builder =
                 TableFieldSchema.newBuilder()

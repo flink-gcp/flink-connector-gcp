@@ -382,7 +382,7 @@ marker says about that passthrough holds unchanged here: the connector does **no
 value, so malformed geometry is a BigQuery row-level error routed to the configured
 `FailedRowHandler` (see [Error handling](#error-handling)); an unset presence-less proto string is
 left `NULL` rather than written as `""`, which is not a valid geometry either; and a marked column is
-therefore never `REQUIRED` under [`deriveRequiredColumns()`](#column-modes). A repeated marked field
+therefore never `REQUIRED` under [`deriveRequiredColumns()`](#nullability). A repeated marked field
 becomes `REPEATED GEOGRAPHY`.
 
 Three differences from the JSON marker, all deliberate:
@@ -393,9 +393,12 @@ Three differences from the JSON marker, all deliberate:
 - **No field-option form.** `jsonFieldOption`/`jsonFieldOptionNumber` exist because a large
   annotated proto corpus was the case they had to serve; no such corpus motivates this marker, and
   the path form keeps the two serializers symmetric. Adding one later would be purely additive.
-- **A path marked both ways is an error**, not a precedence question — a column has one type. This
-  includes marking a `Struct`, `Value` or `ListValue` field, which is [automatically a `JSON`
-  column](#well-known-types): the configured marking wins, and is then rejected for not being a
+- **A field marked both ways is an error**, not a precedence question — a column has one type. By
+  path on either serializer, and on the protobuf side a `jsonFieldOption` against a
+  `geographyFieldPath` as well, which is why the check lives where both mechanisms are visible rather
+  than in `build()`. It also covers marking a `Struct`, `Value` or `ListValue` field, which is
+  [automatically a `JSON` column](#well-known-types): the configured marking wins, and is then
+  rejected for not being a
   string, rather than silently falling back.
 
 Changing an existing `STRING` column to `GEOGRAPHY` by adding the marker to a running pipeline is a
@@ -407,8 +410,9 @@ field and the load job is given an explicit destination schema that types it. Th
 verified end to end against real BigQuery by `BigQueryFileLoadsITCase`, BigQuery's documentation
 describing WKT loading for CSV and JSON but not for Avro.
 
-`INTERVAL` and `RANGE` remain underivable by any serializer, **considered and declined** rather than
-overlooked:
+`INTERVAL` and `RANGE` stay outside what the two *derived* serializers can produce, **considered and
+declined** rather than overlooked. (The [JSON serializer](#json-records) derives nothing, so what its
+supplied schema may contain is a separate question — `RANGE` it rejects outright.)
 
 - **`INTERVAL`.** Avro's `duration` logical type is a `fixed(12)` of months, days and milliseconds,
   while BigQuery's `INTERVAL` is a year-month part plus a day-time part at microsecond precision.
@@ -417,8 +421,7 @@ overlooked:
   `AvroSchemaRoundTripTest` pins — which is why `google.protobuf.Duration` maps to `INT64`
   microseconds rather than to `INTERVAL`.
 - **`RANGE`.** Neither Avro nor protobuf has an equivalent, so supporting it would mean reading a
-  two-field record as a range by convention. `TableSchemaToAvroConverter` rejects it too, and the
-  [JSON serializer](#json-records) rejects a supplied schema containing one.
+  two-field record as a range by convention. `TableSchemaToAvroConverter` rejects it too.
 
 ## Avro records
 
@@ -1092,7 +1095,8 @@ from the serializer's own derived schema (`BigQueryAvroSerializerITCase` — run
 `deriveRequiredColumns()` and asserting the created table's modes, so the option is verified rather
 than merely exercised: `REQUIRED`/`NULLABLE`
 scalars, `TIMESTAMP`, `DATE`, `BYTES`, an enum, a `REPEATED` field, a nested `STRUCT`, a map as
-`REPEATED STRUCT<key, value>` and a `JSON` column; `TIME`, `DATETIME` and `NUMERIC` are excluded
+`REPEATED STRUCT<key, value>` and both marked column types, `JSON` and `GEOGRAPHY`; `TIME`,
+`DATETIME` and `NUMERIC` are excluded
 because the emulator implements neither the packed civil-time encoding nor the decimal byte
 encoding and reads those columns back as unrelated values whatever is written), the same for JSON
 documents including the `ignoreUnknownFields` option (`BigQueryJsonDocumentSerializerITCase`),

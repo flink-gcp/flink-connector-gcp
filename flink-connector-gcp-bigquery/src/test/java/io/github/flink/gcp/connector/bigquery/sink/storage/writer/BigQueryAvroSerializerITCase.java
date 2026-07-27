@@ -225,6 +225,14 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
         assertThat(created.getFields().get("labels").getSubFields())
                 .extracting(Field::getMode)
                 .containsOnly(Field.Mode.NULLABLE);
+        // The marked columns under the default options — the shape an ordinary job gets, and the
+        // reason this second test exists. Asserted by type, because the rows below carry the same
+        // strings whether or not the markers applied at all.
+        assertThat(created.getFields())
+                .extracting(Field::getName, Field::getType)
+                .contains(
+                        tuple("payload", LegacySQLTypeName.JSON),
+                        tuple("boundary", LegacySQLTypeName.GEOGRAPHY));
 
         BigQueryDefaultStreamSink<GenericRecord> sink =
                 (BigQueryDefaultStreamSink<GenericRecord>)
