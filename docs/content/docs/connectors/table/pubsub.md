@@ -68,6 +68,53 @@ FROM TABLE(TUMBLE(TABLE incoming_orders, DESCRIPTOR(publish_time), INTERVAL '1' 
 GROUP BY window_start;
 ```
 
+## Getting the connector onto the classpath
+
+Use `flink-sql-connector-gcp-pubsub`, an uber-jar built for exactly this: put it in Flink's `lib/`
+directory, or add it with `ADD JAR` in the SQL client. It bundles `flink-connector-gcp-pubsub`
+together with its whole runtime tree — the Pub/Sub client, gRPC, protobuf, Guava, the Google auth
+and HTTP clients — which is 52 artifacts, not a dependency list anyone wants to assemble by hand.
+
+The plain `flink-connector-gcp-pubsub` jar works too, where the deployment already resolves
+transitive dependencies. That is the right choice for a DataStream job built with Maven or Gradle.
+For SQL it usually is not.
+
+### Everything bundled is relocated
+
+Every bundled package moves under `io.github.flink.gcp.connector.pubsub.shaded.`, so the versions of
+gRPC, protobuf and Guava this connector needs cannot collide with the ones a job, another connector,
+or Flink itself brings. That is the point of the artifact: without it, a Pub/Sub job that also
+touches any other Google Cloud library becomes a version-alignment exercise.
+
+Five packages are deliberately *not* relocated, and none of them can collide in a way that matters:
+`org.conscrypt`, which gRPC picks up reflectively as an optional TLS provider and does without when
+it is unusable; and the annotation-only `javax.annotation`, `org.jspecify`,
+`org.codehaus.mojo.animal_sniffer` and `android.annotation`, where a duplicate class is inert
+because nothing ever invokes it.
+
+`io.grpc:grpc-netty-shaded` *is* relocated, which takes some care: gRPC ships it already relocated
+once, having renamed its `META-INF/native/` libraries to match, because netty derives the native
+library name from its own package at load time. Relocating those classes a second time therefore
+means renaming the library files again in step. Leaving it alone was the obvious alternative and is
+wrong — the jar would then be unable to share a classpath with anything else bundling gRPC, which
+is the first thing a second GCP SQL connector would do.
+
+### Licensing
+
+`META-INF/NOTICE` inside the jar lists every bundled artifact grouped by licence, and
+`META-INF/licenses/` carries the full text of each non-Apache-2.0 one — protobuf, gax, the Google
+auth library, ThreeTen backport, RE2/J, animal-sniffer and the javax annotation API.
+
+The prose of the NOTICE is human-written, in the module's `NOTICE.template`; the artifact lists are
+generated into it from what Maven actually resolves, so a wrong licence grouping or a stale version
+cannot be written at all. Each licence text has a pinned source — the artifact's own jar where one
+ships a text, otherwise a curated URL matched to the bundled version — recorded with its sha256, so
+a text that changes upstream fails the build instead of being shipped unreviewed. `just
+update-notice <module>` regenerates both after a dependency change; `just check-notice <module>`
+verifies, offline, that what is checked in still matches the bundle and the pins. Generic
+licence-name URLs (`opensource.org`, `spdx.org`) are rejected as sources: they serve HTML pages or
+bare templates, and the copyright holder is part of a BSD or MIT text.
+
 ## The payload and the rest of the message
 
 A Pub/Sub message is a payload plus attributes and an ordering key. The payload is what `format`
@@ -421,6 +468,32 @@ configuration to exist, so "create with defaults" means something for it; a subs
 topic binding is not a subscription, so it cannot. Spelling both `create` would put one vocabulary
 over a difference the DataStream API makes on purpose.
 
+**The uber-jar relocates `grpc-netty-shaded` rather than exempting it.** The exemption is the
+tempting answer, because that artifact carries native libraries whose names netty derives from its
+own package, and maven-shade does not rename native resources. It was built that way first and
+rejected on evidence: with `io.grpc.netty.shaded` left in place, the jar cannot share a classpath
+with anything else carrying that package, and the failure is a `ServiceConfigurationError` reading
+"NettyChannelProvider not a subtype" — a copy extending a differently relocated gRPC core. A second
+GCP SQL connector built the same way would be the first thing to trigger it, so the exemption
+traded a real collision for a hypothetical one. Relocating instead costs two extra relocations that
+rename the native libraries in step, and the packaging test derives the expected names from the
+shaded prefix so the two cannot drift.
+
+One consequence to know before reaching for a tuning flag: relocation rewrites netty's **system
+property names** along with its packages. Inside this jar the knob spelled
+`io.grpc.netty.shaded.io.netty.maxDirectMemory` upstream becomes
+`io.github.flink.gcp.connector.pubsub.shaded.io.grpc.netty.shaded.io.netty.maxDirectMemory`, so a
+`-D` using the upstream name has no effect. This is inherent to relocating an already-relocated
+gRPC and is true of every project listed below.
+
+That pairing is the established practice rather than a local invention: the same two entries appear
+in googleapis/java-bigtable-hbase, Dataproc's gcs-connector, spark-bigquery, Beam's gRPC vendoring
+and the uber-jars of both Google-maintained Flink connectors. The project that skipped it,
+GoogleCloudDataproc/flink-bigquery-connector, publishes a jar whose tcnative and epoll libraries can
+never be found. What remains untested here is whether the renamed libraries load through JNI, which
+happens only on Linux with epoll or tcnative; a wrong rename there degrades to NIO and JDK SSL
+silently rather than failing.
+
 ## Testing
 
 Unit tests cover the factory in both directions (identifier, required options, format discovery,
@@ -460,3 +533,23 @@ a test-only factory. No cloud credentials are needed.
 A source test's `TableEnvironment` enables checkpointing and disables restarts, and rows are drained
 by **distinct** count with a deadline: the transport is at-least-once, so counting total rows would
 let one redelivery crowd out an original.
+
+The uber-jar is covered separately, in `flink-sql-connector-gcp-pubsub`.
+
+- `PubSubSqlConnectorPackagingITCase` reads the built jar: the factory SPI file SQL discovers the
+  connector through, that no class outside the shaded prefix is missing from a short documented
+  allow-list, that the netty native libraries were renamed to match their relocated package, that
+  the relocated gRPC service file names the relocated provider, and that the `NOTICE` claims no
+  Apache provenance.
+- `PubSubSqlConnectorSmokeITCase` runs a SQL round trip against the emulator **through the shaded
+  classes** — the module's surefire configuration drops the connector artifact from the test
+  classpath and adds the uber-jar, and the test asserts the factory really did load from there,
+  because a regression in that setup would leave every other assertion about the wrong code. This
+  is the only test that exercises relocation at runtime; opening a Pub/Sub channel is what puts
+  relocated gRPC and its relocated netty transport together. The harness drives the emulator with
+  the *stock*, unrelocated admin client, so the two coexisting on one classpath is itself part of
+  what is asserted.
+- `BundledDependenciesNoticeTest` diffs `META-INF/NOTICE` against the runtime dependency tree
+  recorded during the build, in both directions. The `artifactSet` is `*:*`, so a new transitive is
+  bundled automatically; this test is what makes it fail the build until the NOTICE is regenerated
+  to record it.

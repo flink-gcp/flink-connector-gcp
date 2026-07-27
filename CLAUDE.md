@@ -23,7 +23,18 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   passing nothing means the version pinned in the pom
 - `just binary-compat 2.3.0` — the floor-build/fingerprint/ceiling-rerun/diff sequence, whose
   order is load-bearing. Reproducing a red weekly `binary_compat` is what it is for
-- `just lint` — shellcheck over `scripts/`, actionlint over `.github/workflows/`. Deliberately
+- `just check-notice <module>` / `just update-notice <module>` — a shaded module's
+  `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
+  what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
+  `scripts/licence-sources.toml`. `update-notice` regenerates after a dependency change;
+  `check-notice` verifies offline in CI. Both take the module as an argument, so the SQL uber-jars
+  to come reuse them. **Invoke the licence goal
+  through a phase, never as a bare `license:add-third-party`**: a CLI goal invocation selects
+  reactor modules without building them, so the module cannot resolve the connector it bundles —
+  `-am` does not change that, and it only appears to work against a local repository some earlier
+  `install` primed
+- `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
+  over `.github/workflows/`. Deliberately
   does **not** run `just --fmt --check`: that is an unstable feature, excluded from just's
   compatibility guarantee, so with `just` installed unpinned it could fail an unchanged pull
   request. actionlint is handed `-shellcheck "$(mise which shellcheck)"` rather than letting it
@@ -222,6 +233,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   google/flink-connector-gcp, java-bigquerystorage, apache/flink-connector-gcp-pubsub):
   record the provenance in the module README and the repository `NOTICE`, and keep original
   headers where applicable. Keep each module README's "no code copied" claim accurate
+- **This project is Apache-2.0 with no usage restrictions, and its dependencies must be too.**
+  A library under a restrictive licence — the GPL family, or the newer source-available and
+  non-commercial ones (SSPL, BUSL, Commons Clause, …) — is normally rejected outright rather than
+  recorded in a NOTICE; adoption of one would be a project discussion, not a licensing entry.
+  `scripts/check-notice.py` enforces this for the shaded modules (decided with the user on #138;
+  the one standing exemption is `javax.annotation-api`, dual-licensed and taken under CDDL with
+  the classpath exception)
 - Never open or reference the private in-house implementation this project supersedes; design
   references must be public OSS or official documentation only
 
@@ -312,7 +330,9 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   column modes (#124/#145), protobuf well-known types (#147), deferred `location()` (#10)
 - `flink-connector-gcp-pubsub/CLAUDE.md` — vendoring provenance (#17/#31), sink (#18), topic
   auto-creation (#19), tuning (#20) and in-flight bounds (#85), ordering×repair (#78), emulator
-  (#21), source (#79/#80)
+  (#21), source (#79/#80), Table API/SQL (#47, split into #135–#138) and the shaded uber-jar
+  (#138) — which is where the repository's only shading decisions live, so read it before adding
+  a second `flink-sql-connector-gcp-*`
 - `flink-connector-gcp-cloudtasks/CLAUDE.md` — sink design (#23) and implementation (#24)
 
 Decisions that span connectors stay here: the package layout convention above, the version policy
