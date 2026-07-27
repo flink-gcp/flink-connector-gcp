@@ -58,3 +58,11 @@ jobs:
       # so this job is safe to run on any pull request.
       - name: Build and verify
         run: just verify
+
+      # Holds each shaded module's hand-written META-INF/NOTICE to the licences
+      # Maven resolves for its bundle. Separate from `just verify` because it
+      # resolves dependency licences over the network, which the ordinary build
+      # should not pay for. python3 comes from the runner image: the script is
+      # standard-library only, so there is no version to pin (see mise.toml).
+      - name: Check the SQL connector NOTICE
+        run: just check-notice flink-sql-connector-gcp-pubsub

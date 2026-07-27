@@ -362,6 +362,20 @@
                 </executions>
             </plugin>
 
+            <!-- Resolves each bundled dependency's declared licence into
+                 target/generated-sources/license/THIRD-PARTY.txt, which
+                 scripts/check-notice.py diffs against META-INF/NOTICE. All the
+                 configuration is inherited from the root pom's pluginManagement, so a
+                 sibling SQL module needs exactly this much.
+
+                 Not bound to a lifecycle phase: it resolves dependencies over the
+                 network, and `just verify` should not pay for that on every build. The
+                 `just check-notice` recipe invokes the goal directly. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>license-maven-plugin</artifactId>
+            </plugin>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>

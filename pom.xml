@@ -111,6 +111,10 @@ limitations under the License.
              guards it. -->
         <protoc.version>4.33.2</protoc.version>
         <protobuf-maven-plugin.version>5.1.7</protobuf-maven-plugin.version>
+        <!-- Resolves the licence of every bundled dependency for the shaded modules,
+             so scripts/check-notice.py can hold their hand-written META-INF/NOTICE to
+             it. Not managed by any BOM. -->
+        <license-maven-plugin.version>2.7.1</license-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -250,6 +254,42 @@ limitations under the License.
     </dependencies>
 
     <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Configured here rather than in the shaded module so every
+                     flink-sql-connector-gcp-* inherits one licence vocabulary: two
+                     modules disagreeing about how to spell Apache-2.0 would produce
+                     two NOTICE styles for one repository. Declared (not just
+                     managed) by each module that ships a bundle. -->
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>license-maven-plugin</artifactId>
+                    <version>${license-maven-plugin.version}</version>
+                    <configuration>
+                        <!-- The bundle is exactly the runtime tree; Flink is provided
+                             and the connector's own artifacts are this project's. -->
+                        <excludedScopes>test,provided</excludedScopes>
+                        <excludedGroups>io.github.flink-gcp</excludedGroups>
+                        <!-- Fails when a dependency declares no licence at all, rather
+                             than reporting it as a warning and writing "Unknown license"
+                             into the report — which check-notice.py would then faithfully
+                             demand the NOTICE repeat. (`failIfWarning` covers both this
+                             and the blacklist, and is deprecated since 1.14.) -->
+                        <failOnMissing>true</failOnMissing>
+                        <!-- Artifacts spell one licence many ways: this tree alone has
+                             six spellings of Apache-2.0 and two of BSD-3-Clause. The
+                             left-hand name is what check-notice.py matches the NOTICE
+                             paragraphs against, so a new spelling shows up as a
+                             mismatch rather than as a silent extra group. -->
+                        <licenseMerges>
+                            <licenseMerge>Apache-2.0|Apache 2.0|Apache 2|Apache License, Version 2.0|The Apache License, Version 2.0|The Apache Software License, Version 2.0</licenseMerge>
+                            <licenseMerge>BSD-3-Clause|BSD New license</licenseMerge>
+                        </licenseMerges>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

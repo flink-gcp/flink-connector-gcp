@@ -17,6 +17,13 @@ shellcheck = "0.11.0"
 # recipe hands it an explicit path instead of trusting PATH — the runner image
 # carries its own shellcheck, and it is not this one.
 actionlint = "1.7.12"
+# Lints scripts/*.py. Exactly pinned for the same reason as the two above: a
+# linter that gains a rule fails a pull request that changed nothing. Note there
+# is no `python` entry beside it — scripts/check-notice.py is standard-library
+# only, so any python3 serves and a pin would buy nothing while pulling mise into
+# the `just verify` job, which uses setup-java and would then need
+# add_shims_to_path disarmed.
+ruff = "0.16.0"
 # Task runner (justfile). A major-version specifier rather than an exact pin,
 # unlike shellcheck above: just guarantees that no 1.x release breaks an
 # existing justfile or a working command line, and that there will never be a
