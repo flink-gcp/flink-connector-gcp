@@ -835,8 +835,9 @@ env.enableCheckpointing(60_000); // EXACTLY_ONCE mode (the default)
 
 Method-specific settings live in `BufferedStreamOptions` (required for this write method,
 rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default) and
-the connector-driven retry schedule (`retryInitialBackoff` 500 ms, `retryMaxBackoff` 10 s,
-`retryMaxAttempts` 10) governing stream creation, transient re-appends and the restore probe.
+the connector-driven recovery schedule (`recoveryInitialBackoff` 500 ms, `recoveryMaxBackoff`
+10 s, `recoveryMaxAttempts` 10) governing stream creation, transient re-appends and the restore
+probe.
 
 **Stream lifecycle.** Each writer subtask owns **one buffered stream, created lazily on its first
 append and reused across checkpoints** — per GCP guidance, frequent `CreateWriteStream` churn
@@ -1091,7 +1092,7 @@ Append failures are classified on the task thread and routed by class:
 
 | Class | Examples | Behavior |
 |---|---|---|
-| Transient | `UNAVAILABLE`, `ABORTED`, `INTERNAL`, `CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `UNKNOWN` | Retried by the SDK's in-stream retries first (500 ms initial delay, ×2 up to 30 s, 5 attempts); failures that still surface are re-appended by the writer on a rebuilt stream writer with backoff (500 ms initial, doubled up to 10 s, 10 attempts). They do not fail the job unless the retry budget is exhausted |
+| Transient | `UNAVAILABLE`, `ABORTED`, `INTERNAL`, `CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `UNKNOWN` | Retried by the SDK's in-stream retries first (by default 500 ms initial delay, ×2 up to 30 s, 5 attempts); failures that still surface are re-appended by the writer on a rebuilt stream writer with backoff (by default 500 ms initial, doubled up to 10 s, 10 attempts). They do not fail the job unless the retry budget is exhausted |
 | Stale stream writer | `STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`, writer closed, the SDK's callback-wait watchdog timeout (a sent append got no response within the SDK's hardcoded 5 minutes; the raw exception carries no status code) | Repaired like transient failures: the destination's stream writer is rebuilt and the batch re-appended within the retry budget |
 | Schema mismatch | `SCHEMA_MISMATCH_EXTRA_FIELDS` (rows carry fields the table does not have) | With `schemaUpdateOptions(...)` enabled: the table schema is reconciled and the batch re-appended while the update propagates (see [Schema evolution](#schema-evolution)). Otherwise terminal |
 | Terminal | `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `NOT_FOUND` under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
@@ -1123,8 +1124,89 @@ Sink<MyEvent> sink =
 Retries preserve the at-least-once contract: a batch whose append outcome was lost may be
 re-appended in full, so duplicates are possible (as with any retry in this write method). Worst
 case, a single repair can take about a minute of SDK retries plus a minute of writer re-appends
-before surfacing as terminal. The SDK retry schedule is not configurable yet — deliberately
-deferred until a real-world need shows which knobs matter.
+before surfacing as terminal (with the default schedules). On the default-stream path both
+schedules are configurable via `DefaultStreamOptions` (see [Tuning](#tuning)); on the
+buffered-stream path the SDK schedule stays fixed and only the writer's own re-append budget is
+configurable, via `BufferedStreamOptions`.
+
+## Tuning
+
+`STORAGE_API_AT_LEAST_ONCE` exposes its tuning knobs on `DefaultStreamOptions`, optional on the
+builder — an unconfigured sink uses the defaults below:
+
+```java
+Sink<MyEvent> sink =
+        BigQuerySink.<MyEvent>builder()
+                .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                .serializer(new MyEventProtoSerializer())
+                .defaultStreamOptions(
+                        DefaultStreamOptions.builder()
+                                .maxInflightRequests(200)
+                                .maxConnectionsPerRegion(40)
+                                .build())
+                .build();
+```
+
+The knobs configure three distinct layers.
+
+**Connector batching and recovery budget** (`recovery*`) — the writer's own batching cap and
+the bounded re-append schedule that sits above the SDK's retries (the same knobs
+`BufferedStreamOptions` exposes for the exactly-once path):
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `maxAppendRequestBytes` | 512 KiB | Serialized-row bytes buffered per destination before an append request is issued |
+| `recoveryInitialBackoff` | 500 ms | First backoff of the connector-driven recovery schedule |
+| `recoveryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling) |
+| `recoveryMaxAttempts` | 10 | Attempt cap of that schedule |
+
+The schedule pacing schema-update propagation waits (flat 30 s, 30 attempts) is deliberately not
+configurable: it tracks how long BigQuery metadata takes to propagate — a service property — not
+a workload property.
+
+**SDK in-stream retries** (`retry*`, spelled the SDK's way) — the schedule the SDK applies to
+retriable append failures before they ever reach the writer; failures that exhaust it surface to
+the connector's recovery budget above:
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `retryInitialDelay` | 500 ms | First retry delay |
+| `retryDelayMultiplier` | 2.0 | Delay multiplier |
+| `retryMaxDelay` | 30 s | Delay cap |
+| `retryMaxAttempts` | 5 | Attempt cap |
+| `maxRetryDuration` | 5 min | Overall ceiling on retrying one failure, across attempts (the SDK's default) |
+
+**Connection pool (multiplexing)** — the default stream multiplexes appends over a shared
+connection pool ([official guidance](https://cloud.google.com/bigquery/docs/write-api-best-practices)
+recommends multiplexing beyond ~20 concurrent connections). The pool scales by load: a
+connection counts as busy above **20 % of its in-flight limits** (or 3 s without a response),
+and a busy pool adds connections up to the ceiling.
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `maxInflightRequests` | 100 | In-flight append requests per pooled connection before the writer blocks |
+| `maxInflightBytes` | 100 MiB | In-flight append bytes per pooled connection (the SDK's default) |
+| `minConnectionsPerRegion` | 2 | Starting connection count per pool (the SDK's default) |
+| `maxConnectionsPerRegion` | 20 | Connection ceiling per pool (the SDK's default) |
+
+`maxInflightRequests` deliberately deviates from the SDK's own default of 1000, following the
+[official multiplexing guidance](https://cloud.google.com/bigquery/docs/write-api-streaming#use_multiplexing)
+("for automatic scaling up to be more effective, you should consider lowering the
+`maxInflightRequests` limit", with 100 in the sample): at 1000, a connection only counts as busy
+above 200 queued requests, so load-based scale-up rarely triggers and throughput plateaus on the
+starting connections. Set it back to 1000 to restore the SDK's behavior.
+
+Caveats — the pool is JVM-global:
+
+- The pool is **static per (location, credentials)** and adopts the settings of whichever stream
+  writer is built first in the JVM: the in-flight limits, SDK retry schedule and
+  `maxRetryDuration` of later writers are silently ignored by the SDK. All writers of one
+  sink carry the same options, so a job is self-consistent — but on a session cluster, or with
+  another Storage Write API client in the same JVM, whichever builds first wins.
+- `minConnectionsPerRegion`/`maxConnectionsPerRegion` are applied once per JVM
+  (`ConnectionWorkerPool.setOptions` is process-wide), before this connector builds its first
+  writer. A second sink configuring different pool bounds in the same JVM is ignored with a
+  warning. The floor is latched when a pool is constructed; the ceiling is read live.
 
 ## Testing
 

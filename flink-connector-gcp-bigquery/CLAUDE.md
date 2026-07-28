@@ -14,8 +14,9 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   failure policies — fail-job (default), log-and-drop, and DLQ routing (the `DeadLetterQueue`
   interface is an experimental stub; lifecycle and shared-module extraction are decided in #37).
   `FailedRow` carries serialized protobuf bytes, not the original record (the writer is
-  stateless). SDK in-stream retry settings are hardcoded in `StreamWriterRowAppenderFactory`;
-  exposing them is deferred until a real-world need shows which knobs matter. The SDK's
+  stateless). SDK in-stream retry settings were hardcoded in `StreamWriterRowAppenderFactory`
+  until #54 exposed them on the default-stream path via `DefaultStreamOptions` (see that entry;
+  the buffered path still uses the shared constant). The SDK's
   callback-wait watchdog timeout (#163) — `MaximumRequestCallbackWaitTimeExceededException`,
   thrown when a sent append gets no response for the SDK's hardcoded 5 minutes — is a plain
   `RuntimeException` with no gRPC status, and only the **first** future of a dead-connection
@@ -100,7 +101,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   trailing batches; `ALREADY_EXISTS` during an offset-shifting replay is terminal). v1 scope:
   fixed destination only (builder rejects `destinationResolver`), no mid-stream schema
   evolution (stream schema pinned at creation), BATCH supported (commit at end of input),
-  streaming requires EXACTLY_ONCE + checkpoints-after-tasks-finish; retry knobs are
+  streaming requires EXACTLY_ONCE + checkpoints-after-tasks-finish; recovery knobs are
   builder-configurable via `BufferedStreamOptions` with defaults. The goccy emulator keeps no
   flush cursor (re-flush duplicates), so exactly-once ITs run against real GCP; the emulator
   gets a single-flush smoke test only
@@ -369,6 +370,41 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   presence-less scalar was already written with its default. `SchemaUnifier` needed no change: it
   only relaxes, so derived-`REQUIRED` against an existing `NULLABLE` column is a silent no-op
   already pinned by `modesAreNeverTightened`
+- **BigQuery default-stream tuning knobs** (#54, first half — SDK retry and connection-pool
+  knobs; eviction, `flushInterval` and the `maybe*` renames land in the closing PR):
+  `DefaultStreamOptions` in `sink.storage` beside `BufferedStreamOptions`, same shape, but
+  **optional on the builder** — the one deliberate deviation from the two-adjacent-checks
+  convention (decided with the user, 2026-07-28): the "required" half exists so that *explicitly
+  choosing* a write method forces its options into view, and the default write method is chosen
+  by not choosing, so only the "rejected for other methods" half carries safety and only it
+  stays. Retry naming was **revised on user feedback** (2026-07-29) after a first cut shipped
+  `retry*` (connector) beside `sdkRetry*` (SDK): two knobs both stemmed "retry…MaxAttempts" were
+  judged a confusion source. Now the **connector budget is `recovery*`**
+  (`recoveryInitialBackoff`/`recoveryMaxBackoff`/`recoveryMaxAttempts`, matching the writer's
+  internal `recoverySchedule` vocabulary, renamed in `BufferedStreamOptions` too so the two
+  classes agree) and the **SDK knobs are bare `retry*`/`maxRetryDuration`** — the `sdk` prefix
+  became redundant once "retry" uniquely meant the SDK layer, the bare names are the vendor's
+  own words per the #121/#147 rule, and the Pub/Sub builder already exposes SDK `RetrySettings`
+  bare (`retryInitialDelay`, `retryDelayMultiplier`, …), so this converges the modules. Note the
+  cross-module asymmetry left standing: Cloud Tasks' `retry*` names a *connector-driven*
+  schedule — its module has no second retry layer, so bare `retry*` is unambiguous there and
+  renaming it would churn a published-in-docs surface for no local gain. `maxInflightRequests` **defaults to 100, deviating from the SDK's 1000 on purpose**
+  (official multiplexing guidance, sample value 100): a pooled connection is a scale-up
+  candidate above 20% of its in-flight limits, so at the SDK default scale-up needs >200 queued
+  requests per connection and rarely triggers — measured against SDK 3.30.0 sources, where the
+  first writer's limits are baked into the JVM-static pool and later writers' are silently
+  dropped (only a `limitExceededBehavior` mismatch throws). That first-writer-wins fact is also
+  why the `ConnectionWorkerPool.setOptions` guard in `StreamWriterRowAppenderFactory` **warns
+  and does not throw** on a second sink requesting different pool bounds in one JVM: a throw
+  could not deliver the second value set either, and failing a session-cluster job over a
+  hygiene knob is disproportionate. The pool floor is latched at pool construction, the ceiling
+  is read live — hence the guard runs before this factory's first `StreamWriter.build()`, and
+  its javadoc concedes another client may have created the pool first. The schema-wait schedule
+  (flat 30 s × 30) is **deliberately not exposed**: it paces BigQuery metadata propagation, a
+  service property, not a workload property. The writer keeps its package-private
+  `(maxAppendRequestBytes, recoverySchedule, schemaWaitSchedule)` constructor for tests; the
+  public options constructor maps `recovery*` → a jitter-free `RetrySchedule`, the exact mapping
+  the buffered writer already uses
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
 - **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
   **`String`** records and a **supplied** schema, since JSON has none of its own — either the

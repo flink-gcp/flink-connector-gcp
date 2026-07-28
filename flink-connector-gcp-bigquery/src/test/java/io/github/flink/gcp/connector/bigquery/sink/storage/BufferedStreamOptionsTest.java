@@ -32,12 +32,12 @@ class BufferedStreamOptionsTest {
 
         assertThat(options.getMaxAppendRequestBytes())
                 .isEqualTo(BufferedStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES);
-        assertThat(options.getRetryInitialBackoff())
-                .isEqualTo(BufferedStreamOptions.DEFAULT_RETRY_INITIAL_BACKOFF);
-        assertThat(options.getRetryMaxBackoff())
-                .isEqualTo(BufferedStreamOptions.DEFAULT_RETRY_MAX_BACKOFF);
-        assertThat(options.getRetryMaxAttempts())
-                .isEqualTo(BufferedStreamOptions.DEFAULT_RETRY_MAX_ATTEMPTS);
+        assertThat(options.getRecoveryInitialBackoff())
+                .isEqualTo(BufferedStreamOptions.DEFAULT_RECOVERY_INITIAL_BACKOFF);
+        assertThat(options.getRecoveryMaxBackoff())
+                .isEqualTo(BufferedStreamOptions.DEFAULT_RECOVERY_MAX_BACKOFF);
+        assertThat(options.getRecoveryMaxAttempts())
+                .isEqualTo(BufferedStreamOptions.DEFAULT_RECOVERY_MAX_ATTEMPTS);
     }
 
     @Test
@@ -45,26 +45,27 @@ class BufferedStreamOptionsTest {
         BufferedStreamOptions options =
                 BufferedStreamOptions.builder()
                         .maxAppendRequestBytes(1024)
-                        .retryInitialBackoff(Duration.ofMillis(100))
-                        .retryMaxBackoff(Duration.ofSeconds(5))
-                        .retryMaxAttempts(3)
+                        .recoveryInitialBackoff(Duration.ofMillis(100))
+                        .recoveryMaxBackoff(Duration.ofSeconds(5))
+                        .recoveryMaxAttempts(3)
                         .build();
 
         assertThat(options.getMaxAppendRequestBytes()).isEqualTo(1024);
-        assertThat(options.getRetryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
-        assertThat(options.getRetryMaxBackoff()).isEqualTo(Duration.ofSeconds(5));
-        assertThat(options.getRetryMaxAttempts()).isEqualTo(3);
+        assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
+        assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(options.getRecoveryMaxAttempts()).isEqualTo(3);
     }
 
     @Test
     void rejectsNonPositiveValues() {
         assertThatThrownBy(() -> BufferedStreamOptions.builder().maxAppendRequestBytes(0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> BufferedStreamOptions.builder().retryInitialBackoff(Duration.ZERO))
+        assertThatThrownBy(
+                        () -> BufferedStreamOptions.builder().recoveryInitialBackoff(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> BufferedStreamOptions.builder().retryMaxBackoff(Duration.ZERO))
+        assertThatThrownBy(() -> BufferedStreamOptions.builder().recoveryMaxBackoff(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> BufferedStreamOptions.builder().retryMaxAttempts(0))
+        assertThatThrownBy(() -> BufferedStreamOptions.builder().recoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -73,10 +74,10 @@ class BufferedStreamOptionsTest {
         assertThatThrownBy(
                         () ->
                                 BufferedStreamOptions.builder()
-                                        .retryInitialBackoff(Duration.ofSeconds(5))
-                                        .retryMaxBackoff(Duration.ofSeconds(1))
+                                        .recoveryInitialBackoff(Duration.ofSeconds(5))
+                                        .recoveryMaxBackoff(Duration.ofSeconds(1))
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("retryMaxBackoff");
+                .hasMessageContaining("recoveryMaxBackoff");
     }
 }

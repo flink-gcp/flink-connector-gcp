@@ -92,9 +92,9 @@ class BufferedStreamCommitterTest {
                 service.asFactory(),
                 null,
                 BufferedStreamOptions.builder()
-                        .retryInitialBackoff(Duration.ofMillis(1))
-                        .retryMaxBackoff(Duration.ofMillis(1))
-                        .retryMaxAttempts(3)
+                        .recoveryInitialBackoff(Duration.ofMillis(1))
+                        .recoveryMaxBackoff(Duration.ofMillis(1))
+                        .recoveryMaxAttempts(3)
                         .build());
     }
 
