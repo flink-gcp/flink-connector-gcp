@@ -56,6 +56,9 @@ class DefaultStreamOptionsTest {
                 .isEqualTo(DefaultStreamOptions.DEFAULT_MIN_CONNECTIONS_PER_REGION);
         assertThat(options.getMaxConnectionsPerRegion())
                 .isEqualTo(DefaultStreamOptions.DEFAULT_MAX_CONNECTIONS_PER_REGION);
+        assertThat(options.getDestinationIdleTimeout())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_DESTINATION_IDLE_TIMEOUT);
+        assertThat(options.getFlushInterval()).isNull();
     }
 
     /**
@@ -84,6 +87,8 @@ class DefaultStreamOptionsTest {
                         .maxInflightBytes(1024 * 1024)
                         .minConnectionsPerRegion(1)
                         .maxConnectionsPerRegion(4)
+                        .destinationIdleTimeout(Duration.ofMinutes(30))
+                        .flushInterval(Duration.ofSeconds(10))
                         .build();
 
         assertThat(options.getMaxAppendRequestBytes()).isEqualTo(1024);
@@ -99,6 +104,8 @@ class DefaultStreamOptionsTest {
         assertThat(options.getMaxInflightBytes()).isEqualTo(1024 * 1024);
         assertThat(options.getMinConnectionsPerRegion()).isEqualTo(1);
         assertThat(options.getMaxConnectionsPerRegion()).isEqualTo(4);
+        assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(30));
+        assertThat(options.getFlushInterval()).isEqualTo(Duration.ofSeconds(10));
     }
 
     @Test
@@ -129,6 +136,11 @@ class DefaultStreamOptionsTest {
         assertThatThrownBy(() -> DefaultStreamOptions.builder().minConnectionsPerRegion(0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> DefaultStreamOptions.builder().maxConnectionsPerRegion(0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () -> DefaultStreamOptions.builder().destinationIdleTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().flushInterval(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -245,6 +257,13 @@ class DefaultStreamOptionsTest {
         assertThat(DefaultStreamOptions.builder().minConnectionsPerRegion(1).build())
                 .isNotEqualTo(defaults);
         assertThat(DefaultStreamOptions.builder().maxConnectionsPerRegion(21).build())
+                .isNotEqualTo(defaults);
+        assertThat(
+                        DefaultStreamOptions.builder()
+                                .destinationIdleTimeout(Duration.ofMinutes(1))
+                                .build())
+                .isNotEqualTo(defaults);
+        assertThat(DefaultStreamOptions.builder().flushInterval(Duration.ofSeconds(1)).build())
                 .isNotEqualTo(defaults);
     }
 }

@@ -22,6 +22,8 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.Objects;
@@ -29,7 +31,8 @@ import java.util.Objects;
 /**
  * Options specific to {@link WriteMethod#STORAGE_API_AT_LEAST_ONCE}: how large append requests may
  * grow, how the connector-driven re-append budget backs off, how the SDK retries retriable append
- * failures in-stream, and how the SDK's connection pool (multiplexing) is sized.
+ * failures in-stream, how the SDK's connection pool (multiplexing) is sized, and the writer's
+ * housekeeping ({@code destinationIdleTimeout}, {@code flushInterval}).
  *
  * <p>Set via {@link BigQuerySinkBuilder#defaultStreamOptions(DefaultStreamOptions)}; optional for a
  * {@code STORAGE_API_AT_LEAST_ONCE} sink (all knobs are defaulted, and an unconfigured sink uses
@@ -114,6 +117,14 @@ public final class DefaultStreamOptions implements Serializable {
     /** Default for {@link Builder#maxConnectionsPerRegion(int)}: the SDK's own default. */
     public static final int DEFAULT_MAX_CONNECTIONS_PER_REGION = 20;
 
+    /**
+     * Default for {@link Builder#destinationIdleTimeout(Duration)}: one hour. Coarse on purpose —
+     * eviction is memory hygiene for long-lived jobs with dynamic destinations (for example
+     * date-suffixed tables), and an evicted destination that receives a record again just rebuilds
+     * its stream writer once.
+     */
+    public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofHours(1);
+
     private final long maxAppendRequestBytes;
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
@@ -127,6 +138,8 @@ public final class DefaultStreamOptions implements Serializable {
     private final long maxInflightBytes;
     private final int minConnectionsPerRegion;
     private final int maxConnectionsPerRegion;
+    private final Duration destinationIdleTimeout;
+    @Nullable private final Duration flushInterval;
 
     private DefaultStreamOptions(Builder builder) {
         this.maxAppendRequestBytes = builder.maxAppendRequestBytes;
@@ -142,6 +155,8 @@ public final class DefaultStreamOptions implements Serializable {
         this.maxInflightBytes = builder.maxInflightBytes;
         this.minConnectionsPerRegion = builder.minConnectionsPerRegion;
         this.maxConnectionsPerRegion = builder.maxConnectionsPerRegion;
+        this.destinationIdleTimeout = builder.destinationIdleTimeout;
+        this.flushInterval = builder.flushInterval;
     }
 
     /**
@@ -218,6 +233,17 @@ public final class DefaultStreamOptions implements Serializable {
         return maxConnectionsPerRegion;
     }
 
+    /** Returns how long a destination may go without records before its writer is evicted. */
+    public Duration getDestinationIdleTimeout() {
+        return destinationIdleTimeout;
+    }
+
+    /** Returns the periodic flush interval, or {@code null} when periodic flushing is disabled. */
+    @Nullable
+    public Duration getFlushInterval() {
+        return flushInterval;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -239,7 +265,9 @@ public final class DefaultStreamOptions implements Serializable {
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
                 && retryInitialDelay.equals(that.retryInitialDelay)
                 && retryMaxDelay.equals(that.retryMaxDelay)
-                && maxRetryDuration.equals(that.maxRetryDuration);
+                && maxRetryDuration.equals(that.maxRetryDuration)
+                && destinationIdleTimeout.equals(that.destinationIdleTimeout)
+                && Objects.equals(flushInterval, that.flushInterval);
     }
 
     @Override
@@ -257,7 +285,9 @@ public final class DefaultStreamOptions implements Serializable {
                 maxInflightRequests,
                 maxInflightBytes,
                 minConnectionsPerRegion,
-                maxConnectionsPerRegion);
+                maxConnectionsPerRegion,
+                destinationIdleTimeout,
+                flushInterval);
     }
 
     @Override
@@ -288,6 +318,10 @@ public final class DefaultStreamOptions implements Serializable {
                 + minConnectionsPerRegion
                 + ", maxConnectionsPerRegion="
                 + maxConnectionsPerRegion
+                + ", destinationIdleTimeout="
+                + destinationIdleTimeout
+                + ", flushInterval="
+                + flushInterval
                 + "}";
     }
 
@@ -308,6 +342,8 @@ public final class DefaultStreamOptions implements Serializable {
         private long maxInflightBytes = DEFAULT_MAX_INFLIGHT_BYTES;
         private int minConnectionsPerRegion = DEFAULT_MIN_CONNECTIONS_PER_REGION;
         private int maxConnectionsPerRegion = DEFAULT_MAX_CONNECTIONS_PER_REGION;
+        private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
+        @Nullable private Duration flushInterval;
 
         private Builder() {}
 
@@ -534,6 +570,52 @@ public final class DefaultStreamOptions implements Serializable {
                     "maxConnectionsPerRegion must be positive: %s",
                     maxConnectionsPerRegion);
             this.maxConnectionsPerRegion = maxConnectionsPerRegion;
+            return this;
+        }
+
+        /**
+         * Sets how long a destination may go without records before the writer closes and drops its
+         * stream writer. Eviction is memory hygiene for long-lived jobs with dynamic destinations
+         * (for example date-suffixed tables), whose per-destination state otherwise grows without
+         * bound; correctness is unaffected, and a destination that receives a record again after
+         * eviction rebuilds its stream writer transparently. The sweep runs at the end of each
+         * successful flush, when nothing is pending or in flight. Defaults to {@link
+         * #DEFAULT_DESTINATION_IDLE_TIMEOUT}; to never evict, set a very large duration.
+         *
+         * @param destinationIdleTimeout the idle timeout
+         * @return this builder
+         */
+        public Builder destinationIdleTimeout(Duration destinationIdleTimeout) {
+            Preconditions.checkNotNull(
+                    destinationIdleTimeout, "destinationIdleTimeout must not be null");
+            Preconditions.checkArgument(
+                    !destinationIdleTimeout.isNegative() && !destinationIdleTimeout.isZero(),
+                    "destinationIdleTimeout must be positive: %s",
+                    destinationIdleTimeout);
+            this.destinationIdleTimeout = destinationIdleTimeout;
+            return this;
+        }
+
+        /**
+         * Enables a periodic time-based flush: every interval, the writer appends all pending
+         * batches and awaits every in-flight append, exactly as the checkpoint flush does. Disabled
+         * by default.
+         *
+         * <p>This is a mitigation for streaming jobs running <em>without</em> checkpointing, where
+         * Flink only flushes at end of input, so sub-threshold buffers would otherwise sit
+         * unacknowledged indefinitely and be lost on failure. It bounds that window; it does not
+         * replace the documented at-least-once guarantee, which requires checkpointing.
+         *
+         * @param flushInterval the flush interval
+         * @return this builder
+         */
+        public Builder flushInterval(Duration flushInterval) {
+            Preconditions.checkNotNull(flushInterval, "flushInterval must not be null");
+            Preconditions.checkArgument(
+                    !flushInterval.isNegative() && !flushInterval.isZero(),
+                    "flushInterval must be positive: %s",
+                    flushInterval);
+            this.flushInterval = flushInterval;
             return this;
         }
 

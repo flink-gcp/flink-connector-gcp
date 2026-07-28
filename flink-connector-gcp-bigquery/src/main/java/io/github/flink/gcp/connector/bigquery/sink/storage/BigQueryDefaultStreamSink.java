@@ -68,7 +68,15 @@ public class BigQueryDefaultStreamSink<T> implements Sink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) {
-        return createWriter(new StreamWriterRowAppenderFactory(options), new BigQueryTableAdmin());
+        // The context's processing-time service fires timer callbacks on the mailbox (task)
+        // thread, which is what makes the writer's periodic flush safe against its
+        // task-thread-only state.
+        return new BigQueryDefaultStreamWriter<>(
+                config,
+                new StreamWriterRowAppenderFactory(options),
+                new BigQueryTableAdmin(),
+                options,
+                context.getProcessingTimeService());
     }
 
     @VisibleForTesting
