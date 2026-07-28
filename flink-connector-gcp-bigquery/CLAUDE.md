@@ -403,7 +403,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   (flat 30 s × 30) is **deliberately not exposed**: it paces BigQuery metadata propagation, a
   service property, not a workload property. The writer keeps its package-private
   `(maxAppendRequestBytes, recoverySchedule, schemaWaitSchedule)` constructor for tests; the
-  public options constructor maps `retry*` → a jitter-free `RetrySchedule`, the exact mapping
+  public options constructor maps `recovery*` → a jitter-free `RetrySchedule`, the exact mapping
   the buffered writer already uses
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
 - **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
