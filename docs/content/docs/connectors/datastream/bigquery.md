@@ -1162,6 +1162,11 @@ the bounded re-append schedule that sits above the SDK's retries (the same knobs
 | `recoveryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling) |
 | `recoveryMaxAttempts` | 10 | Attempt cap of that schedule |
 
+The 512 KiB default favors bounded memory and per-record latency; throughput-oriented jobs have
+headroom to raise `maxAppendRequestBytes` to a few megabytes — the Storage Write API caps a
+request at 10 MB — amortizing per-request overhead over larger batches at the cost of more
+buffered bytes per destination and coarser retry units (a failed request re-appends more rows).
+
 The schedule pacing schema-update propagation waits (flat 30 s, 30 attempts) is deliberately not
 configurable: it tracks how long BigQuery metadata takes to propagate — a service property — not
 a workload property.
