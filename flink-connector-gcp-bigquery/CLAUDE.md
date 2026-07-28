@@ -370,8 +370,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   presence-less scalar was already written with its default. `SchemaUnifier` needed no change: it
   only relaxes, so derived-`REQUIRED` against an existing `NULLABLE` column is a silent no-op
   already pinned by `modesAreNeverTightened`
-- **BigQuery default-stream tuning knobs** (#54, first half — SDK retry and connection-pool
-  knobs; eviction, `flushInterval` and the `maybe*` renames land in the closing PR):
+- **BigQuery default-stream tuning knobs, eviction and flushInterval** (#54):
   `DefaultStreamOptions` in `sink.storage` beside `BufferedStreamOptions`, same shape, but
   **optional on the builder** — the one deliberate deviation from the two-adjacent-checks
   convention (decided with the user, 2026-07-28): the "required" half exists so that *explicitly
@@ -404,7 +403,33 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   service property, not a workload property. The writer keeps its package-private
   `(maxAppendRequestBytes, recoverySchedule, schemaWaitSchedule)` constructor for tests; the
   public options constructor maps `recovery*` → a jitter-free `RetrySchedule`, the exact mapping
-  the buffered writer already uses
+  the buffered writer already uses.
+  **Cold-destination eviction** (`destinationIdleTimeout`, default 1 h, enabled — decided with
+  the user 2026-07-28; disable = set a large duration, no separate flag) sweeps at the **end of a
+  successful `flush(boolean)`, skipped on `endOfInput`**: that is the point where every pending
+  batch is empty and every in-flight append awaited, so closing an appender there cannot cancel a
+  live append and no `collectFailedSiblings`-style draining is needed — placement is the design.
+  The `pendingCount() == 0` guard is defensive (a dropping `FailedRowHandler` can leave
+  re-appended rows pending past the await loop); a failed appender close is WARN-logged and never
+  fails the flush (hygiene must not fail a checkpoint). `lastAccessNanos` lives on
+  `DestinationState`, is refreshed in `write()` only, and is initialized at creation so a state
+  rebuilt by a repair is not instantly idle; boundary is strict (`> timeout` evicts, `== timeout`
+  keeps), pinned by test. **`flushInterval`** (default disabled) registers a recurring
+  processing-time timer from the writer constructor via `WriterInitContext.getProcessingTimeService()`
+  — the first `ProcessingTimeService` use in the repository; safe because timer callbacks run on
+  the mailbox/task thread, the same invariant `states` already relies on (the sink comments this
+  where it passes the service). The callback checks a task-thread `closed` flag (set in
+  `close()`) rather than cancelling a future, calls the real `flush(false)` (so eviction rides
+  it), re-arms itself, and lets exceptions propagate — a failed flush is a failed flush. It is a
+  **mitigation only** for checkpoint-less streaming jobs; the documented guarantee still requires
+  checkpointing, and the docs say so in both places that used to point at #54. The issue's
+  "connection injection seam" item was **not built**: #15 resolved it with the test-only
+  `EmulatorAppenderFactory` through the `@VisibleForTesting createWriter` overload (recorded on
+  the issue). The `maybe*` methods were renamed with it: `createTableIfMissing`,
+  `reconcileSchemaIfMismatched` (kept returning "ran just now" — its caller switches to the
+  schema-wait schedule on exactly that, so forcing its sibling's accumulated-flag shape would
+  complicate a call site for symmetry's sake; the differing `@return` tags now carry the
+  distinction), `warnIfCommitsAreTooFrequent`
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
 - **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
   **`String`** records and a **supplied** schema, since JSON has none of its own — either the

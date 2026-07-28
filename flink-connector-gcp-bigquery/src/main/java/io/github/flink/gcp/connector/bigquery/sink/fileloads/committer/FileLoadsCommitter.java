@@ -137,7 +137,7 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
         }
         Long checkpointId = first.getCheckpointId();
         if (checkpointId != null) {
-            maybeWarnQuota();
+            warnIfCommitsAreTooFrequent();
         }
         // A thrown IOException fails the ongoing commit; requests stay in committer state and are
         // re-committed after the restart (deterministic job ids re-attach on the retry).
@@ -173,7 +173,7 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
      * minimum checkpoint interval — the same threshold the graph-side guard enforces, so an
      * explicit {@code minCheckpointInterval} opt-in silences this warning too.
      */
-    private void maybeWarnQuota() {
+    private void warnIfCommitsAreTooFrequent() {
         long warnGapMs = options.getMinCheckpointInterval().toMillis();
         long now = System.currentTimeMillis();
         if (lastStreamingCommitMillis > 0

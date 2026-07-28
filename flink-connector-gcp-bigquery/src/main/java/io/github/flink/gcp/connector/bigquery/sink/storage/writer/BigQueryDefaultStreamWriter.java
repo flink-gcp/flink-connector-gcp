@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
@@ -46,10 +47,14 @@ import io.grpc.protobuf.StatusProto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -59,6 +64,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 
 /**
  * At-least-once {@link SinkWriter} appending to Storage Write API default streams with dynamic
@@ -189,6 +195,17 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private final long maxAppendRequestBytes;
     private final RetrySchedule recoverySchedule;
     private final RetrySchedule schemaWaitSchedule;
+    private final long destinationIdleTimeoutNanos;
+    @Nullable private final Duration flushInterval;
+    @Nullable private final ProcessingTimeService timerService;
+    private final LongSupplier nanoClock;
+
+    /**
+     * Stops the periodic-flush timer from re-arming (and from flushing closed appenders) once the
+     * writer is closed. Written and read on the task thread only, like {@link #states}: processing
+     * time timer callbacks run on the mailbox.
+     */
+    private boolean closed;
 
     /** Accessed only from the task thread. */
     private final Map<TableDestination, DestinationState> states = new HashMap<>();
@@ -215,7 +232,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private final Set<TableDestination> pushedSchemaRefreshes = ConcurrentHashMap.newKeySet();
 
     /**
-     * Creates a writer with default options.
+     * Creates a writer with default options and no periodic flush.
      *
      * @param config the sink configuration
      * @param appenderFactory the appender factory
@@ -225,20 +242,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             BigQuerySinkConfig<T> config,
             RowAppenderFactory appenderFactory,
             TableAdmin tableAdmin) {
-        this(
-                config,
-                appenderFactory,
-                tableAdmin,
-                DEFAULT_MAX_APPEND_REQUEST_BYTES,
-                DEFAULT_RECOVERY_SCHEDULE,
-                DEFAULT_SCHEMA_WAIT_SCHEDULE);
+        this(config, appenderFactory, tableAdmin, DefaultStreamOptions.builder().build(), null);
     }
 
     /**
-     * Creates a writer, taking the batching cap and the connector-driven recovery schedule from the
-     * given options (same mapping as the buffered-stream writer; the schedule is jitter-free,
-     * matching {@link #DEFAULT_RECOVERY_SCHEDULE}). The schema-wait schedule is not configurable —
-     * it paces BigQuery metadata propagation, a service property rather than a workload property.
+     * Creates a writer with no periodic flush (there is no timer service to drive one).
      *
      * @param config the sink configuration
      * @param appenderFactory the appender factory
@@ -250,6 +258,30 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             RowAppenderFactory appenderFactory,
             TableAdmin tableAdmin,
             DefaultStreamOptions options) {
+        this(config, appenderFactory, tableAdmin, options, null);
+    }
+
+    /**
+     * Creates a writer, taking the batching cap and the connector-driven recovery schedule from the
+     * given options (same mapping as the buffered-stream writer; the schedule is jitter-free,
+     * matching {@link #DEFAULT_RECOVERY_SCHEDULE}). The schema-wait schedule is not configurable —
+     * it paces BigQuery metadata propagation, a service property rather than a workload property.
+     *
+     * <p>When the options carry a {@code flushInterval} and a timer service is given, the writer
+     * registers a recurring processing-time flush; without a timer service the interval is inert.
+     *
+     * @param config the sink configuration
+     * @param appenderFactory the appender factory
+     * @param tableAdmin the admin for creating and updating destination tables
+     * @param options the default-stream options
+     * @param timerService the processing-time service driving the periodic flush, or {@code null}
+     */
+    public BigQueryDefaultStreamWriter(
+            BigQuerySinkConfig<T> config,
+            RowAppenderFactory appenderFactory,
+            TableAdmin tableAdmin,
+            DefaultStreamOptions options,
+            @Nullable ProcessingTimeService timerService) {
         this(
                 config,
                 appenderFactory,
@@ -260,7 +292,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                         options.getRecoveryMaxBackoff().toMillis(),
                         options.getRecoveryMaxAttempts(),
                         0),
-                DEFAULT_SCHEMA_WAIT_SCHEDULE);
+                DEFAULT_SCHEMA_WAIT_SCHEDULE,
+                options.getDestinationIdleTimeout(),
+                options.getFlushInterval(),
+                timerService,
+                System::nanoTime);
     }
 
     BigQueryDefaultStreamWriter(
@@ -270,6 +306,30 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             long maxAppendRequestBytes,
             RetrySchedule recoverySchedule,
             RetrySchedule schemaWaitSchedule) {
+        this(
+                config,
+                appenderFactory,
+                tableAdmin,
+                maxAppendRequestBytes,
+                recoverySchedule,
+                schemaWaitSchedule,
+                DefaultStreamOptions.DEFAULT_DESTINATION_IDLE_TIMEOUT,
+                null,
+                null,
+                System::nanoTime);
+    }
+
+    BigQueryDefaultStreamWriter(
+            BigQuerySinkConfig<T> config,
+            RowAppenderFactory appenderFactory,
+            TableAdmin tableAdmin,
+            long maxAppendRequestBytes,
+            RetrySchedule recoverySchedule,
+            RetrySchedule schemaWaitSchedule,
+            Duration destinationIdleTimeout,
+            @Nullable Duration flushInterval,
+            @Nullable ProcessingTimeService timerService,
+            LongSupplier nanoClock) {
         this.config = Preconditions.checkNotNull(config, "config must not be null");
         this.appenderFactory =
                 Preconditions.checkNotNull(appenderFactory, "appenderFactory must not be null");
@@ -281,6 +341,32 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         this.schemaWaitSchedule =
                 Preconditions.checkNotNull(
                         schemaWaitSchedule, "schemaWaitSchedule must not be null");
+        this.destinationIdleTimeoutNanos =
+                Preconditions.checkNotNull(
+                                destinationIdleTimeout, "destinationIdleTimeout must not be null")
+                        .toNanos();
+        this.flushInterval = flushInterval;
+        this.timerService = timerService;
+        this.nanoClock = Preconditions.checkNotNull(nanoClock, "nanoClock must not be null");
+        if (flushInterval != null && timerService != null) {
+            scheduleFlush();
+        }
+    }
+
+    /**
+     * Arms the next periodic flush. The callback runs on the mailbox (task) thread, which is what
+     * makes calling {@link #flush(boolean)} — and touching {@link #states} — safe from it.
+     */
+    private void scheduleFlush() {
+        timerService.registerTimer(
+                timerService.getCurrentProcessingTime() + flushInterval.toMillis(),
+                timestamp -> {
+                    if (closed) {
+                        return;
+                    }
+                    flush(false);
+                    scheduleFlush();
+                });
     }
 
     @Override
@@ -335,6 +421,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         // schema while serializing this very record gets the stream refreshed before the record's
         // bytes are appended.
         state = refreshOnFingerprintChange(destination, state);
+        state.lastAccessNanos = nanoClock.getAsLong();
         if (state.pendingCount() > 0 && state.pendingBytes + row.size() > maxAppendRequestBytes) {
             appendPending(destination, state);
         }
@@ -367,10 +454,53 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             }
         }
         checkAsyncError();
+        if (!endOfInput) {
+            evictIdleDestinations();
+        }
+    }
+
+    /**
+     * Closes and drops the per-destination state of destinations idle beyond the configured timeout
+     * — memory hygiene for long-lived jobs with dynamic destinations (for example date-suffixed
+     * tables), whose {@link #states} map otherwise grows without bound. Runs at the end of a
+     * successful flush, when every destination's pending batch is empty and every in-flight append
+     * has been awaited, so closing an appender here cannot cancel a live append (the invariant the
+     * repair path maintains with {@code collectFailedSiblings}). The pending check is defensive: a
+     * row-level failure routed to a dropping {@code FailedRowHandler} can leave re-appended rows
+     * pending past the await loop. Correctness is unaffected either way — an evicted destination
+     * that receives a record again rebuilds its stream writer transparently.
+     */
+    private void evictIdleDestinations() {
+        long now = nanoClock.getAsLong();
+        Iterator<Map.Entry<TableDestination, DestinationState>> iterator =
+                states.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<TableDestination, DestinationState> entry = iterator.next();
+            DestinationState state = entry.getValue();
+            if (state.pendingCount() > 0
+                    || now - state.lastAccessNanos <= destinationIdleTimeoutNanos) {
+                continue;
+            }
+            iterator.remove();
+            try {
+                state.appender.close();
+            } catch (RuntimeException e) {
+                // Hygiene must never fail a checkpoint; the stream writer is abandoned either way.
+                LOG.warn(
+                        "Failed to close the stream writer of idle destination {}",
+                        entry.getKey(),
+                        e);
+            }
+            LOG.info(
+                    "Evicted destination {} after {} without records",
+                    entry.getKey(),
+                    Duration.ofNanos(now - state.lastAccessNanos));
+        }
     }
 
     @Override
     public void close() throws Exception {
+        closed = true;
         List<AutoCloseable> closeables = new ArrayList<>(states.size() + 1);
         for (DestinationState state : states.values()) {
             closeables.add(state.appender);
@@ -416,7 +546,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                         destination,
                         config.getSerializer().getDescriptor(destination),
                         config.getLocation());
-        return new DestinationState(appender, fingerprint);
+        return new DestinationState(appender, fingerprint, nanoClock.getAsLong());
     }
 
     /**
@@ -860,7 +990,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             try {
                 state = rebuildState(destination);
             } catch (IOException | RuntimeException e) {
-                tableCreated = maybeCreateMissingTable(destination, e, tableCreated);
+                tableCreated = createTableIfMissing(destination, e, tableCreated);
                 boolean retriable = isRetriable(e, tableCreated, schemaUpdated);
                 if (!retriable || attempt >= schedule.maxAttempts()) {
                     throw wrapFailure(
@@ -889,7 +1019,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 // Schema-mismatch reconciliation is checked before row-level routing, mirroring
                 // repairActionFor: a mismatch fails the batch as a whole, and a schema update can
                 // save rows that per-row routing would drop.
-                if (maybeReconcileSchema(destination, failure, schemaUpdated)) {
+                if (reconcileSchemaIfMismatched(destination, failure, schemaUpdated)) {
                     // The remaining re-appends now wait on schema propagation, which needs the
                     // longer budget.
                     schemaUpdated = true;
@@ -917,7 +1047,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                     }
                     continue;
                 }
-                tableCreated = maybeCreateMissingTable(destination, failure, tableCreated);
+                tableCreated = createTableIfMissing(destination, failure, tableCreated);
                 boolean retriable = isRetriable(failure, tableCreated, schemaUpdated);
                 if (!retriable || attempt >= schedule.maxAttempts()) {
                     throw wrapFailure(
@@ -950,9 +1080,12 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     /**
      * Creates the destination table when a repair-time failure is a recoverable {@code NOT_FOUND}
      * and the table has not been created during this repair yet (a transient repair can discover a
-     * missing table). Returns the updated created-flag.
+     * missing table).
+     *
+     * @return the updated created-flag: {@code true} once the table has been created, whether just
+     *     now or on an earlier attempt of this repair
      */
-    private boolean maybeCreateMissingTable(
+    private boolean createTableIfMissing(
             TableDestination destination, Throwable failure, boolean tableCreated)
             throws IOException {
         if (!tableCreated && isRecoverableNotFound(failure)) {
@@ -968,9 +1101,13 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     /**
      * Reconciles the destination table's schema when a repair-time failure is a schema mismatch,
      * updates are enabled, and no reconciliation has run during this repair yet (a transient repair
-     * can discover a schema mismatch). Returns whether a reconciliation ran just now.
+     * can discover a schema mismatch).
+     *
+     * @return whether a reconciliation ran just now — not the accumulated flag its sibling {@code
+     *     createTableIfMissing} returns; the caller switches to the schema-wait schedule only on a
+     *     fresh reconciliation
      */
-    private boolean maybeReconcileSchema(
+    private boolean reconcileSchemaIfMismatched(
             TableDestination destination, Throwable failure, boolean schemaUpdated)
             throws IOException {
         if (schemaUpdated
@@ -1199,9 +1336,17 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         private ProtoRows.Builder rows = ProtoRows.newBuilder();
         private long pendingBytes;
 
-        DestinationState(RowAppender appender, Object schemaFingerprint) {
+        /**
+         * When the destination last received a record ({@code nanoClock} time), for idle eviction.
+         * Initialized to creation time so a state rebuilt outside {@code write()} (a repair) is not
+         * instantly idle.
+         */
+        private long lastAccessNanos;
+
+        DestinationState(RowAppender appender, Object schemaFingerprint, long createdNanos) {
             this.appender = appender;
             this.schemaFingerprint = schemaFingerprint;
+            this.lastAccessNanos = createdNanos;
         }
 
         void add(ByteString row) {

@@ -774,8 +774,10 @@ model persists unflushed buffers into writer state instead of flushing at the ba
 silently loses those buffers whenever state is dropped.
 
 Checkpointing must be enabled for the at-least-once guarantee in streaming jobs: without it,
-Flink never calls `flush()` mid-stream, so sub-threshold buffers are lost on failure (a
-time-based flush option for checkpoint-less jobs is tracked in [#54]({{< param BookRepo >}}/issues/54)). Batch execution is covered
+Flink never calls `flush()` mid-stream, so sub-threshold buffers are lost on failure. For jobs
+that must run without checkpointing, `DefaultStreamOptions`' `flushInterval` (see
+[Tuning](#tuning)) registers a periodic processing-time flush that bounds this window — a
+mitigation only, not a replacement for the guarantee. Batch execution is covered
 by the end-of-input flush. End-to-end loss behavior additionally depends on the source's own
 state handling.
 
@@ -809,7 +811,7 @@ Neither method is uniformly safer — their loss paths are disjoint:
 | Loss path | `STORAGE_API_AT_LEAST_ONCE` | `STORAGE_API_EXACTLY_ONCE` |
 |---|---|---|
 | Discarded operator state | none (duplicates only) | up to one checkpoint |
-| Checkpointing disabled | buffered rows lost ([#54]({{< param BookRepo >}}/issues/54)) | impossible — rejected at graph construction |
+| Checkpointing disabled | buffered rows lost; window bounded by `flushInterval` when set | impossible — rejected at graph construction |
 | Committable outliving its write stream | none (holds no committer state) | possible — see [Exactly-once](#exactly-once-buffered-streams) |
 | `FailedRowHandler` drop policies | by configuration | by configuration |
 
@@ -1160,6 +1162,11 @@ the bounded re-append schedule that sits above the SDK's retries (the same knobs
 | `recoveryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling) |
 | `recoveryMaxAttempts` | 10 | Attempt cap of that schedule |
 
+The 512 KiB default favors bounded memory and per-record latency; throughput-oriented jobs have
+headroom to raise `maxAppendRequestBytes` to a few megabytes — the Storage Write API caps a
+request at 10 MB — amortizing per-request overhead over larger batches at the cost of more
+buffered bytes per destination and coarser retry units (a failed request re-appends more rows).
+
 The schedule pacing schema-update propagation waits (flat 30 s, 30 attempts) is deliberately not
 configurable: it tracks how long BigQuery metadata takes to propagate — a service property — not
 a workload property.
@@ -1207,6 +1214,28 @@ Caveats — the pool is JVM-global:
   (`ConnectionWorkerPool.setOptions` is process-wide), before this connector builds its first
   writer. A second sink configuring different pool bounds in the same JVM is ignored with a
   warning. The floor is latched when a pool is constructed; the ceiling is read live.
+
+**Writer housekeeping** — per-subtask behavior of the writer itself:
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `destinationIdleTimeout` | 1 h | How long a destination may go without records before its stream writer is closed and dropped |
+| `flushInterval` | disabled | Periodic processing-time flush for streaming jobs running without checkpointing |
+
+Cold-destination eviction is memory hygiene for long-lived jobs with dynamic destinations (for
+example date-suffixed daily tables), whose per-destination state otherwise grows without bound.
+The sweep runs at the end of each successful flush — the point where nothing is pending or in
+flight, so closing a stream writer cannot cancel a live append. Correctness is unaffected: an
+evicted destination that receives a record again rebuilds its stream writer transparently, at
+the cost of that one rebuild. To never evict, set a very large duration.
+
+`flushInterval` bounds the loss window of streaming jobs running *without* checkpointing, where
+Flink only flushes at end of input: every interval, the writer appends all pending batches and
+awaits every in-flight append, exactly as the checkpoint flush does (idle eviction runs from it
+too). It is a mitigation only — the documented at-least-once guarantee still requires
+checkpointing, because only a checkpoint coordinates the sink's flush with the source's
+position. With checkpointing enabled the option is redundant; a flush of nothing is cheap, but
+each flush blocks the task thread until in-flight appends are acknowledged.
 
 ## Testing
 
