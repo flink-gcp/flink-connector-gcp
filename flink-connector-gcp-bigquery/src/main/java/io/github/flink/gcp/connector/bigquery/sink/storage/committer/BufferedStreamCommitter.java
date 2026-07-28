@@ -78,9 +78,9 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
         this.location = location;
         this.retrySchedule =
                 new RetrySchedule(
-                        options.getRetryInitialBackoff().toMillis(),
-                        options.getRetryMaxBackoff().toMillis(),
-                        options.getRetryMaxAttempts(),
+                        options.getRecoveryInitialBackoff().toMillis(),
+                        options.getRecoveryMaxBackoff().toMillis(),
+                        options.getRecoveryMaxAttempts(),
                         0);
     }
 

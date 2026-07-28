@@ -159,9 +159,9 @@ public class BigQueryBufferedStreamWriter<T>
         this.maxAppendRequestBytes = options.getMaxAppendRequestBytes();
         this.retrySchedule =
                 new RetrySchedule(
-                        options.getRetryInitialBackoff().toMillis(),
-                        options.getRetryMaxBackoff().toMillis(),
-                        options.getRetryMaxAttempts(),
+                        options.getRecoveryInitialBackoff().toMillis(),
+                        options.getRecoveryMaxBackoff().toMillis(),
+                        options.getRecoveryMaxAttempts(),
                         0);
 
         BufferedStreamWriterState adopted = null;

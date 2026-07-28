@@ -28,8 +28,8 @@ import java.util.Objects;
 
 /**
  * Options specific to {@link WriteMethod#STORAGE_API_EXACTLY_ONCE}: how large append requests may
- * grow and how connector-driven retries (stream creation, transient append failures, the restore
- * probe) back off.
+ * grow and how the connector-driven recovery schedule (stream creation, transient append failures,
+ * the restore probe) backs off.
  *
  * <p>Set via {@link BigQuerySinkBuilder#bufferedStreamOptions(BufferedStreamOptions)}; required
  * when building a {@code STORAGE_API_EXACTLY_ONCE} sink and rejected for every other write method.
@@ -49,25 +49,25 @@ public final class BufferedStreamOptions implements Serializable {
      */
     public static final long DEFAULT_MAX_APPEND_REQUEST_BYTES = 512 * 1024;
 
-    /** Default for {@link Builder#retryInitialBackoff(Duration)}. */
-    public static final Duration DEFAULT_RETRY_INITIAL_BACKOFF = Duration.ofMillis(500);
+    /** Default for {@link Builder#recoveryInitialBackoff(Duration)}. */
+    public static final Duration DEFAULT_RECOVERY_INITIAL_BACKOFF = Duration.ofMillis(500);
 
-    /** Default for {@link Builder#retryMaxBackoff(Duration)}. */
-    public static final Duration DEFAULT_RETRY_MAX_BACKOFF = Duration.ofSeconds(10);
+    /** Default for {@link Builder#recoveryMaxBackoff(Duration)}. */
+    public static final Duration DEFAULT_RECOVERY_MAX_BACKOFF = Duration.ofSeconds(10);
 
-    /** Default for {@link Builder#retryMaxAttempts(int)}. */
-    public static final int DEFAULT_RETRY_MAX_ATTEMPTS = 10;
+    /** Default for {@link Builder#recoveryMaxAttempts(int)}. */
+    public static final int DEFAULT_RECOVERY_MAX_ATTEMPTS = 10;
 
     private final long maxAppendRequestBytes;
-    private final Duration retryInitialBackoff;
-    private final Duration retryMaxBackoff;
-    private final int retryMaxAttempts;
+    private final Duration recoveryInitialBackoff;
+    private final Duration recoveryMaxBackoff;
+    private final int recoveryMaxAttempts;
 
     private BufferedStreamOptions(Builder builder) {
         this.maxAppendRequestBytes = builder.maxAppendRequestBytes;
-        this.retryInitialBackoff = builder.retryInitialBackoff;
-        this.retryMaxBackoff = builder.retryMaxBackoff;
-        this.retryMaxAttempts = builder.retryMaxAttempts;
+        this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
+        this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
+        this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
     }
 
     /**
@@ -84,19 +84,19 @@ public final class BufferedStreamOptions implements Serializable {
         return maxAppendRequestBytes;
     }
 
-    /** Returns the first backoff of the connector-driven retry schedule. */
-    public Duration getRetryInitialBackoff() {
-        return retryInitialBackoff;
+    /** Returns the first backoff of the connector-driven recovery schedule. */
+    public Duration getRecoveryInitialBackoff() {
+        return recoveryInitialBackoff;
     }
 
-    /** Returns the backoff cap of the connector-driven retry schedule. */
-    public Duration getRetryMaxBackoff() {
-        return retryMaxBackoff;
+    /** Returns the backoff cap of the connector-driven recovery schedule. */
+    public Duration getRecoveryMaxBackoff() {
+        return recoveryMaxBackoff;
     }
 
-    /** Returns the maximum number of attempts of the connector-driven retry schedule. */
-    public int getRetryMaxAttempts() {
-        return retryMaxAttempts;
+    /** Returns the maximum number of attempts of the connector-driven recovery schedule. */
+    public int getRecoveryMaxAttempts() {
+        return recoveryMaxAttempts;
     }
 
     @Override
@@ -109,27 +109,30 @@ public final class BufferedStreamOptions implements Serializable {
         }
         BufferedStreamOptions that = (BufferedStreamOptions) o;
         return maxAppendRequestBytes == that.maxAppendRequestBytes
-                && retryMaxAttempts == that.retryMaxAttempts
-                && retryInitialBackoff.equals(that.retryInitialBackoff)
-                && retryMaxBackoff.equals(that.retryMaxBackoff);
+                && recoveryMaxAttempts == that.recoveryMaxAttempts
+                && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
+                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
-                maxAppendRequestBytes, retryInitialBackoff, retryMaxBackoff, retryMaxAttempts);
+                maxAppendRequestBytes,
+                recoveryInitialBackoff,
+                recoveryMaxBackoff,
+                recoveryMaxAttempts);
     }
 
     @Override
     public String toString() {
         return "BufferedStreamOptions{maxAppendRequestBytes="
                 + maxAppendRequestBytes
-                + ", retryInitialBackoff="
-                + retryInitialBackoff
-                + ", retryMaxBackoff="
-                + retryMaxBackoff
-                + ", retryMaxAttempts="
-                + retryMaxAttempts
+                + ", recoveryInitialBackoff="
+                + recoveryInitialBackoff
+                + ", recoveryMaxBackoff="
+                + recoveryMaxBackoff
+                + ", recoveryMaxAttempts="
+                + recoveryMaxAttempts
                 + "}";
     }
 
@@ -138,9 +141,9 @@ public final class BufferedStreamOptions implements Serializable {
     public static final class Builder {
 
         private long maxAppendRequestBytes = DEFAULT_MAX_APPEND_REQUEST_BYTES;
-        private Duration retryInitialBackoff = DEFAULT_RETRY_INITIAL_BACKOFF;
-        private Duration retryMaxBackoff = DEFAULT_RETRY_MAX_BACKOFF;
-        private int retryMaxAttempts = DEFAULT_RETRY_MAX_ATTEMPTS;
+        private Duration recoveryInitialBackoff = DEFAULT_RECOVERY_INITIAL_BACKOFF;
+        private Duration recoveryMaxBackoff = DEFAULT_RECOVERY_MAX_BACKOFF;
+        private int recoveryMaxAttempts = DEFAULT_RECOVERY_MAX_ATTEMPTS;
 
         private Builder() {}
 
@@ -162,53 +165,54 @@ public final class BufferedStreamOptions implements Serializable {
         }
 
         /**
-         * Sets the first backoff of the connector-driven retry schedule (stream creation after
+         * Sets the first backoff of the connector-driven recovery schedule (stream creation after
          * table auto-creation, transient append failures, the restore probe). Defaults to {@link
-         * #DEFAULT_RETRY_INITIAL_BACKOFF}.
+         * #DEFAULT_RECOVERY_INITIAL_BACKOFF}.
          *
-         * @param retryInitialBackoff the first backoff
+         * @param recoveryInitialBackoff the first backoff
          * @return this builder
          */
-        public Builder retryInitialBackoff(Duration retryInitialBackoff) {
-            Preconditions.checkNotNull(retryInitialBackoff, "retryInitialBackoff must not be null");
+        public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
+            Preconditions.checkNotNull(
+                    recoveryInitialBackoff, "recoveryInitialBackoff must not be null");
             Preconditions.checkArgument(
-                    !retryInitialBackoff.isNegative() && !retryInitialBackoff.isZero(),
-                    "retryInitialBackoff must be positive: %s",
-                    retryInitialBackoff);
-            this.retryInitialBackoff = retryInitialBackoff;
+                    !recoveryInitialBackoff.isNegative() && !recoveryInitialBackoff.isZero(),
+                    "recoveryInitialBackoff must be positive: %s",
+                    recoveryInitialBackoff);
+            this.recoveryInitialBackoff = recoveryInitialBackoff;
             return this;
         }
 
         /**
-         * Sets the backoff cap of the connector-driven retry schedule. Must be at least the initial
-         * backoff. Defaults to {@link #DEFAULT_RETRY_MAX_BACKOFF}.
+         * Sets the backoff cap of the connector-driven recovery schedule. Must be at least the
+         * initial backoff. Defaults to {@link #DEFAULT_RECOVERY_MAX_BACKOFF}.
          *
-         * @param retryMaxBackoff the backoff cap
+         * @param recoveryMaxBackoff the backoff cap
          * @return this builder
          */
-        public Builder retryMaxBackoff(Duration retryMaxBackoff) {
-            Preconditions.checkNotNull(retryMaxBackoff, "retryMaxBackoff must not be null");
+        public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
+            Preconditions.checkNotNull(recoveryMaxBackoff, "recoveryMaxBackoff must not be null");
             Preconditions.checkArgument(
-                    !retryMaxBackoff.isNegative() && !retryMaxBackoff.isZero(),
-                    "retryMaxBackoff must be positive: %s",
-                    retryMaxBackoff);
-            this.retryMaxBackoff = retryMaxBackoff;
+                    !recoveryMaxBackoff.isNegative() && !recoveryMaxBackoff.isZero(),
+                    "recoveryMaxBackoff must be positive: %s",
+                    recoveryMaxBackoff);
+            this.recoveryMaxBackoff = recoveryMaxBackoff;
             return this;
         }
 
         /**
-         * Sets the maximum number of attempts of the connector-driven retry schedule. Defaults to
-         * {@link #DEFAULT_RETRY_MAX_ATTEMPTS}.
+         * Sets the maximum number of attempts of the connector-driven recovery schedule. Defaults
+         * to {@link #DEFAULT_RECOVERY_MAX_ATTEMPTS}.
          *
-         * @param retryMaxAttempts the attempt cap
+         * @param recoveryMaxAttempts the attempt cap
          * @return this builder
          */
-        public Builder retryMaxAttempts(int retryMaxAttempts) {
+        public Builder recoveryMaxAttempts(int recoveryMaxAttempts) {
             Preconditions.checkArgument(
-                    retryMaxAttempts > 0,
-                    "retryMaxAttempts must be positive: %s",
-                    retryMaxAttempts);
-            this.retryMaxAttempts = retryMaxAttempts;
+                    recoveryMaxAttempts > 0,
+                    "recoveryMaxAttempts must be positive: %s",
+                    recoveryMaxAttempts);
+            this.recoveryMaxAttempts = recoveryMaxAttempts;
             return this;
         }
 
@@ -219,10 +223,10 @@ public final class BufferedStreamOptions implements Serializable {
          */
         public BufferedStreamOptions build() {
             Preconditions.checkState(
-                    retryMaxBackoff.compareTo(retryInitialBackoff) >= 0,
-                    "retryMaxBackoff must be >= retryInitialBackoff: %s < %s",
-                    retryMaxBackoff,
-                    retryInitialBackoff);
+                    recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
+                    "recoveryMaxBackoff must be >= recoveryInitialBackoff: %s < %s",
+                    recoveryMaxBackoff,
+                    recoveryInitialBackoff);
             return new BufferedStreamOptions(this);
         }
     }

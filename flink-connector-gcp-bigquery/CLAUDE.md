@@ -101,7 +101,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   trailing batches; `ALREADY_EXISTS` during an offset-shifting replay is terminal). v1 scope:
   fixed destination only (builder rejects `destinationResolver`), no mid-stream schema
   evolution (stream schema pinned at creation), BATCH supported (commit at end of input),
-  streaming requires EXACTLY_ONCE + checkpoints-after-tasks-finish; retry knobs are
+  streaming requires EXACTLY_ONCE + checkpoints-after-tasks-finish; recovery knobs are
   builder-configurable via `BufferedStreamOptions` with defaults. The goccy emulator keeps no
   flush cursor (re-flush duplicates), so exactly-once ITs run against real GCP; the emulator
   gets a single-flush smoke test only
@@ -377,11 +377,18 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   convention (decided with the user, 2026-07-28): the "required" half exists so that *explicitly
   choosing* a write method forces its options into view, and the default write method is chosen
   by not choosing, so only the "rejected for other methods" half carries safety and only it
-  stays. The SDK-facing knobs are prefixed **`sdkRetry*`/`sdkMaxRetryDuration`** — the prefix
-  names the layer the knob is handed to, which is the actual distinction from the connector's
-  own `retry*` re-append budget (an `inStream*` prefix would not disambiguate: both layers retry
-  "in the stream" from a user's viewpoint); sub-names keep the vendor's words per the #121/#147
-  rule. `maxInflightRequests` **defaults to 100, deviating from the SDK's 1000 on purpose**
+  stays. Retry naming was **revised on user feedback** (2026-07-29) after a first cut shipped
+  `retry*` (connector) beside `sdkRetry*` (SDK): two knobs both stemmed "retry…MaxAttempts" were
+  judged a confusion source. Now the **connector budget is `recovery*`**
+  (`recoveryInitialBackoff`/`recoveryMaxBackoff`/`recoveryMaxAttempts`, matching the writer's
+  internal `recoverySchedule` vocabulary, renamed in `BufferedStreamOptions` too so the two
+  classes agree) and the **SDK knobs are bare `retry*`/`maxRetryDuration`** — the `sdk` prefix
+  became redundant once "retry" uniquely meant the SDK layer, the bare names are the vendor's
+  own words per the #121/#147 rule, and the Pub/Sub builder already exposes SDK `RetrySettings`
+  bare (`retryInitialDelay`, `retryDelayMultiplier`, …), so this converges the modules. Note the
+  cross-module asymmetry left standing: Cloud Tasks' `retry*` names a *connector-driven*
+  schedule — its module has no second retry layer, so bare `retry*` is unambiguous there and
+  renaming it would churn a published-in-docs surface for no local gain. `maxInflightRequests` **defaults to 100, deviating from the SDK's 1000 on purpose**
   (official multiplexing guidance, sample value 100): a pooled connection is a scale-up
   candidate above 20% of its in-flight limits, so at the SDK default scale-up needs >200 queued
   requests per connection and rarely triggers — measured against SDK 3.30.0 sources, where the

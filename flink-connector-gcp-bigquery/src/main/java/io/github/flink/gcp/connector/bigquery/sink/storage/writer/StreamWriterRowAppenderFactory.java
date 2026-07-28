@@ -68,7 +68,7 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
      * RESOURCE_EXHAUSTED}), so transient errors are normally absorbed before they reach the sink
      * writer; the writer's own bounded re-append budget sits above these retries. On the
      * default-stream path this constant is only the default — the {@link DefaultStreamOptions}
-     * {@code sdkRetry*} knobs configure the schedule. The buffered-stream write path ({@link
+     * {@code retry*} knobs configure the schedule. The buffered-stream write path ({@link
      * WriteClientBufferedStreamService}) still uses this constant as-is, where the same in-stream
      * retries apply to offset appends (a retry of an append that already landed answers {@code
      * ALREADY_EXISTS}, which that writer treats as success).
@@ -119,7 +119,7 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
                         .setWriterSchema(ProtoSchemaConverter.convert(rowDescriptor))
                         .setEnableConnectionPool(true)
                         .setRetrySettings(toRetrySettings(options))
-                        .setMaxRetryDuration(options.getSdkMaxRetryDuration())
+                        .setMaxRetryDuration(options.getMaxRetryDuration())
                         .setMaxInflightRequests(options.getMaxInflightRequests())
                         .setMaxInflightBytes(options.getMaxInflightBytes())
                         .setTraceId(TRACE_ID);
@@ -130,13 +130,13 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
         return new StreamWriterRowAppender(streamWriter);
     }
 
-    /** Builds the SDK's in-stream {@link RetrySettings} from the {@code sdkRetry*} knobs. */
+    /** Builds the SDK's in-stream {@link RetrySettings} from the {@code retry*} knobs. */
     static RetrySettings toRetrySettings(DefaultStreamOptions options) {
         return RetrySettings.newBuilder()
-                .setInitialRetryDelayDuration(options.getSdkRetryInitialDelay())
-                .setRetryDelayMultiplier(options.getSdkRetryDelayMultiplier())
-                .setMaxRetryDelayDuration(options.getSdkRetryMaxDelay())
-                .setMaxAttempts(options.getSdkRetryMaxAttempts())
+                .setInitialRetryDelayDuration(options.getRetryInitialDelay())
+                .setRetryDelayMultiplier(options.getRetryDelayMultiplier())
+                .setMaxRetryDelayDuration(options.getRetryMaxDelay())
+                .setMaxAttempts(options.getRetryMaxAttempts())
                 .build();
     }
 

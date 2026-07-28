@@ -835,8 +835,9 @@ env.enableCheckpointing(60_000); // EXACTLY_ONCE mode (the default)
 
 Method-specific settings live in `BufferedStreamOptions` (required for this write method,
 rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default) and
-the connector-driven retry schedule (`retryInitialBackoff` 500 ms, `retryMaxBackoff` 10 s,
-`retryMaxAttempts` 10) governing stream creation, transient re-appends and the restore probe.
+the connector-driven recovery schedule (`recoveryInitialBackoff` 500 ms, `recoveryMaxBackoff`
+10 s, `recoveryMaxAttempts` 10) governing stream creation, transient re-appends and the restore
+probe.
 
 **Stream lifecycle.** Each writer subtask owns **one buffered stream, created lazily on its first
 append and reused across checkpoints** — per GCP guidance, frequent `CreateWriteStream` churn
@@ -1148,31 +1149,32 @@ Sink<MyEvent> sink =
 
 The knobs configure three distinct layers.
 
-**Connector batching and re-append budget** — the writer's own batching cap and the bounded
-re-append schedule that sits above the SDK's retries (the same knobs `BufferedStreamOptions`
-exposes for the exactly-once path):
+**Connector batching and recovery budget** (`recovery*`) — the writer's own batching cap and
+the bounded re-append schedule that sits above the SDK's retries (the same knobs
+`BufferedStreamOptions` exposes for the exactly-once path):
 
 | Knob | Default | Meaning |
 |---|---|---|
 | `maxAppendRequestBytes` | 512 KiB | Serialized-row bytes buffered per destination before an append request is issued |
-| `retryInitialBackoff` | 500 ms | First backoff of the connector-driven re-append schedule |
-| `retryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling) |
-| `retryMaxAttempts` | 10 | Attempt cap of that schedule |
+| `recoveryInitialBackoff` | 500 ms | First backoff of the connector-driven recovery schedule |
+| `recoveryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling) |
+| `recoveryMaxAttempts` | 10 | Attempt cap of that schedule |
 
 The schedule pacing schema-update propagation waits (flat 30 s, 30 attempts) is deliberately not
 configurable: it tracks how long BigQuery metadata takes to propagate — a service property — not
 a workload property.
 
-**SDK in-stream retries** — the schedule the SDK applies to retriable append failures before
-they ever reach the writer:
+**SDK in-stream retries** (`retry*`, spelled the SDK's way) — the schedule the SDK applies to
+retriable append failures before they ever reach the writer; failures that exhaust it surface to
+the connector's recovery budget above:
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `sdkRetryInitialDelay` | 500 ms | First retry delay |
-| `sdkRetryDelayMultiplier` | 2.0 | Delay multiplier |
-| `sdkRetryMaxDelay` | 30 s | Delay cap |
-| `sdkRetryMaxAttempts` | 5 | Attempt cap |
-| `sdkMaxRetryDuration` | 5 min | Overall ceiling on retrying one failure, across attempts (the SDK's default) |
+| `retryInitialDelay` | 500 ms | First retry delay |
+| `retryDelayMultiplier` | 2.0 | Delay multiplier |
+| `retryMaxDelay` | 30 s | Delay cap |
+| `retryMaxAttempts` | 5 | Attempt cap |
+| `maxRetryDuration` | 5 min | Overall ceiling on retrying one failure, across attempts (the SDK's default) |
 
 **Connection pool (multiplexing)** — the default stream multiplexes appends over a shared
 connection pool ([official guidance](https://cloud.google.com/bigquery/docs/write-api-best-practices)
@@ -1198,7 +1200,7 @@ Caveats — the pool is JVM-global:
 
 - The pool is **static per (location, credentials)** and adopts the settings of whichever stream
   writer is built first in the JVM: the in-flight limits, SDK retry schedule and
-  `sdkMaxRetryDuration` of later writers are silently ignored by the SDK. All writers of one
+  `maxRetryDuration` of later writers are silently ignored by the SDK. All writers of one
   sink carry the same options, so a job is self-consistent — but on a session cluster, or with
   another Storage Write API client in the same JVM, whichever builds first wins.
 - `minConnectionsPerRegion`/`maxConnectionsPerRegion` are applied once per JVM

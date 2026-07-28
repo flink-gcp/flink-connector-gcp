@@ -32,22 +32,22 @@ class DefaultStreamOptionsTest {
 
         assertThat(options.getMaxAppendRequestBytes())
                 .isEqualTo(DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES);
-        assertThat(options.getRetryInitialBackoff())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_INITIAL_BACKOFF);
-        assertThat(options.getRetryMaxBackoff())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_MAX_BACKOFF);
+        assertThat(options.getRecoveryInitialBackoff())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RECOVERY_INITIAL_BACKOFF);
+        assertThat(options.getRecoveryMaxBackoff())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RECOVERY_MAX_BACKOFF);
+        assertThat(options.getRecoveryMaxAttempts())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RECOVERY_MAX_ATTEMPTS);
+        assertThat(options.getRetryInitialDelay())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_INITIAL_DELAY);
+        assertThat(options.getRetryDelayMultiplier())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_DELAY_MULTIPLIER);
+        assertThat(options.getRetryMaxDelay())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_MAX_DELAY);
         assertThat(options.getRetryMaxAttempts())
                 .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_MAX_ATTEMPTS);
-        assertThat(options.getSdkRetryInitialDelay())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_SDK_RETRY_INITIAL_DELAY);
-        assertThat(options.getSdkRetryDelayMultiplier())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_SDK_RETRY_DELAY_MULTIPLIER);
-        assertThat(options.getSdkRetryMaxDelay())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_SDK_RETRY_MAX_DELAY);
-        assertThat(options.getSdkRetryMaxAttempts())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_SDK_RETRY_MAX_ATTEMPTS);
-        assertThat(options.getSdkMaxRetryDuration())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_SDK_MAX_RETRY_DURATION);
+        assertThat(options.getMaxRetryDuration())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_MAX_RETRY_DURATION);
         assertThat(options.getMaxInflightRequests())
                 .isEqualTo(DefaultStreamOptions.DEFAULT_MAX_INFLIGHT_REQUESTS);
         assertThat(options.getMaxInflightBytes())
@@ -72,14 +72,14 @@ class DefaultStreamOptionsTest {
         DefaultStreamOptions options =
                 DefaultStreamOptions.builder()
                         .maxAppendRequestBytes(1024)
-                        .retryInitialBackoff(Duration.ofMillis(100))
-                        .retryMaxBackoff(Duration.ofSeconds(5))
-                        .retryMaxAttempts(3)
-                        .sdkRetryInitialDelay(Duration.ofMillis(250))
-                        .sdkRetryDelayMultiplier(1.5)
-                        .sdkRetryMaxDelay(Duration.ofSeconds(15))
-                        .sdkRetryMaxAttempts(7)
-                        .sdkMaxRetryDuration(Duration.ofMinutes(2))
+                        .recoveryInitialBackoff(Duration.ofMillis(100))
+                        .recoveryMaxBackoff(Duration.ofSeconds(5))
+                        .recoveryMaxAttempts(3)
+                        .retryInitialDelay(Duration.ofMillis(250))
+                        .retryDelayMultiplier(1.5)
+                        .retryMaxDelay(Duration.ofSeconds(15))
+                        .retryMaxAttempts(7)
+                        .maxRetryDuration(Duration.ofMinutes(2))
                         .maxInflightRequests(50)
                         .maxInflightBytes(1024 * 1024)
                         .minConnectionsPerRegion(1)
@@ -87,14 +87,14 @@ class DefaultStreamOptionsTest {
                         .build();
 
         assertThat(options.getMaxAppendRequestBytes()).isEqualTo(1024);
-        assertThat(options.getRetryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
-        assertThat(options.getRetryMaxBackoff()).isEqualTo(Duration.ofSeconds(5));
-        assertThat(options.getRetryMaxAttempts()).isEqualTo(3);
-        assertThat(options.getSdkRetryInitialDelay()).isEqualTo(Duration.ofMillis(250));
-        assertThat(options.getSdkRetryDelayMultiplier()).isEqualTo(1.5);
-        assertThat(options.getSdkRetryMaxDelay()).isEqualTo(Duration.ofSeconds(15));
-        assertThat(options.getSdkRetryMaxAttempts()).isEqualTo(7);
-        assertThat(options.getSdkMaxRetryDuration()).isEqualTo(Duration.ofMinutes(2));
+        assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
+        assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(options.getRecoveryMaxAttempts()).isEqualTo(3);
+        assertThat(options.getRetryInitialDelay()).isEqualTo(Duration.ofMillis(250));
+        assertThat(options.getRetryDelayMultiplier()).isEqualTo(1.5);
+        assertThat(options.getRetryMaxDelay()).isEqualTo(Duration.ofSeconds(15));
+        assertThat(options.getRetryMaxAttempts()).isEqualTo(7);
+        assertThat(options.getMaxRetryDuration()).isEqualTo(Duration.ofMinutes(2));
         assertThat(options.getMaxInflightRequests()).isEqualTo(50);
         assertThat(options.getMaxInflightBytes()).isEqualTo(1024 * 1024);
         assertThat(options.getMinConnectionsPerRegion()).isEqualTo(1);
@@ -105,21 +105,22 @@ class DefaultStreamOptionsTest {
     void rejectsNonPositiveValues() {
         assertThatThrownBy(() -> DefaultStreamOptions.builder().maxAppendRequestBytes(0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().retryInitialBackoff(Duration.ZERO))
+        assertThatThrownBy(
+                        () -> DefaultStreamOptions.builder().recoveryInitialBackoff(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().retryMaxBackoff(Duration.ZERO))
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().recoveryMaxBackoff(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().recoveryMaxAttempts(0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().retryInitialDelay(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().retryDelayMultiplier(0.99))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().retryMaxDelay(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> DefaultStreamOptions.builder().retryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().sdkRetryInitialDelay(Duration.ZERO))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().sdkRetryDelayMultiplier(0.99))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().sdkRetryMaxDelay(Duration.ZERO))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().sdkRetryMaxAttempts(0))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().sdkMaxRetryDuration(Duration.ZERO))
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().maxRetryDuration(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> DefaultStreamOptions.builder().maxInflightRequests(0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -135,9 +136,9 @@ class DefaultStreamOptionsTest {
     void multiplierOfExactlyOneIsAccepted() {
         assertThat(
                         DefaultStreamOptions.builder()
-                                .sdkRetryDelayMultiplier(1.0)
+                                .retryDelayMultiplier(1.0)
                                 .build()
-                                .getSdkRetryDelayMultiplier())
+                                .getRetryDelayMultiplier())
                 .isEqualTo(1.0);
     }
 
@@ -146,22 +147,22 @@ class DefaultStreamOptionsTest {
         assertThatThrownBy(
                         () ->
                                 DefaultStreamOptions.builder()
-                                        .retryInitialBackoff(Duration.ofSeconds(5))
-                                        .retryMaxBackoff(Duration.ofSeconds(1))
+                                        .recoveryInitialBackoff(Duration.ofSeconds(5))
+                                        .recoveryMaxBackoff(Duration.ofSeconds(1))
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("retryMaxBackoff");
+                .hasMessageContaining("recoveryMaxBackoff");
     }
 
     @Test
     void acceptsMaxBackoffEqualToInitialBackoff() {
         DefaultStreamOptions options =
                 DefaultStreamOptions.builder()
-                        .retryInitialBackoff(Duration.ofSeconds(5))
-                        .retryMaxBackoff(Duration.ofSeconds(5))
+                        .recoveryInitialBackoff(Duration.ofSeconds(5))
+                        .recoveryMaxBackoff(Duration.ofSeconds(5))
                         .build();
 
-        assertThat(options.getRetryMaxBackoff()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(5));
     }
 
     @Test
@@ -169,22 +170,22 @@ class DefaultStreamOptionsTest {
         assertThatThrownBy(
                         () ->
                                 DefaultStreamOptions.builder()
-                                        .sdkRetryInitialDelay(Duration.ofSeconds(5))
-                                        .sdkRetryMaxDelay(Duration.ofSeconds(1))
+                                        .retryInitialDelay(Duration.ofSeconds(5))
+                                        .retryMaxDelay(Duration.ofSeconds(1))
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("sdkRetryMaxDelay");
+                .hasMessageContaining("retryMaxDelay");
     }
 
     @Test
     void acceptsSdkMaxDelayEqualToSdkInitialDelay() {
         DefaultStreamOptions options =
                 DefaultStreamOptions.builder()
-                        .sdkRetryInitialDelay(Duration.ofSeconds(5))
-                        .sdkRetryMaxDelay(Duration.ofSeconds(5))
+                        .retryInitialDelay(Duration.ofSeconds(5))
+                        .retryMaxDelay(Duration.ofSeconds(5))
                         .build();
 
-        assertThat(options.getSdkRetryMaxDelay()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(options.getRetryMaxDelay()).isEqualTo(Duration.ofSeconds(5));
     }
 
     @Test
@@ -218,24 +219,24 @@ class DefaultStreamOptionsTest {
         assertThat(DefaultStreamOptions.builder().build()).hasSameHashCodeAs(defaults);
         assertThat(DefaultStreamOptions.builder().maxAppendRequestBytes(1).build())
                 .isNotEqualTo(defaults);
-        assertThat(DefaultStreamOptions.builder().retryInitialBackoff(Duration.ofMillis(1)).build())
+        assertThat(
+                        DefaultStreamOptions.builder()
+                                .recoveryInitialBackoff(Duration.ofMillis(1))
+                                .build())
                 .isNotEqualTo(defaults);
-        assertThat(DefaultStreamOptions.builder().retryMaxBackoff(Duration.ofDays(1)).build())
+        assertThat(DefaultStreamOptions.builder().recoveryMaxBackoff(Duration.ofDays(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(DefaultStreamOptions.builder().recoveryMaxAttempts(1).build())
+                .isNotEqualTo(defaults);
+        assertThat(DefaultStreamOptions.builder().retryInitialDelay(Duration.ofMillis(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(DefaultStreamOptions.builder().retryDelayMultiplier(3.0).build())
+                .isNotEqualTo(defaults);
+        assertThat(DefaultStreamOptions.builder().retryMaxDelay(Duration.ofDays(1)).build())
                 .isNotEqualTo(defaults);
         assertThat(DefaultStreamOptions.builder().retryMaxAttempts(1).build())
                 .isNotEqualTo(defaults);
-        assertThat(
-                        DefaultStreamOptions.builder()
-                                .sdkRetryInitialDelay(Duration.ofMillis(1))
-                                .build())
-                .isNotEqualTo(defaults);
-        assertThat(DefaultStreamOptions.builder().sdkRetryDelayMultiplier(3.0).build())
-                .isNotEqualTo(defaults);
-        assertThat(DefaultStreamOptions.builder().sdkRetryMaxDelay(Duration.ofDays(1)).build())
-                .isNotEqualTo(defaults);
-        assertThat(DefaultStreamOptions.builder().sdkRetryMaxAttempts(1).build())
-                .isNotEqualTo(defaults);
-        assertThat(DefaultStreamOptions.builder().sdkMaxRetryDuration(Duration.ofDays(1)).build())
+        assertThat(DefaultStreamOptions.builder().maxRetryDuration(Duration.ofDays(1)).build())
                 .isNotEqualTo(defaults);
         assertThat(DefaultStreamOptions.builder().maxInflightRequests(1).build())
                 .isNotEqualTo(defaults);

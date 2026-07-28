@@ -36,13 +36,13 @@ class StreamWriterRowAppenderFactoryTest {
     }
 
     @Test
-    void mapsEverySdkRetryKnobIntoRetrySettings() {
+    void mapsEveryRetryKnobIntoTheSdkRetrySettings() {
         DefaultStreamOptions options =
                 DefaultStreamOptions.builder()
-                        .sdkRetryInitialDelay(Duration.ofMillis(250))
-                        .sdkRetryDelayMultiplier(1.5)
-                        .sdkRetryMaxDelay(Duration.ofSeconds(15))
-                        .sdkRetryMaxAttempts(7)
+                        .retryInitialDelay(Duration.ofMillis(250))
+                        .retryDelayMultiplier(1.5)
+                        .retryMaxDelay(Duration.ofSeconds(15))
+                        .retryMaxAttempts(7)
                         .build();
 
         RetrySettings settings = StreamWriterRowAppenderFactory.toRetrySettings(options);
@@ -55,7 +55,7 @@ class StreamWriterRowAppenderFactoryTest {
 
     /** The defaulted knobs must reproduce the schedule that used to be hardcoded. */
     @Test
-    void defaultSdkRetryKnobsEqualTheSharedConstant() {
+    void defaultRetryKnobsEqualTheSharedConstant() {
         RetrySettings settings =
                 StreamWriterRowAppenderFactory.toRetrySettings(
                         DefaultStreamOptions.builder().build());

@@ -38,21 +38,22 @@ import java.util.Objects;
  * <p>Three groups of knobs configure three distinct layers:
  *
  * <ul>
- *   <li><b>{@code retry*} and {@code maxAppendRequestBytes}</b> — the connector's own bounded
- *       re-append budget, sitting above the SDK's retries (same vocabulary as {@link
- *       BufferedStreamOptions}). The schedule pacing schema-update propagation waits is
- *       deliberately not exposed: it tracks a BigQuery service property, not a workload property.
- *   <li><b>{@code sdkRetry*} and {@code sdkMaxRetryDuration}</b> — the SDK's in-stream retry of
- *       retriable append failures on default streams, handed to the stream writer as {@code
- *       RetrySettings} / {@code setMaxRetryDuration}.
+ *   <li><b>{@code recovery*} and {@code maxAppendRequestBytes}</b> — the connector's own bounded
+ *       recovery budget: re-appends on a rebuilt stream writer after a failure surfaced past the
+ *       SDK's retries (same vocabulary as {@link BufferedStreamOptions}). The schedule pacing
+ *       schema-update propagation waits is deliberately not exposed: it tracks a BigQuery service
+ *       property, not a workload property.
+ *   <li><b>{@code retry*} and {@code maxRetryDuration}</b> — the SDK's in-stream retry of retriable
+ *       append failures on default streams, handed to the stream writer as {@code RetrySettings} /
+ *       {@code setMaxRetryDuration}, spelled the SDK's way.
  *   <li><b>{@code maxInflight*} and {@code *ConnectionsPerRegion}</b> — the SDK's connection pool.
  * </ul>
  *
  * <p><b>The SDK connection pool is JVM-static per (location, credentials).</b> The first stream
  * writer built for a pool key bakes its in-flight limits, SDK retry settings and {@code
- * sdkMaxRetryDuration} into that pool permanently; later writers' values are silently dropped by
- * the SDK. All writers of one sink carry the same options, so within a job the pool is consistent —
- * but on a session cluster, or with another BigQuery Storage Write API client in the same JVM,
+ * maxRetryDuration} into that pool permanently; later writers' values are silently dropped by the
+ * SDK. All writers of one sink carry the same options, so within a job the pool is consistent — but
+ * on a session cluster, or with another BigQuery Storage Write API client in the same JVM,
  * whichever builds first wins. The {@code *ConnectionsPerRegion} knobs are likewise JVM-global
  * ({@code ConnectionWorkerPool.setOptions}): the connector applies them once per JVM before
  * building its first writer, the floor is latched when a pool is constructed, and a second sink
@@ -71,29 +72,29 @@ public final class DefaultStreamOptions implements Serializable {
      */
     public static final long DEFAULT_MAX_APPEND_REQUEST_BYTES = 512 * 1024;
 
-    /** Default for {@link Builder#retryInitialBackoff(Duration)}. */
-    public static final Duration DEFAULT_RETRY_INITIAL_BACKOFF = Duration.ofMillis(500);
+    /** Default for {@link Builder#recoveryInitialBackoff(Duration)}. */
+    public static final Duration DEFAULT_RECOVERY_INITIAL_BACKOFF = Duration.ofMillis(500);
 
-    /** Default for {@link Builder#retryMaxBackoff(Duration)}. */
-    public static final Duration DEFAULT_RETRY_MAX_BACKOFF = Duration.ofSeconds(10);
+    /** Default for {@link Builder#recoveryMaxBackoff(Duration)}. */
+    public static final Duration DEFAULT_RECOVERY_MAX_BACKOFF = Duration.ofSeconds(10);
+
+    /** Default for {@link Builder#recoveryMaxAttempts(int)}. */
+    public static final int DEFAULT_RECOVERY_MAX_ATTEMPTS = 10;
+
+    /** Default for {@link Builder#retryInitialDelay(Duration)}. */
+    public static final Duration DEFAULT_RETRY_INITIAL_DELAY = Duration.ofMillis(500);
+
+    /** Default for {@link Builder#retryDelayMultiplier(double)}. */
+    public static final double DEFAULT_RETRY_DELAY_MULTIPLIER = 2.0;
+
+    /** Default for {@link Builder#retryMaxDelay(Duration)}. */
+    public static final Duration DEFAULT_RETRY_MAX_DELAY = Duration.ofSeconds(30);
 
     /** Default for {@link Builder#retryMaxAttempts(int)}. */
-    public static final int DEFAULT_RETRY_MAX_ATTEMPTS = 10;
+    public static final int DEFAULT_RETRY_MAX_ATTEMPTS = 5;
 
-    /** Default for {@link Builder#sdkRetryInitialDelay(Duration)}. */
-    public static final Duration DEFAULT_SDK_RETRY_INITIAL_DELAY = Duration.ofMillis(500);
-
-    /** Default for {@link Builder#sdkRetryDelayMultiplier(double)}. */
-    public static final double DEFAULT_SDK_RETRY_DELAY_MULTIPLIER = 2.0;
-
-    /** Default for {@link Builder#sdkRetryMaxDelay(Duration)}. */
-    public static final Duration DEFAULT_SDK_RETRY_MAX_DELAY = Duration.ofSeconds(30);
-
-    /** Default for {@link Builder#sdkRetryMaxAttempts(int)}. */
-    public static final int DEFAULT_SDK_RETRY_MAX_ATTEMPTS = 5;
-
-    /** Default for {@link Builder#sdkMaxRetryDuration(Duration)}: the SDK's own default. */
-    public static final Duration DEFAULT_SDK_MAX_RETRY_DURATION = Duration.ofMinutes(5);
+    /** Default for {@link Builder#maxRetryDuration(Duration)}: the SDK's own default. */
+    public static final Duration DEFAULT_MAX_RETRY_DURATION = Duration.ofMinutes(5);
 
     /**
      * Default for {@link Builder#maxInflightRequests(int)}: 100, following the official
@@ -114,14 +115,14 @@ public final class DefaultStreamOptions implements Serializable {
     public static final int DEFAULT_MAX_CONNECTIONS_PER_REGION = 20;
 
     private final long maxAppendRequestBytes;
-    private final Duration retryInitialBackoff;
-    private final Duration retryMaxBackoff;
+    private final Duration recoveryInitialBackoff;
+    private final Duration recoveryMaxBackoff;
+    private final int recoveryMaxAttempts;
+    private final Duration retryInitialDelay;
+    private final double retryDelayMultiplier;
+    private final Duration retryMaxDelay;
     private final int retryMaxAttempts;
-    private final Duration sdkRetryInitialDelay;
-    private final double sdkRetryDelayMultiplier;
-    private final Duration sdkRetryMaxDelay;
-    private final int sdkRetryMaxAttempts;
-    private final Duration sdkMaxRetryDuration;
+    private final Duration maxRetryDuration;
     private final int maxInflightRequests;
     private final long maxInflightBytes;
     private final int minConnectionsPerRegion;
@@ -129,14 +130,14 @@ public final class DefaultStreamOptions implements Serializable {
 
     private DefaultStreamOptions(Builder builder) {
         this.maxAppendRequestBytes = builder.maxAppendRequestBytes;
-        this.retryInitialBackoff = builder.retryInitialBackoff;
-        this.retryMaxBackoff = builder.retryMaxBackoff;
+        this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
+        this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
+        this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
+        this.retryInitialDelay = builder.retryInitialDelay;
+        this.retryDelayMultiplier = builder.retryDelayMultiplier;
+        this.retryMaxDelay = builder.retryMaxDelay;
         this.retryMaxAttempts = builder.retryMaxAttempts;
-        this.sdkRetryInitialDelay = builder.sdkRetryInitialDelay;
-        this.sdkRetryDelayMultiplier = builder.sdkRetryDelayMultiplier;
-        this.sdkRetryMaxDelay = builder.sdkRetryMaxDelay;
-        this.sdkRetryMaxAttempts = builder.sdkRetryMaxAttempts;
-        this.sdkMaxRetryDuration = builder.sdkMaxRetryDuration;
+        this.maxRetryDuration = builder.maxRetryDuration;
         this.maxInflightRequests = builder.maxInflightRequests;
         this.maxInflightBytes = builder.maxInflightBytes;
         this.minConnectionsPerRegion = builder.minConnectionsPerRegion;
@@ -157,44 +158,44 @@ public final class DefaultStreamOptions implements Serializable {
         return maxAppendRequestBytes;
     }
 
-    /** Returns the first backoff of the connector-driven retry schedule. */
-    public Duration getRetryInitialBackoff() {
-        return retryInitialBackoff;
+    /** Returns the first backoff of the connector-driven recovery schedule. */
+    public Duration getRecoveryInitialBackoff() {
+        return recoveryInitialBackoff;
     }
 
-    /** Returns the backoff cap of the connector-driven retry schedule. */
-    public Duration getRetryMaxBackoff() {
-        return retryMaxBackoff;
+    /** Returns the backoff cap of the connector-driven recovery schedule. */
+    public Duration getRecoveryMaxBackoff() {
+        return recoveryMaxBackoff;
     }
 
-    /** Returns the maximum number of attempts of the connector-driven retry schedule. */
+    /** Returns the maximum number of attempts of the connector-driven recovery schedule. */
+    public int getRecoveryMaxAttempts() {
+        return recoveryMaxAttempts;
+    }
+
+    /** Returns the first delay of the SDK's in-stream retry schedule. */
+    public Duration getRetryInitialDelay() {
+        return retryInitialDelay;
+    }
+
+    /** Returns the delay multiplier of the SDK's in-stream retry schedule. */
+    public double getRetryDelayMultiplier() {
+        return retryDelayMultiplier;
+    }
+
+    /** Returns the delay cap of the SDK's in-stream retry schedule. */
+    public Duration getRetryMaxDelay() {
+        return retryMaxDelay;
+    }
+
+    /** Returns the maximum number of attempts of the SDK's in-stream retry schedule. */
     public int getRetryMaxAttempts() {
         return retryMaxAttempts;
     }
 
-    /** Returns the first delay of the SDK's in-stream retry schedule. */
-    public Duration getSdkRetryInitialDelay() {
-        return sdkRetryInitialDelay;
-    }
-
-    /** Returns the delay multiplier of the SDK's in-stream retry schedule. */
-    public double getSdkRetryDelayMultiplier() {
-        return sdkRetryDelayMultiplier;
-    }
-
-    /** Returns the delay cap of the SDK's in-stream retry schedule. */
-    public Duration getSdkRetryMaxDelay() {
-        return sdkRetryMaxDelay;
-    }
-
-    /** Returns the maximum number of attempts of the SDK's in-stream retry schedule. */
-    public int getSdkRetryMaxAttempts() {
-        return sdkRetryMaxAttempts;
-    }
-
     /** Returns the SDK's overall ceiling on retrying one retriable in-stream failure. */
-    public Duration getSdkMaxRetryDuration() {
-        return sdkMaxRetryDuration;
+    public Duration getMaxRetryDuration() {
+        return maxRetryDuration;
     }
 
     /** Returns the SDK's in-flight append request cap per pooled connection. */
@@ -227,32 +228,32 @@ public final class DefaultStreamOptions implements Serializable {
         }
         DefaultStreamOptions that = (DefaultStreamOptions) o;
         return maxAppendRequestBytes == that.maxAppendRequestBytes
+                && recoveryMaxAttempts == that.recoveryMaxAttempts
+                && Double.compare(retryDelayMultiplier, that.retryDelayMultiplier) == 0
                 && retryMaxAttempts == that.retryMaxAttempts
-                && Double.compare(sdkRetryDelayMultiplier, that.sdkRetryDelayMultiplier) == 0
-                && sdkRetryMaxAttempts == that.sdkRetryMaxAttempts
                 && maxInflightRequests == that.maxInflightRequests
                 && maxInflightBytes == that.maxInflightBytes
                 && minConnectionsPerRegion == that.minConnectionsPerRegion
                 && maxConnectionsPerRegion == that.maxConnectionsPerRegion
-                && retryInitialBackoff.equals(that.retryInitialBackoff)
-                && retryMaxBackoff.equals(that.retryMaxBackoff)
-                && sdkRetryInitialDelay.equals(that.sdkRetryInitialDelay)
-                && sdkRetryMaxDelay.equals(that.sdkRetryMaxDelay)
-                && sdkMaxRetryDuration.equals(that.sdkMaxRetryDuration);
+                && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
+                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
+                && retryInitialDelay.equals(that.retryInitialDelay)
+                && retryMaxDelay.equals(that.retryMaxDelay)
+                && maxRetryDuration.equals(that.maxRetryDuration);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
                 maxAppendRequestBytes,
-                retryInitialBackoff,
-                retryMaxBackoff,
+                recoveryInitialBackoff,
+                recoveryMaxBackoff,
+                recoveryMaxAttempts,
+                retryInitialDelay,
+                retryDelayMultiplier,
+                retryMaxDelay,
                 retryMaxAttempts,
-                sdkRetryInitialDelay,
-                sdkRetryDelayMultiplier,
-                sdkRetryMaxDelay,
-                sdkRetryMaxAttempts,
-                sdkMaxRetryDuration,
+                maxRetryDuration,
                 maxInflightRequests,
                 maxInflightBytes,
                 minConnectionsPerRegion,
@@ -263,22 +264,22 @@ public final class DefaultStreamOptions implements Serializable {
     public String toString() {
         return "DefaultStreamOptions{maxAppendRequestBytes="
                 + maxAppendRequestBytes
-                + ", retryInitialBackoff="
-                + retryInitialBackoff
-                + ", retryMaxBackoff="
-                + retryMaxBackoff
+                + ", recoveryInitialBackoff="
+                + recoveryInitialBackoff
+                + ", recoveryMaxBackoff="
+                + recoveryMaxBackoff
+                + ", recoveryMaxAttempts="
+                + recoveryMaxAttempts
+                + ", retryInitialDelay="
+                + retryInitialDelay
+                + ", retryDelayMultiplier="
+                + retryDelayMultiplier
+                + ", retryMaxDelay="
+                + retryMaxDelay
                 + ", retryMaxAttempts="
                 + retryMaxAttempts
-                + ", sdkRetryInitialDelay="
-                + sdkRetryInitialDelay
-                + ", sdkRetryDelayMultiplier="
-                + sdkRetryDelayMultiplier
-                + ", sdkRetryMaxDelay="
-                + sdkRetryMaxDelay
-                + ", sdkRetryMaxAttempts="
-                + sdkRetryMaxAttempts
-                + ", sdkMaxRetryDuration="
-                + sdkMaxRetryDuration
+                + ", maxRetryDuration="
+                + maxRetryDuration
                 + ", maxInflightRequests="
                 + maxInflightRequests
                 + ", maxInflightBytes="
@@ -295,14 +296,14 @@ public final class DefaultStreamOptions implements Serializable {
     public static final class Builder {
 
         private long maxAppendRequestBytes = DEFAULT_MAX_APPEND_REQUEST_BYTES;
-        private Duration retryInitialBackoff = DEFAULT_RETRY_INITIAL_BACKOFF;
-        private Duration retryMaxBackoff = DEFAULT_RETRY_MAX_BACKOFF;
+        private Duration recoveryInitialBackoff = DEFAULT_RECOVERY_INITIAL_BACKOFF;
+        private Duration recoveryMaxBackoff = DEFAULT_RECOVERY_MAX_BACKOFF;
+        private int recoveryMaxAttempts = DEFAULT_RECOVERY_MAX_ATTEMPTS;
+        private Duration retryInitialDelay = DEFAULT_RETRY_INITIAL_DELAY;
+        private double retryDelayMultiplier = DEFAULT_RETRY_DELAY_MULTIPLIER;
+        private Duration retryMaxDelay = DEFAULT_RETRY_MAX_DELAY;
         private int retryMaxAttempts = DEFAULT_RETRY_MAX_ATTEMPTS;
-        private Duration sdkRetryInitialDelay = DEFAULT_SDK_RETRY_INITIAL_DELAY;
-        private double sdkRetryDelayMultiplier = DEFAULT_SDK_RETRY_DELAY_MULTIPLIER;
-        private Duration sdkRetryMaxDelay = DEFAULT_SDK_RETRY_MAX_DELAY;
-        private int sdkRetryMaxAttempts = DEFAULT_SDK_RETRY_MAX_ATTEMPTS;
-        private Duration sdkMaxRetryDuration = DEFAULT_SDK_MAX_RETRY_DURATION;
+        private Duration maxRetryDuration = DEFAULT_MAX_RETRY_DURATION;
         private int maxInflightRequests = DEFAULT_MAX_INFLIGHT_REQUESTS;
         private long maxInflightBytes = DEFAULT_MAX_INFLIGHT_BYTES;
         private int minConnectionsPerRegion = DEFAULT_MIN_CONNECTIONS_PER_REGION;
@@ -328,42 +329,113 @@ public final class DefaultStreamOptions implements Serializable {
         }
 
         /**
-         * Sets the first backoff of the connector-driven retry schedule (append recovery after
-         * table auto-creation, transient append failures past the SDK's own retries, stale-writer
-         * refreshes). Defaults to {@link #DEFAULT_RETRY_INITIAL_BACKOFF}.
+         * Sets the first backoff of the connector-driven recovery schedule (re-appends after table
+         * auto-creation, transient append failures past the SDK's own retries, stale-writer
+         * refreshes). Defaults to {@link #DEFAULT_RECOVERY_INITIAL_BACKOFF}.
          *
-         * @param retryInitialBackoff the first backoff
+         * @param recoveryInitialBackoff the first backoff
          * @return this builder
          */
-        public Builder retryInitialBackoff(Duration retryInitialBackoff) {
-            Preconditions.checkNotNull(retryInitialBackoff, "retryInitialBackoff must not be null");
+        public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
+            Preconditions.checkNotNull(
+                    recoveryInitialBackoff, "recoveryInitialBackoff must not be null");
             Preconditions.checkArgument(
-                    !retryInitialBackoff.isNegative() && !retryInitialBackoff.isZero(),
-                    "retryInitialBackoff must be positive: %s",
-                    retryInitialBackoff);
-            this.retryInitialBackoff = retryInitialBackoff;
+                    !recoveryInitialBackoff.isNegative() && !recoveryInitialBackoff.isZero(),
+                    "recoveryInitialBackoff must be positive: %s",
+                    recoveryInitialBackoff);
+            this.recoveryInitialBackoff = recoveryInitialBackoff;
             return this;
         }
 
         /**
-         * Sets the backoff cap of the connector-driven retry schedule. Must be at least the initial
-         * backoff. Defaults to {@link #DEFAULT_RETRY_MAX_BACKOFF}.
+         * Sets the backoff cap of the connector-driven recovery schedule. Must be at least the
+         * initial backoff. Defaults to {@link #DEFAULT_RECOVERY_MAX_BACKOFF}.
          *
-         * @param retryMaxBackoff the backoff cap
+         * @param recoveryMaxBackoff the backoff cap
          * @return this builder
          */
-        public Builder retryMaxBackoff(Duration retryMaxBackoff) {
-            Preconditions.checkNotNull(retryMaxBackoff, "retryMaxBackoff must not be null");
+        public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
+            Preconditions.checkNotNull(recoveryMaxBackoff, "recoveryMaxBackoff must not be null");
             Preconditions.checkArgument(
-                    !retryMaxBackoff.isNegative() && !retryMaxBackoff.isZero(),
-                    "retryMaxBackoff must be positive: %s",
-                    retryMaxBackoff);
-            this.retryMaxBackoff = retryMaxBackoff;
+                    !recoveryMaxBackoff.isNegative() && !recoveryMaxBackoff.isZero(),
+                    "recoveryMaxBackoff must be positive: %s",
+                    recoveryMaxBackoff);
+            this.recoveryMaxBackoff = recoveryMaxBackoff;
             return this;
         }
 
         /**
-         * Sets the maximum number of attempts of the connector-driven retry schedule. Defaults to
+         * Sets the maximum number of attempts of the connector-driven recovery schedule. Defaults
+         * to {@link #DEFAULT_RECOVERY_MAX_ATTEMPTS}.
+         *
+         * @param recoveryMaxAttempts the attempt cap
+         * @return this builder
+         */
+        public Builder recoveryMaxAttempts(int recoveryMaxAttempts) {
+            Preconditions.checkArgument(
+                    recoveryMaxAttempts > 0,
+                    "recoveryMaxAttempts must be positive: %s",
+                    recoveryMaxAttempts);
+            this.recoveryMaxAttempts = recoveryMaxAttempts;
+            return this;
+        }
+
+        /**
+         * Sets the first delay of the SDK's in-stream retry of retriable append failures (for
+         * example {@code ABORTED}, {@code UNAVAILABLE} and quota {@code RESOURCE_EXHAUSTED}).
+         * Defaults to {@link #DEFAULT_RETRY_INITIAL_DELAY}.
+         *
+         * <p>The connection pool adopts the first writer's SDK retry settings per JVM; see the
+         * class javadoc.
+         *
+         * @param retryInitialDelay the first retry delay
+         * @return this builder
+         */
+        public Builder retryInitialDelay(Duration retryInitialDelay) {
+            Preconditions.checkNotNull(retryInitialDelay, "retryInitialDelay must not be null");
+            Preconditions.checkArgument(
+                    !retryInitialDelay.isNegative() && !retryInitialDelay.isZero(),
+                    "retryInitialDelay must be positive: %s",
+                    retryInitialDelay);
+            this.retryInitialDelay = retryInitialDelay;
+            return this;
+        }
+
+        /**
+         * Sets the delay multiplier of the SDK's in-stream retry schedule. Defaults to {@link
+         * #DEFAULT_RETRY_DELAY_MULTIPLIER}.
+         *
+         * @param retryDelayMultiplier the multiplier, at least 1.0
+         * @return this builder
+         */
+        public Builder retryDelayMultiplier(double retryDelayMultiplier) {
+            Preconditions.checkArgument(
+                    retryDelayMultiplier >= 1.0,
+                    "retryDelayMultiplier must be at least 1.0: %s",
+                    retryDelayMultiplier);
+            this.retryDelayMultiplier = retryDelayMultiplier;
+            return this;
+        }
+
+        /**
+         * Sets the delay cap of the SDK's in-stream retry schedule. Must be at least the initial
+         * delay. Defaults to {@link #DEFAULT_RETRY_MAX_DELAY}.
+         *
+         * @param retryMaxDelay the delay cap
+         * @return this builder
+         */
+        public Builder retryMaxDelay(Duration retryMaxDelay) {
+            Preconditions.checkNotNull(retryMaxDelay, "retryMaxDelay must not be null");
+            Preconditions.checkArgument(
+                    !retryMaxDelay.isNegative() && !retryMaxDelay.isZero(),
+                    "retryMaxDelay must be positive: %s",
+                    retryMaxDelay);
+            this.retryMaxDelay = retryMaxDelay;
+            return this;
+        }
+
+        /**
+         * Sets the maximum number of attempts of the SDK's in-stream retry schedule. Defaults to
          * {@link #DEFAULT_RETRY_MAX_ATTEMPTS}.
          *
          * @param retryMaxAttempts the attempt cap
@@ -379,90 +451,19 @@ public final class DefaultStreamOptions implements Serializable {
         }
 
         /**
-         * Sets the first delay of the SDK's in-stream retry of retriable append failures (for
-         * example {@code ABORTED}, {@code UNAVAILABLE} and quota {@code RESOURCE_EXHAUSTED}).
-         * Defaults to {@link #DEFAULT_SDK_RETRY_INITIAL_DELAY}.
-         *
-         * <p>The connection pool adopts the first writer's SDK retry settings per JVM; see the
-         * class javadoc.
-         *
-         * @param sdkRetryInitialDelay the first retry delay
-         * @return this builder
-         */
-        public Builder sdkRetryInitialDelay(Duration sdkRetryInitialDelay) {
-            Preconditions.checkNotNull(
-                    sdkRetryInitialDelay, "sdkRetryInitialDelay must not be null");
-            Preconditions.checkArgument(
-                    !sdkRetryInitialDelay.isNegative() && !sdkRetryInitialDelay.isZero(),
-                    "sdkRetryInitialDelay must be positive: %s",
-                    sdkRetryInitialDelay);
-            this.sdkRetryInitialDelay = sdkRetryInitialDelay;
-            return this;
-        }
-
-        /**
-         * Sets the delay multiplier of the SDK's in-stream retry schedule. Defaults to {@link
-         * #DEFAULT_SDK_RETRY_DELAY_MULTIPLIER}.
-         *
-         * @param sdkRetryDelayMultiplier the multiplier, at least 1.0
-         * @return this builder
-         */
-        public Builder sdkRetryDelayMultiplier(double sdkRetryDelayMultiplier) {
-            Preconditions.checkArgument(
-                    sdkRetryDelayMultiplier >= 1.0,
-                    "sdkRetryDelayMultiplier must be at least 1.0: %s",
-                    sdkRetryDelayMultiplier);
-            this.sdkRetryDelayMultiplier = sdkRetryDelayMultiplier;
-            return this;
-        }
-
-        /**
-         * Sets the delay cap of the SDK's in-stream retry schedule. Must be at least the initial
-         * delay. Defaults to {@link #DEFAULT_SDK_RETRY_MAX_DELAY}.
-         *
-         * @param sdkRetryMaxDelay the delay cap
-         * @return this builder
-         */
-        public Builder sdkRetryMaxDelay(Duration sdkRetryMaxDelay) {
-            Preconditions.checkNotNull(sdkRetryMaxDelay, "sdkRetryMaxDelay must not be null");
-            Preconditions.checkArgument(
-                    !sdkRetryMaxDelay.isNegative() && !sdkRetryMaxDelay.isZero(),
-                    "sdkRetryMaxDelay must be positive: %s",
-                    sdkRetryMaxDelay);
-            this.sdkRetryMaxDelay = sdkRetryMaxDelay;
-            return this;
-        }
-
-        /**
-         * Sets the maximum number of attempts of the SDK's in-stream retry schedule. Defaults to
-         * {@link #DEFAULT_SDK_RETRY_MAX_ATTEMPTS}.
-         *
-         * @param sdkRetryMaxAttempts the attempt cap
-         * @return this builder
-         */
-        public Builder sdkRetryMaxAttempts(int sdkRetryMaxAttempts) {
-            Preconditions.checkArgument(
-                    sdkRetryMaxAttempts > 0,
-                    "sdkRetryMaxAttempts must be positive: %s",
-                    sdkRetryMaxAttempts);
-            this.sdkRetryMaxAttempts = sdkRetryMaxAttempts;
-            return this;
-        }
-
-        /**
          * Sets the SDK's overall ceiling on retrying one retriable in-stream failure, across all
-         * attempts. Defaults to {@link #DEFAULT_SDK_MAX_RETRY_DURATION}, the SDK's own default.
+         * attempts. Defaults to {@link #DEFAULT_MAX_RETRY_DURATION}, the SDK's own default.
          *
-         * @param sdkMaxRetryDuration the overall retry ceiling
+         * @param maxRetryDuration the overall retry ceiling
          * @return this builder
          */
-        public Builder sdkMaxRetryDuration(Duration sdkMaxRetryDuration) {
-            Preconditions.checkNotNull(sdkMaxRetryDuration, "sdkMaxRetryDuration must not be null");
+        public Builder maxRetryDuration(Duration maxRetryDuration) {
+            Preconditions.checkNotNull(maxRetryDuration, "maxRetryDuration must not be null");
             Preconditions.checkArgument(
-                    !sdkMaxRetryDuration.isNegative() && !sdkMaxRetryDuration.isZero(),
-                    "sdkMaxRetryDuration must be positive: %s",
-                    sdkMaxRetryDuration);
-            this.sdkMaxRetryDuration = sdkMaxRetryDuration;
+                    !maxRetryDuration.isNegative() && !maxRetryDuration.isZero(),
+                    "maxRetryDuration must be positive: %s",
+                    maxRetryDuration);
+            this.maxRetryDuration = maxRetryDuration;
             return this;
         }
 
@@ -543,15 +544,15 @@ public final class DefaultStreamOptions implements Serializable {
          */
         public DefaultStreamOptions build() {
             Preconditions.checkState(
-                    retryMaxBackoff.compareTo(retryInitialBackoff) >= 0,
-                    "retryMaxBackoff must be >= retryInitialBackoff: %s < %s",
-                    retryMaxBackoff,
-                    retryInitialBackoff);
+                    recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
+                    "recoveryMaxBackoff must be >= recoveryInitialBackoff: %s < %s",
+                    recoveryMaxBackoff,
+                    recoveryInitialBackoff);
             Preconditions.checkState(
-                    sdkRetryMaxDelay.compareTo(sdkRetryInitialDelay) >= 0,
-                    "sdkRetryMaxDelay must be >= sdkRetryInitialDelay: %s < %s",
-                    sdkRetryMaxDelay,
-                    sdkRetryInitialDelay);
+                    retryMaxDelay.compareTo(retryInitialDelay) >= 0,
+                    "retryMaxDelay must be >= retryInitialDelay: %s < %s",
+                    retryMaxDelay,
+                    retryInitialDelay);
             Preconditions.checkState(
                     maxConnectionsPerRegion >= minConnectionsPerRegion,
                     "maxConnectionsPerRegion must be >= minConnectionsPerRegion: %s < %s",

@@ -152,9 +152,9 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
         BufferedStreamOptions options =
                 BufferedStreamOptions.builder()
                         .maxAppendRequestBytes(6)
-                        .retryInitialBackoff(Duration.ofMillis(1))
-                        .retryMaxBackoff(Duration.ofMillis(1))
-                        .retryMaxAttempts(3)
+                        .recoveryInitialBackoff(Duration.ofMillis(1))
+                        .recoveryMaxBackoff(Duration.ofMillis(1))
+                        .recoveryMaxAttempts(3)
                         .build();
         BigQueryBufferedStreamWriter<String> writer =
                 writer(
@@ -195,9 +195,9 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
         BufferedStreamOptions options =
                 BufferedStreamOptions.builder()
                         .maxAppendRequestBytes(6)
-                        .retryInitialBackoff(Duration.ofMillis(1))
-                        .retryMaxBackoff(Duration.ofMillis(1))
-                        .retryMaxAttempts(3)
+                        .recoveryInitialBackoff(Duration.ofMillis(1))
+                        .recoveryMaxBackoff(Duration.ofMillis(1))
+                        .recoveryMaxAttempts(3)
                         .build();
         BigQueryBufferedStreamWriter<String> writer =
                 writer(

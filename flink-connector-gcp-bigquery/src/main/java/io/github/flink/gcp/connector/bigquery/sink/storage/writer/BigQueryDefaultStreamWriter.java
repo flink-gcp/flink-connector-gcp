@@ -256,9 +256,9 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 tableAdmin,
                 options.getMaxAppendRequestBytes(),
                 new RetrySchedule(
-                        options.getRetryInitialBackoff().toMillis(),
-                        options.getRetryMaxBackoff().toMillis(),
-                        options.getRetryMaxAttempts(),
+                        options.getRecoveryInitialBackoff().toMillis(),
+                        options.getRecoveryMaxBackoff().toMillis(),
+                        options.getRecoveryMaxAttempts(),
                         0),
                 DEFAULT_SCHEMA_WAIT_SCHEDULE);
     }

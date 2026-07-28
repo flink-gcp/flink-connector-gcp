@@ -114,9 +114,9 @@ class BigQueryBufferedStreamWriterTest {
     /** Options with a fast retry schedule for tests. */
     static BufferedStreamOptions fastOptions(int maxAttempts) {
         return BufferedStreamOptions.builder()
-                .retryInitialBackoff(Duration.ofMillis(1))
-                .retryMaxBackoff(Duration.ofMillis(1))
-                .retryMaxAttempts(maxAttempts)
+                .recoveryInitialBackoff(Duration.ofMillis(1))
+                .recoveryMaxBackoff(Duration.ofMillis(1))
+                .recoveryMaxAttempts(maxAttempts)
                 .build();
     }
 
