@@ -228,7 +228,7 @@ public final class DefaultStreamOptions implements Serializable {
         DefaultStreamOptions that = (DefaultStreamOptions) o;
         return maxAppendRequestBytes == that.maxAppendRequestBytes
                 && retryMaxAttempts == that.retryMaxAttempts
-                && sdkRetryDelayMultiplier == that.sdkRetryDelayMultiplier
+                && Double.compare(sdkRetryDelayMultiplier, that.sdkRetryDelayMultiplier) == 0
                 && sdkRetryMaxAttempts == that.sdkRetryMaxAttempts
                 && maxInflightRequests == that.maxInflightRequests
                 && maxInflightBytes == that.maxInflightBytes
