@@ -120,7 +120,9 @@ class BigQueryProtoRepeatedJsonITCase {
                                 .serializer(serializer)
                                 .build();
         SinkWriter<WellKnownTypes> writer =
-                sink.createWriter(new StreamWriterRowAppenderFactory(), new BigQueryTableAdmin());
+                sink.createWriter(
+                        new StreamWriterRowAppenderFactory(sink.getOptions()),
+                        new BigQueryTableAdmin());
         try {
             writer.write(
                     WellKnownTypes.newBuilder()

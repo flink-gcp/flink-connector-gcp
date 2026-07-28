@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 
 /**
  * Builder for BigQuery sinks, obtained from {@link BigQuerySink#builder()}.
@@ -52,6 +53,7 @@ public class BigQuerySinkBuilder<T> {
     private String location;
     private FileLoadsOptions fileLoadsOptions;
     private BufferedStreamOptions bufferedStreamOptions;
+    private DefaultStreamOptions defaultStreamOptions;
 
     BigQuerySinkBuilder() {}
 
@@ -226,6 +228,22 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
+     * Sets the options specific to {@link WriteMethod#STORAGE_API_AT_LEAST_ONCE}. Optional for that
+     * write method — the default write method is chosen by not choosing, so unlike the other
+     * write-method option objects nothing forces this one into view, and an unconfigured sink uses
+     * {@code DefaultStreamOptions.builder().build()} — and rejected for every other one.
+     *
+     * @param defaultStreamOptions the default-stream options
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> defaultStreamOptions(DefaultStreamOptions defaultStreamOptions) {
+        this.defaultStreamOptions =
+                Preconditions.checkNotNull(
+                        defaultStreamOptions, "defaultStreamOptions must not be null");
+        return this;
+    }
+
+    /**
      * Builds the sink for the configured {@link WriteMethod}.
      *
      * @return the sink
@@ -246,7 +264,9 @@ public class BigQuerySinkBuilder<T> {
                         failedRowHandler,
                         location);
         // The required/forbidden pairing for write-method-scoped options; future write-method
-        // option objects follow the same two adjacent checks.
+        // option objects follow the same two adjacent checks. defaultStreamOptions keeps only the
+        // forbidden half: its write method is the default, chosen by not choosing, so there is
+        // nothing to force into view and all knobs are defaulted.
         Preconditions.checkState(
                 writeMethod == WriteMethod.FILE_LOADS || fileLoadsOptions == null,
                 "fileLoadsOptions(...) is only valid for WriteMethod.FILE_LOADS"
@@ -267,6 +287,12 @@ public class BigQuerySinkBuilder<T> {
                 "bufferedStreamOptions(...) is required for"
                         + " WriteMethod.STORAGE_API_EXACTLY_ONCE.");
         Preconditions.checkState(
+                writeMethod == WriteMethod.STORAGE_API_AT_LEAST_ONCE
+                        || defaultStreamOptions == null,
+                "defaultStreamOptions(...) is only valid for"
+                        + " WriteMethod.STORAGE_API_AT_LEAST_ONCE (write method is %s).",
+                writeMethod);
+        Preconditions.checkState(
                 writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
                         || destinationResolver instanceof FixedDestinationResolver,
                 "WriteMethod.STORAGE_API_EXACTLY_ONCE requires a fixed destination(...);"
@@ -282,7 +308,11 @@ public class BigQuerySinkBuilder<T> {
                         + " restart the job, or use another write method.");
         switch (writeMethod) {
             case STORAGE_API_AT_LEAST_ONCE:
-                return new BigQueryDefaultStreamSink<>(config);
+                return new BigQueryDefaultStreamSink<>(
+                        config,
+                        defaultStreamOptions != null
+                                ? defaultStreamOptions
+                                : DefaultStreamOptions.builder().build());
             case STORAGE_API_EXACTLY_ONCE:
                 return new BigQueryBufferedStreamSink<>(config, bufferedStreamOptions);
             case FILE_LOADS:

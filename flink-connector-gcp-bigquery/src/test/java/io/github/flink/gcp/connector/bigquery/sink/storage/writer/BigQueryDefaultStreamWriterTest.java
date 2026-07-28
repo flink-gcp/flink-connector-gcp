@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import org.junit.jupiter.api.Test;
@@ -242,6 +243,30 @@ class BigQueryDefaultStreamWriterTest {
                         4,
                         fastSchedule(1),
                         fastSchedule(1));
+
+        writer.write("aa", CONTEXT);
+        writer.write("bb", CONTEXT);
+        writer.write("cc", CONTEXT);
+        writer.flush(false);
+
+        FakeAppenderFactory.FakeAppender appender = factory.appenders.values().iterator().next();
+        assertThat(appender.appends).hasSize(2);
+        assertThat(rowsOf(appender.appends.get(0))).containsExactly("aa", "bb");
+        assertThat(rowsOf(appender.appends.get(1))).containsExactly("cc");
+    }
+
+    /** The options constructor must plumb the batching cap through to the append path. */
+    @Test
+    void optionsConstructorAppliesMaxAppendRequestBytes() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config(
+                                (element, context) -> TableDestination.of("p", "d", "t"),
+                                new StringSerializer()),
+                        factory,
+                        NOOP_ADMIN,
+                        DefaultStreamOptions.builder().maxAppendRequestBytes(4).build());
 
         writer.write("aa", CONTEXT);
         writer.write("bb", CONTEXT);

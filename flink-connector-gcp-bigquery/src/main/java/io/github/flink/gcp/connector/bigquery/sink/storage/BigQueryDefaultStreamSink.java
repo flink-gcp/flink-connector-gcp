@@ -42,15 +42,18 @@ public class BigQueryDefaultStreamSink<T> implements Sink<T> {
     private static final long serialVersionUID = 1L;
 
     private final BigQuerySinkConfig<T> config;
+    private final DefaultStreamOptions options;
 
     /**
      * Creates the sink; called by {@link
      * io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder}.
      *
      * @param config the sink configuration
+     * @param options the default-stream options
      */
-    public BigQueryDefaultStreamSink(BigQuerySinkConfig<T> config) {
+    public BigQueryDefaultStreamSink(BigQuerySinkConfig<T> config, DefaultStreamOptions options) {
         this.config = config;
+        this.options = options;
     }
 
     /** Returns the sink configuration. */
@@ -58,13 +61,18 @@ public class BigQueryDefaultStreamSink<T> implements Sink<T> {
         return config;
     }
 
+    /** Returns the default-stream options. */
+    public DefaultStreamOptions getOptions() {
+        return options;
+    }
+
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) {
-        return createWriter(new StreamWriterRowAppenderFactory(), new BigQueryTableAdmin());
+        return createWriter(new StreamWriterRowAppenderFactory(options), new BigQueryTableAdmin());
     }
 
     @VisibleForTesting
     public SinkWriter<T> createWriter(RowAppenderFactory appenderFactory, TableAdmin tableAdmin) {
-        return new BigQueryDefaultStreamWriter<>(config, appenderFactory, tableAdmin);
+        return new BigQueryDefaultStreamWriter<>(config, appenderFactory, tableAdmin, options);
     }
 }

@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
+import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.SchemaUnifier;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
@@ -63,13 +64,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * At-least-once {@link SinkWriter} appending to Storage Write API default streams with dynamic
  * per-record table destinations.
  *
- * <p>Per destination, rows are buffered into append batches (bounded by {@link
- * #DEFAULT_MAX_APPEND_REQUEST_BYTES}) and appended asynchronously; backpressure is provided by the
- * stream writer's own in-flight limits. {@link #flush(boolean)} appends all pending batches and
- * awaits every in-flight append, inspecting each response directly, so records never pass a
- * checkpoint barrier unacknowledged — this is what makes the sink at-least-once. Asynchronous
- * append failures are additionally captured by completion callbacks and handled on the next {@link
- * #write} or {@link #flush} call.
+ * <p>Per destination, rows are buffered into append batches (bounded by {@code
+ * DefaultStreamOptions#maxAppendRequestBytes}, default {@link #DEFAULT_MAX_APPEND_REQUEST_BYTES})
+ * and appended asynchronously; backpressure is provided by the stream writer's own in-flight
+ * limits. {@link #flush(boolean)} appends all pending batches and awaits every in-flight append,
+ * inspecting each response directly, so records never pass a checkpoint barrier unacknowledged —
+ * this is what makes the sink at-least-once. Asynchronous append failures are additionally captured
+ * by completion callbacks and handled on the next {@link #write} or {@link #flush} call.
  *
  * <p>The writer is <em>stateless</em>: it stores nothing in Flink state, so discarding operator
  * state can never lose sink-buffered data (the {@code AsyncSinkWriter}-style alternative of
@@ -214,7 +215,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private final Set<TableDestination> pushedSchemaRefreshes = ConcurrentHashMap.newKeySet();
 
     /**
-     * Creates a writer.
+     * Creates a writer with default options.
      *
      * @param config the sink configuration
      * @param appenderFactory the appender factory
@@ -230,6 +231,35 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 tableAdmin,
                 DEFAULT_MAX_APPEND_REQUEST_BYTES,
                 DEFAULT_RECOVERY_SCHEDULE,
+                DEFAULT_SCHEMA_WAIT_SCHEDULE);
+    }
+
+    /**
+     * Creates a writer, taking the batching cap and the connector-driven recovery schedule from the
+     * given options (same mapping as the buffered-stream writer; the schedule is jitter-free,
+     * matching {@link #DEFAULT_RECOVERY_SCHEDULE}). The schema-wait schedule is not configurable —
+     * it paces BigQuery metadata propagation, a service property rather than a workload property.
+     *
+     * @param config the sink configuration
+     * @param appenderFactory the appender factory
+     * @param tableAdmin the admin for creating and updating destination tables
+     * @param options the default-stream options
+     */
+    public BigQueryDefaultStreamWriter(
+            BigQuerySinkConfig<T> config,
+            RowAppenderFactory appenderFactory,
+            TableAdmin tableAdmin,
+            DefaultStreamOptions options) {
+        this(
+                config,
+                appenderFactory,
+                tableAdmin,
+                options.getMaxAppendRequestBytes(),
+                new RetrySchedule(
+                        options.getRetryInitialBackoff().toMillis(),
+                        options.getRetryMaxBackoff().toMillis(),
+                        options.getRetryMaxAttempts(),
+                        0),
                 DEFAULT_SCHEMA_WAIT_SCHEDULE);
     }
 

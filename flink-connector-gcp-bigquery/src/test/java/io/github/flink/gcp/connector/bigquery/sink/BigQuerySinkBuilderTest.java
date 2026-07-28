@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -92,6 +93,72 @@ class BigQuerySinkBuilderTest {
                         .build();
 
         assertThat(sink).isInstanceOf(BigQueryDefaultStreamSink.class);
+    }
+
+    /** Unlike the other write-method option objects, the default-stream one is optional. */
+    @Test
+    void omittedDefaultStreamOptionsBuildWithDefaults() {
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .build();
+
+        assertThat(sink.getOptions()).isEqualTo(DefaultStreamOptions.builder().build());
+    }
+
+    @Test
+    void configuredDefaultStreamOptionsArePropagated() {
+        DefaultStreamOptions options =
+                DefaultStreamOptions.builder().maxInflightRequests(50).build();
+
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .defaultStreamOptions(options)
+                                .build();
+
+        assertThat(sink.getOptions()).isEqualTo(options);
+    }
+
+    @Test
+    void rejectsDefaultStreamOptionsForOtherWriteMethods() {
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .bufferedStreamOptions(
+                                                BufferedStreamOptions.builder().build())
+                                        .defaultStreamOptions(
+                                                DefaultStreamOptions.builder().build())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("only valid for WriteMethod.STORAGE_API_AT_LEAST_ONCE");
+    }
+
+    @Test
+    void defaultStreamSinkIsJavaSerializable() throws Exception {
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .defaultStreamOptions(
+                                        DefaultStreamOptions.builder()
+                                                .maxInflightRequests(50)
+                                                .build())
+                                .build();
+
+        BigQueryDefaultStreamSink<String> copy = InstantiationUtil.clone(sink);
+
+        assertThat(copy.getOptions()).isEqualTo(sink.getOptions());
+        assertThat(copy.getConfig().getDestinationResolver().resolve("any", CONTEXT))
+                .isEqualTo(DESTINATION);
     }
 
     @Test
