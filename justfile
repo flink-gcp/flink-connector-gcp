@@ -141,7 +141,13 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 # `format --check` are separate goals in ruff, and running only the first would
 # leave formatting unchecked.
 #
-# Lint the shell and Python scripts, and the workflows.
+# tofu contributes only `fmt -check` here. `tofu validate` needs an init that
+# downloads the google provider — too slow for a lint meant to report in
+# seconds — and every pull request that touches opentofu/ gets a full plan
+# from the tofu-plan workflow, which subsumes validate on exactly the changes
+# that need it. Locally, `just tofu validate` runs it directly.
+#
+# Lint the shell and Python scripts, the workflows, and the OpenTofu formatting.
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
@@ -149,6 +155,19 @@ lint:
     mise x ruff -- ruff check scripts/
     mise x ruff -- ruff format --check scripts/
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
+    mise x opentofu -- tofu fmt -check -recursive opentofu/
+
+# The GCP resources behind the real-GCP integration tests (service accounts,
+# WIF, buckets, the dataset) live in opentofu/flink-gcp, planned and applied
+# by CI (tofu-plan.yaml / tofu-apply.yaml). This is the local escape hatch —
+# state inspection, validate, and the bootstrap documented in
+# opentofu/README.md. Credentials come from GOOGLE_APPLICATION_CREDENTIALS,
+# which .env sets — the google provider does not read CLOUDSDK_CONFIG (only
+# the gcloud CLI does; see opentofu/README.md).
+#
+# Run OpenTofu in the flink-gcp root module, e.g. `just tofu plan`.
+tofu *args:
+    mise x opentofu -- tofu -chdir=opentofu/flink-gcp {{ args }}
 
 # Regenerates the resolved-licence report first, because the check is only as
 # current as that file — a stale one would report a bundle that no longer exists.

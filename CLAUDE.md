@@ -34,7 +34,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `-am` does not change that, and it only appears to work against a local repository some earlier
   `install` primed
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
-  over `.github/workflows/`. Deliberately
+  over `.github/workflows/`, `tofu fmt -check` over `opentofu/` (`tofu validate` is deliberately
+  absent: it needs a provider-downloading init, and every PR touching `opentofu/` gets a full plan
+  from the tofu-plan workflow, which subsumes it). Deliberately
   does **not** run `just --fmt --check`: that is an unstable feature, excluded from just's
   compatibility guarantee, so with `just` installed unpinned it could fail an unchanged pull
   request. actionlint is handed `-shellcheck "$(mise which shellcheck)"` rather than letting it
@@ -43,6 +45,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   a broken `relref` or a missing shortcode fails the build), preview it, regenerate the chroma
   palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in
   `docs/go.mod`
+- `just tofu <args>` — OpenTofu in `opentofu/flink-gcp`, the root module holding the project's
+  persistent GCP resources (#5). Local escape hatch only: plan/apply normally run in CI (see
+  "Infrastructure (OpenTofu)" below). Credentials come from
+  `GOOGLE_APPLICATION_CREDENTIALS` in the uncommitted `.env` — the google provider does not read
+  `CLOUDSDK_CONFIG` (only the gcloud CLI does; see `opentofu/README.md`)
 - Recipe bodies stay one command per line — no embedded `#!/usr/bin/env bash` blocks. A single
   compound command is fine (`binary-compat`'s final `diff … || { …; exit 1; }`); a multi-line
   script block is not. The boundary is shellcheck coverage: it reads `scripts/`, actionlint reads
@@ -119,6 +126,30 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - Issues use milestones `v0.1.0` / `v0.2.0` / `v0.3.0+` and GitHub sub-issues; PRs close their
   issue with `Closes #N`
 
+## Infrastructure (OpenTofu, `opentofu/`)
+
+- `opentofu/flink-gcp` is the single root module for the project's **persistent** GCP resources
+  (#5): enabled APIs, the state bucket, the WIF pool/provider, three service accounts and the
+  shared IT bucket/dataset. Fine-grained test resources (tables, topics, subscriptions, queues)
+  are created by the tests themselves and never belong here. A new connector's API and E2E grants
+  are added in the PR that first needs them (Bigtable and Spanner are the known candidates), not
+  in advance
+- CI is **tfaction v2** (`tfaction-root.yaml` at the root): pull requests touching `opentofu/**`
+  get a plan comment (`tofu-plan.yaml`), the merge applies that reviewed plan file from GitHub
+  Artifacts and comments the result (`tofu-apply.yaml`). State locking is the GCS backend's
+  native locking. These two workflows are the standing exception to the #111 just-recipe rule:
+  tfaction is itself the named, rerunnable sequence, and `just tofu <args>` is the local
+  equivalent. They run on plain `GITHUB_TOKEN` — no GitHub App, so tfaction's push-back features
+  (auto-fix commits, follow-up PRs) are unused
+- **No service account keys, ever.** All CI credentials are short-lived WIF tokens; the provider
+  condition pins the immutable repository/owner IDs, and per-account bindings restrict the apply
+  and E2E accounts to `push`/`schedule`/`workflow_dispatch` on `main`. Plan runs read-only
+  (`roles/viewer` plus state-bucket writes for the lock). Local runs use ADC via
+  `CLOUDSDK_CONFIG` from `.env`; the bootstrap that created the backend's own bucket is recorded
+  in `opentofu/README.md`
+- The tofu version is pinned twice on purpose: `mise.toml` (what installs) and
+  `versions.tf` `required_version` (what refuses to run on a skew) — a bump edits both
+
 ## Version policy
 
 - Releases follow full semver (`v0.1.0`, `v0.2.0`, ...). Early milestones are **tags only** — no
@@ -179,8 +210,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   was weighed and accepted: a failure names the `==>` phase inside the recipe rather than a step
   in the GitHub UI
 - **`lint.yaml` is where linters Maven does not run live** (spotless and checkstyle cover the
-  Java sources inside `verify`). Today that is shellcheck and actionlint; `tofu fmt`/`validate`
-  belongs here when the OpenTofu persistent layer lands (#5). Separate from
+  Java sources inside `verify`). Today that is shellcheck, actionlint and `tofu fmt -check`
+  (#5 landed; `tofu validate` is subsumed by the tofu-plan workflow's plan). Separate from
   `ci.yaml` so results arrive in seconds rather than behind the integration tests — that is the
   whole reason, the mise-versus-`setup-java` one having turned out to be a disarmable default
   rather than a conflict (see below). Its `paths` filter must list **every input

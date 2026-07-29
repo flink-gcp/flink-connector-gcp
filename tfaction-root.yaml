@@ -1,0 +1,44 @@
+# Copyright 2026 laughingman7743
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Global tfaction configuration (https://suzuki-shunsuke.github.io/tfaction/).
+# Root modules are the directories carrying a tfaction.yaml — today only
+# opentofu/flink-gcp. The workflows are .github/workflows/tofu-plan.yaml and
+# tofu-apply.yaml.
+
+# The *file name* of the workflow that plans pull requests.
+plan_workflow_name: tofu-plan.yaml
+
+terraform_command: tofu
+
+available_providers:
+  # Both registry hosts name the same provider: tofu resolves the short
+  # `hashicorp/google` source against its own registry, while the lock file a
+  # terraform user would generate names the terraform one.
+  - name: registry.opentofu.org/hashicorp/google
+  - name: registry.terraform.io/hashicorp/google
+
+target_groups:
+  - working_directory: opentofu/
+    # Separate accounts per job: the plan one is read-only on the project
+    # (plus state-lock writes), the apply one holds the managing roles. Both
+    # are assumable only through WIF — no keys exist. The accounts, the pool
+    # and their bindings are managed by this very configuration
+    # (opentofu/flink-gcp/opentofu-sa.tf, wif.tf).
+    terraform_plan_config:
+      gcp_service_account: opentofu-plan@flink-gcp.iam.gserviceaccount.com
+      gcp_workload_identity_provider: projects/639248282241/locations/global/workloadIdentityPools/github/providers/github-actions
+    terraform_apply_config:
+      gcp_service_account: opentofu@flink-gcp.iam.gserviceaccount.com
+      gcp_workload_identity_provider: projects/639248282241/locations/global/workloadIdentityPools/github/providers/github-actions
