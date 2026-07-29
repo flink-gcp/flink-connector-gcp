@@ -1,0 +1,29 @@
+# Copyright 2026 laughingman7743
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+terraform {
+  # Exact, matching the opentofu pin in mise.toml: the version is declared
+  # there once for local runs and CI alike, and this constraint turns a skew
+  # into a loud error instead of a silently different tofu.
+  required_version = "1.12.5"
+
+  required_providers {
+    google = {
+      source = "hashicorp/google"
+      # .terraform.lock.hcl pins the exact release; this constraint only
+      # excludes the next major, whose releases carry breaking changes.
+      version = "~> 7.42"
+    }
+  }
+}

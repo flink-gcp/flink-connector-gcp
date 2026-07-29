@@ -2,8 +2,9 @@ name: Lint
 
 # Linters for the parts of the repository Maven does not cover. Spotless and
 # checkstyle handle the Java sources inside `just verify` (ci.yaml); this is
-# where everything else goes — shellcheck, ruff and actionlint today, and
-# `tofu fmt`/`validate` once the OpenTofu persistent layer lands (#5).
+# where everything else goes — shellcheck, ruff, actionlint and
+# `tofu fmt -check` today (`tofu validate` is subsumed by the plan the
+# tofu-plan workflow runs on exactly the pull requests that touch opentofu/).
 #
 # Split out of ci.yaml so it reports in seconds instead of behind the
 # integration tests. That is the whole reason: keeping mise away from
@@ -27,6 +28,8 @@ on:
       # where those versions are declared, so leaving it out would skip the lint
       # in exactly the change that most needs it.
       - 'mise.toml'
+      # tofu fmt -check reads these.
+      - 'opentofu/**'
   pull_request:
     paths: *lint_paths
   workflow_dispatch:
@@ -52,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # install_args limits this to the three linters — mise.toml pins the tools
+      # install_args limits this to the linters — mise.toml pins the tools
       # every recipe needs, and this job wants none of the others. Their
       # versions come from mise.toml, so they are declared once and are the same
       # locally and here, and not the runner image's copy: its shellcheck is
@@ -61,7 +64,7 @@ jobs:
       # install by default, keyed partly on install_args.
       - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
-          install_args: shellcheck actionlint ruff
+          install_args: shellcheck actionlint ruff opentofu
 
       # just comes from install-action even though mise is right here, so that
       # every workflow installs it the same way. See the note in ci.yaml.

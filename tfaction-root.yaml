@@ -1,0 +1,51 @@
+# Copyright 2026 laughingman7743
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Global tfaction configuration (https://suzuki-shunsuke.github.io/tfaction/).
+# Root modules are the directories carrying a tfaction.yaml — today only
+# opentofu/flink-gcp. The workflows are .github/workflows/tofu-plan.yaml and
+# tofu-apply.yaml.
+
+# The *file name* of the workflow that plans pull requests.
+plan_workflow_name: tofu-plan.yaml
+
+# Not configured because the defaults are what this repository wants, and
+# worth knowing about: dismiss_approval_before_plan is enabled by default —
+# a re-plan dismisses stale approvals, so what was approved is always the
+# plan that will apply.
+
+terraform_command: tofu
+
+# Consumed only by tfaction's `test` action, which this repository does not
+# run yet (see the decisions table in opentofu/README.md) — kept because it
+# is one correct line: tofu resolves the short `hashicorp/google` source
+# against its own registry, as the committed .terraform.lock.hcl records.
+available_providers:
+  - name: registry.opentofu.org/hashicorp/google
+
+target_groups:
+  # A glob, not a prefix: "opentofu/" matches nothing (the first plan run
+  # failed on it), and each root module under opentofu/ must match.
+  - working_directory: "opentofu/*"
+    # Separate accounts per job: the plan one is read-only on the project
+    # (plus state-lock writes), the apply one holds the managing roles. Both
+    # are assumable only through WIF — no keys exist. The accounts, the pool
+    # and their bindings are managed by this very configuration
+    # (opentofu/flink-gcp/opentofu-sa.tf, wif.tf).
+    terraform_plan_config:
+      gcp_service_account: opentofu-plan@flink-gcp.iam.gserviceaccount.com
+      gcp_workload_identity_provider: projects/639248282241/locations/global/workloadIdentityPools/github/providers/github-actions
+    terraform_apply_config:
+      gcp_service_account: opentofu@flink-gcp.iam.gserviceaccount.com
+      gcp_workload_identity_provider: projects/639248282241/locations/global/workloadIdentityPools/github/providers/github-actions

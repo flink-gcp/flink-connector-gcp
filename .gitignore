@@ -14,6 +14,15 @@ tools/japicmp-output/
 __pycache__/
 *.pyc
 
+# OpenTofu (opentofu/). State lives in the flink-gcp-opentofu GCS bucket;
+# local state files only ever exist mid-bootstrap and must never be committed.
+# *_override.tf is the uncommitted local-backend override the bootstrap uses
+# (see opentofu/README.md).
+.terraform/
+*.tfstate
+*.tfstate.*
+*_override.tf
+
 # Hugo documentation site build output
 docs/public/
 docs/resources/

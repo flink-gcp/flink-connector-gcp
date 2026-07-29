@@ -27,6 +27,11 @@ ruff = "0.16.0"
 # installs its own with actions/setup-python (see ci.yaml), so mise stays out
 # of the setup-java job.
 python = "3.12"
+# Runs the opentofu/ configuration (locally via `just tofu` and `just lint`,
+# in CI via the tofu-plan/tofu-apply workflows). Exactly pinned, and
+# versions.tf's required_version repeats it, so a skew between local and CI is
+# a loud error — a bump edits both lines together.
+opentofu = "1.12.5"
 # Task runner (justfile). A major-version specifier rather than an exact pin,
 # unlike shellcheck above: just guarantees that no 1.x release breaks an
 # existing justfile or a working command line, and that there will never be a
@@ -46,5 +51,6 @@ pinact = "4"
 [env]
 # Local, uncommitted settings — e.g. credentials and BQ_IT_* variables for the
 # real-GCP integration tests (see the BigQuery connector documentation under
-# docs/content/docs/connectors/datastream/bigquery.md).
+# docs/content/docs/connectors/datastream/bigquery.md) and the OpenTofu
+# credential variables (see opentofu/README.md).
 _.file = { path = ".env", redact = true }
