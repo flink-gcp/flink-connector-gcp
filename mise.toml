@@ -51,5 +51,6 @@ pinact = "4"
 [env]
 # Local, uncommitted settings — e.g. credentials and BQ_IT_* variables for the
 # real-GCP integration tests (see the BigQuery connector documentation under
-# docs/content/docs/connectors/datastream/bigquery.md).
+# docs/content/docs/connectors/datastream/bigquery.md) and the OpenTofu
+# credential variables (see opentofu/README.md).
 _.file = { path = ".env", redact = true }

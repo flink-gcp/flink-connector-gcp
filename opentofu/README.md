@@ -22,6 +22,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/e2e-sa.tf` | The E2E test service account and its scoped grants |
 | `flink-gcp/it-resources.tf` | Pre-existing bucket/dataset, adopted via import blocks |
 | `flink-gcp/tfaction.yaml` | Marks the directory as a tfaction root module |
+| `flink-gcp/.terraform.lock.hcl` | Committed provider release pin |
 | `/tfaction-root.yaml` | Global tfaction configuration (repository root) |
 
 CI: a pull request touching `opentofu/**` gets a plan comment from
@@ -42,7 +43,7 @@ why:
 | Plan file via GitHub Artifacts | on (built in) | The apply runs exactly the plan the PR reviewed; no extra storage |
 | `dismiss_approval_before_plan` | on (default) | A re-plan dismisses stale approvals, so an approval always refers to the plan that will apply |
 | `hide-comment` job in the plan workflow | on | Outdated plan comments are hidden; the visible comment is the one that would apply |
-| GitHub App | none | Plain `GITHUB_TOKEN` suffices for plan/apply/comments/labels; the App only pays for push-back features (below) |
+| GitHub App | none | Plain `GITHUB_TOKEN` suffices for plan/apply/comments/labels; the App only pays for push-back features (below). Revisit once the repository is public (or moves to a dedicated org): an App token would unlock them |
 | `test` action (auto-`fmt` commits, tflint, trivy) | off | Auto-fix commits pushed with `GITHUB_TOKEN` do not retrigger CI, leaving stale checks; `fmt` is checked (not fixed) in `just lint`, and `validate` is subsumed by the plan this workflow always runs. tflint/trivy can ride in later with an App |
 | `drift_detection` | off (default) | Wants three more workflows and apply-job changes; a candidate follow-up once the nightly E2E workflow ([#28](https://github.com/laughingman7743/flink-connector-gcp/issues/28)) lands |
 
@@ -54,9 +55,10 @@ why:
   a renamed or look-alike repository can never authenticate.
 - Per-account bindings narrow further: the plan account is reachable from any
   event of this repository (and is read-only plus state-lock writes); the
-  apply and E2E accounts only from `push` / `schedule` / `workflow_dispatch`
-  on `main`. Fork pull requests are excluded outright — GitHub does not grant
-  `id-token: write` to runs triggered from forks.
+  apply account only from a `push` to `main`; the E2E account from
+  `push` / `schedule` / `workflow_dispatch` on `main`. Fork pull requests are
+  excluded outright — GitHub does not grant `id-token: write` to runs
+  triggered from forks.
 
 ## Local use
 

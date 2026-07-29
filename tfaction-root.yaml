@@ -27,12 +27,12 @@ plan_workflow_name: tofu-plan.yaml
 
 terraform_command: tofu
 
+# Consumed only by tfaction's `test` action, which this repository does not
+# run yet (see the decisions table in opentofu/README.md) — kept because it
+# is one correct line: tofu resolves the short `hashicorp/google` source
+# against its own registry, as the committed .terraform.lock.hcl records.
 available_providers:
-  # Both registry hosts name the same provider: tofu resolves the short
-  # `hashicorp/google` source against its own registry, while the lock file a
-  # terraform user would generate names the terraform one.
   - name: registry.opentofu.org/hashicorp/google
-  - name: registry.terraform.io/hashicorp/google
 
 target_groups:
   # A glob, not a prefix: "opentofu/" matches nothing (the first plan run

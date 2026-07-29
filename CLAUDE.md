@@ -143,9 +143,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   (auto-fix commits, follow-up PRs) are unused
 - **No service account keys, ever.** All CI credentials are short-lived WIF tokens; the provider
   condition pins the immutable repository/owner IDs, and per-account bindings restrict the apply
-  and E2E accounts to `push`/`schedule`/`workflow_dispatch` on `main`. Plan runs read-only
-  (`roles/viewer` plus state-bucket writes for the lock). Local runs use ADC via
-  `CLOUDSDK_CONFIG` from `.env`; the bootstrap that created the backend's own bucket is recorded
+  account to `push` on `main` and the E2E account to `push`/`schedule`/`workflow_dispatch` on
+  `main`. Plan runs read-only (`roles/viewer` + `roles/iam.securityReviewer`, plus state-bucket
+  writes for the lock). Local runs authenticate via `GOOGLE_APPLICATION_CREDENTIALS` from
+  `.env`; the bootstrap that created the backend's own bucket is recorded
   in `opentofu/README.md`
 - The tofu version is pinned twice on purpose: `mise.toml` (what installs) and
   `versions.tf` `required_version` (what refuses to run on a skew) — a bump edits both

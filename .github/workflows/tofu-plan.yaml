@@ -20,6 +20,9 @@ name: OpenTofu plan
 #   condition pins this repository's immutable ID.
 on:
   pull_request:
+    # Keep in sync with tofu-apply.yaml's paths: a path only here produces
+    # reviewed-but-never-applied changes, a path only there produces applies
+    # with no reviewed plan.
     paths:
       - 'opentofu/**'
       - 'tfaction-root.yaml'

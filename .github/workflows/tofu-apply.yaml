@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - main
+    # Keep in sync with tofu-plan.yaml's paths (see the note there).
     paths:
       - 'opentofu/**'
       - 'tfaction-root.yaml'
