@@ -1,0 +1,37 @@
+name: List OpenTofu targets
+
+# Reusable job shared by tofu-plan.yaml and tofu-apply.yaml: tfaction's
+# list-targets action diffs the change against the root modules declared by
+# tfaction.yaml markers and returns the ones affected, which the callers fan
+# out over as a matrix. With a single root module today the matrix has at most
+# one entry, but this is the shape tfaction documents for any module not at
+# the repository root, and a second module (another GCP project, say) slots in
+# without workflow changes.
+on:
+  workflow_call:
+    outputs:
+      targets:
+        description: JSON array of changed root module targets
+        value: ${{ jobs.list.outputs.targets }}
+
+permissions: {}
+
+jobs:
+  list:
+    name: List targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.list-targets.outputs.targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: List targets
+        id: list-targets
+        uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+        with:
+          action: list-targets

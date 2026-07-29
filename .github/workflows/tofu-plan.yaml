@@ -2,7 +2,9 @@ name: OpenTofu plan
 
 # Plans the opentofu/ configuration on pull requests and posts the result as a
 # PR comment (tfaction v2 drives tofu, tfcmt renders the comment, and the plan
-# file travels to the apply workflow as a GitHub Artifact).
+# file travels to the apply workflow as a GitHub Artifact). The list job
+# resolves which root modules the PR touched (tofu-list.yaml); the plan job
+# fans out over them.
 #
 # This workflow and tofu-apply.yaml deliberately do not go through a just
 # recipe (#111's convention): tfaction is itself the named, rerunnable
@@ -21,9 +23,11 @@ on:
     paths:
       - 'opentofu/**'
       - 'tfaction-root.yaml'
-      # Changing either workflow must re-verify the pipeline they define.
+      # Changing any of these workflows must re-verify the pipeline they
+      # define.
       - '.github/workflows/tofu-plan.yaml'
       - '.github/workflows/tofu-apply.yaml'
+      - '.github/workflows/tofu-list.yaml'
       # mise.toml pins the tofu these jobs run.
       - 'mise.toml'
 
@@ -35,20 +39,36 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  # tfcmt posts the plan as a PR comment and labels the PR.
-  pull-requests: write
-  # Mint the GitHub OIDC token that WIF exchanges for GCP credentials.
-  id-token: write
+permissions: {}
 
 jobs:
+  list:
+    uses: ./.github/workflows/tofu-list.yaml
+    permissions:
+      contents: read
+
   plan:
-    name: tofu plan
+    name: tofu plan (${{ matrix.target.target }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: [list]
+    # A trigger path can change without touching any root module
+    # (mise.toml, a workflow); then there is nothing to plan.
+    if: join(fromJSON(needs.list.outputs.targets), '') != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.list.outputs.targets) }}
+    permissions:
+      contents: read
+      # tfcmt posts the plan as a PR comment and labels the PR.
+      pull-requests: write
+      # Mint the GitHub OIDC token that WIF exchanges for GCP credentials.
+      id-token: write
     env:
-      TFACTION_JOB_TYPE: terraform
+      TFACTION_TARGET: ${{ matrix.target.target }}
+      TFACTION_WORKING_DIR: ${{ matrix.target.working_directory }}
+      TFACTION_JOB_TYPE: ${{ matrix.target.job_type }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
