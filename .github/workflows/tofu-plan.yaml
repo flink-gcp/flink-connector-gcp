@@ -46,6 +46,7 @@ jobs:
     uses: ./.github/workflows/tofu-list.yaml
     permissions:
       contents: read
+      pull-requests: read
 
   plan:
     name: tofu plan (${{ matrix.target.target }})

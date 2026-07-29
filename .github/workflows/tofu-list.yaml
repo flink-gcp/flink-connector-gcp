@@ -23,6 +23,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      # list-targets resolves the pull request (changed files on
+      # pull_request, the merged PR on push) through the API.
+      pull-requests: read
     outputs:
       targets: ${{ steps.list-targets.outputs.targets }}
     steps:
