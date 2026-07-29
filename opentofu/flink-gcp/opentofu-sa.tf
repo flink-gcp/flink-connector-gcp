@@ -48,9 +48,18 @@ resource "google_project_iam_member" "opentofu" {
   member  = google_service_account.opentofu.member
 }
 
+# roles/viewer alone was measured insufficient on the first plan run: it
+# lacks storage.buckets.getIamPolicy, which refreshing the bucket IAM members
+# below needs. securityReviewer adds the *.getIamPolicy family and nothing
+# writable, keeping the account read-only.
 resource "google_project_iam_member" "opentofu_plan" {
+  for_each = toset([
+    "roles/iam.securityReviewer",
+    "roles/viewer",
+  ])
+
   project = local.project_id
-  role    = "roles/viewer"
+  role    = each.value
   member  = google_service_account.opentofu_plan.member
 }
 

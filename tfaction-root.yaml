@@ -20,6 +20,11 @@
 # The *file name* of the workflow that plans pull requests.
 plan_workflow_name: tofu-plan.yaml
 
+# Not configured because the defaults are what this repository wants, and
+# worth knowing about: dismiss_approval_before_plan is enabled by default —
+# a re-plan dismisses stale approvals, so what was approved is always the
+# plan that will apply.
+
 terraform_command: tofu
 
 available_providers:

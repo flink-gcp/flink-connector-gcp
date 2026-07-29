@@ -29,6 +29,23 @@ CI: a pull request touching `opentofu/**` gets a plan comment from
 plan file and comments the result (`tofu-apply.yaml`). Locally, `just tofu
 <args>` runs OpenTofu in the root module and `just lint` checks formatting.
 
+## tfaction configuration decisions
+
+[tfaction](https://suzuki-shunsuke.github.io/tfaction/) v2 drives the CI;
+`/tfaction-root.yaml` holds the configuration. What is on, what is off, and
+why:
+
+| Setting | State | Why |
+|---|---|---|
+| `terraform_command: tofu` | on | This is an OpenTofu repository |
+| Plan/apply as separate WIF service accounts | on | A pull request's plan job never holds write credentials |
+| Plan file via GitHub Artifacts | on (built in) | The apply runs exactly the plan the PR reviewed; no extra storage |
+| `dismiss_approval_before_plan` | on (default) | A re-plan dismisses stale approvals, so an approval always refers to the plan that will apply |
+| `hide-comment` job in the plan workflow | on | Outdated plan comments are hidden; the visible comment is the one that would apply |
+| GitHub App | none | Plain `GITHUB_TOKEN` suffices for plan/apply/comments/labels; the App only pays for push-back features (below) |
+| `test` action (auto-`fmt` commits, tflint, trivy) | off | Auto-fix commits pushed with `GITHUB_TOKEN` do not retrigger CI, leaving stale checks; `fmt` is checked (not fixed) in `just lint`, and `validate` is subsumed by the plan this workflow always runs. tflint/trivy can ride in later with an App |
+| `drift_detection` | off (default) | Wants three more workflows and apply-job changes; a candidate follow-up once the nightly E2E workflow ([#28](https://github.com/laughingman7743/flink-connector-gcp/issues/28)) lands |
+
 ## Security model
 
 - **No service account keys, ever.** Every workflow credential is a

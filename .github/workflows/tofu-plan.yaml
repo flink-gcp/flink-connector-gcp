@@ -42,6 +42,20 @@ concurrency:
 permissions: {}
 
 jobs:
+  # Each new plan hides the outdated plan comments, so the visible comment is
+  # always the one that would apply.
+  hide-comment:
+    name: Hide outdated comments
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+        with:
+          action: hide-comment
+          github_token: ${{ github.token }}
+
   list:
     uses: ./.github/workflows/tofu-list.yaml
     permissions:
