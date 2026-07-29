@@ -30,7 +30,9 @@ available_providers:
   - name: registry.terraform.io/hashicorp/google
 
 target_groups:
-  - working_directory: opentofu/
+  # A glob, not a prefix: "opentofu/" matches nothing (the first plan run
+  # failed on it), and each root module under opentofu/ must match.
+  - working_directory: "opentofu/*"
     # Separate accounts per job: the plan one is read-only on the project
     # (plus state-lock writes), the apply one holds the managing roles. Both
     # are assumable only through WIF — no keys exist. The accounts, the pool
