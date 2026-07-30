@@ -1,0 +1,108 @@
+# Copyright 2026 laughingman7743
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: E2E
+
+# Runs the ITCases gated on real-GCP credentials — the ones `just verify`
+# silently skips, checking exactly what the emulator cannot (idempotent
+# re-flush, load jobs, REPEATED JSON; see the testing section of the BigQuery
+# connector documentation). The whole run is `just e2e`, which also asserts the
+# gated classes actually executed: @EnabledIfEnvironmentVariable makes a
+# missing variable a silent skip, so a workflow that lost its credentials would
+# otherwise go green — the worst failure mode for this job.
+#
+# Weekly rather than nightly, and no push trigger, both on cost: the repository
+# is private, so runner minutes are billed, and the per-PR emulator coverage in
+# ci.yaml already carries the fast-feedback load. The WIF binding also permits
+# `push` on main (opentofu/flink-gcp/e2e-sa.tf), so adding that trigger later
+# is a one-line change here.
+#
+# No GitHub Environment gate: protection rules are unavailable on a private
+# free-plan repository, and fork safety already rests on three WIF layers —
+# GitHub grants no id-token to fork pull requests, the provider condition pins
+# the immutable repository/owner IDs, and the service-account binding admits
+# only schedule/workflow_dispatch/push on refs/heads/main. Revisit when the
+# repository goes public under an organization.
+on:
+  schedule:
+    # Saturdays. Off the hour, because everything scheduled at :00 lands on
+    # the runner queue at the same instant; clear of weekly.yaml's Sunday slot.
+    - cron: '17 1 * * 6'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# id-token is what lets google-github-actions/auth mint the short-lived WIF
+# token; no service account key exists anywhere in this project.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  real_gcp:
+    # Scheduled workflows are inherited by forks; this keeps them from running
+    # there (a fork could not authenticate anyway — see the WIF note above).
+    if: github.repository_owner == 'laughingman7743'
+    name: Real-GCP gated ITCases
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Pinned to the commit for the same reason as weekly.yaml: a merge
+      # landing mid-run must not change what this run tests.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      # The provider and service account are created by opentofu/flink-gcp
+      # (wif.tf, e2e-sa.tf); the provider resource name matches the one in
+      # tfaction-root.yaml. The credentials file this step writes becomes
+      # application-default credentials for the BigQuery and GCS clients in
+      # the tests.
+      #
+      # project_id is explicit because the connector's FILE_LOADS clients are
+      # built with getDefaultInstance() and need an ambient default project:
+      # this step then exports GOOGLE_CLOUD_PROJECT, which is what resolves it
+      # here. The action would infer the same value from the service-account
+      # email, but an inference is not something to build a credential path on.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/639248282241/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: github-actions-e2e@flink-gcp.iam.gserviceaccount.com
+          project_id: flink-gcp
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # Unpinned, and install-action rather than mise: see the note on the same
+      # step in ci.yaml.
+      - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
+        with:
+          tool: just
+
+      # Not secrets: the values name resources declared in opentofu/flink-gcp
+      # (it-resources.tf, main.tf). Set here rather than in repository
+      # variables so the workflow file is the single place that says what this
+      # job runs against.
+      - name: Run the real-GCP gated ITCases
+        env:
+          BQ_IT_PROJECT: flink-gcp
+          BQ_IT_DATASET: flink_gcp_it
+          BQ_IT_GCS_BUCKET: flink-gcp
+        run: just e2e

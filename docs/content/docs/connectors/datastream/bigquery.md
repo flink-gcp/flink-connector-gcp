@@ -1086,7 +1086,14 @@ BigQuery and GCS and are gated on
 `BQ_IT_PROJECT`, `BQ_IT_DATASET` and `BQ_IT_GCS_BUCKET` (application-default credentials); they
 are skipped when the variables are unset, keeping `./mvnw verify` credential-free. For local
 runs, put the variables (plus `GOOGLE_APPLICATION_CREDENTIALS` if not using the default ADC
-location) in an uncommitted `.env` at the repository root — mise loads it automatically.
+location) in an uncommitted `.env` at the repository root — mise loads it automatically. The
+FILE_LOADS clients are built with `getDefaultInstance()`, so the environment must also resolve
+a default project (`GOOGLE_CLOUD_PROJECT`, or a gcloud config the client library can see) —
+with only the `BQ_IT_*` variables set, the load-job committer fails with "A project ID is
+required for this service". `just e2e` runs
+`just e2e` runs every gated ITCase and fails loudly if the variables are missing or a gated
+class did not actually execute. In CI the same recipe runs weekly in the E2E workflow,
+authenticating via Workload Identity Federation ([#28]({{< param BookRepo >}}/issues/28)).
 
 ## Error handling
 
@@ -1307,5 +1314,7 @@ credential-less CI:
   (`BigQueryBufferedStreamExactlyOnceITCase`, gated on `BQ_IT_PROJECT`/`BQ_IT_DATASET` only;
   no bucket needed)
 
-The remaining real-GCP coverage (MiniCluster E2E on GitHub Actions via WIF) is tracked in [#16]({{< param BookRepo >}}/issues/16)
-and [#28]({{< param BookRepo >}}/issues/28).
+These gated ITCases run weekly in the E2E workflow via Workload Identity Federation
+([#28]({{< param BookRepo >}}/issues/28)); `just e2e` is the local equivalent. The remaining
+real-GCP coverage (the MiniCluster fan-out suite) is tracked in
+[#16]({{< param BookRepo >}}/issues/16).
