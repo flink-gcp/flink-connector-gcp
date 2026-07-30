@@ -118,6 +118,30 @@ binary-compat ceiling:
 check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.yaml | cut -d"'" -f2`:
     scripts/check-flink-release.sh {{ ceiling }}
 
+# The ITCases gated on BQ_IT_* variables, which `just verify` silently skips:
+# what they check is exactly what the emulator cannot (see the testing section
+# of the BigQuery connector documentation). The E2E workflow
+# (.github/workflows/e2e.yaml) runs this same recipe weekly via WIF; locally the
+# variables come from the uncommitted .env, which mise loads — so a worktree
+# cannot run this until #156 settles how .env reaches one.
+#
+# The shape is scripts/e2e-gated-its.sh three times around two Maven calls. The
+# pre-flight makes a missing variable an error before any build minutes are
+# spent, and the assertion afterwards proves the gated classes ran — without
+# it, @EnabledIfEnvironmentVariable turns lost credentials into a green run.
+#
+# The execution id on the second Maven call is load-bearing, same as in
+# binary-compat: -Dtest overrides includes on *every* surefire execution, so
+# without @integration-tests the default-test execution would run the same
+# classes a second time.
+#
+# Run the real-GCP gated ITCases and assert they actually ran.
+e2e:
+    scripts/e2e-gated-its.sh --require-env
+    {{ mvn }} -pl flink-connector-gcp-bigquery test-compile
+    {{ mvn }} -pl flink-connector-gcp-bigquery surefire:test@integration-tests -Dtest="$(scripts/e2e-gated-its.sh)"
+    scripts/e2e-gated-its.sh --assert-ran
+
 # Spotless and checkstyle cover the Java sources inside `just verify`; this is
 # everything else.
 #

@@ -23,6 +23,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   passing nothing means the version pinned in the pom
 - `just binary-compat 2.3.0` — the floor-build/fingerprint/ceiling-rerun/diff sequence, whose
   order is load-bearing. Reproducing a red weekly `binary_compat` is what it is for
+- `just e2e` — the ITCases gated on `BQ_IT_*` variables, which `just verify` silently skips,
+  with a pre-flight that makes a missing variable an error and a post-run assertion
+  (`scripts/e2e-gated-its.sh`, which derives the class list from the gating annotation) that the
+  gated classes actually executed. The weekly E2E workflow (`e2e.yaml`) runs this same recipe
+  via WIF; locally the variables come from `.env`, so a worktree cannot run it (#156)
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
