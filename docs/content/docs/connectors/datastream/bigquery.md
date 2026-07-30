@@ -1090,10 +1090,10 @@ location) in an uncommitted `.env` at the repository root — mise loads it auto
 FILE_LOADS clients are built with `getDefaultInstance()`, so the environment must also resolve
 a default project (`GOOGLE_CLOUD_PROJECT`, or a gcloud config the client library can see) —
 with only the `BQ_IT_*` variables set, the load-job committer fails with "A project ID is
-required for this service". `just e2e` runs
-`just e2e` runs every gated ITCase and fails loudly if the variables are missing or a gated
-class did not actually execute. In CI the same recipe runs weekly in the E2E workflow,
-authenticating via Workload Identity Federation ([#28]({{< param BookRepo >}}/issues/28)).
+required for this service". `just e2e` runs every gated ITCase and fails loudly if the
+variables are missing or a gated class did not actually execute. In CI the same recipe runs
+weekly in the E2E workflow, authenticating via Workload Identity Federation
+([#28]({{< param BookRepo >}}/issues/28)).
 
 ## Error handling
 
