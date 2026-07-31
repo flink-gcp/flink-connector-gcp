@@ -65,7 +65,8 @@ import static org.assertj.core.api.Assertions.tuple;
  * emulator 0.8.1 implements neither the packed civil-time encoding nor the decimal byte encoding,
  * so it reads those columns back as unrelated values whatever the connector writes. Their encodings
  * are pinned by unit tests against {@code CivilTimeEncoder} and {@code
- * BigDecimalByteStringEncoder}, and belong to the real-GCP suite.
+ * BigDecimalByteStringEncoder}, and round-trip against the real service in {@link
+ * BigQuerySerializerFidelityITCase}.
  *
  * <p>Only one flush happens here, for the emulator reason recorded on {@link
  * BigQueryDefaultStreamWriterITCase}: on a connection opened after an earlier one has closed, only
