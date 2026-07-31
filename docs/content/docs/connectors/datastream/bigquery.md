@@ -1313,8 +1313,9 @@ credential-less CI:
   the emulator cannot show, since it applies `tables.update` to table metadata only — but the
   measured run took ~2 hours end to end (the Storage Write API kept rejecting, then hanging,
   appends carrying the new column for ~1 h 56 m after the instant REST update), which would
-  consume the whole weekly runner budget. The probe is gated on `BQ_IT_SCHEMA_EVOLUTION` and its
-  javadoc records the measurement
+  consume the whole weekly runner budget. The probe is gated on `BQ_IT_SCHEMA_EVOLUTION`, its
+  javadoc records the measurement, and the hang is under investigation in
+  [#174]({{< param BookRepo >}}/issues/174)
 - load jobs: goccy/bigquery-emulator supports neither `gs://` load jobs nor a Cloud Storage
   endpoint, so the whole `FILE_LOADS` path runs against real services
   (`BigQueryFileLoadsITCase` and `BigQueryFileLoadsStreamingITCase`, env-gated as described
