@@ -73,7 +73,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * on one writer — stay pinned by the emulator ITCase and by {@link
  * BigQueryDefaultStreamWriterSchemaEvolutionTest} against fakes; this probe exists to measure the
  * real service's propagation behavior, and reruns feed the investigation of the hang recorded
- * above.
+ * above, which is tracked in issue #174 (hypotheses and their checkable predictions live there).
  */
 @EnabledIfEnvironmentVariable(named = "BQ_IT_SCHEMA_EVOLUTION", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
