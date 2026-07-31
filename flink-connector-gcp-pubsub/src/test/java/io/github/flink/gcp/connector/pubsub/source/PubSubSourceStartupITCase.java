@@ -137,15 +137,10 @@ class PubSubSourceStartupITCase extends AbstractPubSubSourceEmulatorITCase {
     /** Waits for the source's startup check to create the subscription. */
     private static void awaitSubscription(SubscriptionDestination subscription)
             throws InterruptedException {
-        long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
-        while (System.nanoTime() < deadline) {
-            if (subscriptionExists(subscription)) {
-                return;
-            }
-            Thread.sleep(100);
-        }
-        throw new AssertionError(
-                "The source did not create subscription " + subscription + " in time.");
+        await(
+                "the source to create subscription " + subscription,
+                Duration.ofSeconds(60),
+                () -> subscriptionExists(subscription));
     }
 
     private static PubSubSourceBuilder<String> sourceBuilder() {

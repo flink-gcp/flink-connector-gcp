@@ -55,8 +55,15 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   test through the public builder) reuse the production factory/admin, no test-only factory.
   Per-record failure policy and the fatal-exception classifier moved to #37. Decision record in
   the connector documentation page
-- **Pub/Sub source** (#79, #80): FLIP-27 streaming-pull source; split = (subscription, uid), ack on
-  checkpoint completion, nack on close. Tuning lives in one `PubSubSubscriberOptions` object
+- **Pub/Sub source** (#79, #80, #81): FLIP-27 streaming-pull source; split = (subscription, uid),
+  ack on checkpoint completion, nack on close. **The reader checkpoints no splits** — the
+  enumerator is the only owner of split assignment, recomputing the deterministic plan
+  (`splitCount = PER_KEY ? |subs| : max(|subs|, parallelism)`) on every start — because
+  `SourceOperator` unions reader-restored splits with the enumerator's plan, so a reader that
+  snapshotted its splits would leave a rescaled restore with one subscription consumed by two
+  subtasks, exactly what `PER_KEY` exists to prevent (the #79 self-review bug; pinned by
+  `checkpointsNeverCarrySplits`, exercised end-to-end by `PubSubSourceRecoveryITCase`). Tuning
+  lives in one `PubSubSubscriberOptions` object
   (nested-options pattern, same shape as `PubSubPublisherOptions`). Two decisions deviate from the
   #80 issue text and must not be silently re-litigated:
   (a) the **subscriber shutdown mode is not exposed** — `NACK_IMMEDIATELY` is fixed because
@@ -73,10 +80,32 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   path** — once flow control fills, the client stops delivering and `pollNext` is never called
   again, so a record-driven check would go silent in exactly the state it exists to catch; the
   detector bounds the fetch park only while armed, so a healthy reader parks indefinitely as
-  before. The config-derived ack-extension check is a best-effort warning only.
+  before. Its budget (#101) starts at the reader's **first split assignment**, not at
+  `createReader` — a reader is created before the enumerator's startup check finishes, so a
+  constructor-started budget would be partly spent before there is anything to checkpoint; an
+  unstarted detector is **not armed**, so a reader assigned no split parks indefinitely; and it
+  retires at the **first checkpoint barrier** — `SourceOperator.snapshotState` is called
+  unconditionally, so a barrier carrying no data counts, which is what bounds the guard to
+  measuring one interval, once. The detector's fields are deliberately plain, not volatile:
+  `AddSplitsTask` runs on the fetcher thread, the same thread as `fetch()`, and the reasoning
+  lives in the class javadoc so it is not re-litigated. The config-derived ack-extension check is
+  a best-effort warning only.
   `parallelPullCount > 1` is rejected with `orderingMode(PER_KEY)` rather than silently forced to 1
-  (the factory still force-sets 1 so the guarantee does not rest on the SDK default). The `NACK` deserialization-failure policy is deferred to #81, where
-  the `GetSubscription` preflight can verify a dead-letter policy exists
+  (the factory still force-sets 1 so the guarantee does not rest on the SDK default).
+  The startup check (#81) verifies every subscription (`GetSubscription`) before any split is
+  assigned and rejects: a missing subscription without create options, an unordered subscription
+  under `orderingMode(PER_KEY)`, an exactly-once-delivery subscription, and
+  `deserializationFailurePolicy(NACK)` on a subscription without a dead-letter policy — the NACK
+  requirement is enforced twice, in the builder for auto-created subscriptions and in the
+  enumerator preflight for existing ones. The check's failure messages name the missing
+  permission or setting on purpose; that text is the entire value of those branches.
+  Subscription auto-creation is authorized by the presence of per-subscription
+  `SubscriptionCreateOptions` — no disposition enum, because a subscription without a topic
+  binding is not a subscription (the Table bullet records how the two directions spell creation
+  differently, and the source never creates a topic). `StartPosition` seeks **once, at the first
+  start of a job, never on a restore**: the guard is `PubSubEnumeratorState.startPositionApplied`,
+  and a checkpoint with the flag still false contains no reader holding a split, so re-applying
+  after such a restore is safe; a redeploy without state seeks again
 - **Pub/Sub Table API / SQL** (#47, split into #135–#138): the `table` layer is a *mapping* onto the
   DataStream builders, never a second implementation — one typed `ConfigOption` per builder setter,
   applied with `getOptional(...).ifPresent(...)` so "absent from the DDL" and "left at the

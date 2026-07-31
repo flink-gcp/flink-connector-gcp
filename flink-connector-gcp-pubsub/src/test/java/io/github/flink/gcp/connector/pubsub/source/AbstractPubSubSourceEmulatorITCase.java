@@ -65,6 +65,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
 /**
@@ -297,6 +298,29 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
             throw (Error) failure;
         }
         return new ArrayList<>(elements.values());
+    }
+
+    /**
+     * Polls until the condition holds or the timeout passes, then fails naming what was awaited.
+     *
+     * <p>For conditions observed outside a running job's output — a subscription appearing, a
+     * static observer filling up. Waiting on the job's own records goes through {@link
+     * #drainDistinct} instead, which also watches for the job ending.
+     *
+     * @param what what is being awaited, phrased to follow "Timed out waiting for"
+     * @param timeout how long to wait
+     * @param condition the condition, polled every 100 ms
+     */
+    public static void await(String what, Duration timeout, BooleanSupplier condition)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Timed out waiting for " + what + " (waited " + timeout + ").");
     }
 
     /**
