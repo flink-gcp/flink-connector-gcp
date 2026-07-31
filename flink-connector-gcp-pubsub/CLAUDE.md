@@ -105,7 +105,21 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   differently, and the source never creates a topic). `StartPosition` seeks **once, at the first
   start of a job, never on a restore**: the guard is `PubSubEnumeratorState.startPositionApplied`,
   and a checkpoint with the flag still false contains no reader holding a split, so re-applying
-  after such a restore is safe; a redeploy without state seeks again
+  after such a restore is safe; a redeploy without state seeks again.
+  **The real-GCP gated suite (#82)** is the *only* coverage of: ordered dispatch (per-key
+  callback serialization is gated on a streaming-pull response field the emulator never sets),
+  dead-letter forwarding (performed by the Pub/Sub service agent under project-level grants in
+  `opentofu/`, not by the job's credentials), seek on an ordering-enabled subscription, the
+  create-option knobs persisting (the emulator stores but ignores them), nack-redelivery
+  *promptness* (an observed-behaviour bound — the #118 settlement moved the claim here and left
+  the emulator IT asserting non-loss only), and the subscription admin's permission-denied
+  message texts (via impersonation of the zero-role `e2e-no-pubsub` account — the local-run
+  self-grant is documented on the docs page and deliberately not in opentofu, keeping personal
+  identifiers out of source). Gating is `@EnabledIfEnvironmentVariable` on
+  `PUBSUB_IT_PROJECT` **on every concrete class, never the abstract base** —
+  `scripts/e2e-gated-its.sh` greps the annotation literal and then expects a surefire report per
+  matching file. `PubSubSubscriptionAdmin` carries a `@VisibleForTesting` `CredentialsProvider`
+  constructor for exactly the impersonation tests; no production path uses it
 - **Pub/Sub Table API / SQL** (#47, split into #135–#138): the `table` layer is a *mapping* onto the
   DataStream builders, never a second implementation — one typed `ConfigOption` per builder setter,
   applied with `getOptional(...).ifPresent(...)` so "absent from the DDL" and "left at the

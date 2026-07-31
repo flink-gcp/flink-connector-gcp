@@ -764,19 +764,42 @@ the option-to-protobuf translation are unit-tested on their own. Emulator integr
 production subscriber factory against the emulator and cover the acknowledgement round trip,
 nack-on-close (the nacks counted on the reader's own metric, and the messages redelivered rather
 than lost — redelivery *promptness* is a service-timing property the emulator does not specify, so
-asserting it belongs to the real-GCP suite planned in [#82]({{< param BookRepo >}}/issues/82); see
+the emulator settles for non-loss and the real-GCP suite below asserts promptness; see
 [#118]({{< param BookRepo >}}/issues/118)), and one reader consuming several subscriptions; they
 also drive the production subscription admin (creation with settings read back, `ALREADY_EXISTS`
 leaving an existing subscription alone, and seek-to-timestamp replaying acknowledged messages).
 MiniCluster tests drive the source through the public builder over two subscriptions under real
 checkpoints, and through the startup check end-to-end: auto-creating a missing subscription and then
 consuming it, failing the job when creation is not authorised, rejecting an unordered subscription
-under ordered consumption, and replaying a backlog under `earliestRetained()`.
+under ordered consumption, and replaying a backlog under `earliestRetained()`. Recovery has its own
+MiniCluster tests: a failure injected after a completed checkpoint restarts and restores without
+losing messages, and a savepoint taken at one parallelism restores at another in both directions —
+the split plan is recomputed by the enumerator on every start, so the rescale reassigns cleanly.
+
+A **real-GCP gated suite** covers what the emulator cannot, gated on `PUBSUB_IT_PROJECT`
+(application-default credentials; skipped when unset, keeping `./mvnw verify` credential-free):
+end-to-end per-key ordering through `orderingMode(PER_KEY)` (the only coverage of the ordering
+guarantee anywhere — see below), dead-letter forwarding under the `NACK` policy (the forwarding is
+performed by the Pub/Sub service agent, whose project-level grants the repository's opentofu
+provisions), seek-to-timestamp on an ordering-enabled subscription, the create-option knobs
+(retention, expiration, filter) persisting on the service, prompt redelivery after a nack-on-close
+(an observed-behaviour bound, deliberately not a contract), and the subscription admin's
+permission-denied messages, exercised by impersonating a deliberately unauthorized service account
+(`e2e-no-pubsub`, provisioned with no Pub/Sub role). Topics and subscriptions are created under
+per-run UUID-suffixed names and deleted afterwards. For local runs, put `PUBSUB_IT_PROJECT` in the
+uncommitted `.env` at the repository root — and note the IAM tests impersonate `e2e-no-pubsub`,
+which needs a one-off `roles/iam.serviceAccountTokenCreator` binding for your own account
+(`gcloud iam service-accounts add-iam-policy-binding e2e-no-pubsub@<project>.iam.gserviceaccount.com
+--member=user:<you> --role=roles/iam.serviceAccountTokenCreator`); the grant is deliberately not in
+opentofu, which keeps personal identifiers out of source. `just e2e` runs every gated ITCase across
+the BigQuery and Pub/Sub modules and fails loudly if a variable is missing or a gated class did not
+actually execute; the same recipe runs weekly in the E2E workflow, authenticating via Workload
+Identity Federation ([#28]({{< param BookRepo >}}/issues/28)).
 
 **The emulator cannot verify ordered delivery.** Per-key callback serialization in the client
 library is gated on `subscriptionProperties.messageOrderingEnabled` in the streaming-pull response,
 which the emulator does not set — probing the client library directly against it shows callbacks
 arriving out of order with no Flink involved. The emulator test therefore asserts only that ordered
 mode consumes the subscription from a single subtask without stalling on idle ones; end-to-end
-per-key order is covered by the real-GCP suite ([#82]({{< param BookRepo >}}/issues/82)).
+per-key order is covered by the real-GCP suite above ([#82]({{< param BookRepo >}}/issues/82)).
 

@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.source.subscriptions;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.rpc.AlreadyExistsException;
 import com.google.api.gax.rpc.NotFoundException;
@@ -58,6 +59,7 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
     private static final Logger LOG = LoggerFactory.getLogger(PubSubSubscriptionAdmin.class);
 
     @Nullable private final String emulatorEndpoint;
+    @Nullable private final CredentialsProvider credentialsOverride;
 
     /** Creates an admin using application-default credentials. */
     public PubSubSubscriptionAdmin() {
@@ -71,7 +73,24 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
      *     credentials), or {@code null} for production Pub/Sub with application-default credentials
      */
     public PubSubSubscriptionAdmin(@Nullable String emulatorEndpoint) {
+        this(emulatorEndpoint, null);
+    }
+
+    /**
+     * Creates an admin whose clients authenticate with the given credentials instead of
+     * application-default ones. Only the real-GCP permission-denied tests use this — they
+     * impersonate a deliberately unauthorized identity to assert the operator-facing messages of
+     * the catch blocks above, which no production path needs.
+     *
+     * @param emulatorEndpoint see {@link #PubSubSubscriptionAdmin(String)}; the override is ignored
+     *     against an emulator, whose channel carries no credentials at all
+     * @param credentialsOverride the credentials to use, or {@code null} for application-default
+     */
+    @VisibleForTesting
+    public PubSubSubscriptionAdmin(
+            @Nullable String emulatorEndpoint, @Nullable CredentialsProvider credentialsOverride) {
         this.emulatorEndpoint = emulatorEndpoint;
+        this.credentialsOverride = credentialsOverride;
     }
 
     @Override
@@ -260,7 +279,13 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
     private SubscriptionAdminClient newClient() throws IOException {
         try {
             if (emulatorEndpoint == null) {
-                return SubscriptionAdminClient.create();
+                if (credentialsOverride == null) {
+                    return SubscriptionAdminClient.create();
+                }
+                return SubscriptionAdminClient.create(
+                        SubscriptionAdminSettings.newBuilder()
+                                .setCredentialsProvider(credentialsOverride)
+                                .build());
             }
             // The instantiating provider is auto-closed by the client, so the try-with-resources in
             // each call closes the emulator channel together with the client.

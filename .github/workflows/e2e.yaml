@@ -105,4 +105,5 @@ jobs:
           BQ_IT_PROJECT: flink-gcp
           BQ_IT_DATASET: flink_gcp_it
           BQ_IT_GCS_BUCKET: flink-gcp
+          PUBSUB_IT_PROJECT: flink-gcp
         run: just e2e

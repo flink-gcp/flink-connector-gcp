@@ -16,11 +16,13 @@
 #
 # The single source of truth for which ITCases are gated on real-GCP
 # credentials: every test class annotated with
-# @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", ...) is one. Deriving
-# the list from the gating annotation itself means a newly gated ITCase joins
-# the E2E run automatically — and one added outside the module the `e2e` recipe
-# builds makes --assert-ran fail until the recipe learns to run it, which is
-# the point: joining the E2E workflow is a decision, not an accident.
+# @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", ...) or
+# @EnabledIfEnvironmentVariable(named = "PUBSUB_IT_PROJECT", ...) is one.
+# Deriving the list from the gating annotation itself means a newly gated
+# ITCase joins the E2E run automatically — and one added outside the modules
+# the `e2e` recipe builds makes --assert-ran fail until the recipe learns to
+# run it, which is the point: joining the E2E workflow is a decision, not an
+# accident.
 #
 # Three modes, all called by the `e2e` recipe in the justfile (which the E2E
 # workflow runs — see .github/workflows/e2e.yaml):
@@ -39,13 +41,19 @@
 
 set -euo pipefail
 
-# Fatal when nothing matches: zero gated ITCases means the annotation moved or
-# the tree layout changed, and every mode below would otherwise degenerate into
-# a vacuous pass.
-sources=$(grep -rl --include='*.java' 'named = "BQ_IT_PROJECT"' ./*/src/test/java | sort) || {
-    echo '::error::no test class is gated on BQ_IT_PROJECT; the gating annotation moved or the tree layout changed' >&2
-    exit 1
-}
+# Fatal when a gate matches nothing: zero gated ITCases for a connector means
+# the annotation moved or the tree layout changed, and every mode below would
+# otherwise degenerate into a vacuous pass for that connector while the other
+# one keeps the union non-empty.
+sources=''
+for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT; do
+    matched=$(grep -rl --include='*.java' "named = \"$gate\"" ./*/src/test/java | sort) || {
+        echo "::error::no test class is gated on $gate; the gating annotation moved or the tree layout changed" >&2
+        exit 1
+    }
+    sources="$sources$matched"$'\n'
+done
+sources=$(printf '%s' "$sources" | sort -u)
 
 case "${1:-}" in
     '')
@@ -57,8 +65,9 @@ case "${1:-}" in
         ;;
     --require-env)
         # The union of what the gates read: BQ_IT_PROJECT/BQ_IT_DATASET gate
-        # every class, BQ_IT_GCS_BUCKET additionally gates the FILE_LOADS ones.
-        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET; do
+        # every BigQuery class, BQ_IT_GCS_BUCKET additionally gates the
+        # FILE_LOADS ones, PUBSUB_IT_PROJECT gates the Pub/Sub suite.
+        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT; do
             if [ -z "${!var:-}" ]; then
                 echo "::error::$var is not set, so the gated real-GCP ITCases would silently skip. Locally the variables come from the uncommitted .env at the repository root, which mise loads." >&2
                 exit 1
