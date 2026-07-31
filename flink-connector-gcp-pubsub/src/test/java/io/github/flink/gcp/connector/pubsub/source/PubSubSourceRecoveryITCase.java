@@ -151,7 +151,7 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
                     .as("the injected failure fired, so a restart actually happened")
                     .isTrue();
         } finally {
-            job.cancel().get(30, TimeUnit.SECONDS);
+            cancelQuietly(job);
             ThrowOnceAfterCompletedCheckpoint.forget(runId);
             RecordingMap.forget(runId);
         }
@@ -212,7 +212,7 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
                                     SavepointFormatType.CANONICAL)
                             .get(COLLECT_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
         } catch (Exception e) {
-            firstJob.cancel();
+            cancelQuietly(firstJob);
             throw e;
         } finally {
             RecordingMap.forget(firstRunId);
@@ -237,7 +237,7 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
                                     && RecordingMap.records(secondRunId)
                                             .containsAll(tagged(afterSavepoint, second)));
         } finally {
-            secondJob.cancel().get(30, TimeUnit.SECONDS);
+            cancelQuietly(secondJob);
             RecordingMap.forget(secondRunId);
         }
     }
@@ -284,6 +284,19 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
                 .map(new RecordingMap(runId))
                 .sinkTo(new DiscardingSink<>());
         return env.executeAsync();
+    }
+
+    /**
+     * Cancels without letting the cancellation fail the test: in a finally block a job that already
+     * ended would otherwise throw here and replace the assertion error actually being reported, and
+     * skip the static-registry cleanup after it.
+     */
+    private static void cancelQuietly(JobClient job) {
+        try {
+            job.cancel().get(30, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            // Best effort only.
+        }
     }
 
     private static List<String> payloads(String prefix, int count) {
