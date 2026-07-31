@@ -33,16 +33,9 @@ import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TableResult;
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
-import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
-import com.google.cloud.bigquery.storage.v1.TableSchema;
-import com.google.protobuf.ByteString;
-import com.google.protobuf.Descriptors;
-import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -91,59 +84,6 @@ class BigQueryBufferedStreamExactlyOnceITCase {
 
     /** Trips once per JVM: the induced failure fires on the first pass only. */
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
-
-    private static final TableSchema SCHEMA =
-            TableSchema.newBuilder()
-                    .addFields(
-                            TableFieldSchema.newBuilder()
-                                    .setName("name")
-                                    .setType(TableFieldSchema.Type.STRING)
-                                    .setMode(TableFieldSchema.Mode.REQUIRED))
-                    .addFields(
-                            TableFieldSchema.newBuilder()
-                                    .setName("value")
-                                    .setType(TableFieldSchema.Type.INT64)
-                                    .setMode(TableFieldSchema.Mode.NULLABLE))
-                    .build();
-
-    /** Rows travel as {@code "name|value"} strings. */
-    private static final class RowSerializer extends BigQueryProtoSerializer<String> {
-        private static final long serialVersionUID = 1L;
-
-        private transient Descriptors.Descriptor descriptor;
-
-        @Override
-        public TableSchema getTableSchema(TableDestination destination) {
-            return SCHEMA;
-        }
-
-        @Override
-        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-            return descriptor();
-        }
-
-        private Descriptors.Descriptor descriptor() {
-            if (descriptor == null) {
-                try {
-                    descriptor =
-                            BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                                    SCHEMA);
-                } catch (Descriptors.DescriptorValidationException e) {
-                    throw new IllegalStateException(e);
-                }
-            }
-            return descriptor;
-        }
-
-        @Override
-        public ByteString serialize(String element) {
-            String[] parts = element.split("\\|", -1);
-            DynamicMessage.Builder row = DynamicMessage.newBuilder(descriptor());
-            row.setField(descriptor().findFieldByName("name"), parts[0]);
-            row.setField(descriptor().findFieldByName("value"), Long.parseLong(parts[1]));
-            return row.build().toByteString();
-        }
-    }
 
     @AfterAll
     static void cleanUp() {
@@ -252,7 +192,7 @@ class BigQueryBufferedStreamExactlyOnceITCase {
         return BigQuerySink.<String>builder()
                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
                 .destination(TableDestination.of(PROJECT, DATASET, table))
-                .serializer(new RowSerializer())
+                .serializer(new NameValueRowSerializer())
                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                 .build();
     }
@@ -265,7 +205,7 @@ class BigQueryBufferedStreamExactlyOnceITCase {
                                         StandardTableDefinition.newBuilder()
                                                 .setSchema(
                                                         StorageSchemaConverter.toBigQuerySchema(
-                                                                SCHEMA))
+                                                                NameValueRowSerializer.SCHEMA))
                                                 .build())
                                 .build());
     }

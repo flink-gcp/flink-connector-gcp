@@ -119,6 +119,13 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
 
     @Test
     void connectorWidensTheTableAndWritesThroughRealPropagation() throws Exception {
+        // Fail loud, not with a bare NPE: this class's gate deliberately omits the BQ_IT_PROJECT
+        // annotation (see the class javadoc), so nothing else checks the variable is set.
+        assertThat(RealBigQuery.project())
+                .as(
+                        "BQ_IT_PROJECT (and GOOGLE_CLOUD_PROJECT) must be set alongside"
+                                + " BQ_IT_SCHEMA_EVOLUTION")
+                .isNotNull();
         RealBigQuery.createTable(TABLE, V1);
         EvolvingSerializer serializer = new EvolvingSerializer(V1);
         BigQueryDefaultStreamSink<String> sink =

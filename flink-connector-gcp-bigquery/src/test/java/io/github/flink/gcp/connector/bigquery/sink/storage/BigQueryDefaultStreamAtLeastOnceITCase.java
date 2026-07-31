@@ -27,17 +27,10 @@ import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import com.google.cloud.bigquery.FieldValueList;
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
-import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
-import com.google.cloud.bigquery.storage.v1.TableSchema;
-import com.google.protobuf.ByteString;
-import com.google.protobuf.Descriptors;
-import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -93,59 +86,6 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
 
     /** Trips once per JVM: the induced failure fires on the first pass only. */
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
-
-    private static final TableSchema SCHEMA =
-            TableSchema.newBuilder()
-                    .addFields(
-                            TableFieldSchema.newBuilder()
-                                    .setName("name")
-                                    .setType(TableFieldSchema.Type.STRING)
-                                    .setMode(TableFieldSchema.Mode.REQUIRED))
-                    .addFields(
-                            TableFieldSchema.newBuilder()
-                                    .setName("value")
-                                    .setType(TableFieldSchema.Type.INT64)
-                                    .setMode(TableFieldSchema.Mode.NULLABLE))
-                    .build();
-
-    /** Rows travel as {@code "name|value"} strings. */
-    private static final class RowSerializer extends BigQueryProtoSerializer<String> {
-        private static final long serialVersionUID = 1L;
-
-        private transient Descriptors.Descriptor descriptor;
-
-        @Override
-        public TableSchema getTableSchema(TableDestination destination) {
-            return SCHEMA;
-        }
-
-        @Override
-        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-            return descriptor();
-        }
-
-        private Descriptors.Descriptor descriptor() {
-            if (descriptor == null) {
-                try {
-                    descriptor =
-                            BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                                    SCHEMA);
-                } catch (Descriptors.DescriptorValidationException e) {
-                    throw new IllegalStateException(e);
-                }
-            }
-            return descriptor;
-        }
-
-        @Override
-        public ByteString serialize(String element) {
-            String[] parts = element.split("\\|", -1);
-            DynamicMessage.Builder row = DynamicMessage.newBuilder(descriptor());
-            row.setField(descriptor().findFieldByName("name"), parts[0]);
-            row.setField(descriptor().findFieldByName("value"), Long.parseLong(parts[1]));
-            return row.build().toByteString();
-        }
-    }
 
     @AfterAll
     static void cleanUp() {
@@ -231,7 +171,7 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
                 Types.STRING);
     }
 
-    /** A sink routing each record to {@code <prefix><value % tableCount>_<RUN_ID>}. */
+    /** A sink routing each record to {@link #table}{@code (prefix, value % tableCount)}. */
     private static org.apache.flink.api.connector.sink2.Sink<String> sink(
             String prefix, int tableCount) {
         String project = RealBigQuery.project();
@@ -244,14 +184,15 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
                             return TableDestination.of(
                                     project, dataset, table(prefix, (int) (value % tableCount)));
                         })
-                .serializer(new RowSerializer())
+                .serializer(new NameValueRowSerializer())
                 .build();
     }
 
     /**
      * One query job over all the tables instead of a query job per assertion per table: per table,
-     * the distinct count (gaps), the total count (at-least-once lower bound) and a misrouting
-     * counter.
+     * the distinct count (a shortfall is a gap; duplicates are permitted by at-least-once and
+     * deliberately unasserted — {@code COUNT(*) >= COUNT(DISTINCT)} holds trivially) and a
+     * misrouting counter.
      */
     private static void assertTablesComplete(String prefix, int tableCount, long recordCount)
             throws Exception {
@@ -261,7 +202,7 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
                                 .mapToObj(
                                         i ->
                                                 String.format(
-                                                        "SELECT %1$d AS t, COUNT(*) AS cnt,"
+                                                        "SELECT %1$d AS t,"
                                                                 + " COUNT(DISTINCT value) AS dst,"
                                                                 + " COUNTIF(MOD(value, %2$d) != %1$d)"
                                                                 + " AS misrouted FROM %3$s",
@@ -278,10 +219,6 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
             assertThat(row.get("dst").getLongValue())
                     .as("distinct values in table %d", tableIndex)
                     .isEqualTo(expectedDistinct);
-            // At-least-once: duplicates are permitted, loss is not.
-            assertThat(row.get("cnt").getLongValue())
-                    .as("row count in table %d", tableIndex)
-                    .isGreaterThanOrEqualTo(expectedDistinct);
             assertThat(row.get("misrouted").getLongValue())
                     .as("misrouted rows in table %d", tableIndex)
                     .isZero();
@@ -290,7 +227,7 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
 
     private static void createTables(String prefix, int count) {
         for (int i = 0; i < count; i++) {
-            RealBigQuery.createTable(table(prefix, i), SCHEMA);
+            RealBigQuery.createTable(table(prefix, i), NameValueRowSerializer.SCHEMA);
         }
     }
 
