@@ -110,7 +110,13 @@ class PubSubDeadLetterRealGcpITCase extends AbstractPubSubRealGcpITCase {
             Set<String> deadLettered = pullAndAckUntil(deadLetterObserver, 1, FORWARDING_TIMEOUT);
             assertThat(deadLettered).containsExactly("poison");
         } finally {
-            job.cancel().get(30, TimeUnit.SECONDS);
+            // Best effort, as in PubSubSourceRecoveryITCase: a job that already ended would throw
+            // here and replace the assertion error actually being reported.
+            try {
+                job.cancel().get(30, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                // Best effort only.
+            }
         }
     }
 
