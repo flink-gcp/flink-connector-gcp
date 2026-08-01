@@ -146,18 +146,22 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   native locking. These two workflows are the standing exception to the #111 just-recipe rule:
   tfaction is itself the named, rerunnable sequence, and `just tofu <args>` is the local
   equivalent. They run on plain `GITHUB_TOKEN` — no GitHub App, so tfaction's push-back features
-  (auto-fix commits, follow-up PRs) are unused. **A failed apply is recovered by a follow-up
-  pull request**, never by re-running the apply job: the failure bumps the state serial, making
-  the saved plan stale, so a re-run can only fail again ("Saved plan is stale") — and tofu
-  cancels unstarted operations on the first error, so assume nothing from the failed apply
-  exists until measured. tfaction's native automation of that follow-up PR needs the GitHub App,
-  deliberately deferred to the dedicated org at go-public time (#177; decided with the user on
-  #176, where a dispatch-triggered fresh-apply workflow was built as an alternative and
-  withdrawn in the App's favour). Two service-agent facts from the same incident: enabling an
-  API does **not** create its service agent (they provision lazily; `gcloud beta services
-  identity create` is the per-service one-off, in `opentofu/README.md`), and granting to a
-  nonexistent `gcp-sa-*` member fails as a misleading `Policy update access denied`, not a
-  "does not exist"
+  (auto-fix commits, follow-up PRs) are unused. **The apply workflow must set
+  `TFACTION_IS_APPLY: "true"`** — tfaction's job_type is "terraform" for plan and apply alike,
+  and setup falls back to `terraform_plan_config` (the read-only account) without it; that
+  misconfiguration shipped with #168 and hid behind no-change applies until #170's first real
+  write, whose 403s were then misdiagnosed twice (a missing service agent was blamed on evidence
+  that never included the authenticated principal — **read the auth step's log first**).
+  **A failed apply is recovered by a follow-up pull request**, never by re-running the apply
+  job: the failure bumps the state serial, making the saved plan stale, so a re-run can only
+  fail again ("Saved plan is stale") — and tofu cancels unstarted operations on the first
+  error, so assume nothing from the failed apply exists until measured. tfaction's native
+  automation of that follow-up PR needs the GitHub App, deliberately deferred to the dedicated
+  org at go-public time (#177; decided with the user on #176, where a dispatch-triggered
+  fresh-apply workflow was built as an alternative and withdrawn in the App's favour). One
+  service-agent fact worth keeping: enabling an API does **not** create its service agent (they
+  provision lazily; `gcloud beta services identity create` is the per-service one-off, in
+  `opentofu/README.md`)
 - **No service account keys, ever.** All CI credentials are short-lived WIF tokens; the provider
   condition pins the immutable repository/owner IDs, and per-account bindings restrict the apply
   account to `push` on `main` and the E2E account to `push`/`schedule`/`workflow_dispatch` on
@@ -282,10 +286,15 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   is why #132 added code generation without touching CI. None of this changes why `just` comes from
   `taiki-e/install-action` in every workflow: that rests on its own reason, one binary on `PATH` and
   no shims at all
-- `docs.yaml` and `lint.yaml` both carry `paths` filters, so a pull request touching neither
-  never reports them. Fine while they are optional — but **a required check that never reports
-  blocks a pull request forever**, so making either one required means dropping its filter or
-  adding a job that reports success when the filter does not match
+- `docs.yaml` and `lint.yaml` both carry `paths` filters, and `ci.yaml` carries a
+  `paths-ignore` for changes that cannot affect the Maven build: `opentofu/**`, the tofu
+  workflows, and `**/README.md` / `**/CLAUDE.md` — the last two only because apache-rat's
+  exclude list already carries exactly those patterns, so no licence-header check is lost.
+  `docs/` markdown is deliberately not ignored: rat scans it and `ci.yaml` is its only
+  pre-merge check. A pull request touching only ignored paths never reports these checks. Fine while they are optional — but **a
+  required check that never reports blocks a pull request forever**, so making any of them
+  required means dropping its filter or adding a job that reports success when the filter does
+  not match
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
