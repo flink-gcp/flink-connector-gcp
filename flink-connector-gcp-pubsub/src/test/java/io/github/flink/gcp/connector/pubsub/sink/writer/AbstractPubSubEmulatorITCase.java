@@ -18,28 +18,13 @@ package io.github.flink.gcp.connector.pubsub.sink.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.GrpcTransportChannel;
-import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.api.gax.rpc.NotFoundException;
-import com.google.api.gax.rpc.TransportChannelProvider;
-import com.google.cloud.pubsub.v1.SubscriptionAdminClient;
-import com.google.cloud.pubsub.v1.SubscriptionAdminSettings;
-import com.google.cloud.pubsub.v1.TopicAdminClient;
-import com.google.cloud.pubsub.v1.TopicAdminSettings;
-import com.google.cloud.pubsub.v1.stub.GrpcSubscriberStub;
-import com.google.cloud.pubsub.v1.stub.SubscriberStub;
-import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
-import com.google.pubsub.v1.AcknowledgeRequest;
 import com.google.pubsub.v1.ProjectSubscriptionName;
 import com.google.pubsub.v1.PubsubMessage;
-import com.google.pubsub.v1.PullRequest;
 import com.google.pubsub.v1.PushConfig;
-import com.google.pubsub.v1.ReceivedMessage;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
-import io.github.flink.gcp.connector.pubsub.PubSubEmulatorContainers;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
 import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -47,8 +32,8 @@ import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
+import io.github.flink.gcp.connector.testutils.pubsub.PubSubEmulatorContainers;
+import io.github.flink.gcp.connector.testutils.pubsub.PubSubTestClients;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
@@ -59,19 +44,15 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Shared harness for integration tests against the Pub/Sub emulator: the container, plaintext
- * admin/subscriber clients pointed at it, and a no-op {@link SinkWriter.Context}. Writers under
- * test use the production {@code DefaultPublisherFactory} and {@code PubSubTopicAdmin} in their
- * emulator-endpoint mode.
+ * Shared harness for integration tests against the Pub/Sub emulator: the container, the
+ * emulator-transport {@link PubSubTestClients}, and a no-op {@link SinkWriter.Context}. Writers
+ * under test use the production {@code DefaultPublisherFactory} and {@code PubSubTopicAdmin} in
+ * their emulator-endpoint mode.
  */
 @Testcontainers
 @Timeout(180)
@@ -93,50 +74,17 @@ abstract class AbstractPubSubEmulatorITCase {
     @Container
     private static final PubSubEmulatorContainer EMULATOR = PubSubEmulatorContainers.newContainer();
 
-    private static ManagedChannel channel;
-    private static TransportChannelProvider channelProvider;
-    static TopicAdminClient topicAdminClient;
-    static SubscriptionAdminClient subscriptionAdminClient;
-    private static SubscriberStub subscriberStub;
+    private static PubSubTestClients clients;
 
     @BeforeAll
     static void createClients() throws IOException {
-        channel =
-                ManagedChannelBuilder.forTarget(EMULATOR.getEmulatorEndpoint())
-                        .usePlaintext()
-                        .build();
-        // A fixed provider is not auto-closed by the clients, so all of them can share this
-        // one channel.
-        channelProvider =
-                FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel));
-        topicAdminClient = newTopicAdminClient();
-        subscriptionAdminClient =
-                SubscriptionAdminClient.create(
-                        SubscriptionAdminSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
-        subscriberStub =
-                GrpcSubscriberStub.create(
-                        SubscriberStubSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
+        clients = PubSubTestClients.forEmulator(EMULATOR.getEmulatorEndpoint());
     }
 
     @AfterAll
     static void closeClients() {
-        if (subscriberStub != null) {
-            subscriberStub.close();
-        }
-        if (subscriptionAdminClient != null) {
-            subscriptionAdminClient.close();
-        }
-        if (topicAdminClient != null) {
-            topicAdminClient.close();
-        }
-        if (channel != null) {
-            channel.shutdownNow();
+        if (clients != null) {
+            clients.close();
         }
     }
 
@@ -151,14 +99,6 @@ abstract class AbstractPubSubEmulatorITCase {
      */
     static TopicAdmin newTopicAdmin() {
         return new PubSubTopicAdmin(emulatorEndpoint());
-    }
-
-    private static TopicAdminClient newTopicAdminClient() throws IOException {
-        return TopicAdminClient.create(
-                TopicAdminSettings.newBuilder()
-                        .setTransportChannelProvider(channelProvider)
-                        .setCredentialsProvider(NoCredentialsProvider.create())
-                        .build());
     }
 
     /**
@@ -177,14 +117,14 @@ abstract class AbstractPubSubEmulatorITCase {
 
     /** Creates the topic through the harness-owned admin client. */
     static void createTopic(TopicDestination destination) {
-        topicAdminClient.createTopic(
-                TopicName.of(destination.getProject(), destination.getTopic()));
+        clients.topicAdmin()
+                .createTopic(TopicName.of(destination.getProject(), destination.getTopic()));
     }
 
     static boolean topicExists(TopicDestination destination) {
         try {
-            topicAdminClient.getTopic(
-                    TopicName.of(destination.getProject(), destination.getTopic()));
+            clients.topicAdmin()
+                    .getTopic(TopicName.of(destination.getProject(), destination.getTopic()));
             return true;
         } catch (NotFoundException e) {
             return false;
@@ -193,27 +133,29 @@ abstract class AbstractPubSubEmulatorITCase {
 
     /** Returns the topic as the service reports it. */
     static com.google.pubsub.v1.Topic describeTopic(TopicDestination destination) {
-        return topicAdminClient.getTopic(
-                TopicName.of(destination.getProject(), destination.getTopic()));
+        return clients.topicAdmin()
+                .getTopic(TopicName.of(destination.getProject(), destination.getTopic()));
     }
 
     static void createSubscription(TopicDestination topic, String subscriptionId) {
-        subscriptionAdminClient.createSubscription(
-                SubscriptionName.of(PROJECT, subscriptionId),
-                TopicName.of(topic.getProject(), topic.getTopic()),
-                PushConfig.getDefaultInstance(),
-                10);
+        clients.subscriptionAdmin()
+                .createSubscription(
+                        SubscriptionName.of(PROJECT, subscriptionId),
+                        TopicName.of(topic.getProject(), topic.getTopic()),
+                        PushConfig.getDefaultInstance(),
+                        10);
     }
 
     /** Creates a subscription that preserves ordering-key delivery order. */
     static void createOrderedSubscription(TopicDestination topic, String subscriptionId) {
-        subscriptionAdminClient.createSubscription(
-                Subscription.newBuilder()
-                        .setName(SubscriptionName.format(PROJECT, subscriptionId))
-                        .setTopic(TopicName.format(topic.getProject(), topic.getTopic()))
-                        .setAckDeadlineSeconds(10)
-                        .setEnableMessageOrdering(true)
-                        .build());
+        clients.subscriptionAdmin()
+                .createSubscription(
+                        Subscription.newBuilder()
+                                .setName(SubscriptionName.format(PROJECT, subscriptionId))
+                                .setTopic(TopicName.format(topic.getProject(), topic.getTopic()))
+                                .setAckDeadlineSeconds(10)
+                                .setEnableMessageOrdering(true)
+                                .build());
     }
 
     /** Pulls up to {@code maxMessages} from the subscription and returns their UTF-8 payloads. */
@@ -232,20 +174,8 @@ abstract class AbstractPubSubEmulatorITCase {
     static Set<String> pullDistinctPayloadsUntil(
             String subscriptionId, int expectedDistinct, Duration deadline)
             throws InterruptedException {
-        Set<String> payloads = new LinkedHashSet<>();
-        long deadlineNanos = System.nanoTime() + deadline.toNanos();
-        while (payloads.size() < expectedDistinct && System.nanoTime() < deadlineNanos) {
-            List<ReceivedMessage> received = pull(subscriptionId, 1_000);
-            if (received.isEmpty()) {
-                Thread.sleep(100);
-                continue;
-            }
-            acknowledge(subscriptionId, received);
-            received.stream()
-                    .map(m -> m.getMessage().getData().toString(StandardCharsets.UTF_8))
-                    .forEach(payloads::add);
-        }
-        return payloads;
+        return clients.pullAndAckUntil(
+                subscriptionPath(subscriptionId), expectedDistinct, deadline);
     }
 
     /**
@@ -259,52 +189,15 @@ abstract class AbstractPubSubEmulatorITCase {
     static List<PubsubMessage> pullMessagesUntil(
             String subscriptionId, int expectedCount, Duration deadline)
             throws InterruptedException {
-        Map<String, PubsubMessage> byMessageId = new LinkedHashMap<>();
-        long deadlineNanos = System.nanoTime() + deadline.toNanos();
-        while (byMessageId.size() < expectedCount && System.nanoTime() < deadlineNanos) {
-            List<ReceivedMessage> received = pull(subscriptionId, 1_000);
-            if (received.isEmpty()) {
-                Thread.sleep(100);
-                continue;
-            }
-            acknowledge(subscriptionId, received);
-            received.forEach(
-                    m -> byMessageId.putIfAbsent(m.getMessage().getMessageId(), m.getMessage()));
-        }
-        return new ArrayList<>(byMessageId.values());
+        return clients.pullMessagesUntil(subscriptionPath(subscriptionId), expectedCount, deadline);
     }
 
     /** Pulls up to {@code maxMessages} from the subscription and returns the full messages. */
     static List<PubsubMessage> pullMessages(String subscriptionId, int maxMessages) {
-        return pull(subscriptionId, maxMessages).stream()
-                .map(received -> received.getMessage())
-                .collect(Collectors.toList());
+        return clients.pullMessages(subscriptionPath(subscriptionId), maxMessages);
     }
 
-    /** Acks a pulled batch so the next pull returns the remainder rather than a redelivery. */
-    private static void acknowledge(String subscriptionId, List<ReceivedMessage> received) {
-        subscriberStub
-                .acknowledgeCallable()
-                .call(
-                        AcknowledgeRequest.newBuilder()
-                                .setSubscription(
-                                        ProjectSubscriptionName.format(PROJECT, subscriptionId))
-                                .addAllAckIds(
-                                        received.stream()
-                                                .map(ReceivedMessage::getAckId)
-                                                .collect(Collectors.toList()))
-                                .build());
-    }
-
-    private static List<ReceivedMessage> pull(String subscriptionId, int maxMessages) {
-        return subscriberStub
-                .pullCallable()
-                .call(
-                        PullRequest.newBuilder()
-                                .setSubscription(
-                                        ProjectSubscriptionName.format(PROJECT, subscriptionId))
-                                .setMaxMessages(maxMessages)
-                                .build())
-                .getReceivedMessagesList();
+    private static String subscriptionPath(String subscriptionId) {
+        return ProjectSubscriptionName.format(PROJECT, subscriptionId);
     }
 }

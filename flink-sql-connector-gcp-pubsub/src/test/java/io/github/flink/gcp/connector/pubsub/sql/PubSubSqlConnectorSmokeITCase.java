@@ -24,19 +24,11 @@ import org.apache.flink.table.api.TableResult;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
-import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.GrpcTransportChannel;
-import com.google.api.gax.rpc.FixedTransportChannelProvider;
-import com.google.api.gax.rpc.TransportChannelProvider;
-import com.google.cloud.pubsub.v1.SubscriptionAdminClient;
-import com.google.cloud.pubsub.v1.SubscriptionAdminSettings;
-import com.google.cloud.pubsub.v1.TopicAdminClient;
-import com.google.cloud.pubsub.v1.TopicAdminSettings;
 import com.google.pubsub.v1.PushConfig;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
+import io.github.flink.gcp.connector.testutils.pubsub.PubSubEmulatorContainers;
+import io.github.flink.gcp.connector.testutils.pubsub.PubSubTestClients;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -44,7 +36,6 @@ import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.PubSubEmulatorContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -77,10 +68,11 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * connector uses its relocated copy. That the two coexist on one classpath is not incidental — it
  * is the property an uber-jar exists to provide.
  *
- * <p>The emulator container is duplicated here rather than shared with the connector module's
- * harness: that harness is not published, and its helpers touch production classes whose relocated
- * and unrelocated forms would not type-check against each other across this boundary. Folding the
- * emulator harnesses together is tracked in issue #27; this is a third copy to fold in.
+ * <p>The container image and the stock clients come from the shared test-utils module ({@link
+ * PubSubEmulatorContainers}, {@link PubSubTestClients}), which deals only in stock {@code
+ * com.google.*} types — the connector module's harnesses cannot be reused here, because their
+ * helpers touch production classes whose relocated and unrelocated forms would not type-check
+ * against each other across this boundary (issue #27).
  */
 @Testcontainers
 @Timeout(180)
@@ -95,47 +87,19 @@ class PubSubSqlConnectorSmokeITCase {
     private static final Duration COLLECT_TIMEOUT = Duration.ofSeconds(60);
 
     @Container
-    private static final PubSubEmulatorContainer EMULATOR =
-            new PubSubEmulatorContainer(
-                    DockerImageName.parse(
-                            "gcr.io/google.com/cloudsdktool/google-cloud-cli:441.0.0-emulators"));
+    private static final PubSubEmulatorContainer EMULATOR = PubSubEmulatorContainers.newContainer();
 
-    private static ManagedChannel channel;
-    private static TopicAdminClient topicAdminClient;
-    private static SubscriptionAdminClient subscriptionAdminClient;
+    private static PubSubTestClients clients;
 
     @BeforeAll
     static void createClients() throws IOException {
-        channel =
-                ManagedChannelBuilder.forTarget(EMULATOR.getEmulatorEndpoint())
-                        .usePlaintext()
-                        .build();
-        TransportChannelProvider channelProvider =
-                FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel));
-        topicAdminClient =
-                TopicAdminClient.create(
-                        TopicAdminSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
-        subscriptionAdminClient =
-                SubscriptionAdminClient.create(
-                        SubscriptionAdminSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
+        clients = PubSubTestClients.forEmulator(EMULATOR.getEmulatorEndpoint());
     }
 
     @AfterAll
-    static void closeClients() throws InterruptedException {
-        if (subscriptionAdminClient != null) {
-            subscriptionAdminClient.close();
-        }
-        if (topicAdminClient != null) {
-            topicAdminClient.close();
-        }
-        if (channel != null) {
-            channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
+    static void closeClients() {
+        if (clients != null) {
+            clients.close();
         }
     }
 
@@ -156,12 +120,13 @@ class PubSubSqlConnectorSmokeITCase {
     @Test
     void whatSqlWritesThroughTheShadedClassesIsWhatSqlReadsBack() throws Exception {
         String name = "sql-smoke";
-        topicAdminClient.createTopic(TopicName.of(PROJECT, name));
-        subscriptionAdminClient.createSubscription(
-                SubscriptionName.of(PROJECT, name).toString(),
-                TopicName.of(PROJECT, name).toString(),
-                PushConfig.getDefaultInstance(),
-                60);
+        clients.topicAdmin().createTopic(TopicName.of(PROJECT, name));
+        clients.subscriptionAdmin()
+                .createSubscription(
+                        SubscriptionName.of(PROJECT, name).toString(),
+                        TopicName.of(PROJECT, name).toString(),
+                        PushConfig.getDefaultInstance(),
+                        60);
 
         TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
         // The source acknowledges on checkpoint completion and fails the job if no checkpoint ever

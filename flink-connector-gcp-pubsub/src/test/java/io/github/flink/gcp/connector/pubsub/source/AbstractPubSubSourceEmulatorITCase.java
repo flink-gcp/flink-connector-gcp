@@ -16,32 +16,17 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
-import com.google.api.core.ApiFuture;
-import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.GrpcTransportChannel;
-import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.api.gax.rpc.NotFoundException;
-import com.google.api.gax.rpc.TransportChannelProvider;
-import com.google.cloud.pubsub.v1.Publisher;
-import com.google.cloud.pubsub.v1.SubscriptionAdminClient;
-import com.google.cloud.pubsub.v1.SubscriptionAdminSettings;
-import com.google.cloud.pubsub.v1.TopicAdminClient;
-import com.google.cloud.pubsub.v1.TopicAdminSettings;
-import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
-import com.google.pubsub.v1.PullRequest;
-import com.google.pubsub.v1.PullResponse;
 import com.google.pubsub.v1.PushConfig;
-import com.google.pubsub.v1.ReceivedMessage;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
-import io.github.flink.gcp.connector.pubsub.PubSubEmulatorContainers;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.PubSubSubscriptionAdmin;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
+import io.github.flink.gcp.connector.testutils.pubsub.PubSubEmulatorContainers;
+import io.github.flink.gcp.connector.testutils.pubsub.PubSubTestClients;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
@@ -50,27 +35,22 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
 /**
- * Shared harness for integration tests against the Pub/Sub emulator: the container, plaintext admin
- * clients, and helpers to create topics and subscriptions, publish into them and pull back out.
- * Connectors under test use the production factories in their emulator-endpoint mode.
+ * Shared harness for integration tests against the Pub/Sub emulator: the container, the
+ * emulator-transport {@link PubSubTestClients}, and connector-typed helpers to create topics and
+ * subscriptions, publish into them and pull back out. Connectors under test use the production
+ * factories in their emulator-endpoint mode.
  *
  * <p>Named for the source because that is where it started; the table tests build on it too, since
  * asserting what a sink published means pulling from a subscription. The sink's own harness is
- * still separate — it is package-private in the writer package — and folding the two together is
- * tracked in issue #27. Only the container image is shared, through {@link
- * PubSubEmulatorContainers}.
+ * still separate — it is package-private in the writer package — but both delegate their client
+ * work to the same {@link PubSubTestClients}, so only the connector-typed conveniences differ.
  */
 @Testcontainers
 @Timeout(180)
@@ -88,45 +68,17 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
     @Container
     private static final PubSubEmulatorContainer EMULATOR = PubSubEmulatorContainers.newContainer();
 
-    private static ManagedChannel channel;
-    private static TransportChannelProvider channelProvider;
-    private static TopicAdminClient topicAdminClient;
-    private static SubscriptionAdminClient subscriptionAdminClient;
+    private static PubSubTestClients clients;
 
     @BeforeAll
     static void createClients() throws IOException {
-        channel =
-                ManagedChannelBuilder.forTarget(EMULATOR.getEmulatorEndpoint())
-                        .usePlaintext()
-                        .build();
-        // A fixed provider is not auto-closed by the clients, so all of them can share this one
-        // channel.
-        channelProvider =
-                FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel));
-        topicAdminClient =
-                TopicAdminClient.create(
-                        TopicAdminSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
-        subscriptionAdminClient =
-                SubscriptionAdminClient.create(
-                        SubscriptionAdminSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
+        clients = PubSubTestClients.forEmulator(EMULATOR.getEmulatorEndpoint());
     }
 
     @AfterAll
     static void closeClients() {
-        if (subscriptionAdminClient != null) {
-            subscriptionAdminClient.close();
-        }
-        if (topicAdminClient != null) {
-            topicAdminClient.close();
-        }
-        if (channel != null) {
-            channel.shutdownNow();
+        if (clients != null) {
+            clients.close();
         }
     }
 
@@ -146,12 +98,13 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
     public static SubscriptionDestination createTopicAndSubscription(
             String name, int ackDeadlineSeconds) {
         TopicName topic = TopicName.of(PROJECT, name);
-        topicAdminClient.createTopic(topic);
-        subscriptionAdminClient.createSubscription(
-                SubscriptionName.of(PROJECT, name),
-                topic,
-                PushConfig.getDefaultInstance(),
-                ackDeadlineSeconds);
+        clients.topicAdmin().createTopic(topic);
+        clients.subscriptionAdmin()
+                .createSubscription(
+                        SubscriptionName.of(PROJECT, name),
+                        topic,
+                        PushConfig.getDefaultInstance(),
+                        ackDeadlineSeconds);
         return SubscriptionDestination.of(PROJECT, name);
     }
 
@@ -159,20 +112,21 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
     public static SubscriptionDestination createTopicAndOrderedSubscription(
             String name, int ackDeadlineSeconds) {
         TopicName topic = TopicName.of(PROJECT, name);
-        topicAdminClient.createTopic(topic);
-        subscriptionAdminClient.createSubscription(
-                Subscription.newBuilder()
-                        .setName(SubscriptionName.format(PROJECT, name))
-                        .setTopic(topic.toString())
-                        .setAckDeadlineSeconds(ackDeadlineSeconds)
-                        .setEnableMessageOrdering(true)
-                        .build());
+        clients.topicAdmin().createTopic(topic);
+        clients.subscriptionAdmin()
+                .createSubscription(
+                        Subscription.newBuilder()
+                                .setName(SubscriptionName.format(PROJECT, name))
+                                .setTopic(topic.toString())
+                                .setAckDeadlineSeconds(ackDeadlineSeconds)
+                                .setEnableMessageOrdering(true)
+                                .build());
         return SubscriptionDestination.of(PROJECT, name);
     }
 
     /** Creates a topic without any subscription on it. */
     public static TopicDestination createTopic(String name) {
-        topicAdminClient.createTopic(TopicName.of(PROJECT, name));
+        clients.topicAdmin().createTopic(TopicName.of(PROJECT, name));
         return TopicDestination.of(PROJECT, name);
     }
 
@@ -187,7 +141,7 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
     /** Returns whether the topic exists. */
     public static boolean topicExists(String name) {
         try {
-            topicAdminClient.getTopic(TopicName.of(PROJECT, name));
+            clients.topicAdmin().getTopic(TopicName.of(PROJECT, name));
             return true;
         } catch (NotFoundException e) {
             return false;
@@ -196,13 +150,13 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
 
     /** Returns the topic as the service reports it. */
     public static com.google.pubsub.v1.Topic describeTopic(String name) {
-        return topicAdminClient.getTopic(TopicName.of(PROJECT, name));
+        return clients.topicAdmin().getTopic(TopicName.of(PROJECT, name));
     }
 
     /** Returns whether the subscription exists. */
     public static boolean subscriptionExists(SubscriptionDestination subscription) {
         try {
-            subscriptionAdminClient.getSubscription(subscription.toSubscriptionPath());
+            clients.subscriptionAdmin().getSubscription(subscription.toSubscriptionPath());
             return true;
         } catch (NotFoundException e) {
             return false;
@@ -211,7 +165,7 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
 
     /** Returns the subscription as the service reports it. */
     public static Subscription describeSubscription(SubscriptionDestination subscription) {
-        return subscriptionAdminClient.getSubscription(subscription.toSubscriptionPath());
+        return clients.subscriptionAdmin().getSubscription(subscription.toSubscriptionPath());
     }
 
     /**
@@ -224,43 +178,18 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
     public static Set<String> pullAndAckUntil(
             SubscriptionDestination subscription, int expected, Duration timeout)
             throws InterruptedException {
-        Set<String> payloads = new LinkedHashSet<>();
-        long deadline = System.nanoTime() + timeout.toNanos();
-        while (payloads.size() < expected && System.nanoTime() < deadline) {
-            List<String> pulled = pullAndAck(subscription, expected);
-            if (pulled.isEmpty()) {
-                Thread.sleep(100);
-            }
-            payloads.addAll(pulled);
-        }
-        return payloads;
+        return clients.pullAndAckUntil(subscription.toSubscriptionPath(), expected, timeout);
     }
 
     /**
      * Pulls and acknowledges until {@code expected} <em>distinct</em> messages have arrived or the
      * deadline passes, returning them whole — attributes and ordering key included, which {@link
      * #pullAndAckUntil} discards.
-     *
-     * <p>Distinct by message id, for the same reason {@link #pullAndAckUntil} collects into a set:
-     * an acknowledgement is not necessarily applied before the next pull is served, and the sink is
-     * at-least-once, so the same message can come back. Counting redeliveries would make every
-     * exact-count assertion a coin flip.
      */
     public static List<PubsubMessage> pullMessagesUntil(
             SubscriptionDestination subscription, int expected, Duration timeout)
             throws InterruptedException {
-        Map<String, PubsubMessage> messages = new LinkedHashMap<>();
-        long deadline = System.nanoTime() + timeout.toNanos();
-        while (messages.size() < expected && System.nanoTime() < deadline) {
-            List<PubsubMessage> pulled = pullMessagesAndAck(subscription, expected);
-            if (pulled.isEmpty()) {
-                Thread.sleep(100);
-            }
-            for (PubsubMessage message : pulled) {
-                messages.putIfAbsent(message.getMessageId(), message);
-            }
-        }
-        return new ArrayList<>(messages.values());
+        return clients.pullMessagesUntil(subscription.toSubscriptionPath(), expected, timeout);
     }
 
     /**
@@ -282,25 +211,7 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
      */
     public static List<PubsubMessage> pullMessagesAndAck(
             SubscriptionDestination subscription, int maxMessages) {
-        PullResponse response =
-                subscriptionAdminClient
-                        .getStub()
-                        .pullCallable()
-                        .call(
-                                PullRequest.newBuilder()
-                                        .setSubscription(subscription.toSubscriptionPath())
-                                        .setMaxMessages(maxMessages)
-                                        .build());
-        List<PubsubMessage> messages = new ArrayList<>(response.getReceivedMessagesCount());
-        List<String> ackIds = new ArrayList<>(response.getReceivedMessagesCount());
-        for (ReceivedMessage received : response.getReceivedMessagesList()) {
-            messages.add(received.getMessage());
-            ackIds.add(received.getAckId());
-        }
-        if (!ackIds.isEmpty()) {
-            subscriptionAdminClient.acknowledge(subscription.toSubscriptionPath(), ackIds);
-        }
-        return messages;
+        return clients.pullMessagesAndAck(subscription.toSubscriptionPath(), maxMessages);
     }
 
     /**
@@ -318,32 +229,6 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
      */
     public static void publishOrdered(String topicName, String orderingKey, String... payloads)
             throws IOException, InterruptedException, ExecutionException {
-        Publisher.Builder builder =
-                Publisher.newBuilder(TopicName.of(PROJECT, topicName))
-                        .setChannelProvider(channelProvider)
-                        .setCredentialsProvider(NoCredentialsProvider.create());
-        if (orderingKey != null) {
-            builder.setEnableMessageOrdering(true);
-        }
-        Publisher publisher = builder.build();
-        try {
-            List<ApiFuture<String>> published = new ArrayList<>(payloads.length);
-            for (String payload : payloads) {
-                PubsubMessage.Builder message =
-                        PubsubMessage.newBuilder()
-                                .setData(ByteString.copyFrom(payload, StandardCharsets.UTF_8));
-                if (orderingKey != null) {
-                    message.setOrderingKey(orderingKey);
-                }
-                published.add(publisher.publish(message.build()));
-            }
-            publisher.publishAllOutstanding();
-            for (ApiFuture<String> future : published) {
-                future.get();
-            }
-        } finally {
-            publisher.shutdown();
-            publisher.awaitTermination(30, TimeUnit.SECONDS);
-        }
+        clients.publishOrdered(TopicName.of(PROJECT, topicName), orderingKey, null, payloads);
     }
 }
