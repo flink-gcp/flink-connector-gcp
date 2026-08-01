@@ -87,28 +87,6 @@ message WellKnownTypes {
   WellKnownTypesChild w_child = 22;
 }
 
-// The singular well-known types on their own.
-//
-// Their own message because the BigQuery emulator (goccy 0.8.1) cannot insert
-// into a table that has an ARRAY<JSON> column at all — not even leaving it
-// empty — so an emulator write test cannot use `WellKnownTypes` above. The repeated
-// half is verified against real BigQuery instead.
-//
-// REMOVE THIS MESSAGE once the nightly real-GCP workflow lands (#28, #16): the
-// write test can then run against `WellKnownTypes` on the service, and this fixture
-// exists only to work around the emulator. It duplicates nothing else, so
-// deleting it and repointing BigQueryProtoWellKnownTypesITCase is the whole job.
-message SingularWellKnownTypes {
-  google.protobuf.Int64Value s_int64 = 1;
-  google.protobuf.BoolValue s_bool = 2;
-  google.protobuf.StringValue s_string = 3;
-  google.protobuf.Duration s_duration = 4;
-  google.protobuf.FieldMask s_mask = 5;
-  google.protobuf.Struct s_struct = 6;
-  google.protobuf.Value s_value = 7;
-  google.protobuf.ListValue s_list = 8;
-  google.protobuf.Any s_any = 9;
-}
 
 message WellKnownTypesChild {
   google.protobuf.StringValue c_string = 1;

@@ -16,8 +16,9 @@ name: E2E
 
 # Runs the ITCases gated on real-GCP credentials — the ones `just verify`
 # silently skips, checking exactly what the emulator cannot (idempotent
-# re-flush, load jobs, REPEATED JSON; see the testing section of the BigQuery
-# connector documentation). The whole run is `just e2e`, which also asserts the
+# re-flush, load jobs, the default-stream fan-out/restore suite, serializer
+# column-type fidelity; see the testing section of the BigQuery connector
+# documentation). The whole run is `just e2e`, which also asserts the
 # gated classes actually executed: @EnabledIfEnvironmentVariable makes a
 # missing variable a silent skip, so a workflow that lost its credentials would
 # otherwise go green — the worst failure mode for this job.

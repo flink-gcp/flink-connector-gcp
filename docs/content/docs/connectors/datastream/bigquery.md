@@ -1316,6 +1316,13 @@ credential-less CI:
   consume the whole weekly runner budget. The probe is gated on `BQ_IT_SCHEMA_EVOLUTION`, its
   javadoc records the measurement, and the hang is under investigation in
   [#174]({{< param BookRepo >}}/issues/174)
+- serializer column-type fidelity (`BigQuerySerializerFidelityITCase`): the encodings an
+  emulator divergence would silently corrupt — `NUMERIC`/`BIGNUMERIC` (decimal byte encoding)
+  and `TIME`/`DATETIME` (packed civil-time encoding), which the emulator reads back as unrelated
+  values and the emulator ITs therefore exclude, plus `TIMESTAMP` microsecond precision, `BYTES`,
+  `JSON` including the `REPEATED JSON` the emulator rejects outright, and `GEOGRAPHY` — written
+  per serializer (the full protobuf well-known-type fixture, an Avro schema, JSON documents) and
+  read back with typed accessors
 - load jobs: goccy/bigquery-emulator supports neither `gs://` load jobs nor a Cloud Storage
   endpoint, so the whole `FILE_LOADS` path runs against real services
   (`BigQueryFileLoadsITCase` and `BigQueryFileLoadsStreamingITCase`, env-gated as described
@@ -1328,6 +1335,4 @@ credential-less CI:
   no bucket needed)
 
 These gated ITCases run weekly in the E2E workflow via Workload Identity Federation
-([#28]({{< param BookRepo >}}/issues/28)); `just e2e` is the local equivalent. The remaining
-real-GCP coverage (column-type fidelity across the serializers) is tracked in
-[#16]({{< param BookRepo >}}/issues/16).
+([#28]({{< param BookRepo >}}/issues/28)); `just e2e` is the local equivalent.
