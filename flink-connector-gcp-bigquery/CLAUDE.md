@@ -452,20 +452,21 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   pre-empted, not caught, so the message can say which record it was. A **`BYTES` column takes a
   JSON array of byte values, never base64** (#131), and a **`JSON` column takes the JSON *text* as a
   string, never a nested object** — both contradict what a JSON document usually carries, and both
-  are pinned by tests so they read as known limitations. **The `BYTES` half is being fixed upstream,
-  not here** (#131): a local base64 pre-pass was designed and declined, because walking the schema
-  for `BYTES` paths would make this connector own a piece of the JSON→proto mapping it otherwise
-  delegates whole — and would shadow the library once it decodes base64 itself. Filed as
-  googleapis/google-cloud-java#13980 with a fix in googleapis/google-cloud-java#13981; the
-  scalar-`byte[]` asymmetry found alongside it is #13979. Two things measured while doing it, worth
-  not re-deriving: the fix belongs in `fillField`/`fillRepeatedField`, where the library's own
-  recursion already handles nested and repeated paths that a pre-pass here would have had to walk
-  itself — including matching keys case-insensitively, as the library does; and it must be guarded
-  on the `TableSchema` saying `BYTES`, since proto `BYTES` also carries `NUMERIC`/`BIGNUMERIC` and
-  an unguarded decode turns a `NUMERIC` error into a silently wrong value. When a `libraries-bom`
-  bump carries the fix, `bytesColumnsTakeAJsonArrayOfByteValuesAndNotBase64` is what fails and says
-  so. A **bare number in a `TIMESTAMP` column is
-  epoch microseconds**, so epoch-seconds and epoch-millis documents are accepted and stored as some
+  are pinned by tests so they read as known limitations. **The `BYTES` half is pursued upstream, not
+  here**: a local base64 pre-pass was designed and declined, because walking the schema for `BYTES`
+  paths would make this connector own a piece of the JSON→proto mapping it otherwise delegates
+  whole — and would shadow the library once it decodes base64 itself. Reported as
+  googleapis/google-cloud-java#13980, with a fix proposed in googleapis/google-cloud-java#13981 that
+  also covers googleapis/google-cloud-java#13979, the scalar-`byte[]` asymmetry found alongside it.
+  Two things measured while writing that patch, worth not re-deriving: the fix belongs in
+  `fillField`/`fillRepeatedField`, where the library's own recursion already handles the nested and
+  repeated paths a pre-pass here would have had to walk itself — including matching keys
+  case-insensitively, as the library does; and it must be guarded on the `TableSchema` saying
+  `BYTES`, since proto `BYTES` also carries `NUMERIC`/`BIGNUMERIC` and an unguarded decode turns a
+  `NUMERIC` error into a silently wrong value. Whatever upstream decides,
+  `bytesColumnsTakeAJsonArrayOfByteValuesAndNotBase64` is what fails when a `libraries-bom` bump
+  changes the behaviour, and that is the signal to revisit. A **bare number in a `TIMESTAMP` column
+  is epoch microseconds**, so epoch-seconds and epoch-millis documents are accepted and stored as some
   other instant; pinned too, since nothing can detect it. Keys match columns **case-insensitively**,
   so a differently-spelled key is not an "unknown field". `ignoreUnknownFields` is the one option
   (default strict). `org.json:json` is declared explicitly with a version property because it is

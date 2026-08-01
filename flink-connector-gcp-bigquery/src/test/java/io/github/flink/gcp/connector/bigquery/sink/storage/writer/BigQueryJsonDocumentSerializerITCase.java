@@ -122,7 +122,8 @@ class BigQueryJsonDocumentSerializerITCase extends AbstractBigQueryEmulatorITCas
     /**
      * A {@code BYTES} column reached from JSON has to be a JSON array of byte values: the client
      * library accepts only that or a {@code ByteString}, never the base64 string that protobuf's
-     * own canonical JSON mapping uses. Tracked separately.
+     * own canonical JSON mapping uses. The gap is the library's and is pursued there; #131 tracks
+     * it here.
      */
     private static String byteArray(String value) {
         StringBuilder json = new StringBuilder("[");
