@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.cloudtasks.sink.writer;
+package io.github.flink.gcp.connector.testutils;
 
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.util.FlinkRuntimeException;
@@ -26,11 +26,8 @@ import java.util.concurrent.LinkedBlockingDeque;
  * A queue-backed {@link MailboxExecutor} for tests: {@link #execute} enqueues mails, {@link
  * #yield()} runs the next mail (blocking until one arrives, like the real mailbox), and {@link
  * #drain()} runs every mail already enqueued.
- *
- * <p>Copied from the Pub/Sub module's writer tests; a shared test-infrastructure module is tracked
- * in issues #26 and #27.
  */
-final class FakeMailboxExecutor implements MailboxExecutor {
+public final class FakeMailboxExecutor implements MailboxExecutor {
 
     private final LinkedBlockingDeque<ThrowingRunnable<? extends Exception>> mails =
             new LinkedBlockingDeque<>();
@@ -65,7 +62,7 @@ final class FakeMailboxExecutor implements MailboxExecutor {
     }
 
     /** Runs every mail already enqueued, mimicking the idle mailbox loop between records. */
-    void drain() {
+    public void drain() {
         while (tryYield()) {
             // Mails run for their side effects.
         }

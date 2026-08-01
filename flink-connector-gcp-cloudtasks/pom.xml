@@ -92,6 +92,13 @@ limitations under the License.
 
         <!-- Test dependencies -->
         <dependency>
+            <!-- Shared test utilities (#27). -->
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-test-utils</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- Emulator-based integration tests. The Cloud Tasks emulator has no testcontainers
                  module, so it runs as a plain GenericContainer. -->
             <groupId>org.testcontainers</groupId>

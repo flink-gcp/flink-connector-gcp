@@ -43,6 +43,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
+import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
@@ -80,18 +81,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                                     .setMode(TableFieldSchema.Mode.NULLABLE))
                     .build();
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private static ApiFuture<AppendRowsResponse> storageErrorFuture(
             StorageError.StorageErrorCode code) {

@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
@@ -58,18 +59,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
 
     private static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private static ApiFuture<AppendRowsResponse> notFound() {
         return ApiFutures.immediateFailedFuture(new StatusRuntimeException(Status.NOT_FOUND));

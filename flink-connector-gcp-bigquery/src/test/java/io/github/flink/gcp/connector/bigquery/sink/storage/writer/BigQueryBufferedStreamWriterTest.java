@@ -38,6 +38,7 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStream
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
@@ -56,18 +57,7 @@ class BigQueryBufferedStreamWriterTest {
 
     static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
 
-    static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     /** Serializer writing the record string bytes; descriptor is irrelevant for the fake. */
     static class StringSerializer extends BigQueryProtoSerializer<String> {

@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
@@ -60,18 +61,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
 
     private static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private static ApiFuture<AppendRowsResponse> failedWith(Status status) {
         return ApiFutures.immediateFailedFuture(new StatusRuntimeException(status));

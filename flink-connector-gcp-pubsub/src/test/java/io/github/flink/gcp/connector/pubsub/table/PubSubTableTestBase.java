@@ -25,6 +25,7 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
 import io.github.flink.gcp.connector.pubsub.source.AbstractPubSubSourceEmulatorITCase;
+import io.github.flink.gcp.connector.testutils.Drains;
 
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -32,6 +33,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+
+import static io.github.flink.gcp.connector.testutils.Drains.drainDistinct;
 
 /**
  * Shared harness for the table integration tests: the emulator container and its helpers from the
@@ -68,8 +71,8 @@ abstract class PubSubTableTestBase extends AbstractPubSubSourceEmulatorITCase {
      * or {@link #COLLECT_TIMEOUT} passes, then closes the iterator, which cancels the job.
      *
      * <p>The mechanics of the bounded drain and the reasons for its shape — distinct rows, a
-     * shortfall returned rather than blocked on — live on {@link #drainDistinct}. Callers should
-     * assert with {@code containsAll} rather than an exact multiset, because the source is
+     * shortfall returned rather than blocked on — live on {@link Drains#drainDistinct}. Callers
+     * should assert with {@code containsAll} rather than an exact multiset, because the source is
      * at-least-once.
      *
      * @param result the query to drain

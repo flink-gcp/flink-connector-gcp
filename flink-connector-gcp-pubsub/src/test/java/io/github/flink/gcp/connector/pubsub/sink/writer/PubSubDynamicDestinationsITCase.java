@@ -22,6 +22,7 @@ import io.github.flink.gcp.connector.pubsub.sink.DestinationResolver;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
+import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;

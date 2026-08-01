@@ -28,6 +28,7 @@ import org.apache.flink.util.CloseableIterator;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
+import io.github.flink.gcp.connector.testutils.Drains;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -35,6 +36,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static io.github.flink.gcp.connector.testutils.Drains.drainDistinct;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -110,7 +112,7 @@ class PubSubSourceStreamingITCase extends AbstractPubSubSourceEmulatorITCase {
      * Runs the source until {@code expected} <em>distinct</em> records have been collected or
      * {@link #COLLECT_TIMEOUT} passes, then cancels the job — the source is unbounded, so nothing
      * else would ever end it. The mechanics of the bounded drain and the reason records are counted
-     * distinct rather than total live on {@link #drainDistinct}.
+     * distinct rather than total live on {@link Drains#drainDistinct}.
      */
     private static List<String> collect(
             Source<String, SubscriptionSplit, PubSubEnumeratorState> source, int expected)

@@ -40,6 +40,8 @@ import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -52,7 +54,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.ConsoleHandler;
 import java.util.logging.Formatter;
@@ -125,8 +126,7 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
     private static final Logger LOG =
             LoggerFactory.getLogger(BigQueryDefaultStreamSchemaEvolutionITCase.class);
 
-    private static final String TABLE =
-            "default_stream_evolution_it_" + UUID.randomUUID().toString().substring(0, 8);
+    private static final String TABLE = "default_stream_evolution_it_" + TestNames.runId();
 
     private static final long POLL_INTERVAL_MS = 30_000;
     private static final long CANARY_INITIAL_DELAY_MS = 60_000;
@@ -141,18 +141,7 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
     private static final java.util.logging.Logger SDK_JUL_LOGGER =
             java.util.logging.Logger.getLogger("com.google.cloud.bigquery.storage.v1");
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private static TableFieldSchema nullableString(String name) {
         return TableFieldSchema.newBuilder()
