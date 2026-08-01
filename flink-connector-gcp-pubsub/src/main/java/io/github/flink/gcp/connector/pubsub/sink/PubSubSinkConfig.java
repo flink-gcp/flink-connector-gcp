@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.sink;
 
 import org.apache.flink.annotation.Internal;
 
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -39,6 +40,7 @@ public final class PubSubSinkConfig<T> implements Serializable {
     private final CreateDisposition createDisposition;
     @Nullable private final TopicCreateOptions topicCreateOptions;
     private final PubSubPublisherOptions publisherOptions;
+    private final FailureHandler<? super FailedMessage> failedMessageHandler;
     @Nullable private final String emulatorEndpoint;
 
     PubSubSinkConfig(
@@ -47,12 +49,14 @@ public final class PubSubSinkConfig<T> implements Serializable {
             CreateDisposition createDisposition,
             @Nullable TopicCreateOptions topicCreateOptions,
             PubSubPublisherOptions publisherOptions,
+            FailureHandler<? super FailedMessage> failedMessageHandler,
             @Nullable String emulatorEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.createDisposition = createDisposition;
         this.topicCreateOptions = topicCreateOptions;
         this.publisherOptions = publisherOptions;
+        this.failedMessageHandler = failedMessageHandler;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -83,6 +87,11 @@ public final class PubSubSinkConfig<T> implements Serializable {
     /** Returns the publisher and writer tuning options. */
     public PubSubPublisherOptions getPublisherOptions() {
         return publisherOptions;
+    }
+
+    /** Returns the policy for messages that terminally fail to be published. */
+    public FailureHandler<? super FailedMessage> getFailedMessageHandler() {
+        return failedMessageHandler;
     }
 
     /**

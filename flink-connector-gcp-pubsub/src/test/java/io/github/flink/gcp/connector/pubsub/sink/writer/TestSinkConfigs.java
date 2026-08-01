@@ -16,8 +16,10 @@
 
 package io.github.flink.gcp.connector.pubsub.sink.writer;
 
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.DestinationResolver;
+import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherSink;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
@@ -70,6 +72,21 @@ final class TestSinkConfigs {
                         .destinationResolver(resolver)
                         .serializer(serializer)
                         .publisherOptions(options));
+    }
+
+    static PubSubSinkConfig<String> forResolver(
+            DestinationResolver<? super String> resolver,
+            PubSubSerializationSchema<String> serializer,
+            PubSubPublisherOptions options,
+            FailureHandler<? super FailedMessage> failedMessageHandler,
+            CreateDisposition disposition) {
+        return config(
+                PubSubSink.<String>builder()
+                        .destinationResolver(resolver)
+                        .serializer(serializer)
+                        .publisherOptions(options)
+                        .createDisposition(disposition)
+                        .failedMessageHandler(failedMessageHandler));
     }
 
     private static PubSubSinkConfig<String> config(PubSubSinkBuilder<String> builder) {
