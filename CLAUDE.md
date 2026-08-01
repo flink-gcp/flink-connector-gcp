@@ -168,11 +168,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
     reference is reported regardless (two existed when this landed, both in
     `JsonDocumentSerializerOptions`, left behind by #125's fully-qualified-link rule); a
     reference the reader cannot follow is what a published reference must be free of, a missing
-    `@param` is not. Nothing *fetches* an external JavaDoc index — no `<links>` for Flink and
-    Google, and `detectJavaApiLink` is off, which under `failOnWarnings` would otherwise let an
-    unreachable docs.oracle.com redden the docs build. That costs no links: the JDK
-    cross-links in the output come from the doclet's own automatic platform links, which need
-    no network, so the count is identical either way and the build completes offline
+    `@param` is not. Nothing links out through a fetched index: no `<links>`, which is the only
+    setting here that would probe a remote site, and `detectJavaApiLink` off. That last one costs
+    no links — the JDK cross-links come from the doclet's own automatic platform links, so the
+    count is identical either way; what the default adds is a second mechanism for them, against
+    an element-list the plugin unpacks from its own jar, bundled for Java 10–15 only
   - **One unversioned path, tracking `main`.** Per-release references wait for artifact
     publishing, which is #39's scope; javadoc.io serves released versions from Central for free
     once that happens
