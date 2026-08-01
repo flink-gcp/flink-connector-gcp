@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
+import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.RichMapFunction;
@@ -150,6 +151,13 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
             assertThat(ThrowOnceAfterCompletedCheckpoint.fired(runId))
                     .as("the injected failure fired, so a restart actually happened")
                     .isTrue();
+            // The map records a payload before the failure point, and only one subtask throws —
+            // so in principle every awaited record can be recorded before the restore. This is
+            // what pins the restored job as alive rather than terminally failed behind a
+            // satisfied await.
+            assertThat(job.getJobStatus().get(30, TimeUnit.SECONDS))
+                    .as("the restored job is still running")
+                    .isEqualTo(JobStatus.RUNNING);
         } finally {
             cancelQuietly(job);
             ThrowOnceAfterCompletedCheckpoint.forget(runId);
@@ -294,6 +302,9 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
     private static void cancelQuietly(JobClient job) {
         try {
             job.cancel().get(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            // Keep a test-timeout interruption visible to whatever runs after this cleanup.
+            Thread.currentThread().interrupt();
         } catch (Exception e) {
             // Best effort only.
         }
