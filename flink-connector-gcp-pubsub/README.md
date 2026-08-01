@@ -87,7 +87,8 @@ Both are rendered on the documentation site once it is published.
 Complete runnable jobs — sink, source and SQL — are in
 [Quickstart](../docs/content/docs/quickstart/pubsub.md); dynamic destinations, auto-creation and
 emulator-backed local runs are worked through in
-[Examples](../docs/content/docs/examples/pubsub.md).
+[Examples](../docs/content/docs/examples/pubsub.md). Every option the sink and source take, with
+its default, is in the [configuration reference](../docs/content/docs/reference/pubsub.md).
 
 ## Provenance and attribution
 

@@ -143,3 +143,31 @@ jobs:
 
       - name: Audit the Flink API tiers the main sources depend on
         run: just check-flink-api-tiers
+
+  # The configuration reference check (issue #89): fails when a builder option
+  # or a Table API ConfigOption is added, renamed or removed without the page
+  # documenting it following along, in either direction (see
+  # .claude/skills/curate-option-docs/ for how to respond to each failure).
+  #
+  # A job here for the same reason as api_tiers above, plus one of its own: its
+  # inputs are the Java main sources *and* docs/content/, and this workflow
+  # triggers on both (its paths-ignore excludes neither), while lint.yaml's
+  # paths filter covers neither today.
+  option_docs:
+    name: Check the configuration reference
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # tomllib again; keep in step with mise.toml's python.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        with:
+          tool: just
+
+      - name: Check every option is documented, and every documented option exists
+        run: just check-option-docs

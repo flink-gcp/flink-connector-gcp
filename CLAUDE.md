@@ -58,6 +58,29 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   main sources, `pom.xml`) are exactly `ci.yaml`'s trigger set, where lint.yaml's paths filter
   would have had to grow to every Java source — and it downloads the sources jars (into
   `target/flink-api-tiers/`) while `just lint` stays offline
+- `just check-option-docs` — holds `docs/content/docs/reference/` to the options the connectors
+  actually take (#89), both directions: every public builder setter and every Table API
+  `ConfigOption` key must be named in a table whose **first column header is exactly `Option`** —
+  that header *is* the opt-in, which is what keeps the check off the metadata, type-mapping and
+  policy tables the same pages carry — and every option those tables name must exist. Modules are
+  mapped to pages in `scripts/option-docs.toml`, not classes, so a **new** `*Options` class is
+  required to appear from the moment it exists. Two allowlists, pointing opposite ways — `[exempt]`
+  is a setter with no row, `[extra]` a row with no setter — and **an entry that never fires fails**,
+  as a stale one does in `check-flink-api-tiers.toml`: the four `[exempt]` entries this shipped
+  with were dead on arrival, since the pages name each bulk overload in the same row as its
+  singular. `[exempt]` is empty today; `[extra]` holds Flink's own `FactoryUtil` keys (`format`,
+  `scan.parallelism`, `sink.parallelism`), which the SQL page documents because a reader writing
+  DDL needs every key the connector accepts. The pages are
+  **hand-written, not generated** — their tables group knobs (one Pub/Sub row covers eight
+  `retry*` setters) and carry defaults the sources do not hold, since an unset knob's default
+  belongs to the client library; this check buys back the one property generation would have given
+  free. Its own `ci.yaml` job for the same reason as `check-flink-api-tiers`, plus one of its own:
+  its inputs are the main sources *and* `docs/content/`, and `lint.yaml`'s paths filter covers
+  neither. **How to respond to each failure — where a row goes, what its Default column may say,
+  and which of `[exempt]` (a setter with no row) and `[extra]` (a row with no setter) a case
+  belongs in — is `.claude/skills/curate-option-docs/`**, the third of the checker skills. Note
+  what the check does *not* do: it compares the set of options, not their values, so a changed
+  default has to be edited in the same commit
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
   the **rendered** markdown — `docs/content/` and the READMEs, never the `CLAUDE.md`s — at strict
@@ -111,8 +134,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 ## Documentation (`docs/` vs module READMEs)
 
 - `docs/content/docs/connectors/datastream/<connector>.md` is **the design record**: API notes,
-  design decisions, delivery guarantees, error handling, tuning tables and the testing strategy.
-  Behavior or public API changed → update the docs page, not the README
+  design decisions, delivery guarantees, error handling and the testing strategy. Behavior or
+  public API changed → update the docs page, not the README
+- `docs/content/docs/reference/<connector>.md` is **the option tables**, and the only place they
+  live (#89): the design record states *why* a default is what it is and links here for *what* it
+  is, so a knob's name and value appear exactly once. Adding or renaming an option means editing
+  this page in the same change — `just check-option-docs` fails otherwise, in both directions.
+  `docs/content/docs/{quickstart,examples}/<connector>.md` (#90) are the other two per-connector
+  pages: one runnable job each, and the worked cases the design record describes but does not show
 - The module `README.md` is an **overview only**: title, one-paragraph description, the
   feature-status table (`Implemented (#N)` / `Planned (#N)`), a minimal code sample, a link to the
   docs page, and the **provenance/attribution section** — provenance pairs with `NOTICE` and is a

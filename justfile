@@ -278,6 +278,23 @@ update-notice module:
 check-flink-api-tiers:
     scripts/check-flink-api-tiers.py
 
+# Holds docs/content/docs/reference/ to the options the connectors actually
+# take, in both directions: every builder setter and every Table API
+# ConfigOption must be named in a table whose first column is `Option`, and
+# every option those tables name must exist. Mappings, the four exempt bulk
+# overloads and the three FactoryUtil keys live in scripts/option-docs.toml.
+#
+# The pages are hand-written rather than generated (issue #89): their tables
+# group knobs and carry defaults the sources do not hold, since an unset knob's
+# default belongs to the client library. This is the drift protection that
+# choice would otherwise have cost. Offline and stdlib-only, but a ci.yaml job
+# rather than part of `just lint`, because its inputs are the main sources and
+# docs/content/ — neither of which lint.yaml's paths filter covers.
+#
+# Is every connector option documented, and every documented option real?
+check-option-docs:
+    scripts/check-option-docs.py
+
 # A goal on its own, and the one place in this repository where that is right.
 # The licence-goal rule in CLAUDE.md — a goal-only invocation selects the reactor
 # modules without building them, so a module cannot resolve its siblings — does

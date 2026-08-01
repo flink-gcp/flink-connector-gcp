@@ -1,0 +1,88 @@
+# Copyright 2026 laughingman7743
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Which page must document each connector's options (scripts/check-option-docs.py).
+#
+# Four tables, doing two different jobs. The first two say *where* each surface
+# is documented; the last two are the exceptions, and they point in OPPOSITE
+# directions — which is the thing to get right when adding one:
+#
+#   [[builders]]        module     -> page   what must be documented
+#   [[config_options]]  ConfigOption class -> page
+#   [exempt]            source side         a setter that exists with no row
+#   [extra]             page side           a row that exists with no setter
+#
+# So: the check failed naming a `Class.setter`? That is coverage, and [exempt]
+# is the escape. It failed naming a page and a line? That is staleness, and
+# [extra] is — but a corrected row is usually the real answer. Both are
+# `key = "reason"`, and the reason says why this is *not* a row, since that is
+# what the next person has to re-judge.
+#
+# `.claude/skills/curate-option-docs/` is the procedure for every failure this
+# file can produce, including which of the two an entry belongs in.
+#
+# Modules are mapped, not individual classes, on purpose: a new *Options class
+# added to a module is then required to appear in that module's reference page
+# from the moment it exists. Listing classes here instead would let a new one
+# through silently, which is the rot this check is for. A module with options
+# and no entry here fails for the same reason — see the next connector, since
+# Bigtable and Spanner both arrive as new modules.
+
+# Builder options: every public builder setter under the module's main sources
+# must be named in the page. Sources are `*Options.java`, `*SinkBuilder.java`
+# and `*SourceBuilder.java`, minus anything claimed by [[config_options]].
+[[builders]]
+module = "flink-connector-gcp-bigquery"
+page = "docs/content/docs/reference/bigquery.md"
+
+[[builders]]
+module = "flink-connector-gcp-pubsub"
+page = "docs/content/docs/reference/pubsub.md"
+
+[[builders]]
+module = "flink-connector-gcp-cloudtasks"
+page = "docs/content/docs/reference/cloudtasks.md"
+
+# The Table API surface is real ConfigOptions rather than builder setters, and
+# is documented beside the DDL it is used from rather than beside the builders
+# it maps onto — the mapping is the thing worth reading there.
+[[config_options]]
+source = "flink-connector-gcp-pubsub/src/main/java/io/github/flink/gcp/connector/pubsub/table/PubSubConnectorOptions.java"
+page = "docs/content/docs/connectors/table/pubsub.md"
+
+# SOURCE SIDE. Setters that exist and deliberately have no row, keyed
+# `Class.setter`. The bar is that a reader looking the setter up would find
+# nothing new.
+#
+# Empty, and worth saying why so the same four are not re-added: the bulk
+# `Collection<String>` overloads (`jsonFieldPaths`, `geographyFieldPaths` on
+# both schema options classes) were listed here at first, and turned out not to
+# need it — the pages name them in the same row as their singular, which
+# satisfies coverage directly and reads better than an exemption would. The
+# check now fails on an entry that never fires, which is how that was found.
+[exempt]
+
+# PAGE SIDE. Option-table entries that exist and no mapped source declares,
+# keyed by the name exactly as the table writes it. The last resort of the two:
+# a row nothing declares is usually a rename that needs correcting or a
+# leftover that needs deleting, and only rarely a genuine outside declaration.
+#
+# All three are Flink's own, from FactoryUtil rather than from
+# PubSubConnectorOptions, and the page says so in its opening paragraph. They
+# belong in its tables all the same: a reader writing DDL needs every key the
+# connector accepts, not only the ones this project happens to declare.
+[extra]
+"format" = "Declared by Flink's FactoryUtil; the connector requires it but does not define it."
+"scan.parallelism" = "As format above."
+"sink.parallelism" = "As format above."

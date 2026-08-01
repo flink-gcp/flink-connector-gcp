@@ -72,16 +72,9 @@ API notes:
 
 `publisherOptions(PubSubPublisherOptions)` tunes the SDK publishers and the writer. Every knob
 left unset keeps the SDK's (or the sink's) current default — `PubSubPublisherOptions.defaults()`
-is equivalent to not setting options at all.
-
-| Knob | Default when unset |
-|---|---|
-| `batchElementCountThreshold` / `batchRequestByteThreshold` / `batchDelayThreshold` | SDK batching defaults (100 / 1000 B / 1 ms) |
-| `retryTotalTimeout`, `retryInitialDelay`, `retryDelayMultiplier`, `retryMaxDelay`, `retryInitialRpcTimeout`, `retryRpcTimeoutMultiplier`, `retryMaxRpcTimeout`, `retryMaxAttempts` | SDK publish-retry defaults (600 s total, 100 ms initial, ×4, 60 s cap, ...) |
-| `enableMessageOrdering` | `false` |
-| `maxInFlightMessages` (writer cap) | 1000 |
-| `maxInFlightBytes` (writer cap) | 64 MiB |
-| `recoveryInitialBackoff` / `recoveryMaxBackoff` / `recoveryMaxAttempts` (topic auto-creation) | 500 ms / 10 s / 10 |
+is equivalent to not setting options at all. Every knob and its default is in the
+[configuration reference]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions); this
+section is why they are what they are.
 
 **The SDK publisher's flow controller is deliberately not exposed** ([#85]({{< param BookRepo >}}/issues/85), revising [#20]({{< param BookRepo >}}/issues/20)). In-flight
 publishes are bounded by the writer instead, along both dimensions — see **Backpressure** below.
@@ -328,18 +321,9 @@ API notes:
 
 `subscriberOptions(PubSubSubscriberOptions)` tunes the SDK subscribers and the reader. Every knob
 left unset keeps the SDK's (or the source's) current default — `PubSubSubscriberOptions.defaults()`
-is equivalent to not setting options at all.
-
-| Knob | Default when unset |
-|---|---|
-| `flowControlMaxOutstandingElementCount` / `flowControlMaxOutstandingRequestBytes` | SDK subscriber defaults (1000 messages / 100 MB) |
-| `parallelPullCount` | SDK default (one streaming-pull connection) |
-| `maxAckExtensionPeriod` | SDK default (1 hour) |
-| `minDurationPerAckExtension` / `maxDurationPerAckExtension` | SDK default (adaptive, derived from observed acknowledgement latencies) |
-| `shutdownTimeout` (source-owned) | 5 s |
-| `maxRecordsPerFetch` (source-owned) | 1000 |
-| `awaitAckConfirmation` | unset — acknowledgement is fire-and-forget |
-| `firstCheckpointTimeout` (source-owned) | 10 min; `Duration.ZERO` disables the detector |
+is equivalent to not setting options at all. Every knob and its default is in the
+[configuration reference]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions); this
+section is why they are what they are.
 
 **Flow control is the real bound on in-flight messages.** Because the source acknowledges only on
 checkpoint completion, everything received since the last completed checkpoint counts against these
