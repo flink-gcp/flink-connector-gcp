@@ -126,7 +126,7 @@ limitations under the License.
              sha256-pinned licence texts to it. Not managed by any BOM. -->
         <license-maven-plugin.version>2.7.1</license-maven-plugin.version>
         <!-- Adds the per-major compat source root; see the flink.compat property above. -->
-        <build-helper-maven-plugin.version>3.6.0</build-helper-maven-plugin.version>
+        <build-helper-maven-plugin.version>3.6.1</build-helper-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
