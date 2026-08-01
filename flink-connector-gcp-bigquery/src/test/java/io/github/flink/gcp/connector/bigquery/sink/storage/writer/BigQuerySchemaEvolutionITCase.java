@@ -24,16 +24,12 @@ import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
-import com.google.protobuf.ByteString;
-import com.google.protobuf.Descriptors;
-import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
@@ -74,59 +70,6 @@ class BigQuerySchemaEvolutionITCase extends AbstractBigQueryEmulatorITCase {
                     .addFields(nullableString("name"))
                     .addFields(nullableString("note"))
                     .build();
-
-    /**
-     * Serializer over a mutable schema, writing rows via {@link DynamicMessage}. Records are {@code
-     * "name"} or {@code "name:note"}; the note is written only while the schema has the column.
-     */
-    private static final class EvolvingSerializer extends BigQueryProtoSerializer<String> {
-        private static final long serialVersionUID = 1L;
-
-        private TableSchema schema;
-        private int version;
-        private transient Descriptors.Descriptor descriptor;
-
-        EvolvingSerializer(TableSchema schema) {
-            this.schema = schema;
-        }
-
-        void evolveTo(TableSchema newSchema) {
-            this.schema = newSchema;
-            this.version++;
-            this.descriptor = null;
-        }
-
-        @Override
-        public TableSchema getTableSchema(TableDestination destination) {
-            return schema;
-        }
-
-        @Override
-        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-            if (descriptor == null) {
-                descriptor = super.getDescriptor(destination);
-            }
-            return descriptor;
-        }
-
-        @Override
-        public Object getSchemaFingerprint(TableDestination destination) {
-            return version;
-        }
-
-        @Override
-        public ByteString serialize(String element) {
-            String[] parts = element.split(":", 2);
-            Descriptors.Descriptor d = getDescriptor(null);
-            DynamicMessage.Builder message =
-                    DynamicMessage.newBuilder(d).setField(d.findFieldByName("name"), parts[0]);
-            Descriptors.FieldDescriptor note = d.findFieldByName("note");
-            if (note != null && parts.length > 1) {
-                message.setField(note, parts[1]);
-            }
-            return message.build().toByteString();
-        }
-    }
 
     private static BigQueryDefaultStreamWriter<String> writer(
             TableDestination destination,

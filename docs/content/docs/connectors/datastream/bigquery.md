@@ -1299,10 +1299,23 @@ container per `*ITCase` class). Real BigQuery applies every acknowledged default
 **Real-GCP tests** cover what the emulator cannot faithfully reproduce, and stay out of
 credential-less CI:
 
-- quotas and rate-limit behavior (per-table metadata-update quota, `RESOURCE_EXHAUSTED`
-  handling under real enforcement)
-- the SDK connection pool: multiplexing, scale-up and in-stream retry behavior of the
-  production `StreamWriterRowAppenderFactory`
+- the SDK connection pool under real flow control: MiniCluster streaming jobs running the
+  production `StreamWriterRowAppenderFactory` — multiplexed fan-out to eight tables over one
+  connection pool, and an induced mid-run restart with dynamic destinations showing the
+  at-least-once contract, no gaps with duplicates permitted
+  (`BigQueryDefaultStreamAtLeastOnceITCase`). Quota and retry behavior is covered implicitly by
+  that production path; `RESOURCE_EXHAUSTED` is deliberately not synthesized, because reliably
+  tripping a quota means sustained abusive load against the shared free-tier project, and the
+  connector's handling of quota responses stays pinned by unit tests against fakes
+- default-stream schema evolution against the real service is a **manual probe**
+  (`BigQueryDefaultStreamSchemaEvolutionITCase`), deliberately outside the weekly suite: the
+  connector widens the table itself and the evolved column's values are queried back — the half
+  the emulator cannot show, since it applies `tables.update` to table metadata only — but the
+  measured run took ~2 hours end to end (the Storage Write API kept rejecting, then hanging,
+  appends carrying the new column for ~1 h 56 m after the instant REST update), which would
+  consume the whole weekly runner budget. The probe is gated on `BQ_IT_SCHEMA_EVOLUTION`, its
+  javadoc records the measurement, and the hang is under investigation in
+  [#174]({{< param BookRepo >}}/issues/174)
 - load jobs: goccy/bigquery-emulator supports neither `gs://` load jobs nor a Cloud Storage
   endpoint, so the whole `FILE_LOADS` path runs against real services
   (`BigQueryFileLoadsITCase` and `BigQueryFileLoadsStreamingITCase`, env-gated as described
@@ -1316,5 +1329,5 @@ credential-less CI:
 
 These gated ITCases run weekly in the E2E workflow via Workload Identity Federation
 ([#28]({{< param BookRepo >}}/issues/28)); `just e2e` is the local equivalent. The remaining
-real-GCP coverage (the MiniCluster fan-out suite) is tracked in
+real-GCP coverage (column-type fidelity across the serializers) is tracked in
 [#16]({{< param BookRepo >}}/issues/16).
