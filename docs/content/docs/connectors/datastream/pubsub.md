@@ -284,7 +284,7 @@ Failed publishes are classified on the task thread and routed by class:
 
 | Class | Examples | Behavior |
 |---|---|---|
-| Message-level | `INVALID_ARGUMENT` — the message exceeds 10 MiB, its attributes break a limit, its ordering key is unusable | Routed to the configured [failed-message handler](#failed-message-policy); republishing the same bytes could not succeed, and the messages around it are unaffected |
+| Message-level | `INVALID_ARGUMENT` — the message is over the size limit, its attributes break a limit, its ordering key is unusable | Routed to the configured [failed-message handler](#failed-message-policy); republishing the same bytes could not succeed, and the messages around it are unaffected |
 | Topic not found | `NOT_FOUND` | Under `CREATE_IF_NEEDED` the topic is created and the message republished (see [Topic auto-creation](#topic-auto-creation)). Under `CREATE_NEVER` the job fails |
 | Cancellation | The SDK cancelling an ordering key's queued publishes after an earlier failure for that key | Never a root cause. Under `CREATE_IF_NEEDED` with ordering enabled it is parked alongside the failure that caused it; otherwise it fails the job |
 | Terminal | An outage the SDK's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, …), `PERMISSION_DENIED`, failures carrying no status at all | Fail the ongoing write or checkpoint |

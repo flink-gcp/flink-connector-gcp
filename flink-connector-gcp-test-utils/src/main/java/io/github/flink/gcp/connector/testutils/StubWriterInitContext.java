@@ -77,11 +77,6 @@ public final class StubWriterInitContext implements WriterInitContext {
         this.parallelism = parallelism;
     }
 
-    /** Returns the mailbox the context hands to writers, so a test can run its mails. */
-    public FakeMailboxExecutor getFakeMailboxExecutor() {
-        return mailboxExecutor;
-    }
-
     @Override
     public TaskInfo getTaskInfo() {
         return new TaskInfoImpl("task", parallelism, subtaskIndex, parallelism, 0);

@@ -479,8 +479,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                             message,
                             "A publish to Pub/Sub topic "
                                     + destination
-                                    + " was rejected: the message is invalid"
-                                    + " (INVALID_ARGUMENT).",
+                                    + " was rejected because "
+                                    + PubSubErrorClassifier.MESSAGE_LEVEL_REASON
+                                    + ".",
                             throwable));
         } catch (IOException | RuntimeException e) {
             if (asyncError == null) {

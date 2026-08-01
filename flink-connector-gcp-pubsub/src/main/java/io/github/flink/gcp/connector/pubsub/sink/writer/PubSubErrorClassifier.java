@@ -63,6 +63,14 @@ final class PubSubErrorClassifier {
         FATAL
     }
 
+    /**
+     * What {@link Kind#MESSAGE_LEVEL} means, for the message a routed failure carries. It lives
+     * here rather than at the routing call site because it names the status code this class is
+     * defined by: widening the class and leaving a stale reason behind elsewhere is then not
+     * something a reader has to remember not to do.
+     */
+    static final String MESSAGE_LEVEL_REASON = "the message is invalid (INVALID_ARGUMENT)";
+
     private PubSubErrorClassifier() {}
 
     /**
