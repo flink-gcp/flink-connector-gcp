@@ -26,17 +26,16 @@ import org.apache.flink.util.function.ThrowingRunnable;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
-import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
 import com.google.cloud.tasks.v2.TaskName;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
-import io.github.flink.gcp.connector.cloudtasks.sink.RetrySchedule;
 import io.github.flink.gcp.connector.cloudtasks.sink.TaskIdExtractor;
-import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,7 +46,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
-import java.util.Optional;
 import java.util.PriorityQueue;
 
 /**
@@ -435,32 +433,15 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Returns the status code the failure carries — from the gax {@link ApiException} the client
-     * surfaces, or from a raw gRPC {@link StatusRuntimeException} (defense in depth) — or {@code
-     * null} when it carries none, which is treated as terminal.
-     *
-     * <p>Mirrors the Pub/Sub writer's {@code isNotFoundException}; folding status-code
-     * classification into a shared module is tracked with issues #37 and #61.
+     * Returns the status code the failure carries — the first element of the cause chain {@link
+     * StatusCodes#codeOf} can classify — or {@code null} when no element carries one, which is
+     * treated as terminal.
      */
     @Nullable
     private static StatusCode.Code statusCode(Throwable throwable) {
-        Optional<ApiException> apiException =
-                ExceptionUtils.findThrowable(throwable, ApiException.class);
-        if (apiException.isPresent()) {
-            return apiException.get().getStatusCode().getCode();
-        }
-        Optional<StatusRuntimeException> grpcException =
-                ExceptionUtils.findThrowable(throwable, StatusRuntimeException.class);
-        if (grpcException.isPresent()) {
-            // The two enums name the same gRPC status codes; an unknown name is treated as an
-            // unclassifiable failure rather than crashing the mailbox mail.
-            try {
-                return StatusCode.Code.valueOf(grpcException.get().getStatus().getCode().name());
-            } catch (IllegalArgumentException e) {
-                return null;
-            }
-        }
-        return null;
+        return ExceptionUtils.findThrowable(throwable, t -> StatusCodes.codeOf(t) != null)
+                .map(StatusCodes::codeOf)
+                .orElse(null);
     }
 
     @VisibleForTesting

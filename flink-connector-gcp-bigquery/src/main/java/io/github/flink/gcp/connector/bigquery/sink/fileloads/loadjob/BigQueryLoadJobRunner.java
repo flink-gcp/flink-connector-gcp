@@ -31,7 +31,8 @@ import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.LoadJobConfiguration;
-import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
+import io.github.flink.gcp.connector.base.retry.Retries;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import org.slf4j.Logger;
@@ -217,12 +218,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     }
 
     private static void sleep(long millis, String jobId) throws IOException {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while waiting for BigQuery job " + jobId, e);
-        }
+        Retries.sleep(millis, "Interrupted while waiting for BigQuery job " + jobId);
     }
 
     private JobId toJobId(String jobName) {

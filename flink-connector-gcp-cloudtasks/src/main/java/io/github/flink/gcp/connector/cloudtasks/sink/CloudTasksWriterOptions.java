@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.cloudtasks.sink;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.Objects;

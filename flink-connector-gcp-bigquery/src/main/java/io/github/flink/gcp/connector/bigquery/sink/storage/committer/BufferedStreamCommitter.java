@@ -19,7 +19,8 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.committer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.Committer;
 
-import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
+import io.github.flink.gcp.connector.base.retry.Retries;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.AppendErrorClassifier;
@@ -172,14 +173,6 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
     }
 
     private static void sleep(long millis) throws IOException {
-        if (millis <= 0) {
-            return;
-        }
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while waiting to retry a BigQuery flush", e);
-        }
+        Retries.sleep(millis, "Interrupted while waiting to retry a BigQuery flush");
     }
 }

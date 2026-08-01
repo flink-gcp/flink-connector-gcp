@@ -155,6 +155,17 @@
                             <relocations>
                                 <!-- Everything a user's own job could carry a different version
                                      of, with no exception. -->
+                                <!-- First-party shared infrastructure (#61), bundled transitively
+                                     through the connector. Relocated because a sibling GCP SQL
+                                     uber-jar will bundle it too, and two jars at different release
+                                     versions must not fight over one unrelocated copy — the same
+                                     classpath-sharing rule that keeps grpc-netty-shaded relocated.
+                                     The connector's own ...connector.pubsub package stays
+                                     unrelocated: it is this jar's public surface. -->
+                                <relocation>
+                                    <pattern>io.github.flink.gcp.connector.base</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.pubsub.shaded.io.github.flink.gcp.connector.base</shadedPattern>
+                                </relocation>
                                 <relocation>
                                     <pattern>com.google</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.pubsub.shaded.com.google</shadedPattern>
