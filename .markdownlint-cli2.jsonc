@@ -1,0 +1,29 @@
+// markdownlint-cli2 configuration for `just lint`. Scope is the *rendered* markdown —
+// the docs site sources and the READMEs; CLAUDE.md files are Claude-facing and unrendered,
+// so they stay out for the same reason they are exempt from the explicit-issue-link rule.
+//
+// Rules run at their strict defaults except:
+// - MD013 (line length): off. The ~100-column wrap is a soft convention kept by review, and
+//   issue-link syntax (`[#N]({{< param BookRepo >}}/issues/N)`) legitimately pushes source
+//   lines far past any cap while rendering short — enforcing a source-line limit would force
+//   mid-link wraps or per-line disables on dozens of correct lines.
+// - MD060 (table column style): off. Tables here deliberately pair compact delimiter rows
+//   (`|---|`) with spaced content cells; MD060 wants one style for both.
+// - MD025: the Hugo pages carry a front-matter `title` *and* an H1 (the Flink page shape);
+//   front_matter_title "" stops the front matter from counting as a second top-level heading.
+//
+// MD051 (in-page anchor fragments resolve) is a default-on rule this file exists to keep:
+// Hugo's build validates `relref` cross-page links but never `[text](#anchor)` fragments.
+{
+  "config": {
+    "MD013": false,
+    "MD025": { "front_matter_title": "" },
+    "MD060": false
+  },
+  "globs": [
+    "docs/content/**/*.md",
+    "README.md",
+    "flink-*/README.md",
+    "opentofu/README.md"
+  ]
+}

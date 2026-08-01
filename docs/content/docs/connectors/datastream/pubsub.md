@@ -377,7 +377,7 @@ Where Google *is* specific:
 The connector-specific sizing rule is that **acknowledgement waits for a checkpoint**, so
 outstanding messages accumulate for a whole checkpoint interval:
 
-```
+```text
 flowControlMaxOutstandingElementCount ≳ peak messages/s × checkpoint interval
 ```
 
@@ -647,7 +647,7 @@ A split is one streaming-pull connection to one subscription, and carries no pro
 Pub/Sub has no offset to resume from. The split universe is a pure function of the subscription
 list, the ordering mode and the source parallelism:
 
-```
+```text
 splitCount = (orderingMode == PER_KEY) ? |subscriptions| : max(|subscriptions|, parallelism)
 split i    -> subscription[i % |subscriptions|],  owner(i) -> i % parallelism
 ```
@@ -803,4 +803,3 @@ which the emulator does not set — probing the client library directly against 
 arriving out of order with no Flink involved. The emulator test therefore asserts only that ordered
 mode consumes the subscription from a single subtask without stalling on idle ones; end-to-end
 per-key order is covered by the real-GCP suite above ([#82]({{< param BookRepo >}}/issues/82)).
-

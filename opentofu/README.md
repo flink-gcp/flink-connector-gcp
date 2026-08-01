@@ -70,7 +70,7 @@ google provider's Go auth library does not read it (measured: with only
 `~/.config/gcloud` ADC of a different account); the provider needs
 `GOOGLE_APPLICATION_CREDENTIALS` naming the credentials file directly:
 
-```
+```text
 CLOUDSDK_CONFIG=/Users/<you>/.config/flink-gcp
 GOOGLE_APPLICATION_CREDENTIALS=/Users/<you>/.config/flink-gcp/application_default_credentials.json
 ```
@@ -101,10 +101,10 @@ no service account at all:
 
 3. Move the state into the bucket that now exists:
 
-   ```console
-   $ rm flink-gcp/backend_override.tf
-   $ just tofu init -migrate-state
-   $ rm flink-gcp/terraform.tfstate flink-gcp/terraform.tfstate.backup
+   ```sh
+   rm flink-gcp/backend_override.tf
+   just tofu init -migrate-state
+   rm flink-gcp/terraform.tfstate flink-gcp/terraform.tfstate.backup
    ```
 
 4. `just tofu plan` must report no changes. Commit `.terraform.lock.hcl`.
@@ -124,8 +124,8 @@ are provisioned lazily on first use, and granting a role to one that does not
 exist yet is documented to fail. Before the first apply that grants to a new
 service's agent, provision it once as the owner:
 
-```console
-$ gcloud beta services identity create --service=<service>.googleapis.com --project=flink-gcp
+```sh
+gcloud beta services identity create --service=<service>.googleapis.com --project=flink-gcp
 ```
 
 Done for `pubsub.googleapis.com` on 2026-08-01 (the Pub/Sub agent performs

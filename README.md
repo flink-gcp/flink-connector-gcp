@@ -18,7 +18,7 @@ BigQuery, Cloud Pub/Sub and Cloud Tasks, with Bigtable and Spanner planned.
 
 Requires JDK 17 or 21 and Maven (or use the included wrapper):
 
-```
+```sh
 ./mvnw verify
 ```
 

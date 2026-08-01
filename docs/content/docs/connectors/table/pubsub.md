@@ -420,7 +420,7 @@ distribution arranged upstream is legitimate, and the sink cannot tell the diffe
 Pub/Sub has no way to express a retraction, so an updating query is rejected when the job is
 planned rather than publishing its `-U` and `-D` rows as ordinary messages:
 
-```
+```sql
 INSERT INTO orders SELECT id, COUNT(*) FROM staged GROUP BY id
 -- Table sink ... doesn't support consuming update changes
 ```

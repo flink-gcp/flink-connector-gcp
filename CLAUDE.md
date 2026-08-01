@@ -57,7 +57,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   would have had to grow to every Java source — and it downloads the sources jars (into
   `target/flink-api-tiers/`) while `just lint` stays offline
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
-  over `.github/workflows/`, `tofu fmt -check` over `opentofu/` (`tofu validate` is deliberately
+  over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
+  the **rendered** markdown — `docs/content/` and the READMEs, never the `CLAUDE.md`s — at strict
+  defaults except MD013 (line length: issue-link syntax legitimately outruns any source-line cap)
+  and MD060 (table style), both declined with reasons in `.markdownlint-cli2.jsonc`; MD051's
+  in-page anchor check is the half Hugo's build does not cover (`relref` validates cross-page
+  links only), `tofu fmt -check` over `opentofu/` (`tofu validate` is deliberately
   absent: it needs a provider-downloading init, and every PR touching `opentofu/` gets a full plan
   from the tofu-plan workflow, which subsumes it). Deliberately
   does **not** run `just --fmt --check`: that is an unstable feature, excluded from just's
