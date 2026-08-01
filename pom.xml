@@ -124,6 +124,8 @@ limitations under the License.
              so scripts/check-notice.py can hold their generated META-INF/NOTICE and the
              sha256-pinned licence texts to it. Not managed by any BOM. -->
         <license-maven-plugin.version>2.7.1</license-maven-plugin.version>
+        <!-- Adds the per-major compat source root; see the flink.compat property above. -->
+        <build-helper-maven-plugin.version>3.6.0</build-helper-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -315,7 +317,7 @@ limitations under the License.
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>build-helper-maven-plugin</artifactId>
-                <version>3.6.0</version>
+                <version>${build-helper-maven-plugin.version}</version>
                 <executions>
                     <execution>
                         <id>add-flink-compat-sources</id>
