@@ -102,10 +102,27 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - **Issue references in module READMEs and docs pages are explicit links**, never bare `#N`.
   GitHub autolinks `#N` only in issue/PR *comments*, not in repository markdown files, and Hugo
   never does — so a bare `#N` is dead text in both places a reader actually sees. READMEs use the
-  full URL; docs pages use `[#N]({{< param BookRepo >}}/issues/N)`. Cross-repository references
+  full URL; docs pages use `[#N]({{< param BookRepo >}}/issues/N)`. The `#N` link text must match
+  the `/issues/N` in the URL it wraps — a copy-paste where they disagree sends the reader to the
+  wrong record, and nothing renders differently to reveal it. Cross-repository references
   keep their `owner/repo#N` text and point at *that* repository — `goccy/bigquery-emulator#342`
   is the one in the tree, and a blind `#N` rewrite would have pointed it here. `CLAUDE.md` is
   deliberately exempt: it is read by Claude, not rendered for users
+- **A status claim in a rendered file carries the issue link that *is* the status.** Wording
+  like "under investigation", "planned" or "not yet supported" rots silently when the tracker
+  moves on, so it may appear only beside the issue link whose open/closed state lets a reader
+  check it — and prefer recording the decision plus the protocol over the status word ("closed
+  wait-and-see; a reproduction gets a new issue referencing #174" outlives "under
+  investigation"). Closing or re-scoping an issue includes rewording its rendered mentions in
+  the same change — #186, sweeping the mentions after #174 closed, is the precedent
+- **Comments and javadoc state what the code cannot show** — a measured fact, a decision with
+  its issue number, or the vendor behavior being worked around — never narration of the change
+  that introduced them ("now", "new", "previously", "fixed in this PR"), which is stale the
+  moment it merges and meaningless to a reader who wasn't in the session that wrote it, and
+  never implementation status, whose single home is the README table. Wall-clock or measured
+  numbers carry their date and sample size ("measured 2026-07-31, one run") so a later reader
+  can weigh them, and a superseding measurement edits the original spot rather than appending a
+  correction beside it
 - Pages are plain markdown with front matter (`title`, `type: docs`, `weight` — spaced by 10 so a
   new connector slots in without renumbering) and the plain Apache-2.0 header as an HTML comment.
   **No Flink shortcodes and no vendored Flink layout code** — `artifact`/`tabs`/`hint` do not
