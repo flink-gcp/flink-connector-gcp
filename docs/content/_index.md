@@ -31,7 +31,7 @@ Connectors for using Google Cloud services with [Apache Flink](https://flink.apa
 
 | | Supported |
 |---|---|
-| Apache Flink | 2.2, 2.3 |
+| Apache Flink | 2.2, 2.3, and 1.20 (LTS) |
 | Java | 17, 21 |
 
 The Flink range mirrors [Flink's own support policy](https://flink.apache.org/downloads/): the
@@ -52,7 +52,11 @@ upstream changes surface before they ship.
 Java 11 is not supported even though Flink 2.x declares it, because the build targets bytecode
 17.
 
-Flink 1.20, the 1.x LTS release, will be supported on a dedicated branch.
+Flink 1.20, the 1.x LTS release, is supported from this same source rather than from a
+dedicated branch: the connectors use only APIs that exist identically in 1.20 and 2.x, apart
+from one compile-only seam selected at build time, so the weekly build compiles the whole
+suite against 1.20 as well. This is source-level support — a jar is compiled per major, and
+the one-artifact claim above spans the 2.x range only.
 
 ## Connectors
 

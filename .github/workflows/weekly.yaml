@@ -4,11 +4,13 @@ name: Weekly
 # ci.yaml builds one version for fast feedback (the same split Flink's own
 # externalized connectors use between push_pr.yml and weekly.yml).
 #
-# Four things are checked here:
+# Five things are checked here:
 #   * every supported minor still compiles and passes the suite
 #   * a jar built against the floor still runs on the newest supported minor
 #     without recompiling, which is what lets this project publish one artifact
 #     for the whole range instead of one per minor
+#   * the 1.x LTS lane still builds and passes the whole suite from this same
+#     source (the lts row — see the version policy in CLAUDE.md and #32)
 #   * the next unreleased Flink gets an early warning, so upstream changes are
 #     found before they are released rather than after
 #   * a newly released Flink minor is noticed at all — see new_minor_check
@@ -39,6 +41,12 @@ env:
   FLINK_CEILING: '2.3.0'
   # Upstream early warning: the next Flink that does not exist yet.
   FLINK_NEXT_SNAPSHOT: '2.4-SNAPSHOT'
+  # The 1.x LTS, built from this same source (#32): the lts row compiles and
+  # tests the whole suite against it, selecting the flink1 compat source root
+  # (the one-interface seam described at the flink.compat property in pom.xml).
+  # Bumping to a new 1.20 patch is an edit here — dependabot does not see
+  # workflow env, the same accepted staleness FLINK_CEILING has.
+  FLINK_LTS: '1.20.4'
 
 jobs:
   # Compile and test against each end of the supported range, plus the next
@@ -77,16 +85,22 @@ jobs:
           # bury it.
           - role: next
             jdk: '17'
+          # The 1.x LTS, from this same source (#32): compiled per version via
+          # the flink1 compat root, so this is source-level support — no
+          # cross-major binary claim, which is why binary_compat below does not
+          # involve it. JDK 17 only: it is the one JDK both supported majors
+          # share with ci.yaml.
+          - role: lts
+            jdk: '17'
     steps:
       # Every job pins the same commit. Without this a merge landing mid-run
       # makes one version look like it silently skipped tests — that false
       # positive has already happened once on this repository.
       #
-      # Only main is covered today. Flink 1.20 is the 1.x LTS and will live on
-      # its own branch (#32); covering it means adding rows carrying their own
-      # branch and checking that out here instead, the way
-      # apache/flink-connector-kafka's weekly matrix pairs a Flink version with
-      # a connector branch.
+      # Every row checks out main: the 1.x LTS is built from this same source
+      # (the lts row), not from a version branch — #32 measured the whole API
+      # delta down to one compile-only interface, so the kafka-style
+      # branch-per-line model this comment used to anticipate was not needed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -110,6 +124,7 @@ jobs:
               floor)   args='' ;;
               ceiling) args="-Dflink.version=$FLINK_CEILING" ;;
               next)    args="-Dflink.version=$FLINK_NEXT_SNAPSHOT -Pflink-snapshots" ;;
+              lts)     args="-Dflink.version=$FLINK_LTS -Dflink.compat=flink1" ;;
               *)       echo "::error::unknown role '${{ matrix.role }}'"; exit 1 ;;
           esac
           echo "args=$args" >> "$GITHUB_OUTPUT"

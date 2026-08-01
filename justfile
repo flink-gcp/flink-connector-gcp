@@ -66,8 +66,11 @@ verify *args:
     {{ mvn }} {{ args }} verify
 
 # The same against one specific Flink version, e.g. `just verify-flink 2.3.0`.
+# A 1.x version also selects the flink1 compat source root (see the
+# flink.compat property in pom.xml) — forgetting that flag by hand is exactly
+# the mistake this recipe exists to absorb.
 verify-flink version *extra:
-    @just verify -Dflink.version={{ version }} {{ extra }}
+    @just verify -Dflink.version={{ version }} {{ if version =~ '^1\.' { '-Dflink.compat=flink1' } else { '' } }} {{ extra }}
 
 # One module, e.g. `just verify-module flink-connector-gcp-bigquery`.
 verify-module module:
