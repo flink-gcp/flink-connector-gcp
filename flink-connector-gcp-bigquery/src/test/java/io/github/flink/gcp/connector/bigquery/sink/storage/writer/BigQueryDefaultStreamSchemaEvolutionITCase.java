@@ -281,9 +281,10 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
 
     /**
      * H3 instrumentation: logs the Storage Write API's schema view ({@code GetWriteStream}, view
-     * {@code FULL}, a fresh RPC per tick — so this is the "fresh metadata read" view, in contrast
-     * to whatever an established pooled connection holds) and REST {@code tables.get}'s view, every
-     * {@link #POLL_INTERVAL_MS}, logging a line per tick so liveness is visible.
+     * {@code FULL}, a fresh <em>client and channel</em> per tick — H2's suspected mechanism is
+     * metadata pinned to an established connection, so a poller reusing one long-lived channel
+     * could not call its own view fresh) and REST {@code tables.get}'s view, every {@link
+     * #POLL_INTERVAL_MS}, logging a line per tick so liveness is visible.
      *
      * <p>The default stream's {@code GetWriteStream} resource name is tried in both spellings on
      * the first tick ({@code .../streams/_default} per the resource-name pattern, {@code
@@ -306,9 +307,9 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
             String lastStorage = null;
             String lastRest = null;
             String streamName = null;
-            try (BigQueryWriteClient client = BigQueryWriteClient.create()) {
+            try {
                 while (!stopped) {
-                    try {
+                    try (BigQueryWriteClient client = BigQueryWriteClient.create()) {
                         if (streamName == null) {
                             streamName = resolveStreamName(client);
                         }
@@ -324,15 +325,13 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
                         } else {
                             LOG.info("POLLER unchanged: storage={} rest={}", storage, rest);
                         }
-                    } catch (RuntimeException e) {
+                    } catch (RuntimeException | java.io.IOException e) {
                         LOG.warn("POLLER tick failed: {}", e.toString());
                     }
                     Thread.sleep(POLL_INTERVAL_MS);
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-            } catch (Exception e) {
-                LOG.warn("POLLER died: {}", e.toString());
             }
         }
 
