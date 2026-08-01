@@ -22,8 +22,7 @@ limitations under the License.
 
 # Cloud Tasks Connector
 
-Cloud Tasks sink for Apache Flink, provided by the `flink-connector-gcp-cloudtasks` module. The
-types named on this page are in the [Java API reference]({{< param ApiDocsURL >}}).
+Cloud Tasks sink for Apache Flink, provided by the `flink-connector-gcp-cloudtasks` module.
 
 The sink ships in [#24]({{< param BookRepo >}}/issues/24); its emulator integration tests are [#25]({{< param BookRepo >}}/issues/25). This page doubles as the design
 record: it explains not only what the connector does but why each decision was taken, so the

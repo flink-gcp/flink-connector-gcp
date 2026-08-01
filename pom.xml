@@ -460,10 +460,12 @@ limitations under the License.
                         <exclude>docs/public/**</exclude>
                         <exclude>docs/resources/**</exclude>
                         <!-- Generated API reference (`just docs-javadoc`), which Hugo
-                             copies into the site from static/. Unlike public/ and
-                             resources/ above, CI produces this on every docs build, so
-                             without the exclude the licence check fails there and not
-                             only after a local run. -->
+                             copies into the site from static/. Same case as
+                             public/resources above: rat scans the working tree, so a
+                             local `just verify` after a docs build would otherwise fail
+                             on it. CI never sees it — rat is bound to `verify`, which
+                             only ci.yaml runs, and that job does not generate the
+                             reference. -->
                         <exclude>docs/static/api/**</exclude>
                     </excludes>
                 </configuration>
@@ -473,30 +475,38 @@ limitations under the License.
                 <!-- The API reference published on the documentation site (#88), generated
                      by `just docs-javadoc` into docs/static/api/java, which Hugo copies
                      into the site verbatim. Declared here because the connector parent
-                     manages the version in pluginManagement but declares no plugin, and
-                     <inherited>false</inherited> for the same reason apache-rat above has
-                     it: the output path resolves against the root basedir and must not
-                     follow the child modules.
+                     manages the version in pluginManagement but declares no plugin;
+                     inherited=false because ${project.basedir} in the output path would
+                     otherwise resolve against each child module.
 
-                     Nothing is filtered by API tier. Flink's @Internal is @Documented, so
-                     it renders as a badge on every class page and a consumer can audit the
-                     tiers mechanically — the reasoning is in CLAUDE.md under Documentation.
+                     failOnWarnings stands in for doclint, which the parent turns off with
+                     -Xdoclint:none in an <additionalJOptions> carrying
+                     combine.children="append" — so a child's list is appended to that one
+                     rather than replacing it, and turning doclint back on means taking the
+                     element over with combine.self="override". It is not the same check and
+                     is the better one here: javadoc resolves {@link} itself, outside doclint,
+                     so an unresolvable reference is reported even under -Xdoclint:none
+                     (measured — two were, in JsonDocumentSerializerOptions). Note the plugin
+                     implements it by matching javadoc's last stderr line against
+                     "N warning(s)", not with -Xwerror, so anything that writes to stderr
+                     after that summary would silence it.
 
-                     Doclint stays off, as the connector parent set it: it arrives as
-                     -Xdoclint:none through the parent's <additionalJOptions>, which carries
-                     combine.children="append", so re-enabling it here would mean re-declaring
-                     that whole list rather than adding one element (measured on the effective
-                     POM, #88).
+                     detectJavaApiLink defaults to true, which makes the plugin fetch an
+                     element-list from docs.oracle.com on every run — and under failOnWarnings
+                     an unreachable docs.oracle.com would then redden the docs build. Turning
+                     it off is the same call already made against <links> for Flink and
+                     Google: no documentation build depends on another site being up. It costs
+                     nothing, which is the part worth recording — the JDK cross-links in the
+                     output (4178 of them) come from the doclet's own automatic platform
+                     links, which need no network, so the count is identical either way and
+                     the build now completes with `-o`. Do not "restore" the links by turning
+                     this back on; they were never coming from it.
 
-                     failOnWarnings is the check that replaces it, and it is not the same
-                     check: javadoc resolves {@link} references itself rather than through
-                     doclint, so an unresolvable one is reported even with -Xdoclint:none —
-                     measured, two of them in the tree when this was added. A reference the
-                     reader cannot follow is the defect a published API reference most needs to
-                     be free of, and a missing @param, which doclint would also demand, is not.
+                     doctitle/windowtitle are set because the defaults are
+                     "${project.name} ${project.version} API" and this module's name is
+                     "Flink Connectors GCP : Parent".
 
-                     No <links>: cross-linking to Flink's and Google's published javadoc would
-                     make every documentation build depend on an external site being up. -->
+                     Why nothing is filtered by API tier: CLAUDE.md, under Documentation. -->
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
                 <inherited>false</inherited>
@@ -504,6 +514,7 @@ limitations under the License.
                     <reportOutputDirectory>${project.basedir}/docs/static/api</reportOutputDirectory>
                     <destDir>java</destDir>
                     <failOnWarnings>true</failOnWarnings>
+                    <detectJavaApiLink>false</detectJavaApiLink>
                     <doctitle>GCP Connectors for Apache Flink ${project.version} API</doctitle>
                     <windowtitle>GCP Connectors for Apache Flink ${project.version} API</windowtitle>
                 </configuration>

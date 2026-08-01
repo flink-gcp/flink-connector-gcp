@@ -298,10 +298,8 @@ docs-javadoc:
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
 # into build failures.
 #
-# This builds the hand-written pages only. The API reference comes from
-# `just docs-javadoc`, which the docs workflow runs first; the two are separate
-# recipes so that iterating on prose stays a seconds-long build rather than a
-# Maven one.
+# The API reference is a separate recipe (`just docs-javadoc`) so that iterating
+# on prose stays a seconds-long build rather than a Maven one.
 #
 # Build the documentation site, as the docs workflow does.
 docs:

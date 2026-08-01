@@ -13,12 +13,17 @@ on:
       - 'mise.toml'
       - 'justfile'
       - '.github/workflows/docs.yaml'
-      # The site now contains a generated API reference (#88), so the main
-      # sources and the Maven build are inputs to it exactly as docs/ is — the
-      # same rule that puts mise.toml above. The cost is that this workflow now
-      # runs on nearly every pull request, which was weighed against splitting
-      # the site's definition across two workflows and preferred.
+      # The site contains a generated API reference (#88), so the main sources
+      # and the Maven build are inputs to it exactly as docs/ is — the same rule
+      # that puts mise.toml above. The root pom.xml is listed separately because
+      # GitHub reads `**` as "any character, including /", so `**/pom.xml` needs
+      # a slash before it and never matches a path without one — and the root
+      # pom is where every javadoc setting lives. Generating the reference also
+      # forks the reactor's compile phase, which runs spotless and checkstyle;
+      # their configuration comes from the parent POM today, so nothing further
+      # is listed, but a local checkstyle.xml would belong here.
       - '**/src/main/**'
+      - 'pom.xml'
       - '**/pom.xml'
       - 'mvnw'
       - '.mvn/**'
@@ -90,10 +95,22 @@ jobs:
       # Generating the API reference resolves the whole libraries-bom tree, so
       # the Maven repository is worth caching. ci.yaml gets this from
       # actions/setup-java's `cache: maven`, which is not available here because
-      # the JDK comes from mise.
+      # the JDK comes from mise. ~/.m2/wrapper joins it because the wrapper is
+      # `distributionType=only-script`, so Maven itself is downloaded per run and
+      # unpacked outside the repository directory.
+      #
+      # This project's own artifacts are excluded so that they can never be
+      # restored from a previous run. Nothing here installs them today, so the
+      # bare `javadoc:aggregate` in `just docs-javadoc` resolves the modules from
+      # the reactor and only from there; the exclusion keeps that a property of
+      # the configuration rather than of the current step list, because a cached
+      # SNAPSHOT is exactly what would make that goal pass for the wrong reason.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.m2/repository
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+            !~/.m2/repository/io/github/flink-gcp
           key: maven-docs-${{ hashFiles('**/pom.xml') }}
           restore-keys: maven-docs-
 

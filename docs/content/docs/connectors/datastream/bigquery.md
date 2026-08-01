@@ -34,8 +34,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 | `FILE_LOADS` | GCS-staged Avro files + BigQuery load jobs; batch and streaming (checkpoint-triggered), exactly-once |
 
 Per-feature implementation status is tracked in the
-[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md), and the
-types named on this page are in the [Java API reference]({{< param ApiDocsURL >}}).
+[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md).
 
 ```java
 Sink<MyEvent> sink =
