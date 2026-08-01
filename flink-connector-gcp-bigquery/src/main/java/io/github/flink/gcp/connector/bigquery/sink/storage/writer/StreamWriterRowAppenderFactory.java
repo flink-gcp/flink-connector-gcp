@@ -28,6 +28,7 @@ import com.google.cloud.bigquery.storage.v1.ProtoSchemaConverter;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,30 +62,6 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
      * buffered-stream write path ({@link WriteClientBufferedStreamService}).
      */
     static final String TRACE_ID = "flink-gcp:flink-connector-gcp-bigquery";
-
-    /**
-     * The SDK's in-stream retry of retriable append failures (for example {@code ABORTED}, {@code
-     * UNAVAILABLE}, {@code CANCELLED}, {@code INTERNAL}, {@code DEADLINE_EXCEEDED} and quota {@code
-     * RESOURCE_EXHAUSTED}), so transient errors are normally absorbed before they reach the sink
-     * writer; the writer's own bounded re-append budget sits above these retries. On the
-     * default-stream path this constant is only the default — the {@link DefaultStreamOptions}
-     * {@code retry*} knobs configure the schedule. The buffered-stream write path ({@link
-     * WriteClientBufferedStreamService}) still uses this constant as-is, where the same in-stream
-     * retries apply to offset appends (a retry of an append that already landed answers {@code
-     * ALREADY_EXISTS}, which that writer treats as success).
-     *
-     * <p>Caveat: the SDK's connection pool is JVM-static per (location, credentials) and adopts the
-     * retry settings of whichever writer creates it first; a different BigQuery client in the same
-     * JVM sharing the pool key could have created the pool with other settings. The writer's own
-     * retry budget still applies either way.
-     */
-    static final RetrySettings RETRY_SETTINGS =
-            RetrySettings.newBuilder()
-                    .setInitialRetryDelayDuration(Duration.ofMillis(500))
-                    .setRetryDelayMultiplier(2.0)
-                    .setMaxRetryDelayDuration(Duration.ofSeconds(30))
-                    .setMaxAttempts(5)
-                    .build();
 
     /**
      * The pool bounds applied to the JVM-global {@code ConnectionWorkerPool} settings, or {@code
@@ -130,13 +107,35 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
         return new StreamWriterRowAppender(streamWriter);
     }
 
+    /**
+     * Builds the SDK's in-stream {@link RetrySettings} from the buffered path's {@code retry*}
+     * knobs. The same in-stream retries apply to offset appends there, where a retry of an append
+     * that already landed answers {@code ALREADY_EXISTS} — which that writer treats as success.
+     */
+    static RetrySettings toRetrySettings(BufferedStreamOptions options) {
+        return toRetrySettings(
+                options.getRetryInitialDelay(),
+                options.getRetryDelayMultiplier(),
+                options.getRetryMaxDelay(),
+                options.getRetryMaxAttempts());
+    }
+
     /** Builds the SDK's in-stream {@link RetrySettings} from the {@code retry*} knobs. */
     static RetrySettings toRetrySettings(DefaultStreamOptions options) {
+        return toRetrySettings(
+                options.getRetryInitialDelay(),
+                options.getRetryDelayMultiplier(),
+                options.getRetryMaxDelay(),
+                options.getRetryMaxAttempts());
+    }
+
+    private static RetrySettings toRetrySettings(
+            Duration initialDelay, double multiplier, Duration maxDelay, int maxAttempts) {
         return RetrySettings.newBuilder()
-                .setInitialRetryDelayDuration(options.getRetryInitialDelay())
-                .setRetryDelayMultiplier(options.getRetryDelayMultiplier())
-                .setMaxRetryDelayDuration(options.getRetryMaxDelay())
-                .setMaxAttempts(options.getRetryMaxAttempts())
+                .setInitialRetryDelayDuration(initialDelay)
+                .setRetryDelayMultiplier(multiplier)
+                .setMaxRetryDelayDuration(maxDelay)
+                .setMaxAttempts(maxAttempts)
                 .build();
     }
 

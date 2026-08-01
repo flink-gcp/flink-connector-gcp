@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import com.google.api.gax.retrying.RetrySettings;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -53,14 +54,32 @@ class StreamWriterRowAppenderFactoryTest {
         assertThat(settings.getMaxAttempts()).isEqualTo(7);
     }
 
-    /** The defaulted knobs must reproduce the schedule that used to be hardcoded. */
     @Test
-    void defaultRetryKnobsEqualTheSharedConstant() {
+    void defaultedKnobsProduceTheDocumentedSdkSchedule() {
         RetrySettings settings =
                 StreamWriterRowAppenderFactory.toRetrySettings(
                         DefaultStreamOptions.builder().build());
 
-        assertThat(settings).isEqualTo(StreamWriterRowAppenderFactory.RETRY_SETTINGS);
+        // Literals, not the constants: these are the values the tuning table publishes, and the
+        // deleted shared RETRY_SETTINGS was the last thing pinning them.
+        assertThat(settings.getInitialRetryDelayDuration()).isEqualTo(Duration.ofMillis(500));
+        assertThat(settings.getRetryDelayMultiplier()).isEqualTo(2.0);
+        assertThat(settings.getMaxRetryDelayDuration()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(settings.getMaxAttempts()).isEqualTo(5);
+    }
+
+    /**
+     * The buffered path's knobs default to the same schedule the default-stream path uses, which is
+     * what the two write methods shared through one constant before they were configurable.
+     */
+    @Test
+    void theBufferedPathDefaultsToTheSameSdkSchedule() {
+        assertThat(
+                        StreamWriterRowAppenderFactory.toRetrySettings(
+                                BufferedStreamOptions.builder().build()))
+                .isEqualTo(
+                        StreamWriterRowAppenderFactory.toRetrySettings(
+                                DefaultStreamOptions.builder().build()));
     }
 
     @Test

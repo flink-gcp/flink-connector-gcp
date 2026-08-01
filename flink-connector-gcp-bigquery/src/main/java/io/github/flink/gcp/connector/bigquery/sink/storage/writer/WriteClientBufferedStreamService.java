@@ -31,6 +31,7 @@ import com.google.cloud.bigquery.storage.v1.WriteStream;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Int64Value;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 
 import javax.annotation.Nullable;
 
@@ -48,15 +49,18 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
 
     private final BigQueryWriteClient client;
     @Nullable private final String location;
+    private final BufferedStreamOptions options;
 
     /**
      * Creates a service with a default client.
      *
      * @param location the BigQuery location routing hint for appends, or {@code null}
+     * @param options the buffered-stream options
      * @throws IOException if the client cannot be created
      */
-    public WriteClientBufferedStreamService(@Nullable String location) throws IOException {
-        this(BigQueryWriteClient.create(), location);
+    public WriteClientBufferedStreamService(
+            @Nullable String location, BufferedStreamOptions options) throws IOException {
+        this(BigQueryWriteClient.create(), location, options);
     }
 
     /**
@@ -65,11 +69,14 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
      *
      * @param client the write client
      * @param location the BigQuery location routing hint for appends, or {@code null}
+     * @param options the buffered-stream options
      */
     @VisibleForTesting
-    public WriteClientBufferedStreamService(BigQueryWriteClient client, @Nullable String location) {
+    public WriteClientBufferedStreamService(
+            BigQueryWriteClient client, @Nullable String location, BufferedStreamOptions options) {
         this.client = client;
         this.location = location;
+        this.options = options;
     }
 
     @Override
@@ -91,7 +98,8 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
         StreamWriter.Builder builder =
                 StreamWriter.newBuilder(streamName, client)
                         .setWriterSchema(ProtoSchemaConverter.convert(rowDescriptor))
-                        .setRetrySettings(StreamWriterRowAppenderFactory.RETRY_SETTINGS)
+                        .setRetrySettings(StreamWriterRowAppenderFactory.toRetrySettings(options))
+                        .setMaxRetryDuration(options.getMaxRetryDuration())
                         .setTraceId(StreamWriterRowAppenderFactory.TRACE_ID);
         if (location != null) {
             builder.setLocation(location);

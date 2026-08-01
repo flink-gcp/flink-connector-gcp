@@ -67,9 +67,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     /** How many {@code -rN} ids to probe past a failed deterministic id before giving up. */
     private static final int MAX_RETRY_PROBES = 5;
 
-    private static final RetrySchedule POLL_SCHEDULE =
-            new RetrySchedule(1_000, 30_000, Integer.MAX_VALUE, RetrySchedule.DEFAULT_JITTER_RATIO);
-
+    private final RetrySchedule pollSchedule;
     @Nullable private final String location;
     private final Map<String, Job> activeJobs = new HashMap<>();
     private BigQuery client;
@@ -78,15 +76,18 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
      * Creates a runner.
      *
      * @param location the BigQuery location jobs run in, or {@code null} for the API default
+     * @param pollSchedule how completion polling backs off
      */
-    public BigQueryLoadJobRunner(@Nullable String location) {
+    public BigQueryLoadJobRunner(@Nullable String location, RetrySchedule pollSchedule) {
         this.location = location;
+        this.pollSchedule = pollSchedule;
     }
 
     @VisibleForTesting
-    BigQueryLoadJobRunner(BigQuery client, @Nullable String location) {
+    BigQueryLoadJobRunner(BigQuery client, @Nullable String location, RetrySchedule pollSchedule) {
         this.client = client;
         this.location = location;
+        this.pollSchedule = pollSchedule;
     }
 
     @Override
@@ -127,7 +128,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         int attempt = 1;
         while (!isDone(job)) {
             Retries.sleep(
-                    POLL_SCHEDULE.backoffMs(attempt++),
+                    pollSchedule.backoffMs(attempt++),
                     "Interrupted while waiting for BigQuery job " + jobId);
             Job reloaded = job.reload();
             if (reloaded == null) {

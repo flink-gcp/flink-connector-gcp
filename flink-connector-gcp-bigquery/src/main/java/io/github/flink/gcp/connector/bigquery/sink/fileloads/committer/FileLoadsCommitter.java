@@ -95,7 +95,9 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
                 config,
                 options,
                 storage,
-                () -> new BigQueryLoadJobRunner(config.getLocation()),
+                () ->
+                        new BigQueryLoadJobRunner(
+                                config.getLocation(), options.toLoadJobPollSchedule()),
                 BigQueryTableAdmin::new);
     }
 

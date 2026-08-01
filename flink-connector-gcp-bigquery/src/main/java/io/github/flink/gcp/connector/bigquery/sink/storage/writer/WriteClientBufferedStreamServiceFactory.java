@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import org.apache.flink.annotation.Internal;
 
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
+
 import java.io.IOException;
 
 /**
@@ -29,7 +31,8 @@ public final class WriteClientBufferedStreamServiceFactory implements BufferedSt
     private static final long serialVersionUID = 1L;
 
     @Override
-    public BufferedStreamService create(String location) throws IOException {
-        return new WriteClientBufferedStreamService(location);
+    public BufferedStreamService create(String location, BufferedStreamOptions options)
+            throws IOException {
+        return new WriteClientBufferedStreamService(location, options);
     }
 }

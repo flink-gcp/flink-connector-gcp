@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import org.junit.jupiter.api.Test;
 
@@ -36,6 +37,128 @@ class FileLoadsOptionsTest {
         assertThat(options.getTempDataset()).isNull();
         assertThat(options.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_APPEND);
         assertThat(options.getMinCheckpointInterval()).isEqualTo(Duration.ofMinutes(2));
+        assertThat(options.getLoadJobPollInitialBackoff())
+                .isEqualTo(FileLoadsOptions.DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF);
+        assertThat(options.getLoadJobPollMaxBackoff())
+                .isEqualTo(FileLoadsOptions.DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF);
+        assertThat(options.getSchemaUpdateInitialBackoff())
+                .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF);
+        assertThat(options.getSchemaUpdateMaxBackoff())
+                .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_RECONCILE_MAX_BACKOFF);
+        assertThat(options.getSchemaUpdateMaxAttempts())
+                .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_RECONCILE_MAX_ATTEMPTS);
+    }
+
+    @Test
+    void theLoadJobPollScheduleIsDerivedFromTheKnobsAndUnbounded() {
+        RetrySchedule schedule =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .loadJobPollInitialBackoff(Duration.ofSeconds(1))
+                        .loadJobPollMaxBackoff(Duration.ofSeconds(4))
+                        .build()
+                        .toLoadJobPollSchedule();
+
+        // No attempt cap to configure: a batch load may legitimately run for hours.
+        assertThat(schedule.maxAttempts()).isEqualTo(Integer.MAX_VALUE);
+        assertThat(schedule.jitterRatio()).isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
+        assertThat(schedule.backoffMs(1)).isBetween(750L, 1250L);
+        assertThat(schedule.backoffMs(2)).isBetween(1500L, 2500L);
+    }
+
+    @Test
+    void theSchemaUpdateScheduleIsDerivedFromTheKnobs() {
+        RetrySchedule schedule =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .schemaReconcileInitialBackoff(Duration.ofSeconds(1))
+                        .schemaReconcileMaxBackoff(Duration.ofSeconds(4))
+                        .schemaReconcileMaxAttempts(3)
+                        .build()
+                        .toSchemaReconcileSchedule();
+
+        assertThat(schedule.maxAttempts()).isEqualTo(3);
+        assertThat(schedule.jitterRatio()).isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
+        assertThat(schedule.backoffMs(1)).isBetween(750L, 1250L);
+        assertThat(schedule.backoffMs(2)).isBetween(1500L, 2500L);
+    }
+
+    @Test
+    void rejectsInvalidScheduleKnobs() {
+        assertThatThrownBy(
+                        () -> FileLoadsOptions.builder().loadJobPollInitialBackoff(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("loadJobPollInitialBackoff");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().schemaReconcileMaxAttempts(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("schemaReconcileMaxAttempts");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().schemaReconcileMaxBackoff(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> FileLoadsOptions.builder().loadJobPollMaxBackoff(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("loadJobPollMaxBackoff");
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .schemaReconcileInitialBackoff(Duration.ofNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("schemaReconcileInitialBackoff");
+        // Sub-millisecond durations truncate to a zero the schedule rejects at first commit, so
+        // they are rejected here instead.
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .loadJobPollInitialBackoff(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least 1 ms");
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket")
+                                        .loadJobPollInitialBackoff(Duration.ofSeconds(5))
+                                        .loadJobPollMaxBackoff(Duration.ofSeconds(1))
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("loadJobPollMaxBackoff");
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket")
+                                        .schemaReconcileInitialBackoff(Duration.ofSeconds(5))
+                                        .schemaReconcileMaxBackoff(Duration.ofSeconds(1))
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("schemaReconcileMaxBackoff");
+    }
+
+    /**
+     * One knob at a time, so dropping any single field from {@code equals}/{@code hashCode} fails
+     * here — and every new knob appears in {@code toString}, the operator-facing dump.
+     */
+    @Test
+    void equalsAndToStringCoverEachScheduleKnob() {
+        FileLoadsOptions defaults = FileLoadsOptions.builder().stagingPath("gs://bucket").build();
+
+        assertThat(base().loadJobPollInitialBackoff(Duration.ofMillis(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(base().loadJobPollMaxBackoff(Duration.ofMinutes(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(base().schemaReconcileInitialBackoff(Duration.ofMillis(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(base().schemaReconcileMaxBackoff(Duration.ofMinutes(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(base().schemaReconcileMaxAttempts(3).build()).isNotEqualTo(defaults);
+
+        assertThat(defaults.toString())
+                .contains("loadJobPollInitialBackoff=PT1S")
+                .contains("loadJobPollMaxBackoff=PT30S")
+                .contains("schemaReconcileInitialBackoff=PT0.5S")
+                .contains("schemaReconcileMaxBackoff=PT10S")
+                .contains("schemaReconcileMaxAttempts=10");
+    }
+
+    private static FileLoadsOptions.Builder base() {
+        return FileLoadsOptions.builder().stagingPath("gs://bucket");
     }
 
     @Test

@@ -61,6 +61,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
     private final BufferedStreamServiceFactory serviceFactory;
     @Nullable private final String location;
     private final RetrySchedule retrySchedule;
+    private final BufferedStreamOptions options;
 
     @Nullable private BufferedStreamService service;
 
@@ -78,6 +79,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
         this.serviceFactory = serviceFactory;
         this.location = location;
         this.retrySchedule = options.toRecoverySchedule();
+        this.options = options;
     }
 
     @Override
@@ -164,7 +166,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
 
     private BufferedStreamService service() throws IOException {
         if (service == null) {
-            service = serviceFactory.create(location);
+            service = serviceFactory.create(location, options);
         }
         return service;
     }

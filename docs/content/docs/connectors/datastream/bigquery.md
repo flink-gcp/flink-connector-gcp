@@ -855,7 +855,11 @@ Method-specific settings live in `BufferedStreamOptions` (required for this writ
 rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default) and
 the connector-driven recovery schedule (`recoveryInitialBackoff` 500 ms, `recoveryMaxBackoff`
 10 s, `recoveryMaxAttempts` 10, each backoff jittered by ±25%) governing stream creation,
-transient re-appends and the restore probe.
+transient re-appends and the restore probe. The SDK's in-stream retries below that budget are
+configured by the same `retry*` and `maxRetryDuration` knobs `DefaultStreamOptions` carries, with
+the same defaults — see [Tuning](#tuning). Unlike the default-stream path these appenders never
+enter the SDK's connection pool (each buffered stream gets a dedicated writer), so there is no
+first-writer-wins caveat and no pool-sizing knob.
 
 **Stream lifecycle.** Each writer subtask owns **one buffered stream, created lazily on its first
 append and reused across checkpoints** — per GCP guidance, frequent `CreateWriteStream` churn
@@ -957,8 +961,9 @@ env.setRuntimeMode(RuntimeExecutionMode.BATCH);
 
 FILE_LOADS-only settings live in `FileLoadsOptions` (required for this write method, rejected for
 the others): `stagingPath` (required), `writeDisposition` (`WRITE_APPEND` default,
-`WRITE_TRUNCATE` for atomic batch reloads, `WRITE_EMPTY`), `tempDataset`, and the streaming guard
-`minCheckpointInterval` (all described below).
+`WRITE_TRUNCATE` for atomic batch reloads, `WRITE_EMPTY`), `tempDataset`, the streaming guard
+`minCheckpointInterval`, and the committer's two backoff schedules (`loadJobPoll*` for load-job
+completion polling, `schemaReconcile*` for the etag-race reconcile) — all described below.
 
 **Topology.** Parallel writers encode records (serializer proto bytes → Avro `GenericRecord`) and
 stream them straight to per-destination GCS objects — rows never accumulate on the heap, so memory
@@ -1157,7 +1162,8 @@ configurable, via `BufferedStreamOptions`.
 
 ## Tuning
 
-`STORAGE_API_AT_LEAST_ONCE` exposes its tuning knobs on `DefaultStreamOptions`, optional on the
+Each write method exposes its tuning knobs on its own options class; this section covers them in
+turn, starting with `STORAGE_API_AT_LEAST_ONCE` on `DefaultStreamOptions`, optional on the
 builder — an unconfigured sink uses the defaults below:
 
 ```java
@@ -1191,8 +1197,8 @@ is not configurable: the jitter is mean-preserving (a factor in `[0.75, 1.25]`, 
 delay is the configured one) and all it has to do is stop parallel subtasks from retrying against
 the same table in lockstep. Two other waits are shaped differently on purpose — the SDK's
 in-stream retries below, which the SDK spreads uniformly over `[0, delay)` so that those knobs
-are upper bounds rather than means, and the sleep before re-reading a lost etag race, uniform
-over 0–500 ms to spread subtasks across BigQuery's per-table metadata-update quota (see
+are upper bounds rather than means, and the default-stream writer's sleep before re-reading a lost
+etag race, uniform over 0–500 ms to spread subtasks across BigQuery's per-table metadata-update quota (see
 [Schema evolution](#schema-evolution)).
 
 The 512 KiB default favors bounded memory and per-record latency; throughput-oriented jobs have
@@ -1204,7 +1210,8 @@ The schedule pacing schema-update propagation waits (flat 30 s, 30 attempts) is 
 configurable: it tracks how long BigQuery metadata takes to propagate — a service property — not
 a workload property.
 
-**SDK in-stream retries** (`retry*`, spelled the SDK's way) — the schedule the SDK applies to
+**SDK in-stream retries** (`retry*`, spelled the SDK's way; `BufferedStreamOptions`
+exposes the same five knobs with the same defaults) — the schedule the SDK applies to
 retriable append failures before they ever reach the writer; failures that exhaust it surface to
 the connector's recovery budget above:
 
@@ -1269,6 +1276,32 @@ too). It is a mitigation only — the documented at-least-once guarantee still r
 checkpointing, because only a checkpoint coordinates the sink's flush with the source's
 position. With checkpointing enabled the option is redundant; a flush of nothing is cheap, but
 each flush blocks the task thread until in-flight appends are acknowledged.
+
+**FILE_LOADS committer schedules** — `FileLoadsOptions` exposes the two schedules the committer
+backs off on. Neither affects the Storage Write API paths:
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `loadJobPollInitialBackoff` | 1 s | First backoff between polls of a submitted load or copy job's completion |
+| `loadJobPollMaxBackoff` | 30 s | Poll backoff cap (doubling), before jitter |
+| `schemaReconcileInitialBackoff` | 500 ms | First backoff after losing an etag race while reconciling a table's schema |
+| `schemaReconcileMaxBackoff` | 10 s | Cap of that backoff (doubling), before jitter |
+| `schemaReconcileMaxAttempts` | 10 | Attempt cap of the schema reconcile |
+
+Completion polling covers the temp-table overflow path's copy job as well as the loads
+themselves. It has **no attempt cap to configure**, deliberately: batch load jobs may
+legitimately run for hours, and bounding the polling would fail a load that was progressing
+normally — overall timeouts are the Flink job's to enforce. Lowering `loadJobPollInitialBackoff`
+notices a finished load sooner at the cost of more `jobs.get` calls against your own quota;
+raising it does the reverse.
+
+Only a *lost* etag race consumes a schema-reconcile attempt, and those races do not come from
+this job's parallelism — FILE_LOADS reconciles from a single committer subtask. They come from
+anything else touching the same table at the same time: a second Flink job, a Storage Write API
+sink writing the same destination, or external tooling. Raise the budget when that describes your
+deployment (BigQuery allows about five metadata updates per table per ten seconds); exhausting it
+fails the commit. This is a different wait from the default-stream writer's 0–500 ms etag spread
+described under [Tuning](#tuning) above, which is not configurable.
 
 ## Testing
 

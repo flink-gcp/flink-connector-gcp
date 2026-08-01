@@ -109,6 +109,7 @@ public class BigQueryBufferedStreamWriter<T>
     private final int subtaskId;
     private final long maxAppendRequestBytes;
     private final RetrySchedule retrySchedule;
+    private final BufferedStreamOptions options;
 
     @Nullable private BufferedStreamService service;
     @Nullable private OffsetRowAppender appender;
@@ -159,6 +160,7 @@ public class BigQueryBufferedStreamWriter<T>
         this.subtaskId = subtaskId;
         this.maxAppendRequestBytes = options.getMaxAppendRequestBytes();
         this.retrySchedule = options.toRecoverySchedule();
+        this.options = options;
 
         BufferedStreamWriterState adopted = null;
         for (BufferedStreamWriterState state : restoredStates) {
@@ -695,7 +697,7 @@ public class BigQueryBufferedStreamWriter<T>
 
     private void ensureService() throws IOException {
         if (service == null) {
-            service = serviceFactory.create(config.getLocation());
+            service = serviceFactory.create(config.getLocation(), options);
         }
     }
 

@@ -23,6 +23,9 @@ import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Int64Value;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -147,7 +150,7 @@ public class FakeBufferedStreamService implements BufferedStreamService {
 
     /** Returns a factory handing out this instance. */
     public BufferedStreamServiceFactory asFactory() {
-        return new Factory(this);
+        return new Factory();
     }
 
     private static void throwScripted(Exception e) throws IOException {
@@ -157,19 +160,17 @@ public class FakeBufferedStreamService implements BufferedStreamService {
         throw (RuntimeException) e;
     }
 
+    /** The options the factory was last asked to create a service with; see {@link #asFactory}. */
+    @Nullable public BufferedStreamOptions createdWith;
+
     /** Not actually serializable — for direct writer/committer construction in tests only. */
-    private static final class Factory implements BufferedStreamServiceFactory {
+    private final class Factory implements BufferedStreamServiceFactory {
         private static final long serialVersionUID = 1L;
 
-        private final transient FakeBufferedStreamService service;
-
-        Factory(FakeBufferedStreamService service) {
-            this.service = service;
-        }
-
         @Override
-        public BufferedStreamService create(String location) {
-            return service;
+        public BufferedStreamService create(String location, BufferedStreamOptions options) {
+            createdWith = options;
+            return FakeBufferedStreamService.this;
         }
     }
 }
