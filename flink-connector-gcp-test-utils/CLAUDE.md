@@ -16,6 +16,15 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
   Cloud Tasks fixtures are hand-rolled, single-consumer, and structurally unlike the testcontainers
   `PubSubEmulatorContainer`; they stay in their modules (recorded on #27). Only what has multiple
   consumers moves here.
+- **`StubWriterInitContext` answers what a sink reads and throws for everything else** (#206, its
+  second consumer — it arrived with #205 in the BigQuery test tree and moved when Pub/Sub needed
+  it). The unsupported methods are the point: a sink growing a new dependency on the context shows
+  up as a failing test rather than as a silent null. Two things are deliberate. The metric group is
+  a null-returning `Proxy` held in a **field**, so a test can assert by identity that it reached
+  whatever it was handed to without this class implementing that interface's many methods; and the
+  mailbox is a real `FakeMailboxExecutor`, because the Pub/Sub sink's production `createWriter`
+  takes one — where BigQuery's stub had thrown. No compat source root is needed: `WriterInitContext`
+  and every method overridden here exist identically in 1.20 and 2.x.
 - **Real-GCP gating annotations never move here.** `scripts/e2e-gated-its.sh` discovers the gated
   suite by grepping the `@EnabledIfEnvironmentVariable` literal on concrete classes under the
   connector modules and expects a surefire report per match — a meta-annotation or a base class in

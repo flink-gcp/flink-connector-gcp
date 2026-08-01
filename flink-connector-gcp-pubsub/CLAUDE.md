@@ -53,8 +53,35 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   for publishers (each owning its channel) and the auto-creation admin, mirroring the Apache
   connector's `withHostAndPortForEmulator`; the emulator ITs (including a MiniCluster streaming
   test through the public builder) reuse the production factory/admin, no test-only factory.
-  Per-record failure policy and the fatal-exception classifier moved to #37. Decision record in
-  the connector documentation page
+  Decision record in the connector documentation page
+- **Pub/Sub sink per-message failure policy** (#206, the #37 series): `failedMessageHandler(...)`
+  takes the shared `FailureHandler<FailedMessage>` from `base.failure`, defaulting to `failJob()`
+  — behaviourally today's capture-and-rethrow, which is why `PubSubWriterTest` and
+  `PubSubWriterAutoCreationTest` were left untouched and are the regression guard. `FailedMessage`
+  sits at the `sink` root (a one-class `sink.failure` fails the #119 layer test) and carries the
+  **whole serialized `PubsubMessage`** as `getPayloadBytes()`, not just its data, so a dead-letter
+  consumer recovers attributes and ordering key with `parseFrom`; `describeDestination()` is the
+  `projects/p/topics/t` resource name the `FailedElement` javadoc prescribes, not
+  `TopicDestination.toString()`'s `project/topic`. `PubSubErrorClassifier` (`sink.writer`) absorbs
+  the writer's `isNotFound`/`isCancellation` and fixes the precedence
+  `TOPIC_NOT_FOUND` → `CANCELLATION` → `MESSAGE_LEVEL` → `FATAL`, each walking the cause chain;
+  the order is pinned by test, because a chain can carry both a cancellation and a status.
+  **Exactly two failures are routed, and the boundary is the decision**: a record the serializer
+  rejects, and a publish rejected `INVALID_ARGUMENT`. Not routed, in two directions and for two
+  different reasons — outage-shaped failures (an unavailable service, an exhausted SDK retry
+  budget) must never reach a dropping handler, or an incident bleeds the stream one message at a
+  time rather than backpressuring; and configuration-shaped failures (a `DestinationResolver`
+  returning null, an ordering key without `enableMessageOrdering`) fail *every* record alike, so
+  dropping them would leave an empty topic under a green job — the same trap eager schema
+  derivation closes on the BigQuery side. A `MESSAGE_LEVEL` handler failure is captured into
+  `asyncError` rather than thrown, because it happens inside a mailbox mail; an unchecked one is
+  wrapped naming the topic. `build()` rejects a non-default handler beside
+  `enableMessageOrdering(true)` — compared by **identity against `FailureHandler.failJob()`**, so
+  the rule is about the policy and not about whether the setter was called — because dropping a
+  message reaches into the parked-batch/resume/publish-sequence-sort repair, exactly where #78
+  found races; lifting it is #215, and the error message says so. Coverage is unit tests only: the
+  emulator validates nothing, and what real Pub/Sub answers `INVALID_ARGUMENT` to would have to be
+  measured before a gated IT could assert it
 - **Pub/Sub source** (#79, #80, #81): FLIP-27 streaming-pull source; split = (subscription, uid),
   ack on checkpoint completion, nack on close. **The reader checkpoints no splits** — the
   enumerator is the only owner of split assignment, recomputing the deterministic plan

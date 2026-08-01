@@ -34,7 +34,8 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   connector's concrete type keeps a typed `getDestination()` (BigQuery's returns
   `TableDestination`), and a same-signature `String` override would be an irreconcilable clash. **Which failures are row-level stays per-connector** (only
   data-shaped failures reach a handler), exactly as retryability classification stays
-  per-connector under #61; the Pub/Sub and Cloud Tasks adoptions are #206/#207. `protobuf-java`
+  per-connector under #61; the Pub/Sub adoption is #206 (its module CLAUDE.md records where that
+  connector puts the boundary and why), Cloud Tasks' is #207. `protobuf-java`
   (BOM-managed) is here for `ByteString` on `FailedElement`.
 - **Every schedule jitters, at one shared ratio, and the ratio is never a knob** (#197). The
   maintainer's standing posture is exponential backoff *with* jitter, so

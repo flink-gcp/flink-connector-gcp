@@ -40,6 +40,7 @@ The `WITH` options of the `pubsub` table connector are a separate surface, docum
 | `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing topic is created or fails the job |
 | `topicCreateOptions` | Pub/Sub's own defaults | [Settings](#topiccreateoptions) for topics the sink creates. Rejected with `CREATE_NEVER` |
 | `publisherOptions` | [defaults](#pubsubpublisheroptions) | Publisher and writer tuning |
+| `failedMessageHandler` | `FailureHandler.failJob()` | What happens to a message that terminally fails — fail, drop, or dead-letter. Rejected with `enableMessageOrdering(true)` |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production |
 
 ## `PubSubPublisherOptions`

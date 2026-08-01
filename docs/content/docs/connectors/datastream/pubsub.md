@@ -278,10 +278,83 @@ Publish completion callbacks carry their message (one small callback object per 
 `NOT_FOUND` repair can republish it, plus its serialized size so both in-flight counters can be
 released; the callback *is* the success mail, so the success path allocates nothing beyond it.
 Publish retries within the SDK default to its settings and are tunable through the
-publisher options. A per-message failure policy (the shared `FailureHandler` SPI the BigQuery
-module already uses) and a fatal-exception classifier are tracked in
-[#206]({{< param BookRepo >}}/issues/206), part of the
-[#37]({{< param BookRepo >}}/issues/37) standardization.
+publisher options.
+
+Failed publishes are classified on the task thread and routed by class:
+
+| Class | Examples | Behavior |
+|---|---|---|
+| Message-level | `INVALID_ARGUMENT` — the message exceeds 10 MiB, its attributes break a limit, its ordering key is unusable | Routed to the configured [failed-message handler](#failed-message-policy); republishing the same bytes could not succeed, and the messages around it are unaffected |
+| Topic not found | `NOT_FOUND` | Under `CREATE_IF_NEEDED` the topic is created and the message republished (see [Topic auto-creation](#topic-auto-creation)). Under `CREATE_NEVER` the job fails |
+| Cancellation | The SDK cancelling an ordering key's queued publishes after an earlier failure for that key | Never a root cause. Under `CREATE_IF_NEEDED` with ordering enabled it is parked alongside the failure that caused it; otherwise it fails the job |
+| Terminal | An outage the SDK's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, …), `PERMISSION_DENIED`, failures carrying no status at all | Fail the ongoing write or checkpoint |
+
+### Failed-message policy
+
+Two data-shaped failures are pluggable: a record the serializer rejects, and a message-level
+publish rejection. The policy is `failedMessageHandler(...)`, taking the shared
+`FailureHandler<FailedMessage>` SPI from `flink-connector-gcp-base`
+([#37]({{< param BookRepo >}}/issues/37) standardizes it across the connectors in this
+repository):
+
+```java
+Sink<String> sink =
+        PubSubSink.<String>builder()
+                .topic(TopicDestination.of("my-project", "events"))
+                .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+                .failedMessageHandler(FailureHandler.logAndDrop())
+                .build();
+```
+
+- `FailureHandler.failJob()` (default) — every per-message failure fails the checkpoint, which is
+  the sink's behavior when nothing is configured
+- `FailureHandler.logAndDrop()` — logs each failed message at WARN and drops it
+- `FailureHandler.sendToDeadLetterQueue(...)` — forwards each failed message to a `DeadLetterQueue`
+  (experimental), whose implementation the sink drives through a lifecycle: `open(context)` once
+  when the writer is created (the context carries the subtask index and the writer's metric group),
+  `offer(element)` per failed message — buffering is allowed — `flush()` at every checkpoint
+  barrier and at end of input, always after the sink's own write path has drained (on return
+  everything offered must be durable, throwing fails the checkpoint), and `close()` when the writer
+  closes, which must not be relied on for persistence
+- Custom handlers implement `FailureHandler<FailedMessage>` — or `FailureHandler<FailedElement>`,
+  which `failedMessageHandler(...)` accepts as-is (the parameter is contravariant), so one handler
+  written against the shared contract serves every connector in this repository. Throwing from
+  `handle` fails the checkpoint, returning drops the message. `FailedMessage` carries the
+  `PubsubMessage` the serializer produced, or `null` when serialization itself failed; under the
+  shared `FailedElement` contract it reports `getConnector()` (`"pubsub"`),
+  `describeDestination()` (`projects/<p>/topics/<t>`) and `getPayloadBytes()` — the **whole**
+  serialized message, so a consumer recovers the attributes and the ordering key with
+  `PubsubMessage.parseFrom(bytes)`
+
+**Only those two failures are routed, deliberately.** An outage must not reach a dropping handler,
+or a service incident would bleed the stream one message at a time instead of backpressuring and
+restarting; that is why the message-level class is `INVALID_ARGUMENT` alone and is widened only
+with evidence that a status code identifies one message rather than a condition. Configuration
+failures stay fatal for the mirror-image reason: a destination resolver returning `null`, and a
+message carrying an ordering key without `enableMessageOrdering(true)`, fail every record alike, so
+dropping them would leave an empty topic under a green job.
+
+**A non-default handler is rejected together with `enableMessageOrdering(true)`**, at `build()`.
+Dropping a message would reach into the ordering repair, which republishes a parked batch whole and
+in publish order — the machinery [#78]({{< param BookRepo >}}/issues/78) found races in. Lifting
+the restriction is [#215]({{< param BookRepo >}}/issues/215).
+
+Dead-letter output is **at-least-once, for failures that recur on replay**: messages are offered
+before the checkpoint covering their originating records completes, so a restart replays those
+records and a deterministic failure (an oversized message, a record the serializer cannot convert)
+is offered again — consume the dead-letter destination idempotently or deduplicate by key. A
+failure that does *not* recur on replay is preserved only if a completed checkpoint already flushed
+it. Exactly-once dead-letter output is deliberately not offered: it would require the dead-letter
+write to join the sink's own commit protocol, which no external destination can be enrolled in.
+
+**This is not Pub/Sub's own dead-lettering.** The handler above is a *sink-side* policy: this
+connector decides that a message it is publishing has terminally failed, and hands it to your
+handler. Pub/Sub's dead-letter topics are a *service-side* feature on the subscribe side, used by
+this connector's source under
+[`deserializationFailurePolicy(NACK)`](#deserialization-failures) — and they trigger on
+**delivery count, not cause**, so a redelivery after an unrelated job restart raises the same
+counter as one after a nack. The two are configured separately, route to different places, and
+neither substitutes for the other.
 
 ## Source
 
