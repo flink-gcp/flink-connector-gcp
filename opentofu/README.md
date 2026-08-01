@@ -21,6 +21,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/opentofu-sa.tf` | Plan (read-only) and apply service accounts |
 | `flink-gcp/e2e-sa.tf` | The E2E test service account and its scoped grants |
 | `flink-gcp/it-resources.tf` | Pre-existing bucket/dataset, adopted via import blocks |
+| `flink-gcp/pubsub-e2e-iam.tf` | Service-agent and E2E-account IAM the Pub/Sub source real-GCP suite needs beyond `roles/pubsub.editor` |
 | `flink-gcp/tfaction.yaml` | Marks the directory as a tfaction root module |
 | `flink-gcp/.terraform.lock.hcl` | Committed provider release pin |
 | `/tfaction-root.yaml` | Global tfaction configuration (repository root) |
@@ -45,7 +46,7 @@ why:
 | `hide-comment` job in the plan workflow | on | Outdated plan comments are hidden; the visible comment is the one that would apply |
 | GitHub App | none | Plain `GITHUB_TOKEN` suffices for plan/apply/comments/labels; the App only pays for push-back features (below). Revisit once the repository is public (or moves to a dedicated org): an App token would unlock them |
 | `test` action (auto-`fmt` commits, tflint, trivy) | off | Auto-fix commits pushed with `GITHUB_TOKEN` do not retrigger CI, leaving stale checks; `fmt` is checked (not fixed) in `just lint`, and `validate` is subsumed by the plan this workflow always runs. tflint/trivy can ride in later with an App |
-| `drift_detection` | off (default) | Wants three more workflows and apply-job changes; a candidate follow-up once the nightly E2E workflow ([#28](https://github.com/laughingman7743/flink-connector-gcp/issues/28)) lands |
+| `drift_detection` | off (default) | Wants three more workflows and apply-job changes; a candidate follow-up now that the weekly E2E workflow ([#28](https://github.com/laughingman7743/flink-connector-gcp/issues/28)) has landed |
 
 ## Security model
 
@@ -70,7 +71,7 @@ google provider's Go auth library does not read it (measured: with only
 `~/.config/gcloud` ADC of a different account); the provider needs
 `GOOGLE_APPLICATION_CREDENTIALS` naming the credentials file directly:
 
-```
+```text
 CLOUDSDK_CONFIG=/Users/<you>/.config/flink-gcp
 GOOGLE_APPLICATION_CREDENTIALS=/Users/<you>/.config/flink-gcp/application_default_credentials.json
 ```
@@ -101,10 +102,10 @@ no service account at all:
 
 3. Move the state into the bucket that now exists:
 
-   ```console
-   $ rm flink-gcp/backend_override.tf
-   $ just tofu init -migrate-state
-   $ rm flink-gcp/terraform.tfstate flink-gcp/terraform.tfstate.backup
+   ```sh
+   rm flink-gcp/backend_override.tf
+   just tofu init -migrate-state
+   rm flink-gcp/terraform.tfstate flink-gcp/terraform.tfstate.backup
    ```
 
 4. `just tofu plan` must report no changes. Commit `.terraform.lock.hcl`.
@@ -124,13 +125,15 @@ are provisioned lazily on first use, and granting a role to one that does not
 exist yet is documented to fail. Before the first apply that grants to a new
 service's agent, provision it once as the owner:
 
-```console
-$ gcloud beta services identity create --service=<service>.googleapis.com --project=flink-gcp
+```sh
+gcloud beta services identity create --service=<service>.googleapis.com --project=flink-gcp
 ```
 
 Done for `pubsub.googleapis.com` on 2026-08-01 (the Pub/Sub agent performs
-dead-letter forwarding, PR #170). The agent is permanent once created. For
-the record: the 403s PR #170's applies actually hit were the apply workflow
+dead-letter forwarding,
+[PR #170](https://github.com/laughingman7743/flink-connector-gcp/pull/170)).
+The agent is permanent once created. For the record: the 403s that same PR's
+applies actually hit were the apply workflow
 authenticating as the read-only plan account (`TFACTION_IS_APPLY` was unset —
 see the comment in `tofu-apply.yaml`), diagnosed only after the missing agent
 had been blamed; check the authenticated principal in the workflow log before

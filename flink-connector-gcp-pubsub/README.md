@@ -3,7 +3,7 @@
 Cloud Pub/Sub sink and source for Apache Flink, with dynamic per-record topic destinations on the
 sink and multi-subscription consumption on the source.
 
-### Sink
+## Sink
 
 | Sink feature | Status |
 |---|---|
@@ -13,7 +13,7 @@ sink and multi-subscription consumption on the source.
 | Per-record failure policy; fatal-exception classifier | Planned ([#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37)) |
 | Emulator integration tests | Implemented ([#21](https://github.com/laughingman7743/flink-connector-gcp/issues/21)) |
 
-### Source
+## Source
 
 | Source feature | Status |
 |---|---|
@@ -24,7 +24,7 @@ sink and multi-subscription consumption on the source.
 | Startup check; subscription auto-creation; start position (seek); `NACK` failure policy | Implemented ([#81](https://github.com/laughingman7743/flink-connector-gcp/issues/81)) |
 | Acceptance and real-GCP integration tests | Implemented ([#82](https://github.com/laughingman7743/flink-connector-gcp/issues/82)) |
 
-### Table API / SQL
+## Table API / SQL
 
 | Table API / SQL feature | Status |
 |---|---|

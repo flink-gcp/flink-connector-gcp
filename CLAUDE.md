@@ -29,7 +29,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   cannot resolve inter-module dependencies from the reactor — same mechanism as the licence-goal
   rule below, bitten via the SQL uber-jar in #181 — and it primes `~/.m2` with
   `io.github.flink-gcp` SNAPSHOTs when run by hand (the recipe comment has the cleanup line)
-- `just e2e` — the ITCases gated on `BQ_IT_*` variables, which `just verify` silently skips,
+- `just e2e` — the ITCases gated on the `BQ_IT_*` / `PUBSUB_IT_PROJECT` variables, which
+  `just verify` silently skips,
   with a pre-flight that makes a missing variable an error and a post-run assertion
   (`scripts/e2e-gated-its.sh`, which derives the class list from the gating annotation) that the
   gated classes actually executed. Its `-pl`-scoped builds install the test-utils module first,
@@ -57,7 +58,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   would have had to grow to every Java source — and it downloads the sources jars (into
   `target/flink-api-tiers/`) while `just lint` stays offline
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
-  over `.github/workflows/`, `tofu fmt -check` over `opentofu/` (`tofu validate` is deliberately
+  over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
+  the **rendered** markdown — `docs/content/` and the READMEs, never the `CLAUDE.md`s — at strict
+  defaults except MD013 (line length: issue-link syntax legitimately outruns any source-line cap)
+  and MD060 (table style), both declined with reasons in `.markdownlint-cli2.jsonc`; MD051's
+  in-page anchor check is the half Hugo's build does not cover (`relref` validates cross-page
+  links only), `tofu fmt -check` over `opentofu/` (`tofu validate` is deliberately
   absent: it needs a provider-downloading init, and every PR touching `opentofu/` gets a full plan
   from the tofu-plan workflow, which subsumes it). Deliberately
   does **not** run `just --fmt --check`: that is an unstable feature, excluded from just's
@@ -68,6 +74,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   a broken `relref` or a missing shortcode fails the build), preview it, regenerate the chroma
   palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in
   `docs/go.mod`
+- `just pin-actions` — pin GitHub Actions to commit SHAs; when to run it is a Workflow rule
+  (a workflow added, or an action version changed)
 - `just tofu <args>` — OpenTofu in `opentofu/flink-gcp`, the root module holding the project's
   persistent GCP resources (#5). Local escape hatch only: plan/apply normally run in CI (see
   "Infrastructure (OpenTofu)" below). Credentials come from
@@ -102,10 +110,27 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - **Issue references in module READMEs and docs pages are explicit links**, never bare `#N`.
   GitHub autolinks `#N` only in issue/PR *comments*, not in repository markdown files, and Hugo
   never does — so a bare `#N` is dead text in both places a reader actually sees. READMEs use the
-  full URL; docs pages use `[#N]({{< param BookRepo >}}/issues/N)`. Cross-repository references
+  full URL; docs pages use `[#N]({{< param BookRepo >}}/issues/N)`. The `#N` link text must match
+  the `/issues/N` in the URL it wraps — a copy-paste where they disagree sends the reader to the
+  wrong record, and nothing renders differently to reveal it. Cross-repository references
   keep their `owner/repo#N` text and point at *that* repository — `goccy/bigquery-emulator#342`
   is the one in the tree, and a blind `#N` rewrite would have pointed it here. `CLAUDE.md` is
   deliberately exempt: it is read by Claude, not rendered for users
+- **A status claim in a rendered file carries the issue link that *is* the status.** Wording
+  like "under investigation", "planned" or "not yet supported" rots silently when the tracker
+  moves on, so it may appear only beside the issue link whose open/closed state lets a reader
+  check it — and prefer recording the decision plus the protocol over the status word ("closed
+  wait-and-see; a reproduction gets a new issue referencing #174" outlives "under
+  investigation"). Closing or re-scoping an issue includes rewording its rendered mentions in
+  the same change — #186, sweeping the mentions after #174 closed, is the precedent
+- **Comments and javadoc state what the code cannot show** — a measured fact, a decision with
+  its issue number, or the vendor behavior being worked around — never narration of the change
+  that introduced them ("now", "new", "previously", "fixed in this PR"), which is stale the
+  moment it merges and meaningless to a reader who wasn't in the session that wrote it, and
+  never implementation status, whose single home is the README table. Wall-clock or measured
+  numbers carry their date and sample size ("measured 2026-07-31, one run") so a later reader
+  can weigh them, and a superseding measurement edits the original spot rather than appending a
+  correction beside it
 - Pages are plain markdown with front matter (`title`, `type: docs`, `weight` — spaced by 10 so a
   new connector slots in without renumbering) and the plain Apache-2.0 header as an HTML comment.
   **No Flink shortcodes and no vendored Flink layout code** — `artifact`/`tabs`/`hint` do not
@@ -161,7 +186,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   in advance
 - CI is **tfaction v2** (`tfaction-root.yaml` at the root): pull requests touching `opentofu/**`
   get a plan comment (`tofu-plan.yaml`), the merge applies that reviewed plan file from GitHub
-  Artifacts and comments the result (`tofu-apply.yaml`). State locking is the GCS backend's
+  Artifacts and comments the result (`tofu-apply.yaml`); both resolve the changed root modules
+  through the shared `tofu-list.yaml`. State locking is the GCS backend's
   native locking. These two workflows are the standing exception to the #111 just-recipe rule:
   tfaction is itself the named, rerunnable sequence, and `just tofu <args>` is the local
   equivalent. They run on plain `GITHUB_TOKEN` — no GitHub App, so tfaction's push-back features

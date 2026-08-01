@@ -2,7 +2,7 @@ name: Lint
 
 # Linters for the parts of the repository Maven does not cover. Spotless and
 # checkstyle handle the Java sources inside `just verify` (ci.yaml); this is
-# where everything else goes — shellcheck, ruff, actionlint and
+# where everything else goes — shellcheck, ruff, actionlint, markdownlint and
 # `tofu fmt -check` today (`tofu validate` is subsumed by the plan the
 # tofu-plan workflow runs on exactly the pull requests that touch opentofu/).
 #
@@ -28,8 +28,16 @@ on:
       # where those versions are declared, so leaving it out would skip the lint
       # in exactly the change that most needs it.
       - 'mise.toml'
-      # tofu fmt -check reads these.
+      # tofu fmt -check reads these (opentofu/README.md doubles as markdownlint
+      # input).
       - 'opentofu/**'
+      # markdownlint reads its config and the rendered markdown — the docs
+      # sources and the READMEs. CLAUDE.md files are deliberately outside its
+      # globs (see .markdownlint-cli2.jsonc), so they are not inputs here.
+      - '.markdownlint-cli2.jsonc'
+      - 'docs/content/**'
+      - 'README.md'
+      - 'flink-*/README.md'
   pull_request:
     paths: *lint_paths
   workflow_dispatch:
@@ -64,7 +72,7 @@ jobs:
       # install by default, keyed partly on install_args.
       - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
-          install_args: shellcheck actionlint ruff opentofu
+          install_args: shellcheck actionlint ruff opentofu node npm:markdownlint-cli2
 
       # just comes from install-action even though mise is right here, so that
       # every workflow installs it the same way. See the note in ci.yaml.

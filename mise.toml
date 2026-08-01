@@ -28,6 +28,16 @@ ruff = "0.16.0"
 # Python script install their own with actions/setup-python, so mise stays
 # out of the setup-java job.
 python = "3.12"
+# Lints the rendered markdown (docs/content/ and the READMEs; scope and the
+# rule deviations live in .markdownlint-cli2.jsonc). Exactly pinned for the
+# same reason as shellcheck: a release that gains a rule (MD060 arrived this
+# way) would fail a pull request that changed nothing. The npm backend rides
+# the node entry below.
+"npm:markdownlint-cli2" = "0.23.2"
+# Runtime for the npm backend above — nothing else here uses node. Pinned to a
+# major: markdownlint-cli2's behavior is its own version's, and a node patch
+# cannot add a lint rule.
+node = "24"
 # Runs the opentofu/ configuration (locally via `just tofu` and `just lint`,
 # in CI via the tofu-plan/tofu-apply workflows). Exactly pinned, and
 # versions.tf's required_version repeats it, so a skew between local and CI is
