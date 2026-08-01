@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.storage;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
@@ -194,6 +195,7 @@ public final class DefaultStreamOptions implements Serializable {
      * Jittered: parallel subtasks recovering from the same table creation, or from the same backend
      * hiccup, would otherwise re-append in lockstep.
      */
+    @Internal
     public RetrySchedule toRecoverySchedule() {
         return new RetrySchedule(
                 recoveryInitialBackoff.toMillis(),

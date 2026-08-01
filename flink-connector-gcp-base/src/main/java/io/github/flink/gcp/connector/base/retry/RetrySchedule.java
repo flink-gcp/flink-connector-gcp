@@ -77,6 +77,11 @@ public final class RetrySchedule {
         return maxAttempts;
     }
 
+    /** Returns the proportional jitter applied to each backoff. */
+    public double jitterRatio() {
+        return jitterRatio;
+    }
+
     /**
      * Returns the jittered backoff after the given attempt (1-based): the initial delay doubled per
      * attempt up to the cap, multiplied by a random factor in {@code [1 - jitterRatio, 1 +

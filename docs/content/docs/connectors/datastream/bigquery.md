@@ -1183,13 +1183,17 @@ the bounded re-append schedule that sits above the SDK's retries (the same knobs
 |---|---|---|
 | `maxAppendRequestBytes` | 512 KiB | Serialized-row bytes buffered per destination before an append request is issued |
 | `recoveryInitialBackoff` | 500 ms | First backoff of the connector-driven recovery schedule |
-| `recoveryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling) |
+| `recoveryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling), before jitter |
 | `recoveryMaxAttempts` | 10 | Attempt cap of that schedule |
 
-Every backoff the connector itself sleeps is jittered by ±25%, which is not configurable: the
-jitter is mean-preserving (a factor in `[0.75, 1.25]`, so the expected delay is the configured
-one) and all it has to do is stop parallel subtasks from retrying against the same table in
-lockstep. The SDK's own retries below are jittered by the SDK.
+Every backoff derived from one of the connector's own retry schedules is jittered by ±25%, which
+is not configurable: the jitter is mean-preserving (a factor in `[0.75, 1.25]`, so the expected
+delay is the configured one) and all it has to do is stop parallel subtasks from retrying against
+the same table in lockstep. Two other waits are shaped differently on purpose — the SDK's
+in-stream retries below, which the SDK spreads uniformly over `[0, delay)` so that those knobs
+are upper bounds rather than means, and the sleep before re-reading a lost etag race, uniform
+over 0–500 ms to spread subtasks across BigQuery's per-table metadata-update quota (see
+[Schema evolution](#schema-evolution)).
 
 The 512 KiB default favors bounded memory and per-record latency; throughput-oriented jobs have
 headroom to raise `maxAppendRequestBytes` to a few megabytes — the Storage Write API caps a

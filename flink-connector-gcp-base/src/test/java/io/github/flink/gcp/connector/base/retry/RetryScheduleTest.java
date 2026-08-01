@@ -56,8 +56,10 @@ class RetryScheduleTest {
 
     @Test
     void theDefaultJitterRatioIsNonZero() {
-        // Every connector's schedules map onto this one constant, and the only thing the value has
-        // to be is non-zero — a zero here would silently re-synchronize every parallel subtask.
+        // The only thing the shared ratio has to be is non-zero; a zero would silently
+        // re-synchronize every parallel subtask. This is the sole guard: each connector's mapping
+        // test asserts its schedule carries DEFAULT_JITTER_RATIO, which a zeroed constant would
+        // satisfy, and a zero backoff ratio is invisible in a backoff range assertion too.
         assertThat(RetrySchedule.DEFAULT_JITTER_RATIO).isGreaterThan(0).isLessThan(1);
     }
 

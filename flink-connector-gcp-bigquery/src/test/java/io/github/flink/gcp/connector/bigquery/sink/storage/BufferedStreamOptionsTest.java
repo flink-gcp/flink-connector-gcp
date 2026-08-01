@@ -68,18 +68,10 @@ class BufferedStreamOptionsTest {
                         .toRecoverySchedule();
 
         assertThat(schedule.maxAttempts()).isEqualTo(3);
+        assertThat(schedule.jitterRatio()).isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
+        // The backoffs pin that the two durations reach the schedule the right way round.
+        assertThat(schedule.backoffMs(1)).isBetween(750L, 1250L);
         assertThat(schedule.backoffMs(2)).isBetween(1500L, 2500L);
-
-        // Staying inside the ±25% range does not on its own prove the jitter is applied — a ratio
-        // regressing to zero also does. The variation is what has to be asserted.
-        long first = schedule.backoffMs(1);
-        boolean varies = false;
-        for (int i = 0; i < 200; i++) {
-            long backoff = schedule.backoffMs(1);
-            assertThat(backoff).isBetween(750L, 1250L);
-            varies |= backoff != first;
-        }
-        assertThat(varies).as("the recovery schedule must jitter").isTrue();
     }
 
     @Test

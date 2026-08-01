@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.storage;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
@@ -105,6 +106,7 @@ public final class BufferedStreamOptions implements Serializable {
      * by the writer and the committer. Jittered: the writer, the committer and every parallel
      * subtask of both back off against the same table.
      */
+    @Internal
     public RetrySchedule toRecoverySchedule() {
         return new RetrySchedule(
                 recoveryInitialBackoff.toMillis(),

@@ -259,10 +259,10 @@ queue's job:
 |---|---|---|
 | `maxInFlightTasks` | 1000 | Caps outstanding creates, in flight plus parked. At the cap `write()` yields to the task mailbox until completions bring the count down |
 | `retryInitialBackoff` | 100 ms | First backoff for `UNAVAILABLE` / `DEADLINE_EXCEEDED` / `RESOURCE_EXHAUSTED` |
-| `retryMaxBackoff` | 10 s | Cap the backoff doubles up to |
+| `retryMaxBackoff` | 10 s | Cap the backoff doubles up to, before jitter |
 | `retryMaxAttempts` | 8 | Total attempts, the first create included; exhausting the budget fails the job |
 | `notFoundInitialBackoff` | 500 ms | First backoff of the `NOT_FOUND` budget |
-| `notFoundMaxBackoff` | 2 s | Cap of the `NOT_FOUND` backoff |
+| `notFoundMaxBackoff` | 2 s | Cap of the `NOT_FOUND` backoff, before jitter |
 | `notFoundMaxAttempts` | 3 | `NOT_FOUND` attempts. Short on purpose: long enough to ride out a blip, short enough that a mistyped queue fails quickly. A queue taking minutes to re-activate outlives this budget by design — recovering from that is the job's restart strategy, not the writer's |
 
 Both backoffs carry ±25% jitter, so parallel subtasks backing off against the same queue at the

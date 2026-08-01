@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
@@ -129,6 +130,7 @@ public final class CloudTasksWriterOptions implements Serializable {
      * Returns the schedule retrying {@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED} and {@code
      * RESOURCE_EXHAUSTED} creations.
      */
+    @Internal
     public RetrySchedule toRetrySchedule() {
         return new RetrySchedule(
                 retryInitialBackoff.toMillis(),
@@ -143,6 +145,7 @@ public final class CloudTasksWriterOptions implements Serializable {
      * it is created, and the jitter is mean-preserving, so spreading the attempts costs the short
      * budget nothing in expectation.
      */
+    @Internal
     public RetrySchedule toNotFoundRetrySchedule() {
         return new RetrySchedule(
                 notFoundInitialBackoff.toMillis(),

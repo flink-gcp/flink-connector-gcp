@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.sink;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
@@ -213,6 +214,7 @@ public final class PubSubPublisherOptions implements Serializable {
      * Jittered: every subtask that parked publishes for the same missing topic resumes against the
      * same freshly created topic, so unjittered they would republish in lockstep.
      */
+    @Internal
     public RetrySchedule toRecoverySchedule() {
         return new RetrySchedule(
                 recoveryInitialBackoff.toMillis(),

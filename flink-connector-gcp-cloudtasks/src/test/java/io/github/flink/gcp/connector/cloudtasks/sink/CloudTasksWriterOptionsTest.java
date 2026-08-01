@@ -57,26 +57,15 @@ class CloudTasksWriterOptionsTest {
 
         assertThat(options.toRetrySchedule().maxAttempts()).isEqualTo(4);
         assertThat(options.toNotFoundRetrySchedule().maxAttempts()).isEqualTo(2);
-        // Both schedules are jittered by ±25% to de-synchronize parallel subtasks — including the
-        // NOT_FOUND one, which was jitter-free until #197.
-        assertJittered(options.toRetrySchedule(), 1_500L, 2_500L);
-        assertJittered(options.toNotFoundRetrySchedule(), 750L, 1_250L);
-    }
-
-    /**
-     * Asserts the first backoff stays within the jittered range <em>and</em> varies. Staying inside
-     * the range does not on its own prove the jitter is applied — a ratio regressing to zero also
-     * does.
-     */
-    private static void assertJittered(RetrySchedule schedule, long minMs, long maxMs) {
-        long first = schedule.backoffMs(1);
-        boolean varies = false;
-        for (int i = 0; i < 200; i++) {
-            long backoff = schedule.backoffMs(1);
-            assertThat(backoff).isBetween(minMs, maxMs);
-            varies |= backoff != first;
-        }
-        assertThat(varies).as("the schedule must jitter").isTrue();
+        // Both schedules are jittered to de-synchronize parallel subtasks backing off against the
+        // same queue.
+        assertThat(options.toRetrySchedule().jitterRatio())
+                .isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
+        assertThat(options.toNotFoundRetrySchedule().jitterRatio())
+                .isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
+        // The backoffs pin that the two budgets' durations reach their own schedule.
+        assertThat(options.toRetrySchedule().backoffMs(1)).isBetween(1_500L, 2_500L);
+        assertThat(options.toNotFoundRetrySchedule().backoffMs(1)).isBetween(750L, 1_250L);
     }
 
     @Test

@@ -17,8 +17,12 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   expectation and only has to be non-zero. That also disposes of the pre-#197 argument that a
   short budget cannot afford jitter — true of full jitter, false of this shape. Not exposed as a
   builder knob: it fails the workload-property test the `recovery*`/`retry*` knobs pass. The
-  AWS-taxonomy variants (full, equal, decorrelated) are still unadopted — #197's Question 2 —
-  and a variant arrives only with the call site whose measurement justifies it.
+  AWS-taxonomy variants (full, equal, decorrelated) are unadopted **in `RetrySchedule`** — #197's
+  Question 2 — and one arrives only with the call site whose measurement justifies it. Two
+  full-jitter waits do exist outside the type and are not counter-examples:
+  `BigQueryDefaultStreamWriter.sleepJitter()` spreads subtasks across a metadata-update quota
+  rather than backing off a retry, and gax jitters the SDK's own in-stream retries over
+  `[0, delay)` beneath these schedules.
 - **A connector's knobs are mapped onto a `RetrySchedule` by the options class that owns them**,
   as `CloudTasksWriterOptions.toRetrySchedule()` always did and as `DefaultStreamOptions`,
   `BufferedStreamOptions` and `PubSubPublisherOptions` now do (#197). Never in the consumer: one
