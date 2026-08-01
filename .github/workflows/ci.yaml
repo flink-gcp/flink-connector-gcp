@@ -5,7 +5,28 @@ on:
     branches:
       - main
       - v1.20
+    # Infrastructure-only changes cannot affect the Maven build, and a tofu
+    # pull request otherwise pays ~7 runner-minutes for nothing (raised by the
+    # owner on #176, right after a billing cut). paths-ignore rather than
+    # paths: everything else must keep running this. Scope is deliberately
+    # only the files Maven can never see — markdown is NOT here, because
+    # apache-rat (inside `just verify`) does scan it. If this check ever
+    # becomes required, remember the CLAUDE.md caveat: a required check that
+    # never reports blocks a pull request forever.
+    paths-ignore:
+      - 'opentofu/**'
+      - 'tfaction-root.yaml'
+      - '.github/workflows/tofu-plan.yaml'
+      - '.github/workflows/tofu-apply.yaml'
+      - '.github/workflows/tofu-list.yaml'
   pull_request:
+    # Keep in sync with push's list above.
+    paths-ignore:
+      - 'opentofu/**'
+      - 'tfaction-root.yaml'
+      - '.github/workflows/tofu-plan.yaml'
+      - '.github/workflows/tofu-apply.yaml'
+      - '.github/workflows/tofu-list.yaml'
   workflow_dispatch:
 
 concurrency:

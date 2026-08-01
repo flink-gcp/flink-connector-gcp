@@ -27,13 +27,15 @@ data "google_project" "this" {
 # The agent's address is constructed from the project number rather than
 # provisioned via google_project_service_identity, which would pull in the
 # google-beta provider — but the agent is NOT created by enabling the API, as
-# an earlier version of this comment claimed. Service agents are provisioned
-# lazily on first use, and granting to one that does not exist yet fails with
-# an unhelpful "Policy update access denied" (measured on this file's first
-# apply). The one-off bootstrap is
-#   gcloud beta services identity create --service=pubsub.googleapis.com
-# run as the owner, recorded in ../README.md; the agent is permanent once
-# created, so this never recurs for Pub/Sub.
+# an earlier version of this comment claimed: service agents are provisioned
+# lazily on first use. The pubsub agent was provisioned as a one-off
+# (gcloud beta services identity create --service=pubsub.googleapis.com, run
+# as the owner, recorded in ../README.md) and is permanent. Note the 403s
+# this file's first applies hit were NOT the missing agent — they were the
+# apply workflow authenticating as the read-only plan account (fixed in
+# tofu-apply.yaml alongside this comment); a missing-agent grant failure
+# remains a documented GCP behaviour, but this repository never actually
+# observed it.
 resource "google_project_iam_member" "pubsub_service_agent" {
   for_each = toset([
     "roles/pubsub.publisher",
