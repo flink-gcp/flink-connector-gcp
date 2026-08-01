@@ -16,7 +16,6 @@
 
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
-import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 
 import com.google.pubsub.v1.PubsubMessage;
@@ -27,18 +26,12 @@ import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.junit.jupiter.api.Test;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.testutils.pubsub.PubSubSplitReaders.fetchUntil;
+import static io.github.flink.gcp.connector.testutils.pubsub.PubSubSplitReaders.payloads;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -169,49 +162,6 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
             reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split)));
             return fetchUntil(reader, expected, timeout);
         }
-    }
-
-    /**
-     * Fetches until {@code expected} <em>distinct</em> messages have been collected or the timeout
-     * elapses, returning them in arrival order. Distinct by split and message id — message ids are
-     * only unique within a topic — because delivery is at-least-once: a wait long enough to span
-     * the acknowledgement deadline (see {@link #REDELIVERY_TIMEOUT}) can legitimately see the same
-     * message twice, and a duplicate must dedupe rather than crowd out a message still to arrive. A
-     * fetch blocks until data arrives, so a waker nudges the reader once the deadline passes.
-     */
-    private static List<PubsubMessage> fetchUntil(
-            PubSubSplitReader reader, int expected, Duration timeout) throws Exception {
-        Map<String, PubsubMessage> received = new LinkedHashMap<>();
-        long deadlineNanos = System.nanoTime() + timeout.toNanos();
-        ScheduledExecutorService waker = Executors.newSingleThreadScheduledExecutor();
-        try {
-            // Nudge the reader periodically so a fetch that has nothing to return cannot outlive
-            // the deadline check.
-            waker.scheduleAtFixedRate(reader::wakeUp, 200, 200, TimeUnit.MILLISECONDS);
-            while (received.size() < expected && System.nanoTime() < deadlineNanos) {
-                drain(reader.fetch(), received);
-            }
-        } finally {
-            waker.shutdownNow();
-        }
-        return new ArrayList<>(received.values());
-    }
-
-    private static void drain(
-            RecordsWithSplitIds<PubsubMessage> records, Map<String, PubsubMessage> into) {
-        String splitId;
-        while ((splitId = records.nextSplit()) != null) {
-            PubsubMessage message;
-            while ((message = records.nextRecordFromSplit()) != null) {
-                into.putIfAbsent(splitId + "/" + message.getMessageId(), message);
-            }
-        }
-    }
-
-    private static List<String> payloads(List<PubsubMessage> messages) {
-        return messages.stream()
-                .map(message -> message.getData().toString(StandardCharsets.UTF_8))
-                .collect(Collectors.toList());
     }
 
     private static PubSubAckTracker newTracker() {

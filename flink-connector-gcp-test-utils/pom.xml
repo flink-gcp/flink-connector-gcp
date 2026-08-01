@@ -47,5 +47,60 @@ limitations under the License.
             <artifactId>flink-core</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <!-- SplitReader/RecordsWithSplitIds for the fetch-loop helper. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-base</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- The Pub/Sub half (testutils.pubsub). Versions managed by the libraries BOM. -->
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-pubsub</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- PubsubMessage, PullRequest/Response, TopicName. -->
+            <groupId>com.google.api.grpc</groupId>
+            <artifactId>proto-google-cloud-pubsub-v1</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- ByteString on the publish path. -->
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- ApiFuture on the publish path. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>api-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- NoCredentialsProvider and the transport-channel-provider types. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- GrpcTransportChannel for the emulator's plaintext channel. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax-grpc</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- ManagedChannel(Builder) for the emulator's plaintext channel. -->
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- PubSubEmulatorContainer behind the shared image holder. -->
+            <groupId>org.testcontainers</groupId>
+            <artifactId>gcloud</artifactId>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 </project>

@@ -333,8 +333,8 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   the packaging IT's skeleton carries over — including the netty-native assertions, since the
   BigQuery tree bundles gRPC too. **Deliberately not extracted yet**: sharing needs a test-jar or
   a shared test module, and generalising on one consumer means guessing the parameterisation —
-  extract when the second SQL module actually lands, shaped by what it needs (same call as the
-  emulator harnesses, #27).
+  extract when the second SQL module actually lands, shaped by what it needs (the call #27 made
+  for the emulator harnesses, extracted once the third consumer existed).
   **`download-licenses` must not be used for the licence texts**: it names files after the *licence*,
   so protobuf, gax, google-auth and threetenbp collapse into one BSD-3-Clause file and the last
   download wins. Measured — it left ThreeTen's copyright line standing for Google's code, and the

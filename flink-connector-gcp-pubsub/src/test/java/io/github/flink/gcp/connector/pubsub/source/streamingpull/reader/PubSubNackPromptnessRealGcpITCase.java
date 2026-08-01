@@ -16,7 +16,6 @@
 
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
-import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 
 import com.google.pubsub.v1.PubsubMessage;
@@ -29,18 +28,12 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSpl
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.testutils.pubsub.PubSubSplitReaders.fetchUntil;
+import static io.github.flink.gcp.connector.testutils.pubsub.PubSubSplitReaders.payloads;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -108,40 +101,6 @@ class PubSubNackPromptnessRealGcpITCase extends AbstractPubSubRealGcpITCase {
                 ackTracker,
                 options,
                 new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount));
-    }
-
-    /**
-     * Fetches until {@code expected} distinct messages arrive or the timeout elapses — the shape of
-     * {@code PubSubSplitReaderITCase.fetchUntil}, duplicated because that helper is private to its
-     * class (folding the harnesses together is issue #27).
-     */
-    private static List<PubsubMessage> fetchUntil(
-            PubSubSplitReader reader, int expected, Duration timeout) throws Exception {
-        Map<String, PubsubMessage> received = new LinkedHashMap<>();
-        long deadlineNanos = System.nanoTime() + timeout.toNanos();
-        ScheduledExecutorService waker = Executors.newSingleThreadScheduledExecutor();
-        try {
-            waker.scheduleAtFixedRate(reader::wakeUp, 200, 200, TimeUnit.MILLISECONDS);
-            while (received.size() < expected && System.nanoTime() < deadlineNanos) {
-                RecordsWithSplitIds<PubsubMessage> records = reader.fetch();
-                String splitId;
-                while ((splitId = records.nextSplit()) != null) {
-                    PubsubMessage message;
-                    while ((message = records.nextRecordFromSplit()) != null) {
-                        received.putIfAbsent(splitId + "/" + message.getMessageId(), message);
-                    }
-                }
-            }
-        } finally {
-            waker.shutdownNow();
-        }
-        return new ArrayList<>(received.values());
-    }
-
-    private static List<String> payloads(List<PubsubMessage> messages) {
-        return messages.stream()
-                .map(message -> message.getData().toString(StandardCharsets.UTF_8))
-                .collect(Collectors.toList());
     }
 
     private static PubSubAckTracker newTracker() {

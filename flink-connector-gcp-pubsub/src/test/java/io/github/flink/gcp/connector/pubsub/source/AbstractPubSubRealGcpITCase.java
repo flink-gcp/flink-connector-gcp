@@ -16,21 +16,14 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
-import com.google.api.core.ApiFuture;
-import com.google.cloud.pubsub.v1.Publisher;
-import com.google.cloud.pubsub.v1.SubscriptionAdminClient;
-import com.google.cloud.pubsub.v1.TopicAdminClient;
-import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
-import com.google.pubsub.v1.PullRequest;
-import com.google.pubsub.v1.PullResponse;
 import com.google.pubsub.v1.PushConfig;
-import com.google.pubsub.v1.ReceivedMessage;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.pubsub.PubSubTestClients;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
@@ -38,17 +31,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.function.UnaryOperator;
 
 /**
@@ -56,11 +43,12 @@ import java.util.function.UnaryOperator;
  * properties the emulator cannot verify: ordered dispatch, dead-letter forwarding, seek on an
  * ordering-enabled subscription, retention and expiration settings taking effect, and IAM.
  *
- * <p>Clients authenticate with application-default credentials; the project comes from {@code
- * PUBSUB_IT_PROJECT}. Topics and subscriptions are created under per-run UUID-suffixed names and
- * deleted in {@link AfterAll}, so runs cannot collide and a crash leaves at most one run's
- * resources behind (subscriptions auto-created by a source under test are registered with {@link
- * #trackSubscription} so the same cleanup covers them).
+ * <p>Clients authenticate with application-default credentials through the ADC transport of {@link
+ * PubSubTestClients}; the project comes from {@code PUBSUB_IT_PROJECT}. Topics and subscriptions
+ * are created under per-run UUID-suffixed names and deleted in {@link AfterAll}, so runs cannot
+ * collide and a crash leaves at most one run's resources behind (subscriptions auto-created by a
+ * source under test are registered with {@link #trackSubscription} so the same cleanup covers
+ * them).
  *
  * <p>The {@code @EnabledIfEnvironmentVariable} gate lives on every concrete class, never here:
  * {@code scripts/e2e-gated-its.sh} discovers the suite by grepping for the annotation literal and
@@ -96,13 +84,11 @@ public abstract class AbstractPubSubRealGcpITCase {
     private static final List<TopicName> createdTopics = new CopyOnWriteArrayList<>();
     private static final List<SubscriptionName> createdSubscriptions = new CopyOnWriteArrayList<>();
 
-    private static TopicAdminClient topicAdminClient;
-    private static SubscriptionAdminClient subscriptionAdminClient;
+    private static PubSubTestClients clients;
 
     @BeforeAll
     static void createClients() throws IOException {
-        topicAdminClient = TopicAdminClient.create();
-        subscriptionAdminClient = SubscriptionAdminClient.create();
+        clients = PubSubTestClients.withApplicationDefaultCredentials();
     }
 
     @AfterAll
@@ -110,25 +96,22 @@ public abstract class AbstractPubSubRealGcpITCase {
         // Subscriptions before topics: a subscription without its topic lingers detached.
         for (SubscriptionName subscription : createdSubscriptions) {
             try {
-                subscriptionAdminClient.deleteSubscription(subscription);
+                clients.subscriptionAdmin().deleteSubscription(subscription);
             } catch (RuntimeException e) {
                 LOG.warn("Failed to delete subscription {}", subscription, e);
             }
         }
         for (TopicName topic : createdTopics) {
             try {
-                topicAdminClient.deleteTopic(topic);
+                clients.topicAdmin().deleteTopic(topic);
             } catch (RuntimeException e) {
                 LOG.warn("Failed to delete topic {}", topic, e);
             }
         }
         createdSubscriptions.clear();
         createdTopics.clear();
-        if (subscriptionAdminClient != null) {
-            subscriptionAdminClient.close();
-        }
-        if (topicAdminClient != null) {
-            topicAdminClient.close();
+        if (clients != null) {
+            clients.close();
         }
     }
 
@@ -140,7 +123,7 @@ public abstract class AbstractPubSubRealGcpITCase {
     /** Creates a topic under a unique name and registers it for deletion. */
     protected static TopicDestination createTopic(String prefix) {
         TopicName topic = TopicName.of(PROJECT, uniqueName(prefix));
-        topicAdminClient.createTopic(topic);
+        clients.topicAdmin().createTopic(topic);
         createdTopics.add(topic);
         return TopicDestination.of(PROJECT, topic.getTopic());
     }
@@ -163,7 +146,7 @@ public abstract class AbstractPubSubRealGcpITCase {
                         .setName(name.toString())
                         .setTopic(topic.toTopicPath())
                         .setPushConfig(PushConfig.getDefaultInstance());
-        subscriptionAdminClient.createSubscription(customize.apply(builder).build());
+        clients.subscriptionAdmin().createSubscription(customize.apply(builder).build());
         createdSubscriptions.add(name);
         return SubscriptionDestination.of(PROJECT, name.getSubscription());
     }
@@ -181,7 +164,7 @@ public abstract class AbstractPubSubRealGcpITCase {
 
     /** Returns the subscription as the service reports it. */
     protected static Subscription describeSubscription(SubscriptionDestination subscription) {
-        return subscriptionAdminClient.getSubscription(subscription.toSubscriptionPath());
+        return clients.subscriptionAdmin().getSubscription(subscription.toSubscriptionPath());
     }
 
     /** Publishes the payloads and waits for the acknowledgements. */
@@ -198,52 +181,21 @@ public abstract class AbstractPubSubRealGcpITCase {
     protected static void publishOrdered(
             TopicDestination topic, String orderingKey, String... payloads)
             throws IOException, InterruptedException, ExecutionException {
-        Publisher.Builder builder =
-                Publisher.newBuilder(TopicName.of(topic.getProject(), topic.getTopic()));
-        if (orderingKey != null) {
-            builder.setEnableMessageOrdering(true).setEndpoint(ORDERING_PUBLISH_ENDPOINT);
-        }
-        Publisher publisher = builder.build();
-        try {
-            List<ApiFuture<String>> published = new ArrayList<>(payloads.length);
-            for (String payload : payloads) {
-                PubsubMessage.Builder message =
-                        PubsubMessage.newBuilder()
-                                .setData(ByteString.copyFrom(payload, StandardCharsets.UTF_8));
-                if (orderingKey != null) {
-                    message.setOrderingKey(orderingKey);
-                }
-                published.add(publisher.publish(message.build()));
-            }
-            publisher.publishAllOutstanding();
-            for (ApiFuture<String> future : published) {
-                future.get();
-            }
-        } finally {
-            publisher.shutdown();
-            publisher.awaitTermination(30, TimeUnit.SECONDS);
-        }
+        clients.publishOrdered(
+                TopicName.of(topic.getProject(), topic.getTopic()),
+                orderingKey,
+                orderingKey != null ? ORDERING_PUBLISH_ENDPOINT : null,
+                payloads);
     }
 
     /**
      * Pulls and acknowledges until {@code expected} distinct payloads have arrived or the deadline
-     * passes, returning what did arrive. Same contract as the emulator harness's helper of the same
-     * name (folding the harnesses together is issue #27).
+     * passes, returning what did arrive.
      */
     protected static Set<String> pullAndAckUntil(
             SubscriptionDestination subscription, int expected, Duration timeout)
             throws InterruptedException {
-        Set<String> payloads = new LinkedHashSet<>();
-        long deadline = System.nanoTime() + timeout.toNanos();
-        while (payloads.size() < expected && System.nanoTime() < deadline) {
-            for (PubsubMessage message : pullMessagesAndAck(subscription, expected)) {
-                payloads.add(message.getData().toStringUtf8());
-            }
-            if (payloads.size() < expected) {
-                Thread.sleep(200);
-            }
-        }
-        return payloads;
+        return clients.pullAndAckUntil(subscription.toSubscriptionPath(), expected, timeout);
     }
 
     /**
@@ -253,40 +205,12 @@ public abstract class AbstractPubSubRealGcpITCase {
     protected static List<PubsubMessage> pullMessagesUntil(
             SubscriptionDestination subscription, int expected, Duration timeout)
             throws InterruptedException {
-        Map<String, PubsubMessage> messages = new LinkedHashMap<>();
-        long deadline = System.nanoTime() + timeout.toNanos();
-        while (messages.size() < expected && System.nanoTime() < deadline) {
-            for (PubsubMessage message : pullMessagesAndAck(subscription, expected)) {
-                messages.putIfAbsent(message.getMessageId(), message);
-            }
-            if (messages.size() < expected) {
-                Thread.sleep(200);
-            }
-        }
-        return new ArrayList<>(messages.values());
+        return clients.pullMessagesUntil(subscription.toSubscriptionPath(), expected, timeout);
     }
 
     /** One pull, acknowledging whatever arrives. */
     protected static List<PubsubMessage> pullMessagesAndAck(
             SubscriptionDestination subscription, int maxMessages) {
-        PullResponse response =
-                subscriptionAdminClient
-                        .getStub()
-                        .pullCallable()
-                        .call(
-                                PullRequest.newBuilder()
-                                        .setSubscription(subscription.toSubscriptionPath())
-                                        .setMaxMessages(maxMessages)
-                                        .build());
-        List<PubsubMessage> messages = new ArrayList<>(response.getReceivedMessagesCount());
-        List<String> ackIds = new ArrayList<>(response.getReceivedMessagesCount());
-        for (ReceivedMessage received : response.getReceivedMessagesList()) {
-            messages.add(received.getMessage());
-            ackIds.add(received.getAckId());
-        }
-        if (!ackIds.isEmpty()) {
-            subscriptionAdminClient.acknowledge(subscription.toSubscriptionPath(), ackIds);
-        }
-        return messages;
+        return clients.pullMessagesAndAck(subscription.toSubscriptionPath(), maxMessages);
     }
 }
