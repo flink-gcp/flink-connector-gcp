@@ -267,9 +267,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `taiki-e/install-action` in every workflow: that rests on its own reason, one binary on `PATH` and
   no shims at all
 - `docs.yaml` and `lint.yaml` both carry `paths` filters, and `ci.yaml` carries a
-  `paths-ignore` for infrastructure-only changes (`opentofu/**`, the tofu workflows — files
-  Maven can never see; markdown is deliberately not ignored, because apache-rat scans it), so a
-  pull request touching only those never reports them. Fine while they are optional — but **a
+  `paths-ignore` for changes that cannot affect the Maven build: `opentofu/**`, the tofu
+  workflows, and `**/README.md` / `**/CLAUDE.md` — the last two only because apache-rat's
+  exclude list already carries exactly those patterns, so no licence-header check is lost.
+  `docs/` markdown is deliberately not ignored: rat scans it and `ci.yaml` is its only
+  pre-merge check. A pull request touching only ignored paths never reports these checks. Fine while they are optional — but **a
   required check that never reports blocks a pull request forever**, so making any of them
   required means dropping its filter or adding a job that reports success when the filter does
   not match
