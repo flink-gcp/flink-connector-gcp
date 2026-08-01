@@ -39,7 +39,7 @@ import java.util.Set;
  * <ul>
  *   <li>{@link Kind#ROW_LEVEL} — the append was rejected because of specific rows, identified by
  *       index ({@link Exceptions.AppendSerializtionError}); the remaining rows of the batch are
- *       valid. Routed to the configured {@code FailedRowHandler}.
+ *       valid. Routed to the configured {@code FailureHandler}.
  *   <li>{@link Kind#TRANSIENT} — the failure is retriable ({@code UNAVAILABLE}, {@code ABORTED},
  *       {@code INTERNAL}, {@code CANCELLED}, {@code DEADLINE_EXCEEDED}, {@code RESOURCE_EXHAUSTED}
  *       and {@code UNKNOWN}). These are normally retried inside the SDK; when one still surfaces,

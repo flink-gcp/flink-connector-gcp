@@ -65,8 +65,8 @@ import java.util.UUID;
  * destination.
  *
  * <p>Serialization and Avro-conversion failures are row-level and routed to the configured {@link
- * io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler}; staging I/O failures fail
- * the job. There is no row-level policy at load time — a BigQuery load job is all-or-nothing.
+ * io.github.flink.gcp.connector.base.failure.FailureHandler}; staging I/O failures fail the job.
+ * There is no row-level policy at load time — a BigQuery load job is all-or-nothing.
  *
  * <p>The schema per destination is captured when its first record arrives and cached for the
  * writer's lifetime; mid-run serializer schema changes are only picked up after a restart.
@@ -200,9 +200,12 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
     }
 
     @Override
-    public void flush(boolean endOfInput) {
-        // Nothing to do: prepareCommit(), which follows every flush, finishes the open files.
-        // A pre-end-of-input flush is a checkpoint — the streaming trigger for FILE_LOADS.
+    public void flush(boolean endOfInput) throws IOException {
+        // The staged files need nothing here: prepareCommit(), which follows every flush,
+        // finishes the open ones. A pre-end-of-input flush is a checkpoint — the streaming
+        // trigger for FILE_LOADS — and the failure handler persists the rows routed to it
+        // before that checkpoint completes.
+        config.getFailedRowHandler().flush();
     }
 
     @Override

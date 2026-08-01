@@ -20,11 +20,13 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.failure.FailedElement;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 /**
  * A single row that terminally failed to be written to BigQuery, as passed to a {@link
- * FailedRowHandler}.
+ * FailureHandler FailureHandler&lt;FailedRow&gt;}.
  *
  * <p>Carries the serialized protobuf row bytes rather than the original record: the sink writer is
  * stateless and only retains serialized append batches, so by the time a server-side row error is
@@ -34,7 +36,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
  * <p>Instances are created by the sink and are not serializable.
  */
 @PublicEvolving
-public final class FailedRow {
+public final class FailedRow implements FailedElement {
 
     private final TableDestination destination;
     private final ByteString rowBytes;
@@ -83,12 +85,28 @@ public final class FailedRow {
         return rowBytes;
     }
 
-    /** Returns the failure description. */
+    @Override
+    public String getConnector() {
+        return "bigquery";
+    }
+
+    @Override
+    public String describeDestination() {
+        return destination.toString();
+    }
+
+    /** Returns {@link #getRowBytes()} under the shared {@link FailedElement} contract. */
+    @Override
+    public ByteString getPayloadBytes() {
+        return rowBytes;
+    }
+
+    @Override
     public String getErrorMessage() {
         return errorMessage;
     }
 
-    /** Returns the underlying failure, or {@code null} when none is available. */
+    @Override
     public Throwable getCause() {
         return cause;
     }

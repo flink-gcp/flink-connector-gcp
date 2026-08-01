@@ -26,13 +26,13 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Empty;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
@@ -90,14 +90,23 @@ class BigQueryBufferedStreamWriterTest {
     }
 
     /** Handler recording every failed row. */
-    static class RecordingHandler implements FailedRowHandler {
+    static class RecordingHandler implements FailureHandler<FailedRow> {
         private static final long serialVersionUID = 1L;
 
         final List<FailedRow> rows = new ArrayList<>();
 
+        /** "handle"/"flush" in invocation order, pinning that flush runs after the drain. */
+        final List<String> events = new ArrayList<>();
+
         @Override
         public void handle(FailedRow row) {
             rows.add(row);
+            events.add("handle");
+        }
+
+        @Override
+        public void flush() {
+            events.add("flush");
         }
     }
 
@@ -116,7 +125,7 @@ class BigQueryBufferedStreamWriterTest {
 
     static BigQuerySinkConfig<String> config(
             BigQueryProtoSerializer<? super String> serializer,
-            FailedRowHandler handler,
+            FailureHandler<FailedRow> handler,
             CreateDisposition createDisposition) {
         var builder = BigQuerySink.<String>builder().destination(DESTINATION);
         builder.serializer(serializer);
@@ -169,6 +178,27 @@ class BigQueryBufferedStreamWriterTest {
         assertThat(states)
                 .containsExactly(
                         new BufferedStreamWriterState(BufferedStreamWriterState.NO_STREAM, 0, 1));
+        writer.close();
+    }
+
+    @Test
+    void handlerFlushRunsAtEveryWriterFlushAfterRoutedRowsAreHandled() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        RecordingHandler handler = new RecordingHandler();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler, null),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+
+        writer.write("poison1", CONTEXT);
+        writer.flush(false);
+        writer.flush(true);
+
+        // The routed row is handled before the first flush(), so a buffering handler has
+        // everything when it persists; end of input flushes the handler too.
+        assertThat(handler.events).containsExactly("handle", "flush", "flush");
         writer.close();
     }
 

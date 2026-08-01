@@ -75,7 +75,7 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
         Preconditions.checkArgument(
                 tableSchema.getFieldsCount() > 0, "tableSchema must have at least one field");
         // Derived here so an unusable schema fails while the job graph is built rather than on the
-        // first record, where the sink would route it to the FailedRowHandler once per record.
+        // first record, where the sink would route it to the FailureHandler once per record.
         descriptor();
     }
 

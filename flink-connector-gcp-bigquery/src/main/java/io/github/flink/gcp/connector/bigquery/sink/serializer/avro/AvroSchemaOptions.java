@@ -186,7 +186,7 @@ public final class AvroSchemaOptions implements Serializable {
          *
          * <p>Two consequences to weigh. A record that <em>omits</em> a field the Avro schema
          * declares mandatory becomes a row-level failure routed to the configured {@code
-         * FailedRowHandler}; without this option the column is simply left unset instead. And
+         * FailureHandler}; without this option the column is simply left unset instead. And
          * BigQuery cannot add a {@code REQUIRED} column to an existing table, so a column derived
          * this way is only ever created together with the table.
          *
@@ -232,7 +232,7 @@ public final class AvroSchemaOptions implements Serializable {
          * <p>The value must be one of the text forms BigQuery accepts for a geography — WKT,
          * hex-encoded WKB or GeoJSON — and is passed through verbatim without being validated by
          * the connector, so malformed geometry is a BigQuery row-level error routed to the
-         * configured {@code FailedRowHandler}.
+         * configured {@code FailureHandler}.
          *
          * @param path dotted field path from the root record, for example {@code site.boundary}
          * @return this builder

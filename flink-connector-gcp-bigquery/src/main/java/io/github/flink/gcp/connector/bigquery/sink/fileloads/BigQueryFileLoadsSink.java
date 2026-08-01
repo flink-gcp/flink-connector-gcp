@@ -35,6 +35,7 @@ import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 
+import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -47,6 +48,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStora
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.time.Duration;
 
 /**
@@ -111,7 +113,12 @@ public class BigQueryFileLoadsSink<T>
     }
 
     @Override
-    public SinkWriter<T> createWriter(WriterInitContext context) {
+    public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
+        config.getFailedRowHandler()
+                .open(
+                        new DefaultFailureHandlerContext(
+                                context.getTaskInfo().getIndexOfThisSubtask(),
+                                context.metricGroup()));
         return new FileLoadsWriter<>(
                 config,
                 options,

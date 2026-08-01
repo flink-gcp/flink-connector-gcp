@@ -30,6 +30,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
@@ -38,7 +39,6 @@ import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -665,7 +665,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                                 BigQuerySink.<String>builder()
                                         .destination(DESTINATION)
                                         .serializer(new EvolvingSerializer(V2))
-                                        .failedRowHandler((FailedRowHandler) routed::add)
+                                        .failedRowHandler((FailureHandler<FailedRow>) routed::add)
                                         .build())
                         .getConfig();
         BigQueryDefaultStreamWriter<String> writer = writer(config, factory, admin);

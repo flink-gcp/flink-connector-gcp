@@ -108,7 +108,7 @@ enum ProtoWellKnownType {
      * millis = 1; }} is legal protobuf that any descriptor pool can carry — nothing reserves the
      * package — and before this check it derived an {@code INT64} column and then threw {@code
      * NullPointerException: ... because "field" is null} on <em>every record</em>, from inside the
-     * writers' {@code FailedRowHandler} catch, where a log-and-drop policy would discard the whole
+     * writers' {@code FailureHandler} catch, where a log-and-drop policy would discard the whole
      * stream. Measured, not supposed.
      *
      * <p>Answering {@link #NONE} rather than throwing is deliberate: such a message is expanded as

@@ -460,8 +460,12 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
   imports**, so the independence is a property of the import graph and not just of the call graph.
   Spotless does keep a javadoc-only import (measured, not assumed), so the short form was
   available and was declined for that reason
-- `sink.failure` — row-level failure SPI (`FailedRow`, handlers, DLQ stub), kept separate so the
-  cross-connector extraction planned in #37 stays cheap
+- `sink.failure` — holds the connector-specific failure type only (`FailedRow`); the handler/DLQ
+  SPI itself is the shared `base.failure` package since #37 extracted it (#205), whose contract
+  the base module's CLAUDE.md records. The package's original purpose ("keep the extraction
+  cheap") is discharged; it stays in place because moving `FailedRow` would churn ~29 files for
+  no behavioural gain. Later connectors put their failure type at the `sink` root instead (a
+  one-class `sink.failure` fails the #119 layer test)
 - `source` / `table` — reserved for sources (#31, #34, #64) and Table API (#47, #57), with the
   same philosophy: public API at the package root, implementation subpackages beneath. The
   family rule above applies here too, and `source.streamingpull` **keeps** its layer under it:

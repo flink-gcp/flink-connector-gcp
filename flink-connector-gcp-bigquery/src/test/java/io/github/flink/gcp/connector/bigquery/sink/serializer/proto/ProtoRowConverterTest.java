@@ -362,7 +362,7 @@ class ProtoRowConverterTest {
      * source omits it — and the target column is {@code REQUIRED}, so {@code build()} refuses.
      * Reaching it needs a source message that violates its own contract, which only {@code
      * buildPartial} can produce; the writers catch this as a row-level failure and route it to the
-     * configured {@code FailedRowHandler}.
+     * configured {@code FailureHandler}.
      */
     @Test
     void aMissingProto2RequiredFieldIsARowLevelFailure() throws Exception {
@@ -412,7 +412,7 @@ class ProtoRowConverterTest {
     /**
      * The JSON exception, from the value side: were a JSON-mapped presence-less string derived as
      * REQUIRED, the rule that leaves it unset when empty would fail {@code build()} on every record
-     * omitting it — a poison record on every record, routed to the FailedRowHandler.
+     * omitting it — a poison record on every record, routed to the FailureHandler.
      */
     @Test
     void keepsJsonColumnsWritableWhenRequiredIsDerived() throws Exception {
@@ -833,9 +833,9 @@ class ProtoRowConverterTest {
      * The value half of the shape check, and the half that matters: recognising a well-known type
      * on its name alone left the {@code seconds}/{@code nanos} descriptors null and threw {@code
      * NullPointerException} <em>per record</em>, naming no field, from inside the writers' {@code
-     * FailedRowHandler} catch — so a log-and-drop policy would have discarded the whole stream
-     * while the job stayed green. Converting the message as the ordinary struct it is removes the
-     * failure rather than relocating it.
+     * FailureHandler} catch — so a log-and-drop policy would have discarded the whole stream while
+     * the job stayed green. Converting the message as the ordinary struct it is removes the failure
+     * rather than relocating it.
      */
     @Test
     void convertsAWellKnownTypeNameCarryingTheWrongFieldsAsAnOrdinaryStruct() throws Exception {

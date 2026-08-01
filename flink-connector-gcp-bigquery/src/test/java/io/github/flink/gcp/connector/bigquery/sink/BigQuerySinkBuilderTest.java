@@ -25,7 +25,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Empty;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
@@ -416,8 +416,7 @@ class BigQuerySinkBuilderTest {
         assertThat(defaults.getConfig().getCreateDisposition())
                 .isEqualTo(CreateDisposition.CREATE_IF_NEEDED);
         assertThat(defaults.getConfig().getLocation()).isNull();
-        assertThat(defaults.getConfig().getFailedRowHandler())
-                .isEqualTo(FailedRowHandler.failJob());
+        assertThat(defaults.getConfig().getFailedRowHandler()).isEqualTo(FailureHandler.failJob());
 
         BigQueryDefaultStreamSink<String> overridden =
                 (BigQueryDefaultStreamSink<String>)
@@ -425,14 +424,14 @@ class BigQuerySinkBuilderTest {
                                 .destination(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .createDisposition(CreateDisposition.CREATE_NEVER)
-                                .failedRowHandler(FailedRowHandler.logAndDrop())
+                                .failedRowHandler(FailureHandler.logAndDrop())
                                 .location("asia-northeast1")
                                 .build();
         assertThat(overridden.getConfig().getCreateDisposition())
                 .isEqualTo(CreateDisposition.CREATE_NEVER);
         assertThat(overridden.getConfig().getLocation()).isEqualTo("asia-northeast1");
         assertThat(overridden.getConfig().getFailedRowHandler())
-                .isEqualTo(FailedRowHandler.logAndDrop());
+                .isEqualTo(FailureHandler.logAndDrop());
     }
 
     @Test

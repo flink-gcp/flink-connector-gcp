@@ -28,6 +28,7 @@ import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -35,7 +36,6 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.FixedDestinationResolver;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -78,7 +78,7 @@ import java.util.concurrent.ExecutionException;
  * open costs nothing — its unflushed tail stays invisible either way.
  *
  * <p><b>Error handling.</b> Serialization failures and oversized rows are routed to the {@link
- * FailedRowHandler} before any stream exists. Transient append failures surfacing past the SDK's
+ * FailureHandler} before any stream exists. Transient append failures surfacing past the SDK's
  * in-stream retries are re-appended at their original offset within a bounded budget ({@code
  * OFFSET_ALREADY_EXISTS} then means the original landed — success). A row-level rejection discards
  * nothing silently: the rejected batch's failing rows go to the handler and the surviving rows,
@@ -104,7 +104,7 @@ public class BigQueryBufferedStreamWriter<T>
     private final BigQuerySinkConfig<T> config;
     private final BufferedStreamServiceFactory serviceFactory;
     private final TableAdmin tableAdmin;
-    private final FailedRowHandler failedRowHandler;
+    private final FailureHandler<FailedRow> failedRowHandler;
     private final TableDestination destination;
     private final int subtaskId;
     private final long maxAppendRequestBytes;
@@ -232,6 +232,9 @@ public class BigQueryBufferedStreamWriter<T>
     public void flush(boolean endOfInput) throws IOException {
         sendAppend();
         drainInFlight(false);
+        // After the drain: every row-level failure this flush routed has been handled, so the
+        // handler can persist them before the checkpoint completes.
+        failedRowHandler.flush();
     }
 
     @Override
@@ -414,7 +417,7 @@ public class BigQueryBufferedStreamWriter<T>
 
     /**
      * Recovers from a row-level rejection: the rejected request never advanced the stream offset,
-     * so its failing rows are routed to the {@link FailedRowHandler} and the surviving rows — plus
+     * so its failing rows are routed to the {@link FailureHandler} and the surviving rows — plus
      * every batch appended behind the rejected one, whose pre-assigned offsets are now stale — are
      * replayed with recomputed offsets.
      */
@@ -522,7 +525,7 @@ public class BigQueryBufferedStreamWriter<T>
     }
 
     /**
-     * Routes a row-level append failure to the {@link FailedRowHandler} row by row and returns the
+     * Routes a row-level append failure to the {@link FailureHandler} row by row and returns the
      * surviving rows. The handler decides per row: returning normally drops the row, throwing fails
      * the writer.
      */

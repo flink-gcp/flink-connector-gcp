@@ -30,11 +30,11 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Empty;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.grpc.Status;
@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for the error classification, retry and {@link FailedRowHandler} routing behavior of {@link
+ * Tests for the error classification, retry and {@link FailureHandler} routing behavior of {@link
  * BigQueryDefaultStreamWriter}. Table auto-creation ({@code NOT_FOUND}) recovery is covered by
  * {@link BigQueryDefaultStreamWriterAutoCreationTest}.
  */
@@ -130,15 +130,25 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     }
 
     /** Handler recording every routed row and dropping it. */
-    private static class RecordingFailedRowHandler implements FailedRowHandler {
+    private static class RecordingFailedRowHandler implements FailureHandler<FailedRow> {
         private static final long serialVersionUID = 1L;
 
         private final transient List<FailedRow> rows = new ArrayList<>();
+
+        /** "handle"/"flush" in invocation order, pinning that flush runs after the drain. */
+        private final transient List<String> events = new ArrayList<>();
+
         private transient boolean closed;
 
         @Override
         public void handle(FailedRow row) {
             rows.add(row);
+            events.add("handle");
+        }
+
+        @Override
+        public void flush() {
+            events.add("flush");
         }
 
         @Override
@@ -201,7 +211,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
             io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer<
                             ? super String>
                     serializer,
-            FailedRowHandler failedRowHandler) {
+            FailureHandler<FailedRow> failedRowHandler) {
         return ((BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .destination(DESTINATION)
@@ -239,7 +249,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         factory.scriptedResults.add(failedWith(Status.INVALID_ARGUMENT));
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
-                        config(new StringSerializer(), FailedRowHandler.failJob()),
+                        config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
                         BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
@@ -261,7 +271,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         SettableApiFuture<AppendRowsResponse> pending = SettableApiFuture.create();
         factory.scriptedResults.add(pending);
         BigQueryDefaultStreamWriter<String> writer =
-                writer(config(new StringSerializer(), FailedRowHandler.failJob()), factory, 1, 3);
+                writer(config(new StringSerializer(), FailureHandler.failJob()), factory, 1, 3);
 
         writer.write("aa", CONTEXT);
         writer.write("bb", CONTEXT); // triggers the async append of [aa]
@@ -281,7 +291,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         factory.scriptedResults.add(failedWith(Status.UNAVAILABLE));
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
-                        config(new StringSerializer(), FailedRowHandler.failJob()),
+                        config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
                         BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
@@ -300,7 +310,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(failedWith(Status.ABORTED));
         BigQueryDefaultStreamWriter<String> writer =
-                writer(config(new StringSerializer(), FailedRowHandler.failJob()), factory, 1, 3);
+                writer(config(new StringSerializer(), FailureHandler.failJob()), factory, 1, 3);
 
         writer.write("aa", CONTEXT); // buffered
         writer.write("bb", CONTEXT); // appends [aa], which fails asynchronously with ABORTED
@@ -319,7 +329,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         factory.scriptedResults.add(failedWith(Status.UNAVAILABLE)); // retry attempt 2
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
-                        config(new StringSerializer(), FailedRowHandler.failJob()),
+                        config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
                         BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         2);
@@ -339,7 +349,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         factory.scriptedResults.add(failedWith(Status.UNAVAILABLE)); // re-append after creation
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
-                        config(new StringSerializer(), FailedRowHandler.failJob()),
+                        config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
                         BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
@@ -358,7 +368,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         factory.scriptedResults.add(rowLevelError(Map.of(1, "row 1 is broken")));
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
-                        config(new StringSerializer(), FailedRowHandler.failJob()),
+                        config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
                         BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
@@ -368,7 +378,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
 
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("A row for BigQuery table p.d.t failed terminally")
+                .hasMessageContaining("A record for bigquery destination p.d.t failed terminally")
                 .hasMessageContaining("row 1 is broken");
     }
 
@@ -451,7 +461,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     void rowLevelFailureThrowingCustomHandlerFailsTheFlush() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(rowLevelError(Map.of(0, "broken")));
-        FailedRowHandler throwingHandler =
+        FailureHandler<FailedRow> throwingHandler =
                 row -> {
                     throw new IOException("handler rejected the row");
                 };
@@ -467,6 +477,58 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
                 .hasMessage("handler rejected the row");
+    }
+
+    // --- handler lifecycle: flush at every writer flush, after the drain ---
+
+    @Test
+    void handlerFlushRunsAtEveryWriterFlushAfterRoutedRowsAreHandled() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(rowLevelError(Map.of(0, "broken")));
+        RecordingFailedRowHandler handler = new RecordingFailedRowHandler();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler),
+                        factory,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+        writer.flush(true);
+
+        // The routed row is handled before the first flush(), so a buffering handler has
+        // everything when it persists; end of input flushes the handler too.
+        assertThat(handler.events).containsExactly("handle", "flush", "flush");
+    }
+
+    @Test
+    void handlerFlushFailureFailsTheFlush() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        FailureHandler<FailedRow> unflushableHandler =
+                new FailureHandler<FailedRow>() {
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public void handle(FailedRow row) {}
+
+                    @Override
+                    public void flush() throws IOException {
+                        throw new IOException("dead letters not persisted");
+                    }
+                };
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), unflushableHandler),
+                        factory,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("aa", CONTEXT);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessage("dead letters not persisted");
     }
 
     // --- write()-time row-level failures: serialization and size limit ---
@@ -499,7 +561,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         BigQueryDefaultStreamWriter<String> writer =
                 writer(
-                        config(new StringSerializer(), FailedRowHandler.failJob()),
+                        config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
                         BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);

@@ -36,6 +36,7 @@ import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 
+import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -48,6 +49,7 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.writer.WriteClientBuf
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 
+import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
 
@@ -111,13 +113,14 @@ public class BigQueryBufferedStreamSink<T>
     }
 
     @Override
-    public SinkWriter<T> createWriter(WriterInitContext context) {
+    public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
         return restoreWriter(context, Collections.emptyList());
     }
 
     @Override
     public StatefulSinkWriter<T, BufferedStreamWriterState> restoreWriter(
-            WriterInitContext context, Collection<BufferedStreamWriterState> recoveredState) {
+            WriterInitContext context, Collection<BufferedStreamWriterState> recoveredState)
+            throws IOException {
         return restoreWriter(context, recoveredState, new BigQueryTableAdmin());
     }
 
@@ -125,7 +128,13 @@ public class BigQueryBufferedStreamSink<T>
     StatefulSinkWriter<T, BufferedStreamWriterState> restoreWriter(
             WriterInitContext context,
             Collection<BufferedStreamWriterState> recoveredState,
-            TableAdmin tableAdmin) {
+            TableAdmin tableAdmin)
+            throws IOException {
+        config.getFailedRowHandler()
+                .open(
+                        new DefaultFailureHandlerContext(
+                                context.getTaskInfo().getIndexOfThisSubtask(),
+                                context.metricGroup()));
         return new BigQueryBufferedStreamWriter<>(
                 config,
                 options,

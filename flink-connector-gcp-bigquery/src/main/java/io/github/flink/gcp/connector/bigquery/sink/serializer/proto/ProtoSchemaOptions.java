@@ -292,8 +292,8 @@ public final class ProtoSchemaOptions implements Serializable {
          * <p>Two consequences worth weighing before enabling it. A record that leaves a {@code
          * REQUIRED}-derived field unset — reachable only through a proto2 {@code required} field on
          * a partially built message — becomes a row-level failure routed to the configured {@code
-         * FailedRowHandler}. And BigQuery cannot add a {@code REQUIRED} column to an existing
-         * table, so a column derived this way is only ever created with the table.
+         * FailureHandler}. And BigQuery cannot add a {@code REQUIRED} column to an existing table,
+         * so a column derived this way is only ever created with the table.
          *
          * @return this builder
          */
@@ -381,7 +381,7 @@ public final class ProtoSchemaOptions implements Serializable {
          * recognise as one. The value must be one of the text forms BigQuery accepts for a
          * geography — WKT, hex-encoded WKB or GeoJSON — and is passed through verbatim without
          * being validated by the connector, so malformed geometry is a BigQuery row-level error
-         * routed to the configured {@code FailedRowHandler}.
+         * routed to the configured {@code FailureHandler}.
          *
          * <p>Where the mapping is a property of the schema rather than of the pipeline, {@link
          * #geographyFieldOption} marks the same columns by annotation instead; the two are unioned.
