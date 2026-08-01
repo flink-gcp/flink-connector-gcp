@@ -68,7 +68,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     private static final int MAX_RETRY_PROBES = 5;
 
     private static final RetrySchedule POLL_SCHEDULE =
-            new RetrySchedule(1_000, 30_000, Integer.MAX_VALUE, 0.25);
+            new RetrySchedule(1_000, 30_000, Integer.MAX_VALUE, RetrySchedule.DEFAULT_JITTER_RATIO);
 
     @Nullable private final String location;
     private final Map<String, Job> activeJobs = new HashMap<>();

@@ -16,8 +16,11 @@
 
 package io.github.flink.gcp.connector.pubsub.sink;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
+
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 
 import javax.annotation.Nullable;
 
@@ -204,6 +207,20 @@ public final class PubSubPublisherOptions implements Serializable {
     /** Returns the maximum republish attempts of the topic auto-creation recovery. */
     public int getRecoveryMaxAttempts() {
         return recoveryMaxAttempts;
+    }
+
+    /**
+     * Returns the topic auto-creation recovery schedule the {@code recovery*} knobs describe.
+     * Jittered: every subtask that parked publishes for the same missing topic resumes against the
+     * same freshly created topic, so unjittered they would republish in lockstep.
+     */
+    @Internal
+    public RetrySchedule toRecoverySchedule() {
+        return new RetrySchedule(
+                recoveryInitialBackoff.toMillis(),
+                recoveryMaxBackoff.toMillis(),
+                recoveryMaxAttempts,
+                RetrySchedule.DEFAULT_JITTER_RATIO);
     }
 
     /** Returns whether any batching knob deviates from the SDK default. */

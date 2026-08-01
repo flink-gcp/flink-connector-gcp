@@ -404,8 +404,12 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   (flat 30 s × 30) is **deliberately not exposed**: it paces BigQuery metadata propagation, a
   service property, not a workload property. The writer keeps its package-private
   `(maxAppendRequestBytes, recoverySchedule, schemaWaitSchedule)` constructor for tests; the
-  public options constructor maps `recovery*` → a jitter-free `RetrySchedule`, the exact mapping
-  the buffered writer already uses.
+  public options constructor takes the schedule from `DefaultStreamOptions.toRecoverySchedule()`,
+  as the buffered writer and the committer take theirs from
+  `BufferedStreamOptions.toRecoverySchedule()` — the mapping-on-the-options rule and the one
+  shared jitter ratio are recorded in the base module's CLAUDE.md. Both mappings were jitter-free
+  before #197, with no reason ever recorded for it; they now carry
+  `RetrySchedule.DEFAULT_JITTER_RATIO` like every other schedule.
   **Cold-destination eviction** (`destinationIdleTimeout`, default 1 h, enabled — decided with
   the user 2026-07-28; disable = set a large duration, no separate flag) sweeps at the **end of a
   successful `flush(boolean)`, skipped on `endOfInput`**: that is the point where every pending

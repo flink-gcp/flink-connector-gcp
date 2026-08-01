@@ -7,6 +7,29 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   the mirror-image rule. Everything here is `@Internal` — the public knobs live on each
   connector's own options objects, which map onto the internal types here. A type only moves in
   once it has multiple consumers (the same bar test-utils applies).
+- **Every schedule jitters, at one shared ratio, and the ratio is never a knob** (#197). The
+  maintainer's standing posture is exponential backoff *with* jitter, so
+  `RetrySchedule.DEFAULT_JITTER_RATIO` is the only ratio in the repository — a connector passing
+  a literal is a review finding, and passing `0` needs a recorded reason (nothing in main sources
+  does today; the constructor still accepts it because tests want deterministic backoffs). One
+  number rather than a per-site choice because the value is not load-bearing: the jitter is
+  **mean-preserving** (factor in `[1 - r, 1 + r]`), so it costs the budget nothing in
+  expectation and only has to be non-zero. That also disposes of the pre-#197 argument that a
+  short budget cannot afford jitter — true of full jitter, false of this shape. Not exposed as a
+  builder knob: it fails the workload-property test the `recovery*`/`retry*` knobs pass. The
+  AWS-taxonomy variants (full, equal, decorrelated) are unadopted **in `RetrySchedule`** — #197's
+  Question 2 — and one arrives only with the call site whose measurement justifies it. Two
+  full-jitter waits do exist outside the type and are not counter-examples:
+  `BigQueryDefaultStreamWriter.sleepJitter()` spreads subtasks across a metadata-update quota
+  rather than backing off a retry, and gax jitters the SDK's own in-stream retries over
+  `[0, delay)` beneath these schedules.
+- **A connector's knobs are mapped onto a `RetrySchedule` by the options class that owns them**,
+  as `CloudTasksWriterOptions.toRetrySchedule()` always did and as `DefaultStreamOptions`,
+  `BufferedStreamOptions` and `PubSubPublisherOptions` now do (#197). Never in the consumer: one
+  method then serves every consumer of the same knobs (the buffered writer and its committer),
+  and the mapping becomes directly unit-testable — a ratio silently regressing to zero inside a
+  writer constructor is otherwise unobservable, which is exactly the mutant #197's tests had to
+  kill.
 - **Retry loops stay in the connectors; only the schedule, the backoff sleep and status-code
   extraction are shared.** #61's plan sketched a `Retries.run(schedule, isRetryable, action)`
   executor, and it was evaluated against every loop and adopted nowhere (recorded on #61): all

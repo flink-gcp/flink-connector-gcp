@@ -177,10 +177,12 @@ parked per destination, the topic is created with the configured `TopicCreateOpt
 field at its service default when none are set), and the messages are
 republished under a bounded backoff budget (`recoveryInitialBackoff` doubling to
 `recoveryMaxBackoff` over `recoveryMaxAttempts`; by default 500 ms → 10 s, 10 attempts,
-~1 minute **per destination**) covering topic-metadata propagation. Existing topics cost nothing: no
-admin call is made (and no admin client is even constructed) unless a publish actually fails
-with `NOT_FOUND`; when one does, the admin client is short-lived — opened for the creation
-call and closed with it.
+~1 minute **per destination**) covering topic-metadata propagation. Each backoff carries ±25%
+jitter — every subtask that parked publishes for the same missing topic resumes against the same
+freshly created topic, so unjittered they would republish in lockstep. Existing topics cost
+nothing: no admin call is made (and no admin client is even constructed) unless a publish
+actually fails with `NOT_FOUND`; when one does, the admin client is short-lived — opened for the
+creation call and closed with it.
 
 Creation is idempotent across parallel subtasks: `ALREADY_EXISTS` is treated as success, so
 subtasks racing to create the same topic need no coordination. The credentials running the job

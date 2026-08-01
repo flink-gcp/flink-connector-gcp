@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.storage;
 
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -106,6 +107,25 @@ class DefaultStreamOptionsTest {
         assertThat(options.getMaxConnectionsPerRegion()).isEqualTo(4);
         assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(30));
         assertThat(options.getFlushInterval()).isEqualTo(Duration.ofSeconds(10));
+    }
+
+    @Test
+    void theRecoveryScheduleIsDerivedFromTheKnobsAndJittered() {
+        RetrySchedule schedule =
+                DefaultStreamOptions.builder()
+                        .recoveryInitialBackoff(Duration.ofSeconds(1))
+                        .recoveryMaxBackoff(Duration.ofSeconds(4))
+                        .recoveryMaxAttempts(3)
+                        .build()
+                        .toRecoverySchedule();
+
+        assertThat(schedule.maxAttempts()).isEqualTo(3);
+        assertThat(schedule.jitterRatio()).isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
+        // The backoffs pin that each duration reaches its own slot, in milliseconds: an
+        // ordering swap is already rejected by the schedule's own precondition, a mixed-up field
+        // or unit is not.
+        assertThat(schedule.backoffMs(1)).isBetween(750L, 1250L);
+        assertThat(schedule.backoffMs(2)).isBetween(1500L, 2500L);
     }
 
     @Test

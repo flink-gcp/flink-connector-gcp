@@ -171,9 +171,10 @@ class CloudTasksTaskCreationITCase extends AbstractCloudTasksEmulatorITCase {
                 .hasMessageContaining("NOT_FOUND after 2 attempt(s)")
                 .hasMessageContaining("the queue does not exist");
         // One backoff was waited out between the two attempts, so the creation really was parked
-        // and re-dispatched rather than failed on the spot.
+        // and re-dispatched rather than failed on the spot. The floor is the 500 ms initial
+        // backoff less the ±25% jitter, not the 500 ms itself.
         assertThat(Duration.ofNanos(System.nanoTime() - startedAt))
-                .isGreaterThanOrEqualTo(Duration.ofMillis(500));
+                .isGreaterThanOrEqualTo(Duration.ofMillis(375));
     }
 
     private static List<String> bodies(List<Task> tasks) {

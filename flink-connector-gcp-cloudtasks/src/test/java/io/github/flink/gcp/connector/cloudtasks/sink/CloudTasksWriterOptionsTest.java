@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink;
 
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -47,19 +48,24 @@ class CloudTasksWriterOptionsTest {
         CloudTasksWriterOptions options =
                 CloudTasksWriterOptions.builder()
                         .retryMaxAttempts(4)
-                        .retryInitialBackoff(Duration.ofMillis(200))
-                        .retryMaxBackoff(Duration.ofMillis(400))
+                        .retryInitialBackoff(Duration.ofMillis(2_000))
+                        .retryMaxBackoff(Duration.ofMillis(4_000))
                         .notFoundMaxAttempts(2)
-                        .notFoundInitialBackoff(Duration.ofMillis(50))
-                        .notFoundMaxBackoff(Duration.ofMillis(50))
+                        .notFoundInitialBackoff(Duration.ofMillis(1_000))
+                        .notFoundMaxBackoff(Duration.ofMillis(1_000))
                         .build();
 
         assertThat(options.toRetrySchedule().maxAttempts()).isEqualTo(4);
         assertThat(options.toNotFoundRetrySchedule().maxAttempts()).isEqualTo(2);
-        // The NOT_FOUND schedule has no jitter, so its backoff is exact.
-        assertThat(options.toNotFoundRetrySchedule().backoffMs(1)).isEqualTo(50);
-        // The transient schedule is jittered by ±20% to de-synchronize parallel subtasks.
-        assertThat(options.toRetrySchedule().backoffMs(1)).isBetween(160L, 240L);
+        // Both schedules are jittered to de-synchronize parallel subtasks backing off against the
+        // same queue.
+        assertThat(options.toRetrySchedule().jitterRatio())
+                .isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
+        assertThat(options.toNotFoundRetrySchedule().jitterRatio())
+                .isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
+        // The backoffs pin that each budget's durations reach its own schedule, in milliseconds.
+        assertThat(options.toRetrySchedule().backoffMs(1)).isBetween(1_500L, 2_500L);
+        assertThat(options.toNotFoundRetrySchedule().backoffMs(1)).isBetween(750L, 1_250L);
     }
 
     @Test

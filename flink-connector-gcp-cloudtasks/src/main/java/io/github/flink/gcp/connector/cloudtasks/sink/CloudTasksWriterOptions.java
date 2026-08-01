@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
@@ -51,14 +52,6 @@ public final class CloudTasksWriterOptions implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private static final CloudTasksWriterOptions DEFAULTS = builder().build();
-
-    /**
-     * Proportional jitter of the transient-failure backoff, de-synchronizing parallel subtasks that
-     * back off against the same queue at the same moment. Not exposed: the value only has to be
-     * non-zero to serve its purpose. The {@code NOT_FOUND} schedule has no jitter — its budget is
-     * short enough that spreading it out would mostly eat the budget.
-     */
-    private static final double RETRY_JITTER_RATIO = 0.2;
 
     private final int maxInFlightTasks;
     private final Duration retryInitialBackoff;
@@ -137,21 +130,28 @@ public final class CloudTasksWriterOptions implements Serializable {
      * Returns the schedule retrying {@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED} and {@code
      * RESOURCE_EXHAUSTED} creations.
      */
+    @Internal
     public RetrySchedule toRetrySchedule() {
         return new RetrySchedule(
                 retryInitialBackoff.toMillis(),
                 retryMaxBackoff.toMillis(),
                 retryMaxAttempts,
-                RETRY_JITTER_RATIO);
+                RetrySchedule.DEFAULT_JITTER_RATIO);
     }
 
-    /** Returns the schedule retrying {@code NOT_FOUND} creations. */
+    /**
+     * Returns the schedule retrying {@code NOT_FOUND} creations. Jittered like the transient
+     * schedule: every subtask that hit the same missing queue retries against the same queue once
+     * it is created, and the jitter is mean-preserving, so spreading the attempts costs the short
+     * budget nothing in expectation.
+     */
+    @Internal
     public RetrySchedule toNotFoundRetrySchedule() {
         return new RetrySchedule(
                 notFoundInitialBackoff.toMillis(),
                 notFoundMaxBackoff.toMillis(),
                 notFoundMaxAttempts,
-                0);
+                RetrySchedule.DEFAULT_JITTER_RATIO);
     }
 
     @Override

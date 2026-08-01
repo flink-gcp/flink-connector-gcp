@@ -854,8 +854,8 @@ env.enableCheckpointing(60_000); // EXACTLY_ONCE mode (the default)
 Method-specific settings live in `BufferedStreamOptions` (required for this write method,
 rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default) and
 the connector-driven recovery schedule (`recoveryInitialBackoff` 500 ms, `recoveryMaxBackoff`
-10 s, `recoveryMaxAttempts` 10) governing stream creation, transient re-appends and the restore
-probe.
+10 s, `recoveryMaxAttempts` 10, each backoff jittered by ±25%) governing stream creation,
+transient re-appends and the restore probe.
 
 **Stream lifecycle.** Each writer subtask owns **one buffered stream, created lazily on its first
 append and reused across checkpoints** — per GCP guidance, frequent `CreateWriteStream` churn
@@ -1118,7 +1118,7 @@ Append failures are classified on the task thread and routed by class:
 
 | Class | Examples | Behavior |
 |---|---|---|
-| Transient | `UNAVAILABLE`, `ABORTED`, `INTERNAL`, `CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `UNKNOWN` | Retried by the SDK's in-stream retries first (by default 500 ms initial delay, ×2 up to 30 s, 5 attempts); failures that still surface are re-appended by the writer on a rebuilt stream writer with backoff (by default 500 ms initial, doubled up to 10 s, 10 attempts). They do not fail the job unless the retry budget is exhausted |
+| Transient | `UNAVAILABLE`, `ABORTED`, `INTERNAL`, `CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `UNKNOWN` | Retried by the SDK's in-stream retries first (by default 500 ms initial delay, ×2 up to 30 s, 5 attempts); failures that still surface are re-appended by the writer on a rebuilt stream writer with backoff (by default 500 ms initial, doubled up to 10 s, 10 attempts, ±25% jitter). They do not fail the job unless the retry budget is exhausted |
 | Stale stream writer | `STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`, writer closed, the SDK's callback-wait watchdog timeout (a sent append got no response within the SDK's hardcoded 5 minutes; the raw exception carries no status code) | Repaired like transient failures: the destination's stream writer is rebuilt and the batch re-appended within the retry budget |
 | Schema mismatch | `SCHEMA_MISMATCH_EXTRA_FIELDS` (rows carry fields the table does not have) | With `schemaUpdateOptions(...)` enabled: the table schema is reconciled and the batch re-appended while the update propagates (see [Schema evolution](#schema-evolution)). Otherwise terminal |
 | Terminal | `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `NOT_FOUND` under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
@@ -1183,8 +1183,17 @@ the bounded re-append schedule that sits above the SDK's retries (the same knobs
 |---|---|---|
 | `maxAppendRequestBytes` | 512 KiB | Serialized-row bytes buffered per destination before an append request is issued |
 | `recoveryInitialBackoff` | 500 ms | First backoff of the connector-driven recovery schedule |
-| `recoveryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling) |
+| `recoveryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling), before jitter |
 | `recoveryMaxAttempts` | 10 | Attempt cap of that schedule |
+
+Every backoff derived from one of the connector's own retry schedules is jittered by ±25%, which
+is not configurable: the jitter is mean-preserving (a factor in `[0.75, 1.25]`, so the expected
+delay is the configured one) and all it has to do is stop parallel subtasks from retrying against
+the same table in lockstep. Two other waits are shaped differently on purpose — the SDK's
+in-stream retries below, which the SDK spreads uniformly over `[0, delay)` so that those knobs
+are upper bounds rather than means, and the sleep before re-reading a lost etag race, uniform
+over 0–500 ms to spread subtasks across BigQuery's per-table metadata-update quota (see
+[Schema evolution](#schema-evolution)).
 
 The 512 KiB default favors bounded memory and per-record latency; throughput-oriented jobs have
 headroom to raise `maxAppendRequestBytes` to a few megabytes — the Storage Write API caps a

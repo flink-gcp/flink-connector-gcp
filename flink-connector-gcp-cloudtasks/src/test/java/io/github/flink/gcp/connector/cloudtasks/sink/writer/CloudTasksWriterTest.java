@@ -207,7 +207,10 @@ class CloudTasksWriterTest {
                 .hasMessageContaining("NOT_FOUND")
                 .hasMessageContaining("2 attempt(s)");
         assertThat(creator.requests).hasSize(2);
-        assertThat(time.getSleptMillis()).isEqualTo(500);
+        // One backoff of the NOT_FOUND budget's initial 500 ms, jittered by ±25%. The point is
+        // that it spent the NOT_FOUND budget rather than the transient one (whose initial backoff
+        // is 100 ms), which the range still distinguishes.
+        assertThat(time.getSleptMillis()).isBetween(375L, 625L);
     }
 
     @Test
