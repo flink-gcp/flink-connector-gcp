@@ -20,11 +20,13 @@
 # or the check fails. The value is in noticing the next unstable
 # dependency when it is added, not in relitigating the ones below.
 #
-# How to react when the check fails:
+# How to react when the check fails (the judgment ladder lives in
+# .claude/skills/curate-flink-api-tier/):
 #   - a new type appears in the failure: prefer a stable alternative (for
 #     the utility classes, inlining a few lines beats a new entry); if the
 #     dependency is genuinely unavoidable, add an entry whose reason says
-#     why, the way SplitsRemoval's does
+#     why, the way SplitsRemoval's does. A new @Experimental exposure is a
+#     design discussion first, never just an entry
 #   - an entry is reported stale: the import is gone, so delete the entry —
 #     the list stays an exact record, never a superset
 #   - a type resolves to no sources jar: a type moved between Flink
