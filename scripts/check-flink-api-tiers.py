@@ -35,8 +35,8 @@ accepted blind spot is a declaration-lookalike inside a Java text block, which
 survives comment/string stripping.
 
 Exit codes: 0 clean, 1 policy violation (unlisted type, stale entry, unused
-artifact), 2 infrastructure (download failure, unresolvable import,
-unparseable declaration).
+artifact), 2 infrastructure or config authoring error (download failure,
+unresolvable import, unparseable declaration, malformed allowlist).
 
 Standard library only, deliberately: nothing here justifies a package manager.
 """
@@ -71,6 +71,9 @@ ALLOWLISTED = {
     UNANNOTATED: "unannotated",
 }
 
+# Single-type imports only, and that is complete: checkstyle's AvoidStarImport
+# (tools/maven/checkstyle.xml) keeps wildcard imports out of the tree, so a
+# star import cannot slip a type past this scan.
 IMPORT = re.compile(
     r"^import\s+(?:static\s+)?(org\.apache\.flink[\w.]+)\s*;", re.MULTILINE
 )
@@ -225,6 +228,18 @@ def main() -> int:
 
     with CONFIG.open("rb") as handle:
         config = tomllib.load(handle)
+    # A typo'd table name would otherwise sit ignored while its types get
+    # reported as unlisted — fail on the typo itself, which is the fixable end.
+    unknown = set(config) - {"artifacts", *ALLOWLISTED.values()}
+    if unknown:
+        infra(f"{CONFIG.name} has unknown top-level entries: {sorted(unknown)}.")
+    for table in ALLOWLISTED.values():
+        for fqcn, entry in config.get(table, {}).items():
+            if not str(entry.get("reason", "")).strip():
+                infra(
+                    f"{CONFIG.name}: [{table}] entry {fqcn} has no reason. The "
+                    f"reason is the point of the allowlist; write one."
+                )
     version = flink_version()
     index = build_index(config["artifacts"], version)
 
