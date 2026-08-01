@@ -14,10 +14,30 @@
 #
 # Which page must document each connector's options (scripts/check-option-docs.py).
 #
+# Four tables, doing two different jobs. The first two say *where* each surface
+# is documented; the last two are the exceptions, and they point in OPPOSITE
+# directions — which is the thing to get right when adding one:
+#
+#   [[builders]]        module     -> page   what must be documented
+#   [[config_options]]  ConfigOption class -> page
+#   [exempt]            source side         a setter that exists with no row
+#   [extra]             page side           a row that exists with no setter
+#
+# So: the check failed naming a `Class.setter`? That is coverage, and [exempt]
+# is the escape. It failed naming a page and a line? That is staleness, and
+# [extra] is — but a corrected row is usually the real answer. Both are
+# `key = "reason"`, and the reason says why this is *not* a row, since that is
+# what the next person has to re-judge.
+#
+# `.claude/skills/curate-option-docs/` is the procedure for every failure this
+# file can produce, including which of the two an entry belongs in.
+#
 # Modules are mapped, not individual classes, on purpose: a new *Options class
 # added to a module is then required to appear in that module's reference page
 # from the moment it exists. Listing classes here instead would let a new one
-# through silently, which is the rot this check is for.
+# through silently, which is the rot this check is for. A module with options
+# and no entry here fails for the same reason — see the next connector, since
+# Bigtable and Spanner both arrive as new modules.
 
 # Builder options: every public builder setter under the module's main sources
 # must be named in the page. Sources are `*Options.java`, `*SinkBuilder.java`
@@ -41,14 +61,21 @@ page = "docs/content/docs/reference/cloudtasks.md"
 source = "flink-connector-gcp-pubsub/src/main/java/io/github/flink/gcp/connector/pubsub/table/PubSubConnectorOptions.java"
 page = "docs/content/docs/connectors/table/pubsub.md"
 
-# Setters the pages deliberately do not name, as `Class.setter = "reason"`.
+# SOURCE SIDE. Setters that exist and deliberately have no row, keyed
+# `Class.setter`. The bar is that a reader looking the setter up would find
+# nothing new — all four below are `Collection<String>` bulk overloads of a
+# singular the page already documents in the same row. A setter that does
+# something its singular does not is a row, not an entry here.
 [exempt]
 "ProtoSchemaOptions.jsonFieldPaths" = "Collection overload of jsonFieldPath, documented with it: the page names both spellings in one row and the bulk form adds nothing a reader has to look up."
 "ProtoSchemaOptions.geographyFieldPaths" = "As jsonFieldPaths above."
 "AvroSchemaOptions.jsonFieldPaths" = "As jsonFieldPaths above."
 "AvroSchemaOptions.geographyFieldPaths" = "As jsonFieldPaths above."
 
-# Option-table entries a page carries that the mapped source does not declare.
+# PAGE SIDE. Option-table entries that exist and no mapped source declares,
+# keyed by the name exactly as the table writes it. The last resort of the two:
+# a row nothing declares is usually a rename that needs correcting or a
+# leftover that needs deleting, and only rarely a genuine outside declaration.
 #
 # All three are Flink's own, from FactoryUtil rather than from
 # PubSubConnectorOptions, and the page says so in its opening paragraph. They

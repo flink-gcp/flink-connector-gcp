@@ -146,7 +146,8 @@ jobs:
 
   # The configuration reference check (issue #89): fails when a builder option
   # or a Table API ConfigOption is added, renamed or removed without the page
-  # documenting it following along, in either direction.
+  # documenting it following along, in either direction (see
+  # .claude/skills/curate-option-docs/ for how to respond to each failure).
   #
   # A job here for the same reason as api_tiers above, plus one of its own: its
   # inputs are the Java main sources *and* docs/content/, and this workflow

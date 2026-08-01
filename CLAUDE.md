@@ -73,7 +73,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   belongs to the client library; this check buys back the one property generation would have given
   free. Its own `ci.yaml` job for the same reason as `check-flink-api-tiers`, plus one of its own:
   its inputs are the main sources *and* `docs/content/`, and `lint.yaml`'s paths filter covers
-  neither
+  neither. **How to respond to each failure — where a row goes, what its Default column may say,
+  and which of `[exempt]` (a setter with no row) and `[extra]` (a row with no setter) a case
+  belongs in — is `.claude/skills/curate-option-docs/`**, the third of the checker skills. Note
+  what the check does *not* do: it compares the set of options, not their values, so a changed
+  default has to be edited in the same commit
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
   the **rendered** markdown — `docs/content/` and the READMEs, never the `CLAUDE.md`s — at strict
