@@ -21,7 +21,6 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.connector.sink2.Committer;
 import org.apache.flink.api.connector.sink2.CommitterInitContext;
-import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.SupportsCommitter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
@@ -37,6 +36,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.committer.FileLoadsCheckpointStamper;
@@ -76,7 +76,7 @@ import java.time.Duration;
  */
 @Internal
 public class BigQueryFileLoadsSink<T>
-        implements Sink<T>,
+        implements CrossVersionSink<T>,
                 SupportsCommitter<FileLoadsCommittable>,
                 SupportsPreCommitTopology<FileLoadsCommittable, FileLoadsCommittable> {
 

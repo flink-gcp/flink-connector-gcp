@@ -19,7 +19,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   integration tests, apache-rat license-header check. Requires JDK 17; `mise.toml` pins java/maven
 - `just format` — run before committing; CI fails on unformatted code
 - `just verify-flink 2.3.0` / `just verify-module flink-connector-gcp-bigquery` — one Flink
-  version, one module. `just verify <maven args>` is the passthrough the weekly matrix uses, and
+  version, one module. A 1.x version also selects the `flink1` compat source root (see the
+  version policy), which is why the recipe exists rather than passing `-Dflink.version` by hand. `just verify <maven args>` is the passthrough the weekly matrix uses, and
   passing nothing means the version pinned in the pom
 - `just binary-compat 2.3.0` — the floor-build/fingerprint/ceiling-rerun/diff sequence, whose
   order is load-bearing. Reproducing a red weekly `binary_compat` is what it is for
@@ -183,7 +184,25 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   works. A new Flink minor moves both ends: that is a deliberate edit to `flink.version` plus
   `.github/workflows/weekly.yaml`, never a dependabot minor bump — which is now enforced by an
   `ignore` rule (patch bumps still arrive). Closed PRs #42 and #97 are the precedent for
-  rejecting minor bumps. Flink 1.20 (1.x LTS) will live on a dedicated `v1.20` branch (#32)
+  rejecting minor bumps.
+- **Flink 1.20 (1.x LTS) is supported from this same source, not from a branch or per-version
+  modules** (decided in #32, reversing the branch plan first recorded here — measured, not
+  assumed): the whole API delta between 1.20 and 2.x for the surface these connectors touch is
+  (a) 1.20 still declaring the deprecated `createWriter(Sink.InitContext)` abstract while 2.x
+  removed the type — absorbed by the one-interface `CrossVersionSink` seam under
+  `src/main/java-flink1`/`java-flink2`, selected by the `flink.compat` Maven property (default
+  `flink2`; `just verify-flink 1.20.x` adds `-Dflink.compat=flink1` itself) — and (b)
+  `CommittableMessage.getCheckpointId()` changing its return type across the majors, dodged by
+  calling `getCheckpointIdOrEOI()` (present in both, deprecated on 2.x; if a 2.x minor removes
+  it, that call is the line to revisit). The 1.20 bridge default is compile-only: 1.20's runtime
+  always creates writers through `createWriter(WriterInitContext)`, measured by the whole suite
+  running green on 1.20.4 with the bridge throwing. **This is source-level support** — the
+  weekly `lts` row compiles and tests everything at `FLINK_LTS`, a jar is compiled per major,
+  and no cross-major binary claim is made (the one-artifact claim below spans the 2.x range
+  only). A red `lts` row reproduces locally with `just verify-flink <FLINK_LTS>` — the same
+  first-move rule `binary_compat` has. A Dataproc-style per-version module split was considered and declined: it buys
+  isolation the two ~15-line interface variants already provide. Publishing (the kafka-style
+  `X.Y.Z-1.20` suffix) is decided in #29/#39
 - **One artifact covers the supported range**, so there is no per-minor artifact suffix (the
   `-2.1` suffix assumption from before #102 is dropped; #29/#39 decide publishing). Only about
   half the Flink API surface these connectors touch is `@Public` — and `@Public` guarantees
@@ -195,10 +214,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - The version matrix lives in `weekly.yaml`, not `ci.yaml`: per-PR CI stays single-version for
   latency, matching Flink's own `push_pr.yml` / `weekly.yml` split. Every matrix job checks out
   `github.sha` rather than a branch — a merge landing mid-run once made one version look like it
-  had silently skipped 60 tests. Matrix rows carry a **role** (`floor` / `ceiling` / `next`), not
-  a version, because GitHub does not expose the `env` context to `strategy` and a version
-  repeated across rows is how one of them gets missed; the version is resolved in a step from
-  `FLINK_CEILING` / `FLINK_NEXT_SNAPSHOT` at the top of the file. The `floor` row passes no
+  had silently skipped 60 tests. Matrix rows carry a **role** (`floor` / `ceiling` / `next` /
+  `lts`), not a version, because GitHub does not expose the `env` context to `strategy` and a
+  version repeated across rows is how one of them gets missed; the version is resolved in a step
+  from `FLINK_CEILING` / `FLINK_NEXT_SNAPSHOT` / `FLINK_LTS` at the top of the file. A 1.20
+  patch bump is an edit to `FLINK_LTS` there — dependabot does not see workflow env, the same
+  accepted staleness `FLINK_CEILING` has. The `floor` row passes no
   `-Dflink.version` at all, so the pom stays the single source of truth for it, and it runs on
   JDK 21 because floor-on-17 is already covered by `ci.yaml` and by `binary_compat`. The `next`
   row is upstream early-warning and is deliberately **not** `continue-on-error`
@@ -369,8 +390,11 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
 A new top-level class in a module's `sink` root needs a reason to be public API; implementation
 types belong in the subpackages. The one standing exception is a single-family module's
 `@Internal` `Sink` class (`CloudTasksCreateTaskSink`, `PubSubPublisherSink`), which sits beside
-its facade because there is no family package left to hold it. Test sources mirror the main-tree
-packages.
+its facade because there is no family package left to hold it. Every module's `sink` root also
+carries the `@Internal` `CrossVersionSink` seam in the per-major source roots
+(`src/main/java-flink1`/`java-flink2` — see the version policy): it must be importable by every
+sink in the module, and its two variants share one FQCN on purpose. Test sources mirror the
+main-tree packages.
 
 ## Design decisions (do not silently revisit)
 

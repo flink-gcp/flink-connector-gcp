@@ -18,11 +18,11 @@ package io.github.flink.gcp.connector.bigquery.sink.storage;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryDefaultStreamWriter;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.RowAppenderFactory;
@@ -37,7 +37,7 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
  * @param <T> type of the records written by the sink
  */
 @Internal
-public class BigQueryDefaultStreamSink<T> implements Sink<T> {
+public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
 
     private static final long serialVersionUID = 1L;
 

@@ -44,8 +44,12 @@ public final class FileLoadsCheckpointStamper
         if (message instanceof CommittableWithLineage) {
             CommittableWithLineage<FileLoadsCommittable> lineage =
                     (CommittableWithLineage<FileLoadsCommittable>) message;
+            // getCheckpointIdOrEOI, not getCheckpointId: the latter's return type differs across
+            // the supported Flink majors (OptionalLong in 1.20, long in 2.x), while this accessor
+            // returns long in both. Deprecated on 2.x as a plain alias of getCheckpointId — if a
+            // future 2.x minor removes it, this is the one line to revisit (issue #32).
             return lineage.map(
-                    committable -> committable.withCheckpointId(lineage.getCheckpointId()));
+                    committable -> committable.withCheckpointId(lineage.getCheckpointIdOrEOI()));
         }
         return message;
     }

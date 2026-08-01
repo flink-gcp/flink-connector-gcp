@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - v1.20
     # Changes that cannot affect the Maven build skip it: a tofu or docs-note
     # pull request otherwise pays ~7 runner-minutes for nothing (raised by the
     # owner on #176/#178, right after a billing cut — private-repo minutes are

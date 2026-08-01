@@ -17,12 +17,13 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.committer;
 
 import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
-import org.apache.flink.streaming.api.connector.sink2.CommittableSummary;
 import org.apache.flink.streaming.api.connector.sink2.CommittableWithLineage;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import org.junit.jupiter.api.Test;
+
+import java.lang.reflect.Proxy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -46,16 +47,31 @@ class FileLoadsCheckpointStamperTest {
 
         CommittableWithLineage<FileLoadsCommittable> lineage =
                 (CommittableWithLineage<FileLoadsCommittable>) out;
-        assertThat(lineage.getCheckpointId()).isEqualTo(7L);
+        assertThat(lineage.getCheckpointIdOrEOI()).isEqualTo(7L);
         assertThat(lineage.getSubtaskId()).isEqualTo(3);
         assertThat(lineage.getCommittable().getCheckpointId()).isEqualTo(7L);
         assertThat(lineage.getCommittable().getUri()).isEqualTo("gs://bucket/prefix/a.avro");
         assertThat(lineage.getCommittable().getFlinkJobId()).isEqualTo(FLINK_JOB_ID);
     }
 
+    /**
+     * The non-lineage message is a {@link Proxy} rather than a {@code CommittableSummary}:
+     * constructing a real summary is version-specific ({@code CommittableSummary}'s constructor
+     * gained and lost arguments between the supported Flink majors), while the stamper's contract —
+     * anything that is not a {@code CommittableWithLineage} passes through untouched — needs only
+     * an instance that is not one.
+     */
     @Test
-    void forwardsSummariesUntouched() {
-        CommittableSummary<FileLoadsCommittable> summary = new CommittableSummary<>(0, 2, 7L, 1, 0);
+    void forwardsNonLineageMessagesUntouched() {
+        @SuppressWarnings("unchecked")
+        CommittableMessage<FileLoadsCommittable> summary =
+                (CommittableMessage<FileLoadsCommittable>)
+                        Proxy.newProxyInstance(
+                                CommittableMessage.class.getClassLoader(),
+                                new Class<?>[] {CommittableMessage.class},
+                                (proxy, method, args) -> {
+                                    throw new UnsupportedOperationException(method.getName());
+                                });
 
         assertThat(stamper.map(summary)).isSameAs(summary);
     }

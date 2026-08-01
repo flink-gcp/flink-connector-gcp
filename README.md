@@ -28,7 +28,8 @@ are recipes in the `justfile`, and the workflows call the same ones. Run `just -
 index; [mise](https://mise.jdx.dev/) installs the tools they need.
 
 `main` supports **Flink 2.2 and 2.3**, mirroring Flink's own policy of supporting the current and
-the previous minor release. Flink 1.20, the 1.x LTS release, is planned on a dedicated branch.
+the previous minor release, and additionally builds against **Flink 1.20** (the 1.x LTS) from
+the same source — `just verify-flink 1.20.4` builds and tests for it.
 See [Supported versions](docs/content/_index.md#supported-versions) for how the range is verified
 and why a single artifact covers it.
 

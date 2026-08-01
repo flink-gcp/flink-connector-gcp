@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.cloudtasks.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
-import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
@@ -37,7 +36,7 @@ import java.io.IOException;
  * @param <T> type of the records written by the sink
  */
 @Internal
-public class CloudTasksCreateTaskSink<T> implements Sink<T> {
+public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
 
     private static final long serialVersionUID = 1L;
 
