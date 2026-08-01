@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.storage;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 
@@ -97,6 +98,19 @@ public final class BufferedStreamOptions implements Serializable {
     /** Returns the maximum number of attempts of the connector-driven recovery schedule. */
     public int getRecoveryMaxAttempts() {
         return recoveryMaxAttempts;
+    }
+
+    /**
+     * Returns the connector-driven recovery schedule the {@code recovery*} knobs describe, shared
+     * by the writer and the committer. Jittered: the writer, the committer and every parallel
+     * subtask of both back off against the same table.
+     */
+    public RetrySchedule toRecoverySchedule() {
+        return new RetrySchedule(
+                recoveryInitialBackoff.toMillis(),
+                recoveryMaxBackoff.toMillis(),
+                recoveryMaxAttempts,
+                RetrySchedule.DEFAULT_JITTER_RATIO);
     }
 
     @Override

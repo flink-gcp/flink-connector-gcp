@@ -55,6 +55,13 @@ class RetryScheduleTest {
     }
 
     @Test
+    void theDefaultJitterRatioIsNonZero() {
+        // Every connector's schedules map onto this one constant, and the only thing the value has
+        // to be is non-zero — a zero here would silently re-synchronize every parallel subtask.
+        assertThat(RetrySchedule.DEFAULT_JITTER_RATIO).isGreaterThan(0).isLessThan(1);
+    }
+
+    @Test
     void jitterNeverGoesBelowOneMillisecond() {
         RetrySchedule schedule = new RetrySchedule(1, 1, 1, 0.99);
 

@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.sink;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -211,6 +212,32 @@ class PubSubPublisherOptionsTest {
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("recoveryMaxBackoff");
+    }
+
+    @Test
+    void theRecoveryScheduleIsDerivedFromTheKnobsAndJittered() {
+        RetrySchedule schedule =
+                PubSubPublisherOptions.builder()
+                        .recoveryInitialBackoff(Duration.ofSeconds(1))
+                        .recoveryMaxBackoff(Duration.ofSeconds(4))
+                        .recoveryMaxAttempts(7)
+                        .build()
+                        .toRecoverySchedule();
+
+        assertThat(schedule.maxAttempts()).isEqualTo(7);
+        // Doubling from the initial backoff, each attempt jittered by ±25%.
+        assertThat(schedule.backoffMs(2)).isBetween(1500L, 2500L);
+
+        // Staying inside the ±25% range does not on its own prove the jitter is applied — a ratio
+        // regressing to zero also does. The variation is what has to be asserted.
+        long first = schedule.backoffMs(1);
+        boolean varies = false;
+        for (int i = 0; i < 200; i++) {
+            long backoff = schedule.backoffMs(1);
+            assertThat(backoff).isBetween(750L, 1250L);
+            varies |= backoff != first;
+        }
+        assertThat(varies).as("the recovery schedule must jitter").isTrue();
     }
 
     @Test

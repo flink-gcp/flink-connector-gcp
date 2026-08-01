@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.storage;
 
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -54,6 +55,31 @@ class BufferedStreamOptionsTest {
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
         assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(5));
         assertThat(options.getRecoveryMaxAttempts()).isEqualTo(3);
+    }
+
+    @Test
+    void theRecoveryScheduleIsDerivedFromTheKnobsAndJittered() {
+        RetrySchedule schedule =
+                BufferedStreamOptions.builder()
+                        .recoveryInitialBackoff(Duration.ofSeconds(1))
+                        .recoveryMaxBackoff(Duration.ofSeconds(4))
+                        .recoveryMaxAttempts(3)
+                        .build()
+                        .toRecoverySchedule();
+
+        assertThat(schedule.maxAttempts()).isEqualTo(3);
+        assertThat(schedule.backoffMs(2)).isBetween(1500L, 2500L);
+
+        // Staying inside the ±25% range does not on its own prove the jitter is applied — a ratio
+        // regressing to zero also does. The variation is what has to be asserted.
+        long first = schedule.backoffMs(1);
+        boolean varies = false;
+        for (int i = 0; i < 200; i++) {
+            long backoff = schedule.backoffMs(1);
+            assertThat(backoff).isBetween(750L, 1250L);
+            varies |= backoff != first;
+        }
+        assertThat(varies).as("the recovery schedule must jitter").isTrue();
     }
 
     @Test

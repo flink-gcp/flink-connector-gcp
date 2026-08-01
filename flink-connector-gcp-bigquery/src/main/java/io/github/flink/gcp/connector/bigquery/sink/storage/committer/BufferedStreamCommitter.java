@@ -77,12 +77,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
             BufferedStreamOptions options) {
         this.serviceFactory = serviceFactory;
         this.location = location;
-        this.retrySchedule =
-                new RetrySchedule(
-                        options.getRecoveryInitialBackoff().toMillis(),
-                        options.getRecoveryMaxBackoff().toMillis(),
-                        options.getRecoveryMaxAttempts(),
-                        0);
+        this.retrySchedule = options.toRecoverySchedule();
     }
 
     @Override

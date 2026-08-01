@@ -158,12 +158,7 @@ public class BigQueryBufferedStreamWriter<T>
                 ((FixedDestinationResolver) config.getDestinationResolver()).getDestination();
         this.subtaskId = subtaskId;
         this.maxAppendRequestBytes = options.getMaxAppendRequestBytes();
-        this.retrySchedule =
-                new RetrySchedule(
-                        options.getRecoveryInitialBackoff().toMillis(),
-                        options.getRecoveryMaxBackoff().toMillis(),
-                        options.getRecoveryMaxAttempts(),
-                        0);
+        this.retrySchedule = options.toRecoverySchedule();
 
         BufferedStreamWriterState adopted = null;
         for (BufferedStreamWriterState state : restoredStates) {

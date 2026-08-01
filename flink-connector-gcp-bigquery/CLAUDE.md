@@ -404,8 +404,16 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   (flat 30 s × 30) is **deliberately not exposed**: it paces BigQuery metadata propagation, a
   service property, not a workload property. The writer keeps its package-private
   `(maxAppendRequestBytes, recoverySchedule, schemaWaitSchedule)` constructor for tests; the
-  public options constructor maps `recovery*` → a jitter-free `RetrySchedule`, the exact mapping
-  the buffered writer already uses.
+  public options constructor takes the schedule from `DefaultStreamOptions.toRecoverySchedule()`,
+  as the buffered writer and the committer take theirs from
+  `BufferedStreamOptions.toRecoverySchedule()`. **The `recovery*` → `RetrySchedule` mapping lives
+  on the options class, never in the consumer** — that is what lets one method serve the buffered
+  writer and its committer, and what makes each mapping directly unit-testable (a jitter ratio
+  silently regressing to zero inside a constructor is otherwise unobservable). Both are jittered
+  at `RetrySchedule.DEFAULT_JITTER_RATIO`; they were jitter-free until #197 aligned every
+  schedule in the repository on the one shared ratio, so the #54-era reasoning that a recovery
+  schedule should be jitter-free is superseded, and the ratio is deliberately not a knob (the
+  reasoning lives on the base module's constant).
   **Cold-destination eviction** (`destinationIdleTimeout`, default 1 h, enabled — decided with
   the user 2026-07-28; disable = set a large duration, no separate flag) sweeps at the **end of a
   successful `flush(boolean)`, skipped on `endOfInput`**: that is the point where every pending

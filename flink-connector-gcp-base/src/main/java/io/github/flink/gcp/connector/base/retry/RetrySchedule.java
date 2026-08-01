@@ -29,6 +29,22 @@ import java.util.concurrent.ThreadLocalRandom;
 @Internal
 public final class RetrySchedule {
 
+    /**
+     * The jitter every schedule in this project uses, unless it has a recorded reason not to.
+     *
+     * <p>One number rather than a per-site choice, because the value is not load-bearing: the
+     * jitter is mean-preserving (the backoff is multiplied by a factor in {@code [1 - ratio, 1 +
+     * ratio]}, so the expected delay stays the design value) and all it has to do is break the
+     * synchronization between parallel subtasks retrying against the same destination. Only being
+     * non-zero serves that purpose, so a site picking its own ratio would be picking a number
+     * nothing distinguishes.
+     *
+     * <p>Not a builder knob on any connector's options: there is no workload for which a particular
+     * ratio is the right answer, which is the test the {@code recovery*} and {@code retry*} knobs
+     * pass and this does not.
+     */
+    public static final double DEFAULT_JITTER_RATIO = 0.25;
+
     private final long initialBackoffMs;
     private final long maxBackoffMs;
     private final int maxAttempts;

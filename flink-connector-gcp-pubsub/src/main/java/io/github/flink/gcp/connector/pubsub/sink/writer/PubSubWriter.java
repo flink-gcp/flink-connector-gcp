@@ -199,7 +199,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 publisherFactory,
                 topicAdmin,
                 mailboxExecutor,
-                recoverySchedule(config.getPublisherOptions()));
+                config.getPublisherOptions().toRecoverySchedule());
     }
 
     /**
@@ -232,16 +232,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         this.maxInFlightBytes = options.getMaxInFlightBytes();
         this.recoverySchedule = recoverySchedule;
         this.orderingEnabled = options.isEnableMessageOrdering();
-    }
-
-    /** Maps the public recovery knobs onto the internal schedule (jitter deliberately zero). */
-    @VisibleForTesting
-    static RetrySchedule recoverySchedule(PubSubPublisherOptions options) {
-        return new RetrySchedule(
-                options.getRecoveryInitialBackoff().toMillis(),
-                options.getRecoveryMaxBackoff().toMillis(),
-                options.getRecoveryMaxAttempts(),
-                0);
     }
 
     @Override

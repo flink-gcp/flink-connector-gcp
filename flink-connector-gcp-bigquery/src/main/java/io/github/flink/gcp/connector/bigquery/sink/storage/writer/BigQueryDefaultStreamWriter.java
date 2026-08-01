@@ -158,22 +158,13 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     static final int MAX_ROW_BYTES = 9 * 1024 * 1024;
 
     /**
-     * Retry schedule for re-appends on the task thread, shared by {@code NOT_FOUND} recovery after
-     * creating a table (metadata propagation to the Storage Write API backend is usually seconds
-     * but can take considerably longer), transient append failures that surfaced past the SDK's own
-     * retries, and stale-stream-writer refreshes. The defaults (500 ms initial, doubled up to 10 s,
-     * 10 attempts) allow roughly a minute in total.
-     */
-    static final RetrySchedule DEFAULT_RECOVERY_SCHEDULE = new RetrySchedule(500, 10_000, 10, 0);
-
-    /**
      * Retry schedule for re-appends after a table schema update, while the update propagates to the
      * Storage Write API backend — which takes minutes, considerably longer than table-creation
-     * propagation. Flat 30 s waits with ±25% jitter (de-synchronizing parallel subtasks), 30
-     * attempts: a ceiling of roughly fifteen minutes.
+     * propagation. Flat 30 s waits, jittered (de-synchronizing parallel subtasks), 30 attempts: a
+     * ceiling of roughly fifteen minutes.
      */
     static final RetrySchedule DEFAULT_SCHEMA_WAIT_SCHEDULE =
-            new RetrySchedule(30_000, 30_000, 30, 0.25);
+            new RetrySchedule(30_000, 30_000, 30, RetrySchedule.DEFAULT_JITTER_RATIO);
 
     /**
      * Attempts at applying a schema update before giving up; each attempt is a fresh read, union
@@ -264,9 +255,12 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     /**
      * Creates a writer, taking the batching cap and the connector-driven recovery schedule from the
-     * given options (same mapping as the buffered-stream writer; the schedule is jitter-free,
-     * matching {@link #DEFAULT_RECOVERY_SCHEDULE}). The schema-wait schedule is not configurable —
-     * it paces BigQuery metadata propagation, a service property rather than a workload property.
+     * given options. That schedule covers {@code NOT_FOUND} recovery after creating a table
+     * (metadata propagation to the Storage Write API backend is usually seconds but can take
+     * considerably longer), transient append failures that surfaced past the SDK's own retries, and
+     * stale-stream-writer refreshes; its defaults allow roughly a minute in total. The schema-wait
+     * schedule is not configurable — it paces BigQuery metadata propagation, a service property
+     * rather than a workload property.
      *
      * <p>When the options carry a {@code flushInterval} and a timer service is given, the writer
      * registers a recurring processing-time flush; without a timer service the interval is inert.
@@ -288,11 +282,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 appenderFactory,
                 tableAdmin,
                 options.getMaxAppendRequestBytes(),
-                new RetrySchedule(
-                        options.getRecoveryInitialBackoff().toMillis(),
-                        options.getRecoveryMaxBackoff().toMillis(),
-                        options.getRecoveryMaxAttempts(),
-                        0),
+                options.toRecoverySchedule(),
                 DEFAULT_SCHEMA_WAIT_SCHEDULE,
                 options.getDestinationIdleTimeout(),
                 options.getFlushInterval(),

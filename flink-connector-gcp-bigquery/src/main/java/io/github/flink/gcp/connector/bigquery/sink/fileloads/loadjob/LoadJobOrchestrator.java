@@ -109,7 +109,7 @@ public final class LoadJobOrchestrator {
     @VisibleForTesting static final long MAX_BYTES_PER_JOB = 11L * (1L << 40);
 
     private static final RetrySchedule SCHEMA_UPDATE_SCHEDULE =
-            new RetrySchedule(500, 10_000, 10, 0.25);
+            new RetrySchedule(500, 10_000, 10, RetrySchedule.DEFAULT_JITTER_RATIO);
 
     private final BigQuerySinkConfig<?> config;
     private final FileLoadsOptions options;

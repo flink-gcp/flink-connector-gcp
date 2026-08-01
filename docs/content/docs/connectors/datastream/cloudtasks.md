@@ -265,10 +265,10 @@ queue's job:
 | `notFoundMaxBackoff` | 2 s | Cap of the `NOT_FOUND` backoff |
 | `notFoundMaxAttempts` | 3 | `NOT_FOUND` attempts. Short on purpose: long enough to ride out a blip, short enough that a mistyped queue fails quickly. A queue taking minutes to re-activate outlives this budget by design — recovering from that is the job's restart strategy, not the writer's |
 
-The transient backoff carries ±20% jitter, so parallel subtasks backing off against the same queue
-at the same instant do not retry in lockstep. It is not exposed: the value only has to be non-zero
-to do its job. The `NOT_FOUND` schedule has no jitter, its budget being short enough that spreading
-it out would mostly eat the budget.
+Both backoffs carry ±25% jitter, so parallel subtasks backing off against the same queue at the
+same instant do not retry in lockstep. The ratio is not exposed: the jitter is mean-preserving —
+the backoff is multiplied by a factor in `[0.75, 1.25]`, so the expected delay is the configured
+one — which is why even the short `NOT_FOUND` budget carries it.
 
 ## Queues, rate limits and sink concurrency
 

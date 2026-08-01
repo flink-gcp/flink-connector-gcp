@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink;
 
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -47,19 +48,35 @@ class CloudTasksWriterOptionsTest {
         CloudTasksWriterOptions options =
                 CloudTasksWriterOptions.builder()
                         .retryMaxAttempts(4)
-                        .retryInitialBackoff(Duration.ofMillis(200))
-                        .retryMaxBackoff(Duration.ofMillis(400))
+                        .retryInitialBackoff(Duration.ofMillis(2_000))
+                        .retryMaxBackoff(Duration.ofMillis(4_000))
                         .notFoundMaxAttempts(2)
-                        .notFoundInitialBackoff(Duration.ofMillis(50))
-                        .notFoundMaxBackoff(Duration.ofMillis(50))
+                        .notFoundInitialBackoff(Duration.ofMillis(1_000))
+                        .notFoundMaxBackoff(Duration.ofMillis(1_000))
                         .build();
 
         assertThat(options.toRetrySchedule().maxAttempts()).isEqualTo(4);
         assertThat(options.toNotFoundRetrySchedule().maxAttempts()).isEqualTo(2);
-        // The NOT_FOUND schedule has no jitter, so its backoff is exact.
-        assertThat(options.toNotFoundRetrySchedule().backoffMs(1)).isEqualTo(50);
-        // The transient schedule is jittered by ±20% to de-synchronize parallel subtasks.
-        assertThat(options.toRetrySchedule().backoffMs(1)).isBetween(160L, 240L);
+        // Both schedules are jittered by ±25% to de-synchronize parallel subtasks — including the
+        // NOT_FOUND one, which was jitter-free until #197.
+        assertJittered(options.toRetrySchedule(), 1_500L, 2_500L);
+        assertJittered(options.toNotFoundRetrySchedule(), 750L, 1_250L);
+    }
+
+    /**
+     * Asserts the first backoff stays within the jittered range <em>and</em> varies. Staying inside
+     * the range does not on its own prove the jitter is applied — a ratio regressing to zero also
+     * does.
+     */
+    private static void assertJittered(RetrySchedule schedule, long minMs, long maxMs) {
+        long first = schedule.backoffMs(1);
+        boolean varies = false;
+        for (int i = 0; i < 200; i++) {
+            long backoff = schedule.backoffMs(1);
+            assertThat(backoff).isBetween(minMs, maxMs);
+            varies |= backoff != first;
+        }
+        assertThat(varies).as("the schedule must jitter").isTrue();
     }
 
     @Test
