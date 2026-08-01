@@ -22,8 +22,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   version, one module. A 1.x version also selects the `flink1` compat source root (see the
   version policy), which is why the recipe exists rather than passing `-Dflink.version` by hand. `just verify <maven args>` is the passthrough the weekly matrix uses, and
   passing nothing means the version pinned in the pom
-- `just binary-compat 2.3.0` — the floor-build/fingerprint/ceiling-rerun/diff sequence, whose
-  order is load-bearing. Reproducing a red weekly `binary_compat` is what it is for
+- `just binary-compat 2.3.0` — the floor-build/install/fingerprint/ceiling-rerun/diff
+  sequence, whose order is load-bearing. Reproducing a red weekly `binary_compat` is what it is
+  for. The install step (root pom + the Pub/Sub connector) exists because the goal-only rerun
+  cannot resolve inter-module dependencies from the reactor — same mechanism as the licence-goal
+  rule below, bitten via the SQL uber-jar in #181 — and it primes `~/.m2` with
+  `io.github.flink-gcp` SNAPSHOTs when run by hand (the recipe comment has the cleanup line)
 - `just e2e` — the ITCases gated on `BQ_IT_*` variables, which `just verify` silently skips,
   with a pre-flight that makes a missing variable an error and a post-run assertion
   (`scripts/e2e-gated-its.sh`, which derives the class list from the gating annotation) that the

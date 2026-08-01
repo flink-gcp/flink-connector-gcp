@@ -97,10 +97,24 @@ format:
 # flink-connector-parent, so a bare `surefire:test` would ignore them and
 # silently skip every ITCase while still reporting green.
 #
+# The install step exists because the rerun, being goal-only, cannot resolve
+# inter-module dependencies from the reactor — the same mechanism the licence
+# goal's phase rule guards against (see CLAUDE.md under Build). The SQL
+# uber-jar bundles the Pub/Sub connector (#138, the repository's first
+# inter-module dependency), so without the install the rerun dies resolving it
+# (#181) — and excluding that module instead would drop the most
+# binary-compat-shaped case there is: the jar shaded on the floor, tested on
+# the ceiling. The root pom installs with it because the installed connector
+# pom names it as parent. Cost, when run by hand: io.github.flink-gcp
+# SNAPSHOTs land in ~/.m2 — the primed-local-repo hazard —
+# `rm -rf ~/.m2/repository/io/github/flink-gcp` undoes it.
+#
 # Check that a floor-built jar still runs on Flink <ceiling>, uncompiled.
 binary-compat ceiling:
     @echo '==> Build against the floor (the Flink version pinned in pom.xml)'
     {{ mvn }} verify
+    @echo '==> Install what the goal-only rerun cannot resolve from the reactor'
+    {{ mvn }} -pl .,flink-connector-gcp-pubsub -DskipTests install
     @echo '==> Record which tests the floor build ran'
     @mkdir -p target
     scripts/surefire-fingerprint.sh > target/floor-tests.txt
