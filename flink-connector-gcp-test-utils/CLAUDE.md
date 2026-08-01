@@ -25,8 +25,11 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
   both install this module into `~/.m2` first. A rename or a new similarly-consumed module must
   update those recipes.
 - This module has no tests of its own: it produces no surefire reports, which
-  `scripts/surefire-fingerprint.sh` and `e2e-gated-its.sh --assert-ran` silently and correctly
-  ignore. If it ever gains tests, `binary-compat`'s same-tests diff picks them up automatically.
+  `scripts/surefire-fingerprint.sh` correctly ignores (its `find` simply matches nothing here).
+  `e2e-gated-its.sh --assert-ran` ignores the module for a different reason — it has no gated
+  class for the annotation grep to find; a gated class *without* a report is fatal there, not
+  ignored. If the module ever gains tests, `binary-compat`'s same-tests diff picks them up
+  automatically.
 - No compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here implements `Sink`
   across the 1.x/2.x API gap. Adding a sink test-double that does would need the seam — prefer
   keeping such doubles in the module that needs them.

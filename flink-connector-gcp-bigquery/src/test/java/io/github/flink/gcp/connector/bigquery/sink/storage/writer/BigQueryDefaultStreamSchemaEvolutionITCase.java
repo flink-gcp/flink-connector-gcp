@@ -16,9 +16,6 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
-import io.github.flink.gcp.connector.testutils.TestContexts;
-import io.github.flink.gcp.connector.testutils.TestNames;
-
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import com.google.api.core.ApiFuture;
@@ -43,6 +40,8 @@ import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -127,8 +126,7 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
     private static final Logger LOG =
             LoggerFactory.getLogger(BigQueryDefaultStreamSchemaEvolutionITCase.class);
 
-    private static final String TABLE =
-            "default_stream_evolution_it_" + TestNames.runId();
+    private static final String TABLE = "default_stream_evolution_it_" + TestNames.runId();
 
     private static final long POLL_INTERVAL_MS = 30_000;
     private static final long CANARY_INITIAL_DELAY_MS = 60_000;
@@ -143,8 +141,7 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
     private static final java.util.logging.Logger SDK_JUL_LOGGER =
             java.util.logging.Logger.getLogger("com.google.cloud.bigquery.storage.v1");
 
-    private static final SinkWriter.Context CONTEXT =
-            TestContexts.NO_OP;
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private static TableFieldSchema nullableString(String name) {
         return TableFieldSchema.newBuilder()

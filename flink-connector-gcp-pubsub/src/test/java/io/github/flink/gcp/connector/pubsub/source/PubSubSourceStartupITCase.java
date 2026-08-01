@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializat
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
+import io.github.flink.gcp.connector.testutils.Drains;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -171,7 +172,7 @@ class PubSubSourceStartupITCase extends AbstractPubSubSourceEmulatorITCase {
     /**
      * Runs the source until it has produced {@code expected} distinct records or {@link
      * #COLLECT_TIMEOUT} passes, then stops it. The mechanics of the bounded drain and the reason
-     * records are counted distinct live on {@link #drainDistinct}.
+     * records are counted distinct live on {@link Drains#drainDistinct}.
      */
     private static List<String> collect(
             Source<String, SubscriptionSplit, PubSubEnumeratorState> source, int expected)
