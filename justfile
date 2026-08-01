@@ -138,6 +138,11 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 # without @integration-tests the default-test execution would run the same
 # classes a second time.
 #
+# Make the main checkout's .env reachable from this worktree (issue #156;
+# the guard logic lives in the script, where shellcheck reads it).
+worktree-env:
+    scripts/worktree-env.sh
+
 # Run the real-GCP gated ITCases and assert they actually ran.
 e2e:
     scripts/e2e-gated-its.sh --require-env

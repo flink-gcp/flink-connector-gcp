@@ -28,7 +28,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   with a pre-flight that makes a missing variable an error and a post-run assertion
   (`scripts/e2e-gated-its.sh`, which derives the class list from the gating annotation) that the
   gated classes actually executed. The weekly E2E workflow (`e2e.yaml`) runs this same recipe
-  via WIF; locally the variables come from `.env`, so a worktree cannot run it (#156)
+  via WIF; locally the variables come from the uncommitted `.env`, which a fresh worktree does
+  not have — run `just worktree-env` once there to symlink the main checkout's copy (#156; the same
+  link also carries `just tofu`'s credentials)
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
@@ -110,7 +112,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 ## Workflow rules
 
 - **One git worktree per PR** under `/tmp/worktrees/flink-connector-gcp/`; never switch branches
-  in the main checkout. Remove the worktree and local branch after merge
+  in the main checkout. Remove the worktree and local branch after merge. If the branch needs the
+  real-GCP ITs or `just tofu`, run `just worktree-env` once in the fresh worktree — it symlinks
+  the main checkout's uncommitted `.env` (#156)
 - All changes go through **draft PRs**; nothing is pushed directly to `main` after the initial
   skeleton
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency
@@ -395,6 +399,16 @@ carries the `@Internal` `CrossVersionSink` seam in the per-major source roots
 (`src/main/java-flink1`/`java-flink2` — see the version policy): it must be importable by every
 sink in the module, and its two variants share one FQCN on purpose. Test sources mirror the
 main-tree packages.
+
+## Emulators are conveniences, not authorities
+
+An emulator is a convenience for fast feedback, never evidence about the service's behaviour.
+Where the two disagree, the real service decides, and the emulator gets a documented workaround
+naming the deviation. A mapping or behaviour decision may not be settled on emulator evidence
+alone (#156). The record behind the rule: the goccy/bigquery-emulator divergence table — including
+the one that nearly cost a correct mapping — is on #156, and the Pub/Sub emulator's blind spots
+(ordered dispatch, ordered seek, dead-letter forwarding, IAM, and every create-option knob it
+stores but ignores) are why the #82 real-GCP gated suite is the only coverage of those behaviours.
 
 ## Design decisions (do not silently revisit)
 
