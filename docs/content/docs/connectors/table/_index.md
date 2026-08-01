@@ -27,5 +27,5 @@ Connectors for the Table API and SQL.
 Each of these is a mapping onto the DataStream connector of the same name rather than a separate
 implementation: the programmatic API is the source of truth, and a table option exists because a
 builder setter does. The corresponding
-{{< relref "docs/connectors/datastream" >}} page is where the behavior behind an option is
-described; the page here documents the option surface and the decisions specific to SQL.
+[DataStream connector]({{< relref "docs/connectors/datastream" >}}) page is where the behavior
+behind an option is described; the page here documents the option surface and the decisions specific to SQL.

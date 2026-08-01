@@ -33,6 +33,13 @@ the same source — `just verify-flink 1.20.4` builds and tests for it.
 See [Supported versions](docs/content/_index.md#supported-versions) for how the range is verified
 and why a single artifact covers it.
 
+## Getting started
+
+[Quickstart](docs/content/docs/quickstart/_index.md) installs the artifacts from this build and
+sets up credentials, then has one complete job per connector;
+[Examples](docs/content/docs/examples/_index.md) covers dynamic destinations, exactly-once,
+auto-creation and emulator-backed local runs.
+
 ## License
 
 [Apache License 2.0](LICENSE)

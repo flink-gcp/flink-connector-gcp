@@ -27,6 +27,10 @@ Connectors for using Google Cloud services with [Apache Flink](https://flink.apa
 > Building from source is described in the
 > [repository README]({{< param BookRepo >}}#build).
 
+The [Quickstart]({{< relref "docs/quickstart" >}}) builds and installs the connectors, sets up
+credentials and runs one complete job per connector; [Examples]({{< relref "docs/examples" >}})
+covers dynamic destinations, exactly-once, auto-creation and emulator-backed local runs.
+
 ## Supported versions
 
 | | Supported |
