@@ -86,7 +86,9 @@ The other connector artifact ids are `flink-connector-gcp-pubsub` and
 `flink-connector-gcp-cloudtasks`. All three are SNAPSHOTs of an unreleased project: the coordinates
 and the API behind them change without notice, and this section is rewritten when there is
 something published to point at. The Flink version above is the floor the connectors are compiled
-against; any version in the supported range works, since one build covers the whole of it.
+against, and one build covers the whole 2.x range — a job on 2.3 needs no different artifact.
+**Flink 1.20 is the exception**: that claim spans 2.x only, so a 1.20 job needs the connectors
+built the way the next paragraph describes.
 
 **Building for Flink 1.20** means selecting the compatibility source root along with the version,
 which one command does both halves of:
@@ -121,9 +123,10 @@ Two environment facts a first run trips over:
   `getDefaultInstance()`. Without it the load-job committer fails with *"A project ID is required
   for this service"* — the project named in the destination is not consulted for this.
 - **The BigQuery sink and the Pub/Sub sink need permission to *create* their destination**, since
-  that is what they do by default. `createDisposition(CREATE_NEVER)` turns both into
-  write-only jobs. The Pub/Sub source creates a subscription only when given creation settings,
-  and the Cloud Tasks sink never creates a queue at all.
+  that is what they do by default. `createDisposition(CREATE_NEVER)` drops the requirement on
+  both, at the price of a missing destination failing the job instead of being created. The
+  Pub/Sub source creates a subscription only when given creation settings, and the Cloud Tasks
+  sink never creates a queue at all.
 
 What each connector asks for:
 

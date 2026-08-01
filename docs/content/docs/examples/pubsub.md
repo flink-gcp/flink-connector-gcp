@@ -107,12 +107,16 @@ starts from an empty backlog whatever was published before.
 
 ## Running against the emulator
 
-Google's own emulator ships with the gcloud CLI, and runs on your machine rather than in a
-container:
+Google's own emulator runs on your machine rather than in a container, but it is a gcloud
+component rather than part of the base install:
 
 ```sh
+gcloud components install pubsub-emulator
 gcloud beta emulators pubsub start --project=my-project --host-port=localhost:8085
 ```
+
+Pass `--host-port` rather than taking the default, which binds the IPv6 loopback (`[::1]:8085`) —
+`emulatorEndpoint("localhost:8085")` is then resolving a name the emulator may not be listening on.
 
 ```java
 PubSubSink.<String>builder()
