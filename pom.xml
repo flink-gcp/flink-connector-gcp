@@ -491,16 +491,15 @@ limitations under the License.
                      "N warning(s)", not with -Xwerror, so anything that writes to stderr
                      after that summary would silence it.
 
-                     detectJavaApiLink defaults to true, which makes the plugin fetch an
-                     element-list from docs.oracle.com on every run — and under failOnWarnings
-                     an unreachable docs.oracle.com would then redden the docs build. Turning
-                     it off is the same call already made against <links> for Flink and
-                     Google: no documentation build depends on another site being up. It costs
-                     nothing, which is the part worth recording — the JDK cross-links in the
-                     output (4178 of them) come from the doclet's own automatic platform
-                     links, which need no network, so the count is identical either way and
-                     the build now completes with `-o`. Do not "restore" the links by turning
-                     this back on; they were never coming from it.
+                     detectJavaApiLink defaults to true, and off it costs nothing: the JDK
+                     cross-links in the output (4178 of them) come from the doclet's own
+                     automatic platform links, so the count is identical either way. What the
+                     default adds is a second mechanism for the same links — the plugin passes
+                     -linkoffline against an element-list it unpacks from its own jar. That
+                     list is bundled for Java 10 to 15 only, so the day maven.compiler.source
+                     moves past 15 the default stops being satisfiable from the jar, and this
+                     is one fewer thing to discover then. Note it is *not* a network fetch:
+                     only <links>, which this build does not use, probes a remote site.
 
                      doctitle/windowtitle are set because the defaults are
                      "${project.name} ${project.version} API" and this module's name is

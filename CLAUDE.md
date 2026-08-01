@@ -151,23 +151,20 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   become site URLs when Pages goes live, which is a checklist item on #6
 - **The API reference is the site's generated half** (#88): `just docs-javadoc` aggregates JavaDoc
   across every module into `docs/static/api/java`, which Hugo copies verbatim, so it is part of the
-  Pages artifact the moment #93 adds the deploy job — nothing further to wire. It is never
+  Pages artifact the moment #93 adds a deploy job that runs `just docs-javadoc` before uploading. It is never
   committed (gitignored, rat-excluded), and pages link to it with `{{< param ApiDocsURL >}}` —
   a param rather than a `relref` because the output is not Hugo *content*, and not `Book*`-prefixed
-  because that namespace is hugo-book's. Three decisions behind it, each measured rather than
-  assumed:
+  because that namespace is hugo-book's. Three decisions behind it, the first two measured rather
+  than assumed:
   - **Nothing is filtered by API tier.** `@Internal` is `@Documented`, so the tier is a badge on
     every class page, and using an `@Internal` type is the caller's risk — a consumer can audit
     tiers mechanically exactly as `just check-flink-api-tiers` does against Flink. Filtering was
-    priced and declined: package-level exclusion reaches only 80 of 112 `@Internal` files because
-    12 packages mix tiers, `sourceFileExcludes` drops files from the *source path* and so breaks
+    priced and declined: package-level exclusion would still leave 32 `@Internal` files documented,
+    because 12 packages mix tiers, `sourceFileExcludes` drops files from the *source path* and so breaks
     resolution of public signatures that name them, and a doclet buys zero-maintenance filtering
     at a cost this project has no reason to pay. Apache Flink publishes unfiltered too
   - **Doclint stays off, `failOnWarnings` is on instead.** The parent supplies `-Xdoclint:none`
-    through `<additionalJOptions>` with `combine.children="append"`, so a child's list is
-    *appended* to it rather than replacing it and turning doclint back on would mean taking the
-    element over with `combine.self="override"` — and it turns out not to be the check worth
-    having. JavaDoc resolves `{@link}` itself rather than through doclint, so an unresolvable
+    through `<additionalJOptions>` — and it turns out not to be the check worth having. JavaDoc resolves `{@link}` itself rather than through doclint, so an unresolvable
     reference is reported regardless (two existed when this landed, both in
     `JsonDocumentSerializerOptions`, left behind by #125's fully-qualified-link rule); a
     reference the reader cannot follow is what a published reference must be free of, a missing

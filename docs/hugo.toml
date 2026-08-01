@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ApiDocsURL under [params] repeats this path; the two move together.
 baseURL = "https://laughingman7743.github.io/flink-connector-gcp/"
 locale = "en-us"
 title = "GCP Connectors for Apache Flink"

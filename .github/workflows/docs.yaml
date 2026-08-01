@@ -19,12 +19,14 @@ on:
       # GitHub reads `**` as "any character, including /", so `**/pom.xml` needs
       # a slash before it and never matches a path without one — and the root
       # pom is where every javadoc setting lives. Generating the reference also
-      # forks the reactor's compile phase, which runs spotless and checkstyle;
-      # their configuration comes from the parent POM today, so nothing further
-      # is listed, but a local checkstyle.xml would belong here.
+      # forks the reactor's compile phase, which runs checkstyle and spotless at
+      # validate: checkstyle reads tools/maven/checkstyle.xml and
+      # suppressions.xml from this repository, so tools/** is an input too;
+      # spotless is configured entirely in the parent POM, so it adds nothing.
       - '**/src/main/**'
       - 'pom.xml'
       - '**/pom.xml'
+      - 'tools/**'
       - 'mvnw'
       - '.mvn/**'
   pull_request:

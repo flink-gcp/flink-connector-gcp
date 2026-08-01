@@ -16,10 +16,13 @@
 
 package io.github.flink.gcp.connector.testutils;
 
+import org.apache.flink.annotation.Internal;
+
 import java.time.Duration;
 import java.util.function.BooleanSupplier;
 
 /** Deadline-bounded polling for test assertions. */
+@Internal
 public final class Awaits {
 
     /**

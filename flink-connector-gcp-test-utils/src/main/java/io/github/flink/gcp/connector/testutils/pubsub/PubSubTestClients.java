@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.testutils.pubsub;
 
+import org.apache.flink.annotation.Internal;
+
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.GrpcTransportChannel;
@@ -58,6 +60,7 @@ import java.util.concurrent.TimeUnit;
  * <p>Subscriptions are addressed by their full resource path ({@code
  * projects/<p>/subscriptions/<s>}) so no connector destination type crosses the module boundary.
  */
+@Internal
 public final class PubSubTestClients implements AutoCloseable {
 
     private final TopicAdminClient topicAdmin;

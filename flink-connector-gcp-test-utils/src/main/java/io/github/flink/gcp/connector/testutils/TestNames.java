@@ -16,12 +16,15 @@
 
 package io.github.flink.gcp.connector.testutils;
 
+import org.apache.flink.annotation.Internal;
+
 import java.util.UUID;
 
 /**
  * Random resource-name helpers for the gated integration tests against real GCP: concurrent runs
  * must not collide on resource names, and a crashed run must leave behind names that identify it.
  */
+@Internal
 public final class TestNames {
 
     /**
