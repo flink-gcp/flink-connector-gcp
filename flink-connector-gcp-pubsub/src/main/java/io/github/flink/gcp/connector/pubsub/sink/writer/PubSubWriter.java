@@ -464,6 +464,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * handler that fails the job cannot throw at a caller: its failure is captured into {@link
      * #asyncError} and rethrown from the next {@link #write} or {@link #flush}, exactly as a
      * terminal publish failure is. First failure wins, as everywhere else here.
+     *
+     * <p>Routing is <em>not</em> skipped once {@link #asyncError} is set. The writer is about to
+     * fail either way, but this message really did fail terminally, and a dead-letter destination
+     * that is missing it is worse than one holding a message a replay will produce again — the
+     * guarantee is at-least-once.
      */
     private void routeFailedMessage(
             TopicDestination destination, PubsubMessage message, Throwable throwable) {

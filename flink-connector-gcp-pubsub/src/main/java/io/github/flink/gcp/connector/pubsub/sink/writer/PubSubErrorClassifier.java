@@ -53,7 +53,7 @@ import java.util.concurrent.CancellationException;
  * still the repairable topic failure, and a cascade cancellation carries no status of its own.
  */
 @Internal
-public final class PubSubErrorClassifier {
+final class PubSubErrorClassifier {
 
     /** The classes a failed publish falls into. */
     enum Kind {
