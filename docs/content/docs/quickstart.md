@@ -60,11 +60,27 @@ That installs `0.1.0-SNAPSHOT` into `~/.m2`, from where an ordinary dependency r
   <artifactId>flink-connector-gcp-bigquery</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>
+
+<!-- The connectors declare their Flink dependencies as `provided`, so a job brings its own.
+     `compile` scope runs the jobs below from an IDE on the embedded MiniCluster; switch both to
+     `provided` for a jar submitted to a cluster, which has them already. -->
+<dependency>
+  <groupId>org.apache.flink</groupId>
+  <artifactId>flink-streaming-java</artifactId>
+  <version>2.2.1</version>
+</dependency>
+<dependency>
+  <groupId>org.apache.flink</groupId>
+  <artifactId>flink-clients</artifactId>
+  <version>2.2.1</version>
+</dependency>
 ```
 
-The other artifact ids are `flink-connector-gcp-pubsub` and `flink-connector-gcp-cloudtasks`. All
-three are SNAPSHOTs of an unreleased project: the coordinates and the API behind them change
-without notice, and this section is rewritten when there is something published to point at.
+The other connector artifact ids are `flink-connector-gcp-pubsub` and
+`flink-connector-gcp-cloudtasks`. All three are SNAPSHOTs of an unreleased project: the coordinates
+and the API behind them change without notice, and this section is rewritten when there is
+something published to point at. The Flink version above is the floor the connectors are compiled
+against; any version in the supported range works, since one build covers the whole of it.
 
 **Building for Flink 1.20** means selecting the compatibility source root along with the version,
 which one command does both halves of:

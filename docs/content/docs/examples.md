@@ -27,8 +27,8 @@ routing each record to its own destination, configuring exactly-once, letting th
 what it writes to, and running the lot against an emulator.
 
 Each starts from the jobs in the [Quickstart]({{< relref "docs/quickstart" >}}), so only the parts
-that change are shown. The reasoning behind every option is on the connector's own page, linked from each
-section.
+that change are shown. The reasoning behind every option is on the connector's own page, linked
+from each section.
 
 ## Dynamic per-record destinations
 
@@ -150,6 +150,10 @@ page. The queues must all exist; the sink creates none of them.
 Two of BigQuery's three write methods are exactly-once, and they trade against each other rather
 than one being better. Pub/Sub and Cloud Tasks are at-least-once with no exactly-once path — the
 services have no transactional publish.
+
+Both need streaming checkpointing in `CheckpointingMode.EXACTLY_ONCE`, which is Flink's default and
+so needs no line in either job below — but a cluster setting `execution.checkpointing.mode` to
+`AT_LEAST_ONCE` has the job rejected when the graph is built, rather than silently downgraded.
 
 ### Buffered streams
 
@@ -369,7 +373,8 @@ Google publishes no Cloud Tasks emulator; the one the integration tests use is
 [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator) (MIT).
 
 ```sh
-docker run --rm -p 8123:8123 ghcr.io/aertje/cloud-tasks-emulator:1.2.0 \
+docker run --rm -p 8123:8123 --add-host=host.docker.internal:host-gateway \
+    ghcr.io/aertje/cloud-tasks-emulator:1.2.0 \
     -host 0.0.0.0 -port 8123 \
     -queue projects/my-project/locations/asia-northeast1/queues/webhooks
 ```
@@ -378,14 +383,21 @@ docker run --rm -p 8123:8123 ghcr.io/aertje/cloud-tasks-emulator:1.2.0 \
 CloudTasksSink.<String>builder()
         .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
         .serializer(
-                CloudTasksSerializationSchema.httpTarget("http://localhost:9000/orders")
+                // Not localhost: the emulator dispatches from inside the container, where that
+                // would be the container itself. --add-host above is what makes this name resolve
+                // to the host on Linux; Docker Desktop provides it already.
+                CloudTasksSerializationSchema.httpTarget("http://host.docker.internal:9000/orders")
                         .withBody(new SimpleStringSchema()))
         .emulatorEndpoint("localhost:8123")
         .build();
 ```
 
-It dispatches over real HTTP, so a local server sees what the tasks actually carry. What it cannot
-show: task-name garbage collection (so the deduplication *window* is untestable, only the
+Unlike the Pub/Sub emulator this one dispatches over **real HTTP**, so a server on your machine
+sees exactly what the tasks carry — which is the whole reason it is worth running, and also why
+the target URL has to be reachable from the container's network rather than yours. (The module's
+own tests solve the same problem with testcontainers' `exposeHostPorts(...)`.)
+
+What it cannot show: task-name garbage collection (so the deduplication *window* is untestable, only the
 `ALREADY_EXISTS` response), queue-level `uriOverride` routing, the OAuth token path (it implements
 OIDC only), failure injection, and any size limit.
 
