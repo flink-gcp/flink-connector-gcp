@@ -24,6 +24,18 @@ concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
+# The one line that makes this the APPLY workflow. tfaction's job_type stays
+# "terraform" for plan and apply alike; setup selects terraform_apply_config —
+# the managing service account — only when TFACTION_IS_APPLY is "true"
+# (getJobConfig in tfaction's lib). Without it, setup silently falls back to
+# terraform_plan_config, and every apply here ran as the read-only plan
+# account: unnoticed for as long as every apply was a no-change apply (reads
+# suffice for those), then #170 and #176 — the first applies that had to
+# write — failed all their writes with 403s that were misread twice before
+# the auth step's log gave up the wrong principal.
+env:
+  TFACTION_IS_APPLY: "true"
+
 permissions: {}
 
 jobs:

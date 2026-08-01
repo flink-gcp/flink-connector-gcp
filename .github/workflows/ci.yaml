@@ -5,7 +5,35 @@ on:
     branches:
       - main
       - v1.20
+    # Changes that cannot affect the Maven build skip it: a tofu or docs-note
+    # pull request otherwise pays ~7 runner-minutes for nothing (raised by the
+    # owner on #176/#178, right after a billing cut — private-repo minutes are
+    # metered). paths-ignore rather than paths: everything else must keep
+    # running this. READMEs and CLAUDE.md files are here because apache-rat
+    # excludes exactly those patterns (see the root pom), so skipping them
+    # cannot hide a missing licence header; docs/ markdown is deliberately
+    # NOT here, because rat does scan it and this job is its only pre-merge
+    # check. If this check ever becomes required, remember the CLAUDE.md
+    # caveat: a required check that never reports blocks a pull request
+    # forever.
+    paths-ignore:
+      - 'opentofu/**'
+      - 'tfaction-root.yaml'
+      - '.github/workflows/tofu-plan.yaml'
+      - '.github/workflows/tofu-apply.yaml'
+      - '.github/workflows/tofu-list.yaml'
+      - '**/README.md'
+      - '**/CLAUDE.md'
   pull_request:
+    # Keep in sync with push's list above.
+    paths-ignore:
+      - 'opentofu/**'
+      - 'tfaction-root.yaml'
+      - '.github/workflows/tofu-plan.yaml'
+      - '.github/workflows/tofu-apply.yaml'
+      - '.github/workflows/tofu-list.yaml'
+      - '**/README.md'
+      - '**/CLAUDE.md'
   workflow_dispatch:
 
 concurrency:

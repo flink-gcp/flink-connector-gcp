@@ -118,11 +118,10 @@ no service account at all:
 
 ## Service agents (one-off, per service)
 
-Granting a role to a Google service agent
-(`service-<project-number>@gcp-sa-<service>.iam.gserviceaccount.com`) fails
-with an unhelpful `Policy update access denied` when the agent does not exist
-yet — and enabling the service's API does **not** create it; agents are
-provisioned lazily on first use. Before the first apply that grants to a new
+Enabling a service's API does **not** create its service agent
+(`service-<project-number>@gcp-sa-<service>.iam.gserviceaccount.com`); agents
+are provisioned lazily on first use, and granting a role to one that does not
+exist yet is documented to fail. Before the first apply that grants to a new
 service's agent, provision it once as the owner:
 
 ```console
@@ -130,7 +129,12 @@ $ gcloud beta services identity create --service=<service>.googleapis.com --proj
 ```
 
 Done for `pubsub.googleapis.com` on 2026-08-01 (the Pub/Sub agent performs
-dead-letter forwarding, PR #170). The agent is permanent once created.
+dead-letter forwarding, PR #170). The agent is permanent once created. For
+the record: the 403s PR #170's applies actually hit were the apply workflow
+authenticating as the read-only plan account (`TFACTION_IS_APPLY` was unset —
+see the comment in `tofu-apply.yaml`), diagnosed only after the missing agent
+had been blamed; check the authenticated principal in the workflow log before
+theorising about the resource.
 
 A failed apply also leaves the pull request's saved plan **stale** — the
 failure itself bumps the state serial, so the plan no longer describes the
