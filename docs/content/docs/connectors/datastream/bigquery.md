@@ -767,8 +767,8 @@ Caveats:
   failover rebuilds fresh stream writers — so its practical cost is a job restart, not an
   indefinite hang. The connector deliberately adds no second per-append timeout below that (it
   would race the SDK's own 5-minute callback watchdog and could tear down slow-but-progressing
-  appends into duplicates); the tail is under investigation in
-  [#174]({{< param BookRepo >}}/issues/174).
+  appends into duplicates); the tail's record and open hypotheses are in
+  [#174]({{< param BookRepo >}}/issues/174), closed as wait-and-see until it reproduces.
 - Schema unionization stays opt-in because BigQuery columns can never be dropped again: one
   malformed record shipping an unexpected field could otherwise poison a table permanently. With
   updates disabled, schema-mismatch appends fail the job (with a hint), and externally driven
@@ -1330,8 +1330,9 @@ credential-less CI:
   after the instant REST update) — a tail that would consume the whole weekly runner budget if
   the probe joined the suite. The probe is gated on `BQ_IT_SCHEMA_EVOLUTION` and instrumented to
   capture the next tail occurrence end to end (SDK-level connection logs, both schema views
-  polled over time, a non-pooled canary writer); the hang is under investigation in
-  [#174]({{< param BookRepo >}}/issues/174)
+  polled over time, a non-pooled canary writer); the hang's record and open hypotheses are in
+  [#174]({{< param BookRepo >}}/issues/174), closed as wait-and-see — a captured reproduction
+  gets a new issue referencing it
 - serializer column-type fidelity (`BigQuerySerializerFidelityITCase`): the encodings an
   emulator divergence would silently corrupt — `NUMERIC`/`BIGNUMERIC` (decimal byte encoding)
   and `TIME`/`DATETIME` (packed civil-time encoding), which the emulator reads back as unrelated

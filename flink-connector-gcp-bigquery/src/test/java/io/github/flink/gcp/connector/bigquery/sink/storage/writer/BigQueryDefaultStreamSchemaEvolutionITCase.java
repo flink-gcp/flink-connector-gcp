@@ -92,8 +92,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>The evolution <em>mechanics</em> — fingerprint change detection, reconcile, continued writes
  * on one writer — stay pinned by the emulator ITCase and by {@link
  * BigQueryDefaultStreamWriterSchemaEvolutionTest} against fakes; this probe exists to measure the
- * real service's propagation behavior, and reruns feed the investigation of the hang recorded
- * above, which is tracked in issue #174.
+ * real service's propagation behavior, and reruns are the trap for the hang recorded above — its
+ * record and open hypotheses are in issue #174, closed as wait-and-see. A captured reproduction
+ * gets a new issue referencing #174, with the run log attached.
  *
  * <p><b>Instrumentation for #174's hypotheses</b> (each maps to one of the issue's checkable
  * predictions; everything goes to the run's console, so a teed run log is the measurement):
