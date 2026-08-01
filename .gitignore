@@ -27,3 +27,6 @@ __pycache__/
 docs/public/
 docs/resources/
 docs/.hugo_build.lock
+
+# Generated API reference (`just docs-javadoc`).
+docs/static/api/

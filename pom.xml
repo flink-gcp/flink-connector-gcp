@@ -459,7 +459,63 @@ limitations under the License.
                         <exclude>docs/assets/_chroma-*.scss</exclude>
                         <exclude>docs/public/**</exclude>
                         <exclude>docs/resources/**</exclude>
+                        <!-- Generated API reference (`just docs-javadoc`), which Hugo
+                             copies into the site from static/. Same case as
+                             public/resources above: rat scans the working tree, so a
+                             local `just verify` after a docs build would otherwise fail
+                             on it. CI never sees it — rat is bound to `verify`, which
+                             only ci.yaml runs, and that job does not generate the
+                             reference. -->
+                        <exclude>docs/static/api/**</exclude>
                     </excludes>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <!-- The API reference published on the documentation site (#88), generated
+                     by `just docs-javadoc` into docs/static/api/java, which Hugo copies
+                     into the site verbatim. Declared here because the connector parent
+                     manages the version in pluginManagement but declares no plugin;
+                     inherited=false because ${project.basedir} in the output path would
+                     otherwise resolve against each child module.
+
+                     failOnWarnings stands in for doclint, which the parent turns off with
+                     -Xdoclint:none in an <additionalJOptions> carrying
+                     combine.children="append" — so a child's list is appended to that one
+                     rather than replacing it, and turning doclint back on means taking the
+                     element over with combine.self="override". It is not the same check and
+                     is the better one here: javadoc resolves {@link} itself, outside doclint,
+                     so an unresolvable reference is reported even under -Xdoclint:none
+                     (measured — two were, in JsonDocumentSerializerOptions). Note the plugin
+                     implements it by matching javadoc's last stderr line against
+                     "N warning(s)", not with -Xwerror, so anything that writes to stderr
+                     after that summary would silence it.
+
+                     detectJavaApiLink defaults to true, and off it costs nothing: the JDK
+                     cross-links in the output (4178 of them) come from the doclet's own
+                     automatic platform links, so the count is identical either way. What the
+                     default adds is a second mechanism for the same links — the plugin passes
+                     -linkoffline against an element-list it unpacks from its own jar. That
+                     list is bundled for Java 10 to 15 only, so the day maven.compiler.source
+                     moves past 15 the default stops being satisfiable from the jar, and this
+                     is one fewer thing to discover then. Note it is *not* a network fetch:
+                     only <links>, which this build does not use, probes a remote site.
+
+                     doctitle/windowtitle are set because the defaults are
+                     "${project.name} ${project.version} API" and this module's name is
+                     "Flink Connectors GCP : Parent".
+
+                     Why nothing is filtered by API tier: CLAUDE.md, under Documentation. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <inherited>false</inherited>
+                <configuration>
+                    <reportOutputDirectory>${project.basedir}/docs/static/api</reportOutputDirectory>
+                    <destDir>java</destDir>
+                    <failOnWarnings>true</failOnWarnings>
+                    <detectJavaApiLink>false</detectJavaApiLink>
+                    <doctitle>GCP Connectors for Apache Flink ${project.version} API</doctitle>
+                    <windowtitle>GCP Connectors for Apache Flink ${project.version} API</windowtitle>
                 </configuration>
             </plugin>
         </plugins>

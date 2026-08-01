@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.testutils.pubsub;
 
+import org.apache.flink.annotation.Internal;
+
 import org.testcontainers.containers.PubSubEmulatorContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -23,6 +25,7 @@ import org.testcontainers.utility.DockerImageName;
  * The Pub/Sub emulator image shared by every harness that starts the emulator — the connector
  * module's sink and source harnesses and the SQL module's smoke test — so they cannot drift apart.
  */
+@Internal
 public final class PubSubEmulatorContainers {
 
     private static final DockerImageName IMAGE =

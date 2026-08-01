@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.testutils;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.function.ThrowingRunnable;
@@ -27,6 +28,7 @@ import java.util.concurrent.LinkedBlockingDeque;
  * #yield()} runs the next mail (blocking until one arrives, like the real mailbox), and {@link
  * #drain()} runs every mail already enqueued.
  */
+@Internal
 public final class FakeMailboxExecutor implements MailboxExecutor {
 
     private final LinkedBlockingDeque<ThrowingRunnable<? extends Exception>> mails =

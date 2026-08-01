@@ -278,8 +278,28 @@ update-notice module:
 check-flink-api-tiers:
     scripts/check-flink-api-tiers.py
 
+# A goal on its own, and the one place in this repository where that is right.
+# The licence-goal rule in CLAUDE.md — a goal-only invocation selects the reactor
+# modules without building them, so a module cannot resolve its siblings — does
+# not reach this goal: javadoc:aggregate *forks* the compile phase across the
+# whole reactor, so flink-connector-gcp-base is built in the same session and
+# resolves from it. Measured, not assumed: this succeeds from a clean target/
+# with no io.github.flink-gcp artifact in ~/.m2 at all (#88). Prefixing a phase
+# would only add a jar and a shade nothing here consumes.
+#
+# Output lands in docs/static/api/java, which Hugo copies into the site verbatim;
+# the previous run is removed first so a deleted class does not linger.
+#
+# Generate the JavaDoc API reference into the documentation site.
+docs-javadoc:
+    rm -rf docs/static/api/java
+    {{ mvn }} javadoc:aggregate
+
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
 # into build failures.
+#
+# The API reference is a separate recipe (`just docs-javadoc`) so that iterating
+# on prose stays a seconds-long build rather than a Maven one.
 #
 # Build the documentation site, as the docs workflow does.
 docs:

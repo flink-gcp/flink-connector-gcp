@@ -16,9 +16,11 @@
 
 package io.github.flink.gcp.connector.testutils;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
 /** Shared test stubs for {@link SinkWriter.Context}. */
+@Internal
 public final class TestContexts {
 
     /**

@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.testutils;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.CloseableIterator;
 
 import java.time.Duration;
@@ -30,6 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /** Deadline-bounded draining of a running job's collect iterator. */
+@Internal
 public final class Drains {
 
     /**

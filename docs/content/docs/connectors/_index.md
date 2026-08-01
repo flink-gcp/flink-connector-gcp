@@ -22,3 +22,6 @@ limitations under the License.
 # Connectors
 
 Google Cloud connectors for Apache Flink.
+
+The connector types named on these pages are documented in the
+[Java API reference]({{< param ApiDocsURL >}}).

@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.testutils.pubsub;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 
@@ -37,6 +38,7 @@ import java.util.stream.Collectors;
  * {@code flink-connector-base} interface so the connector's reader class never crosses the module
  * boundary.
  */
+@Internal
 public final class PubSubSplitReaders {
 
     /**
