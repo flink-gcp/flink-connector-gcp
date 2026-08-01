@@ -29,6 +29,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.Any;
 import com.google.protobuf.BoolValue;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.BytesValue;
 import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Int64Value;
@@ -192,6 +193,7 @@ class BigQuerySerializerFidelityITCase {
                         // Explicitly set to the type default: must not read back as NULL.
                         .setWInt64(Int64Value.of(0L))
                         .setWBool(BoolValue.of(false))
+                        .setWBytes(BytesValue.of(ByteString.copyFromUtf8("bytes")))
                         .setWDuration(Duration.newBuilder().setSeconds(1L).setNanos(500_000_000))
                         .setWMask(
                                 FieldMask.newBuilder()
@@ -237,14 +239,17 @@ class BigQuerySerializerFidelityITCase {
                                 + "|2|{\"a\":true},{}|1,2|1000000|m=5|child",
                         "unset|null|null|null|null|null|null|null|0|null|null|null|null|null");
 
-        // Microsecond fidelity of the Timestamp mapping, compared as an exact epoch-micros long.
-        List<FieldValueList> ts =
+        // Typed exact comparisons where the client exposes an accessor: Timestamp as an exact
+        // epoch-micros long, the BytesValue wrapper's payload byte for byte.
+        List<FieldValueList> typed =
                 RealBigQuery.queryRows(
-                        "SELECT w_ts FROM "
+                        "SELECT w_ts, w_bytes FROM "
                                 + RealBigQuery.tablePath(PROTO_TABLE)
                                 + " WHERE w_string = 'set'");
-        assertThat(ts).hasSize(1);
-        assertThat(ts.get(0).get(0).getTimestampValue()).isEqualTo(SEEN_AT_MICROS);
+        assertThat(typed).hasSize(1);
+        assertThat(typed.get(0).get(0).getTimestampValue()).isEqualTo(SEEN_AT_MICROS);
+        assertThat(typed.get(0).get(1).getBytesValue())
+                .isEqualTo("bytes".getBytes(StandardCharsets.UTF_8));
     }
 
     private static String protoQuery() {
@@ -437,7 +442,14 @@ class BigQuerySerializerFidelityITCase {
         }
     }
 
-    /** Returns one line per row, joining every column so a wrong conversion shows up. */
+    /**
+     * Returns one line per row, joining every column so a wrong conversion shows up.
+     *
+     * <p>{@code w_value} is deliberately ambiguous in this rendering: the JSON literal {@code null}
+     * and a NULL column both print as {@code null}. The unset row, where every column is NULL, is
+     * what disambiguates the set one — whose {@code w_value} is set, so its {@code null} is the
+     * JSON one. (Carried over from the retired emulator write half, whose assertion this ports.)
+     */
     private static List<String> rows(String sql) throws InterruptedException {
         List<String> rows = new ArrayList<>();
         for (FieldValueList row : RealBigQuery.queryRows(sql)) {
