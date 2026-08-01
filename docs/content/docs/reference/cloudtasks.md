@@ -44,6 +44,13 @@ execute. That inversion is the connector's whole reason for existing, and it is 
 | `writerOptions` | [defaults](#cloudtaskswriteroptions) | The in-flight cap and the two retry budgets |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production |
 
+**The task itself is configured on the serialization schema, not here.** `httpTarget(url)` starts a
+fluent chain — `withBody`, `withMethod`, `withUrl`, `withHeaders`, `withOidcToken`, `withOAuthToken`
+— which composes the `Task` each record becomes, and the builder takes the result as the single
+`serializer` option above. The chain is described under
+[API notes]({{< relref "docs/connectors/datastream/cloudtasks" >}}#api-notes) and typed in the
+[Java API reference]({{< param ApiDocsURL >}}).
+
 Naming is off by default because Google documents deduplication as costing *"significantly increased
 latency"*, and the id is hashed because sequential ids raise latency and error rates across the
 whole queue — see

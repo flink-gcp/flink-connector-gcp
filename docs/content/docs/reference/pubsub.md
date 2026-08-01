@@ -36,7 +36,7 @@ The `WITH` options of the `pubsub` table connector are a separate surface, docum
 |---|---|---|
 | `topic` | **required**, unless `destinationResolver` is set | Publishes every record to one fixed topic |
 | `destinationResolver` | — | Resolves the topic per record |
-| `serializer` | **required** | Converts each record into a `PubsubMessage` |
+| `serializer` | **required** | Converts each record into a `PubsubMessage`. `dataOnly(...)` wraps a payload-only schema; `withAttributes(...)` and `withOrderingKey(...)` layer onto any of them |
 | `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing topic is created or fails the job |
 | `topicCreateOptions` | Pub/Sub's own defaults | [Settings](#topiccreateoptions) for topics the sink creates. Rejected with `CREATE_NEVER` |
 | `publisherOptions` | [defaults](#pubsubpublisheroptions) | Publisher and writer tuning |

@@ -61,6 +61,16 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG = Path(__file__).resolve().parent / "option-docs.toml"
 
 # The three source shapes a module's builder options live in.
+#
+# `*SerializationSchema.java` is deliberately absent, and the boundary is worth
+# stating because seven `with*` methods sit just outside it (`withAttributes`,
+# `withOrderingKey`, `withMethod`, `withUrl`, `withHeaders`, `withOidcToken`,
+# `withOAuthToken`). Those configure a *record*, not the sink: they compose a
+# schema value the builder then takes as one option, which is why the reference
+# pages document `serializer` and point at the connector page and the JavaDoc
+# for what a schema can be told to do. Widening the globs to cover them would
+# also mean this script deciding which `with*` on which fluent type is an
+# option, which is a judgement it has no way to make.
 SOURCE_GLOBS = ("*Options.java", "*SinkBuilder.java", "*SourceBuilder.java")
 
 # `public Builder maxInFlightBytes(long ...)` on a nested options builder, and
@@ -179,6 +189,29 @@ def main() -> int:
     counts: list[tuple[str, int]] = []
 
     claimed = {entry["source"] for entry in config.get("config_options", [])}
+
+    # A module that grows options and is never mapped would be checked by
+    # nothing, silently — the failure mode a per-module mapping otherwise has,
+    # and the one a new connector walks straight into. Bigtable and Spanner are
+    # the known candidates.
+    mapped = {entry["module"] for entry in config["builders"]}
+    for tree in sorted(ROOT.glob("*/src/main/java")):
+        module = tree.relative_to(ROOT).parts[0]
+        if module in mapped:
+            continue
+        stray = sorted(
+            str(source.relative_to(ROOT))
+            for pattern in SOURCE_GLOBS
+            for source in tree.rglob(pattern)
+            if str(source.relative_to(ROOT)) not in claimed
+        )
+        if stray:
+            problems.append(
+                f"{module} declares options ({stray[0]}"
+                f"{f', and {len(stray) - 1} more' if len(stray) > 1 else ''}) but no "
+                f"[[builders]] entry in {CONFIG.name} maps it to a page, so nothing "
+                f"checks them. Add the module and its reference page."
+            )
 
     for entry in config["builders"]:
         module, page = entry["module"], ROOT / entry["page"]
