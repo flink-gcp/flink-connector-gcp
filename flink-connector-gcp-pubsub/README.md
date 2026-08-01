@@ -22,7 +22,7 @@ sink and multi-subscription consumption on the source.
 | Subscriber tuning options (flow control, ack extension, parallel pull, shutdown); missing-checkpoint detection | Implemented ([#80](https://github.com/laughingman7743/flink-connector-gcp/issues/80)) |
 | Deserialization failure policy; nack on collect failure; metrics; acknowledgement confirmation | Implemented ([#80](https://github.com/laughingman7743/flink-connector-gcp/issues/80)) |
 | Startup check; subscription auto-creation; start position (seek); `NACK` failure policy | Implemented ([#81](https://github.com/laughingman7743/flink-connector-gcp/issues/81)) |
-| Acceptance and real-GCP integration tests | Planned ([#82](https://github.com/laughingman7743/flink-connector-gcp/issues/82)) |
+| Acceptance and real-GCP integration tests | Implemented ([#82](https://github.com/laughingman7743/flink-connector-gcp/issues/82)) |
 
 ### Table API / SQL
 
