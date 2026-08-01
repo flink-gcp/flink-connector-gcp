@@ -752,10 +752,23 @@ Caveats:
   harmless: the union only ever relaxes, so it reports no change and never tries to tighten. The
   reverse does bite — a table created with `REQUIRED` columns whose schema later relaxes needs
   `allowFieldRelaxation`, which is off by default.
-- A schema update propagates to the Storage Write API backend within minutes. The writer keeps
-  re-appending affected batches for up to ~15 minutes (flat 30 s waits, ±25 % jitter, 30
-  attempts) — a schema repair can therefore block a checkpoint longer than Flink's default
-  checkpoint timeout of 10 minutes, which may need raising on jobs that enable schema updates.
+- A schema update typically propagates to the Storage Write API backend in well under a minute —
+  measured against the real service, six instrumented probe runs each had the widened rows
+  accepted ~35 s after the instant REST update. The writer keeps re-appending affected batches
+  for up to ~15 minutes (flat 30 s waits, ±25 % jitter, 30 attempts) — a schema repair can
+  therefore block a checkpoint longer than Flink's default checkpoint timeout of 10 minutes,
+  which may need raising on jobs that enable schema updates.
+- One measured run sat far outside that envelope (a rare tail — one of seven runs to date):
+  appends carrying the new column hung ~35 and ~79 minutes before resolving, ~2 h end to end,
+  and the hung append that was finally reported as failed had been applied server-side anyway,
+  landing its row twice (permitted by at-least-once; queries asserting exact multisets after a
+  schema change should de-duplicate). In a checkpointed streaming job the checkpoint timeout is
+  what bounds this tail: the hung repair blocks the checkpoint, the timeout fails the task, and
+  failover rebuilds fresh stream writers — so its practical cost is a job restart, not an
+  indefinite hang. The connector deliberately adds no second per-append timeout below that (it
+  would race the SDK's own 5-minute callback watchdog and could tear down slow-but-progressing
+  appends into duplicates); the tail is under investigation in
+  [#174]({{< param BookRepo >}}/issues/174).
 - Schema unionization stays opt-in because BigQuery columns can never be dropped again: one
   malformed record shipping an unexpected field could otherwise poison a table permanently. With
   updates disabled, schema-mismatch appends fail the job (with a hint), and externally driven
@@ -1311,11 +1324,13 @@ credential-less CI:
 - default-stream schema evolution against the real service is a **manual probe**
   (`BigQueryDefaultStreamSchemaEvolutionITCase`), deliberately outside the weekly suite: the
   connector widens the table itself and the evolved column's values are queried back — the half
-  the emulator cannot show, since it applies `tables.update` to table metadata only — but the
-  measured run took ~2 hours end to end (the Storage Write API kept rejecting, then hanging,
-  appends carrying the new column for ~1 h 56 m after the instant REST update), which would
-  consume the whole weekly runner budget. The probe is gated on `BQ_IT_SCHEMA_EVOLUTION`, its
-  javadoc records the measurement, and the hang is under investigation in
+  the emulator cannot show, since it applies `tables.update` to table metadata only. Propagation
+  typically completes in well under a minute, but one measured run took ~2 hours end to end (the
+  Storage Write API kept rejecting, then hanging, appends carrying the new column for ~1 h 56 m
+  after the instant REST update) — a tail that would consume the whole weekly runner budget if
+  the probe joined the suite. The probe is gated on `BQ_IT_SCHEMA_EVOLUTION` and instrumented to
+  capture the next tail occurrence end to end (SDK-level connection logs, both schema views
+  polled over time, a non-pooled canary writer); the hang is under investigation in
   [#174]({{< param BookRepo >}}/issues/174)
 - serializer column-type fidelity (`BigQuerySerializerFidelityITCase`): the encodings an
   emulator divergence would silently corrupt — `NUMERIC`/`BIGNUMERIC` (decimal byte encoding)
