@@ -199,7 +199,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   running green on 1.20.4 with the bridge throwing. **This is source-level support** — the
   weekly `lts` row compiles and tests everything at `FLINK_LTS`, a jar is compiled per major,
   and no cross-major binary claim is made (the one-artifact claim below spans the 2.x range
-  only). A Dataproc-style per-version module split was considered and declined: it buys
+  only). A red `lts` row reproduces locally with `just verify-flink <FLINK_LTS>` — the same
+  first-move rule `binary_compat` has. A Dataproc-style per-version module split was considered and declined: it buys
   isolation the two ~15-line interface variants already provide. Publishing (the kafka-style
   `X.Y.Z-1.20` suffix) is decided in #29/#39
 - **One artifact covers the supported range**, so there is no per-minor artifact suffix (the
