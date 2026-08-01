@@ -71,7 +71,7 @@ building from source this way.
 |---|---|
 | BigQuery | [Sink]({{< relref "docs/connectors/datastream/bigquery" >}}) — unified write API over the Storage Write API (at-least-once and exactly-once) and GCS-staged load jobs, with dynamic per-record table destinations |
 | Cloud Pub/Sub | [Sink and source]({{< relref "docs/connectors/datastream/pubsub" >}}) — dynamic per-record topic destinations, and a FLIP-27 source with multi-subscription splits. Writable [from SQL]({{< relref "docs/connectors/table/pubsub" >}}) as well |
-| Cloud Tasks | [Sink]({{< relref "docs/connectors/datastream/cloudtasks" >}}) — dispatch a stream as HTTP tasks the service executes later, paced by the queue's rate limit (design settled; implementation next) |
+| Cloud Tasks | [Sink]({{< relref "docs/connectors/datastream/cloudtasks" >}}) — dispatch a stream as HTTP tasks the service executes later, paced by the queue's rate limit |
 
 Bigtable and Spanner connectors are planned.
 

@@ -29,7 +29,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   cannot resolve inter-module dependencies from the reactor — same mechanism as the licence-goal
   rule below, bitten via the SQL uber-jar in #181 — and it primes `~/.m2` with
   `io.github.flink-gcp` SNAPSHOTs when run by hand (the recipe comment has the cleanup line)
-- `just e2e` — the ITCases gated on `BQ_IT_*` variables, which `just verify` silently skips,
+- `just e2e` — the ITCases gated on the `BQ_IT_*` / `PUBSUB_IT_PROJECT` variables, which
+  `just verify` silently skips,
   with a pre-flight that makes a missing variable an error and a post-run assertion
   (`scripts/e2e-gated-its.sh`, which derives the class list from the gating annotation) that the
   gated classes actually executed. Its `-pl`-scoped builds install the test-utils module first,
@@ -73,6 +74,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   a broken `relref` or a missing shortcode fails the build), preview it, regenerate the chroma
   palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in
   `docs/go.mod`
+- `just pin-actions` — pin GitHub Actions to commit SHAs; when to run it is a Workflow rule
+  (a workflow added, or an action version changed)
 - `just tofu <args>` — OpenTofu in `opentofu/flink-gcp`, the root module holding the project's
   persistent GCP resources (#5). Local escape hatch only: plan/apply normally run in CI (see
   "Infrastructure (OpenTofu)" below). Credentials come from
@@ -183,7 +186,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   in advance
 - CI is **tfaction v2** (`tfaction-root.yaml` at the root): pull requests touching `opentofu/**`
   get a plan comment (`tofu-plan.yaml`), the merge applies that reviewed plan file from GitHub
-  Artifacts and comments the result (`tofu-apply.yaml`). State locking is the GCS backend's
+  Artifacts and comments the result (`tofu-apply.yaml`); both resolve the changed root modules
+  through the shared `tofu-list.yaml`. State locking is the GCS backend's
   native locking. These two workflows are the standing exception to the #111 just-recipe rule:
   tfaction is itself the named, rerunnable sequence, and `just tofu <args>` is the local
   equivalent. They run on plain `GITHUB_TOKEN` — no GitHub App, so tfaction's push-back features
