@@ -28,7 +28,9 @@ DataStream sink and source described in
 is documented; this page covers the option surface and the decisions specific to SQL.
 
 Per-feature implementation status — including which directions are implemented — is tracked in the
-[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-pubsub/README.md).
+[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-pubsub/README.md). The SQL
+options below are read by the table factory, not by a public Java type; the DataStream types they
+map onto are in the [Java API reference]({{< param ApiDocsURL >}}).
 
 ```sql
 CREATE TABLE orders (

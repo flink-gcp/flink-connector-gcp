@@ -23,10 +23,12 @@ import java.io.Serializable;
 /**
  * Options controlling how JSON records are converted to BigQuery rows.
  *
- * <p>Unlike {@link ProtoSchemaOptions} and {@link AvroSchemaOptions} these carry no schema-mapping
- * settings: a JSON document has no schema of its own, so the BigQuery schema is supplied to {@link
- * JsonDocumentSerializer} directly and already says what each column is — {@code JSON} columns
- * included.
+ * <p>Unlike {@link io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions
+ * ProtoSchemaOptions} and {@link
+ * io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions AvroSchemaOptions}
+ * these carry no schema-mapping settings: a JSON document has no schema of its own, so the BigQuery
+ * schema is supplied to {@link JsonDocumentSerializer} directly and already says what each column
+ * is — {@code JSON} columns included.
  */
 @PublicEvolving
 public final class JsonDocumentSerializerOptions implements Serializable {

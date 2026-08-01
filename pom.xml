@@ -459,7 +459,53 @@ limitations under the License.
                         <exclude>docs/assets/_chroma-*.scss</exclude>
                         <exclude>docs/public/**</exclude>
                         <exclude>docs/resources/**</exclude>
+                        <!-- Generated API reference (`just docs-javadoc`), which Hugo
+                             copies into the site from static/. Unlike public/ and
+                             resources/ above, CI produces this on every docs build, so
+                             without the exclude the licence check fails there and not
+                             only after a local run. -->
+                        <exclude>docs/static/api/**</exclude>
                     </excludes>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <!-- The API reference published on the documentation site (#88), generated
+                     by `just docs-javadoc` into docs/static/api/java, which Hugo copies
+                     into the site verbatim. Declared here because the connector parent
+                     manages the version in pluginManagement but declares no plugin, and
+                     <inherited>false</inherited> for the same reason apache-rat above has
+                     it: the output path resolves against the root basedir and must not
+                     follow the child modules.
+
+                     Nothing is filtered by API tier. Flink's @Internal is @Documented, so
+                     it renders as a badge on every class page and a consumer can audit the
+                     tiers mechanically — the reasoning is in CLAUDE.md under Documentation.
+
+                     Doclint stays off, as the connector parent set it: it arrives as
+                     -Xdoclint:none through the parent's <additionalJOptions>, which carries
+                     combine.children="append", so re-enabling it here would mean re-declaring
+                     that whole list rather than adding one element (measured on the effective
+                     POM, #88).
+
+                     failOnWarnings is the check that replaces it, and it is not the same
+                     check: javadoc resolves {@link} references itself rather than through
+                     doclint, so an unresolvable one is reported even with -Xdoclint:none —
+                     measured, two of them in the tree when this was added. A reference the
+                     reader cannot follow is the defect a published API reference most needs to
+                     be free of, and a missing @param, which doclint would also demand, is not.
+
+                     No <links>: cross-linking to Flink's and Google's published javadoc would
+                     make every documentation build depend on an external site being up. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <inherited>false</inherited>
+                <configuration>
+                    <reportOutputDirectory>${project.basedir}/docs/static/api</reportOutputDirectory>
+                    <destDir>java</destDir>
+                    <failOnWarnings>true</failOnWarnings>
+                    <doctitle>GCP Connectors for Apache Flink ${project.version} API</doctitle>
+                    <windowtitle>GCP Connectors for Apache Flink ${project.version} API</windowtitle>
                 </configuration>
             </plugin>
         </plugins>

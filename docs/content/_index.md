@@ -75,6 +75,20 @@ building from source this way.
 
 Bigtable and Spanner connectors are planned.
 
+## API reference
+
+The [Java API reference]({{< param ApiDocsURL >}}) is generated from the source of every module.
+
+Flink's API stability annotations mark what is safe to depend on, and this project applies them to
+its own types: `@PublicEvolving` and `@Experimental` are the supported surface, while `@Internal`
+marks implementation detail that may change or disappear in any release. The reference documents
+both rather than hiding the internals — the annotation appears on each class page, so a type's tier
+is visible at the point where someone is deciding whether to depend on it.
+
+It is generated from `main`, so it describes the current source rather than any release. References
+per released version arrive with artifact publishing
+([#39]({{< param BookRepo >}}/issues/39)).
+
 ## Disclaimer
 
 This is an independent open-source project, licensed under the

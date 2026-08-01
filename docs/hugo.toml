@@ -38,3 +38,14 @@ title = "GCP Connectors for Apache Flink"
   BookTheme = "auto"
   BookRepo = "https://github.com/laughingman7743/flink-connector-gcp"
   BookEditLink = '{{ .Site.Params.BookRepo }}/edit/main/docs/{{ .Path }}'
+
+  # The generated API reference (#88). `just docs-javadoc` writes it to
+  # docs/static/api/java, which Hugo copies into the site, so this is a page on
+  # this same site rather than an external one — but it is not Hugo *content*,
+  # so `relref` cannot reach it and the URL has to be written out. That repeats
+  # baseURL's path above, and the two must move together.
+  #
+  # Deliberately not named Book*, unlike the entries above: that prefix belongs
+  # to hugo-book's own parameters, and a name added there later would collide
+  # silently.
+  ApiDocsURL = "https://laughingman7743.github.io/flink-connector-gcp/api/java/"

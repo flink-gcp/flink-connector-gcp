@@ -74,7 +74,15 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - `just docs` / `just docs-serve` / `just docs-chroma` — build the site as CI does (a deprecation,
   a broken `relref` or a missing shortcode fails the build), preview it, regenerate the chroma
   palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in
-  `docs/go.mod`
+  `docs/go.mod`. These build the hand-written pages only; the generated half is
+  `just docs-javadoc` (below), which the docs workflow runs first
+- `just docs-javadoc` — the aggregated JavaDoc that ships as the site's API reference (#88), into
+  `docs/static/api/java`, which Hugo copies verbatim (gitignored, rat-excluded). It invokes
+  `javadoc:aggregate` as a **bare goal**, the one place here that is correct: the licence-goal rule
+  above does not reach it, because this goal *forks* the `compile` phase across the whole reactor,
+  so `flink-connector-gcp-base` is built in the same session and resolves from it. Measured with a
+  clean `target/` and no `io.github.flink-gcp` artifact in `~/.m2` — the two conditions that
+  otherwise make such a run look green for the wrong reason
 - `just pin-actions` — pin GitHub Actions to commit SHAs; when to run it is a Workflow rule
   (a workflow added, or an action version changed)
 - `just tofu <args>` — OpenTofu in `opentofu/flink-gcp`, the root module holding the project's
@@ -144,6 +152,31 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - The site is built as a CI check only; GitHub Pages publishing waits until the repository is
   public (#6). Each module README links to its docs page by in-repo relative path — those links
   become site URLs when Pages goes live, which is a checklist item on #6
+- **The API reference is the site's generated half** (#88): `just docs-javadoc` aggregates JavaDoc
+  across every module into `docs/static/api/java`, which Hugo copies verbatim, so it is part of the
+  Pages artifact the moment #93 adds the deploy job — nothing further to wire. It is never
+  committed (gitignored, rat-excluded), and pages link to it with `{{< param ApiDocsURL >}}` —
+  a param rather than a `relref` because the output is not Hugo *content*, and not `Book*`-prefixed
+  because that namespace is hugo-book's. Three decisions behind it, each measured rather than
+  assumed:
+  - **Nothing is filtered by API tier.** `@Internal` is `@Documented`, so the tier is a badge on
+    every class page, and using an `@Internal` type is the caller's risk — a consumer can audit
+    tiers mechanically exactly as `just check-flink-api-tiers` does against Flink. Filtering was
+    priced and declined: package-level exclusion reaches only 74 of 112 `@Internal` files because
+    12 packages mix tiers, `sourceFileExcludes` drops files from the *source path* and so breaks
+    resolution of public signatures that name them, and a doclet buys zero-maintenance filtering
+    at a cost this project has no reason to pay. Apache Flink publishes unfiltered too
+  - **Doclint stays off, `failOnWarnings` is on instead.** The parent supplies `-Xdoclint:none`
+    through `<additionalJOptions>` with `combine.children="append"`, so overriding it means
+    re-declaring that whole list — and it turns out not to be the check worth having. JavaDoc
+    resolves `{@link}` itself rather than through doclint, so an unresolvable reference is
+    reported regardless (two existed when this landed, both in `JsonDocumentSerializerOptions`,
+    left behind by #125's fully-qualified-link rule); a reference the reader cannot follow is
+    what a published reference must be free of, a missing `@param` is not. No `<links>` to
+    external JavaDoc either — it would make every docs build depend on another site being up
+  - **One unversioned path, tracking `main`.** Per-release references wait for artifact
+    publishing, which is #39's scope; javadoc.io serves released versions from Central for free
+    once that happens
 - A module `CLAUDE.md` (`flink-connector-gcp-<product>/CLAUDE.md`) is the third document in this
   split and the only **Claude-facing** one — never rendered, never linked from the site, so
   nothing user-facing belongs in it. It carries that module's design decisions and nothing else; behavior and public
@@ -305,7 +338,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   rather than a conflict (see below). Its `paths` filter must list **every input
   to a lint, not just the linted files** — `mise.toml` is in it because that is where the
   shellcheck version is pinned, and skipping the lint on a version bump would skip it in the one
-  change that most needs it. `docs.yaml` carries `mise.toml` for the same reason since #111
+  change that most needs it. `docs.yaml` carries `mise.toml` for the same reason since #111, and
+  the main sources and poms since #88 made the API reference part of the site — which does mean
+  `docs.yaml` now runs on nearly every pull request, accepted over splitting the site's definition
+  across two workflows
 - **Where a tool's version lives decides how CI installs it.** Pin in `mise.toml` and install
   with `jdx/mise-action` + `install_args` when a version skew can fail a pull request that
   changed nothing — shellcheck (0.9.0 on ubuntu-24.04, 0.11.0 on 26.04, so an `ubuntu-latest`
@@ -332,7 +368,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   changes at all — protoc resolves as `com.google.protobuf:protoc:<version>:exe:<platform>`, which
   is why #132 added code generation without touching CI. None of this changes why `just` comes from
   `taiki-e/install-action` in every workflow: that rests on its own reason, one binary on `PATH` and
-  no shims at all
+  no shims at all. The JDK follows the same "arrange not to need it": `docs.yaml` builds JavaDoc
+  since #88 and takes java from `mise.toml` rather than adding `setup-java`, so the job keeps one
+  JDK installer and the no-shim-to-shadow property above stays true by construction rather than by
+  a disarmed default. Maven is not installed there at all — `./mvnw` is the wrapper
 - `docs.yaml` and `lint.yaml` both carry `paths` filters, and `ci.yaml` carries a
   `paths-ignore` for changes that cannot affect the Maven build: `opentofu/**`, the tofu
   workflows, and `**/README.md` / `**/CLAUDE.md` — the last two only because apache-rat's

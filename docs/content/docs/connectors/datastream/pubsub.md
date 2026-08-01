@@ -27,7 +27,8 @@ sink and multi-subscription consumption on the source, provided by the
 `flink-connector-gcp-pubsub` module.
 
 Per-feature implementation status is tracked in the
-[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-pubsub/README.md).
+[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-pubsub/README.md), and the
+types named on this page are in the [Java API reference]({{< param ApiDocsURL >}}).
 
 ```java
 Sink<MyEvent> sink =
