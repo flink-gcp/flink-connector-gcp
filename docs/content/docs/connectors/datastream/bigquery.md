@@ -1162,9 +1162,10 @@ configurable, via `BufferedStreamOptions`.
 
 ## Tuning
 
-Each write method exposes its tuning knobs on its own options class; this section covers them in
-turn, starting with `STORAGE_API_AT_LEAST_ONCE` on `DefaultStreamOptions`, optional on the
-builder — an unconfigured sink uses the defaults below:
+Each write method exposes its tuning knobs on its own options class, and every knob with its
+default is in the [configuration reference]({{< relref "docs/reference/bigquery" >}}). This section
+is why they are what they are, taking them in turn, starting with `STORAGE_API_AT_LEAST_ONCE` on
+`DefaultStreamOptions` — optional on the builder, so an unconfigured sink runs on those defaults:
 
 ```java
 Sink<MyEvent> sink =
@@ -1181,16 +1182,9 @@ Sink<MyEvent> sink =
 
 The knobs configure three distinct layers.
 
-**Connector batching and recovery budget** (`recovery*`) — the writer's own batching cap and
-the bounded re-append schedule that sits above the SDK's retries (the same knobs
-`BufferedStreamOptions` exposes for the exactly-once path):
-
-| Knob | Default | Meaning |
-|---|---|---|
-| `maxAppendRequestBytes` | 512 KiB | Serialized-row bytes buffered per destination before an append request is issued |
-| `recoveryInitialBackoff` | 500 ms | First backoff of the connector-driven recovery schedule |
-| `recoveryMaxBackoff` | 10 s | Backoff cap of that schedule (doubling), before jitter |
-| `recoveryMaxAttempts` | 10 | Attempt cap of that schedule |
+**Connector batching and recovery budget** (`maxAppendRequestBytes` and `recovery*`) — the
+writer's own batching cap and the bounded re-append schedule that sits above the SDK's retries.
+`BufferedStreamOptions` exposes the same knobs, with the same defaults, for the exactly-once path.
 
 Every backoff derived from one of the connector's own retry schedules is jittered by ±25%, which
 is not configurable: the jitter is mean-preserving (a factor in `[0.75, 1.25]`, so the expected
@@ -1210,31 +1204,16 @@ The schedule pacing schema-update propagation waits (flat 30 s, 30 attempts) is 
 configurable: it tracks how long BigQuery metadata takes to propagate — a service property — not
 a workload property.
 
-**SDK in-stream retries** (`retry*`, spelled the SDK's way; `BufferedStreamOptions`
-exposes the same five knobs with the same defaults) — the schedule the SDK applies to
-retriable append failures before they ever reach the writer; failures that exhaust it surface to
-the connector's recovery budget above:
-
-| Knob | Default | Meaning |
-|---|---|---|
-| `retryInitialDelay` | 500 ms | First retry delay |
-| `retryDelayMultiplier` | 2.0 | Delay multiplier |
-| `retryMaxDelay` | 30 s | Delay cap |
-| `retryMaxAttempts` | 5 | Attempt cap |
-| `maxRetryDuration` | 5 min | Overall ceiling on retrying one failure, across attempts (the SDK's default) |
+**SDK in-stream retries** (`retry*`, spelled the SDK's way; `BufferedStreamOptions` exposes the
+same five knobs with the same defaults) — the schedule the SDK applies to retriable append failures
+before they ever reach the writer. Failures that exhaust it surface to the connector's recovery
+budget above, so the two schedules compose rather than compete.
 
 **Connection pool (multiplexing)** — the default stream multiplexes appends over a shared
 connection pool ([official guidance](https://cloud.google.com/bigquery/docs/write-api-best-practices)
 recommends multiplexing beyond ~20 concurrent connections). The pool scales by load: a
 connection counts as busy above **20 % of its in-flight limits** (or 3 s without a response),
 and a busy pool adds connections up to the ceiling.
-
-| Knob | Default | Meaning |
-|---|---|---|
-| `maxInflightRequests` | 100 | In-flight append requests per pooled connection before the writer blocks |
-| `maxInflightBytes` | 100 MiB | In-flight append bytes per pooled connection (the SDK's default) |
-| `minConnectionsPerRegion` | 2 | Starting connection count per pool (the SDK's default) |
-| `maxConnectionsPerRegion` | 20 | Connection ceiling per pool (the SDK's default) |
 
 `maxInflightRequests` deliberately deviates from the SDK's own default of 1000, following the
 [official multiplexing guidance](https://cloud.google.com/bigquery/docs/write-api-streaming#use_multiplexing)
@@ -1255,12 +1234,8 @@ Caveats — the pool is JVM-global:
   writer. A second sink configuring different pool bounds in the same JVM is ignored with a
   warning. The floor is latched when a pool is constructed; the ceiling is read live.
 
-**Writer housekeeping** — per-subtask behavior of the writer itself:
-
-| Knob | Default | Meaning |
-|---|---|---|
-| `destinationIdleTimeout` | 1 h | How long a destination may go without records before its stream writer is closed and dropped |
-| `flushInterval` | disabled | Periodic processing-time flush for streaming jobs running without checkpointing |
+**Writer housekeeping** — `destinationIdleTimeout` and `flushInterval`, both per-subtask
+behavior of the writer itself.
 
 Cold-destination eviction is memory hygiene for long-lived jobs with dynamic destinations (for
 example date-suffixed daily tables), whose per-destination state otherwise grows without bound.
@@ -1277,16 +1252,8 @@ checkpointing, because only a checkpoint coordinates the sink's flush with the s
 position. With checkpointing enabled the option is redundant; a flush of nothing is cheap, but
 each flush blocks the task thread until in-flight appends are acknowledged.
 
-**FILE_LOADS committer schedules** — `FileLoadsOptions` exposes the two schedules the committer
-backs off on. Neither affects the Storage Write API paths:
-
-| Knob | Default | Meaning |
-|---|---|---|
-| `loadJobPollInitialBackoff` | 1 s | First backoff between polls of a submitted load or copy job's completion |
-| `loadJobPollMaxBackoff` | 30 s | Poll backoff cap (doubling), before jitter |
-| `schemaReconcileInitialBackoff` | 500 ms | First backoff after losing an etag race while reconciling a table's schema |
-| `schemaReconcileMaxBackoff` | 10 s | Cap of that backoff (doubling), before jitter |
-| `schemaReconcileMaxAttempts` | 10 | Attempt cap of the schema reconcile |
+**FILE_LOADS committer schedules** — `FileLoadsOptions` exposes two schedules the committer backs
+off on, `loadJobPoll*` and `schemaReconcile*`. Neither affects the Storage Write API paths.
 
 Completion polling covers the temp-table overflow path's copy job as well as the loads
 themselves. It has **no attempt cap to configure**, deliberately: batch load jobs may

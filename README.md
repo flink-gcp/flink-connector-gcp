@@ -38,7 +38,9 @@ and why a single artifact covers it.
 [Quickstart](docs/content/docs/quickstart/_index.md) installs the artifacts from this build and
 sets up credentials, then has one complete job per connector;
 [Examples](docs/content/docs/examples/_index.md) covers dynamic destinations, exactly-once,
-auto-creation and emulator-backed local runs.
+auto-creation and emulator-backed local runs; and the
+[configuration reference](docs/content/docs/reference/_index.md) lists every option each connector
+takes, with its default.
 
 ## License
 

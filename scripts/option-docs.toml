@@ -1,0 +1,60 @@
+# Copyright 2026 laughingman7743
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Which page must document each connector's options (scripts/check-option-docs.py).
+#
+# Modules are mapped, not individual classes, on purpose: a new *Options class
+# added to a module is then required to appear in that module's reference page
+# from the moment it exists. Listing classes here instead would let a new one
+# through silently, which is the rot this check is for.
+
+# Builder options: every public builder setter under the module's main sources
+# must be named in the page. Sources are `*Options.java`, `*SinkBuilder.java`
+# and `*SourceBuilder.java`, minus anything claimed by [[config_options]].
+[[builders]]
+module = "flink-connector-gcp-bigquery"
+page = "docs/content/docs/reference/bigquery.md"
+
+[[builders]]
+module = "flink-connector-gcp-pubsub"
+page = "docs/content/docs/reference/pubsub.md"
+
+[[builders]]
+module = "flink-connector-gcp-cloudtasks"
+page = "docs/content/docs/reference/cloudtasks.md"
+
+# The Table API surface is real ConfigOptions rather than builder setters, and
+# is documented beside the DDL it is used from rather than beside the builders
+# it maps onto — the mapping is the thing worth reading there.
+[[config_options]]
+source = "flink-connector-gcp-pubsub/src/main/java/io/github/flink/gcp/connector/pubsub/table/PubSubConnectorOptions.java"
+page = "docs/content/docs/connectors/table/pubsub.md"
+
+# Setters the pages deliberately do not name, as `Class.setter = "reason"`.
+[exempt]
+"ProtoSchemaOptions.jsonFieldPaths" = "Collection overload of jsonFieldPath, documented with it: the page names both spellings in one row and the bulk form adds nothing a reader has to look up."
+"ProtoSchemaOptions.geographyFieldPaths" = "As jsonFieldPaths above."
+"AvroSchemaOptions.jsonFieldPaths" = "As jsonFieldPaths above."
+"AvroSchemaOptions.geographyFieldPaths" = "As jsonFieldPaths above."
+
+# Option-table entries a page carries that the mapped source does not declare.
+#
+# All three are Flink's own, from FactoryUtil rather than from
+# PubSubConnectorOptions, and the page says so in its opening paragraph. They
+# belong in its tables all the same: a reader writing DDL needs every key the
+# connector accepts, not only the ones this project happens to declare.
+[extra]
+"format" = "Declared by Flink's FactoryUtil; the connector requires it but does not define it."
+"scan.parallelism" = "As format above."
+"sink.parallelism" = "As format above."

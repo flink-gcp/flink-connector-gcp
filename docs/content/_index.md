@@ -29,7 +29,9 @@ Connectors for using Google Cloud services with [Apache Flink](https://flink.apa
 
 The [Quickstart]({{< relref "docs/quickstart" >}}) builds and installs the connectors, sets up
 credentials and runs one complete job per connector; [Examples]({{< relref "docs/examples" >}})
-covers dynamic destinations, exactly-once, auto-creation and emulator-backed local runs.
+covers dynamic destinations, exactly-once, auto-creation and emulator-backed local runs; and the
+[configuration reference]({{< relref "docs/reference" >}}) lists every option each connector takes,
+with its default.
 
 ## Supported versions
 

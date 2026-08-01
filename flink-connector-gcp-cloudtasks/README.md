@@ -35,7 +35,8 @@ tuned, and how queue rate limits relate to sink concurrency — is in
 A complete runnable job is in
 [Quickstart](../docs/content/docs/quickstart/cloudtasks.md); sharding across queues and
 emulator-backed local runs are worked through in
-[Examples](../docs/content/docs/examples/cloudtasks.md).
+[Examples](../docs/content/docs/examples/cloudtasks.md). Every option the sink takes, with its
+default, is in the [configuration reference](../docs/content/docs/reference/cloudtasks.md).
 
 ## Provenance and attribution
 

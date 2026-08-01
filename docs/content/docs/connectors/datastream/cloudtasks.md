@@ -252,18 +252,16 @@ completed checkpoint, so the restart replays their records.
 ### Tuning
 
 `CloudTasksWriterOptions` (nested-options pattern, every knob defaulted, set through
-`writerOptions(...)`) is the whole surface. There are deliberately no rate knobs here — that is the
-queue's job:
+`writerOptions(...)`) is the whole surface, and every knob with its default is in the
+[configuration reference]({{< relref "docs/reference/cloudtasks" >}}#cloudtaskswriteroptions).
+There are deliberately no rate knobs among them — that is the queue's job.
 
-| Option | Default | What it does |
-|---|---|---|
-| `maxInFlightTasks` | 1000 | Caps outstanding creates, in flight plus parked. At the cap `write()` yields to the task mailbox until completions bring the count down |
-| `retryInitialBackoff` | 100 ms | First backoff for `UNAVAILABLE` / `DEADLINE_EXCEEDED` / `RESOURCE_EXHAUSTED` |
-| `retryMaxBackoff` | 10 s | Cap the backoff doubles up to, before jitter |
-| `retryMaxAttempts` | 8 | Total attempts, the first create included; exhausting the budget fails the job |
-| `notFoundInitialBackoff` | 500 ms | First backoff of the `NOT_FOUND` budget |
-| `notFoundMaxBackoff` | 2 s | Cap of the `NOT_FOUND` backoff, before jitter |
-| `notFoundMaxAttempts` | 3 | `NOT_FOUND` attempts. Short on purpose: long enough to ride out a blip, short enough that a mistyped queue fails quickly. A queue taking minutes to re-activate outlives this budget by design — recovering from that is the job's restart strategy, not the writer's |
+Two shapes in that table are worth the reasoning. `NOT_FOUND` has a **separate, short budget**
+because a queue idle for 30 days takes "a few minutes to re-activate" and "some method calls may
+return `NOT_FOUND`" meanwhile, so it is not proof of a misconfigured queue — but a mistyped queue
+name must not burn the full retry budget on every record before failing. A queue taking minutes to
+re-activate outlives that budget by design: recovering from it is the job's restart strategy, not
+the writer's.
 
 Both backoffs carry ±25% jitter, so parallel subtasks backing off against the same queue at the
 same instant do not retry in lockstep. The ratio is not exposed: the jitter is mean-preserving —

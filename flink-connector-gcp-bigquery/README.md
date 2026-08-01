@@ -35,7 +35,8 @@ are documented in
 A complete runnable job is in
 [Quickstart](../docs/content/docs/quickstart/bigquery.md); dynamic destinations, the exactly-once
 write methods and table auto-creation are worked through in
-[Examples](../docs/content/docs/examples/bigquery.md).
+[Examples](../docs/content/docs/examples/bigquery.md). Every option the sink takes, with its
+default, is in the [configuration reference](../docs/content/docs/reference/bigquery.md).
 
 ## Provenance and attribution
 
