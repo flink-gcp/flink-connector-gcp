@@ -74,7 +74,7 @@ jobs:
       # be a 2.0. mise.toml says `just = "1"`, so both sides mean the same
       # thing. The guarantee covers stable features only, which is why nothing
       # CI runs uses a `--unstable` one — see the lint recipe.
-      - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: just
 
@@ -137,7 +137,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: just
 
