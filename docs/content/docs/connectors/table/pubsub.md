@@ -23,9 +23,8 @@ limitations under the License.
 # Cloud Pub/Sub SQL Connector
 
 The `pubsub` table connector, provided by the `flink-connector-gcp-pubsub` module. It maps onto the
-DataStream sink and source described in
-{{< relref "docs/connectors/datastream/pubsub" >}}, which is where the behavior behind every option
-is documented; this page covers the option surface and the decisions specific to SQL.
+[DataStream sink and source]({{< relref "docs/connectors/datastream/pubsub" >}}), which is where the
+behavior behind every option is documented; this page covers the option surface and the decisions specific to SQL.
 
 Per-feature implementation status — including which directions are implemented — is tracked in the
 [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-pubsub/README.md). Most of

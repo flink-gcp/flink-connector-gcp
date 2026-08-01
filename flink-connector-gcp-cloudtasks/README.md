@@ -32,6 +32,10 @@ tuned, and how queue rate limits relate to sink concurrency — is in
 [docs/content/docs/connectors/datastream/cloudtasks.md](../docs/content/docs/connectors/datastream/cloudtasks.md)
 (rendered on the documentation site once it is published).
 
+A complete runnable job is in [Quickstart](../docs/content/docs/quickstart.md); sharding across
+queues and emulator-backed local runs are worked through in
+[Examples](../docs/content/docs/examples.md).
+
 ## Provenance and attribution
 
 This module is an original implementation. No Flink Cloud Tasks connector exists in Apache Flink,

@@ -1,6 +1,7 @@
 ---
 title: Connectors
 bookCollapseSection: true
+weight: 30
 ---
 
 <!--

@@ -1348,8 +1348,10 @@ exactly-once semantics are verified against real BigQuery instead). The at-least
 connect through a test-only plaintext appender
 factory (`EmulatorAppenderFactory`) that also papers over two emulator deviations tracked by
 [goccy/bigquery-emulator#342](https://github.com/goccy/bigquery-emulator/issues/342) (default-stream naming, `UNKNOWN` instead of `NOT_FOUND` for missing
-tables); routing the *production* factory at the emulator via an injection seam is tracked in
-[#54]({{< param BookRepo >}}/issues/54). One further deviation (same family): on a connection opened after an earlier connection to
+tables); routing the *production* factory at the emulator via an injection seam was considered
+under [#54]({{< param BookRepo >}}/issues/54) and left unbuilt, the test-only overload having
+removed the need — it would slot into that factory's constructor state cheaply should a consumer
+appear. One further deviation (same family): on a connection opened after an earlier connection to
 the emulator has closed, only the first `AppendRows` request is durably applied — follow-ups are
 acknowledged but never become queryable. The multi-flush scenario therefore runs in its own test
 class, whose connection is guaranteed to be its container's first (one forked JVM and fresh
