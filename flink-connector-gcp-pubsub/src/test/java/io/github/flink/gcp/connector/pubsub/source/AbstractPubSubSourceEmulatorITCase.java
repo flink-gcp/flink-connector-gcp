@@ -36,7 +36,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -190,19 +189,6 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
             SubscriptionDestination subscription, int expected, Duration timeout)
             throws InterruptedException {
         return clients.pullMessagesUntil(subscription.toSubscriptionPath(), expected, timeout);
-    }
-
-    /**
-     * Pulls up to {@code maxMessages} from the subscription and acknowledges them, returning their
-     * payloads. One pull only — use {@link #pullAndAckUntil} to assert on a known count.
-     */
-    public static List<String> pullAndAck(SubscriptionDestination subscription, int maxMessages) {
-        List<PubsubMessage> messages = pullMessagesAndAck(subscription, maxMessages);
-        List<String> payloads = new ArrayList<>(messages.size());
-        for (PubsubMessage message : messages) {
-            payloads.add(message.getData().toStringUtf8());
-        }
-        return payloads;
     }
 
     /**

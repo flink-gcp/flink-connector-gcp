@@ -95,20 +95,35 @@ public final class PubSubTestClients implements AutoCloseable {
         // channel.
         TransportChannelProvider channelProvider =
                 FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel));
-        TopicAdminClient topicAdmin =
-                TopicAdminClient.create(
-                        TopicAdminSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
-        SubscriptionAdminClient subscriptionAdmin =
-                SubscriptionAdminClient.create(
-                        SubscriptionAdminSettings.newBuilder()
-                                .setTransportChannelProvider(channelProvider)
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
-        return new PubSubTestClients(
-                topicAdmin, subscriptionAdmin, channelProvider, channel, Duration.ofMillis(100));
+        TopicAdminClient topicAdmin = null;
+        try {
+            topicAdmin =
+                    TopicAdminClient.create(
+                            TopicAdminSettings.newBuilder()
+                                    .setTransportChannelProvider(channelProvider)
+                                    .setCredentialsProvider(NoCredentialsProvider.create())
+                                    .build());
+            SubscriptionAdminClient subscriptionAdmin =
+                    SubscriptionAdminClient.create(
+                            SubscriptionAdminSettings.newBuilder()
+                                    .setTransportChannelProvider(channelProvider)
+                                    .setCredentialsProvider(NoCredentialsProvider.create())
+                                    .build());
+            return new PubSubTestClients(
+                    topicAdmin,
+                    subscriptionAdmin,
+                    channelProvider,
+                    channel,
+                    Duration.ofMillis(100));
+        } catch (IOException | RuntimeException e) {
+            // A half-built instance is never returned, so close what exists here: the caller's
+            // teardown only ever sees a fully-constructed one.
+            if (topicAdmin != null) {
+                topicAdmin.close();
+            }
+            channel.shutdownNow();
+            throw e;
+        }
     }
 
     /**
@@ -116,12 +131,18 @@ public final class PubSubTestClients implements AutoCloseable {
      * interval is looser than the emulator transport's because every pull is a network round trip.
      */
     public static PubSubTestClients withApplicationDefaultCredentials() throws IOException {
-        return new PubSubTestClients(
-                TopicAdminClient.create(),
-                SubscriptionAdminClient.create(),
-                null,
-                null,
-                Duration.ofMillis(200));
+        TopicAdminClient topicAdmin = TopicAdminClient.create();
+        try {
+            return new PubSubTestClients(
+                    topicAdmin,
+                    SubscriptionAdminClient.create(),
+                    null,
+                    null,
+                    Duration.ofMillis(200));
+        } catch (IOException | RuntimeException e) {
+            topicAdmin.close();
+            throw e;
+        }
     }
 
     public TopicAdminClient topicAdmin() {
@@ -130,12 +151,6 @@ public final class PubSubTestClients implements AutoCloseable {
 
     public SubscriptionAdminClient subscriptionAdmin() {
         return subscriptionAdmin;
-    }
-
-    /** Publishes the payloads to the topic and waits for the acknowledgements. */
-    public void publish(TopicName topic, String... payloads)
-            throws IOException, InterruptedException, ExecutionException {
-        publishOrdered(topic, null, null, payloads);
     }
 
     /**
