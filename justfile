@@ -201,7 +201,9 @@ e2e:
 # from the tofu-plan workflow, which subsumes validate on exactly the changes
 # that need it. Locally, `just tofu validate` runs it directly.
 #
-# Lint the shell and Python scripts, the workflows, and the OpenTofu formatting.
+# Lint the shell and Python scripts, the workflows, the rendered markdown, and
+# the OpenTofu formatting. markdownlint's file set and rule deviations live in
+# .markdownlint-cli2.jsonc (discovered from the working directory).
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
@@ -209,6 +211,7 @@ lint:
     mise x ruff -- ruff check scripts/
     mise x ruff -- ruff format --check scripts/
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
+    mise x npm:markdownlint-cli2 -- markdownlint-cli2
     mise x opentofu -- tofu fmt -check -recursive opentofu/
 
 # The GCP resources behind the real-GCP integration tests (service accounts,
