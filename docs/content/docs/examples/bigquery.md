@@ -1,7 +1,7 @@
 ---
-title: Examples
+title: BigQuery
 type: docs
-weight: 20
+weight: 10
 ---
 
 <!--
@@ -20,31 +20,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Examples
+# BigQuery examples
 
-Worked examples of the four things the connector pages describe at length but never show whole:
-routing each record to its own destination, configuring exactly-once, letting the connector create
-what it writes to, and running the lot against an emulator.
+Starting from the [BigQuery quickstart]({{< relref "docs/quickstart/bigquery" >}}) job.
 
-Each starts from the jobs in the [Quickstart]({{< relref "docs/quickstart" >}}), so only the parts
-that change are shown. The reasoning behind every option is on the connector's own page, linked
-from each section.
-
-## Dynamic per-record destinations
-
-All three sinks resolve their destination per record from the same shape — a `destinationResolver`
-in place of the fixed `destination` / `topic` / `queue` — so one sink instance fans out across
-tables, topics or queues.
-
-**The resolver runs once per record on the write path.** That is the constraint the examples below
-are built around: it must be cheap, deterministic, and it should hand back cached destination
-instances rather than allocating one per record, because destination identity is what the sinks key
-their per-destination state on.
-
-### BigQuery: a table per day
+## A table per day
 
 The writer context carries the record's event timestamp, which is what makes time-based routing
-expressible without the record having to carry the routing key itself.
+expressible without the record having to carry the routing key itself. The
+[resolver contract]({{< relref "docs/examples" >}}#dynamic-per-record-destinations-share-one-shape)
+is what the caching here is for.
 
 ```java
 public class DailyTableResolver implements DestinationResolver<OrderEvent> {
@@ -100,56 +85,11 @@ table is created on its first record under the default create disposition, so
 write method takes one fixed destination. Dynamic destinations there are
 [#76]({{< param BookRepo >}}/issues/76).
 
-### Pub/Sub: a topic per record
-
-```java
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders")
-        .sinkTo(
-                PubSubSink.<OrderEvent>builder()
-                        .destinationResolver(
-                                (element, context) ->
-                                        TopicDestination.of("my-project", element.region()))
-                        .serializer(
-                                PubSubSerializationSchema.dataOnly(new OrderEventSchema())
-                                        .withOrderingKey(OrderEvent::customerId))
-                        .build());
-```
-
-A lambda is fine where the destination set is small: `TopicDestination` is pure identity, so the
-allocation is a few fields. Cache as the BigQuery example does when the resolver is doing real work
-to produce the name.
-
-Each distinct topic gets its own SDK publisher, owned by the writer and closed with it. Ordering,
-when enabled, is per key *within one topic* and holds per writer subtask — route same-key records
-to the same subtask with `keyBy` for end-to-end order.
-
-### Cloud Tasks: sharding across queues
-
-```java
-CloudTasksSink.<OrderEvent>builder()
-        .destinationResolver(
-                (element, context) ->
-                        QueueDestination.of(
-                                "my-project",
-                                "asia-northeast1",
-                                "webhooks-" + Math.floorMod(element.customerId().hashCode(), 4)))
-        .serializer(
-                CloudTasksSerializationSchema.httpTarget("https://api.example.com/v1/orders")
-                        .withBody(new OrderEventSchema()))
-        .build();
-```
-
-This one costs nothing: Cloud Tasks has no per-destination connection or stream, so a single client
-serves every queue. Sharding across queues is how a pipeline exceeds the per-queue throughput
-ceiling — the aggregate limits, and why they rarely matter for the workload this connector exists
-for, are on the [Cloud Tasks connector]({{< relref "docs/connectors/datastream/cloudtasks" >}})
-page. The queues must all exist; the sink creates none of them.
-
 ## Exactly-once
 
 Two of BigQuery's three write methods are exactly-once, and they trade against each other rather
-than one being better. Pub/Sub and Cloud Tasks are at-least-once with no exactly-once path — the
-services have no transactional publish.
+than one being better. (Pub/Sub and Cloud Tasks are at-least-once with no exactly-once path — those
+services have no transactional publish.)
 
 Both need streaming checkpointing in `CheckpointingMode.EXACTLY_ONCE`, which is Flink's default and
 so needs no line in either job below — but a cluster setting `execution.checkpointing.mode` to
@@ -278,130 +218,7 @@ means a routing bug.
 Creation is also the **only** moment a `REQUIRED` column can appear — BigQuery cannot add one to an
 existing table — so whichever column modes the serializer derives are decided here, durably.
 
-## Topic and subscription auto-creation
-
-### Topics, on the sink
-
-The sink creates a missing topic reactively: a publish failing with `NOT_FOUND` parks its messages,
-creates the topic, and republishes under a bounded backoff. An existing topic costs nothing — no
-admin call is made unless a publish actually fails.
-
-```java
-PubSubSink.<OrderEvent>builder()
-        .topic(TopicDestination.of("my-project", "orders"))
-        .topicCreateOptions(
-                TopicCreateOptions.builder()
-                        // What makes messages published before a subscription exists reachable
-                        // by one created later, or by a backwards seek.
-                        .messageRetention(Duration.ofDays(7))
-                        .build())
-        .serializer(PubSubSerializationSchema.dataOnly(new OrderEventSchema()))
-        .build();
-```
-
-**An auto-created topic starts with no subscriptions**, so without `messageRetention` the messages
-published before one is attached are retained for nobody. That makes auto-creation without it suit
-pipelines whose consumers create their own subscriptions, or attach them promptly. With dynamic
-destinations one options object applies to *every* topic the sink creates.
-
-Supplying the options is not what authorises creation here — the disposition is, because a topic
-can meaningfully be created with defaults. Combining them with `CREATE_NEVER` is rejected at graph
-construction rather than silently ignored.
-
-### Subscriptions, on the source
-
-The source is the other way round: **passing creation settings alongside a subscription is what
-authorises creating it.** There is no disposition, because there is no meaningful "create with
-defaults" — a subscription without a topic is not a subscription, and only you know which topic to
-bind.
-
-```java
-PubSubSource.<OrderEvent>builder()
-        .subscription(
-                SubscriptionDestination.of("my-project", "orders-sub"),
-                SubscriptionCreateOptions.builder()
-                        .topic(TopicDestination.of("my-project", "orders"))
-                        .ackDeadline(Duration.ofSeconds(60))
-                        .build())
-        // No options: this one must already exist, and the startup check says so if it does not.
-        .subscription(SubscriptionDestination.of("my-project", "returns-sub"))
-        .deserializationSchema(new OrderEventDeserializationSchema())
-        .build();
-```
-
-**The settings are per subscription because they carry the topic binding.** One options object
-shared across several would bind them all to one topic, and Pub/Sub delivers a complete copy of a
-topic's stream to every subscription of it — so the source would emit each message once per
-subscription, with nothing anywhere reporting an error.
-
-A subscription only retains messages published **after** it exists, so a job that auto-creates one
-starts from an empty backlog whatever was published before.
-
-## Running against an emulator
-
-**An emulator is a convenience for fast feedback, never evidence about the service's behaviour.**
-Where the two disagree the real service decides, and every emulator below has blind spots that
-matter — a green emulator run is not a green integration.
-
-### Pub/Sub
-
-```sh
-gcloud beta emulators pubsub start --project=my-project --host-port=localhost:8085
-```
-
-```java
-PubSubSink.<String>builder()
-        .topic(TopicDestination.of("my-project", "orders"))
-        .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
-        .emulatorEndpoint("localhost:8085")
-        .build();
-```
-
-`emulatorEndpoint(...)` exists on the source too, and on both it opens a **plaintext channel with
-no credentials** — so it must only ever point at an emulator, never at production Pub/Sub. Note the
-source deliberately does *not* honour the `PUBSUB_EMULATOR_HOST` environment variable, unlike the
-Apache connector: a stray value on a task manager would silently redirect a production job.
-
-What the emulator cannot show: ordered delivery (per-key callback serialization in the client
-library is gated on a subscription property the emulator does not set, so callbacks arrive out of
-order with no Flink involved), ordered seek, dead-letter forwarding, IAM, and the *effect* of every
-create-option it stores and ignores — a KMS key that does not exist is accepted.
-
-### Cloud Tasks
-
-Google publishes no Cloud Tasks emulator; the one the integration tests use is
-[`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator) (MIT).
-
-```sh
-docker run --rm -p 8123:8123 --add-host=host.docker.internal:host-gateway \
-    ghcr.io/aertje/cloud-tasks-emulator:1.2.0 \
-    -host 0.0.0.0 -port 8123 \
-    -queue projects/my-project/locations/asia-northeast1/queues/webhooks
-```
-
-```java
-CloudTasksSink.<String>builder()
-        .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
-        .serializer(
-                // Not localhost: the emulator dispatches from inside the container, where that
-                // would be the container itself. --add-host above is what makes this name resolve
-                // to the host on Linux; Docker Desktop provides it already.
-                CloudTasksSerializationSchema.httpTarget("http://host.docker.internal:9000/orders")
-                        .withBody(new SimpleStringSchema()))
-        .emulatorEndpoint("localhost:8123")
-        .build();
-```
-
-Unlike the Pub/Sub emulator this one dispatches over **real HTTP**, so a server on your machine
-sees exactly what the tasks carry — which is the whole reason it is worth running, and also why
-the target URL has to be reachable from the container's network rather than yours. (The module's
-own tests solve the same problem with testcontainers' `exposeHostPorts(...)`.)
-
-What it cannot show: task-name garbage collection (so the deduplication *window* is untestable, only the
-`ALREADY_EXISTS` response), queue-level `uriOverride` routing, the OAuth token path (it implements
-OIDC only), failure injection, and any size limit.
-
-### BigQuery
+## No emulator path
 
 **There is no `emulatorEndpoint(...)` on the BigQuery sink**, and that is a decision rather than a
 gap waiting to be filled. The module's own tests reach

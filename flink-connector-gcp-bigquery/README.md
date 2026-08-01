@@ -32,9 +32,10 @@ are documented in
 [docs/content/docs/connectors/datastream/bigquery.md](../docs/content/docs/connectors/datastream/bigquery.md)
 (rendered on the documentation site once it is published).
 
-A complete runnable job is in [Quickstart](../docs/content/docs/quickstart.md); dynamic
-destinations, the exactly-once write methods and table auto-creation are worked through in
-[Examples](../docs/content/docs/examples.md).
+A complete runnable job is in
+[Quickstart](../docs/content/docs/quickstart/bigquery.md); dynamic destinations, the exactly-once
+write methods and table auto-creation are worked through in
+[Examples](../docs/content/docs/examples/bigquery.md).
 
 ## Provenance and attribution
 

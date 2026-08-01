@@ -84,9 +84,10 @@ The Table API / SQL option surface is documented in
 [docs/content/docs/connectors/table/pubsub.md](../docs/content/docs/connectors/table/pubsub.md).
 Both are rendered on the documentation site once it is published.
 
-A complete runnable job is in [Quickstart](../docs/content/docs/quickstart.md); dynamic
-destinations, auto-creation and emulator-backed local runs are worked through in
-[Examples](../docs/content/docs/examples.md).
+Complete runnable jobs — sink, source and SQL — are in
+[Quickstart](../docs/content/docs/quickstart/pubsub.md); dynamic destinations, auto-creation and
+emulator-backed local runs are worked through in
+[Examples](../docs/content/docs/examples/pubsub.md).
 
 ## Provenance and attribution
 

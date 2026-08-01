@@ -35,9 +35,9 @@ and why a single artifact covers it.
 
 ## Getting started
 
-[Quickstart](docs/content/docs/quickstart.md) installs the artifacts from this build, sets up
-credentials and runs one complete job per connector;
-[Examples](docs/content/docs/examples.md) covers dynamic destinations, exactly-once,
+[Quickstart](docs/content/docs/quickstart/_index.md) installs the artifacts from this build and
+sets up credentials, then has one complete job per connector;
+[Examples](docs/content/docs/examples/_index.md) covers dynamic destinations, exactly-once,
 auto-creation and emulator-backed local runs.
 
 ## License
