@@ -110,3 +110,36 @@ jobs:
 
       - name: Check the SQL connector NOTICE
         run: just check-notice flink-sql-connector-gcp-pubsub
+
+  # The Flink API tier audit (issue #103): fails when the main sources add a
+  # dependency on an @Internal, @Experimental or unannotated Flink type
+  # without a reasoned allowlist entry in scripts/flink-api-tiers.toml (see
+  # .claude/skills/curate-flink-api-tier/ for how to respond).
+  #
+  # A job here rather than a step in lint.yaml (decided with the user on the
+  # pull request that added it): the audit's inputs — the Java main sources
+  # and pom.xml's flink.version — are exactly this workflow's trigger set,
+  # while lint.yaml's paths filter would have had to grow to every Java
+  # source, losing its scripts-and-workflows character. A job of its own
+  # rather than a step in `build` so it reports in seconds beside the
+  # integration tests instead of behind them, and needs no JDK.
+  api_tiers:
+    name: Audit Flink API tiers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same reason as the NOTICE check above: the script is stdlib-only but
+      # needs >= 3.11 for tomllib, installed deliberately rather than trusted
+      # from the runner image. Keep in step with mise.toml's python.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
+        with:
+          tool: just
+
+      - name: Audit the Flink API tiers the main sources depend on
+        run: just check-flink-api-tiers
