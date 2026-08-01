@@ -55,6 +55,29 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   and checkpoints-after-tasks-finish (the final batch rides the post-finish checkpoint). Quota
   guard at graph construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5
   min warns (1,500 load jobs/table/day), plus a runtime cadence warning in the committer
+- **FILE_LOADS committer schedules** (#198): `loadJobPoll*` and `schemaUpdate*` on
+  `FileLoadsOptions`, mapped by `toLoadJobPollSchedule()` / `toSchemaUpdateSchedule()`. Both pass
+  the #54 workload-versus-service test that kept the default-stream schema-wait schedule
+  unexposed: completion polling paces the **caller's own** `jobs.get` quota and latency, and the
+  etag-race budget scales with how many subtasks reconcile one table at once — parallelism, not a
+  BigQuery property. **The polling attempt cap stays unexposed and hardcoded to
+  `Integer.MAX_VALUE`**: a batch load may legitimately run for hours, so any bound a user could
+  set would fail loads that were progressing normally, and the Flink job's own timeouts are the
+  right ceiling. Exposing it "for symmetry" is the mistake to avoid. `BigQueryLoadJobRunner` takes
+  its schedule as a constructor argument rather than reading the options — it implements the
+  `LoadJobRunner` SPI and must not depend on the FILE_LOADS options type
+- **Buffered-path SDK retry knobs** (#198): `BufferedStreamOptions` gained the `retry*` /
+  `maxRetryDuration` five, mirroring `DefaultStreamOptions` per the #54 naming split (connector
+  budgets are `recovery*`, SDK knobs bare `retry*`). This deleted
+  `StreamWriterRowAppenderFactory.RETRY_SETTINGS`, whose only remaining consumer was the buffered
+  service; the SDK mapping stays in that factory as an overloaded `toRetrySettings`, **not** on
+  the options class — the mapping-on-the-options rule in the base module's CLAUDE.md is about
+  `RetrySchedule`, and putting a gax type on a `@PublicEvolving` class would be worse than the
+  `@Internal` project type. Reaching the service meant widening the `BufferedStreamServiceFactory`
+  SPI to `create(location, options)`; both are `@Internal` and unpublished, so the signature
+  changed rather than being routed around. Defaults reproduce the old constant exactly, and
+  `maxRetryDuration` defaults to the SDK's own 5 minutes, which that path did not previously set —
+  so the buffered path's behavior is unchanged
 - **BigQuery FILE_LOADS live-table reconciliation** (#142): `ensureFinalTable` is the shared
   entry point for **every** load — direct and temp-table alike — memoized once per destination per
   run (`finalTableSchema`; the orchestrator is constructed per commit, so the memo is naturally

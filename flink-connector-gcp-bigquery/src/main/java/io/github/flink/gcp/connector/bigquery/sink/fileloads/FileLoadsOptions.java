@@ -16,10 +16,12 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -34,7 +36,16 @@ import java.util.regex.Pattern;
 /**
  * Options specific to {@link WriteMethod#FILE_LOADS}: where staging files go on Cloud Storage, how
  * loaded rows land in tables that already hold data, where oversized loads stage their temporary
- * tables, and how checkpoint-triggered loads are paced in streaming execution.
+ * tables, how checkpoint-triggered loads are paced in streaming execution, and the two schedules
+ * the committer backs off on.
+ *
+ * <p>The two schedules pace different things. {@code loadJobPoll*} is how often a submitted load
+ * job's completion is checked — the caller's own {@code jobs.get} rate and how promptly a finished
+ * load is noticed — and has deliberately <b>no attempt cap</b>: batch loads may legitimately run
+ * for hours, and bounding the polling would fail a load that was progressing normally. Overall
+ * timeouts are the Flink job's to enforce. {@code schemaUpdate*} is the budget for losing an etag
+ * race when parallel subtasks reconcile the same table's schema, so it scales with the job's
+ * parallelism.
  *
  * <p>Set via {@link BigQuerySinkBuilder#fileLoadsOptions(FileLoadsOptions)}; required when building
  * a {@code FILE_LOADS} sink and rejected for every other write method.
@@ -65,12 +76,37 @@ public final class FileLoadsOptions implements Serializable {
      */
     public static final Duration DEFAULT_MIN_CHECKPOINT_INTERVAL = Duration.ofMinutes(2);
 
+    /** Default for {@link Builder#loadJobPollInitialBackoff(Duration)}. */
+    public static final Duration DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF = Duration.ofSeconds(1);
+
+    /** Default for {@link Builder#loadJobPollMaxBackoff(Duration)}. */
+    public static final Duration DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF = Duration.ofSeconds(30);
+
+    /** Default for {@link Builder#schemaUpdateInitialBackoff(Duration)}. */
+    public static final Duration DEFAULT_SCHEMA_UPDATE_INITIAL_BACKOFF = Duration.ofMillis(500);
+
+    /** Default for {@link Builder#schemaUpdateMaxBackoff(Duration)}. */
+    public static final Duration DEFAULT_SCHEMA_UPDATE_MAX_BACKOFF = Duration.ofSeconds(10);
+
+    /** Default for {@link Builder#schemaUpdateMaxAttempts(int)}. */
+    public static final int DEFAULT_SCHEMA_UPDATE_MAX_ATTEMPTS = 10;
+
     private final String stagingPath;
     @Nullable private final String tempDataset;
     private final WriteDisposition writeDisposition;
     private final Duration minCheckpointInterval;
+    private final Duration loadJobPollInitialBackoff;
+    private final Duration loadJobPollMaxBackoff;
+    private final Duration schemaUpdateInitialBackoff;
+    private final Duration schemaUpdateMaxBackoff;
+    private final int schemaUpdateMaxAttempts;
 
     private FileLoadsOptions(Builder builder) {
+        this.loadJobPollInitialBackoff = builder.loadJobPollInitialBackoff;
+        this.loadJobPollMaxBackoff = builder.loadJobPollMaxBackoff;
+        this.schemaUpdateInitialBackoff = builder.schemaUpdateInitialBackoff;
+        this.schemaUpdateMaxBackoff = builder.schemaUpdateMaxBackoff;
+        this.schemaUpdateMaxAttempts = builder.schemaUpdateMaxAttempts;
         this.stagingPath = builder.stagingPath;
         this.tempDataset = builder.tempDataset;
         this.writeDisposition = builder.writeDisposition;
@@ -113,6 +149,54 @@ public final class FileLoadsOptions implements Serializable {
         return minCheckpointInterval;
     }
 
+    /** Returns the first backoff between load-job completion polls. */
+    public Duration getLoadJobPollInitialBackoff() {
+        return loadJobPollInitialBackoff;
+    }
+
+    /** Returns the backoff cap between load-job completion polls. */
+    public Duration getLoadJobPollMaxBackoff() {
+        return loadJobPollMaxBackoff;
+    }
+
+    /** Returns the first backoff of the schema-reconcile budget. */
+    public Duration getSchemaUpdateInitialBackoff() {
+        return schemaUpdateInitialBackoff;
+    }
+
+    /** Returns the backoff cap of the schema-reconcile budget. */
+    public Duration getSchemaUpdateMaxBackoff() {
+        return schemaUpdateMaxBackoff;
+    }
+
+    /** Returns the maximum number of attempts of the schema-reconcile budget. */
+    public int getSchemaUpdateMaxAttempts() {
+        return schemaUpdateMaxAttempts;
+    }
+
+    /**
+     * Returns the load-job completion polling schedule. Effectively unbounded in attempts, so a
+     * long-running batch load is awaited rather than abandoned.
+     */
+    @Internal
+    public RetrySchedule toLoadJobPollSchedule() {
+        return new RetrySchedule(
+                loadJobPollInitialBackoff.toMillis(),
+                loadJobPollMaxBackoff.toMillis(),
+                Integer.MAX_VALUE,
+                RetrySchedule.DEFAULT_JITTER_RATIO);
+    }
+
+    /** Returns the schema-reconcile budget the {@code schemaUpdate*} knobs describe. */
+    @Internal
+    public RetrySchedule toSchemaUpdateSchedule() {
+        return new RetrySchedule(
+                schemaUpdateInitialBackoff.toMillis(),
+                schemaUpdateMaxBackoff.toMillis(),
+                schemaUpdateMaxAttempts,
+                RetrySchedule.DEFAULT_JITTER_RATIO);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -125,12 +209,26 @@ public final class FileLoadsOptions implements Serializable {
         return stagingPath.equals(that.stagingPath)
                 && Objects.equals(tempDataset, that.tempDataset)
                 && writeDisposition == that.writeDisposition
-                && minCheckpointInterval.equals(that.minCheckpointInterval);
+                && minCheckpointInterval.equals(that.minCheckpointInterval)
+                && loadJobPollInitialBackoff.equals(that.loadJobPollInitialBackoff)
+                && loadJobPollMaxBackoff.equals(that.loadJobPollMaxBackoff)
+                && schemaUpdateInitialBackoff.equals(that.schemaUpdateInitialBackoff)
+                && schemaUpdateMaxBackoff.equals(that.schemaUpdateMaxBackoff)
+                && schemaUpdateMaxAttempts == that.schemaUpdateMaxAttempts;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(stagingPath, tempDataset, writeDisposition, minCheckpointInterval);
+        return Objects.hash(
+                stagingPath,
+                tempDataset,
+                writeDisposition,
+                minCheckpointInterval,
+                loadJobPollInitialBackoff,
+                loadJobPollMaxBackoff,
+                schemaUpdateInitialBackoff,
+                schemaUpdateMaxBackoff,
+                schemaUpdateMaxAttempts);
     }
 
     @Override
@@ -143,6 +241,16 @@ public final class FileLoadsOptions implements Serializable {
                 + writeDisposition
                 + ", minCheckpointInterval="
                 + minCheckpointInterval
+                + ", loadJobPollInitialBackoff="
+                + loadJobPollInitialBackoff
+                + ", loadJobPollMaxBackoff="
+                + loadJobPollMaxBackoff
+                + ", schemaUpdateInitialBackoff="
+                + schemaUpdateInitialBackoff
+                + ", schemaUpdateMaxBackoff="
+                + schemaUpdateMaxBackoff
+                + ", schemaUpdateMaxAttempts="
+                + schemaUpdateMaxAttempts
                 + "}";
     }
 
@@ -154,6 +262,11 @@ public final class FileLoadsOptions implements Serializable {
         @Nullable private String tempDataset;
         private WriteDisposition writeDisposition = WriteDisposition.WRITE_APPEND;
         private Duration minCheckpointInterval = DEFAULT_MIN_CHECKPOINT_INTERVAL;
+        private Duration loadJobPollInitialBackoff = DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF;
+        private Duration loadJobPollMaxBackoff = DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF;
+        private Duration schemaUpdateInitialBackoff = DEFAULT_SCHEMA_UPDATE_INITIAL_BACKOFF;
+        private Duration schemaUpdateMaxBackoff = DEFAULT_SCHEMA_UPDATE_MAX_BACKOFF;
+        private int schemaUpdateMaxAttempts = DEFAULT_SCHEMA_UPDATE_MAX_ATTEMPTS;
 
         private Builder() {}
 
@@ -233,6 +346,85 @@ public final class FileLoadsOptions implements Serializable {
         }
 
         /**
+         * Sets the first backoff between polls of a submitted load job's completion. Defaults to
+         * {@link FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF}. Lowering it notices a
+         * finished load sooner at the cost of more {@code jobs.get} calls; raising it does the
+         * reverse. There is no attempt cap to configure — see the class javadoc.
+         *
+         * @param loadJobPollInitialBackoff the first poll backoff, positive
+         * @return this builder
+         */
+        public Builder loadJobPollInitialBackoff(Duration loadJobPollInitialBackoff) {
+            this.loadJobPollInitialBackoff =
+                    checkPositive(loadJobPollInitialBackoff, "loadJobPollInitialBackoff");
+            return this;
+        }
+
+        /**
+         * Caps the backoff between polls of a submitted load job's completion. Must be at least the
+         * initial backoff. Defaults to {@link FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF}.
+         *
+         * @param loadJobPollMaxBackoff the poll backoff cap, positive
+         * @return this builder
+         */
+        public Builder loadJobPollMaxBackoff(Duration loadJobPollMaxBackoff) {
+            this.loadJobPollMaxBackoff =
+                    checkPositive(loadJobPollMaxBackoff, "loadJobPollMaxBackoff");
+            return this;
+        }
+
+        /**
+         * Sets the first backoff after losing an etag race while reconciling a destination table's
+         * schema. Defaults to {@link FileLoadsOptions#DEFAULT_SCHEMA_UPDATE_INITIAL_BACKOFF}.
+         *
+         * @param schemaUpdateInitialBackoff the first backoff, positive
+         * @return this builder
+         */
+        public Builder schemaUpdateInitialBackoff(Duration schemaUpdateInitialBackoff) {
+            this.schemaUpdateInitialBackoff =
+                    checkPositive(schemaUpdateInitialBackoff, "schemaUpdateInitialBackoff");
+            return this;
+        }
+
+        /**
+         * Caps the backoff of the schema-reconcile budget. Must be at least the initial backoff.
+         * Defaults to {@link FileLoadsOptions#DEFAULT_SCHEMA_UPDATE_MAX_BACKOFF}.
+         *
+         * @param schemaUpdateMaxBackoff the backoff cap, positive
+         * @return this builder
+         */
+        public Builder schemaUpdateMaxBackoff(Duration schemaUpdateMaxBackoff) {
+            this.schemaUpdateMaxBackoff =
+                    checkPositive(schemaUpdateMaxBackoff, "schemaUpdateMaxBackoff");
+            return this;
+        }
+
+        /**
+         * Caps the attempts at reconciling a destination table's schema. Defaults to {@link
+         * FileLoadsOptions#DEFAULT_SCHEMA_UPDATE_MAX_ATTEMPTS}. Each attempt is a fresh read, union
+         * and etag-conditioned update, so only lost races consume attempts — raise it for jobs
+         * whose parallelism makes those races frequent.
+         *
+         * @param schemaUpdateMaxAttempts the attempt cap, positive
+         * @return this builder
+         */
+        public Builder schemaUpdateMaxAttempts(int schemaUpdateMaxAttempts) {
+            Preconditions.checkArgument(
+                    schemaUpdateMaxAttempts > 0,
+                    "schemaUpdateMaxAttempts must be positive: %s",
+                    schemaUpdateMaxAttempts);
+            this.schemaUpdateMaxAttempts = schemaUpdateMaxAttempts;
+            return this;
+        }
+
+        private static Duration checkPositive(Duration value, String name) {
+            Preconditions.checkNotNull(value, name + " must not be null");
+            Preconditions.checkArgument(
+                    !value.isNegative() && !value.isZero(), name + " must be positive: %s", value);
+            return value;
+        }
+
+        /**
          * Builds the options.
          *
          * @return the options
@@ -240,6 +432,16 @@ public final class FileLoadsOptions implements Serializable {
         public FileLoadsOptions build() {
             Preconditions.checkState(
                     stagingPath != null, "stagingPath is required: set stagingPath(\"gs://...\").");
+            Preconditions.checkState(
+                    loadJobPollMaxBackoff.compareTo(loadJobPollInitialBackoff) >= 0,
+                    "loadJobPollMaxBackoff must be >= loadJobPollInitialBackoff: %s < %s",
+                    loadJobPollMaxBackoff,
+                    loadJobPollInitialBackoff);
+            Preconditions.checkState(
+                    schemaUpdateMaxBackoff.compareTo(schemaUpdateInitialBackoff) >= 0,
+                    "schemaUpdateMaxBackoff must be >= schemaUpdateInitialBackoff: %s < %s",
+                    schemaUpdateMaxBackoff,
+                    schemaUpdateInitialBackoff);
             return new FileLoadsOptions(this);
         }
     }

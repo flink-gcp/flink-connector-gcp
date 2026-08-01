@@ -855,7 +855,11 @@ Method-specific settings live in `BufferedStreamOptions` (required for this writ
 rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default) and
 the connector-driven recovery schedule (`recoveryInitialBackoff` 500 ms, `recoveryMaxBackoff`
 10 s, `recoveryMaxAttempts` 10, each backoff jittered by ±25%) governing stream creation,
-transient re-appends and the restore probe.
+transient re-appends and the restore probe. The SDK's in-stream retries below that budget are
+configured by the same `retry*` and `maxRetryDuration` knobs `DefaultStreamOptions` carries, with
+the same defaults — see [Tuning](#tuning). Unlike the default-stream path these appenders never
+enter the SDK's connection pool (each buffered stream gets a dedicated writer), so there is no
+first-writer-wins caveat and no pool-sizing knob.
 
 **Stream lifecycle.** Each writer subtask owns **one buffered stream, created lazily on its first
 append and reused across checkpoints** — per GCP guidance, frequent `CreateWriteStream` churn
@@ -1204,7 +1208,8 @@ The schedule pacing schema-update propagation waits (flat 30 s, 30 attempts) is 
 configurable: it tracks how long BigQuery metadata takes to propagate — a service property — not
 a workload property.
 
-**SDK in-stream retries** (`retry*`, spelled the SDK's way) — the schedule the SDK applies to
+**SDK in-stream retries** (`retry*`, spelled the SDK's way; `BufferedStreamOptions`
+exposes the same five knobs with the same defaults) — the schedule the SDK applies to
 retriable append failures before they ever reach the writer; failures that exhaust it surface to
 the connector's recovery budget above:
 
@@ -1269,6 +1274,28 @@ too). It is a mitigation only — the documented at-least-once guarantee still r
 checkpointing, because only a checkpoint coordinates the sink's flush with the source's
 position. With checkpointing enabled the option is redundant; a flush of nothing is cheap, but
 each flush blocks the task thread until in-flight appends are acknowledged.
+
+**FILE_LOADS committer schedules** — `FileLoadsOptions` exposes the two schedules the committer
+backs off on. Neither affects the Storage Write API paths:
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `loadJobPollInitialBackoff` | 1 s | First backoff between polls of a submitted load job's completion |
+| `loadJobPollMaxBackoff` | 30 s | Poll backoff cap (doubling), before jitter |
+| `schemaUpdateInitialBackoff` | 500 ms | First backoff after losing an etag race while reconciling a table's schema |
+| `schemaUpdateMaxBackoff` | 10 s | Cap of that backoff (doubling), before jitter |
+| `schemaUpdateMaxAttempts` | 10 | Attempt cap of the schema reconcile |
+
+Completion polling has **no attempt cap to configure**, deliberately: batch load jobs may
+legitimately run for hours, and bounding the polling would fail a load that was progressing
+normally — overall timeouts are the Flink job's to enforce. Lowering `loadJobPollInitialBackoff`
+notices a finished load sooner at the cost of more `jobs.get` calls against your own quota;
+raising it does the reverse.
+
+The schema-reconcile budget is the one to raise at high parallelism: every subtask reconciles the
+same destination table, and only a *lost* race consumes an attempt, so the attempts needed scale
+with how many subtasks reconcile at once (BigQuery allows about five metadata updates per table
+per ten seconds). Exhausting it fails the commit.
 
 ## Testing
 

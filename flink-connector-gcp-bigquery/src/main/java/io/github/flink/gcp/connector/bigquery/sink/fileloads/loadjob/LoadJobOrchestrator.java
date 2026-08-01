@@ -108,11 +108,9 @@ public final class LoadJobOrchestrator {
     /** Per-load-job byte budget: 11 TiB, a safety margin under BigQuery's 15 TB limit. */
     @VisibleForTesting static final long MAX_BYTES_PER_JOB = 11L * (1L << 40);
 
-    private static final RetrySchedule SCHEMA_UPDATE_SCHEDULE =
-            new RetrySchedule(500, 10_000, 10, RetrySchedule.DEFAULT_JITTER_RATIO);
-
     private final BigQuerySinkConfig<?> config;
     private final FileLoadsOptions options;
+    private final RetrySchedule schemaUpdateSchedule;
     private final LoadJobRunner runner;
     private final TableAdmin tableAdmin;
     private final StagingStorage storage;
@@ -145,6 +143,7 @@ public final class LoadJobOrchestrator {
             @Nullable Long checkpointId) {
         this.config = config;
         this.options = options;
+        this.schemaUpdateSchedule = options.toSchemaUpdateSchedule();
         this.runner = runner;
         this.tableAdmin = tableAdmin;
         this.storage = storage;
@@ -396,7 +395,7 @@ public final class LoadJobOrchestrator {
             }
             return StorageSchemaConverter.toBigQuerySchema(snapshot.getSchema());
         }
-        for (int attempt = 1; attempt <= SCHEMA_UPDATE_SCHEDULE.maxAttempts(); attempt++) {
+        for (int attempt = 1; attempt <= schemaUpdateSchedule.maxAttempts(); attempt++) {
             SchemaUnifier.UnionResult union =
                     SchemaUnifier.union(
                             snapshot.getSchema(), desired, config.getSchemaUpdateOptions());
@@ -405,7 +404,7 @@ public final class LoadJobOrchestrator {
                 return StorageSchemaConverter.toBigQuerySchema(union.getSchema());
             }
             Retries.sleep(
-                    SCHEMA_UPDATE_SCHEDULE.backoffMs(attempt),
+                    schemaUpdateSchedule.backoffMs(attempt),
                     "Interrupted while reconciling the schema of " + destination);
             snapshot = tableAdmin.getSchema(destination);
             if (snapshot == null) {
@@ -420,7 +419,7 @@ public final class LoadJobOrchestrator {
                 "Failed to reconcile the schema of "
                         + destination
                         + " after "
-                        + SCHEMA_UPDATE_SCHEDULE.maxAttempts()
+                        + schemaUpdateSchedule.maxAttempts()
                         + " attempts (concurrent updates kept winning).");
     }
 

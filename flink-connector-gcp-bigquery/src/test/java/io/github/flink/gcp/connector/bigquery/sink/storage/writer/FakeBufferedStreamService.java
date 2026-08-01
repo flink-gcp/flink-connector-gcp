@@ -23,6 +23,7 @@ import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Int64Value;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -168,7 +169,7 @@ public class FakeBufferedStreamService implements BufferedStreamService {
         }
 
         @Override
-        public BufferedStreamService create(String location) {
+        public BufferedStreamService create(String location, BufferedStreamOptions options) {
             return service;
         }
     }

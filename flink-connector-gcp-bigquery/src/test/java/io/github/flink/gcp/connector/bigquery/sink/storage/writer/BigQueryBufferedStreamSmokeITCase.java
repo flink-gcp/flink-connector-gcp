@@ -22,6 +22,7 @@ import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.grpc.ManagedChannelBuilder;
 import org.junit.jupiter.api.Test;
 
@@ -60,7 +61,9 @@ class BigQueryBufferedStreamSmokeITCase extends AbstractBigQueryEmulatorITCase {
                                                         ManagedChannelBuilder::usePlaintext)
                                                 .build())
                                 .build());
-        try (BufferedStreamService service = new WriteClientBufferedStreamService(client, null)) {
+        try (BufferedStreamService service =
+                new WriteClientBufferedStreamService(
+                        client, null, BufferedStreamOptions.builder().build())) {
             String streamName = service.createBufferedStream(destination);
             assertThat(streamName).contains("buffered_smoke");
 

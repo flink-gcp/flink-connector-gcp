@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import com.google.api.gax.retrying.RetrySettings;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -53,14 +54,51 @@ class StreamWriterRowAppenderFactoryTest {
         assertThat(settings.getMaxAttempts()).isEqualTo(7);
     }
 
-    /** The defaulted knobs must reproduce the schedule that used to be hardcoded. */
     @Test
-    void defaultRetryKnobsEqualTheSharedConstant() {
+    void defaultedKnobsProduceTheDocumentedSdkSchedule() {
         RetrySettings settings =
                 StreamWriterRowAppenderFactory.toRetrySettings(
                         DefaultStreamOptions.builder().build());
 
-        assertThat(settings).isEqualTo(StreamWriterRowAppenderFactory.RETRY_SETTINGS);
+        assertThat(settings.getInitialRetryDelayDuration())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_INITIAL_DELAY);
+        assertThat(settings.getRetryDelayMultiplier())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_DELAY_MULTIPLIER);
+        assertThat(settings.getMaxRetryDelayDuration())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_MAX_DELAY);
+        assertThat(settings.getMaxAttempts())
+                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_MAX_ATTEMPTS);
+    }
+
+    /**
+     * The buffered path's knobs default to the same schedule the default-stream path uses, which is
+     * what the two write methods shared through one constant before they were configurable.
+     */
+    @Test
+    void theBufferedPathDefaultsToTheSameSdkSchedule() {
+        assertThat(
+                        StreamWriterRowAppenderFactory.toRetrySettings(
+                                BufferedStreamOptions.builder().build()))
+                .isEqualTo(
+                        StreamWriterRowAppenderFactory.toRetrySettings(
+                                DefaultStreamOptions.builder().build()));
+    }
+
+    @Test
+    void theBufferedPathCarriesItsConfiguredSdkKnobs() {
+        RetrySettings settings =
+                StreamWriterRowAppenderFactory.toRetrySettings(
+                        BufferedStreamOptions.builder()
+                                .retryInitialDelay(Duration.ofMillis(250))
+                                .retryDelayMultiplier(1.5)
+                                .retryMaxDelay(Duration.ofSeconds(15))
+                                .retryMaxAttempts(7)
+                                .build());
+
+        assertThat(settings.getInitialRetryDelayDuration()).isEqualTo(Duration.ofMillis(250));
+        assertThat(settings.getRetryDelayMultiplier()).isEqualTo(1.5);
+        assertThat(settings.getMaxRetryDelayDuration()).isEqualTo(Duration.ofSeconds(15));
+        assertThat(settings.getMaxAttempts()).isEqualTo(7);
     }
 
     @Test
