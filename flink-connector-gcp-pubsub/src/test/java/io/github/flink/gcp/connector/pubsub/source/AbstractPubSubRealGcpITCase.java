@@ -30,6 +30,7 @@ import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
@@ -45,7 +46,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -134,7 +134,7 @@ public abstract class AbstractPubSubRealGcpITCase {
 
     /** Returns a name no other run can collide with. */
     protected static String uniqueName(String prefix) {
-        return prefix + "-" + UUID.randomUUID();
+        return TestNames.unique(prefix);
     }
 
     /** Creates a topic under a unique name and registers it for deletion. */

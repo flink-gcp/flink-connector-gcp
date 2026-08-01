@@ -104,9 +104,10 @@ format:
 # inter-module dependency), so without the install the rerun dies resolving it
 # (#181) — and excluding that module instead would drop the most
 # binary-compat-shaped case there is: the jar shaded on the floor, tested on
-# the ceiling. The root pom installs with it because the installed connector
-# pom names it as parent. Cost, when run by hand: io.github.flink-gcp
-# SNAPSHOTs land in ~/.m2 — the primed-local-repo hazard —
+# the ceiling. The test-utils module installs for the same reason: every
+# module's tests depend on it (#27). The root pom installs with them because
+# the installed poms name it as parent. Cost, when run by hand:
+# io.github.flink-gcp SNAPSHOTs land in ~/.m2 — the primed-local-repo hazard —
 # `rm -rf ~/.m2/repository/io/github/flink-gcp` undoes it.
 #
 # Check that a floor-built jar still runs on Flink <ceiling>, uncompiled.
@@ -114,7 +115,7 @@ binary-compat ceiling:
     @echo '==> Build against the floor (the Flink version pinned in pom.xml)'
     {{ mvn }} verify
     @echo '==> Install what the goal-only rerun cannot resolve from the reactor'
-    {{ mvn }} -pl .,flink-connector-gcp-pubsub -DskipTests install
+    {{ mvn }} -pl .,flink-connector-gcp-pubsub,flink-connector-gcp-test-utils -DskipTests install
     @echo '==> Record which tests the floor build ran'
     @mkdir -p target
     scripts/surefire-fingerprint.sh > target/floor-tests.txt
@@ -158,8 +159,15 @@ worktree-env:
     scripts/worktree-env.sh
 
 # Run the real-GCP gated ITCases and assert they actually ran.
+#
+# The install step mirrors binary-compat's: the two -pl builds below are
+# reactor subsets, so the test-utils module the gated tests depend on (#27)
+# must come from ~/.m2, not the reactor. Same hand-run cost too — the
+# io.github.flink-gcp SNAPSHOTs it leaves behind are removed with
+# `rm -rf ~/.m2/repository/io/github/flink-gcp`.
 e2e:
     scripts/e2e-gated-its.sh --require-env
+    {{ mvn }} -pl .,flink-connector-gcp-test-utils -DskipTests install
     {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub test-compile
     {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub surefire:test@integration-tests -Dtest="$(scripts/e2e-gated-its.sh)"
     scripts/e2e-gated-its.sh --assert-ran

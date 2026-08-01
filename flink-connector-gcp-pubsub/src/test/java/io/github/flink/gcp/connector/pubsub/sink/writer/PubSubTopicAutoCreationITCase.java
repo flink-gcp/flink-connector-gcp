@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
+import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

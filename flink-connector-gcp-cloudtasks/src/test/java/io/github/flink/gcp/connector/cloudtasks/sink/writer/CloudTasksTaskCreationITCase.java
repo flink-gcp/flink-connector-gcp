@@ -21,6 +21,7 @@ import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
+import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

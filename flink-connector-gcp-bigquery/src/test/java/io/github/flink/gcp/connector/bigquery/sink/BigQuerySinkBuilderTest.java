@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStrea
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,18 +45,7 @@ class BigQuerySinkBuilderTest {
     private static final TableDestination DESTINATION =
             TableDestination.of("my-project", "my_dataset", "my_table");
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     /** A trivial serializable test serializer. */
     private static class TestSerializer extends BigQueryProtoSerializer<Object> {

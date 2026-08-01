@@ -33,6 +33,8 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.testutils.Drains.drainDistinct;
+
 /**
  * Shared harness for the table integration tests: the emulator container and its helpers from the
  * source harness, plus the two things a SQL test needs on top — a {@link TableEnvironment} and a

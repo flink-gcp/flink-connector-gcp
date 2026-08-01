@@ -14,15 +14,18 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.pubsub.sink.writer;
+package io.github.flink.gcp.connector.testutils;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
 /** Shared test stubs for {@link SinkWriter.Context}. */
-final class TestContexts {
+public final class TestContexts {
 
-    /** A no-op context: no timestamp, no watermark. */
-    static final SinkWriter.Context NO_OP =
+    /**
+     * A no-op context: no timestamp, and {@link Long#MIN_VALUE} for the watermark — the value a
+     * writer sees before any watermark has arrived.
+     */
+    public static final SinkWriter.Context NO_OP =
             new SinkWriter.Context() {
                 @Override
                 public long currentWatermark() {

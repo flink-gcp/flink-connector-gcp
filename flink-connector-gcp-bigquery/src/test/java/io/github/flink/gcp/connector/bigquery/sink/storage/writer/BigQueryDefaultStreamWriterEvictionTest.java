@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
@@ -65,18 +66,7 @@ class BigQueryDefaultStreamWriterEvictionTest {
     private static final TableDestination A = TableDestination.of("p", "d", "a");
     private static final TableDestination B = TableDestination.of("p", "d", "b");
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private final CountingAppenderFactory factory = new CountingAppenderFactory();
     private final AtomicLong nanos = new AtomicLong();

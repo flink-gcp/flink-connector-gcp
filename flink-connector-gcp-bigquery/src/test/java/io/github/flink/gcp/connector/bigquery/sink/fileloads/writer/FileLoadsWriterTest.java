@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSi
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.apache.avro.file.DataFileReader;
 import org.apache.avro.file.SeekableByteArrayInput;
 import org.apache.avro.generic.GenericDatumReader;
@@ -65,18 +66,7 @@ class FileLoadsWriterTest {
                                     .setMode(TableFieldSchema.Mode.NULLABLE))
                     .build();
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     /** A record routed to a table, optionally failing serialization or producing bad bytes. */
     private static final class TestRow {

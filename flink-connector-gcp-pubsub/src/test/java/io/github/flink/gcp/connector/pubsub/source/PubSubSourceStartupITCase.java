@@ -36,6 +36,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.function.Function;
 
+import static io.github.flink.gcp.connector.testutils.Awaits.await;
+import static io.github.flink.gcp.connector.testutils.Drains.drainDistinct;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 

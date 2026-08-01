@@ -43,7 +43,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static io.github.flink.gcp.connector.pubsub.source.AbstractPubSubSourceEmulatorITCase.drainDistinct;
+import static io.github.flink.gcp.connector.testutils.Drains.drainDistinct;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**

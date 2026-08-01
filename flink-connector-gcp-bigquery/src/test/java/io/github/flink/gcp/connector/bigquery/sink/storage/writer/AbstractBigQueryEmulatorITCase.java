@@ -28,6 +28,7 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
+import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
@@ -52,18 +53,7 @@ abstract class AbstractBigQueryEmulatorITCase {
     private static final int REST_PORT = 9050;
     private static final int GRPC_PORT = 9060;
 
-    static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     @Container
     private static final GenericContainer<?> EMULATOR =

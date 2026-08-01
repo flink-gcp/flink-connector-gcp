@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
+import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -44,7 +45,6 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -73,7 +73,7 @@ class BigQueryBufferedStreamExactlyOnceITCase {
     private static final String PROJECT = System.getenv("BQ_IT_PROJECT");
     private static final String DATASET = System.getenv("BQ_IT_DATASET");
 
-    private static final String RUN_ID = UUID.randomUUID().toString().substring(0, 8);
+    private static final String RUN_ID = TestNames.runId();
     private static final String TABLE_RESTART = "buffered_stream_it_restart_" + RUN_ID;
     private static final String TABLE_CLEAN = "buffered_stream_it_clean_" + RUN_ID;
     private static final String TABLE_BATCH = "buffered_stream_it_batch_" + RUN_ID;

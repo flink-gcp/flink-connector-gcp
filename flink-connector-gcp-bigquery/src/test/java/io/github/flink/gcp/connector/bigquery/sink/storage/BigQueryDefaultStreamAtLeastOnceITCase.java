@@ -31,13 +31,13 @@ import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -73,7 +73,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(600)
 class BigQueryDefaultStreamAtLeastOnceITCase {
 
-    private static final String RUN_ID = UUID.randomUUID().toString().substring(0, 8);
+    private static final String RUN_ID = TestNames.runId();
 
     private static final int FAN_OUT_TABLE_COUNT = 8;
     private static final long FAN_OUT_RECORD_COUNT = 120;

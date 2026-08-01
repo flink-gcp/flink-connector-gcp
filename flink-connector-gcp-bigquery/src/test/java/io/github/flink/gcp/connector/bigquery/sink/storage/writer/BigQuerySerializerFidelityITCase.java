@@ -52,6 +52,8 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStream
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypesChild;
+import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestNames;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
@@ -68,7 +70,6 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
@@ -104,7 +105,7 @@ import static org.assertj.core.api.Assertions.tuple;
 @Timeout(600)
 class BigQuerySerializerFidelityITCase {
 
-    private static final String RUN_ID = UUID.randomUUID().toString().substring(0, 8);
+    private static final String RUN_ID = TestNames.runId();
     private static final String PROTO_TABLE = "fidelity_proto_" + RUN_ID;
     private static final String AVRO_TABLE = "fidelity_avro_" + RUN_ID;
     private static final String JSON_TABLE = "fidelity_json_" + RUN_ID;
@@ -113,18 +114,7 @@ class BigQuerySerializerFidelityITCase {
     private static final long SEEN_AT_MICROS =
             SEEN_AT.getEpochSecond() * 1_000_000L + SEEN_AT.getNano() / 1_000L;
 
-    private static final SinkWriter.Context CONTEXT =
-            new SinkWriter.Context() {
-                @Override
-                public long currentWatermark() {
-                    return 0;
-                }
-
-                @Override
-                public Long timestamp() {
-                    return null;
-                }
-            };
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     @AfterAll
     static void dropTables() {

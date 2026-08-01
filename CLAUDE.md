@@ -24,14 +24,16 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   passing nothing means the version pinned in the pom
 - `just binary-compat 2.3.0` — the floor-build/install/fingerprint/ceiling-rerun/diff
   sequence, whose order is load-bearing. Reproducing a red weekly `binary_compat` is what it is
-  for. The install step (root pom + the Pub/Sub connector) exists because the goal-only rerun
+  for. The install step (root pom + the Pub/Sub connector + the test-utils module every module's
+  tests depend on) exists because the goal-only rerun
   cannot resolve inter-module dependencies from the reactor — same mechanism as the licence-goal
   rule below, bitten via the SQL uber-jar in #181 — and it primes `~/.m2` with
   `io.github.flink-gcp` SNAPSHOTs when run by hand (the recipe comment has the cleanup line)
 - `just e2e` — the ITCases gated on `BQ_IT_*` variables, which `just verify` silently skips,
   with a pre-flight that makes a missing variable an error and a post-run assertion
   (`scripts/e2e-gated-its.sh`, which derives the class list from the gating annotation) that the
-  gated classes actually executed. The weekly E2E workflow (`e2e.yaml`) runs this same recipe
+  gated classes actually executed. Its `-pl`-scoped builds install the test-utils module first,
+  for the same reactor-resolution reason `binary-compat` installs (#27). The weekly E2E workflow (`e2e.yaml`) runs this same recipe
   via WIF; locally the variables come from the uncommitted `.env`, which a fresh worktree does
   not have — run `just worktree-env` once there to symlink the main checkout's copy (#156; the same
   link also carries `just tofu`'s credentials)
@@ -444,6 +446,10 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   (#138) — which is where the repository's only shading decisions live, so read it before adding
   a second `flink-sql-connector-gcp-*`
 - `flink-connector-gcp-cloudtasks/CLAUDE.md` — sink design (#23) and implementation (#24)
+- `flink-connector-gcp-test-utils/CLAUDE.md` — the shared test-utils module (#27): test-support
+  code only (never the #37/#61 shared main-code module, whose `-base`/`-common` names stay
+  reserved), all-provided dependencies, no forced unification of emulator container fixtures, and
+  the justfile install-list coupling its reactor-sibling consumers create
 
 Decisions that span connectors stay here: the package layout convention above, the version policy
 and the licensing rules. A new connector gets its own module file rather than a section here.

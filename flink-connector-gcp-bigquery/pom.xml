@@ -117,6 +117,13 @@ limitations under the License.
 
         <!-- Test dependencies -->
         <dependency>
+            <!-- Shared test utilities (#27). -->
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-test-utils</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- Emulator-based integration tests (goccy/bigquery-emulator). -->
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>

@@ -53,6 +53,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static io.github.flink.gcp.connector.testutils.Awaits.await;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**

@@ -39,7 +39,7 @@ import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import static io.github.flink.gcp.connector.pubsub.source.AbstractPubSubSourceEmulatorITCase.await;
+import static io.github.flink.gcp.connector.testutils.Awaits.await;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**

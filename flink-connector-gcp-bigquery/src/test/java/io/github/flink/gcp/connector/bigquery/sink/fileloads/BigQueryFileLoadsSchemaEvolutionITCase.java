@@ -45,6 +45,7 @@ import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -52,7 +53,6 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -78,7 +78,7 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
     private static final String DATASET = System.getenv("BQ_IT_DATASET");
     private static final String BUCKET = System.getenv("BQ_IT_GCS_BUCKET");
 
-    private static final String RUN_ID = UUID.randomUUID().toString().substring(0, 8);
+    private static final String RUN_ID = TestNames.runId();
     private static final String EVOLVING_TABLE = "file_loads_evo_it_" + RUN_ID;
     private static final String STRICT_TABLE = "file_loads_strict_it_" + RUN_ID;
     private static final String STAGING_PREFIX = "flink-file-loads-evo-it/" + RUN_ID;
