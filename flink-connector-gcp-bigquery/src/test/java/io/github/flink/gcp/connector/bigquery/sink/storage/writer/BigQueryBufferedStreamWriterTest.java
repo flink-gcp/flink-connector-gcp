@@ -397,4 +397,28 @@ class BigQueryBufferedStreamWriterTest {
         assertThat(service.createdStreams).hasSize(1);
         assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
     }
+
+    /**
+     * The SPI takes the options so the SDK {@code retry*} knobs reach the appenders. A service
+     * built with anything other than the writer's own options — defaults, say — would drop them
+     * silently, since the appender is the only thing that reads them.
+     */
+    @Test
+    void theWriterBuildsItsServiceWithItsOwnOptions() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        BufferedStreamOptions options =
+                BufferedStreamOptions.builder()
+                        .recoveryInitialBackoff(Duration.ofMillis(1))
+                        .recoveryMaxBackoff(Duration.ofMillis(1))
+                        .retryMaxAttempts(9)
+                        .build();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(config(), options, service, BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+
+        writer.write("row-1", CONTEXT);
+        writer.flush(false);
+
+        assertThat(service.createdWith).isSameAs(options);
+        writer.close();
+    }
 }

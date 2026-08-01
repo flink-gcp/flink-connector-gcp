@@ -39,13 +39,17 @@ import java.util.regex.Pattern;
  * tables, how checkpoint-triggered loads are paced in streaming execution, and the two schedules
  * the committer backs off on.
  *
- * <p>The two schedules pace different things. {@code loadJobPoll*} is how often a submitted load
- * job's completion is checked — the caller's own {@code jobs.get} rate and how promptly a finished
- * load is noticed — and has deliberately <b>no attempt cap</b>: batch loads may legitimately run
- * for hours, and bounding the polling would fail a load that was progressing normally. Overall
- * timeouts are the Flink job's to enforce. {@code schemaUpdate*} is the budget for losing an etag
- * race when parallel subtasks reconcile the same table's schema, so it scales with the job's
- * parallelism.
+ * <p>The two schedules pace different things. {@code loadJobPoll*} is how often a submitted load or
+ * copy job's completion is checked — the caller's own {@code jobs.get} rate and how promptly a
+ * finished job is noticed — and has deliberately <b>no attempt cap</b>: batch loads may
+ * legitimately run for hours, and bounding the polling would fail a load that was progressing
+ * normally. Overall timeouts are the Flink job's to enforce.
+ *
+ * <p>{@code schemaReconcile*} is the budget for losing an etag race while reconciling a destination
+ * table's schema. Those races do <b>not</b> come from this job's parallelism — FILE_LOADS
+ * reconciles from a single committer subtask — but from anything else updating the same table at
+ * the same time: a second Flink job, a Storage Write API sink writing the same destination, or
+ * external tooling.
  *
  * <p>Set via {@link BigQuerySinkBuilder#fileLoadsOptions(FileLoadsOptions)}; required when building
  * a {@code FILE_LOADS} sink and rejected for every other write method.
@@ -82,14 +86,14 @@ public final class FileLoadsOptions implements Serializable {
     /** Default for {@link Builder#loadJobPollMaxBackoff(Duration)}. */
     public static final Duration DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF = Duration.ofSeconds(30);
 
-    /** Default for {@link Builder#schemaUpdateInitialBackoff(Duration)}. */
-    public static final Duration DEFAULT_SCHEMA_UPDATE_INITIAL_BACKOFF = Duration.ofMillis(500);
+    /** Default for {@link Builder#schemaReconcileInitialBackoff(Duration)}. */
+    public static final Duration DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF = Duration.ofMillis(500);
 
-    /** Default for {@link Builder#schemaUpdateMaxBackoff(Duration)}. */
-    public static final Duration DEFAULT_SCHEMA_UPDATE_MAX_BACKOFF = Duration.ofSeconds(10);
+    /** Default for {@link Builder#schemaReconcileMaxBackoff(Duration)}. */
+    public static final Duration DEFAULT_SCHEMA_RECONCILE_MAX_BACKOFF = Duration.ofSeconds(10);
 
-    /** Default for {@link Builder#schemaUpdateMaxAttempts(int)}. */
-    public static final int DEFAULT_SCHEMA_UPDATE_MAX_ATTEMPTS = 10;
+    /** Default for {@link Builder#schemaReconcileMaxAttempts(int)}. */
+    public static final int DEFAULT_SCHEMA_RECONCILE_MAX_ATTEMPTS = 10;
 
     private final String stagingPath;
     @Nullable private final String tempDataset;
@@ -97,16 +101,16 @@ public final class FileLoadsOptions implements Serializable {
     private final Duration minCheckpointInterval;
     private final Duration loadJobPollInitialBackoff;
     private final Duration loadJobPollMaxBackoff;
-    private final Duration schemaUpdateInitialBackoff;
-    private final Duration schemaUpdateMaxBackoff;
-    private final int schemaUpdateMaxAttempts;
+    private final Duration schemaReconcileInitialBackoff;
+    private final Duration schemaReconcileMaxBackoff;
+    private final int schemaReconcileMaxAttempts;
 
     private FileLoadsOptions(Builder builder) {
         this.loadJobPollInitialBackoff = builder.loadJobPollInitialBackoff;
         this.loadJobPollMaxBackoff = builder.loadJobPollMaxBackoff;
-        this.schemaUpdateInitialBackoff = builder.schemaUpdateInitialBackoff;
-        this.schemaUpdateMaxBackoff = builder.schemaUpdateMaxBackoff;
-        this.schemaUpdateMaxAttempts = builder.schemaUpdateMaxAttempts;
+        this.schemaReconcileInitialBackoff = builder.schemaReconcileInitialBackoff;
+        this.schemaReconcileMaxBackoff = builder.schemaReconcileMaxBackoff;
+        this.schemaReconcileMaxAttempts = builder.schemaReconcileMaxAttempts;
         this.stagingPath = builder.stagingPath;
         this.tempDataset = builder.tempDataset;
         this.writeDisposition = builder.writeDisposition;
@@ -149,29 +153,29 @@ public final class FileLoadsOptions implements Serializable {
         return minCheckpointInterval;
     }
 
-    /** Returns the first backoff between load-job completion polls. */
+    /** Returns the first backoff between load- or copy-job completion polls. */
     public Duration getLoadJobPollInitialBackoff() {
         return loadJobPollInitialBackoff;
     }
 
-    /** Returns the backoff cap between load-job completion polls. */
+    /** Returns the backoff cap between load- or copy-job completion polls. */
     public Duration getLoadJobPollMaxBackoff() {
         return loadJobPollMaxBackoff;
     }
 
     /** Returns the first backoff of the schema-reconcile budget. */
     public Duration getSchemaUpdateInitialBackoff() {
-        return schemaUpdateInitialBackoff;
+        return schemaReconcileInitialBackoff;
     }
 
     /** Returns the backoff cap of the schema-reconcile budget. */
     public Duration getSchemaUpdateMaxBackoff() {
-        return schemaUpdateMaxBackoff;
+        return schemaReconcileMaxBackoff;
     }
 
     /** Returns the maximum number of attempts of the schema-reconcile budget. */
     public int getSchemaUpdateMaxAttempts() {
-        return schemaUpdateMaxAttempts;
+        return schemaReconcileMaxAttempts;
     }
 
     /**
@@ -187,13 +191,13 @@ public final class FileLoadsOptions implements Serializable {
                 RetrySchedule.DEFAULT_JITTER_RATIO);
     }
 
-    /** Returns the schema-reconcile budget the {@code schemaUpdate*} knobs describe. */
+    /** Returns the schema-reconcile budget the {@code schemaReconcile*} knobs describe. */
     @Internal
-    public RetrySchedule toSchemaUpdateSchedule() {
+    public RetrySchedule toSchemaReconcileSchedule() {
         return new RetrySchedule(
-                schemaUpdateInitialBackoff.toMillis(),
-                schemaUpdateMaxBackoff.toMillis(),
-                schemaUpdateMaxAttempts,
+                schemaReconcileInitialBackoff.toMillis(),
+                schemaReconcileMaxBackoff.toMillis(),
+                schemaReconcileMaxAttempts,
                 RetrySchedule.DEFAULT_JITTER_RATIO);
     }
 
@@ -212,9 +216,9 @@ public final class FileLoadsOptions implements Serializable {
                 && minCheckpointInterval.equals(that.minCheckpointInterval)
                 && loadJobPollInitialBackoff.equals(that.loadJobPollInitialBackoff)
                 && loadJobPollMaxBackoff.equals(that.loadJobPollMaxBackoff)
-                && schemaUpdateInitialBackoff.equals(that.schemaUpdateInitialBackoff)
-                && schemaUpdateMaxBackoff.equals(that.schemaUpdateMaxBackoff)
-                && schemaUpdateMaxAttempts == that.schemaUpdateMaxAttempts;
+                && schemaReconcileInitialBackoff.equals(that.schemaReconcileInitialBackoff)
+                && schemaReconcileMaxBackoff.equals(that.schemaReconcileMaxBackoff)
+                && schemaReconcileMaxAttempts == that.schemaReconcileMaxAttempts;
     }
 
     @Override
@@ -226,9 +230,9 @@ public final class FileLoadsOptions implements Serializable {
                 minCheckpointInterval,
                 loadJobPollInitialBackoff,
                 loadJobPollMaxBackoff,
-                schemaUpdateInitialBackoff,
-                schemaUpdateMaxBackoff,
-                schemaUpdateMaxAttempts);
+                schemaReconcileInitialBackoff,
+                schemaReconcileMaxBackoff,
+                schemaReconcileMaxAttempts);
     }
 
     @Override
@@ -245,12 +249,12 @@ public final class FileLoadsOptions implements Serializable {
                 + loadJobPollInitialBackoff
                 + ", loadJobPollMaxBackoff="
                 + loadJobPollMaxBackoff
-                + ", schemaUpdateInitialBackoff="
-                + schemaUpdateInitialBackoff
-                + ", schemaUpdateMaxBackoff="
-                + schemaUpdateMaxBackoff
-                + ", schemaUpdateMaxAttempts="
-                + schemaUpdateMaxAttempts
+                + ", schemaReconcileInitialBackoff="
+                + schemaReconcileInitialBackoff
+                + ", schemaReconcileMaxBackoff="
+                + schemaReconcileMaxBackoff
+                + ", schemaReconcileMaxAttempts="
+                + schemaReconcileMaxAttempts
                 + "}";
     }
 
@@ -264,9 +268,9 @@ public final class FileLoadsOptions implements Serializable {
         private Duration minCheckpointInterval = DEFAULT_MIN_CHECKPOINT_INTERVAL;
         private Duration loadJobPollInitialBackoff = DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF;
         private Duration loadJobPollMaxBackoff = DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF;
-        private Duration schemaUpdateInitialBackoff = DEFAULT_SCHEMA_UPDATE_INITIAL_BACKOFF;
-        private Duration schemaUpdateMaxBackoff = DEFAULT_SCHEMA_UPDATE_MAX_BACKOFF;
-        private int schemaUpdateMaxAttempts = DEFAULT_SCHEMA_UPDATE_MAX_ATTEMPTS;
+        private Duration schemaReconcileInitialBackoff = DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF;
+        private Duration schemaReconcileMaxBackoff = DEFAULT_SCHEMA_RECONCILE_MAX_BACKOFF;
+        private int schemaReconcileMaxAttempts = DEFAULT_SCHEMA_RECONCILE_MAX_ATTEMPTS;
 
         private Builder() {}
 
@@ -346,81 +350,88 @@ public final class FileLoadsOptions implements Serializable {
         }
 
         /**
-         * Sets the first backoff between polls of a submitted load job's completion. Defaults to
-         * {@link FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF}. Lowering it notices a
-         * finished load sooner at the cost of more {@code jobs.get} calls; raising it does the
-         * reverse. There is no attempt cap to configure — see the class javadoc.
+         * Sets the first backoff between polls of a submitted load or copy job's completion.
+         * Defaults to {@link FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF}. Lowering it
+         * notices a finished load sooner at the cost of more {@code jobs.get} calls; raising it
+         * does the reverse. There is no attempt cap to configure — see the class javadoc.
          *
          * @param loadJobPollInitialBackoff the first poll backoff, positive
          * @return this builder
          */
         public Builder loadJobPollInitialBackoff(Duration loadJobPollInitialBackoff) {
             this.loadJobPollInitialBackoff =
-                    checkPositive(loadJobPollInitialBackoff, "loadJobPollInitialBackoff");
+                    checkAtLeastOneMilli(loadJobPollInitialBackoff, "loadJobPollInitialBackoff");
             return this;
         }
 
         /**
-         * Caps the backoff between polls of a submitted load job's completion. Must be at least the
-         * initial backoff. Defaults to {@link FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF}.
+         * Caps the backoff between polls of a submitted load or copy job's completion. Must be at
+         * least the initial backoff. Defaults to {@link
+         * FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF}.
          *
          * @param loadJobPollMaxBackoff the poll backoff cap, positive
          * @return this builder
          */
         public Builder loadJobPollMaxBackoff(Duration loadJobPollMaxBackoff) {
             this.loadJobPollMaxBackoff =
-                    checkPositive(loadJobPollMaxBackoff, "loadJobPollMaxBackoff");
+                    checkAtLeastOneMilli(loadJobPollMaxBackoff, "loadJobPollMaxBackoff");
             return this;
         }
 
         /**
          * Sets the first backoff after losing an etag race while reconciling a destination table's
-         * schema. Defaults to {@link FileLoadsOptions#DEFAULT_SCHEMA_UPDATE_INITIAL_BACKOFF}.
+         * schema. Defaults to {@link FileLoadsOptions#DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF}.
          *
-         * @param schemaUpdateInitialBackoff the first backoff, positive
+         * @param schemaReconcileInitialBackoff the first backoff, positive
          * @return this builder
          */
-        public Builder schemaUpdateInitialBackoff(Duration schemaUpdateInitialBackoff) {
-            this.schemaUpdateInitialBackoff =
-                    checkPositive(schemaUpdateInitialBackoff, "schemaUpdateInitialBackoff");
+        public Builder schemaReconcileInitialBackoff(Duration schemaReconcileInitialBackoff) {
+            this.schemaReconcileInitialBackoff =
+                    checkAtLeastOneMilli(
+                            schemaReconcileInitialBackoff, "schemaReconcileInitialBackoff");
             return this;
         }
 
         /**
          * Caps the backoff of the schema-reconcile budget. Must be at least the initial backoff.
-         * Defaults to {@link FileLoadsOptions#DEFAULT_SCHEMA_UPDATE_MAX_BACKOFF}.
+         * Defaults to {@link FileLoadsOptions#DEFAULT_SCHEMA_RECONCILE_MAX_BACKOFF}.
          *
-         * @param schemaUpdateMaxBackoff the backoff cap, positive
+         * @param schemaReconcileMaxBackoff the backoff cap, positive
          * @return this builder
          */
-        public Builder schemaUpdateMaxBackoff(Duration schemaUpdateMaxBackoff) {
-            this.schemaUpdateMaxBackoff =
-                    checkPositive(schemaUpdateMaxBackoff, "schemaUpdateMaxBackoff");
+        public Builder schemaReconcileMaxBackoff(Duration schemaReconcileMaxBackoff) {
+            this.schemaReconcileMaxBackoff =
+                    checkAtLeastOneMilli(schemaReconcileMaxBackoff, "schemaReconcileMaxBackoff");
             return this;
         }
 
         /**
          * Caps the attempts at reconciling a destination table's schema. Defaults to {@link
-         * FileLoadsOptions#DEFAULT_SCHEMA_UPDATE_MAX_ATTEMPTS}. Each attempt is a fresh read, union
-         * and etag-conditioned update, so only lost races consume attempts — raise it for jobs
-         * whose parallelism makes those races frequent.
+         * FileLoadsOptions#DEFAULT_SCHEMA_RECONCILE_MAX_ATTEMPTS}. Each attempt is a fresh read,
+         * union and etag-conditioned update, so only lost races consume attempts — raise it when
+         * something outside this job updates the same table concurrently.
          *
-         * @param schemaUpdateMaxAttempts the attempt cap, positive
+         * @param schemaReconcileMaxAttempts the attempt cap, positive
          * @return this builder
          */
-        public Builder schemaUpdateMaxAttempts(int schemaUpdateMaxAttempts) {
+        public Builder schemaReconcileMaxAttempts(int schemaReconcileMaxAttempts) {
             Preconditions.checkArgument(
-                    schemaUpdateMaxAttempts > 0,
-                    "schemaUpdateMaxAttempts must be positive: %s",
-                    schemaUpdateMaxAttempts);
-            this.schemaUpdateMaxAttempts = schemaUpdateMaxAttempts;
+                    schemaReconcileMaxAttempts > 0,
+                    "schemaReconcileMaxAttempts must be positive: %s",
+                    schemaReconcileMaxAttempts);
+            this.schemaReconcileMaxAttempts = schemaReconcileMaxAttempts;
             return this;
         }
 
-        private static Duration checkPositive(Duration value, String name) {
+        /**
+         * These durations reach a {@code RetrySchedule} through {@code toMillis()}, which would
+         * turn a sub-millisecond value into a zero the schedule rejects at first commit rather than
+         * here.
+         */
+        private static Duration checkAtLeastOneMilli(Duration value, String name) {
             Preconditions.checkNotNull(value, name + " must not be null");
             Preconditions.checkArgument(
-                    !value.isNegative() && !value.isZero(), name + " must be positive: %s", value);
+                    value.toMillis() > 0, name + " must be at least 1 ms: %s", value);
             return value;
         }
 
@@ -438,10 +449,10 @@ public final class FileLoadsOptions implements Serializable {
                     loadJobPollMaxBackoff,
                     loadJobPollInitialBackoff);
             Preconditions.checkState(
-                    schemaUpdateMaxBackoff.compareTo(schemaUpdateInitialBackoff) >= 0,
-                    "schemaUpdateMaxBackoff must be >= schemaUpdateInitialBackoff: %s < %s",
-                    schemaUpdateMaxBackoff,
-                    schemaUpdateInitialBackoff);
+                    schemaReconcileMaxBackoff.compareTo(schemaReconcileInitialBackoff) >= 0,
+                    "schemaReconcileMaxBackoff must be >= schemaReconcileInitialBackoff: %s < %s",
+                    schemaReconcileMaxBackoff,
+                    schemaReconcileInitialBackoff);
             return new FileLoadsOptions(this);
         }
     }

@@ -961,8 +961,9 @@ env.setRuntimeMode(RuntimeExecutionMode.BATCH);
 
 FILE_LOADS-only settings live in `FileLoadsOptions` (required for this write method, rejected for
 the others): `stagingPath` (required), `writeDisposition` (`WRITE_APPEND` default,
-`WRITE_TRUNCATE` for atomic batch reloads, `WRITE_EMPTY`), `tempDataset`, and the streaming guard
-`minCheckpointInterval` (all described below).
+`WRITE_TRUNCATE` for atomic batch reloads, `WRITE_EMPTY`), `tempDataset`, the streaming guard
+`minCheckpointInterval`, and the committer's two backoff schedules (`loadJobPoll*` for load-job
+completion polling, `schemaReconcile*` for the etag-race reconcile) — all described below.
 
 **Topology.** Parallel writers encode records (serializer proto bytes → Avro `GenericRecord`) and
 stream them straight to per-destination GCS objects — rows never accumulate on the heap, so memory
@@ -1161,7 +1162,8 @@ configurable, via `BufferedStreamOptions`.
 
 ## Tuning
 
-`STORAGE_API_AT_LEAST_ONCE` exposes its tuning knobs on `DefaultStreamOptions`, optional on the
+Each write method exposes its tuning knobs on its own options class; this section covers them in
+turn, starting with `STORAGE_API_AT_LEAST_ONCE` on `DefaultStreamOptions`, optional on the
 builder — an unconfigured sink uses the defaults below:
 
 ```java
@@ -1195,8 +1197,8 @@ is not configurable: the jitter is mean-preserving (a factor in `[0.75, 1.25]`, 
 delay is the configured one) and all it has to do is stop parallel subtasks from retrying against
 the same table in lockstep. Two other waits are shaped differently on purpose — the SDK's
 in-stream retries below, which the SDK spreads uniformly over `[0, delay)` so that those knobs
-are upper bounds rather than means, and the sleep before re-reading a lost etag race, uniform
-over 0–500 ms to spread subtasks across BigQuery's per-table metadata-update quota (see
+are upper bounds rather than means, and the default-stream writer's sleep before re-reading a lost
+etag race, uniform over 0–500 ms to spread subtasks across BigQuery's per-table metadata-update quota (see
 [Schema evolution](#schema-evolution)).
 
 The 512 KiB default favors bounded memory and per-record latency; throughput-oriented jobs have
@@ -1280,22 +1282,26 @@ backs off on. Neither affects the Storage Write API paths:
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `loadJobPollInitialBackoff` | 1 s | First backoff between polls of a submitted load job's completion |
+| `loadJobPollInitialBackoff` | 1 s | First backoff between polls of a submitted load or copy job's completion |
 | `loadJobPollMaxBackoff` | 30 s | Poll backoff cap (doubling), before jitter |
-| `schemaUpdateInitialBackoff` | 500 ms | First backoff after losing an etag race while reconciling a table's schema |
-| `schemaUpdateMaxBackoff` | 10 s | Cap of that backoff (doubling), before jitter |
-| `schemaUpdateMaxAttempts` | 10 | Attempt cap of the schema reconcile |
+| `schemaReconcileInitialBackoff` | 500 ms | First backoff after losing an etag race while reconciling a table's schema |
+| `schemaReconcileMaxBackoff` | 10 s | Cap of that backoff (doubling), before jitter |
+| `schemaReconcileMaxAttempts` | 10 | Attempt cap of the schema reconcile |
 
-Completion polling has **no attempt cap to configure**, deliberately: batch load jobs may
+Completion polling covers the temp-table overflow path's copy job as well as the loads
+themselves. It has **no attempt cap to configure**, deliberately: batch load jobs may
 legitimately run for hours, and bounding the polling would fail a load that was progressing
 normally — overall timeouts are the Flink job's to enforce. Lowering `loadJobPollInitialBackoff`
 notices a finished load sooner at the cost of more `jobs.get` calls against your own quota;
 raising it does the reverse.
 
-The schema-reconcile budget is the one to raise at high parallelism: every subtask reconciles the
-same destination table, and only a *lost* race consumes an attempt, so the attempts needed scale
-with how many subtasks reconcile at once (BigQuery allows about five metadata updates per table
-per ten seconds). Exhausting it fails the commit.
+Only a *lost* etag race consumes a schema-reconcile attempt, and those races do not come from
+this job's parallelism — FILE_LOADS reconciles from a single committer subtask. They come from
+anything else touching the same table at the same time: a second Flink job, a Storage Write API
+sink writing the same destination, or external tooling. Raise the budget when that describes your
+deployment (BigQuery allows about five metadata updates per table per ten seconds); exhausting it
+fails the commit. This is a different wait from the default-stream writer's 0–500 ms etag spread
+described under [Tuning](#tuning) above, which is not configurable.
 
 ## Testing
 

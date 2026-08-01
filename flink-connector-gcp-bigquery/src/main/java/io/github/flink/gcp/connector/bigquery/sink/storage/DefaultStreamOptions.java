@@ -98,7 +98,13 @@ public final class DefaultStreamOptions implements Serializable {
     /** Default for {@link Builder#retryMaxAttempts(int)}. */
     public static final int DEFAULT_RETRY_MAX_ATTEMPTS = 5;
 
-    /** Default for {@link Builder#maxRetryDuration(Duration)}: the SDK's own default. */
+    /**
+     * Default for {@link Builder#maxRetryDuration(Duration)}: the SDK's own default, read from
+     * {@code StreamWriter.Builder} in google-cloud-bigquerystorage 3.30.0. Pinned here rather than
+     * inherited, so a later SDK default does not silently change this path's behavior — but that
+     * also means this constant no longer tracks the SDK, which is why it names the version it was
+     * taken from.
+     */
     public static final Duration DEFAULT_MAX_RETRY_DURATION = Duration.ofMinutes(5);
 
     /**

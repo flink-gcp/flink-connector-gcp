@@ -110,7 +110,7 @@ public final class LoadJobOrchestrator {
 
     private final BigQuerySinkConfig<?> config;
     private final FileLoadsOptions options;
-    private final RetrySchedule schemaUpdateSchedule;
+    private final RetrySchedule schemaReconcileSchedule;
     private final LoadJobRunner runner;
     private final TableAdmin tableAdmin;
     private final StagingStorage storage;
@@ -143,7 +143,7 @@ public final class LoadJobOrchestrator {
             @Nullable Long checkpointId) {
         this.config = config;
         this.options = options;
-        this.schemaUpdateSchedule = options.toSchemaUpdateSchedule();
+        this.schemaReconcileSchedule = options.toSchemaReconcileSchedule();
         this.runner = runner;
         this.tableAdmin = tableAdmin;
         this.storage = storage;
@@ -395,7 +395,7 @@ public final class LoadJobOrchestrator {
             }
             return StorageSchemaConverter.toBigQuerySchema(snapshot.getSchema());
         }
-        for (int attempt = 1; attempt <= schemaUpdateSchedule.maxAttempts(); attempt++) {
+        for (int attempt = 1; attempt <= schemaReconcileSchedule.maxAttempts(); attempt++) {
             SchemaUnifier.UnionResult union =
                     SchemaUnifier.union(
                             snapshot.getSchema(), desired, config.getSchemaUpdateOptions());
@@ -404,7 +404,7 @@ public final class LoadJobOrchestrator {
                 return StorageSchemaConverter.toBigQuerySchema(union.getSchema());
             }
             Retries.sleep(
-                    schemaUpdateSchedule.backoffMs(attempt),
+                    schemaReconcileSchedule.backoffMs(attempt),
                     "Interrupted while reconciling the schema of " + destination);
             snapshot = tableAdmin.getSchema(destination);
             if (snapshot == null) {
@@ -419,7 +419,7 @@ public final class LoadJobOrchestrator {
                 "Failed to reconcile the schema of "
                         + destination
                         + " after "
-                        + schemaUpdateSchedule.maxAttempts()
+                        + schemaReconcileSchedule.maxAttempts()
                         + " attempts (concurrent updates kept winning).");
     }
 

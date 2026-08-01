@@ -42,11 +42,11 @@ class FileLoadsOptionsTest {
         assertThat(options.getLoadJobPollMaxBackoff())
                 .isEqualTo(FileLoadsOptions.DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF);
         assertThat(options.getSchemaUpdateInitialBackoff())
-                .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_UPDATE_INITIAL_BACKOFF);
+                .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF);
         assertThat(options.getSchemaUpdateMaxBackoff())
-                .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_UPDATE_MAX_BACKOFF);
+                .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_RECONCILE_MAX_BACKOFF);
         assertThat(options.getSchemaUpdateMaxAttempts())
-                .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_UPDATE_MAX_ATTEMPTS);
+                .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_RECONCILE_MAX_ATTEMPTS);
     }
 
     @Test
@@ -71,11 +71,11 @@ class FileLoadsOptionsTest {
         RetrySchedule schedule =
                 FileLoadsOptions.builder()
                         .stagingPath("gs://bucket")
-                        .schemaUpdateInitialBackoff(Duration.ofSeconds(1))
-                        .schemaUpdateMaxBackoff(Duration.ofSeconds(4))
-                        .schemaUpdateMaxAttempts(3)
+                        .schemaReconcileInitialBackoff(Duration.ofSeconds(1))
+                        .schemaReconcileMaxBackoff(Duration.ofSeconds(4))
+                        .schemaReconcileMaxAttempts(3)
                         .build()
-                        .toSchemaUpdateSchedule();
+                        .toSchemaReconcileSchedule();
 
         assertThat(schedule.maxAttempts()).isEqualTo(3);
         assertThat(schedule.jitterRatio()).isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
@@ -89,11 +89,28 @@ class FileLoadsOptionsTest {
                         () -> FileLoadsOptions.builder().loadJobPollInitialBackoff(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("loadJobPollInitialBackoff");
-        assertThatThrownBy(() -> FileLoadsOptions.builder().schemaUpdateMaxAttempts(0))
+        assertThatThrownBy(() -> FileLoadsOptions.builder().schemaReconcileMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("schemaUpdateMaxAttempts");
-        assertThatThrownBy(() -> FileLoadsOptions.builder().schemaUpdateMaxBackoff(null))
+                .hasMessageContaining("schemaReconcileMaxAttempts");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().schemaReconcileMaxBackoff(null))
                 .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> FileLoadsOptions.builder().loadJobPollMaxBackoff(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("loadJobPollMaxBackoff");
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .schemaReconcileInitialBackoff(Duration.ofNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("schemaReconcileInitialBackoff");
+        // Sub-millisecond durations truncate to a zero the schedule rejects at first commit, so
+        // they are rejected here instead.
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .loadJobPollInitialBackoff(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least 1 ms");
         assertThatThrownBy(
                         () ->
                                 FileLoadsOptions.builder()
@@ -107,11 +124,41 @@ class FileLoadsOptionsTest {
                         () ->
                                 FileLoadsOptions.builder()
                                         .stagingPath("gs://bucket")
-                                        .schemaUpdateInitialBackoff(Duration.ofSeconds(5))
-                                        .schemaUpdateMaxBackoff(Duration.ofSeconds(1))
+                                        .schemaReconcileInitialBackoff(Duration.ofSeconds(5))
+                                        .schemaReconcileMaxBackoff(Duration.ofSeconds(1))
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("schemaUpdateMaxBackoff");
+                .hasMessageContaining("schemaReconcileMaxBackoff");
+    }
+
+    /**
+     * One knob at a time, so dropping any single field from {@code equals}/{@code hashCode} fails
+     * here — and every new knob appears in {@code toString}, the operator-facing dump.
+     */
+    @Test
+    void equalsAndToStringCoverEachScheduleKnob() {
+        FileLoadsOptions defaults = FileLoadsOptions.builder().stagingPath("gs://bucket").build();
+
+        assertThat(base().loadJobPollInitialBackoff(Duration.ofMillis(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(base().loadJobPollMaxBackoff(Duration.ofMinutes(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(base().schemaReconcileInitialBackoff(Duration.ofMillis(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(base().schemaReconcileMaxBackoff(Duration.ofMinutes(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(base().schemaReconcileMaxAttempts(3).build()).isNotEqualTo(defaults);
+
+        assertThat(defaults.toString())
+                .contains("loadJobPollInitialBackoff=PT1S")
+                .contains("loadJobPollMaxBackoff=PT30S")
+                .contains("schemaReconcileInitialBackoff=PT0.5S")
+                .contains("schemaReconcileMaxBackoff=PT10S")
+                .contains("schemaReconcileMaxAttempts=10");
+    }
+
+    private static FileLoadsOptions.Builder base() {
+        return FileLoadsOptions.builder().stagingPath("gs://bucket");
     }
 
     @Test
@@ -213,21 +260,8 @@ class FileLoadsOptionsTest {
                         .minCheckpointInterval(Duration.ofMinutes(10))
                         .build();
 
-        FileLoadsOptions e =
-                FileLoadsOptions.builder()
-                        .stagingPath("gs://bucket")
-                        .schemaUpdateMaxAttempts(3)
-                        .build();
-        FileLoadsOptions f =
-                FileLoadsOptions.builder()
-                        .stagingPath("gs://bucket")
-                        .loadJobPollMaxBackoff(Duration.ofMinutes(1))
-                        .build();
-
         assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
         assertThat(a).isNotEqualTo(c);
         assertThat(a).isNotEqualTo(d);
-        assertThat(a).isNotEqualTo(e);
-        assertThat(a).isNotEqualTo(f);
     }
 }

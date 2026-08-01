@@ -67,9 +67,33 @@ class BufferedStreamOptionsTest {
         assertThat(options.getRetryMaxDelay()).isEqualTo(Duration.ofSeconds(15));
         assertThat(options.getRetryMaxAttempts()).isEqualTo(7);
         assertThat(options.getMaxRetryDuration()).isEqualTo(Duration.ofMinutes(2));
-        assertThat(options)
-                .isNotEqualTo(BufferedStreamOptions.builder().build())
-                .hasToString(options.toString());
+        // toString is the operator-facing dump of the configuration, so every knob must appear.
+        assertThat(options.toString())
+                .contains("retryInitialDelay=PT0.25S")
+                .contains("retryDelayMultiplier=1.5")
+                .contains("retryMaxDelay=PT15S")
+                .contains("retryMaxAttempts=7")
+                .contains("maxRetryDuration=PT2M");
+    }
+
+    /**
+     * One knob at a time, so dropping any single field from {@code equals}/{@code hashCode} fails
+     * here — setting all five at once would not.
+     */
+    @Test
+    void equalsDistinguishesEachSdkRetryKnob() {
+        BufferedStreamOptions defaults = BufferedStreamOptions.builder().build();
+
+        assertThat(BufferedStreamOptions.builder().retryInitialDelay(Duration.ofMillis(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(BufferedStreamOptions.builder().retryDelayMultiplier(3.0).build())
+                .isNotEqualTo(defaults);
+        assertThat(BufferedStreamOptions.builder().retryMaxDelay(Duration.ofMinutes(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(BufferedStreamOptions.builder().retryMaxAttempts(9).build())
+                .isNotEqualTo(defaults);
+        assertThat(BufferedStreamOptions.builder().maxRetryDuration(Duration.ofMinutes(9)).build())
+                .isNotEqualTo(defaults);
     }
 
     @Test
@@ -81,7 +105,11 @@ class BufferedStreamOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryDelayMultiplier");
         assertThatThrownBy(() -> BufferedStreamOptions.builder().retryMaxAttempts(0))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryMaxAttempts");
+        assertThatThrownBy(() -> BufferedStreamOptions.builder().retryMaxDelay(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryMaxDelay");
         assertThatThrownBy(() -> BufferedStreamOptions.builder().maxRetryDuration(null))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(

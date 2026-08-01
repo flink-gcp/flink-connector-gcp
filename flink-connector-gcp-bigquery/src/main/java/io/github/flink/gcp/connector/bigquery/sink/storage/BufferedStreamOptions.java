@@ -91,7 +91,13 @@ public final class BufferedStreamOptions implements Serializable {
     /** Default for {@link Builder#retryMaxAttempts(int)}. */
     public static final int DEFAULT_RETRY_MAX_ATTEMPTS = 5;
 
-    /** Default for {@link Builder#maxRetryDuration(Duration)}: the SDK's own default. */
+    /**
+     * Default for {@link Builder#maxRetryDuration(Duration)}: the SDK's own default, read from
+     * {@code StreamWriter.Builder} in google-cloud-bigquerystorage 3.30.0. Pinned here rather than
+     * inherited, so a later SDK default does not silently change this path's behavior — but that
+     * also means this constant no longer tracks the SDK, which is why it names the version it was
+     * taken from.
+     */
     public static final Duration DEFAULT_MAX_RETRY_DURATION = Duration.ofMinutes(5);
 
     private final long maxAppendRequestBytes;
@@ -334,7 +340,7 @@ public final class BufferedStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder retryInitialDelay(Duration retryInitialDelay) {
-            this.retryInitialDelay = checkPositive(retryInitialDelay, "retryInitialDelay");
+            this.retryInitialDelay = checkAtLeastOneMilli(retryInitialDelay, "retryInitialDelay");
             return this;
         }
 
@@ -362,7 +368,7 @@ public final class BufferedStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder retryMaxDelay(Duration retryMaxDelay) {
-            this.retryMaxDelay = checkPositive(retryMaxDelay, "retryMaxDelay");
+            this.retryMaxDelay = checkAtLeastOneMilli(retryMaxDelay, "retryMaxDelay");
             return this;
         }
 
@@ -390,14 +396,14 @@ public final class BufferedStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder maxRetryDuration(Duration maxRetryDuration) {
-            this.maxRetryDuration = checkPositive(maxRetryDuration, "maxRetryDuration");
+            this.maxRetryDuration = checkAtLeastOneMilli(maxRetryDuration, "maxRetryDuration");
             return this;
         }
 
-        private static Duration checkPositive(Duration value, String name) {
+        private static Duration checkAtLeastOneMilli(Duration value, String name) {
             Preconditions.checkNotNull(value, name + " must not be null");
             Preconditions.checkArgument(
-                    !value.isNegative() && !value.isZero(), name + " must be positive: %s", value);
+                    value.toMillis() > 0, name + " must be at least 1 ms: %s", value);
             return value;
         }
 

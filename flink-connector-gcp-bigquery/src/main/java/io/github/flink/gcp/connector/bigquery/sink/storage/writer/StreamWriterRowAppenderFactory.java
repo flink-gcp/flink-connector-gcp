@@ -34,6 +34,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -112,21 +113,29 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
      * that already landed answers {@code ALREADY_EXISTS} — which that writer treats as success.
      */
     static RetrySettings toRetrySettings(BufferedStreamOptions options) {
-        return RetrySettings.newBuilder()
-                .setInitialRetryDelayDuration(options.getRetryInitialDelay())
-                .setRetryDelayMultiplier(options.getRetryDelayMultiplier())
-                .setMaxRetryDelayDuration(options.getRetryMaxDelay())
-                .setMaxAttempts(options.getRetryMaxAttempts())
-                .build();
+        return toRetrySettings(
+                options.getRetryInitialDelay(),
+                options.getRetryDelayMultiplier(),
+                options.getRetryMaxDelay(),
+                options.getRetryMaxAttempts());
     }
 
     /** Builds the SDK's in-stream {@link RetrySettings} from the {@code retry*} knobs. */
     static RetrySettings toRetrySettings(DefaultStreamOptions options) {
+        return toRetrySettings(
+                options.getRetryInitialDelay(),
+                options.getRetryDelayMultiplier(),
+                options.getRetryMaxDelay(),
+                options.getRetryMaxAttempts());
+    }
+
+    private static RetrySettings toRetrySettings(
+            Duration initialDelay, double multiplier, Duration maxDelay, int maxAttempts) {
         return RetrySettings.newBuilder()
-                .setInitialRetryDelayDuration(options.getRetryInitialDelay())
-                .setRetryDelayMultiplier(options.getRetryDelayMultiplier())
-                .setMaxRetryDelayDuration(options.getRetryMaxDelay())
-                .setMaxAttempts(options.getRetryMaxAttempts())
+                .setInitialRetryDelayDuration(initialDelay)
+                .setRetryDelayMultiplier(multiplier)
+                .setMaxRetryDelayDuration(maxDelay)
+                .setMaxAttempts(maxAttempts)
                 .build();
     }
 

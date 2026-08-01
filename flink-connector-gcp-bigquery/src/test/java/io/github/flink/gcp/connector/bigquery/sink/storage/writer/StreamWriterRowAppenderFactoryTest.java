@@ -60,14 +60,12 @@ class StreamWriterRowAppenderFactoryTest {
                 StreamWriterRowAppenderFactory.toRetrySettings(
                         DefaultStreamOptions.builder().build());
 
-        assertThat(settings.getInitialRetryDelayDuration())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_INITIAL_DELAY);
-        assertThat(settings.getRetryDelayMultiplier())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_DELAY_MULTIPLIER);
-        assertThat(settings.getMaxRetryDelayDuration())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_MAX_DELAY);
-        assertThat(settings.getMaxAttempts())
-                .isEqualTo(DefaultStreamOptions.DEFAULT_RETRY_MAX_ATTEMPTS);
+        // Literals, not the constants: these are the values the tuning table publishes, and the
+        // deleted shared RETRY_SETTINGS was the last thing pinning them.
+        assertThat(settings.getInitialRetryDelayDuration()).isEqualTo(Duration.ofMillis(500));
+        assertThat(settings.getRetryDelayMultiplier()).isEqualTo(2.0);
+        assertThat(settings.getMaxRetryDelayDuration()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(settings.getMaxAttempts()).isEqualTo(5);
     }
 
     /**
@@ -82,23 +80,6 @@ class StreamWriterRowAppenderFactoryTest {
                 .isEqualTo(
                         StreamWriterRowAppenderFactory.toRetrySettings(
                                 DefaultStreamOptions.builder().build()));
-    }
-
-    @Test
-    void theBufferedPathCarriesItsConfiguredSdkKnobs() {
-        RetrySettings settings =
-                StreamWriterRowAppenderFactory.toRetrySettings(
-                        BufferedStreamOptions.builder()
-                                .retryInitialDelay(Duration.ofMillis(250))
-                                .retryDelayMultiplier(1.5)
-                                .retryMaxDelay(Duration.ofSeconds(15))
-                                .retryMaxAttempts(7)
-                                .build());
-
-        assertThat(settings.getInitialRetryDelayDuration()).isEqualTo(Duration.ofMillis(250));
-        assertThat(settings.getRetryDelayMultiplier()).isEqualTo(1.5);
-        assertThat(settings.getMaxRetryDelayDuration()).isEqualTo(Duration.ofSeconds(15));
-        assertThat(settings.getMaxAttempts()).isEqualTo(7);
     }
 
     @Test
