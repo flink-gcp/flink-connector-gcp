@@ -63,7 +63,7 @@ class CloudTasksWriterOptionsTest {
                 .isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
         assertThat(options.toNotFoundRetrySchedule().jitterRatio())
                 .isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
-        // The backoffs pin that the two budgets' durations reach their own schedule.
+        // The backoffs pin that each budget's durations reach its own schedule, in milliseconds.
         assertThat(options.toRetrySchedule().backoffMs(1)).isBetween(1_500L, 2_500L);
         assertThat(options.toNotFoundRetrySchedule().backoffMs(1)).isBetween(750L, 1_250L);
     }

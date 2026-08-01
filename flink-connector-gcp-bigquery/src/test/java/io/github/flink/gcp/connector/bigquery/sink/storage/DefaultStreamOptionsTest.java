@@ -121,7 +121,9 @@ class DefaultStreamOptionsTest {
 
         assertThat(schedule.maxAttempts()).isEqualTo(3);
         assertThat(schedule.jitterRatio()).isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
-        // The backoffs pin that the two durations reach the schedule the right way round.
+        // The backoffs pin that each duration reaches its own slot, in milliseconds: an
+        // ordering swap is already rejected by the schedule's own precondition, a mixed-up field
+        // or unit is not.
         assertThat(schedule.backoffMs(1)).isBetween(750L, 1250L);
         assertThat(schedule.backoffMs(2)).isBetween(1500L, 2500L);
     }
