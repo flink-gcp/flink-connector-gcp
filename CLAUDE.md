@@ -64,7 +64,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   defaults except MD013 (line length: issue-link syntax legitimately outruns any source-line cap)
   and MD060 (table style), both declined with reasons in `.markdownlint-cli2.jsonc`; MD051's
   in-page anchor check is the half Hugo's build does not cover (`relref` validates cross-page
-  links only), `tofu fmt -check` over `opentofu/` (`tofu validate` is deliberately
+  links only). Those two do **not** add up to the whole, though: a *cross-page* link carrying a
+  `#fragment` is checked by neither — `relref` resolves the page and stops, MD051 reads same-page
+  anchors only — so it can point at nothing while both stay green. Splitting a page into a section
+  turns every same-page anchor into one of those, which is why #90 resolved them by hand against
+  the `id=`s in the built `docs/public` (all 19 pages, ~12 lines of throwaway Python). A `scripts/`
+  checker for it was weighed and deferred there: build it when the pages actually rot, not before.
+  Also `tofu fmt -check` over `opentofu/` (`tofu validate` is deliberately
   absent: it needs a provider-downloading init, and every PR touching `opentofu/` gets a full plan
   from the tofu-plan workflow, which subsumes it). Deliberately
   does **not** run `just --fmt --check`: that is an unstable feature, excluded from just's
