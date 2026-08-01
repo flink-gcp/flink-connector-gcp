@@ -27,11 +27,21 @@
 
 set -euo pipefail
 
+# The link must land where mise looks for it — beside mise.toml at the
+# worktree root — not wherever the script was invoked from.
+cd "$(git rev-parse --show-toplevel)"
+
 main_root=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
 
-# Never clobber a real file: in the main checkout this is the .env itself
-# (and linking there would replace it with a self-referential symlink), and in
-# a worktree it is a hand-made copy someone chose to have.
+# In the main checkout there is nothing to link — and linking would replace
+# the real .env with a self-referential symlink. Checked by path, not by file
+# type, so it also holds when the main checkout's .env is itself a symlink.
+if [ "$(pwd -P)" = "$main_root" ]; then
+    echo "This is the main checkout; its .env is the link target. Nothing to do."
+    exit 0
+fi
+
+# Never clobber a hand-made copy someone chose to have in this worktree.
 if [ -f .env ] && [ ! -L .env ]; then
     echo ".env is already a regular file here; nothing to link."
     exit 0
