@@ -637,9 +637,12 @@ Three of those rows are traps worth stating plainly, because each is accepted ra
   other instant, with no error anywhere. Send an ISO-8601 string, or convert before the sink.
 - **A `JSON` column takes the JSON text as a string**, so `{"payload":{"k":1}}` fails and
   `{"payload":"{\"k\":1}"}` is what to write.
-- **A `BYTES` column takes a JSON array of byte values**, such as `[104,105]` — not the base64 string
-  that protobuf's own canonical JSON mapping uses. A base64 document fails per record until it is
-  pre-decoded.
+- **A `BYTES` column takes a JSON array of byte values**, such as `[104,105]` — not the base64
+  string that protobuf's own canonical JSON mapping uses, and that BigQuery's own JSON load path
+  requires. A base64 document fails per record, so pre-decode it with a `map` before the sink. The
+  gap is in the conversion library rather than here, and is reported there as
+  [googleapis/google-cloud-java#13980](https://github.com/googleapis/google-cloud-java/issues/13980);
+  [#131]({{< param BookRepo >}}/issues/131) tracks it, and is where to check whether it has landed.
 
 Keys are matched to columns **case-insensitively**, so a key whose spelling differs from the column's
 is not an unknown field — and two keys differing only by case are not two fields either: one value
