@@ -145,7 +145,18 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   native locking. These two workflows are the standing exception to the #111 just-recipe rule:
   tfaction is itself the named, rerunnable sequence, and `just tofu <args>` is the local
   equivalent. They run on plain `GITHUB_TOKEN` — no GitHub App, so tfaction's push-back features
-  (auto-fix commits, follow-up PRs) are unused
+  (auto-fix commits, follow-up PRs) are unused. **A failed apply is recovered by a follow-up
+  pull request**, never by re-running the apply job: the failure bumps the state serial, making
+  the saved plan stale, so a re-run can only fail again ("Saved plan is stale") — and tofu
+  cancels unstarted operations on the first error, so assume nothing from the failed apply
+  exists until measured. tfaction's native automation of that follow-up PR needs the GitHub App,
+  deliberately deferred to the dedicated org at go-public time (#177; decided with the user on
+  #176, where a dispatch-triggered fresh-apply workflow was built as an alternative and
+  withdrawn in the App's favour). Two service-agent facts from the same incident: enabling an
+  API does **not** create its service agent (they provision lazily; `gcloud beta services
+  identity create` is the per-service one-off, in `opentofu/README.md`), and granting to a
+  nonexistent `gcp-sa-*` member fails as a misleading `Policy update access denied`, not a
+  "does not exist"
 - **No service account keys, ever.** All CI credentials are short-lived WIF tokens; the provider
   condition pins the immutable repository/owner IDs, and per-account bindings restrict the apply
   account to `push` on `main` and the E2E account to `push`/`schedule`/`workflow_dispatch` on

@@ -26,7 +26,14 @@ data "google_project" "this" {
 # suite's topics and subscriptions are created per run under random names.
 # The agent's address is constructed from the project number rather than
 # provisioned via google_project_service_identity, which would pull in the
-# google-beta provider; Pub/Sub creates the agent when its API is enabled.
+# google-beta provider — but the agent is NOT created by enabling the API, as
+# an earlier version of this comment claimed. Service agents are provisioned
+# lazily on first use, and granting to one that does not exist yet fails with
+# an unhelpful "Policy update access denied" (measured on this file's first
+# apply). The one-off bootstrap is
+#   gcloud beta services identity create --service=pubsub.googleapis.com
+# run as the owner, recorded in ../README.md; the agent is permanent once
+# created, so this never recurs for Pub/Sub.
 resource "google_project_iam_member" "pubsub_service_agent" {
   for_each = toset([
     "roles/pubsub.publisher",
