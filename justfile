@@ -165,9 +165,17 @@ worktree-env:
 # must come from ~/.m2, not the reactor. Same hand-run cost too — the
 # io.github.flink-gcp SNAPSHOTs it leaves behind are removed with
 # `rm -rf ~/.m2/repository/io/github/flink-gcp`.
+#
+# rat is skipped in that install because building `.` runs apache-rat over the
+# whole working tree, and in the E2E workflow the tree contains the WIF
+# credentials file google-github-actions/auth writes into the workspace root
+# (gha-creds-*.json, no licence header — measured 2026-08-01: the first
+# dispatch after #27 added this step failed exactly there, on a tree ci.yaml
+# had just passed). The header check is not lost: ci.yaml's verify runs rat on
+# every pull request, and this install only primes ~/.m2.
 e2e:
     scripts/e2e-gated-its.sh --require-env
-    {{ mvn }} -pl .,flink-connector-gcp-test-utils -DskipTests install
+    {{ mvn }} -pl .,flink-connector-gcp-test-utils -DskipTests -Drat.skip=true install
     {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub test-compile
     {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub surefire:test@integration-tests -Dtest="$(scripts/e2e-gated-its.sh)"
     scripts/e2e-gated-its.sh --assert-ran
