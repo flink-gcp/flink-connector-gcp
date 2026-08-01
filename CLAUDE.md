@@ -64,10 +64,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   that header *is* the opt-in, which is what keeps the check off the metadata, type-mapping and
   policy tables the same pages carry — and every option those tables name must exist. Modules are
   mapped to pages in `scripts/option-docs.toml`, not classes, so a **new** `*Options` class is
-  required to appear from the moment it exists; the four `[exempt]` entries are bulk
-  `Collection<String>` overloads of a documented singular, and the three `[extra]` ones are
-  Flink's own `FactoryUtil` keys (`format`, `scan.parallelism`, `sink.parallelism`), which the SQL
-  page documents because a reader writing DDL needs every key the connector accepts. The pages are
+  required to appear from the moment it exists. Two allowlists, pointing opposite ways — `[exempt]`
+  is a setter with no row, `[extra]` a row with no setter — and **an entry that never fires fails**,
+  as a stale one does in `check-flink-api-tiers.toml`: the four `[exempt]` entries this shipped
+  with were dead on arrival, since the pages name each bulk overload in the same row as its
+  singular. `[exempt]` is empty today; `[extra]` holds Flink's own `FactoryUtil` keys (`format`,
+  `scan.parallelism`, `sink.parallelism`), which the SQL page documents because a reader writing
+  DDL needs every key the connector accepts. The pages are
   **hand-written, not generated** — their tables group knobs (one Pub/Sub row covers eight
   `retry*` setters) and carry defaults the sources do not hold, since an unset knob's default
   belongs to the client library; this check buys back the one property generation would have given

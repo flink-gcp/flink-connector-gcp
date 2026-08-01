@@ -63,14 +63,15 @@ page = "docs/content/docs/connectors/table/pubsub.md"
 
 # SOURCE SIDE. Setters that exist and deliberately have no row, keyed
 # `Class.setter`. The bar is that a reader looking the setter up would find
-# nothing new — all four below are `Collection<String>` bulk overloads of a
-# singular the page already documents in the same row. A setter that does
-# something its singular does not is a row, not an entry here.
+# nothing new.
+#
+# Empty, and worth saying why so the same four are not re-added: the bulk
+# `Collection<String>` overloads (`jsonFieldPaths`, `geographyFieldPaths` on
+# both schema options classes) were listed here at first, and turned out not to
+# need it — the pages name them in the same row as their singular, which
+# satisfies coverage directly and reads better than an exemption would. The
+# check now fails on an entry that never fires, which is how that was found.
 [exempt]
-"ProtoSchemaOptions.jsonFieldPaths" = "Collection overload of jsonFieldPath, documented with it: the page names both spellings in one row and the bulk form adds nothing a reader has to look up."
-"ProtoSchemaOptions.geographyFieldPaths" = "As jsonFieldPaths above."
-"AvroSchemaOptions.jsonFieldPaths" = "As jsonFieldPaths above."
-"AvroSchemaOptions.geographyFieldPaths" = "As jsonFieldPaths above."
 
 # PAGE SIDE. Option-table entries that exist and no mapped source declares,
 # keyed by the name exactly as the table writes it. The last resort of the two:

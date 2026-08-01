@@ -187,6 +187,13 @@ def main() -> int:
     extra = config.get("extra", {})
     problems: list[str] = []
     counts: list[tuple[str, int]] = []
+    # Which allowlist entries actually did something. An entry that never fires
+    # is a claim nobody can check, and it accumulates silently — the four
+    # [exempt] entries this check shipped with were all dead on arrival,
+    # because the pages named the bulk overloads in the same row as their
+    # singular. check-flink-api-tiers.py fails on a stale entry for the same
+    # reason; so does this now.
+    used: set[str] = set()
 
     claimed = {entry["source"] for entry in config.get("config_options", [])}
 
@@ -221,7 +228,10 @@ def main() -> int:
         for klass, setters in by_class.items():
             real |= setters
             for setter in sorted(setters):
-                if setter in documented or f"{klass}.{setter}" in exempt:
+                if setter in documented:
+                    continue
+                if f"{klass}.{setter}" in exempt:
+                    used.add(f"{klass}.{setter}")
                     continue
                 problems.append(
                     f"{entry['page']}: {klass}.{setter} is a builder option but no "
@@ -229,12 +239,16 @@ def main() -> int:
                     f'entry "{klass}.{setter}" in {CONFIG.name} saying why not.'
                 )
         for name, line in sorted(documented.items(), key=lambda kv: kv[1]):
-            if name not in real and name not in extra:
-                problems.append(
-                    f"{entry['page']}:{line}: the option table names `{name}`, "
-                    f"which no builder in {module} declares. Remove the row, or "
-                    f"correct it to the setter's current name."
-                )
+            if name in real:
+                continue
+            if name in extra:
+                used.add(name)
+                continue
+            problems.append(
+                f"{entry['page']}:{line}: the option table names `{name}`, "
+                f"which no builder in {module} declares. Remove the row, or "
+                f"correct it to the setter's current name."
+            )
         counts.append((entry["page"], len(real)))
 
     for entry in config.get("config_options", []):
@@ -249,27 +263,40 @@ def main() -> int:
                 f"table names it."
             )
         for name, line in sorted(documented.items(), key=lambda kv: kv[1]):
-            if name not in keys and name not in extra:
-                problems.append(
-                    f"{entry['page']}:{line}: the option table names `{name}`, "
-                    f"which {Path(entry['source']).name} does not declare. Remove "
-                    f'the row, or add an [extra] entry "{name}" saying where it '
-                    f"comes from."
-                )
+            if name in keys:
+                continue
+            if name in extra:
+                used.add(name)
+                continue
+            problems.append(
+                f"{entry['page']}:{line}: the option table names `{name}`, "
+                f"which {Path(entry['source']).name} does not declare. Remove "
+                f'the row, or add an [extra] entry "{name}" saying where it '
+                f"comes from."
+            )
         counts.append((entry["page"], len(keys)))
+
+    for table, entries in (("exempt", exempt), ("extra", extra)):
+        for key in sorted(set(entries) - used):
+            problems.append(
+                f'[{table}] entry "{key}" in {CONFIG.name} never fires: the check '
+                f"passes without it. Delete it — an allowlist entry that forgives "
+                f"nothing is a claim nobody can check."
+            )
 
     if problems:
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
-        fail(f"\n{len(problems)} option(s) out of sync with the documentation.")
+        fail(f"\n{len(problems)} problem(s) between the sources and the reference.")
 
     total = sum(n for _, n in counts)
     print(f"{total} options documented:")
     for page, n in counts:
         print(f"  {n:>3}  {page}")
-    if exempt:
+    if exempt or extra:
         print(
-            f"  {len(exempt)} exempt, {len(extra)} declared elsewhere (see {CONFIG.name})"
+            f"  {len(exempt)} exempt, {len(extra)} declared elsewhere "
+            f"(see {CONFIG.name}); every one of them fires, or this would have failed"
         )
     return 0
 

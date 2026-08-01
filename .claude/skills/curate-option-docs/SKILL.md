@@ -34,6 +34,10 @@ more likely a corrected row.
 Both are dictionaries of `key = "reason"`. The reason is read by the next person deciding whether
 the entry still applies, so it says *why this is not a row*, not *what the option is*.
 
+**An entry that never fires is itself a failure**, the rule `check-flink-api-tiers.toml` applies to
+its allowlist. So an entry is never a safe way to quieten something: if the check passes without
+it, it has to go.
+
 ## Failure: "`Class.setter` is a builder option but no `Option`-headed table names it"
 
 A knob was added or renamed and the reference did not follow. **Write the row** — this is the
@@ -66,9 +70,12 @@ do not group to save typing.
 
 ### When `[exempt]` is right instead
 
-Only when a reader looking up the setter would find nothing new. The four entries today are all the
-same shape — a `Collection<String>` bulk overload of a documented singular (`jsonFieldPaths` beside
-`jsonFieldPath`). A setter that does something the singular does not is a row, not an exemption.
+Only when a reader looking up the setter would find nothing new — and check first that a row is not
+simply the better answer. **`[exempt]` is empty today**, and the way it got that way is the lesson:
+the four bulk `Collection<String>` overloads listed there at first were all documentable in the same
+row as their singular (`` `jsonFieldPath` / `jsonFieldPaths` ``), so the exemptions forgave nothing.
+An entry that never fires now fails the check, so a dead one cannot accumulate — but the cheaper
+habit is to try the row first.
 
 ## Failure: "the option table names `x`, which no builder in `<module>` declares"
 
