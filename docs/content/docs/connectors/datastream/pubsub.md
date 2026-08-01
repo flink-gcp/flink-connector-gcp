@@ -787,7 +787,7 @@ provisions), seek-to-timestamp on an ordering-enabled subscription, the create-o
 permission-denied messages, exercised by impersonating a deliberately unauthorized service account
 (`e2e-no-pubsub`, provisioned with no Pub/Sub role). Topics and subscriptions are created under
 per-run UUID-suffixed names and deleted afterwards. For local runs, put `PUBSUB_IT_PROJECT` in the
-uncommitted `.env` at the repository root (in a git worktree, run `just link-env` once to make it
+uncommitted `.env` at the repository root (in a git worktree, run `just worktree-env` once to make it
 reachable there) — and note the IAM tests impersonate `e2e-no-pubsub`,
 which needs a one-off `roles/iam.serviceAccountTokenCreator` binding for your own account
 (`gcloud iam service-accounts add-iam-policy-binding e2e-no-pubsub@<project>.iam.gserviceaccount.com

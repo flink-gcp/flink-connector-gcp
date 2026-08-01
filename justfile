@@ -140,8 +140,8 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 #
 # Make the main checkout's .env reachable from this worktree (issue #156;
 # the guard logic lives in the script, where shellcheck reads it).
-link-env:
-    scripts/link-env.sh
+worktree-env:
+    scripts/worktree-env.sh
 
 # Run the real-GCP gated ITCases and assert they actually ran.
 e2e:

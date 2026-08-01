@@ -29,7 +29,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   (`scripts/e2e-gated-its.sh`, which derives the class list from the gating annotation) that the
   gated classes actually executed. The weekly E2E workflow (`e2e.yaml`) runs this same recipe
   via WIF; locally the variables come from the uncommitted `.env`, which a fresh worktree does
-  not have — run `just link-env` once there to symlink the main checkout's copy (#156; the same
+  not have — run `just worktree-env` once there to symlink the main checkout's copy (#156; the same
   link also carries `just tofu`'s credentials)
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
