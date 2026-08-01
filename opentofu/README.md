@@ -115,3 +115,32 @@ no service account at all:
    identifiers out of this configuration). If a permission is missing, the
    plan job fails naming it; add it in `opentofu-sa.tf` and apply locally —
    pull-request CI can only plan, so fixing plan permissions never needs CI.
+
+## Service agents (one-off, per service)
+
+Granting a role to a Google service agent
+(`service-<project-number>@gcp-sa-<service>.iam.gserviceaccount.com`) fails
+with an unhelpful `Policy update access denied` when the agent does not exist
+yet — and enabling the service's API does **not** create it; agents are
+provisioned lazily on first use. Before the first apply that grants to a new
+service's agent, provision it once as the owner:
+
+```console
+$ gcloud beta services identity create --service=<service>.googleapis.com --project=flink-gcp
+```
+
+Done for `pubsub.googleapis.com` on 2026-08-01 (the Pub/Sub agent performs
+dead-letter forwarding, PR #170). The agent is permanent once created.
+
+A failed apply also leaves the pull request's saved plan **stale** — the
+failure itself bumps the state serial, so the plan no longer describes the
+state, and rerunning the apply job fails with "Saved plan is stale" by
+design. The recovery is a follow-up pull request whose fresh plan picks up
+the remainder; rerunning the old job can never succeed. tfaction can create
+that follow-up pull request automatically, but only with a GitHub App token —
+adopting the App is planned together with the dedicated org at go-public time
+([#177](https://github.com/laughingman7743/flink-connector-gcp/issues/177)),
+and until then the follow-up pull request is written by hand. A
+dispatch-triggered fresh-apply workflow was built as an alternative on
+[PR #176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)
+and withdrawn in the App's favour.
