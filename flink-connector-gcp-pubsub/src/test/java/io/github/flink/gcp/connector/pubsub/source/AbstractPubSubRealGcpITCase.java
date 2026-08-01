@@ -68,6 +68,11 @@ import java.util.function.UnaryOperator;
  *
  * <p>Timeouts are looser than the emulator harness's: the service is remote, and dead-letter
  * forwarding in particular is service-paced.
+ *
+ * <p>The clients and the cleanup registries are static and shared by every concrete class in the
+ * fork — one class's {@link AfterAll} clears and closes, the next class's {@link BeforeAll}
+ * re-creates. That hand-off assumes surefire's default sequential class execution in one fork;
+ * enabling class-level parallelism would let one class's cleanup delete another's live resources.
  */
 @Timeout(300)
 public abstract class AbstractPubSubRealGcpITCase {
