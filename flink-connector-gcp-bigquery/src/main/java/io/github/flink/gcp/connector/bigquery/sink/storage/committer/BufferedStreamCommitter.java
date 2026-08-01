@@ -136,7 +136,9 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
                         committable.getStreamName(),
                         committable.getFlushOffset(),
                         e.toString());
-                sleep(retrySchedule.backoffMs(attempt));
+                Retries.sleep(
+                        retrySchedule.backoffMs(attempt),
+                        "Interrupted while waiting to retry a BigQuery flush");
                 attempt++;
             }
         }
@@ -170,9 +172,5 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
             service = serviceFactory.create(location);
         }
         return service;
-    }
-
-    private static void sleep(long millis) throws IOException {
-        Retries.sleep(millis, "Interrupted while waiting to retry a BigQuery flush");
     }
 }

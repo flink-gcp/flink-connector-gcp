@@ -126,7 +126,9 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         Preconditions.checkState(job != null, "Job %s was never submitted", jobId);
         int attempt = 1;
         while (!isDone(job)) {
-            sleep(POLL_SCHEDULE.backoffMs(attempt++), jobId);
+            Retries.sleep(
+                    POLL_SCHEDULE.backoffMs(attempt++),
+                    "Interrupted while waiting for BigQuery job " + jobId);
             Job reloaded = job.reload();
             if (reloaded == null) {
                 throw new IOException(
@@ -215,10 +217,6 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     private static boolean isDone(Job job) {
         JobStatus status = job.getStatus();
         return status != null && status.getState() == JobStatus.State.DONE;
-    }
-
-    private static void sleep(long millis, String jobId) throws IOException {
-        Retries.sleep(millis, "Interrupted while waiting for BigQuery job " + jobId);
     }
 
     private JobId toJobId(String jobName) {
