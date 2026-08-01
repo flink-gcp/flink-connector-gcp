@@ -40,8 +40,9 @@ import java.util.Objects;
  *
  * <p>Deliberately mirrors {@code sink.TopicDestination} (and the BigQuery module's {@code
  * TableDestination}) rather than sharing a base type: the three name different resources and only
- * coincide in shape. Extracting a shared destination-identity type is tracked with the other
- * cross-connector extractions in issue #61.
+ * coincide in shape. A shared destination-identity type was considered and declined when issue #61
+ * created {@code flink-connector-gcp-base} — a type moves there only once it has multiple
+ * consumers, and nothing consumes destination identity across modules.
  */
 @PublicEvolving
 public final class SubscriptionDestination implements Serializable {
