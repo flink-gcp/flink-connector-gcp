@@ -112,7 +112,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 ## Workflow rules
 
 - **One git worktree per PR** under `/tmp/worktrees/flink-connector-gcp/`; never switch branches
-  in the main checkout. Remove the worktree and local branch after merge
+  in the main checkout. Remove the worktree and local branch after merge. If the branch needs the
+  real-GCP ITs or `just tofu`, run `just worktree-env` once in the fresh worktree — it symlinks
+  the main checkout's uncommitted `.env` (#156)
 - All changes go through **draft PRs**; nothing is pushed directly to `main` after the initial
   skeleton
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency

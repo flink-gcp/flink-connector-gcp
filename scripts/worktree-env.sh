@@ -48,7 +48,7 @@ if [ -f .env ] && [ ! -L .env ]; then
 fi
 
 if [ ! -f "$main_root/.env" ]; then
-    echo "::error::$main_root/.env does not exist. Create it in the main checkout first" \
+    echo "error: $main_root/.env does not exist. Create it in the main checkout first" \
         '(see "Local use" in opentofu/README.md for the variables it needs).' >&2
     exit 1
 fi
