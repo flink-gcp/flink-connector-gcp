@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.pubsub.source;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
+import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.PermissionDeniedException;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.ImpersonatedCredentials;
@@ -90,13 +91,21 @@ class PubSubSubscriptionAdminIamRealGcpITCase extends AbstractPubSubRealGcpITCas
         assertThat(describeSubscriptionExists(denied)).isFalse();
     }
 
+    /**
+     * The cause is asserted as any {@link ApiException}, not {@code PermissionDeniedException}:
+     * measured 2026-08-01, real Pub/Sub answers a permissionless {@code Seek} with {@code
+     * UNAUTHENTICATED} while {@code GetSubscription} and {@code CreateSubscription} get {@code
+     * PERMISSION_DENIED} — and the connector's seek branch catches the generic {@code
+     * RuntimeException}, so every gax status takes the same path and the message is the whole
+     * contract.
+     */
     @Test
     void seekWithoutTheUpdatePermissionNamesThePermissionAndRole() {
         assertThatThrownBy(() -> deniedAdmin().seek(existingSubscription, Instant.now()))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("pubsub.subscriptions.update")
                 .hasMessageContaining("roles/pubsub.editor")
-                .hasCauseInstanceOf(PermissionDeniedException.class);
+                .hasCauseInstanceOf(ApiException.class);
     }
 
     /** The production admin, authenticating as the deliberately unauthorized identity. */
