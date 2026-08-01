@@ -1086,7 +1086,8 @@ BigQuery and GCS and are gated on
 `BQ_IT_PROJECT`, `BQ_IT_DATASET` and `BQ_IT_GCS_BUCKET` (application-default credentials); they
 are skipped when the variables are unset, keeping `./mvnw verify` credential-free. For local
 runs, put the variables (plus `GOOGLE_APPLICATION_CREDENTIALS` if not using the default ADC
-location) in an uncommitted `.env` at the repository root — mise loads it automatically. The
+location) in an uncommitted `.env` at the repository root — mise loads it automatically. In a git
+worktree, run `just worktree-env` once to make the repository root's `.env` reachable there. The
 FILE_LOADS clients are built with `getDefaultInstance()`, so the environment must also resolve
 a default project (`GOOGLE_CLOUD_PROJECT`, or a gcloud config the client library can see) —
 with only the `BQ_IT_*` variables set, the load-job committer fails with "A project ID is
