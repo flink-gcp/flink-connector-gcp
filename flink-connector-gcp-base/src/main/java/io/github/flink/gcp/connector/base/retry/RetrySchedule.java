@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.cloudtasks.sink;
+package io.github.flink.gcp.connector.base.retry;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
@@ -24,10 +24,7 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * An immutable retry schedule: exponential backoff from an initial delay up to a cap, a bounded
  * number of attempts, and optional proportional jitter (to de-synchronize parallel subtasks
- * retrying against the same queue).
- *
- * <p>Duplicated from the BigQuery and Pub/Sub modules; extracting a shared retry module is tracked
- * in issue #61.
+ * retrying against the same destination).
  */
 @Internal
 public final class RetrySchedule {

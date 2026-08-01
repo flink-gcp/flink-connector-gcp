@@ -3,10 +3,10 @@
 Design decisions for the shared test-utils module (#27). Read before adding anything here.
 
 - **Test-support code only, forever.** Production code shared across connectors — retry
-  (`RetrySchedule`, #61), DLQ/metrics (#37) — goes to the *main-code* shared module those issues
-  plan, for which the names `flink-connector-gcp-base` / `-common` stay reserved. Utilities live in
-  `src/main/java` here only so siblings can consume the plain jar at `test` scope (the
-  `flink-test-utils` shape); that placement does not make them production code.
+  (`RetrySchedule`, #61), DLQ/metrics (#37) — goes to the *main-code* shared module,
+  `flink-connector-gcp-base` (created by #61; its own CLAUDE.md records the mirror-image rule).
+  Utilities live in `src/main/java` here only so siblings can consume the plain jar at `test`
+  scope (the `flink-test-utils` shape); that placement does not make them production code.
 - **Every dependency is `provided`.** Consumers' test classpaths already carry what they exercise,
   and `provided` is non-transitive, so depending on this module adds no new resolution path to any
   artifact — which is what keeps the SQL uber-jar's shade-scope mediation undisturbed (a Google

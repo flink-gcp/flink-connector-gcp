@@ -28,17 +28,15 @@ import org.apache.flink.util.function.ThrowingRunnable;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
-import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
-import io.github.flink.gcp.connector.pubsub.sink.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -565,28 +563,15 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /**
      * Whether the failure's cause chain carries a {@code NOT_FOUND} status — either as the gax
-     * {@link ApiException} the SDK publisher surfaces or as a raw gRPC {@link
-     * StatusRuntimeException} (defense in depth).
+     * {@code ApiException} the SDK publisher surfaces or as a raw gRPC {@code
+     * StatusRuntimeException} (defense in depth), both read through {@link StatusCodes#codeOf}.
      *
-     * <p>Mirrors the BigQuery module's {@code AppendErrorClassifier.hasCode}; folding status-code
-     * classification into a shared module is tracked with issue #61, and a Pub/Sub fatal-exception
-     * classifier with issue #37.
+     * <p>A Pub/Sub fatal-exception classifier is tracked with issue #37.
      */
     private static boolean isNotFound(Throwable throwable) {
-        return ExceptionUtils.findThrowable(throwable, PubSubWriter::isNotFoundException)
+        return ExceptionUtils.findThrowable(
+                        throwable, t -> StatusCodes.codeOf(t) == StatusCode.Code.NOT_FOUND)
                 .isPresent();
-    }
-
-    private static boolean isNotFoundException(Throwable throwable) {
-        if (throwable instanceof ApiException) {
-            return ((ApiException) throwable).getStatusCode().getCode()
-                    == StatusCode.Code.NOT_FOUND;
-        }
-        if (throwable instanceof StatusRuntimeException) {
-            return ((StatusRuntimeException) throwable).getStatus().getCode()
-                    == Status.Code.NOT_FOUND;
-        }
-        return false;
     }
 
     @VisibleForTesting

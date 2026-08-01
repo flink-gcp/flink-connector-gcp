@@ -31,7 +31,8 @@ import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.LoadJobConfiguration;
-import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
+import io.github.flink.gcp.connector.base.retry.Retries;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import org.slf4j.Logger;
@@ -125,7 +126,9 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         Preconditions.checkState(job != null, "Job %s was never submitted", jobId);
         int attempt = 1;
         while (!isDone(job)) {
-            sleep(POLL_SCHEDULE.backoffMs(attempt++), jobId);
+            Retries.sleep(
+                    POLL_SCHEDULE.backoffMs(attempt++),
+                    "Interrupted while waiting for BigQuery job " + jobId);
             Job reloaded = job.reload();
             if (reloaded == null) {
                 throw new IOException(
@@ -214,15 +217,6 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     private static boolean isDone(Job job) {
         JobStatus status = job.getStatus();
         return status != null && status.getState() == JobStatus.State.DONE;
-    }
-
-    private static void sleep(long millis, String jobId) throws IOException {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while waiting for BigQuery job " + jobId, e);
-        }
     }
 
     private JobId toJobId(String jobName) {

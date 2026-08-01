@@ -17,10 +17,10 @@
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import com.google.cloud.bigquery.TableId;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
-import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;

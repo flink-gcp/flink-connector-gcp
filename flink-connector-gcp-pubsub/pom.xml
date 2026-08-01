@@ -57,6 +57,14 @@ limitations under the License.
             <scope>provided</scope>
         </dependency>
 
+        <!-- Shared connector infrastructure: the retry schedule and status-code
+             extraction (#61). -->
+        <dependency>
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-base</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Google Cloud (versions managed by the libraries BOM) -->
         <dependency>
             <groupId>com.google.cloud</groupId>

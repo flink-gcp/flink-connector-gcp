@@ -31,9 +31,10 @@ import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.retry.Retries;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
-import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
@@ -1220,15 +1221,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     private static void sleep(long millis) throws IOException {
-        if (millis <= 0) {
-            return;
-        }
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while waiting to retry appends to BigQuery", e);
-        }
+        Retries.sleep(millis, "Interrupted while waiting to retry appends to BigQuery");
     }
 
     /**

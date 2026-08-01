@@ -23,9 +23,10 @@ import org.apache.flink.util.StringUtils;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.base.retry.Retries;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
-import io.github.flink.gcp.connector.bigquery.sink.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -403,13 +404,9 @@ public final class LoadJobOrchestrator {
                     || tableAdmin.updateSchema(destination, snapshot, union.getSchema())) {
                 return StorageSchemaConverter.toBigQuerySchema(union.getSchema());
             }
-            try {
-                Thread.sleep(SCHEMA_UPDATE_SCHEDULE.backoffMs(attempt));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException(
-                        "Interrupted while reconciling the schema of " + destination, e);
-            }
+            Retries.sleep(
+                    SCHEMA_UPDATE_SCHEDULE.backoffMs(attempt),
+                    "Interrupted while reconciling the schema of " + destination);
             snapshot = tableAdmin.getSchema(destination);
             if (snapshot == null) {
                 throw new IOException(
