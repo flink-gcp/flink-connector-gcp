@@ -244,6 +244,19 @@ update-notice module:
     {{ mvn }} -pl {{ module }} -am generate-test-resources
     scripts/check-notice.py --update {{ module }}
 
+# Classifies every org.apache.flink type the main sources import by its
+# class-level stability annotation, read from the -sources.jars (never class
+# files: a class file's constant pool lists method-level annotations too, the
+# bug that produced the wrong numbers on issue #103). @Internal, @Experimental
+# and unannotated types must each have a reasoned allowlist entry in
+# scripts/flink-api-tiers.toml; anything new — or stale — fails. Downloads the
+# sources jars from Maven Central into target/flink-api-tiers/ on first run,
+# which is why this is not part of `just lint` (that stays offline).
+#
+# Do the main sources depend only on allowlisted Flink API tiers?
+check-flink-api-tiers:
+    scripts/check-flink-api-tiers.py
+
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
 # into build failures.
 #

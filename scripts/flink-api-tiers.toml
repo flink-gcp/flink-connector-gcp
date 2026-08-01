@@ -1,0 +1,132 @@
+# Copyright 2026 laughingman7743
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Which unstable Flink API tiers the main sources may depend on, and why.
+# Consumed by scripts/check-flink-api-tiers.py (issue #103): every
+# `org.apache.flink` type the main sources import is classified by its
+# class-level stability annotation, and a type that is @Internal,
+# @Experimental or unannotated must have an entry here — with a reason —
+# or the check fails. The value is in noticing the next unstable
+# dependency when it is added, not in relitigating the ones below.
+#
+# How to react when the check fails:
+#   - a new type appears in the failure: prefer a stable alternative (for
+#     the utility classes, inlining a few lines beats a new entry); if the
+#     dependency is genuinely unavoidable, add an entry whose reason says
+#     why, the way SplitsRemoval's does
+#   - an entry is reported stale: the import is gone, so delete the entry —
+#     the list stays an exact record, never a superset
+#   - a type resolves to no sources jar: a type moved between Flink
+#     artifacts, or a new package family arrived; extend `artifacts` below
+#   - an artifact is reported unused: it no longer owns any imported type;
+#     remove it from `artifacts`
+#
+# @Public and @PublicEvolving need no entries: both are supported tiers
+# (source-compatible across minors for @Public, within a minor for
+# @PublicEvolving), and the connector's compatibility claims are measured
+# against them by the weekly binary_compat job, not licensed here.
+
+# The org.apache.flink sources jars that own the imported types, resolved at
+# the pom-pinned flink.version (the supported floor). Not flink-streaming-java:
+# since the 2.x restructuring the streaming.api.* types this project uses ship
+# in flink-runtime's sources jar, and flink-core-api (split out of flink-core
+# in 2.0) owns util.function.*.
+artifacts = [
+    "flink-annotations",
+    "flink-core",
+    "flink-core-api",
+    "flink-metrics-core",
+    "flink-runtime",
+    "flink-connector-base",
+    "flink-table-common",
+]
+
+# ---------------------------------------------------------------------------
+# @Internal — Flink reserves the right to change these in any release.
+# ---------------------------------------------------------------------------
+
+[internal."org.apache.flink.annotation.VisibleForTesting"]
+reason = """
+The annotation itself is @Internal in flink-annotations. Marker only — no
+runtime behaviour to break, and dropping it would cost the documentation
+value it exists for. Cheap to replace with a comment if it ever moves."""
+
+[internal."org.apache.flink.util.Preconditions"]
+reason = """
+Argument-checking utility used by every builder and options class. Guava's
+Preconditions or a few inlined checks are drop-in replacements if it ever
+changes; not worth avoiding until then."""
+
+[internal."org.apache.flink.util.ExceptionUtils"]
+reason = """
+findThrowable in every writer's error classification (cause-chain walks in
+AppendErrorClassifier, PubSubWriter, CloudTasksWriter). Small,
+stable-in-practice utility; inlining the helper is the fallback."""
+
+[internal."org.apache.flink.metrics.ThreadSafeSimpleCounter"]
+reason = """
+The Pub/Sub source reader counts records outside the mailbox thread, and this
+is Flink's own thread-safe Counter. The fallback is a trivial
+LongAdder-backed Counter implementation in this repository."""
+
+[internal."org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval"]
+reason = """
+Part of the SplitReader SPI surface in practice: handleSplitsChanges receives
+a SplitsChange, and distinguishing a removal from an addition means naming
+the @Internal subtype. Near-unavoidable while implementing the interface —
+noted as such on issue #103."""
+
+# ---------------------------------------------------------------------------
+# @Experimental — no guarantee even across patch releases. The four entries
+# are one coherent exposure, not four: the FILE_LOADS pre-commit topology
+# (issue #14), a deliberate and documented design decision recorded in
+# flink-connector-gcp-bigquery/CLAUDE.md and the BigQuery docs page.
+# ---------------------------------------------------------------------------
+
+[experimental."org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology"]
+reason = """
+FILE_LOADS pre-commit topology (issue #14): the sink aggregates per-subtask
+pending files into load jobs before the committer, which is exactly what
+this interface exists for. FileSink's compactor sets the precedent."""
+
+[experimental."org.apache.flink.streaming.api.connector.sink2.CommittableMessage"]
+reason = "Carrier type of the SupportsPreCommitTopology contract; same exposure."
+
+[experimental."org.apache.flink.streaming.api.connector.sink2.CommittableWithLineage"]
+reason = "Concrete CommittableMessage the pre-commit topology emits; same exposure."
+
+[experimental."org.apache.flink.streaming.api.connector.sink2.CommittableMessageTypeInfo"]
+reason = "TypeInformation for the pre-commit topology stream; same exposure."
+
+# ---------------------------------------------------------------------------
+# Unannotated — no tier at all, which is weaker than @Internal, not stronger.
+# ---------------------------------------------------------------------------
+
+[unannotated."org.apache.flink.core.memory.DataInputDeserializer"]
+reason = """
+The Pub/Sub source's split and enumerator-state serializers use Flink's own
+byte-order-stable views, the same pairing every Flink connector's
+SimpleVersionedSerializer uses. Fallback is DataInputStream over a
+ByteArrayInputStream."""
+
+[unannotated."org.apache.flink.core.memory.DataOutputSerializer"]
+reason = """
+Write-side twin of DataInputDeserializer in the same serializers; same
+rationale and same fallback."""
+
+[unannotated."org.apache.flink.util.IOUtils"]
+reason = """
+closeAll in the writers' and split reader's close paths, where closing every
+resource before rethrowing the first failure is the point. A few lines of
+try/catch aggregation replace it if needed."""

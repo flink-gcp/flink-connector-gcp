@@ -2,9 +2,11 @@ name: Lint
 
 # Linters for the parts of the repository Maven does not cover. Spotless and
 # checkstyle handle the Java sources inside `just verify` (ci.yaml); this is
-# where everything else goes — shellcheck, ruff, actionlint and
-# `tofu fmt -check` today (`tofu validate` is subsumed by the plan the
-# tofu-plan workflow runs on exactly the pull requests that touch opentofu/).
+# where everything else goes — shellcheck, ruff, actionlint,
+# `tofu fmt -check` (`tofu validate` is subsumed by the plan the tofu-plan
+# workflow runs on exactly the pull requests that touch opentofu/), and the
+# Flink API tier audit (issue #103), which fails on a new main-source
+# dependency on an @Internal, @Experimental or unannotated Flink type.
 #
 # Split out of ci.yaml so it reports in seconds instead of behind the
 # integration tests. That is the whole reason: keeping mise away from
@@ -30,6 +32,12 @@ on:
       - 'mise.toml'
       # tofu fmt -check reads these.
       - 'opentofu/**'
+      # The API tier audit reads the org.apache.flink imports in every main
+      # source root (java, java-flink1, java-flink2) — a new import is exactly
+      # what it exists to catch —
+      - '*/src/main/java*/**'
+      # and classifies them at the pom-pinned flink.version.
+      - 'pom.xml'
   pull_request:
     paths: *lint_paths
   workflow_dispatch:
@@ -74,3 +82,15 @@ jobs:
 
       - name: Run the linters
         run: just lint
+
+      # check-flink-api-tiers.py needs python >= 3.11 (tomllib). Same shape as
+      # ci.yaml's check-notice step: setup-python rather than mise, keeping the
+      # install_args above limited to the linters. No cache option on purpose:
+      # the script has zero pip dependencies, so there is nothing to cache, and
+      # `cache: pip` without a requirements file fails the step.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Audit the Flink API tiers the main sources depend on
+        run: just check-flink-api-tiers

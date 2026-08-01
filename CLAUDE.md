@@ -45,6 +45,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   reactor modules without building them, so the module cannot resolve the connector it bundles —
   `-am` does not change that, and it only appears to work against a local repository some earlier
   `install` primed
+- `just check-flink-api-tiers` — classifies every `org.apache.flink` type the main sources import
+  by its class-level stability annotation, read from the `-sources.jar`s at the pom-pinned
+  `flink.version` (never class files: their constant pool lists method-level annotations too,
+  the #103 miscount). `@Internal`, `@Experimental` and unannotated types each need a reasoned
+  allowlist entry in `scripts/flink-api-tiers.toml`; a new one — or a stale entry — fails.
+  Runs in `lint.yaml` as its own step, not inside `just lint`, because it downloads the sources
+  jars (into `target/flink-api-tiers/`) and `just lint` stays offline
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, `tofu fmt -check` over `opentofu/` (`tofu validate` is deliberately
   absent: it needs a provider-downloading init, and every PR touching `opentofu/` gets a full plan
