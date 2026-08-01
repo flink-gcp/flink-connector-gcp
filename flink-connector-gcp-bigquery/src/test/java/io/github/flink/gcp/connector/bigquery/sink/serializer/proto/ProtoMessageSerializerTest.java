@@ -125,12 +125,12 @@ class ProtoMessageSerializerTest {
     }
 
     /**
-     * Not on the first record. {@code serialize()} runs inside the writers' {@code
-     * FailedRowHandler} catch, so a lazily derived schema makes one misconfiguration look like a
-     * poison record — and a log-and-drop or DLQ policy then swallows it once per record for the
-     * life of the job, leaving the table empty and the job green. The Avro serializer has always
-     * derived eagerly for this reason; this side did not until the geography marker added three
-     * more ways to misconfigure it.
+     * Not on the first record. {@code serialize()} runs inside the writers' {@code FailureHandler}
+     * catch, so a lazily derived schema makes one misconfiguration look like a poison record — and
+     * a log-and-drop or DLQ policy then swallows it once per record for the life of the job,
+     * leaving the table empty and the job green. The Avro serializer has always derived eagerly for
+     * this reason; this side did not until the geography marker added three more ways to
+     * misconfigure it.
      */
     @Test
     void schemaMappingProblemsFailWhenTheSerializerIsCreated() {

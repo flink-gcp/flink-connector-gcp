@@ -20,7 +20,8 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.util.Preconditions;
 
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
@@ -49,7 +50,7 @@ public class BigQuerySinkBuilder<T> {
     private TableCreateOptionsProvider tableCreateOptionsProvider =
             destination -> TableCreateOptions.defaults();
     private SchemaUpdateOptions schemaUpdateOptions = SchemaUpdateOptions.defaults();
-    private FailedRowHandler failedRowHandler = FailedRowHandler.failJob();
+    private FailureHandler<? super FailedRow> failedRowHandler = FailureHandler.failJob();
     private String location;
     private FileLoadsOptions fileLoadsOptions;
     private BufferedStreamOptions bufferedStreamOptions;
@@ -170,16 +171,20 @@ public class BigQuerySinkBuilder<T> {
     /**
      * Sets the policy for rows that terminally fail to be written (rows rejected by the Storage
      * Write API with per-row error details, rows that fail serialization, and rows exceeding the
-     * per-row size limit). Defaults to {@link FailedRowHandler#failJob()}.
+     * per-row size limit). Defaults to {@link FailureHandler#failJob()}.
      *
      * <p>The handler decides per row: returning normally drops the row, throwing fails the ongoing
      * write or checkpoint. Transient append failures are retried without involving the handler, and
-     * terminal request failures such as {@code PERMISSION_DENIED} always fail the job.
+     * terminal request failures such as {@code PERMISSION_DENIED} always fail the job. The sink
+     * drives the handler's lifecycle ({@code open}/{@code flush}/{@code close}) as documented on
+     * {@link FailureHandler}. The parameter is contravariant, so a cross-connector {@code
+     * FailureHandler<FailedElement>} is accepted as-is.
      *
      * @param failedRowHandler the handler
      * @return this builder
      */
-    public BigQuerySinkBuilder<T> failedRowHandler(FailedRowHandler failedRowHandler) {
+    public BigQuerySinkBuilder<T> failedRowHandler(
+            FailureHandler<? super FailedRow> failedRowHandler) {
         this.failedRowHandler =
                 Preconditions.checkNotNull(failedRowHandler, "failedRowHandler must not be null");
         return this;

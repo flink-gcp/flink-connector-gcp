@@ -70,7 +70,7 @@ public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedR
         this.options = Preconditions.checkNotNull(options, "options must not be null");
         // Derived here so an unmappable schema fails while the job graph is built. Left to the
         // lazy path it would first be derived from serialize(), whose exceptions the writers route
-        // to the FailedRowHandler: one misconfiguration would look like a poison record, and a
+        // to the FailureHandler: one misconfiguration would look like a poison record, and a
         // log-and-drop or DLQ policy would swallow it once per record for the life of the job. The
         // state is transient, so a task manager rebuilds it after deserialization regardless.
         state();

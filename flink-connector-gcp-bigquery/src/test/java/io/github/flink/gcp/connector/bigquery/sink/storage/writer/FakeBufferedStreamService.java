@@ -81,6 +81,9 @@ public class FakeBufferedStreamService implements BufferedStreamService {
 
     public boolean closed;
 
+    /** When set, {@link #close()} throws it after recording the close. */
+    public RuntimeException closeFailure;
+
     private int streamSequence;
 
     /** Returns a successful append response acknowledging the given offset. */
@@ -146,6 +149,9 @@ public class FakeBufferedStreamService implements BufferedStreamService {
     @Override
     public void close() {
         closed = true;
+        if (closeFailure != null) {
+            throw closeFailure;
+        }
     }
 
     /** Returns a factory handing out this instance. */

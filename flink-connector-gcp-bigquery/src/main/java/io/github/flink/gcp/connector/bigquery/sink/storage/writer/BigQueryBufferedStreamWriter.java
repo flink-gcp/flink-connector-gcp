@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.api.connector.sink2.StatefulSinkWriter;
+import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
@@ -28,6 +29,7 @@ import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -35,7 +37,6 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.FixedDestinationResolver;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -48,6 +49,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -78,7 +80,7 @@ import java.util.concurrent.ExecutionException;
  * open costs nothing — its unflushed tail stays invisible either way.
  *
  * <p><b>Error handling.</b> Serialization failures and oversized rows are routed to the {@link
- * FailedRowHandler} before any stream exists. Transient append failures surfacing past the SDK's
+ * FailureHandler} before any stream exists. Transient append failures surfacing past the SDK's
  * in-stream retries are re-appended at their original offset within a bounded budget ({@code
  * OFFSET_ALREADY_EXISTS} then means the original landed — success). A row-level rejection discards
  * nothing silently: the rejected batch's failing rows go to the handler and the surviving rows,
@@ -104,7 +106,7 @@ public class BigQueryBufferedStreamWriter<T>
     private final BigQuerySinkConfig<T> config;
     private final BufferedStreamServiceFactory serviceFactory;
     private final TableAdmin tableAdmin;
-    private final FailedRowHandler failedRowHandler;
+    private final FailureHandler<? super FailedRow> failedRowHandler;
     private final TableDestination destination;
     private final int subtaskId;
     private final long maxAppendRequestBytes;
@@ -232,6 +234,9 @@ public class BigQueryBufferedStreamWriter<T>
     public void flush(boolean endOfInput) throws IOException {
         sendAppend();
         drainInFlight(false);
+        // After the drain: every row-level failure this flush routed has been handled, so the
+        // handler can persist them before the checkpoint completes.
+        failedRowHandler.flush();
     }
 
     @Override
@@ -262,15 +267,19 @@ public class BigQueryBufferedStreamWriter<T>
         // closes; a crash leaves restored committables behind), and BigQuery rejects FlushRows
         // on a finalized stream — finalizing here could make those commits permanently fail.
         // An unflushable tail past the last snapshot stays invisible without any cleanup.
+        // closeAll, not sequential closes: the handler must be closed on the failure path too,
+        // even when closing the appender or service throws.
+        List<AutoCloseable> closeables = new ArrayList<>();
         if (appender != null) {
-            appender.close();
+            closeables.add(appender);
             appender = null;
         }
         if (service != null) {
-            service.close();
+            closeables.add(service);
             service = null;
         }
-        failedRowHandler.close();
+        closeables.add(failedRowHandler::close);
+        IOUtils.closeAll(closeables);
     }
 
     // ------------------------------------------------------------------
@@ -414,7 +423,7 @@ public class BigQueryBufferedStreamWriter<T>
 
     /**
      * Recovers from a row-level rejection: the rejected request never advanced the stream offset,
-     * so its failing rows are routed to the {@link FailedRowHandler} and the surviving rows — plus
+     * so its failing rows are routed to the {@link FailureHandler} and the surviving rows — plus
      * every batch appended behind the rejected one, whose pre-assigned offsets are now stale — are
      * replayed with recomputed offsets.
      */
@@ -473,8 +482,22 @@ public class BigQueryBufferedStreamWriter<T>
             Exceptions.AppendSerializtionError rowLevel =
                     AppendErrorClassifier.findRowLevel(failure).orElse(null);
             if (rowLevel != null) {
+                ProtoRows survivors = routeRowLevel(batch, rowLevel);
+                if (survivors.getSerializedRowsCount() >= batch.getSerializedRowsCount()) {
+                    // No row matched the reported indices, so nothing was dropped; re-appending
+                    // the identical batch could never make progress (mirrors the default-stream
+                    // writer's guard in retryBatches).
+                    throw wrapFailure(
+                            "A replayed append to BigQuery stream "
+                                    + streamName
+                                    + " failed with row errors matching none of the batch's rows"
+                                    + " ("
+                                    + attempt
+                                    + " attempt(s))",
+                            failure);
+                }
                 replay.removeFirst();
-                replay.addFirst(routeRowLevel(batch, rowLevel));
+                replay.addFirst(survivors);
                 attempt = 0;
                 continue;
             }
@@ -522,7 +545,7 @@ public class BigQueryBufferedStreamWriter<T>
     }
 
     /**
-     * Routes a row-level append failure to the {@link FailedRowHandler} row by row and returns the
+     * Routes a row-level append failure to the {@link FailureHandler} row by row and returns the
      * surviving rows. The handler decides per row: returning normally drops the row, throwing fails
      * the writer.
      */

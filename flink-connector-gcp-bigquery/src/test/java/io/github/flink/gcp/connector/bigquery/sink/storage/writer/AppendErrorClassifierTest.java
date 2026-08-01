@@ -134,6 +134,22 @@ class AppendErrorClassifierTest {
     }
 
     @Test
+    void aRowDetailedErrorWithATransientStatusCodeIsTransientNotRowLevel() {
+        // The SDK copies the response's status code verbatim onto the row-detailed exception, so
+        // row details under a transient code are an availability verdict: the whole batch is
+        // retried and the failure handler never sees rows a later attempt would have written.
+        Exceptions.AppendSerializtionError error =
+                new Exceptions.AppendSerializtionError(
+                        Status.Code.UNAVAILABLE.value(),
+                        "backend unavailable",
+                        "stream",
+                        ROW_ERRORS);
+        assertThat(AppendErrorClassifier.classify(error))
+                .isEqualTo(AppendErrorClassifier.Kind.TRANSIENT);
+        assertThat(AppendErrorClassifier.findRowLevel(error)).isEmpty();
+    }
+
+    @Test
     void appendErrorWithoutRowIndicesFallsBackToStatusClassification() {
         Exceptions.AppendSerializtionError error =
                 new Exceptions.AppendSerializtionError(

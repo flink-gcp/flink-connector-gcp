@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
+import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -29,6 +30,8 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.writer.RowAppenderFac
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.StreamWriterRowAppenderFactory;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+
+import java.io.IOException;
 
 /**
  * At-least-once sink appending to Storage Write API default streams with dynamic per-record table
@@ -67,7 +70,8 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
     }
 
     @Override
-    public SinkWriter<T> createWriter(WriterInitContext context) {
+    public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
+        config.getFailedRowHandler().open(DefaultFailureHandlerContext.of(context));
         // The context's processing-time service fires timer callbacks on the mailbox (task)
         // thread, which is what makes the writer's periodic flush safe against its
         // task-thread-only state.
@@ -79,6 +83,7 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
                 context.getProcessingTimeService());
     }
 
+    /** Test entry point; unlike the production path it does not open the failure handler. */
     @VisibleForTesting
     public SinkWriter<T> createWriter(RowAppenderFactory appenderFactory, TableAdmin tableAdmin) {
         return new BigQueryDefaultStreamWriter<>(config, appenderFactory, tableAdmin, options);

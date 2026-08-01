@@ -24,12 +24,12 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -145,18 +145,34 @@ class FileLoadsWriterTest {
     }
 
     /** Collects failed rows instead of failing the job. */
-    private static final class CollectingHandler implements FailedRowHandler {
+    private static final class CollectingHandler implements FailureHandler<FailedRow> {
         private static final long serialVersionUID = 1L;
 
         private final List<FailedRow> rows = new ArrayList<>();
 
+        /** "handle"/"flush" in invocation order, pinning that flush follows the routed rows. */
+        private final List<String> events = new ArrayList<>();
+
+        private boolean closed;
+
         @Override
         public void handle(FailedRow row) {
             rows.add(row);
+            events.add("handle");
+        }
+
+        @Override
+        public void flush() {
+            events.add("flush");
+        }
+
+        @Override
+        public void close() {
+            closed = true;
         }
     }
 
-    private static BigQuerySinkConfig<TestRow> config(FailedRowHandler handler) {
+    private static BigQuerySinkConfig<TestRow> config(FailureHandler<FailedRow> handler) {
         BigQueryFileLoadsSink<TestRow> sink =
                 (BigQueryFileLoadsSink<TestRow>)
                         BigQuerySink.<TestRow>builder()
@@ -199,7 +215,7 @@ class FileLoadsWriterTest {
     @Test
     void stagesOneFilePerDestination() throws Exception {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
-        BigQuerySinkConfig<TestRow> config = config(FailedRowHandler.failJob());
+        BigQuerySinkConfig<TestRow> config = config(FailureHandler.failJob());
         FileLoadsWriter<TestRow> writer =
                 writer(config, storage, FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
 
@@ -236,7 +252,7 @@ class FileLoadsWriterTest {
     @Test
     void rollsFilesAtMaxSize() throws Exception {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
-        FileLoadsWriter<TestRow> writer = writer(config(FailedRowHandler.failJob()), storage, 1);
+        FileLoadsWriter<TestRow> writer = writer(config(FailureHandler.failJob()), storage, 1);
 
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         writer.write(new TestRow("t1", "b", 2L), CONTEXT);
@@ -308,7 +324,7 @@ class FileLoadsWriterTest {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         FileLoadsWriter<TestRow> writer =
                 writer(
-                        config(FailedRowHandler.failJob()),
+                        config(FailureHandler.failJob()),
                         storage,
                         FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
 
@@ -317,17 +333,50 @@ class FileLoadsWriterTest {
     }
 
     @Test
-    void flushIsANoOpInBothModes() {
+    void flushLeavesStagedFilesAloneInBothModes() throws Exception {
         // A pre-end-of-input flush is a checkpoint — the streaming trigger; prepareCommit(),
-        // which follows every flush, does the actual file finishing.
+        // which follows every flush, does the actual file finishing. flush() only tells the
+        // failure handler to persist what was routed to it.
         FileLoadsWriter<TestRow> writer =
                 writer(
-                        config(FailedRowHandler.failJob()),
+                        config(FailureHandler.failJob()),
                         new InMemoryStagingStorage(),
                         FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
 
         writer.flush(false);
         writer.flush(true);
+    }
+
+    @Test
+    void handlerFlushRunsAtEveryWriterFlush() throws Exception {
+        CollectingHandler handler = new CollectingHandler();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(handler),
+                        new InMemoryStagingStorage(),
+                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+
+        writer.write(new TestRow("t1", "a", 1L, true, false), CONTEXT);
+        writer.flush(false);
+        writer.flush(true);
+
+        // The routed row is handled before the first flush(), so a buffering handler has
+        // everything when it persists; end of input flushes the handler too.
+        assertThat(handler.events).containsExactly("handle", "flush", "flush");
+    }
+
+    @Test
+    void closeClosesTheHandler() throws Exception {
+        CollectingHandler handler = new CollectingHandler();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(handler),
+                        new InMemoryStagingStorage(),
+                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+
+        writer.close();
+
+        assertThat(handler.closed).isTrue();
     }
 
     @Test
@@ -337,7 +386,7 @@ class FileLoadsWriterTest {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         FileLoadsWriter<TestRow> writer =
                 writer(
-                        config(FailedRowHandler.failJob()),
+                        config(FailureHandler.failJob()),
                         storage,
                         FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
 
@@ -366,7 +415,7 @@ class FileLoadsWriterTest {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         FileLoadsWriter<TestRow> writer =
                 writer(
-                        config(FailedRowHandler.failJob()),
+                        config(FailureHandler.failJob()),
                         storage,
                         FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
 

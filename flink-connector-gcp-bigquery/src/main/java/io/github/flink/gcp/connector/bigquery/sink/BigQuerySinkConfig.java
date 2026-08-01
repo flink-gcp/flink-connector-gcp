@@ -18,7 +18,8 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.Internal;
 
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 
 import java.io.Serializable;
@@ -39,7 +40,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final CreateDisposition createDisposition;
     private final TableCreateOptionsProvider tableCreateOptionsProvider;
     private final SchemaUpdateOptions schemaUpdateOptions;
-    private final FailedRowHandler failedRowHandler;
+    private final FailureHandler<? super FailedRow> failedRowHandler;
     private final String location;
 
     BigQuerySinkConfig(
@@ -48,7 +49,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             CreateDisposition createDisposition,
             TableCreateOptionsProvider tableCreateOptionsProvider,
             SchemaUpdateOptions schemaUpdateOptions,
-            FailedRowHandler failedRowHandler,
+            FailureHandler<? super FailedRow> failedRowHandler,
             String location) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
@@ -85,7 +86,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     }
 
     /** Returns the handler for rows that terminally fail to be written. */
-    public FailedRowHandler getFailedRowHandler() {
+    public FailureHandler<? super FailedRow> getFailedRowHandler() {
         return failedRowHandler;
     }
 

@@ -173,7 +173,7 @@ one [as geography](#geography-columns), by path or by field option, wins in the 
 rejected, none of them being a string: the configured marking is never quietly ignored.
 
 A `Duration` outside protobuf's valid range is a row-level failure routed to the configured
-[`FailedRowHandler`](#error-handling), like a `uint64` too large for `INT64`. `FieldMask` paths are
+[`FailureHandler`](#error-handling), like a `uint64` too large for `INT64`. `FieldMask` paths are
 joined exactly as declared, *not* lowerCamelCased the way protobuf's canonical JSON form renders
 them, so they come back as they were written.
 
@@ -228,7 +228,7 @@ Three things to weigh before enabling it:
   option changes protobuf field labels rather than the encoding of any value, so rows already
   serialized stay valid.
 - A record that leaves a `REQUIRED`-derived field unset is a row-level failure routed to the
-  configured `FailedRowHandler` (see [Error handling](#error-handling)). Reaching that needs a
+  configured `FailureHandler` (see [Error handling](#error-handling)). Reaching that needs a
   proto2 `required` field missing from a partially built message; every other `REQUIRED` column is
   one the value path always writes.
 - **Turning it back off later is not symmetrical.** Simply removing the option leaves existing rows
@@ -349,7 +349,7 @@ Three consequences worth knowing:
   Check the derived schema with `serializer.getTableSchema(destination)` when adopting a number.
 - **JSON-mapped strings are not validated by the connector.** Parsing every record to pre-empt a
   malformed value would defeat the point of a passthrough, so an invalid JSON string is rejected by
-  BigQuery as a row-level error and routed through the configured `FailedRowHandler`
+  BigQuery as a row-level error and routed through the configured `FailureHandler`
   (see [Error handling](#error-handling)).
 - **An unset plain proto3 string leaves the column NULL**, rather than writing `""`. A plain proto3
   scalar has no presence, so an unset value reaches the sink as the empty string — which is not
@@ -410,7 +410,7 @@ The value must already be one of the text forms BigQuery accepts for a geography
 (`POINT(1 2)`), hex-encoded WKB, or GeoJSON — and reaches the column verbatim. Everything the JSON
 marker says about that passthrough holds unchanged here: the connector does **not** validate the
 value, so malformed geometry is a BigQuery row-level error routed to the configured
-`FailedRowHandler` (see [Error handling](#error-handling)); an unset presence-less proto string is
+`FailureHandler` (see [Error handling](#error-handling)); an unset presence-less proto string is
 left `NULL` rather than written as `""`, which is not a valid geometry either; and a marked column is
 therefore never `REQUIRED` under [`deriveRequiredColumns()`](#nullability). A repeated marked field
 becomes `REPEATED GEOGRAPHY`.
@@ -511,7 +511,7 @@ nested record fields and map entry columns are covered along with the rest, so a
 
 The one thing it changes in the value path is what happens to a record that omits a field the Avro
 schema declares mandatory: by default the column is left unset, and under `deriveRequiredColumns()`
-that record is a row-level failure routed to the configured `FailedRowHandler`. Records that do carry
+that record is a row-level failure routed to the configured `FailureHandler`. Records that do carry
 the value convert identically either way.
 
 It also changes what staged FILE_LOADS files look like, since `NULLABLE` becomes `["null", T]` on the
@@ -527,7 +527,7 @@ that omits one is not, and where it surfaces depends on the write method:
 
 | Write method | A row omitting a column the table has as `REQUIRED` |
 |---|---|
-| `STORAGE_API_*` | BigQuery rejects that row; it is routed to the `FailedRowHandler` per policy |
+| `STORAGE_API_*` | BigQuery rejects that row; it is routed to the `FailureHandler` per policy |
 | `FILE_LOADS` | the **load job** fails, taking every other row in the same commit with it — there is no row-level policy at load time |
 
 So on a pre-existing table, either keep `deriveRequiredColumns()` on — which reproduces the old
@@ -538,7 +538,7 @@ table's columns once with `schemaUpdateOptions(SchemaUpdateOptions.builder().all
 **JSON columns.** `AvroSchemaOptions.builder().jsonFieldPath("event.payload")` derives a `string`
 field at that dotted path as a [`JSON` column](#json-columns) instead of `STRING`. As on the
 protobuf path the value is passed through verbatim and is *not* validated — malformed JSON is a
-BigQuery row-level error, routed to the configured `FailedRowHandler`. A path matching no field, or
+BigQuery row-level error, routed to the configured `FailureHandler`. A path matching no field, or
 matching a field that is not a `string`, is rejected when the schema is derived. A marker is needed
 at all because Avro has no standard JSON logical type to infer the column from; there is no
 annotation-driven equivalent of `ProtoSchemaOptions`' field options for a different reason, that Avro
@@ -564,7 +564,7 @@ mapping problem is thrown where the pipeline is built. Deferring it to the first
 inside the sink's per-record failure handling, where a log-and-drop or DLQ policy would swallow one
 misconfiguration once per record instead of failing the job.
 
-**Row-level failures**, routed to the `FailedRowHandler` (see
+**Row-level failures**, routed to the `FailureHandler` (see
 [Error handling](#error-handling)): a missing value for a `REQUIRED` column — which for a
 derived schema means only under `deriveRequiredColumns()`, since otherwise no derived column is
 mandatory (see [Column modes](#column-modes)) — a null element in a
@@ -611,7 +611,7 @@ in it is your own statement and is passed through as-is — including when you f
 destination table, which is the point of the `Schema` overload. A column with no mode set is
 `NULLABLE`, so the unconstrained default still holds for anything you did not decide. The
 consequence to know: a document omitting a `REQUIRED` column is a row-level failure, reported by the
-conversion library and routed through the configured `FailedRowHandler`.
+conversion library and routed through the configured `FailureHandler`.
 
 Conversion is the Storage Write API client's own `JsonToProtoMessage`, the same one
 `JsonStreamWriter` uses. What each column type accepts:
@@ -659,7 +659,7 @@ JsonDocumentSerializer.of(schema, JsonDocumentSerializerOptions.builder().ignore
 A record whose fields are *all* dropped as unknown produces a row with every column NULL rather than
 a failure — worth knowing if the destination has no `REQUIRED` column to catch it.
 
-**Row-level failures**, routed to the `FailedRowHandler` (see
+**Row-level failures**, routed to the `FailureHandler` (see
 [Error handling](#error-handling)): text that is not a JSON object, a record carrying more than one
 JSON value, an empty object, a value that will not convert to its column type, a missing `REQUIRED`
 column, and an unknown field unless the option above is set. The client library reports the
@@ -829,7 +829,7 @@ Neither method is uniformly safer — their loss paths are disjoint:
 | Discarded operator state | none (duplicates only) | up to one checkpoint |
 | Checkpointing disabled | buffered rows lost; window bounded by `flushInterval` when set | impossible — rejected at graph construction |
 | Committable outliving its write stream | none (holds no committer state) | possible — see [Exactly-once](#exactly-once-buffered-streams) |
-| `FailedRowHandler` drop policies | by configuration | by configuration |
+| `FailureHandler` drop policies | by configuration | by configuration |
 
 ## Exactly-once (buffered streams)
 
@@ -920,7 +920,7 @@ stream-creation time — schema from the serializer, partitioning and clustering
 `tableCreateOptions(...)` — with retries while table metadata propagates, and `CREATE_NEVER`
 fails immediately.
 
-**Error handling.** Serialization failures and oversized rows go to the `FailedRowHandler` before
+**Error handling.** Serialization failures and oversized rows go to the `FailureHandler` before
 any stream exists, as in the at-least-once method. Server-side **row-level rejections are also
 routed to the handler** — with more machinery than the at-least-once path needs: an append
 request is rejected atomically (the offset never advances), so the writer routes the failing rows
@@ -1091,7 +1091,7 @@ checkpoint *are* the data, and restoring a streaming job after the rule already 
 leaves the pending loads permanently failing (the poisoned committables can then only be dropped
 by starting without state).
 
-**Errors.** `FailedRowHandler` covers serialization/Avro-conversion failures (row-level, before
+**Errors.** `FailureHandler` covers serialization/Avro-conversion failures (row-level, before
 staging). A load job itself is all-or-nothing: there is no per-row policy at load time, and a
 failed load fails the Flink job.
 
@@ -1127,30 +1127,50 @@ Append failures are classified on the task thread and routed by class:
 | Stale stream writer | `STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`, writer closed, the SDK's callback-wait watchdog timeout (a sent append got no response within the SDK's hardcoded 5 minutes; the raw exception carries no status code) | Repaired like transient failures: the destination's stream writer is rebuilt and the batch re-appended within the retry budget |
 | Schema mismatch | `SCHEMA_MISMATCH_EXTRA_FIELDS` (rows carry fields the table does not have) | With `schemaUpdateOptions(...)` enabled: the table schema is reconciled and the batch re-appended while the update propagates (see [Schema evolution](#schema-evolution)). Otherwise terminal |
 | Terminal | `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `NOT_FOUND` under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
-| Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured `FailedRowHandler`; surviving rows of the batch are re-appended |
+| Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured failure handler; surviving rows of the batch are re-appended. A row-detailed error whose own status code is transient is classified transient, not row-level: outage-shaped failures never reach the handler |
 
-The failed-row policy is pluggable via `failedRowHandler(...)`:
+The failed-row policy is pluggable via `failedRowHandler(...)`, taking the shared
+`FailureHandler<FailedRow>` SPI from `flink-connector-gcp-base`
+([#37]({{< param BookRepo >}}/issues/37) standardizes it across the connectors in this
+repository):
 
 ```java
 Sink<MyEvent> sink =
         BigQuerySink.<MyEvent>builder()
                 .destination(TableDestination.of("my-project", "my_dataset", "events"))
                 .serializer(new MyEventProtoSerializer())
-                .failedRowHandler(FailedRowHandler.logAndDrop())
+                .failedRowHandler(FailureHandler.logAndDrop())
                 .build();
 ```
 
-- `FailedRowHandler.failJob()` (default) — every row-level failure fails the checkpoint
-- `FailedRowHandler.logAndDrop()` — logs each failed row at WARN and drops it
-- `FailedRowHandler.sendToDeadLetterQueue(...)` — forwards each failed row to a
-  `DeadLetterQueue`, an experimental stub interface for the cross-connector DLQ
-  standardization ([#37]({{< param BookRepo >}}/issues/37)). The stub has no flush/checkpoint lifecycle yet: implementations
-  should write through synchronously (throwing on failure), and restarts can produce
-  duplicate dead-letter entries
-- Custom handlers implement `FailedRowHandler`; throwing from `handle` fails the checkpoint,
-  returning drops the row. `FailedRow` carries the serialized protobuf bytes (the writer is
-  stateless, so the original record object is gone by the time server-side row errors arrive),
-  or `null` bytes when serialization itself failed
+- `FailureHandler.failJob()` (default) — every row-level failure fails the checkpoint
+- `FailureHandler.logAndDrop()` — logs each failed row at WARN and drops it
+- `FailureHandler.sendToDeadLetterQueue(...)` — forwards each failed row to a
+  `DeadLetterQueue` (experimental), whose implementation the sink drives through a lifecycle:
+  `open(context)` once when the writer is created (the context carries the subtask index and
+  the writer's metric group), `offer(element)` per failed row — buffering is allowed —
+  `flush()` at every checkpoint barrier and at end of input — and at every `flushInterval`
+  tick when that option is set — always after the sink's own write path has drained (on
+  return everything offered must be durable, throwing fails the checkpoint),
+  and `close()` when the writer closes, which must not be relied on for persistence
+- Custom handlers implement `FailureHandler<FailedRow>` — or `FailureHandler<FailedElement>`,
+  which `failedRowHandler(...)` accepts as-is (the parameter is contravariant), so one handler
+  written against the shared contract serves every connector in this repository. Throwing from
+  `handle` fails the checkpoint, returning drops the row. `FailedRow` carries the serialized protobuf bytes (the
+  writer is stateless, so the original record object is gone by the time server-side row errors
+  arrive), or `null` bytes when serialization itself failed. Under the shared `FailedElement`
+  contract it also reports `getConnector()` (`"bigquery"`) and `describeDestination()` (the
+  `project.dataset.table` string), so one `DeadLetterQueue` implementation can serve every
+  connector in this repository
+
+Dead-letter output is **at-least-once, for failures that recur on replay**: rows are offered
+before the checkpoint covering their originating records completes, so a restart replays those
+records and a deterministic failure (malformed data, an oversized row) is offered again —
+consume the dead-letter destination idempotently or deduplicate by key. A failure that does
+*not* recur on replay is preserved only if a completed checkpoint already flushed it (or the
+queue writes through synchronously). Exactly-once dead-letter output is deliberately not
+offered: it would require the dead-letter write to join the sink's own commit protocol, which
+no external destination can be enrolled in.
 
 Retries preserve the at-least-once contract: a batch whose append outcome was lost may be
 re-appended in full, so duplicates are possible (as with any retry in this write method). Worst

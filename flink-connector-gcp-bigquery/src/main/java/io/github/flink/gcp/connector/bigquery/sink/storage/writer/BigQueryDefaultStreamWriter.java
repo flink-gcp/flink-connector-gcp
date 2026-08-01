@@ -31,13 +31,13 @@ import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.SchemaUnifier;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -90,8 +90,8 @@ import java.util.function.LongSupplier;
  * writer itself as stale (finalized, unknown, closed) — are re-appended on a rebuilt stream writer
  * with backoff within a bounded retry budget; exhausting the budget is terminal. Row-level failures
  * (rows rejected with per-row error details) are routed row by row to the configured {@link
- * FailedRowHandler} — which fails the job, drops the row, or forwards it to a dead-letter queue —
- * and the surviving rows of the batch are re-appended. Everything else (for example {@code
+ * FailureHandler} — which fails the job, drops the row, or forwards it to a dead-letter queue — and
+ * the surviving rows of the batch are re-appended. Everything else (for example {@code
  * INVALID_ARGUMENT} or {@code PERMISSION_DENIED}) is terminal and fails the ongoing write or
  * checkpoint. In-flight batches are retained together with their destination until acknowledged so
  * they can be re-appended.
@@ -183,7 +183,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private final BigQuerySinkConfig<T> config;
     private final RowAppenderFactory appenderFactory;
     private final TableAdmin tableAdmin;
-    private final FailedRowHandler failedRowHandler;
+    private final FailureHandler<? super FailedRow> failedRowHandler;
     private final long maxAppendRequestBytes;
     private final RetrySchedule recoverySchedule;
     private final RetrySchedule schemaWaitSchedule;
@@ -445,6 +445,9 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             }
         }
         checkAsyncError();
+        // After the drain: every row-level failure this flush routed has been handled, so the
+        // handler can persist them before the checkpoint completes.
+        failedRowHandler.flush();
         if (!endOfInput) {
             evictIdleDestinations();
         }
@@ -457,7 +460,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * successful flush, when every destination's pending batch is empty and every in-flight append
      * has been awaited, so closing an appender here cannot cancel a live append (the invariant the
      * repair path maintains with {@code collectFailedSiblings}). The pending check is defensive: a
-     * row-level failure routed to a dropping {@code FailedRowHandler} can leave re-appended rows
+     * row-level failure routed to a dropping {@code FailureHandler} can leave re-appended rows
      * pending past the await loop. Correctness is unaffected either way — an evicted destination
      * that receives a record again rebuilds its stream writer transparently.
      */
@@ -723,7 +726,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * batches are re-appended after creating the table, schema mismatches are re-appended after
      * reconciling the table schema (when updates are enabled), transient and stale-writer failures
      * are re-appended within the retry budget, row-level failures are routed to the {@link
-     * FailedRowHandler} (surviving rows are re-appended), and anything else fails the writer. The
+     * FailureHandler} (surviving rows are re-appended), and anything else fails the writer. The
      * {@link #inFlight} removal arbitrates ownership against the completion callbacks.
      */
     private void handleFailedAppend(ApiFuture<AppendRowsResponse> future, Throwable cause)
@@ -854,7 +857,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Routes a row-level append failure to the {@link FailedRowHandler} row by row and returns the
+     * Routes a row-level append failure to the {@link FailureHandler} row by row and returns the
      * surviving rows. The handler decides per row: returning normally drops the row, throwing fails
      * the writer.
      */
@@ -959,7 +962,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * repair and the disposition allows it), schema mismatches while a schema update propagates
      * (reconciling first if the mismatch is discovered during this repair and updates are enabled),
      * stale-writer and transient failures, and row-level failures (which are routed to the {@link
-     * FailedRowHandler}, shrinking the batch to the surviving rows). Terminal failures and
+     * FailureHandler}, shrinking the batch to the surviving rows). Terminal failures and
      * retry-budget exhaustion fail the writer.
      *
      * @param destination the destination whose appender is rebuilt
@@ -1224,7 +1227,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * the storage error in its trailers) so those responses are repaired like the equivalent
      * append-future failures instead of dropping every row. With schema updates disabled, a schema
      * mismatch accompanied by row errors falls through to row-level routing so the configured
-     * {@link FailedRowHandler} policy still applies. Remaining row errors become a synthesized
+     * {@link FailureHandler} policy still applies. Remaining row errors become a synthesized
      * row-level error (the same shape the SDK raises), and any other error is terminal.
      */
     private Throwable responseToThrowable(

@@ -39,7 +39,7 @@ import java.util.Set;
  * <ul>
  *   <li>{@link Kind#ROW_LEVEL} — the append was rejected because of specific rows, identified by
  *       index ({@link Exceptions.AppendSerializtionError}); the remaining rows of the batch are
- *       valid. Routed to the configured {@code FailedRowHandler}.
+ *       valid. Routed to the configured {@code FailureHandler}.
  *   <li>{@link Kind#TRANSIENT} — the failure is retriable ({@code UNAVAILABLE}, {@code ABORTED},
  *       {@code INTERNAL}, {@code CANCELLED}, {@code DEADLINE_EXCEEDED}, {@code RESOURCE_EXHAUSTED}
  *       and {@code UNKNOWN}). These are normally retried inside the SDK; when one still surfaces,
@@ -123,12 +123,21 @@ public final class AppendErrorClassifier {
      * the correctly spelled {@code AppendSerializationError} subclass is covered too. An error
      * without row indices is not row-level — it falls through to status-code classification.
      *
+     * <p>An error whose <em>own</em> status code is transient is also not row-level: the SDK copies
+     * the response's status code verbatim onto the row-detailed exception, so row details under a
+     * transient code would be an availability verdict, not a per-row data verdict. Retrying the
+     * whole batch is always safe (a failed append wrote nothing), while routing rows to the failure
+     * handler on a transient verdict could dead-letter or drop rows that a later attempt would
+     * write. This keeps "outage-shaped failures never reach the handler" a property of this code
+     * rather than of the service's conventions.
+     *
      * @param t the failure
      * @return the row-level error, or empty
      */
     static Optional<Exceptions.AppendSerializtionError> findRowLevel(Throwable t) {
         return ExceptionUtils.findThrowable(t, Exceptions.AppendSerializtionError.class)
-                .filter(e -> !e.getRowIndexToErrorMessage().isEmpty());
+                .filter(e -> !e.getRowIndexToErrorMessage().isEmpty())
+                .filter(e -> !TRANSIENT_CODES.contains(e.getStatus().getCode()));
     }
 
     /**

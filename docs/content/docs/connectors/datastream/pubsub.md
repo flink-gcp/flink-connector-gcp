@@ -285,8 +285,10 @@ Publish completion callbacks carry their message (one small callback object per 
 `NOT_FOUND` repair can republish it, plus its serialized size so both in-flight counters can be
 released; the callback *is* the success mail, so the success path allocates nothing beyond it.
 Publish retries within the SDK default to its settings and are tunable through the
-publisher options. A per-record failure policy (the `FailedRowHandler` analog of the BigQuery
-module) and a fatal-exception classifier are deferred to [#37]({{< param BookRepo >}}/issues/37).
+publisher options. A per-message failure policy (the shared `FailureHandler` SPI the BigQuery
+module already uses) and a fatal-exception classifier are tracked in
+[#206]({{< param BookRepo >}}/issues/206), part of the
+[#37]({{< param BookRepo >}}/issues/37) standardization.
 
 ## Source
 

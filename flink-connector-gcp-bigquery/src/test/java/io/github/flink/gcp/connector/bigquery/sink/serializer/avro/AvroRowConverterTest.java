@@ -448,7 +448,7 @@ class AvroRowConverterTest {
     /**
      * Also the guard on {@code toKind}'s {@code GEOGRAPHY} case. Without it a marked column derives
      * a correct schema and then throws on the first record — from inside the writers' {@code
-     * FailedRowHandler} catch, where a log-and-drop policy would swallow the whole stream.
+     * FailureHandler} catch, where a log-and-drop policy would swallow the whole stream.
      */
     @Test
     void geographyMarkedStringPassesThroughVerbatim() throws Exception {

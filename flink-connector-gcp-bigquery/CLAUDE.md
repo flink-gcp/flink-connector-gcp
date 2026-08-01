@@ -10,9 +10,39 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   (`setEnableConnectionPool`); no self-built keyed writer pool. The serializer SPI is an abstract
   class (`BigQueryProtoSerializer`) with `getDescriptor(TableDestination)` + `ByteString`
   rows — not a functional interface (descriptors are not Java-serializable)
-- **BigQuery error handling** (#13): a single `FailedRowHandler` SPI covers all row-level
-  failure policies — fail-job (default), log-and-drop, and DLQ routing (the `DeadLetterQueue`
-  interface is an experimental stub; lifecycle and shared-module extraction are decided in #37).
+- **BigQuery error handling** (#13; SPI extracted to the base module by #37/#205): the row-level
+  failure policy is the shared `FailureHandler<FailedRow>` from `base.failure` — fail-job
+  (default), log-and-drop, DLQ routing — and the base module's CLAUDE.md owns the lifecycle
+  contract (open at `createWriter`, flush after each writer flush's drain, at-least-once for
+  failures that recur on replay). This module keeps `FailedRow` (implements `FailedElement`;
+  `getConnector()` = "bigquery", `describeDestination()` = the `p.d.t` string) and the builder
+  setter keeps its `failedRowHandler` name — domain vocabulary at the surface users touch. The
+  old `FailedRowHandler`/`FailedRowHandlers`/module-local `DeadLetterQueue` stub were deleted
+  outright, not aliased (nothing published). The three sinks open the handler in their
+  production `createWriter`/`restoreWriter` via `DefaultFailureHandlerContext.of(context)`. The
+  default-stream sink's `@VisibleForTesting createWriter(appenderFactory, tableAdmin)`
+  deliberately does not open, so fake-injected writer tests need no `WriterInitContext` — but
+  the buffered sink's `@VisibleForTesting` 3-arg `restoreWriter` is the production delegate and
+  **does** open (its writer tests bypass the sink and construct the writer directly). The three
+  writers call the handler's `flush()` after their drains, and their `close()` uses
+  `IOUtils.closeAll` so the handler is closed even when closing an appender/service or aborting
+  a staged file throws (the lifecycle contract promises close on the failure path too; note
+  `StagedFileWriter.abort()` swallows by design, so the FILE_LOADS `closeAll` is belt-and-braces
+  and only the buffered path's failure-path close is pinnable by test).
+  **`findRowLevel` rejects a row-detailed error whose own status code is transient** (#213
+  round-2 review): the SDK copies the response's status code verbatim onto
+  `AppendSerializationError` after its in-stream retries, so row details under `UNAVAILABLE` &c.
+  are an availability verdict, not a data verdict — retrying the whole batch is always safe (a
+  failed append wrote nothing), while routing on it could dead-letter rows a later attempt would
+  write. This makes "outage-shaped failures never reach the handler" a property of the code, not
+  of the service's conventions; before the filter it held only by vendor contract on the
+  SDK-exception path (the connector's own transient-before-row-errors guard in
+  `responseToThrowable` sits on a path SDK 3.30.0 never takes for errored responses).
+  **`replayBatches` carries the same no-progress guard as `retryBatches`**: row errors naming no
+  row in the batch drop nothing, and re-appending the identical batch (with the attempt counter
+  reset and no backoff) would loop for as long as the server repeats the verdict — the buffered
+  writer lacked the guard the default writer had, found by trying to refute the classification
+  claims rather than by reading the diff.
   `FailedRow` carries serialized protobuf bytes, not the original record (the writer is
   stateless). SDK in-stream retry settings were hardcoded in `StreamWriterRowAppenderFactory`
   until #54 exposed them on the default-stream path via `DefaultStreamOptions` and #198 exposed
@@ -124,7 +154,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   were never committable, so they stay invisible). **Streams are never finalized anywhere** —
   real BigQuery rejects `FlushRows` on a finalized stream (verified; the batch IT caught it),
   so finalizing races restored-but-uncommitted commits; open streams' unflushed tails are
-  invisible and cost nothing. Server-side row-level errors route to `FailedRowHandler` with
+  invisible and cost nothing. Server-side row-level errors route to the `FailureHandler` with
   offset-recompute recovery (atomic request rejection → route failing rows, replay survivors +
   trailing batches; `ALREADY_EXISTS` during an offset-shifting replay is terminal). v1 scope:
   fixed destination only (builder rejects `destinationResolver`), no mid-stream schema
@@ -142,7 +172,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   it decides whether the derived schema says `JSON` instead of `STRUCT`/`STRING` for table
   auto-creation, the write stream and load jobs. It covers **message and string** fields (a message
   is printed as canonical proto JSON; a string is passed through verbatim and *not* validated —
-  malformed JSON is a BigQuery row-level error, routed to `FailedRowHandler`). #50's issue text
+  malformed JSON is a BigQuery row-level error, routed to the `FailureHandler`). #50's issue text
   says message-only; that was widened in the implementing PR because the corpus the feature exists
   to migrate annotates **string** fields, so option selection alone would have delivered nothing.
   `isJsonField(field, path)` decides the configured JSON marking; #126 made
@@ -209,7 +239,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   lives at derivation, so one early check for one rule would be its own inconsistency. Derivation is
   the right place **because `ProtoMessageSerializer` now derives eagerly in its constructor**, which
   #126 fixed as part of the change: it did not, so every proto schema misconfiguration — the JSON ones
-  included — was reported from `serialize()`, inside the writers' `FailedRowHandler` catch, where
+  included — was reported from `serialize()`, inside the writers' `FailureHandler` catch, where
   log-and-drop swallows it once per record for the life of the job and leaves the table empty with the
   job green. The deferral first written here ("pre-existing, wants its own issue") understated it by
   saying "from a task manager": the failure went through the *row-failure* path, not merely a remote
@@ -226,7 +256,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   documentation describes WKT loading for CSV and JSON and *not* for Avro. `AvroRowConverter.toKind`
   was the one exhaustive `TableFieldSchema.Type` switch without a `GEOGRAPHY` case, and its absence
   would not have failed a schema test: the column derives correctly and then throws on the first
-  record, inside the writers' `FailedRowHandler` catch. Same rule as the Avro and #147 entries.
+  record, inside the writers' `FailureHandler` catch. Same rule as the Avro and #147 entries.
   `INTERVAL` and `RANGE` stay underivable, **considered and declined**, and the docs say so:
   Avro's `duration` is a `fixed(12)` of months/days/millis against BigQuery's year-month plus
   microsecond day-time, so either direction is a lossy re-encode, and `TableSchemaToAvroConverter`
@@ -266,7 +296,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   (`timestamp-nanos`, `local-timestamp-nanos`, `duration`, `big-decimal`, `uuid` on a `fixed`) are
   **rejected at job start** rather than silently falling back to the base type — literally at job
   start, because the schema is derived in `AvroRecordSerializer.of(...)` rather than lazily: the
-  lazy path first runs from `serialize()`, inside the writers' `FailedRowHandler` catch, where one
+  lazy path first runs from `serialize()`, inside the writers' `FailureHandler` catch, where one
   misconfiguration would look like a poison record and a log-and-drop policy would swallow the whole
   stream. A `["null", array]` field is `REPEATED`, so a null array and an empty one are
   indistinguishable — BigQuery offers no way to keep them apart, and the alternative is rejecting
@@ -296,7 +326,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   declared. Nothing reserves the `google.protobuf` package — `package google.protobuf; message
   Duration { int64 millis = 1; }` is legal — and on the name alone that derived an `INT64` column
   and then threw a field-less `NullPointerException` on **every record**, from inside the writers'
-  `FailedRowHandler` catch, where log-and-drop would swallow the stream. Measured, and it is the
+  `FailureHandler` catch, where log-and-drop would swallow the stream. Measured, and it is the
   same rule the Avro entry above states: **a schema problem must not surface from `serialize()`**.
   Answering `NONE` rather than throwing is deliberate — there is nothing to reject, only a name that
   did not mean what it usually does. Note this could not be relocated with a `checkArgument`:
@@ -443,7 +473,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   successful `flush(boolean)`, skipped on `endOfInput`**: that is the point where every pending
   batch is empty and every in-flight append awaited, so closing an appender there cannot cancel a
   live append and no `collectFailedSiblings`-style draining is needed — placement is the design.
-  The `pendingCount() == 0` guard is defensive (a dropping `FailedRowHandler` can leave
+  The `pendingCount() == 0` guard is defensive (a dropping `FailureHandler` can leave
   re-appended rows pending past the await loop); a failed appender close is WARN-logged and never
   fails the flush (hygiene must not fail a checkpoint). `lastAccessNanos` lives on
   `DestinationState`, is refreshed in `write()` only, and is initialized at creation so a state

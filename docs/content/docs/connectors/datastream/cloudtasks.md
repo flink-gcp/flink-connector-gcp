@@ -319,8 +319,9 @@ Terminal failures fail the job. Failures captured by completion callbacks are re
 thread from the next `write()`/`flush()`, and `flush()` awaits every outstanding create, so a
 failure cannot slip past a checkpoint barrier. Only the first terminal failure is kept: once one is
 captured, later failures are not retried either, since the job is going to fail regardless. A
-per-record failure policy — the `FailedRowHandler` analogue — is deferred to [#37]({{< param BookRepo >}}/issues/37) along with the
-other connectors'.
+per-task failure policy — the shared `FailureHandler` SPI the BigQuery module already uses — is
+tracked in [#207]({{< param BookRepo >}}/issues/207), part of the
+[#37]({{< param BookRepo >}}/issues/37) standardization.
 
 A failure that carries no gRPC status at all — neither a gax `ApiException` nor a raw
 `StatusRuntimeException` — is treated as terminal rather than retried, on the grounds that an
@@ -342,7 +343,7 @@ Bodies should be sized against the smaller number until this is verified empiric
 | Queue management | None — the queue must exist and be configured |
 | Pacing | None in the sink; owned by the queue |
 | Delivery | At-least-once, flush on checkpoint, stateless writer |
-| Failure policy | Fail the job; per-record policy in [#37]({{< param BookRepo >}}/issues/37) |
+| Failure policy | Fail the job; per-task policy in [#207]({{< param BookRepo >}}/issues/207) |
 | Table API / SQL | Deferred to [#99]({{< param BookRepo >}}/issues/99) |
 
 ## Testing

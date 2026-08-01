@@ -4,9 +4,38 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
 
 - **Main-code shared infrastructure only.** This is the module #61 (retry) and #37 (DLQ/metrics)
   planned; test-support code stays in `flink-connector-gcp-test-utils`, whose CLAUDE.md records
-  the mirror-image rule. Everything here is `@Internal` — the public knobs live on each
-  connector's own options objects, which map onto the internal types here. A type only moves in
-  once it has multiple consumers (the same bar test-utils applies).
+  the mirror-image rule. Everything here is `@Internal` **except `base.failure`** — the public
+  knobs live on each connector's own options objects, which map onto the internal types here.
+  The exception is structural, not preferential: `base.failure` is a user-*implemented* SPI
+  (#37), an interface users implement cannot be internal, and keeping it per-connector would
+  mean three copies and no cross-connector `DeadLetterQueue` — the point of that issue. A second
+  public package needs the same kind of argument. A type only moves in once it has multiple
+  consumers (the same bar test-utils applies).
+- **`base.failure` is the shared failure SPI** (#37, first consumer BigQuery via #205):
+  `FailedElement` (read-only contract — connector id, destination string, nullable payload
+  bytes, message, cause), `FailureHandler<F extends FailedElement>` (`handle` = drop-or-throw,
+  default `open(FailureHandlerContext)`/`flush()`/`close()`; built-ins `failJob()` — the default
+  everywhere — `logAndDrop()`, `sendToDeadLetterQueue`), `DeadLetterQueue` (`@Experimental`,
+  `offer` + the same lifecycle, driven by the `sendToDeadLetterQueue` handler), and the
+  `@Internal` `DefaultFailureHandlerContext` the sinks build from their `WriterInitContext`.
+  Decisions not to re-litigate: **`flush()` runs from each writer's `flush(boolean)` after the
+  write-path drain** — failures are discovered by the drain, so flushing first would checkpoint
+  past unflushed dead letters; the guarantee is stated as **at-least-once for failures that
+  recur on replay**, and exactly-once is deliberately not offered (it would require the
+  dead-letter write to join the sink's own commit protocol); `open()` carries subtask index and
+  metric group and nothing more — grow it only when a real consumer demands it. The generic
+  parameter keeps `failedRowHandler(...)`-style setters typed per connector while
+  `FailedElement` lets one `DeadLetterQueue` implementation serve every connector; the
+  built-ins' unchecked casts are safe because handlers only consume elements, and the connector
+  builders' setters take `FailureHandler<? super X>` so a cross-connector
+  `FailureHandler<FailedElement>` is accepted without a cast. `getConnector()`
+  values are lower-case module words (`bigquery`, `pubsub`, `cloudtasks`) and are API —
+  dead-letter consumers key on them. `describeDestination()` is not `getDestination()` because a
+  connector's concrete type keeps a typed `getDestination()` (BigQuery's returns
+  `TableDestination`), and a same-signature `String` override would be an irreconcilable clash. **Which failures are row-level stays per-connector** (only
+  data-shaped failures reach a handler), exactly as retryability classification stays
+  per-connector under #61; the Pub/Sub and Cloud Tasks adoptions are #206/#207. `protobuf-java`
+  (BOM-managed) is here for `ByteString` on `FailedElement`.
 - **Every schedule jitters, at one shared ratio, and the ratio is never a knob** (#197). The
   maintainer's standing posture is exponential backoff *with* jitter, so
   `RetrySchedule.DEFAULT_JITTER_RATIO` is the only ratio in the repository — a connector passing
@@ -53,11 +82,16 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   deliberately does not use this helper, since it targets `io.grpc.Status.Code` with
   gRPC-first precedence and feeds typed code sets, and converting it would churn the classifier
   for no dedup gain.
-- **Dependencies are `flink-core` (provided) plus `gax`/`grpc-api` (BOM-managed).** Unlike
+- **Dependencies are `flink-core` (provided) plus `gax`/`grpc-api`/`protobuf-java`
+  (BOM-managed).** Unlike
   test-utils, consumers depend on this module at **compile** scope, so it is bundled into the
   `flink-sql-connector-gcp-*` uber-jars and must be relocated there like any other bundled
   package root (the Pub/Sub SQL module's CLAUDE.md records the shading rules); it is also on the
   justfile `binary-compat`/`e2e` install lists for the same reactor-resolution reason
   test-utils is (#181).
 - No compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here touches the
-  1.x/2.x `Sink` API gap.
+  1.x/2.x `Sink` API gap. `DefaultFailureHandlerContext.of(WriterInitContext)` is not a
+  counter-example — the type and both methods it reads (`getTaskInfo()`, `metricGroup()`) exist
+  identically in 1.20 and 2.x; the compile-breaking gap is only `createWriter(Sink.InitContext)`
+  (the other delta the root file's version policy records, `getCheckpointId()`'s return type, is
+  dodged by `getCheckpointIdOrEOI()` and touches nothing here).

@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
+import org.apache.flink.util.IOUtils;
 
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
@@ -65,8 +66,8 @@ import java.util.UUID;
  * destination.
  *
  * <p>Serialization and Avro-conversion failures are row-level and routed to the configured {@link
- * io.github.flink.gcp.connector.bigquery.sink.failure.FailedRowHandler}; staging I/O failures fail
- * the job. There is no row-level policy at load time — a BigQuery load job is all-or-nothing.
+ * io.github.flink.gcp.connector.base.failure.FailureHandler}; staging I/O failures fail the job.
+ * There is no row-level policy at load time — a BigQuery load job is all-or-nothing.
  *
  * <p>The schema per destination is captured when its first record arrives and cached for the
  * writer's lifetime; mid-run serializer schema changes are only picked up after a restart.
@@ -200,9 +201,12 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
     }
 
     @Override
-    public void flush(boolean endOfInput) {
-        // Nothing to do: prepareCommit(), which follows every flush, finishes the open files.
-        // A pre-end-of-input flush is a checkpoint — the streaming trigger for FILE_LOADS.
+    public void flush(boolean endOfInput) throws IOException {
+        // The staged files need nothing here: prepareCommit(), which follows every flush,
+        // finishes the open ones. A pre-end-of-input flush is a checkpoint — the streaming
+        // trigger for FILE_LOADS — and the failure handler persists the rows routed to it
+        // before that checkpoint completes.
+        config.getFailedRowHandler().flush();
     }
 
     @Override
@@ -221,13 +225,18 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
 
     @Override
     public void close() throws Exception {
+        // closeAll, not sequential closes: the handler must be closed on the failure path too,
+        // even when aborting a staged file throws.
+        List<AutoCloseable> closeables = new ArrayList<>();
         for (DestinationState state : destinations.values()) {
             if (state.file != null) {
-                state.file.abort();
+                StagedFileWriter file = state.file;
                 state.file = null;
+                closeables.add(file::abort);
             }
         }
-        config.getFailedRowHandler().close();
+        closeables.add(config.getFailedRowHandler()::close);
+        IOUtils.closeAll(closeables);
     }
 
     private DestinationState stateFor(TableDestination destination) {

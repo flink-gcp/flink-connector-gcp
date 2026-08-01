@@ -974,7 +974,7 @@ class ProtoToTableSchemaConverterTest {
      *
      * <p>Recognising on the name alone derived an {@code INT64} column here and then threw {@code
      * NullPointerException} on <em>every record</em> — from inside the writers' {@code
-     * FailedRowHandler} catch, where a log-and-drop policy would have discarded the whole stream.
+     * FailureHandler} catch, where a log-and-drop policy would have discarded the whole stream.
      */
     @Test
     void doesNotRecogniseAWellKnownTypeNameCarryingTheWrongFields() {
