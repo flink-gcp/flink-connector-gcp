@@ -50,7 +50,7 @@ public class BigQuerySinkBuilder<T> {
     private TableCreateOptionsProvider tableCreateOptionsProvider =
             destination -> TableCreateOptions.defaults();
     private SchemaUpdateOptions schemaUpdateOptions = SchemaUpdateOptions.defaults();
-    private FailureHandler<FailedRow> failedRowHandler = FailureHandler.failJob();
+    private FailureHandler<? super FailedRow> failedRowHandler = FailureHandler.failJob();
     private String location;
     private FileLoadsOptions fileLoadsOptions;
     private BufferedStreamOptions bufferedStreamOptions;
@@ -177,12 +177,14 @@ public class BigQuerySinkBuilder<T> {
      * write or checkpoint. Transient append failures are retried without involving the handler, and
      * terminal request failures such as {@code PERMISSION_DENIED} always fail the job. The sink
      * drives the handler's lifecycle ({@code open}/{@code flush}/{@code close}) as documented on
-     * {@link FailureHandler}.
+     * {@link FailureHandler}. The parameter is contravariant, so a cross-connector {@code
+     * FailureHandler<FailedElement>} is accepted as-is.
      *
      * @param failedRowHandler the handler
      * @return this builder
      */
-    public BigQuerySinkBuilder<T> failedRowHandler(FailureHandler<FailedRow> failedRowHandler) {
+    public BigQuerySinkBuilder<T> failedRowHandler(
+            FailureHandler<? super FailedRow> failedRowHandler) {
         this.failedRowHandler =
                 Preconditions.checkNotNull(failedRowHandler, "failedRowHandler must not be null");
         return this;

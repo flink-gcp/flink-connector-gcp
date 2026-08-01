@@ -153,6 +153,8 @@ class FileLoadsWriterTest {
         /** "handle"/"flush" in invocation order, pinning that flush follows the routed rows. */
         private final List<String> events = new ArrayList<>();
 
+        private boolean closed;
+
         @Override
         public void handle(FailedRow row) {
             rows.add(row);
@@ -162,6 +164,11 @@ class FileLoadsWriterTest {
         @Override
         public void flush() {
             events.add("flush");
+        }
+
+        @Override
+        public void close() {
+            closed = true;
         }
     }
 
@@ -356,6 +363,20 @@ class FileLoadsWriterTest {
         // The routed row is handled before the first flush(), so a buffering handler has
         // everything when it persists; end of input flushes the handler too.
         assertThat(handler.events).containsExactly("handle", "flush", "flush");
+    }
+
+    @Test
+    void closeClosesTheHandler() throws Exception {
+        CollectingHandler handler = new CollectingHandler();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(handler),
+                        new InMemoryStagingStorage(),
+                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+
+        writer.close();
+
+        assertThat(handler.closed).isTrue();
     }
 
     @Test

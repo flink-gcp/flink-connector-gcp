@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.api.connector.sink2.StatefulSinkWriter;
+import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
@@ -48,6 +49,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -104,7 +106,7 @@ public class BigQueryBufferedStreamWriter<T>
     private final BigQuerySinkConfig<T> config;
     private final BufferedStreamServiceFactory serviceFactory;
     private final TableAdmin tableAdmin;
-    private final FailureHandler<FailedRow> failedRowHandler;
+    private final FailureHandler<? super FailedRow> failedRowHandler;
     private final TableDestination destination;
     private final int subtaskId;
     private final long maxAppendRequestBytes;
@@ -265,15 +267,19 @@ public class BigQueryBufferedStreamWriter<T>
         // closes; a crash leaves restored committables behind), and BigQuery rejects FlushRows
         // on a finalized stream — finalizing here could make those commits permanently fail.
         // An unflushable tail past the last snapshot stays invisible without any cleanup.
+        // closeAll, not sequential closes: the handler must be closed on the failure path too,
+        // even when closing the appender or service throws.
+        List<AutoCloseable> closeables = new ArrayList<>();
         if (appender != null) {
-            appender.close();
+            closeables.add(appender);
             appender = null;
         }
         if (service != null) {
-            service.close();
+            closeables.add(service);
             service = null;
         }
-        failedRowHandler.close();
+        closeables.add(failedRowHandler::close);
+        IOUtils.closeAll(closeables);
     }
 
     // ------------------------------------------------------------------

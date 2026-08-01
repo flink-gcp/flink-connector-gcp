@@ -40,7 +40,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final CreateDisposition createDisposition;
     private final TableCreateOptionsProvider tableCreateOptionsProvider;
     private final SchemaUpdateOptions schemaUpdateOptions;
-    private final FailureHandler<FailedRow> failedRowHandler;
+    private final FailureHandler<? super FailedRow> failedRowHandler;
     private final String location;
 
     BigQuerySinkConfig(
@@ -49,7 +49,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             CreateDisposition createDisposition,
             TableCreateOptionsProvider tableCreateOptionsProvider,
             SchemaUpdateOptions schemaUpdateOptions,
-            FailureHandler<FailedRow> failedRowHandler,
+            FailureHandler<? super FailedRow> failedRowHandler,
             String location) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
@@ -86,7 +86,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     }
 
     /** Returns the handler for rows that terminally fail to be written. */
-    public FailureHandler<FailedRow> getFailedRowHandler() {
+    public FailureHandler<? super FailedRow> getFailedRowHandler() {
         return failedRowHandler;
     }
 

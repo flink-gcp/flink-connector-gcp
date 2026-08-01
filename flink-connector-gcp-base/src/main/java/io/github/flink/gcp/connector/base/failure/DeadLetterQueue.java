@@ -26,8 +26,9 @@ import java.io.Serializable;
  * FailureHandler#sendToDeadLetterQueue(DeadLetterQueue)}. One implementation serves every
  * connector: it sees failures through the shared {@link FailedElement} contract.
  *
- * <p><b>Lifecycle.</b> The sink writer drives the queue on the Flink task thread only, so
- * implementations need not be thread-safe:
+ * <p><b>Lifecycle.</b> The {@code sendToDeadLetterQueue} handler drives the queue from the sink
+ * writer's own lifecycle, on the Flink task thread only, so implementations need not be
+ * thread-safe:
  *
  * <ul>
  *   <li>{@link #open(FailureHandlerContext)} is called once, before the first {@link #offer}, when
@@ -36,7 +37,8 @@ import java.io.Serializable;
  *   <li>{@link #offer(FailedElement)} accepts one terminally failed element. Implementations may
  *       buffer; they need not write durably here.
  *   <li>{@link #flush()} is called from the sink writer's own flush — at every checkpoint barrier
- *       and at end of input. When it returns, every element offered so far must be durably
+ *       and at end of input (and at any additional sink-triggered flush, such as an optional
+ *       periodic flush interval). When it returns, every element offered so far must be durably
  *       persisted; throwing fails the ongoing checkpoint and thereby the job.
  *   <li>{@link #close()} is called when the sink writer closes, on success and failure paths alike.
  *       It releases resources and must not be relied on for persistence: on the failure path,

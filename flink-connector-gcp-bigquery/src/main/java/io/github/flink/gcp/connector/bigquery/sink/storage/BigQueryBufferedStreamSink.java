@@ -130,11 +130,7 @@ public class BigQueryBufferedStreamSink<T>
             Collection<BufferedStreamWriterState> recoveredState,
             TableAdmin tableAdmin)
             throws IOException {
-        config.getFailedRowHandler()
-                .open(
-                        new DefaultFailureHandlerContext(
-                                context.getTaskInfo().getIndexOfThisSubtask(),
-                                context.metricGroup()));
+        config.getFailedRowHandler().open(DefaultFailureHandlerContext.of(context));
         return new BigQueryBufferedStreamWriter<>(
                 config,
                 options,

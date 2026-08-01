@@ -26,9 +26,13 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   metric group and nothing more — grow it only when a real consumer demands it. The generic
   parameter keeps `failedRowHandler(...)`-style setters typed per connector while
   `FailedElement` lets one `DeadLetterQueue` implementation serve every connector; the
-  built-ins' unchecked casts are safe because handlers only consume elements. `getConnector()`
+  built-ins' unchecked casts are safe because handlers only consume elements, and the connector
+  builders' setters take `FailureHandler<? super X>` so a cross-connector
+  `FailureHandler<FailedElement>` is accepted without a cast. `getConnector()`
   values are lower-case module words (`bigquery`, `pubsub`, `cloudtasks`) and are API —
-  dead-letter consumers key on them. **Which failures are row-level stays per-connector** (only
+  dead-letter consumers key on them. `describeDestination()` is not `getDestination()` because a
+  connector's concrete type keeps a typed `getDestination()` (BigQuery's returns
+  `TableDestination`), and a same-signature `String` override would be an irreconcilable clash. **Which failures are row-level stays per-connector** (only
   data-shaped failures reach a handler), exactly as retryability classification stays
   per-connector under #61; the Pub/Sub and Cloud Tasks adoptions are #206/#207. `protobuf-java`
   (BOM-managed) is here for `ByteString` on `FailedElement`.
@@ -86,4 +90,6 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   justfile `binary-compat`/`e2e` install lists for the same reactor-resolution reason
   test-utils is (#181).
 - No compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here touches the
-  1.x/2.x `Sink` API gap.
+  1.x/2.x `Sink` API gap. `DefaultFailureHandlerContext.of(WriterInitContext)` is not a
+  counter-example — the type and both methods it reads (`getTaskInfo()`, `metricGroup()`) exist
+  identically in 1.20 and 2.x; the gap is only `createWriter(Sink.InitContext)`.

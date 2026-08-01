@@ -39,7 +39,8 @@ import java.io.Serializable;
  *       drops it, throwing fails the ongoing write or checkpoint (the built-in {@link #failJob()}
  *       policy, the default, does exactly that);
  *   <li>{@link #flush()} is called from the sink writer's own flush — at every checkpoint barrier
- *       and at end of input, after the write path has drained. When it returns, every element
+ *       and at end of input (and at any additional sink-triggered flush, such as an optional
+ *       periodic flush interval), after the write path has drained. When it returns, every element
  *       handled so far must be durably persisted (a handler that persists nothing simply returns);
  *       throwing fails the ongoing checkpoint;
  *   <li>{@link #close()} is called when the sink writer closes, on success and failure paths alike.

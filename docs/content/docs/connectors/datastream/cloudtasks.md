@@ -343,7 +343,7 @@ Bodies should be sized against the smaller number until this is verified empiric
 | Queue management | None — the queue must exist and be configured |
 | Pacing | None in the sink; owned by the queue |
 | Delivery | At-least-once, flush on checkpoint, stateless writer |
-| Failure policy | Fail the job; per-record policy in [#37]({{< param BookRepo >}}/issues/37) |
+| Failure policy | Fail the job; per-task policy in [#207]({{< param BookRepo >}}/issues/207) |
 | Table API / SQL | Deferred to [#99]({{< param BookRepo >}}/issues/99) |
 
 ## Testing

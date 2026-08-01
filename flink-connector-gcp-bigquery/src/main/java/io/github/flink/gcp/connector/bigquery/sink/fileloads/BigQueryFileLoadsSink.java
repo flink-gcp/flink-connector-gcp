@@ -114,11 +114,7 @@ public class BigQueryFileLoadsSink<T>
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
-        config.getFailedRowHandler()
-                .open(
-                        new DefaultFailureHandlerContext(
-                                context.getTaskInfo().getIndexOfThisSubtask(),
-                                context.metricGroup()));
+        config.getFailedRowHandler().open(DefaultFailureHandlerContext.of(context));
         return new FileLoadsWriter<>(
                 config,
                 options,

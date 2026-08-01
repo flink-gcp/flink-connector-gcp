@@ -24,9 +24,8 @@ import javax.annotation.Nullable;
 
 /**
  * An element that terminally failed to be written by one of this project's sinks — the read-only
- * contract every connector's concrete failure type (BigQuery's {@code FailedRow}, Pub/Sub's {@code
- * FailedMessage}, Cloud Tasks' {@code FailedTask}) implements, and the view a cross-connector
- * {@link DeadLetterQueue} sees.
+ * contract every connector's concrete failure type implements (BigQuery's {@code FailedRow} today;
+ * later connectors add theirs), and the view a cross-connector {@link DeadLetterQueue} sees.
  *
  * <p>Carries the serialized payload rather than the original record: the sink writers are
  * stateless, so by the time a server-side failure is reported the original record object no longer

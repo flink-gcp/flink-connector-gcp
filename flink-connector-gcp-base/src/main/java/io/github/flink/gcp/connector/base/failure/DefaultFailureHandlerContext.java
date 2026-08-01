@@ -17,10 +17,11 @@
 package io.github.flink.gcp.connector.base.failure;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.Preconditions;
 
-/** The {@link FailureHandlerContext} the sinks build from their {@code WriterInitContext}. */
+/** The {@link FailureHandlerContext} the sinks build from their {@link WriterInitContext}. */
 @Internal
 public final class DefaultFailureHandlerContext implements FailureHandlerContext {
 
@@ -36,6 +37,17 @@ public final class DefaultFailureHandlerContext implements FailureHandlerContext
     public DefaultFailureHandlerContext(int subtaskIndex, MetricGroup metricGroup) {
         this.subtaskIndex = subtaskIndex;
         this.metricGroup = Preconditions.checkNotNull(metricGroup, "metricGroup must not be null");
+    }
+
+    /**
+     * Creates the context a sink passes to {@link FailureHandler#open} when creating its writer.
+     *
+     * @param context the writer init context
+     * @return the failure-handler context
+     */
+    public static DefaultFailureHandlerContext of(WriterInitContext context) {
+        return new DefaultFailureHandlerContext(
+                context.getTaskInfo().getIndexOfThisSubtask(), context.metricGroup());
     }
 
     @Override

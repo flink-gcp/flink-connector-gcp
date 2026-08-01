@@ -1149,8 +1149,9 @@ Sink<MyEvent> sink =
   `DeadLetterQueue` (experimental), whose implementation the sink drives through a lifecycle:
   `open(context)` once when the writer is created (the context carries the subtask index and
   the writer's metric group), `offer(element)` per failed row — buffering is allowed —
-  `flush()` at every checkpoint barrier and at end of input (after the sink's own write path
-  has drained; on return everything offered must be durable, throwing fails the checkpoint),
+  `flush()` at every checkpoint barrier and at end of input — and at every `flushInterval`
+  tick when that option is set — always after the sink's own write path has drained (on
+  return everything offered must be durable, throwing fails the checkpoint),
   and `close()` when the writer closes, which must not be relied on for persistence
 - Custom handlers implement `FailureHandler<FailedRow>`; throwing from `handle` fails the
   checkpoint, returning drops the row. `FailedRow` carries the serialized protobuf bytes (the

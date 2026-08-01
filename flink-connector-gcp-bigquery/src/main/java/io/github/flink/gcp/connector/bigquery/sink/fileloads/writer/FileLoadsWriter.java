@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
+import org.apache.flink.util.IOUtils;
 
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
@@ -224,13 +225,18 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
 
     @Override
     public void close() throws Exception {
+        // closeAll, not sequential closes: the handler must be closed on the failure path too,
+        // even when aborting a staged file throws.
+        List<AutoCloseable> closeables = new ArrayList<>();
         for (DestinationState state : destinations.values()) {
             if (state.file != null) {
-                state.file.abort();
+                StagedFileWriter file = state.file;
                 state.file = null;
+                closeables.add(file::abort);
             }
         }
-        config.getFailedRowHandler().close();
+        closeables.add(config.getFailedRowHandler()::close);
+        IOUtils.closeAll(closeables);
     }
 
     private DestinationState stateFor(TableDestination destination) {

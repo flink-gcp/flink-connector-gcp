@@ -20,6 +20,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.ApiExceptionFactory;
+import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
@@ -48,6 +49,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -98,6 +100,8 @@ class BigQueryBufferedStreamWriterTest {
         /** "handle"/"flush" in invocation order, pinning that flush runs after the drain. */
         final List<String> events = new ArrayList<>();
 
+        boolean closed;
+
         @Override
         public void handle(FailedRow row) {
             rows.add(row);
@@ -107,6 +111,11 @@ class BigQueryBufferedStreamWriterTest {
         @Override
         public void flush() {
             events.add("flush");
+        }
+
+        @Override
+        public void close() {
+            closed = true;
         }
     }
 
@@ -184,6 +193,15 @@ class BigQueryBufferedStreamWriterTest {
     @Test
     void handlerFlushRunsAtEveryWriterFlushAfterRoutedRowsAreHandled() throws Exception {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
+        // Rejected inside flush()'s drain, not at write() time, so the events order pins that
+        // the handler flushes only after the drain routed the row.
+        service.appendResults.add(
+                FakeBufferedStreamService.failure(
+                        new Exceptions.AppendSerializtionError(
+                                Status.Code.INVALID_ARGUMENT.value(),
+                                "bad rows",
+                                "stream",
+                                Map.of(0, "bad row"))));
         RecordingHandler handler = new RecordingHandler();
         BigQueryBufferedStreamWriter<String> writer =
                 writer(
@@ -192,7 +210,7 @@ class BigQueryBufferedStreamWriterTest {
                         service,
                         BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
 
-        writer.write("poison1", CONTEXT);
+        writer.write("a", CONTEXT);
         writer.flush(false);
         writer.flush(true);
 
@@ -200,6 +218,22 @@ class BigQueryBufferedStreamWriterTest {
         // everything when it persists; end of input flushes the handler too.
         assertThat(handler.events).containsExactly("handle", "flush", "flush");
         writer.close();
+    }
+
+    @Test
+    void closeClosesTheHandler() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        RecordingHandler handler = new RecordingHandler();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler, null),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+
+        writer.close();
+
+        assertThat(handler.closed).isTrue();
     }
 
     @Test

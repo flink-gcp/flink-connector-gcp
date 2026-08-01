@@ -19,9 +19,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   setter keeps its `failedRowHandler` name — domain vocabulary at the surface users touch. The
   old `FailedRowHandler`/`FailedRowHandlers`/module-local `DeadLetterQueue` stub were deleted
   outright, not aliased (nothing published). The three sinks open the handler in their
-  production `createWriter`/`restoreWriter`; the `@VisibleForTesting` overloads deliberately do
-  not, so fake-injected writer tests need no `WriterInitContext`. The three writers call the
-  handler's `flush()` after their drains and close it as they always did.
+  production `createWriter`/`restoreWriter` via `DefaultFailureHandlerContext.of(context)`. The
+  default-stream sink's `@VisibleForTesting createWriter(appenderFactory, tableAdmin)`
+  deliberately does not open, so fake-injected writer tests need no `WriterInitContext` — but
+  the buffered sink's `@VisibleForTesting` 3-arg `restoreWriter` is the production delegate and
+  **does** open (its writer tests bypass the sink and construct the writer directly). The three
+  writers call the handler's `flush()` after their drains, and their `close()` uses
+  `IOUtils.closeAll` so the handler is closed even when closing an appender/service or aborting
+  a staged file throws (the lifecycle contract promises close on the failure path too).
   `FailedRow` carries serialized protobuf bytes, not the original record (the writer is
   stateless). SDK in-stream retry settings were hardcoded in `StreamWriterRowAppenderFactory`
   until #54 exposed them on the default-stream path via `DefaultStreamOptions` and #198 exposed

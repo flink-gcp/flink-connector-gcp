@@ -183,7 +183,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private final BigQuerySinkConfig<T> config;
     private final RowAppenderFactory appenderFactory;
     private final TableAdmin tableAdmin;
-    private final FailureHandler<FailedRow> failedRowHandler;
+    private final FailureHandler<? super FailedRow> failedRowHandler;
     private final long maxAppendRequestBytes;
     private final RetrySchedule recoverySchedule;
     private final RetrySchedule schemaWaitSchedule;

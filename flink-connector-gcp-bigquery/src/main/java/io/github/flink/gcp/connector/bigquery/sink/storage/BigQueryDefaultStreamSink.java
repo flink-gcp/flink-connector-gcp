@@ -71,11 +71,7 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
-        config.getFailedRowHandler()
-                .open(
-                        new DefaultFailureHandlerContext(
-                                context.getTaskInfo().getIndexOfThisSubtask(),
-                                context.metricGroup()));
+        config.getFailedRowHandler().open(DefaultFailureHandlerContext.of(context));
         // The context's processing-time service fires timer callbacks on the mailbox (task)
         // thread, which is what makes the writer's periodic flush safe against its
         // task-thread-only state.
