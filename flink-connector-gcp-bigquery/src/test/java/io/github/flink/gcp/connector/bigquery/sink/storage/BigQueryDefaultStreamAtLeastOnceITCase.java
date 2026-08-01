@@ -144,8 +144,10 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
                         source(RESTART_RECORD_COUNT, RESTART_RECORDS_PER_SECOND),
                         WatermarkStrategy.noWatermarks(),
                         "rows")
-                // Throws once, roughly four seconds in — after at least one checkpoint completed
-                // and while further appends are in flight — so the restore path actually runs.
+                // Throws once, roughly eight seconds in (perSecond() divides the rate among the
+                // two subtasks, and index 15 is the sixteenth record of subtask 0's range) —
+                // after several checkpoints completed and while further appends are in flight —
+                // so the restore path actually runs.
                 .map(
                         element -> {
                             long value = Long.parseLong(element.split("\\|", -1)[1]);
@@ -196,6 +198,8 @@ class BigQueryDefaultStreamAtLeastOnceITCase {
      */
     private static void assertTablesComplete(String prefix, int tableCount, long recordCount)
             throws Exception {
+        // Exact only while recordCount is a multiple of tableCount (both record-count constants
+        // are): each residue of value % tableCount then appears exactly this many times.
         long expectedDistinct = recordCount / tableCount;
         String sql =
                 IntStream.range(0, tableCount)
