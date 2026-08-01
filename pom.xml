@@ -98,7 +98,7 @@ limitations under the License.
              `dependency:tree` cannot show it, since it prints this pin and drops the
              bigquerystorage edge entirely. Check google-cloud-bigquerystorage's own pom
              when the libraries BOM moves. -->
-        <org-json.version>20250517</org-json.version>
+        <org-json.version>20260719</org-json.version>
 
         <!-- Test dependencies -->
         <assertj.version>3.27.7</assertj.version>
