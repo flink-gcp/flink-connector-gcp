@@ -256,8 +256,8 @@ completed checkpoint, so the restart replays their records.
 [configuration reference]({{< relref "docs/reference/cloudtasks" >}}#cloudtaskswriteroptions).
 There are deliberately no rate knobs among them — that is the queue's job.
 
-Two shapes in that table are worth the reasoning. `NOT_FOUND` has a **separate, short budget**
-because a queue idle for 30 days takes "a few minutes to re-activate" and "some method calls may
+One shape in that table needs the reasoning that used to sit in its own row. `NOT_FOUND` has a
+**separate, short budget** because a queue idle for 30 days takes "a few minutes to re-activate" and "some method calls may
 return `NOT_FOUND`" meanwhile, so it is not proof of a misconfigured queue — but a mistyped queue
 name must not burn the full retry budget on every record before failing. A queue taking minutes to
 re-activate outlives that budget by design: recovering from it is the job's restart strategy, not
