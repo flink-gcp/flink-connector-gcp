@@ -383,6 +383,35 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     }
 
     @Test
+    void aTransientCodedRowDetailedFailureIsRetriedWholeAndNeverRouted() throws Exception {
+        // An outage-shaped failure must not become dead letters even when it arrives with row
+        // details: the SDK stamps the response's own status code onto AppendSerializationError.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(
+                ApiFutures.immediateFailedFuture(
+                        new Exceptions.AppendSerializtionError(
+                                Status.Code.UNAVAILABLE.value(),
+                                "backend unavailable",
+                                "stream",
+                                Map.of(0, "phantom row error"))));
+        RecordingFailedRowHandler handler = new RecordingFailedRowHandler();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler),
+                        factory,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("aa", CONTEXT);
+        writer.write("bb", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.rows).isEmpty();
+        // The whole batch was re-appended on the rebuilt appender, nothing dropped.
+        assertThat(rowsOf(factory.created.get(1).appends.get(0))).containsExactly("aa", "bb");
+    }
+
+    @Test
     void rowLevelFailureDropsOnlyTheFailedRowsAndReappendsTheRest() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(rowLevelError(Map.of(1, "row 1 is broken")));

@@ -463,8 +463,8 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
 - `sink.failure` — holds the connector-specific failure type only (`FailedRow`); the handler/DLQ
   SPI itself is the shared `base.failure` package since #37 extracted it (#205), whose contract
   the base module's CLAUDE.md records. The package's original purpose ("keep the extraction
-  cheap") is discharged; it stays in place because moving `FailedRow` would churn ~29 files for
-  no behavioural gain. Later connectors put their failure type at the `sink` root instead (a
+  cheap") is discharged; it stays in place because moving `FailedRow` would churn ~a dozen files
+  (10 importers plus the class and its test, measured on #213) for no behavioural gain. Later connectors put their failure type at the `sink` root instead (a
   one-class `sink.failure` fails the #119 layer test)
 - `source` / `table` — reserved for sources (#31, #34, #64) and Table API (#47, #57), with the
   same philosophy: public API at the package root, implementation subpackages beneath. The

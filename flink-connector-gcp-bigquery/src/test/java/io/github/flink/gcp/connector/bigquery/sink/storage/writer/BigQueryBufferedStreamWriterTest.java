@@ -237,6 +237,28 @@ class BigQueryBufferedStreamWriterTest {
     }
 
     @Test
+    void closeStillClosesTheHandlerWhenTheServiceCloseThrows() throws Exception {
+        // The lifecycle contract promises close on the failure path too; sequential closes would
+        // skip the handler when the service close throws.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.closeFailure = new IllegalStateException("service close failure");
+        RecordingHandler handler = new RecordingHandler();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler, null),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+        writer.write("a", CONTEXT);
+        writer.flush(false);
+
+        assertThatThrownBy(writer::close)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("service close failure");
+        assertThat(handler.closed).isTrue();
+    }
+
+    @Test
     void appendsAndEmitsOneCommittablePerCheckpoint() throws Exception {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         BigQueryBufferedStreamWriter<String> writer =

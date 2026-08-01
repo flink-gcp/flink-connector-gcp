@@ -482,8 +482,22 @@ public class BigQueryBufferedStreamWriter<T>
             Exceptions.AppendSerializtionError rowLevel =
                     AppendErrorClassifier.findRowLevel(failure).orElse(null);
             if (rowLevel != null) {
+                ProtoRows survivors = routeRowLevel(batch, rowLevel);
+                if (survivors.getSerializedRowsCount() >= batch.getSerializedRowsCount()) {
+                    // No row matched the reported indices, so nothing was dropped; re-appending
+                    // the identical batch could never make progress (mirrors the default-stream
+                    // writer's guard in retryBatches).
+                    throw wrapFailure(
+                            "A replayed append to BigQuery stream "
+                                    + streamName
+                                    + " failed with row errors matching none of the batch's rows"
+                                    + " ("
+                                    + attempt
+                                    + " attempt(s))",
+                            failure);
+                }
                 replay.removeFirst();
-                replay.addFirst(routeRowLevel(batch, rowLevel));
+                replay.addFirst(survivors);
                 attempt = 0;
                 continue;
             }

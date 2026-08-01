@@ -1127,7 +1127,7 @@ Append failures are classified on the task thread and routed by class:
 | Stale stream writer | `STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`, writer closed, the SDK's callback-wait watchdog timeout (a sent append got no response within the SDK's hardcoded 5 minutes; the raw exception carries no status code) | Repaired like transient failures: the destination's stream writer is rebuilt and the batch re-appended within the retry budget |
 | Schema mismatch | `SCHEMA_MISMATCH_EXTRA_FIELDS` (rows carry fields the table does not have) | With `schemaUpdateOptions(...)` enabled: the table schema is reconciled and the batch re-appended while the update propagates (see [Schema evolution](#schema-evolution)). Otherwise terminal |
 | Terminal | `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `NOT_FOUND` under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
-| Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured failure handler; surviving rows of the batch are re-appended |
+| Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured failure handler; surviving rows of the batch are re-appended. A row-detailed error whose own status code is transient is classified transient, not row-level: outage-shaped failures never reach the handler |
 
 The failed-row policy is pluggable via `failedRowHandler(...)`, taking the shared
 `FailureHandler<FailedRow>` SPI from `flink-connector-gcp-base`
@@ -1153,8 +1153,10 @@ Sink<MyEvent> sink =
   tick when that option is set — always after the sink's own write path has drained (on
   return everything offered must be durable, throwing fails the checkpoint),
   and `close()` when the writer closes, which must not be relied on for persistence
-- Custom handlers implement `FailureHandler<FailedRow>`; throwing from `handle` fails the
-  checkpoint, returning drops the row. `FailedRow` carries the serialized protobuf bytes (the
+- Custom handlers implement `FailureHandler<FailedRow>` — or `FailureHandler<FailedElement>`,
+  which `failedRowHandler(...)` accepts as-is (the parameter is contravariant), so one handler
+  written against the shared contract serves every connector in this repository. Throwing from
+  `handle` fails the checkpoint, returning drops the row. `FailedRow` carries the serialized protobuf bytes (the
   writer is stateless, so the original record object is gone by the time server-side row errors
   arrive), or `null` bytes when serialization itself failed. Under the shared `FailedElement`
   contract it also reports `getConnector()` (`"bigquery"`) and `describeDestination()` (the

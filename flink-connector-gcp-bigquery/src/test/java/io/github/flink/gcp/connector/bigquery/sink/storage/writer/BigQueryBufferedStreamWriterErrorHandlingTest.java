@@ -186,6 +186,63 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
     }
 
     @Test
+    void aTransientCodedRowDetailedFailureIsRetriedInPlaceAndNeverRouted() throws Exception {
+        // An outage-shaped failure must not become dead letters even when it arrives with row
+        // details: the SDK stamps the response's own status code onto AppendSerializationError.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.appendResults.add(
+                FakeBufferedStreamService.failure(
+                        new Exceptions.AppendSerializtionError(
+                                Status.Code.UNAVAILABLE.value(),
+                                "backend unavailable",
+                                "stream",
+                                Map.of(0, "phantom row error"))));
+        RecordingHandler handler = new RecordingHandler();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler, null),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+
+        writer.write("a", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.rows).isEmpty();
+        // Retried at the same offset; the retry (script exhausted) succeeded.
+        assertThat(service.appends).hasSize(2);
+        writer.close();
+    }
+
+    @Test
+    void replayRowErrorsMatchingNoRowsAreTerminal() {
+        // A row-level rejection whose indices name no row in the batch drops nothing, so
+        // re-appending the identical batch could never make progress; without the guard this
+        // would loop as long as the server repeats the verdict, with no backoff.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.appendResults.add(
+                FakeBufferedStreamService.failure(rowLevelError(Map.of(5, "phantom"))));
+        service.appendResults.add(
+                FakeBufferedStreamService.failure(rowLevelError(Map.of(5, "phantom"))));
+        RecordingHandler handler = new RecordingHandler();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler, null),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+
+        assertThatThrownBy(
+                        () -> {
+                            writer.write("a", CONTEXT);
+                            writer.flush(false);
+                        })
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("row errors matching none of the batch's rows");
+        assertThat(handler.rows).isEmpty();
+    }
+
+    @Test
     void laterAcknowledgedAppendAfterARejectionIsTerminal() {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         service.appendResults.add(

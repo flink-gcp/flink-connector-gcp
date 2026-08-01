@@ -76,8 +76,9 @@ public interface FailureHandler<F extends FailedElement> extends Serializable {
     default void open(FailureHandlerContext context) throws IOException {}
 
     /**
-     * Persists every element handled so far; called at every checkpoint barrier and at end of
-     * input, after the sink's own write path has drained.
+     * Persists every element handled so far; called at every checkpoint barrier and at end of input
+     * (and at any additional sink-triggered flush, such as an optional periodic flush interval),
+     * after the sink's own write path has drained.
      *
      * @throws IOException if persistence fails; this fails the ongoing checkpoint
      */

@@ -26,7 +26,23 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   **does** open (its writer tests bypass the sink and construct the writer directly). The three
   writers call the handler's `flush()` after their drains, and their `close()` uses
   `IOUtils.closeAll` so the handler is closed even when closing an appender/service or aborting
-  a staged file throws (the lifecycle contract promises close on the failure path too).
+  a staged file throws (the lifecycle contract promises close on the failure path too; note
+  `StagedFileWriter.abort()` swallows by design, so the FILE_LOADS `closeAll` is belt-and-braces
+  and only the buffered path's failure-path close is pinnable by test).
+  **`findRowLevel` rejects a row-detailed error whose own status code is transient** (#213
+  round-2 review): the SDK copies the response's status code verbatim onto
+  `AppendSerializationError` after its in-stream retries, so row details under `UNAVAILABLE` &c.
+  are an availability verdict, not a data verdict — retrying the whole batch is always safe (a
+  failed append wrote nothing), while routing on it could dead-letter rows a later attempt would
+  write. This makes "outage-shaped failures never reach the handler" a property of the code, not
+  of the service's conventions; before the filter it held only by vendor contract on the
+  SDK-exception path (the connector's own transient-before-row-errors guard in
+  `responseToThrowable` sits on a path SDK 3.30.0 never takes for errored responses).
+  **`replayBatches` carries the same no-progress guard as `retryBatches`**: row errors naming no
+  row in the batch drop nothing, and re-appending the identical batch (with the attempt counter
+  reset and no backoff) would loop for as long as the server repeats the verdict — the buffered
+  writer lacked the guard the default writer had, found by trying to refute the classification
+  claims rather than by reading the diff.
   `FailedRow` carries serialized protobuf bytes, not the original record (the writer is
   stateless). SDK in-stream retry settings were hardcoded in `StreamWriterRowAppenderFactory`
   until #54 exposed them on the default-stream path via `DefaultStreamOptions` and #198 exposed

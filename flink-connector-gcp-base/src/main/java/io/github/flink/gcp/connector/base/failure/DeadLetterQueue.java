@@ -78,7 +78,8 @@ public interface DeadLetterQueue extends Serializable {
 
     /**
      * Durably persists every element offered so far; called at every checkpoint barrier and at end
-     * of input.
+     * of input (and at any additional sink-triggered flush, such as an optional periodic flush
+     * interval).
      *
      * @throws IOException if persistence fails; this fails the ongoing checkpoint
      */

@@ -92,4 +92,6 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
 - No compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here touches the
   1.x/2.x `Sink` API gap. `DefaultFailureHandlerContext.of(WriterInitContext)` is not a
   counter-example — the type and both methods it reads (`getTaskInfo()`, `metricGroup()`) exist
-  identically in 1.20 and 2.x; the gap is only `createWriter(Sink.InitContext)`.
+  identically in 1.20 and 2.x; the compile-breaking gap is only `createWriter(Sink.InitContext)`
+  (the other delta the root file's version policy records, `getCheckpointId()`'s return type, is
+  dodged by `getCheckpointIdOrEOI()` and touches nothing here).
