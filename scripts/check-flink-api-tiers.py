@@ -42,6 +42,7 @@ Standard library only, deliberately: nothing here justifies a package manager.
 """
 
 import argparse
+import http.client
 import re
 import sys
 import urllib.request
@@ -101,10 +102,16 @@ def strip_comments(source: str) -> str:
 
 
 def declaration(simple: str) -> re.Pattern[str]:
-    """The type declaration of `simple` with its class-level annotations in group 1."""
+    """The type declaration of `simple` with its class-level annotations in group 1.
+
+    The annotation-argument alternative allows one level of nested parens:
+    `@ConfigGroups(groups = @ConfigGroup(...))` (TaskManagerOptions in
+    flink-core) would otherwise break the anchor at the first `)` and demote
+    the type to unannotated.
+    """
     return re.compile(
         r"^[ \t]*("
-        r"(?:@\w+(?:\s*\([^)]*\))?\s*"
+        r"(?:@\w+(?:\s*\((?:[^()]|\([^()]*\))*\))?\s*"
         r"|(?:public|protected|private|abstract|final|static|sealed|non-sealed|strictfp)\s+)*"
         r")"
         r"(?:class|interface|enum|record|@interface)\s+" + re.escape(simple) + r"\b",
@@ -150,9 +157,11 @@ def sources_jar(artifact: str, version: str) -> Path:
     request = urllib.request.Request(
         url, headers={"User-Agent": "flink-connector-gcp-api-tiers"}
     )
+    # HTTPException covers what OSError does not: a truncated body raises
+    # http.client.IncompleteRead, which is not an OSError.
     try:
         body = urllib.request.urlopen(request, timeout=30).read()
-    except OSError as error:
+    except (OSError, http.client.HTTPException) as error:
         infra(
             f"Downloading {url} failed ({error}). A 404 usually means the "
             f"artifacts list in {CONFIG.name} names an artifact that does not "
@@ -170,7 +179,15 @@ def build_index(
     """Map each .java entry path to (owning artifact, open jar); first jar wins."""
     index: dict[str, tuple[str, zipfile.ZipFile]] = {}
     for artifact in artifacts:
-        jar = zipfile.ZipFile(sources_jar(artifact, version))
+        path = sources_jar(artifact, version)
+        try:
+            jar = zipfile.ZipFile(path)
+        except zipfile.BadZipFile:
+            # A complete HTTP 200 body that was not a zip (an outage page, a
+            # middlebox). Without the unlink the bad file would satisfy the
+            # cache check on every later run.
+            path.unlink()
+            infra(f"{path.name} was not a valid zip; removed from the cache, rerun.")
         for name in jar.namelist():
             if name.endswith(".java"):
                 index.setdefault(name, (artifact, jar))
@@ -210,10 +227,11 @@ def classify(source: str, entry: str, nested: list[str]) -> str:
         if not match:
             continue
         tiers = [t for t in re.findall(r"@(\w+)", match.group(1)) if t in TIERS]
-        if len(tiers) > 1:
-            infra(f"{entry}: {simple} declares several tiers {tiers}; fix this script.")
         if tiers:
-            return tiers[0]
+            # Flink does dual-annotate (ExternallyInducedSourceReader is
+            # @Experimental @PublicEvolving in 2.2.1): the weaker guarantee
+            # governs, and TIERS is ordered stablest-first.
+            return max(tiers, key=TIERS.index)
         if simple == Path(entry).stem:
             return UNANNOTATED
     infra(
@@ -227,25 +245,30 @@ def main() -> int:
     argparse.ArgumentParser(description=__doc__.splitlines()[0]).parse_args()
 
     with CONFIG.open("rb") as handle:
-        config = tomllib.load(handle)
+        try:
+            config = tomllib.load(handle)
+        except tomllib.TOMLDecodeError as error:
+            infra(f"{CONFIG.name} is not valid TOML: {error}")
     # A typo'd table name would otherwise sit ignored while its types get
     # reported as unlisted — fail on the typo itself, which is the fixable end.
     unknown = set(config) - {"artifacts", *ALLOWLISTED.values()}
     if unknown:
         infra(f"{CONFIG.name} has unknown top-level entries: {sorted(unknown)}.")
+    if not isinstance(config.get("artifacts"), list) or not config["artifacts"]:
+        infra(f"{CONFIG.name} needs a non-empty artifacts list.")
     for table in ALLOWLISTED.values():
         for fqcn, entry in config.get(table, {}).items():
-            if not str(entry.get("reason", "")).strip():
+            if not isinstance(entry, dict) or not str(entry.get("reason", "")).strip():
                 infra(
-                    f"{CONFIG.name}: [{table}] entry {fqcn} has no reason. The "
-                    f"reason is the point of the allowlist; write one."
+                    f"{CONFIG.name}: [{table}] entry {fqcn} needs a table with a "
+                    f"reason. The reason is the point of the allowlist; write one."
                 )
     version = flink_version()
     index = build_index(config["artifacts"], version)
 
     by_tier: dict[str, set[str]] = {tier: set() for tier in (*TIERS, UNANNOTATED)}
     used_artifacts: set[str] = set()
-    for fqcn in sorted(collect_imports()):
+    for fqcn in collect_imports():
         entry, nested = resolve(fqcn, index)
         artifact, jar = index[entry]
         used_artifacts.add(artifact)

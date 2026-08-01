@@ -37,11 +37,13 @@ Work down this ladder and stop at the first rung that holds.
 
 Different from `@Internal`: an `@Experimental` dependency is usually a *design
 decision* (a whole topology or feature resting on an unguaranteed surface),
-not a utility choice. The one existing exposure — the FILE_LOADS pre-commit
-topology — was decided and documented deliberately (issue #14). A new one gets
-the same treatment: **take it to the user as a design discussion first**, and
-only then record the entries, each reason pointing at the issue where it was
-decided. Do not allowlist your way past this rung.
+not a utility choice. The two existing exposures — the FILE_LOADS pre-commit
+topology (issue #14) and the buffered-stream exactly-once sink's identity
+pre-commit topology used as a validation hook (issue #30) — were each decided
+and documented deliberately. A new one gets the same treatment: **take it to
+the user as a design discussion first**, and only then record the entries,
+each reason pointing at the issue where it was decided. Do not allowlist your
+way past this rung.
 
 ## Failure: "entry … is stale: the main sources no longer import it"
 

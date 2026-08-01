@@ -20,12 +20,13 @@ actionlint = "1.7.12"
 # Lints scripts/*.py. Exactly pinned for the same reason as the two above: a
 # linter that gains a rule fails a pull request that changed nothing.
 ruff = "0.16.0"
-# scripts/check-notice.py is standard-library only, but that standard library
-# must be 3.11+: tomllib reads scripts/licence-sources.toml. A major.minor pin,
-# not exact — the requirement is the module’s presence, and a patch release
-# cannot fail a pull request. CI does not use this entry: the build job
-# installs its own with actions/setup-python (see ci.yaml), so mise stays out
-# of the setup-java job.
+# scripts/check-notice.py and scripts/check-flink-api-tiers.py are
+# standard-library only, but that standard library must be 3.11+: tomllib
+# reads their scripts/*.toml configs. A major.minor pin, not exact — the
+# requirement is the module’s presence, and a patch release cannot fail a
+# pull request. CI does not use this entry: both ci.yaml jobs that run a
+# Python script install their own with actions/setup-python, so mise stays
+# out of the setup-java job.
 python = "3.12"
 # Runs the opentofu/ configuration (locally via `just tofu` and `just lint`,
 # in CI via the tofu-plan/tofu-apply workflows). Exactly pinned, and

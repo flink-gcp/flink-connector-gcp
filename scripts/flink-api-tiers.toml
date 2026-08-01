@@ -91,16 +91,20 @@ noted as such on issue #103."""
 
 # ---------------------------------------------------------------------------
 # @Experimental — no guarantee even across patch releases. The four entries
-# are one coherent exposure, not four: the FILE_LOADS pre-commit topology
-# (issue #14), a deliberate and documented design decision recorded in
-# flink-connector-gcp-bigquery/CLAUDE.md and the BigQuery docs page.
+# are one coherent surface, not four exposures — carried by two deliberate,
+# documented design decisions in the BigQuery sink: the FILE_LOADS pre-commit
+# topology (issue #14) and the buffered-stream exactly-once sink's identity
+# pre-commit topology used as a validation hook (issue #30). Both are
+# recorded in flink-connector-gcp-bigquery/CLAUDE.md and the BigQuery docs
+# page.
 # ---------------------------------------------------------------------------
 
 [experimental."org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology"]
 reason = """
-FILE_LOADS pre-commit topology (issue #14): the sink aggregates per-subtask
-pending files into load jobs before the committer, which is exactly what
-this interface exists for. FileSink's compactor sets the precedent."""
+Implemented by both BigQuery 2PC sinks: FILE_LOADS aggregates per-subtask
+pending files into load jobs before the committer (issue #14, FileSink's
+compactor precedent), and the buffered-stream exactly-once sink uses the
+identity topology as its validation hook (issue #30)."""
 
 [experimental."org.apache.flink.streaming.api.connector.sink2.CommittableMessage"]
 reason = "Carrier type of the SupportsPreCommitTopology contract; same exposure."
@@ -118,9 +122,9 @@ reason = "TypeInformation for the pre-commit topology stream; same exposure."
 [unannotated."org.apache.flink.core.memory.DataInputDeserializer"]
 reason = """
 The Pub/Sub source's split and enumerator-state serializers use Flink's own
-byte-order-stable views, the same pairing every Flink connector's
-SimpleVersionedSerializer uses. Fallback is DataInputStream over a
-ByteArrayInputStream."""
+byte-order-stable views, a pairing common across Flink connectors'
+SimpleVersionedSerializers. Fallback is DataInputStream over a
+ByteArrayInputStream — which is what the kafka connector's serializers use."""
 
 [unannotated."org.apache.flink.core.memory.DataOutputSerializer"]
 reason = """
