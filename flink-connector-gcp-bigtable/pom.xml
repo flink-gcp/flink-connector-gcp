@@ -97,6 +97,14 @@ limitations under the License.
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- MetricListener, reached through test-utils' TestSinkWriterMetricGroup: that
+                 module declares flink-test-utils at provided scope, which is non-transitive
+                 by design, so every module using the shared writer stubs declares it too. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-test-utils</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- Building the gax exceptions the writer tests script, which need a transport
                  status code. Test scope, since no main source touches gRPC directly; test-scope
                  declarations are not transitive, so this cannot demote the artifact out of a

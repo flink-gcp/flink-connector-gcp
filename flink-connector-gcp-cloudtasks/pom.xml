@@ -107,6 +107,14 @@ limitations under the License.
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- MetricListener, reached through test-utils' TestSinkWriterMetricGroup: that
+                 module declares flink-test-utils at provided scope, which is non-transitive
+                 by design, so every module using the shared writer stubs declares it too. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-test-utils</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- Emulator-based integration tests. The Cloud Tasks emulator has no testcontainers
                  module, so it runs as a plain GenericContainer. -->
             <groupId>org.testcontainers</groupId>
