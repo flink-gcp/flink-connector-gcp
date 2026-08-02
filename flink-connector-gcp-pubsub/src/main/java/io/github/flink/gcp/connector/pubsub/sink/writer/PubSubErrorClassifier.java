@@ -97,10 +97,16 @@ final class PubSubErrorClassifier {
     /**
      * Returns the status code the failure is counted under, or {@code null} when its chain carries
      * none — a raw {@link CancellationException}, or anything the client library surfaced without a
-     * status. The first classifiable element of the chain wins, which is the same "match anywhere"
-     * traversal {@link #classify} performs; it lives here rather than at the metric call site
-     * because this class owns the connector's traversal policy, exactly as {@code
-     * StatusCodes.codeOf} leaves that policy to its callers.
+     * status. It lives here rather than at the metric call site because this class owns the
+     * connector's cause-chain policy, exactly as {@code StatusCodes.codeOf} leaves that policy to
+     * its callers.
+     *
+     * <p>The <b>outermost</b> classifiable element wins, which is not quite what {@link #classify}
+     * does — that searches the whole chain for one specific code. A chain carrying two statuses
+     * would therefore be counted under the outer one while being classified by the inner: the
+     * metric answers "what did the publish fail with", not "which branch did the writer take". gax
+     * surfaces one status per failure, so the two agree in practice, and the counter naming the
+     * outermost status is the reading that survives if that ever stops being true.
      *
      * @param throwable the failure reported by the publish future
      * @return the status code, or {@code null}

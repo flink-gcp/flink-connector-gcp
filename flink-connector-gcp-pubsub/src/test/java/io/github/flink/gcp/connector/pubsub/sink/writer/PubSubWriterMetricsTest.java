@@ -26,9 +26,11 @@ import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
+import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
@@ -315,6 +317,25 @@ class PubSubWriterMetricsTest {
         assertThat(counter("destination", topicB, "recordsSend")).isEqualTo(1);
         assertThat(metrics.hasMetric("destination", topicB, "sendErrors")).isTrue();
         assertThat(counter("destination", topicB, "sendErrors")).isZero();
+    }
+
+    @Test
+    void theProductionPathRegistersOnTheContextsOwnMetricGroup() throws Exception {
+        // Everything else here injects the group directly, so this is what pins the one line
+        // carrying it from Flink: a writer registering on a group of its own would report nothing
+        // any reporter sees, and every other test in this class would still pass.
+        StubWriterInitContext context = new StubWriterInitContext(0);
+
+        SinkWriter<String> writer =
+                PubSubSink.<String>builder()
+                        .topic(topic("topic-a"))
+                        .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+                        .build()
+                        .createWriter(context);
+
+        assertThat(context.getSinkWriterMetricGroup().hasMetric("inFlightMessages")).isTrue();
+        assertThat(context.getSinkWriterMetricGroup().hasMetric("topicsCreated")).isTrue();
+        writer.close();
     }
 
     @Test
