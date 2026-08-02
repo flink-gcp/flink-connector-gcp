@@ -29,10 +29,17 @@ on:
       # in exactly the change that most needs it.
       - 'mise.toml'
       # The scripts test suite's remaining inputs: the uv project at the
-      # repository root. A pytest bump lands in these two files and must run
-      # the suite, for the same reason mise.toml is listed.
+      # repository root (a pytest bump lands in these two files and must run
+      # the suite, for the same reason mise.toml is listed), and the poms and
+      # NOTICE.template markers the suite's real-repo CLI tests assert
+      # against — a new module or inter-module edge changes the deriver's
+      # expected output, and the stale expectation must fail on the pull
+      # request that made it stale, not on the next one to touch scripts/.
       - 'pyproject.toml'
       - 'uv.lock'
+      - 'pom.xml'
+      - 'flink-*/pom.xml'
+      - 'flink-*/NOTICE.template'
       # tofu fmt -check reads these (opentofu/README.md doubles as markdownlint
       # input).
       - 'opentofu/**'

@@ -82,8 +82,8 @@ verify-module module:
 # workflow_dispatch build the whole reactor). The mapping is derived from the
 # poms, never configured — the script's docstring is the specification.
 # positional-arguments because `{{ args }}` interpolation re-splits words and
-# strips quotes, which shredded --files's JSON argument the first time CI ran
-# it; "$@" hands the arguments through verbatim.
+# strips quotes — --files's quoted JSON argument does not survive it — while
+# "$@" hands the arguments through verbatim.
 #
 # Which Maven modules does a change build? e.g. `just ci-maven-args --diff origin/main`.
 [positional-arguments]

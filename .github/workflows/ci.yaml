@@ -40,11 +40,11 @@ permissions:
 jobs:
   # Decides what the build job runs (issue #243): a pull request builds the
   # modules its changes affect instead of the whole reactor — a full-reactor
-  # run costs ~8 minutes of wall clock (measured on PR #241; the module
-  # breakdown is on the issue), most of it in modules a typical change never
-  # touches — and billed minutes go down with it. Pushes to main and manual
-  # dispatches always build everything, so a mis-derived subset can never let
-  # a module rot on main.
+  # run costs ~8 minutes of wall clock (measured on PR #241, 2026-08-01, one
+  # run; the module breakdown is on the issue), most of it in modules a
+  # typical change never touches — and billed minutes go down with it. Pushes
+  # to main and manual dispatches always build everything, so a mis-derived
+  # subset can never let a module rot on main.
   #
   # The decision lives in one place, scripts/ci-maven-args.py, which derives
   # the module mapping from the poms; `just ci-maven-args --diff origin/main`
@@ -235,7 +235,8 @@ jobs:
   # A job here for the same reason as api_tiers above, plus one of its own: its
   # inputs are the Java main sources *and* docs/content/, and this workflow's
   # pull_request trigger fires on both (it carries no filter at all), while
-  # lint.yaml's paths filter covers neither today. Not behind the changes job,
+  # lint.yaml's paths carry docs/content only for markdownlint and would have
+  # had to grow to every Java source. Not behind the changes job,
   # like api_tiers and for the same reasons.
   option_docs:
     name: Check the configuration reference

@@ -259,8 +259,12 @@ def changed_files(args: argparse.Namespace) -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--files", help="JSON array of changed paths (CI, pull_request)")
-    mode.add_argument("--full", action="store_true", help="full reactor (CI, push)")
+    mode.add_argument(
+        "--files", help="JSON array of changed paths (the synthetic-input seam)"
+    )
+    mode.add_argument(
+        "--full", action="store_true", help="full reactor (CI: push, dispatch)"
+    )
     mode.add_argument(
         "--diff", metavar="BASE_REF", help="classify git diff BASE...HEAD"
     )
