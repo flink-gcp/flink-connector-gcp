@@ -238,6 +238,25 @@ class CloudTasksWriterFailureHandlerTest {
     }
 
     @Test
+    void retriesATransientStatusBuriedUnderAServerError() throws Exception {
+        CloudTasksWriter<String> writer = writer(retrying(2));
+        // The transient lookup scans the whole chain whatever sits in front of it, so this is
+        // retried rather than treated as the terminal INTERNAL the first classifiable status
+        // names. Safe in the one direction that matters — an unstable service is never dropped —
+        // and it costs only a retry when the chain really was terminal.
+        creator.enqueueFailure(
+                FakeTaskCreator.apiException(
+                        StatusCode.Code.INTERNAL,
+                        FakeTaskCreator.apiException(StatusCode.Code.UNAVAILABLE)));
+
+        writer.write("order-1", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(creator.requests).hasSize(2);
+        assertThat(handler.handled).isEmpty();
+    }
+
+    @Test
     void failsTheJobOnAnInvalidArgumentBuriedUnderAServerError() throws Exception {
         CloudTasksWriter<String> writer = writer(TestSinkConfigs.builder());
         // INTERNAL outermost: whatever the inner INVALID_ARGUMENT describes, this call failed
