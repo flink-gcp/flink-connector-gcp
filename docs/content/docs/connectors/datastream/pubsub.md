@@ -334,6 +334,14 @@ failures stay fatal for the mirror-image reason: a destination resolver returnin
 message carrying an ordering key without `enableMessageOrdering(true)`, fail every record alike, so
 dropping them would leave an empty topic under a green job.
 
+That reasoning does not extend to a serializer that produces an *invalid message* for every
+record — a bug that puts a malformed attribute or an over-long ordering key on all of them.
+Pub/Sub rejects each one individually, the sink cannot tell a systematic rejection from a
+per-message one (the classification is the response's status code, not a judgement about the
+whole stream), and a dropping policy discards the lot silently. Watch the failure count rather
+than the job status when running anything other than `failJob()` — per-sink error metrics are
+[#208]({{< param BookRepo >}}/issues/208).
+
 **A non-default handler is rejected together with `enableMessageOrdering(true)`**, at `build()`.
 Dropping a message would reach into the ordering repair, which republishes a parked batch whole and
 in publish order — the machinery [#78]({{< param BookRepo >}}/issues/78) found races in. Lifting

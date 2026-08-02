@@ -73,7 +73,12 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   time rather than backpressuring; and configuration-shaped failures (a `DestinationResolver`
   returning null, an ordering key without `enableMessageOrdering`) fail *every* record alike, so
   dropping them would leave an empty topic under a green job — the same trap eager schema
-  derivation closes on the BigQuery side. A `MESSAGE_LEVEL` handler failure is captured into
+  derivation closes on the BigQuery side. **That second argument does not reach as far as it
+  sounds, and the docs now say so**: a serializer producing an *invalid message* for every record
+  is rejected per message, so it is routed and droppable exactly like a genuine one-off — the
+  classification reads a response status code and cannot tell a systematic rejection from a
+  per-message one. Nothing in this PR's scope closes that; the answer is the #208 error metrics,
+  and BigQuery carries the identical exposure. A `MESSAGE_LEVEL` handler failure is captured into
   `asyncError` rather than thrown, because it happens inside a mailbox mail; an unchecked one is
   wrapped naming the topic. `build()` rejects a non-default handler beside
   `enableMessageOrdering(true)` — compared by **identity against `FailureHandler.failJob()`**, so

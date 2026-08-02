@@ -260,13 +260,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             message = config.getSerializer().serialize(element);
         } catch (IOException | RuntimeException e) {
             // The record never became a message, so there is nothing to carry but the destination:
-            // FailedMessage.getPayloadBytes() is null, as the shared contract prescribes.
+            // FailedMessage.getPayloadBytes() is null, as the shared contract prescribes. The
+            // description leaves the topic to describeDestination(), as routeFailedMessage does.
             failedMessageHandler.handle(
-                    FailedMessage.of(
-                            destination,
-                            null,
-                            "Failed to serialize a record for Pub/Sub topic " + destination + ".",
-                            e));
+                    FailedMessage.of(destination, null, "The record could not be serialized.", e));
             return;
         }
         if (!orderingEnabled && !message.getOrderingKey().isEmpty()) {
@@ -469,6 +466,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * fail either way, but this message really did fail terminally, and a dead-letter destination
      * that is missing it is worse than one holding a message a replay will produce again — the
      * guarantee is at-least-once.
+     *
+     * <p>The description does not name the topic: every reader of it reaches the element's {@code
+     * describeDestination()} too — the built-in handlers compose the two — so naming it here would
+     * put the topic in the sentence twice, in two spellings.
      */
     private void routeFailedMessage(
             TopicDestination destination, PubsubMessage message, Throwable throwable) {
@@ -477,9 +478,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                     FailedMessage.of(
                             destination,
                             message,
-                            "A publish to Pub/Sub topic "
-                                    + destination
-                                    + " was rejected because "
+                            "The publish was rejected because "
                                     + PubSubErrorClassifier.MESSAGE_LEVEL_REASON
                                     + ".",
                             throwable));

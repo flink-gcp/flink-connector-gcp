@@ -165,7 +165,10 @@ class PubSubWriterFailureHandlerTest {
         // Serialization never produced a message, so the shared contract's payload is null.
         assertThat(failed.getPubsubMessage()).isNull();
         assertThat(failed.getPayloadBytes()).isNull();
-        assertThat(failed.getErrorMessage()).contains("topic-a");
+        assertThat(failed.getErrorMessage()).contains("could not be serialized");
+        // The topic is on the element, not repeated in the description — which is what the
+        // built-in handlers compose, so a handler still reports it exactly once.
+        assertThat(failed.describeDestination()).endsWith("/topics/topic-a");
         assertThat(failed.getCause()).isSameAs(failure);
         // Dropped, not published — and the writer carried on with the next record.
         assertThat(factory.publishers.keySet()).containsExactly(topic("topic-b"));
@@ -187,6 +190,7 @@ class PubSubWriterFailureHandlerTest {
         assertThat(failed.getPubsubMessage().getData().toString(StandardCharsets.UTF_8))
                 .isEqualTo("topic-a");
         assertThat(failed.getErrorMessage()).contains("INVALID_ARGUMENT");
+        assertThat(failed.describeDestination()).endsWith("/topics/topic-a");
         assertThat(failed.getCause()).isSameAs(failure);
     }
 
