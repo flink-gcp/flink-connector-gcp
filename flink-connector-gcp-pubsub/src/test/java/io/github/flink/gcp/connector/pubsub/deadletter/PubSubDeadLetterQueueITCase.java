@@ -128,7 +128,11 @@ class PubSubDeadLetterQueueITCase {
             fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(3)));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row one")));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row two")));
+            assertThat(fixture.queue.getOutstandingMessages()).isEqualTo(2);
             fixture.queue.flush();
+            // Awaited and released: a flush that left them behind would await the same futures
+            // again at the next checkpoint, and grow without bound.
+            assertThat(fixture.queue.getOutstandingMessages()).isZero();
 
             List<PubsubMessage> pulled =
                     clients.pullMessagesUntil(fixture.subscriptionPath, 2, PULL_DEADLINE);
@@ -201,6 +205,25 @@ class PubSubDeadLetterQueueITCase {
             bounded.queue.offer(new StubElement(ByteString.copyFromUtf8("three")));
             bounded.queue.flush();
             assertThat(clients.pullMessagesUntil(bounded.subscriptionPath, 3, PULL_DEADLINE))
+                    .hasSize(3);
+        }
+    }
+
+    @Test
+    void unboundedBuffersEverythingUntilTheFlush() throws Exception {
+        Fixture fixture = newFixture(PubSubDeadLetterQueue.UNBOUNDED);
+
+        try (Closer closer = new Closer(fixture.queue)) {
+            fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+            for (int i = 0; i < 3; i++) {
+                fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row " + i)));
+            }
+
+            // Nothing awaited before the flush, whatever the count: this is the one mode whose
+            // memory this queue does not bound.
+            assertThat(fixture.queue.getOutstandingMessages()).isEqualTo(3);
+            fixture.queue.flush();
+            assertThat(clients.pullMessagesUntil(fixture.subscriptionPath, 3, PULL_DEADLINE))
                     .hasSize(3);
         }
     }
