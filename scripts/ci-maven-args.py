@@ -54,7 +54,10 @@ Each changed file is classified by the first matching rule:
    anything under `scripts/` into the build and no source reads a file from
    it, so such a change pays ~a minute for rat instead of the full reactor
    (issue #253; measured at 7m41s on PR #252, which changed `scripts/tests/`
-   alone).
+   alone). That `-pl .` really does licence-check these paths is measured too,
+   not inferred from the rat configuration: deleting the header block from
+   scripts/ci-gate.sh fails `just verify -pl .` with "Unapproved: 1"
+   (2026-08-02, one run).
    The exception is NOTICE_INPUTS below, and the reason is mechanical: the
    NOTICE check is a step *inside* the build job, gated on `check_notice`,
    which is true only when the built set carries a NOTICE.template. Routing
