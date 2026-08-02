@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for scripts/ci-maven-args.py (issue #243).
+"""Tests for scripts/ci-maven-args.py (issues #243, #253).
 
 Two layers on purpose. The synthetic-repo tests pin the derivation rules —
 classification, the two-phase closure, NOTICE detection — against a pom tree
@@ -103,9 +103,9 @@ def classify(mod, files):
     ],
 )
 def test_ignored_paths_select_nothing(fake_repo, ci_maven_args, path):
-    ignored, selected, docs, everything = classify(ci_maven_args, [path])
+    ignored, selected, root_only, everything = classify(ci_maven_args, [path])
     assert ignored == [path]
-    assert not selected and not docs and not everything
+    assert not selected and not root_only and not everything
 
 
 def test_module_file_selects_its_module(fake_repo, ci_maven_args):
@@ -118,12 +118,46 @@ def test_module_readme_is_ignored_before_module_matching(fake_repo, ci_maven_arg
     assert ignored and not selected
 
 
-def test_docs_and_unknown_paths_classify_apart(fake_repo, ci_maven_args):
-    _, selected, docs, everything = classify(
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/content/x.md",
+        # Nothing Maven builds reads these, but the root module's rat run
+        # scans them, so they buy `-pl .` rather than nothing (#253).
+        "scripts/ci-maven-args.py",
+        "scripts/tests/test_ci_gate.py",
+        "scripts/option-docs.toml",
+        "pyproject.toml",
+        "uv.lock",
+    ],
+)
+def test_root_only_paths_buy_the_rat_check(fake_repo, ci_maven_args, path):
+    _, selected, root_only, everything = classify(ci_maven_args, [path])
+    assert not selected and not everything
+    assert root_only == [path]
+
+
+@pytest.mark.parametrize(
+    "path", ["scripts/licence-sources.toml", "scripts/check-notice.py"]
+)
+def test_the_notice_checkers_inputs_stay_full_reactor(fake_repo, ci_maven_args, path):
+    # The check they feed is a step *inside* the build job, gated on
+    # check_notice — which is false for `-pl .`, since no shaded module is
+    # built. Routing these to the root-only class would skip the licence check
+    # on exactly the change that edits the licence pins.
+    _, selected, root_only, everything = classify(ci_maven_args, [path])
+    assert not selected and not root_only
+    assert everything == [path]
+
+
+def test_root_only_and_unknown_paths_classify_apart(fake_repo, ci_maven_args):
+    _, selected, root_only, everything = classify(
         ci_maven_args, ["docs/content/x.md", "justfile", "pom.xml"]
     )
     assert not selected
-    assert docs == ["docs/content/x.md"]
+    assert root_only == ["docs/content/x.md"]
+    # The justfile carries the Maven invocations themselves, so it is unknown
+    # territory on purpose rather than a scripts-like sibling.
     assert sorted(everything) == ["justfile", "pom.xml"]
 
 
@@ -214,9 +248,27 @@ def test_base_change_collapses_to_the_full_reactor(ci_maven_args):
     assert out["check_notice"] == "true"
 
 
-def test_docs_only_builds_the_root_rat_check(ci_maven_args):
-    out = outputs(run_cli("--files", json.dumps(["docs/content/docs/x.md"])))
+@pytest.mark.parametrize(
+    "files",
+    [
+        ["docs/content/docs/x.md"],
+        ["scripts/tests/test_ci_gate.py"],
+        ["scripts/ci-maven-args.py", "pyproject.toml", "uv.lock"],
+        # Mixed: docs and scripts are one class, not two that collide.
+        ["docs/content/docs/x.md", "scripts/lint-something.sh"],
+    ],
+)
+def test_root_only_changes_build_the_root_rat_check(ci_maven_args, files):
+    out = outputs(run_cli("--files", json.dumps(files)))
     assert out == {"run_build": "true", "maven_args": "-pl .", "check_notice": "false"}
+
+
+def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
+    # The regression this class's boundary exists to prevent (#253): the NOTICE
+    # check runs inside the build job behind check_notice, so a licence-pin
+    # change must keep the reactor that makes it true.
+    out = outputs(run_cli("--files", json.dumps(["scripts/licence-sources.toml"])))
+    assert out == {"run_build": "true", "maven_args": "", "check_notice": "true"}
 
 
 def test_ignored_only_skips_the_build(ci_maven_args):
