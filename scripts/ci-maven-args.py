@@ -44,13 +44,30 @@ Each changed file is classified by the first matching rule:
    old workflow-level paths-ignore; the push trigger keeps the real one, so
    merges that cannot affect the Maven build stay free on main too.
 2. **A module directory** — that module.
-3. **`docs/**`** — the root module alone (`-pl .`): its apache-rat execution
-   scans the whole working tree, and CI is the docs markdown's only pre-merge
-   licence check, so a docs-only change pays ~a minute for rat instead of the
-   full reactor.
+3. **Root-only** — the root module alone (`-pl .`). These are the paths whose
+   only Maven-relevant consumer is the root module's apache-rat execution,
+   which scans the whole working tree (`inherited=false`,
+   `excludeSubProjects=false`) and is their only pre-merge licence check:
+   `docs/**`, `scripts/**` and the uv project behind `just test-scripts`
+   (`pyproject.toml`, `uv.lock` — the lockfile is rat-excluded and rides along
+   with its pyproject rather than earning a rule of its own). No pom wires
+   anything under `scripts/` into the build and no source reads a file from
+   it, so such a change pays ~a minute for rat instead of the full reactor
+   (issue #253; measured at 7m41s on PR #252, which changed `scripts/tests/`
+   alone). That `-pl .` really does licence-check these paths is measured too,
+   not inferred from the rat configuration: deleting the header block from
+   scripts/ci-gate.sh fails `just verify -pl .` with "Unapproved: 1"
+   (2026-08-02, one run).
+   The exception is NOTICE_INPUTS below, and the reason is mechanical: the
+   NOTICE check is a step *inside* the build job, gated on `check_notice`,
+   which is true only when the built set carries a NOTICE.template. Routing
+   those two here would compute `false` and silently skip the licence check on
+   exactly the change that edits the licence pins. The other two checkers run
+   as unconditional ci.yaml jobs, so their inputs are genuinely Maven-free.
 4. **Anything else** — the full reactor: the root pom, `mise.toml`, the
-   justfile, `scripts/`, the workflows, a new top-level directory. Unknown
-   means everything; that is the safe direction.
+   justfile (it carries the Maven invocations themselves), the workflows, a
+   new top-level directory. Unknown means everything; that is the safe
+   direction.
 
 Modes (ci.yaml's changes job passes the last two; no third-party
 changed-files action is involved — a pull_request checkout is the
@@ -113,6 +130,20 @@ IGNORED_FILES = {
     ".github/workflows/tofu-apply.yaml",
     ".github/workflows/tofu-list.yaml",
 }
+
+# Rule 3: nothing Maven builds from these, but the root module's rat run does
+# scan them, so they select `-pl .` rather than nothing at all.
+ROOT_ONLY_PREFIXES = ("docs/", "scripts/")
+ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock"}
+
+# ...except the inputs of the one checker whose CI step the deriver can switch
+# off. `just check-notice` runs inside the build job behind check_notice, so a
+# change to these must keep the full reactor — where a shaded module is built,
+# check_notice is true, and the module's own packaging tests run too. Not a
+# list of "scripts that matter": it is exactly the Maven-gated checker's
+# inputs, which is why check-option-docs.py and flink-api-tiers.toml are
+# absent (their ci.yaml jobs run unconditionally).
+NOTICE_INPUTS = {"scripts/licence-sources.toml", "scripts/check-notice.py"}
 
 
 def fail(message: str) -> "sys.NoReturn":
@@ -177,10 +208,10 @@ def module_dependencies(modules: list[str]) -> dict[str, set[str]]:
 def classify(
     files: list[str], modules: list[str]
 ) -> tuple[list[str], set[str], list[str], list[str]]:
-    """Split changed paths into (ignored, module set, docs, full-reactor)."""
+    """Split changed paths into (ignored, module set, root-only, full-reactor)."""
     ignored: list[str] = []
     selected: set[str] = set()
-    docs: list[str] = []
+    root_only: list[str] = []
     everything: list[str] = []
     for f in files:
         f = f.strip().lstrip("/")
@@ -196,11 +227,13 @@ def classify(
         module = next((m for m in modules if f.startswith(m + "/")), None)
         if module is not None:
             selected.add(module)
-        elif f.startswith("docs/"):
-            docs.append(f)
+        elif f in NOTICE_INPUTS:
+            everything.append(f)
+        elif f.startswith(ROOT_ONLY_PREFIXES) or f in ROOT_ONLY_FILES:
+            root_only.append(f)
         else:
             everything.append(f)
-    return ignored, selected, docs, everything
+    return ignored, selected, root_only, everything
 
 
 def close_over(changed: set[str], edges: dict[str, set[str]]) -> set[str]:
@@ -256,6 +289,28 @@ def changed_files(args: argparse.Namespace) -> list[str]:
     return result.stdout.splitlines()
 
 
+def check_notice_inputs_exist() -> None:
+    """Refuse to run if a NOTICE_INPUTS path is gone.
+
+    The two allowlists this script carries go stale in opposite directions, so
+    only one needs a guard. A stale ROOT_ONLY_FILES entry stops matching and
+    its path falls through to the full reactor: over-building, which is the
+    safe direction and announces itself in the wall clock. A stale
+    NOTICE_INPUTS entry falls through to the *root-only* class instead, and the
+    licence check silently stops running on the change that edits the licence
+    pins — the failure this set exists to prevent, reintroduced by a rename
+    nobody would connect to it.
+    """
+    missing = sorted(path for path in NOTICE_INPUTS if not (ROOT / path).is_file())
+    if missing:
+        infra(
+            f"NOTICE_INPUTS names {missing}, which no longer exist. A rename "
+            f"here does not fail loudly on its own: the path would quietly "
+            f"rejoin the root-only class and stop pulling in the reactor that "
+            f"makes check_notice true. Update the set in {Path(__file__).name}."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -270,6 +325,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    check_notice_inputs_exist()
     modules = pom_modules()
     edges = module_dependencies(modules)
 
@@ -278,10 +334,10 @@ def main() -> None:
         return
 
     files = changed_files(args)
-    ignored, selected, docs, everything = classify(files, modules)
+    ignored, selected, root_only, everything = classify(files, modules)
     print(
         f"changed: {len(files)} file(s) — {len(ignored)} ignored, "
-        f"{len(docs)} docs, {len(everything)} full-reactor, "
+        f"{len(root_only)} root-only, {len(everything)} full-reactor, "
         f"modules: {', '.join(sorted(selected)) or 'none'}",
         file=sys.stderr,
     )
@@ -299,7 +355,7 @@ def main() -> None:
     if selected >= set(modules):
         emit(run_build=True, maven_args="", check_notice=True, reason="all modules")
         return
-    if not selected and not docs:
+    if not selected and not root_only:
         emit(
             run_build=False,
             maven_args="",
@@ -312,7 +368,7 @@ def main() -> None:
     maven_args = "-pl " + ",".join(["."] + ordered)
     check_notice = any((ROOT / m / "NOTICE.template").is_file() for m in ordered)
     reason = (
-        "modules " + ", ".join(ordered) if ordered else "docs only (root rat check)"
+        "modules " + ", ".join(ordered) if ordered else "root module only (rat check)"
     )
     emit(
         run_build=True,

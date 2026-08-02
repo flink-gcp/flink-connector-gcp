@@ -445,9 +445,19 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   the last two only because apache-rat's exclude list already carries exactly those patterns,
   so no licence-header check is lost) lives twice on purpose: as the script's first
   classification rule, and as a real `paths-ignore` on the **push** trigger only, where no
-  required check can be blocked and a tofu-only merge stays free. `docs/`-only changes build
-  `-pl .` alone — rat scans docs markdown from the root module and `ci.yaml` is its only
-  pre-merge check. Pushes to main and `workflow_dispatch` always build the full reactor. The
+  required check can be blocked and a tofu-only merge stays free. A **root-only** change builds
+  `-pl .` alone: `docs/**`, `scripts/**` and the root uv project (`pyproject.toml`, `uv.lock`)
+  are the paths whose only Maven-relevant consumer is the root module's rat run, which scans the
+  whole working tree and is their only pre-merge licence check (#253 — a `scripts/tests/`-only
+  pull request had been paying 7m41s of full reactor for it). **Two files are deliberately
+  outside that class**, `scripts/licence-sources.toml` and `scripts/check-notice.py`: the NOTICE
+  check is a step *inside* the `build` job gated on `check_notice`, which is false when no
+  shaded module is built, so routing them there would skip the licence check on exactly the
+  change that edits the licence pins. That the other checkers' scripts *are* in the class is the
+  same fact from the other side — `api_tiers` and `option_docs` are unconditional jobs, so
+  nothing about them depends on what the deriver picks. The `justfile` stays full-reactor too:
+  it carries the Maven invocations themselves.
+  Pushes to main and `workflow_dispatch` always build the full reactor. The
   checks branch protection is to require — once it is available, which needs the repository
   public (#6) or a paid plan; a private free-plan repository cannot set required checks at all —
   are `CI passed` (the gate job that turns "nothing to build" into an explicit green — `build`
