@@ -11,6 +11,7 @@ sink and multi-subscription consumption on the source.
 | Topic auto-creation | Implemented ([#19](https://github.com/laughingman7743/flink-connector-gcp/issues/19)) |
 | Attributes/ordering-key conveniences; message ordering; batching/retry options; recovery knobs; in-flight message and byte caps | Implemented ([#20](https://github.com/laughingman7743/flink-connector-gcp/issues/20), byte cap [#85](https://github.com/laughingman7743/flink-connector-gcp/issues/85)) |
 | Per-message failure policy; fatal-exception classifier | Implemented ([#206](https://github.com/laughingman7743/flink-connector-gcp/issues/206)) |
+| Cross-connector dead-letter queue (`PubSubDeadLetterQueue`) | Implemented ([#211](https://github.com/laughingman7743/flink-connector-gcp/issues/211)) |
 | Emulator integration tests | Implemented ([#21](https://github.com/laughingman7743/flink-connector-gcp/issues/21)) |
 
 ## Source

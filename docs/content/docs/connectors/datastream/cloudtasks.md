@@ -410,6 +410,48 @@ task the service never accepted, so it never entered the queue and the queue's o
 configuration never applies to it. A task that *is* created and whose HTTP target then fails is
 retried by Cloud Tasks under the queue's `retryConfig`, entirely outside this sink's view.
 
+### Dead-lettering to a Pub/Sub topic
+
+`PubSubDeadLetterQueue` is this repository's one shipped `DeadLetterQueue` implementation
+(experimental, [#211]({{< param BookRepo >}}/issues/211)). It publishes each failed element to a
+Pub/Sub topic, and it sees failures through the shared `FailedElement` contract, so **one instance
+serves every connector here**. It lives in the Pub/Sub module, so a Cloud Tasks job dead-lettering
+this way adds `flink-connector-gcp-pubsub` as a dependency:
+
+```java
+CloudTasksSink.<OrderEvent>builder()
+        .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
+        .serializer(serializer)
+        .failedTaskHandler(
+                FailureHandler.sendToDeadLetterQueue(
+                        PubSubDeadLetterQueue.builder()
+                                .topic(TopicDestination.of("my-project", "dead-letters"))
+                                .build()))
+        .build();
+```
+
+| Attribute | Value |
+|---|---|
+| `dlq-connector` | `cloudtasks` here |
+| `dlq-destination` | the queue the task was bound for |
+| `dlq-error` | the failure description, truncated to Pub/Sub's 1024-byte attribute-value limit and marked with `...` |
+| `dlq-timestamp` | when the element was offered, ISO-8601 |
+| `dlq-subtask` | the offering sink subtask's index |
+
+The message **data** is the whole serialized `Task` — empty when serialization itself failed, which
+is how a consumer tells the two apart — so a consumer recovers the target URL, the method, the
+headers and the authorization with `Task.parseFrom(data)`. The failure's cause chain is not in the
+envelope (it has no bounded string form); enable `DEBUG` logging on `PubSubDeadLetterQueue` to see
+untruncated errors in the job logs.
+
+Publishes are batched and awaited in `flush()`, so a rare failure costs no round trip of its own.
+`maxOutstandingMessages` bounds what one checkpoint interval can accumulate when *every* record
+fails — the default is 1000, `0` publishes each element synchronously (the narrowest loss window,
+one round trip per element) and `-1` buffers until the flush. The topic must already exist: this
+queue never creates one, because a dead-letter destination created on the fly is one nothing is
+consuming. Full description on the
+[Pub/Sub page]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-lettering-to-a-pubsub-topic).
+
 One limit is worth stating because the documentation contradicts itself: the maximum task size is
 given as **100 KB** by the `CreateTask` API reference and the proto, and as **1 MiB** by the quotas
 page. The sink does not validate against either; an oversized task is rejected by the service.
