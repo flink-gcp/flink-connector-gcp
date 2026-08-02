@@ -121,10 +121,8 @@ class PubSubDeadLetterQueueITCase {
 
     @Test
     void offersFlushesAndTheMessagesComeBackOut() throws Exception {
-        Fixture fixture = newFixture();
-        Instant before = Instant.now();
-
-        try (Closer closer = new Closer(fixture.queue)) {
+        try (Fixture fixture = newFixture()) {
+            Instant before = Instant.now();
             fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(3)));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row one")));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row two")));
@@ -157,9 +155,7 @@ class PubSubDeadLetterQueueITCase {
 
     @Test
     void carriesAnElementWhoseSerializationFailedWithEmptyData() throws Exception {
-        Fixture fixture = newFixture();
-
-        try (Closer closer = new Closer(fixture.queue)) {
+        try (Fixture fixture = newFixture()) {
             fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
             fixture.queue.offer(new StubElement(null));
             fixture.queue.flush();
@@ -175,9 +171,7 @@ class PubSubDeadLetterQueueITCase {
 
     @Test
     void writeThroughPublishesWithoutWaitingForAFlush() throws Exception {
-        Fixture fixture = newFixture(PubSubDeadLetterQueue.WRITE_THROUGH);
-
-        try (Closer closer = new Closer(fixture.queue)) {
+        try (Fixture fixture = newFixture(PubSubDeadLetterQueue.WRITE_THROUGH)) {
             fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("durable already")));
 
@@ -191,9 +185,7 @@ class PubSubDeadLetterQueueITCase {
 
     @Test
     void theBoundAwaitsWhileTheDefaultKeepsBuffering() throws Exception {
-        Fixture bounded = newFixture(2);
-
-        try (Closer closer = new Closer(bounded.queue)) {
+        try (Fixture bounded = newFixture(2)) {
             bounded.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
             bounded.queue.offer(new StubElement(ByteString.copyFromUtf8("one")));
             assertThat(bounded.queue.getOutstandingMessages()).isEqualTo(1);
@@ -211,9 +203,7 @@ class PubSubDeadLetterQueueITCase {
 
     @Test
     void unboundedBuffersEverythingUntilTheFlush() throws Exception {
-        Fixture fixture = newFixture(PubSubDeadLetterQueue.UNBOUNDED);
-
-        try (Closer closer = new Closer(fixture.queue)) {
+        try (Fixture fixture = newFixture(PubSubDeadLetterQueue.UNBOUNDED)) {
             fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
             for (int i = 0; i < 3; i++) {
                 fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row " + i)));
@@ -275,22 +265,14 @@ class PubSubDeadLetterQueueITCase {
                 subscriptionPath);
     }
 
-    private static final class Fixture {
+    /** A queue and the subscription its topic feeds; closes the queue at the end of a test. */
+    private static final class Fixture implements AutoCloseable {
         private final PubSubDeadLetterQueue queue;
         private final String subscriptionPath;
 
         private Fixture(PubSubDeadLetterQueue queue, String subscriptionPath) {
             this.queue = queue;
             this.subscriptionPath = subscriptionPath;
-        }
-    }
-
-    /** Closes the queue at the end of a test, whatever the test did. */
-    private static final class Closer implements AutoCloseable {
-        private final PubSubDeadLetterQueue queue;
-
-        private Closer(PubSubDeadLetterQueue queue) {
-            this.queue = queue;
         }
 
         @Override
