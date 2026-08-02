@@ -128,6 +128,13 @@ final class CloudTasksWriterMetrics {
      * retries, and the sum over the retryable codes is what a separate retries counter would have
      * reported.
      *
+     * <p>The code passed in is the chain's <b>outermost</b> classifiable status, which is not
+     * always the one the writer acts on: routing scans the whole chain for a transient status
+     * (deliberately, so an unstable service cannot produce a dead letter). A chain carrying two
+     * would therefore be counted under the outer one while being retried on the inner. The counter
+     * answers "what did the creation fail with"; gax surfaces one status per failure, so the two
+     * agree in practice.
+     *
      * @param code the status code, or {@code null} for a failure carrying none
      */
     void createFailure(@Nullable StatusCode.Code code) {
