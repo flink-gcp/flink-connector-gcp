@@ -513,9 +513,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   checks branch protection requires (#250, live since the plan upgrade — a private free-plan
   repository cannot set required checks at all) are `CI passed` (the gate job that turns
   "nothing to build" into an explicit green — `build` itself must never be required, it skips),
-  `Audit Flink API tiers` and `Check the configuration reference`. `Check the gated-suite
-  tagging` (#245) is a candidate for the same treatment and reports unconditionally, but adding
-  it is a repository-settings change, not a change to this file. The never-reports caveat still
+  `Audit Flink API tiers`, `Check the configuration reference` and `Check the gated-suite
+  tagging` — the fourth added when #245 landed, on the same footing as the other two: it reports
+  unconditionally, whatever the change touches. A required context is matched **by job name**, so
+  renaming any of these four in the workflow silently stops protecting main; rename the context in
+  the same change. The never-reports caveat still
   applies verbatim to `docs.yaml` and `lint.yaml`, which keep their `paths` filters and must
   stay optional as long as they do
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
