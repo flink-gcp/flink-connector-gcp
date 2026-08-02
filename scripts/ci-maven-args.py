@@ -52,19 +52,23 @@ Each changed file is classified by the first matching rule:
    justfile, `scripts/`, the workflows, a new top-level directory. Unknown
    means everything; that is the safe direction.
 
-Modes (CI passes the first two, see ci.yaml; the third reproduces CI's
-decision by hand):
+Modes (ci.yaml's changes job passes the last two; no third-party
+changed-files action is involved — a pull_request checkout is the
+base-into-head merge commit, so its own git history already carries the
+changed-file list, decided on PR #247 after weighing the supply-chain
+surface such actions add):
 
-  --files '<json array>'  pull_request: dorny/paths-filter's list-files output
-                          for a catch-all filter. The action is the
-                          changed-file *provider* — it reads the pull
-                          request's file list through the API — and this
-                          script is the single place the decision logic
-                          lives, in CI and locally alike.
+  --files '<json array>'  classify an explicit changed-path list — the
+                          synthetic-input seam for exercising the
+                          classification by hand and from tests.
   --full                  push / workflow_dispatch: the full reactor.
-  --diff <base-ref>       classify `git diff --name-only <base-ref>...HEAD`
-                          exactly as CI would, e.g. `just ci-maven-args
-                          --diff origin/main` on a feature branch.
+  --diff <base-ref>       classify `git diff --no-renames --name-only
+                          <base-ref>...HEAD`. CI passes `HEAD^1` — on the
+                          merge commit that is the current base tip, so the
+                          diff is the pull request's net change. Locally,
+                          `just ci-maven-args --diff origin/main` predicts
+                          what a pull request with the current branch's
+                          committed diff would build.
 
 Output, one `$GITHUB_OUTPUT`-style line each:
 
@@ -235,10 +239,9 @@ def changed_files(args: argparse.Namespace) -> list[str]:
         if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
             infra("--files must be a JSON array of path strings")
         return files
-    # --no-renames because the CI side sees renames as dorny/paths-filter
-    # reports them — one deleted plus one added path — and git's default
-    # rename detection would show only the new name, letting a file moved out
-    # of a module hide that module from the local prediction.
+    # --no-renames so a rename is one deleted plus one added path: git's
+    # default rename detection would show only the new name, letting a file
+    # moved out of a module hide that module from the build.
     result = subprocess.run(
         ["git", "diff", "--no-renames", "--name-only", f"{args.diff}...HEAD"],
         cwd=ROOT,

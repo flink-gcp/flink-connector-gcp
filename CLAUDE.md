@@ -82,11 +82,19 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   what the check does *not* do: it compares the set of options, not their values, so a changed
   default has to be edited in the same commit
 - `just ci-maven-args` — CI's module-selection decision (#243): which Maven modules does a
-  change build? `ci.yaml`'s `changes` job calls it with `--files` (the changed-file list
-  dorny/paths-filter read off the pull request) or `--full`; `just ci-maven-args --diff
-  origin/main` reproduces by hand what a pull request with the current branch's committed diff
-  would build. The mapping is derived from the poms, never configured — the script's docstring
-  is the specification, and the ci.yaml bullet under Version policy carries the design
+  change build? `ci.yaml`'s `changes` job calls it with `--diff HEAD^1` (the pull_request
+  checkout is the base-into-head merge commit, fetched at depth 2, so that diff is the pull
+  request's net change) or `--full`; `just ci-maven-args --diff origin/main` reproduces by hand
+  what a pull request with the current branch's committed diff would build. The mapping is
+  derived from the poms, never configured — the script's docstring is the specification, and
+  the ci.yaml bullet under Version policy carries the design
+- `just test-scripts` — pytest over `scripts/` (the CI deriver and the CI gate today), through
+  the uv project scoped at `scripts/pyproject.toml` (decided with the user on PR #247): uv is
+  pinned in `mise.toml` like the linters, pytest in `scripts/uv.lock` (committed, rat-excluded
+  as machine-written), and the project is never packaged — the scripts stay stdlib-only
+  executables the tests load by file path. Runs as lint.yaml's `script_tests` job, whose paths
+  already cover its inputs. A new `scripts/*.py` checker owes its tests here, alongside the
+  curate-* skill the checker rule already demands
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
   the **rendered** markdown — `docs/content/` and the READMEs, never the `CLAUDE.md`s — at strict
@@ -413,8 +421,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - **`ci.yaml` selects what a pull request builds instead of filtering whether it runs** (#243):
   its `pull_request` trigger carries no paths filter — required checks made that impossible,
   because **a required check that never reports blocks a pull request forever** — and a
-  `changes` job derives the Maven `-pl` subset instead. dorny/paths-filter only provides the
-  changed-file list; the decision is `scripts/ci-maven-args.py`, whose module mapping is
+  `changes` job derives the Maven `-pl` subset instead. The changed-file list comes from git
+  alone — the pull_request checkout is the base-into-head merge commit, fetched at depth 2 so
+  `HEAD^1` is the current base tip; a third-party changed-files action was tried and removed on
+  PR #247 as avoidable supply-chain surface. The decision is `scripts/ci-maven-args.py`, whose
+  module mapping is
   derived from the poms (`<modules>` for the set and reactor order, `io.github.flink-gcp`
   dependencies for the edges — dependents of a changed module build transitively, its
   dependencies ride along for reactor resolution), so a new module is covered the moment the

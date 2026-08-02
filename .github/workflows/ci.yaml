@@ -46,51 +46,46 @@ jobs:
   # dispatches always build everything, so a mis-derived subset can never let
   # a module rot on main.
   #
-  # dorny/paths-filter is the changed-file *provider* — it reads the pull
-  # request's file list through the API, which is what the job-level
-  # pull-requests permission is for (same shape as tofu-list.yaml). The
-  # decision itself lives in one place, scripts/ci-maven-args.py, which
-  # derives the module mapping from the poms; `just ci-maven-args --diff
-  # origin/main` reproduces it by hand.
+  # The decision lives in one place, scripts/ci-maven-args.py, which derives
+  # the module mapping from the poms; `just ci-maven-args --diff origin/main`
+  # reproduces it by hand. The changed-file list comes from git alone: a
+  # third-party changed-files action (dorny/paths-filter) was tried first and
+  # removed on this pull request — weighed with the owner against
+  # tj-actions/changed-files' CVE-2025-30066 supply-chain compromise, a
+  # changed-file provider is third-party code and an extra pull-requests:read
+  # permission this job simply does not need, since the checkout already
+  # carries the answer. What the action's API pagination bought only matters
+  # past GitHub's 3000-file response cap, far beyond anything this repository
+  # sees.
   changes:
     name: Detect what changed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
     outputs:
       run_build: ${{ steps.derive.outputs.run_build }}
       maven_args: ${{ steps.derive.outputs.maven_args }}
       check_notice: ${{ steps.derive.outputs.check_notice }}
     steps:
+      # A pull_request checkout is the base-into-head merge commit
+      # (refs/pull/N/merge); fetching its two parents as well (depth 2) makes
+      # HEAD^1 the current base tip, so `--diff HEAD^1` below is exactly the
+      # net change merging this pull request would apply.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
 
       - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: just
 
-      # The one filter matches every changed file; list-files is the output
-      # this job actually consumes. No setup-python for the deriver: unlike
-      # the tomllib scripts below, it needs nothing newer than any runner
-      # image's python3, and this job sits on every pull request's critical
-      # path.
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
-        if: github.event_name == 'pull_request'
-        id: filter
-        with:
-          list-files: json
-          filters: |
-            all:
-              - '**'
-
+      # No setup-python for the deriver: unlike the tomllib scripts below, it
+      # needs nothing newer than any runner image's python3, and this job sits
+      # on every pull request's critical path.
       - name: Derive the Maven arguments
         id: derive
-        env:
-          CHANGED_FILES: ${{ steps.filter.outputs.all_files }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = 'pull_request' ]; then
-            just ci-maven-args --files "$CHANGED_FILES" >> "$GITHUB_OUTPUT"
+            just ci-maven-args --diff 'HEAD^1' >> "$GITHUB_OUTPUT"
           else
             just ci-maven-args --full >> "$GITHUB_OUTPUT"
           fi
@@ -177,10 +172,9 @@ jobs:
   # job, not `build`, because `build` is skipped when a change cannot affect
   # the Maven build — and a required check that never reports blocks a pull
   # request forever. This job reports whenever the run is not cancelled,
-  # turning that skip into an explicit green. Inline `run:` rather than a just
-  # recipe — an exception to the #111 rule beside the tfaction workflows: its
-  # inputs are GitHub `needs` contexts with no local equivalent, and
-  # actionlint still shellchecks the block.
+  # turning that skip into an explicit green. The truth table lives in
+  # scripts/ci-gate.sh so it can be run by hand; the `needs` results reach it
+  # as plain environment variables.
   ci_passed:
     name: CI passed
     runs-on: ubuntu-latest
@@ -188,30 +182,14 @@ jobs:
     needs: [changes, build]
     if: ${{ !cancelled() }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Evaluate the build result
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           RUN_BUILD: ${{ needs.changes.outputs.run_build }}
-        run: |
-          if [ "$CHANGES_RESULT" != 'success' ]; then
-            echo "::error::change detection did not succeed ($CHANGES_RESULT), so nothing downstream of it can be trusted"
-            exit 1
-          fi
-          case "$BUILD_RESULT" in
-            success)
-              echo "build succeeded" ;;
-            skipped)
-              if [ "$RUN_BUILD" = 'false' ]; then
-                echo "nothing in this change affects the Maven build"
-              else
-                echo "::error::the build was skipped although change detection asked for it"
-                exit 1
-              fi ;;
-            *)
-              echo "::error::build: $BUILD_RESULT"
-              exit 1 ;;
-          esac
+        run: scripts/ci-gate.sh
 
   # The Flink API tier audit (issue #103): fails when the main sources add a
   # dependency on an @Internal, @Experimental or unannotated Flink type

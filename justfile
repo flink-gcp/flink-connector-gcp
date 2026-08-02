@@ -77,17 +77,28 @@ verify-module module:
     {{ mvn }} -pl {{ module }} verify
 
 # CI's module-selection decision (issue #243): ci.yaml's changes job calls this
-# with --files (the changed-file list dorny/paths-filter read off the pull
-# request) or --full (push and workflow_dispatch build the whole reactor). The
-# mapping is derived from the poms, never configured — the script's docstring
-# is the specification. positional-arguments because `{{ args }}` interpolation
-# re-splits words and strips quotes, which shredded --files's JSON argument the
-# first time CI ran it; "$@" hands the arguments through verbatim.
+# with --diff HEAD^1 (the pull_request checkout is the base-into-head merge
+# commit, so that diff is the pull request's net change) or --full (push and
+# workflow_dispatch build the whole reactor). The mapping is derived from the
+# poms, never configured — the script's docstring is the specification.
+# positional-arguments because `{{ args }}` interpolation re-splits words and
+# strips quotes, which shredded --files's JSON argument the first time CI ran
+# it; "$@" hands the arguments through verbatim.
 #
 # Which Maven modules does a change build? e.g. `just ci-maven-args --diff origin/main`.
 [positional-arguments]
 ci-maven-args *args:
     scripts/ci-maven-args.py "$@"
+
+# pytest over scripts/ (the CI deriver and the CI gate today), through the uv
+# project scoped at scripts/pyproject.toml: uv is pinned in mise.toml like the
+# linters, pytest is pinned in scripts/uv.lock, and --locked makes a drifted
+# lockfile fail instead of silently re-resolving. The scripts themselves stay
+# standard-library executables; the tests load them by file path.
+#
+# Run the scripts/tests suite with pytest.
+test-scripts:
+    mise x uv -- uv run --project scripts --locked pytest scripts/tests
 
 # Apply the formatter — CI fails on unformatted code, so run before committing.
 format:

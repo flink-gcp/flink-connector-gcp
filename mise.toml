@@ -28,6 +28,11 @@ ruff = "0.16.0"
 # Python script install their own with actions/setup-python, so mise stays
 # out of the setup-java job.
 python = "3.12"
+# Runs the scripts/tests suite through scripts/pyproject.toml (`just
+# test-scripts`). uv itself is pinned exactly like the linters — a runner that
+# changes resolution behaviour must not fail an unchanged pull request — while
+# pytest's version lives in scripts/uv.lock, which is the lockfile's job.
+uv = "0.12.1"
 # Lints the rendered markdown (docs/content/ and the READMEs; scope and the
 # rule deviations live in .markdownlint-cli2.jsonc). Exactly pinned for the
 # same reason as shellcheck: a release that gains a rule (MD060 arrived this
