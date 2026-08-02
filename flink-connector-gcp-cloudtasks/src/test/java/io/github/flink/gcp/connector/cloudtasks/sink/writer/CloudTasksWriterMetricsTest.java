@@ -267,9 +267,20 @@ class CloudTasksWriterMetricsTest {
         // carrying it from Flink: a writer registering on a group of its own would report nothing
         // any reporter sees, and every other test in this class would still pass. The Pub/Sub sink
         // has the twin of this test, added when its absence was found in review (#208).
+        //
+        // Through an emulator endpoint, and that is not optional: this is the production
+        // createWriter, so it builds a real CloudTasksClient — eagerly, unlike the Pub/Sub sink's
+        // lazily created publishers — and the production path demands application-default
+        // credentials. A machine with ADC configured passes either way, which is how the
+        // credential-free form got missed until CI ran it. Nothing is ever sent: the endpoint is
+        // never dialled, and the writer is closed at the end.
         StubWriterInitContext context = new StubWriterInitContext(0);
 
-        SinkWriter<String> writer = TestSinkConfigs.builder().build().createWriter(context);
+        SinkWriter<String> writer =
+                TestSinkConfigs.builder()
+                        .emulatorEndpoint("localhost:1")
+                        .build()
+                        .createWriter(context);
 
         assertThat(context.getSinkWriterMetricGroup().hasMetric("inFlightTasks")).isTrue();
         assertThat(context.getSinkWriterMetricGroup().hasMetric("tasksDeduplicated")).isTrue();
