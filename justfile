@@ -80,11 +80,14 @@ verify-module module:
 # with --files (the changed-file list dorny/paths-filter read off the pull
 # request) or --full (push and workflow_dispatch build the whole reactor). The
 # mapping is derived from the poms, never configured — the script's docstring
-# is the specification.
+# is the specification. positional-arguments because `{{ args }}` interpolation
+# re-splits words and strips quotes, which shredded --files's JSON argument the
+# first time CI ran it; "$@" hands the arguments through verbatim.
 #
 # Which Maven modules does a change build? e.g. `just ci-maven-args --diff origin/main`.
+[positional-arguments]
 ci-maven-args *args:
-    scripts/ci-maven-args.py {{ args }}
+    scripts/ci-maven-args.py "$@"
 
 # Apply the formatter — CI fails on unformatted code, so run before committing.
 format:
