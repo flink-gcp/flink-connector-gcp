@@ -186,6 +186,27 @@ class CloudTasksWriterMetricsTest {
     }
 
     @Test
+    void countsARecordWhoseTaskIdExtractorThrewAsASendError() throws Exception {
+        // The third routed failure, and the one a reader is least likely to expect: a *throwing*
+        // extractor is per-record and routed, while one returning null or an empty key fails every
+        // record alike and stays fatal (#207). Only the routed half reaches this counter.
+        CloudTasksWriter<String> writer =
+                writer(
+                        TestSinkConfigs.builder()
+                                .taskIdExtractor(
+                                        element -> {
+                                            throw new IllegalStateException("no key");
+                                        })
+                                .failedTaskHandler(FailureHandler.logAndDrop()));
+
+        writer.write("first", TestContexts.NO_OP);
+
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(counter("numRecordsSend")).isZero();
+        assertThat(creator.requests).isEmpty();
+    }
+
+    @Test
     void countsATaskTheServiceRejectedAsASendError() throws Exception {
         CloudTasksWriter<String> writer =
                 writer(TestSinkConfigs.builder().failedTaskHandler(FailureHandler.logAndDrop()));
