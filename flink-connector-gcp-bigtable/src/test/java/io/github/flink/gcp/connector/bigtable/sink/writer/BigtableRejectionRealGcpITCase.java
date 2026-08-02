@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -61,6 +62,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * with no entry and no row key. Measured 2026-08-02 with {@code google-cloud-bigtable} 2.80.0; a
  * run at 110,000 mutations never reached the wire.
  */
+@Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BIGTABLE_IT_PROJECT", matches = ".+")
 class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
 

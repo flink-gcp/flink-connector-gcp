@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -49,6 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * slower", not "the connector broke": the connector's own half (the nack was issued) is asserted
  * deterministically through the metric first.
  */
+@Tag("gated")
 @EnabledIfEnvironmentVariable(named = "PUBSUB_IT_PROJECT", matches = ".+")
 class PubSubNackPromptnessRealGcpITCase extends AbstractPubSubRealGcpITCase {
 

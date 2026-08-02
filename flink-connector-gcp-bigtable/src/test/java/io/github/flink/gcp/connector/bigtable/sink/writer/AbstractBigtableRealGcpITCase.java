@@ -71,7 +71,10 @@ import java.util.List;
  *
  * <p>The {@code @EnabledIfEnvironmentVariable} gate lives on every concrete class, never here:
  * {@code scripts/e2e-gated-its.sh} discovers the suite by grepping for the annotation literal and
- * then expects a surefire report per matching file, which an abstract class never produces.
+ * then expects a surefire report per matching file, which an abstract class never produces. The
+ * {@code gated} tag beside it (issue #245) has to stay on the concrete classes for the same reason,
+ * even though JUnit would inherit it from here: {@code --check-tags} greps both literals per file,
+ * so hoisting one leaves the other unpaired.
  */
 @Timeout(600)
 abstract class AbstractBigtableRealGcpITCase {

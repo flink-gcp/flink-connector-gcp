@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.PubSubSubscriptionAdmin;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -48,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * account carries the {@code roles/iam.serviceAccountTokenCreator} binding; running locally needs a
  * one-off self-grant first — see the documentation page's Testing section.
  */
+@Tag("gated")
 @EnabledIfEnvironmentVariable(named = "PUBSUB_IT_PROJECT", matches = ".+")
 class PubSubSubscriptionAdminIamRealGcpITCase extends AbstractPubSubRealGcpITCase {
 

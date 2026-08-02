@@ -28,7 +28,10 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
 - **Real-GCP gating annotations never move here.** `scripts/e2e-gated-its.sh` discovers the gated
   suite by grepping the `@EnabledIfEnvironmentVariable` literal on concrete classes under the
   connector modules and expects a surefire report per match — a meta-annotation or a base class in
-  this module would make that grep silently return nothing.
+  this module would make that grep silently return nothing. The same holds for the `@Tag("gated")`
+  each of those classes carries beside it (#245): the pair is what makes the suite opt-in per
+  command, `--check-tags` greps both literals, and hoisting either into a shared annotation here
+  would defeat the check rather than tidy it.
 - **The justfile install lists name this module.** The `binary-compat` and `e2e` recipes run
   goal-only / `-pl`-scoped Maven, which cannot resolve a reactor sibling from source (#181), so
   both install this module into `~/.m2` first. A rename or a new similarly-consumed module must

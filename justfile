@@ -183,8 +183,6 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 worktree-env:
     scripts/worktree-env.sh
 
-# Run the real-GCP gated ITCases and assert they actually ran.
-#
 # The install step mirrors binary-compat's: the two -pl builds below are
 # reactor subsets, so the test-utils module the gated tests depend on (#27)
 # and the base module the connectors compile against (#61) must come from
@@ -205,12 +203,33 @@ worktree-env:
 # (a one-node one stands at roughly $470 a month) and creates one per gated
 # class instead, deleting it afterwards. A killed run is swept by the next one,
 # not left standing — see AbstractBigtableRealGcpITCase.
+#
+# -Dtest.excluded.groups= is that opt-in (issue #245): the gated classes carry
+# @Tag("gated"), which the root pom excludes from every surefire execution, so
+# this recipe — and nothing else — brings them back. Clearing it is what makes
+# the cost above a property of the command rather than of the shell's
+# environment, which is where it used to live.
+#
+# Run the real-GCP gated ITCases and assert they actually ran.
 e2e:
     scripts/e2e-gated-its.sh --require-env
     {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-test-utils -DskipTests -Drat.skip=true install
     {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable test-compile
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable surefire:test@integration-tests -Dtest="$(scripts/e2e-gated-its.sh)"
+    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(scripts/e2e-gated-its.sh)"
     scripts/e2e-gated-its.sh --assert-ran
+
+# The two markers a gated real-GCP ITCase carries have to stay together: the
+# @EnabledIfEnvironmentVariable the E2E suite is discovered by, and the
+# @Tag("gated") that keeps the class out of every ordinary build. Forgetting
+# the tag fails in the expensive direction — the suite runs during
+# `just verify` in any shell holding the variable — so the pairing is checked
+# rather than merely documented (issue #245). A ci.yaml job rather than part of
+# `just lint`, whose paths filter would have had to grow to every Java test
+# source; the check needs neither a JDK nor the network.
+#
+# Does every gated ITCase carry both the environment gate and @Tag("gated")?
+check-gated-tags:
+    scripts/e2e-gated-its.sh --check-tags
 
 # Deletes Bigtable instances an E2E run abandoned (issue #246). The suite
 # already sweeps at the start of a gated class, but only the weekly E2E

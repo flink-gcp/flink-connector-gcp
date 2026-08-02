@@ -32,6 +32,7 @@ import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -54,6 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * here: what distinguishes it is the end-of-input flush rather than anything about the service, and
  * {@code BigtableSinkJobITCase} covers it against the emulator.
  */
+@Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BIGTABLE_IT_PROJECT", matches = ".+")
 class BigtableSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
 

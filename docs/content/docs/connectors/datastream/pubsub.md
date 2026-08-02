@@ -885,7 +885,10 @@ losing messages, and a savepoint taken at one parallelism restores at another in
 the split plan is recomputed by the enumerator on every start, so the rescale reassigns cleanly.
 
 A **real-GCP gated suite** covers what the emulator cannot, gated on `PUBSUB_IT_PROJECT`
-(application-default credentials; skipped when unset, keeping `./mvnw verify` credential-free):
+(application-default credentials; skipped when unset, keeping `./mvnw verify` credential-free, and
+never selected by an ordinary build even when it is set, because of the `@Tag("gated")` these
+classes carry — running the suite is opt-in per command, through `just e2e`,
+[#245]({{< param BookRepo >}}/issues/245)):
 end-to-end per-key ordering through `orderingMode(PER_KEY)` (the only coverage of the ordering
 guarantee anywhere — see below), dead-letter forwarding under the `NACK` policy (the forwarding is
 performed by the Pub/Sub service agent, whose project-level grants the repository's opentofu

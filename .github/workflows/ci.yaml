@@ -257,3 +257,33 @@ jobs:
 
       - name: Check every option is documented, and every documented option exists
         run: just check-option-docs
+
+  # The gated-suite pairing check (issue #245): a real-GCP ITCase carries both
+  # the @EnabledIfEnvironmentVariable the E2E suite is discovered by and the
+  # @Tag("gated") that keeps it out of every ordinary build, and this fails
+  # when a class has one without the other.
+  #
+  # Checked rather than merely documented because forgetting the tag fails in
+  # the expensive direction — the suite then runs during `just verify` in any
+  # shell holding the variable, creating billed Bigtable instances — and
+  # because nothing else would notice: CI never sets those variables, so the
+  # damage lands on a laptop.
+  #
+  # A job here rather than in lint.yaml for the reason api_tiers gives: its
+  # inputs are the Java test sources, exactly this workflow's trigger set,
+  # while lint.yaml's paths filter would have had to grow to every one of them.
+  # Not behind the changes job, like api_tiers and for the same reasons. Needs
+  # no JDK, no Python and no network — it is a grep over the test tree.
+  gated_tags:
+    name: Check the gated-suite tagging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        with:
+          tool: just
+
+      - name: Check every gated ITCase carries both markers
+        run: just check-gated-tags

@@ -1105,7 +1105,10 @@ for checkpoint-triggered streaming loads, `BigQueryFileLoadsSchemaEvolutionITCas
 against a pre-existing table whose schema the serializer's extends) run real jobs against
 BigQuery and GCS and are gated on
 `BQ_IT_PROJECT`, `BQ_IT_DATASET` and `BQ_IT_GCS_BUCKET` (application-default credentials); they
-are skipped when the variables are unset, keeping `./mvnw verify` credential-free. For local
+are skipped when the variables are unset, keeping `./mvnw verify` credential-free. They also carry
+`@Tag("gated")`, which the build excludes by default, so a shell that has the variables set does not
+run them either — the build never selects them, and running them is opt-in per command, through
+`just e2e` ([#245]({{< param BookRepo >}}/issues/245)). For local
 runs, put the variables (plus `GOOGLE_APPLICATION_CREDENTIALS` if not using the default ADC
 location) in an uncommitted `.env` at the repository root — mise loads it automatically. In a git
 worktree, run `just worktree-env` once to make the repository root's `.env` reachable there. The

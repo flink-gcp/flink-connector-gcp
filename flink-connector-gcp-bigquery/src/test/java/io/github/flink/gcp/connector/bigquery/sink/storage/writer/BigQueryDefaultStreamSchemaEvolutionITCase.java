@@ -44,6 +44,7 @@ import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -82,11 +83,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code BQ_IT_PROJECT} annotation literal, so this class gates on {@code BQ_IT_SCHEMA_EVOLUTION}
  * (plus {@code BQ_IT_DATASET}) instead and the script never sees it — <b>do not "fix" the gating to
  * match the other real-GCP ITCases</b>. {@code BQ_IT_PROJECT} and {@code GOOGLE_CLOUD_PROJECT} must
- * still be set for the run to work:
+ * still be set for the run to work, and {@code -Dtest.excluded.groups=} is what clears the
+ * exclusion the build applies to the {@code gated} tag by default (issue #245) — without it this
+ * class is not selected at all, whatever the environment holds:
  *
  * <pre>{@code
  * BQ_IT_SCHEMA_EVOLUTION=1 ./mvnw -pl flink-connector-gcp-bigquery test-compile \
- *   surefire:test@integration-tests -Dtest=BigQueryDefaultStreamSchemaEvolutionITCase
+ *   surefire:test@integration-tests -Dtest.excluded.groups= \
+ *   -Dtest=BigQueryDefaultStreamSchemaEvolutionITCase
  * }</pre>
  *
  * <p>The evolution <em>mechanics</em> — fingerprint change detection, reconcile, continued writes
@@ -119,6 +123,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       assertion.
  * </ul>
  */
+@Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_SCHEMA_EVOLUTION", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
 @Timeout(10_800)

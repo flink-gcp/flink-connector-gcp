@@ -30,6 +30,7 @@ import org.apache.flink.util.Collector;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -59,6 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * time after the last nack, so the wait is generous and the class timeout wider than the base's.
  */
 @Timeout(600)
+@Tag("gated")
 @EnabledIfEnvironmentVariable(named = "PUBSUB_IT_PROJECT", matches = ".+")
 class PubSubDeadLetterRealGcpITCase extends AbstractPubSubRealGcpITCase {
 
