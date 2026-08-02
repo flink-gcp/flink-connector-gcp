@@ -548,6 +548,11 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   (#138) — which is where the repository's only shading decisions live, so read it before adding
   a second `flink-sql-connector-gcp-*`
 - `flink-connector-gcp-cloudtasks/CLAUDE.md` — sink design (#23) and implementation (#24)
+- `flink-connector-gcp-bigtable/CLAUDE.md` — sink design and implementation (#33): implement rather
+  than adopt or vendor, the four SDK facts the writer rests on (including the client's own blocking
+  flow controller and two Google-internal annotations accepted deliberately), the row-level vs fatal
+  boundary and the one code in it that is unmeasured, one fixed table per sink, and why the send
+  metrics landed here rather than with #37
 - `flink-connector-gcp-test-utils/CLAUDE.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its

@@ -1,7 +1,7 @@
 # GCP Connectors for Apache Flink
 
 Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/):
-BigQuery, Cloud Pub/Sub and Cloud Tasks, with Bigtable and Spanner planned.
+BigQuery, Cloud Pub/Sub, Cloud Tasks and Bigtable, with Spanner planned.
 
 > **Status: early development.** Nothing is released yet; APIs and coordinates will change.
 
@@ -13,6 +13,7 @@ BigQuery, Cloud Pub/Sub and Cloud Tasks, with Bigtable and Spanner planned.
 | `flink-connector-gcp-pubsub` | Cloud Pub/Sub sink (dynamic topic destinations) and source |
 | `flink-sql-connector-gcp-pubsub` | The Pub/Sub connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 | `flink-connector-gcp-cloudtasks` | Cloud Tasks sink |
+| `flink-connector-gcp-bigtable` | Bigtable sink (bulk row mutations into one fixed table) |
 
 ## Build
 
