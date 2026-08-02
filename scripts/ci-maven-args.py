@@ -40,9 +40,15 @@ Each changed file is classified by the first matching rule:
 1. **Ignored** — any `README.md` or `CLAUDE.md` (apache-rat's exclude list
    carries exactly those patterns, so skipping them loses no licence-header
    check), `opentofu/**`, `tfaction-root.yaml` and the three tofu workflows
-   (the tfaction workflows check those). This is the pull_request half of the
-   old workflow-level paths-ignore; the push trigger keeps the real one, so
-   merges that cannot affect the Maven build stay free on main too.
+   (the tfaction workflows check those), and everything under `.github/` that
+   is not a workflow or a composite action — templates, CODEOWNERS,
+   dependabot.yml — since GitHub reads those and no build does. This is the
+   pull_request half of the old workflow-level paths-ignore; the push trigger
+   keeps the real one, so merges that cannot affect the Maven build stay free
+   on main too. The push list stays an explicit handful rather than mirroring
+   the `.github/` rule: GitHub's `!` negation in paths-ignore is order-sensitive
+   and getting it wrong would silently stop CI on a real workflow change, and
+   the cost of not mirroring it is one full build per merge of an inert file.
 2. **A module directory** — that module.
 3. **Root-only** — the root module alone (`-pl .`). These are the paths whose
    only Maven-relevant consumer is the root module's apache-rat execution,
@@ -129,12 +135,15 @@ IGNORED_FILES = {
     ".github/workflows/tofu-plan.yaml",
     ".github/workflows/tofu-apply.yaml",
     ".github/workflows/tofu-list.yaml",
-    # GitHub reads this one; no build does. And unlike scripts/, it does not
-    # even buy the root-only rat run: .github/** is rat-excluded. Named file by
-    # file rather than by a `.github/` prefix, because a *workflow* under there
-    # changes what CI runs — unknown territory on purpose.
-    ".github/PULL_REQUEST_TEMPLATE.md",
 }
+
+# Everything under .github/ is inert to the Maven build — GitHub reads it, no
+# build does, and it is rat-excluded so it does not even buy the root-only rat
+# run — EXCEPT the two directories that decide what CI itself does. Stated as a
+# rule rather than as a file list that grows by one entry per template: the
+# templates, CODEOWNERS, dependabot.yml and whatever GitHub adds next are all
+# the same case, and the case that is not is small and named.
+GITHUB_BUILD_RELEVANT = (".github/workflows/", ".github/actions/")
 
 # Rule 3: nothing Maven builds from these, but the root module's rat run does
 # scan them, so they select `-pl .` rather than nothing at all.
@@ -226,6 +235,7 @@ def classify(
             f.rsplit("/", 1)[-1] in IGNORED_BASENAMES
             or f.startswith(IGNORED_PREFIXES)
             or f in IGNORED_FILES
+            or (f.startswith(".github/") and not f.startswith(GITHUB_BUILD_RELEVANT))
         ):
             ignored.append(f)
             continue
