@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.writer;
 
+import org.apache.flink.util.IOUtils;
+
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.models.CreateInstanceRequest;
@@ -121,27 +123,22 @@ abstract class AbstractBigtableRealGcpITCase {
     }
 
     @AfterAll
-    static void deleteInstanceAndCloseClients() {
-        if (dataClient != null) {
-            dataClient.close();
-        }
-        if (tableAdmin != null) {
-            tableAdmin.close();
-        }
-        if (instanceAdmin != null) {
-            if (instanceId != null) {
-                try {
-                    // Deleting the instance takes its clusters and tables with it, so nothing
-                    // else has to be cleaned up.
-                    instanceAdmin.deleteInstance(instanceId);
-                } catch (RuntimeException e) {
-                    LOG.warn(
-                            "Failed to delete instance {}; the sweep will reclaim it",
-                            instanceId,
-                            e);
-                }
+    static void deleteInstanceAndCloseClients() throws Exception {
+        try {
+            // The instance goes first, before any client is closed: it is the only part of this
+            // fixture that costs money, and a client throwing on close must not be able to skip
+            // its deletion. Deleting it takes its clusters and tables with it, so there is nothing
+            // else to clean up.
+            if (instanceAdmin != null && instanceId != null) {
+                instanceAdmin.deleteInstance(instanceId);
             }
-            instanceAdmin.close();
+        } catch (RuntimeException e) {
+            LOG.warn(
+                    "Failed to delete instance {}; a later run's sweep reclaims it", instanceId, e);
+        } finally {
+            // closeAll rather than a sequence, for the same reason: one client failing to close
+            // would otherwise leave the others open.
+            IOUtils.closeAll(dataClient, tableAdmin, instanceAdmin);
         }
     }
 
