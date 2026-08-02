@@ -39,8 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * single-append connections are unaffected. This multi-flush scenario therefore lives in its own
  * test class, so its connection is guaranteed to be the container's first: the testcontainers
  * extension starts a fresh container per {@code *ITCase} class, and kept doing so when #243 made
- * the classes share forked JVMs (measured there: one container per class). Real BigQuery applies
- * every acknowledged default-stream append.
+ * the classes share forked JVMs (measured there on the Pub/Sub fixtures; the per-class lifecycle is
+ * the extension's, not the module's). Real BigQuery applies every acknowledged default-stream
+ * append.
  */
 class BigQueryDefaultStreamWriterITCase extends AbstractBigQueryEmulatorITCase {
 

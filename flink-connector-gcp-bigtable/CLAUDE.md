@@ -84,7 +84,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
 - **The E2E suite creates an ephemeral instance per gated *class*, not per run** (#218) — the one
   deviation from that issue's settled design. When this landed it was forced: `reuseForks=false`
   meant a fresh JVM per class, where a JVM-scoped holder buys nothing. #243's root-pom override
-  (`reuseForks=true`) changed the calculus — the two forks' classes now run sequentially in
+  (`reuseForks=true`) changed the calculus — the two forks' classes run sequentially in
   long-lived JVMs, so a per-fork holder became possible — and per-class was kept anyway: a shared
   holder would still be raced by the two forks, a single class must stay runnable by hand, and
   best-effort deletion tracks per class. Nothing persistent exists to run against because a one-node instance stands at roughly

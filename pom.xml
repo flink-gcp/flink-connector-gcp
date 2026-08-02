@@ -357,7 +357,11 @@ limitations under the License.
                              testcontainers extension still starts and stops every static
                              container per test class - measured, not assumed: 15 creates
                              for the 15 Pub/Sub IT classes sharing one JVM (junit 5.13.3,
-                             testcontainers 1.21.4) - which
+                             testcontainers 1.21.4), and since 14 of those classes share
+                             two inherited static containers whose start() is a no-op
+                             while running, a container that survived its class would have
+                             shown ~3 creates: the count proves the per-class stop too -
+                             which
                              BigQueryDefaultStreamWriterITCase's first-connection guarantee
                              rests on. Classes inside a fork run sequentially, which the
                              real-GCP suites' static hand-offs assume; class-level
