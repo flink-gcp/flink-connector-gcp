@@ -27,6 +27,7 @@ on:
       - '.github/workflows/tofu-list.yaml'
       - '**/README.md'
       - '**/CLAUDE.md'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
   pull_request:
   workflow_dispatch:
 

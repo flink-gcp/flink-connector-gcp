@@ -100,12 +100,27 @@ def classify(mod, files):
         ".github/workflows/tofu-plan.yaml",
         ".github/workflows/tofu-apply.yaml",
         ".github/workflows/tofu-list.yaml",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".github/ISSUE_TEMPLATE/bug.md",
+        ".github/CODEOWNERS",
+        ".github/dependabot.yml",
     ],
 )
 def test_ignored_paths_select_nothing(fake_repo, ci_maven_args, path):
     ignored, selected, root_only, everything = classify(ci_maven_args, [path])
     assert ignored == [path]
     assert not selected and not root_only and not everything
+
+
+@pytest.mark.parametrize(
+    "path", [".github/workflows/ci.yaml", ".github/actions/setup/action.yml"]
+)
+def test_what_drives_ci_stays_unknown_territory(fake_repo, ci_maven_args, path):
+    # The two directories under .github/ that decide what CI itself does are
+    # the exception to the rule above: a change there is unknown territory.
+    _, selected, root_only, everything = classify(ci_maven_args, [path])
+    assert not selected and not root_only
+    assert everything == [path]
 
 
 def test_module_file_selects_its_module(fake_repo, ci_maven_args):

@@ -250,6 +250,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   the main checkout's uncommitted `.env` (#156)
 - All changes go through **draft PRs**; nothing is pushed directly to `main` after the initial
   skeleton
+- **A description follows `.github/PULL_REQUEST_TEMPLATE.md`: `## WHAT` and `## WHY`, both
+  filled** (#257). WHY is the half that does not survive in git — a diff shows what changed and
+  never why it was worth changing — so a description that only restates the diff is incomplete
+  even when it is long. The template is a floor, not a cap: everything this project already
+  expects of a description goes **under** those headings — the verification list, the mutant
+  table a change with new tests carries, the decisions weighed and declined. Squash before merge
+  (the review fix-ups are session bookkeeping), so the merged commit message carries the same
+  WHAT/WHY and the per-round detail stays in the PR comments
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency
   findings, not only correctness ones — and push the fixes before asking for review. Record the
   findings *and the deferrals, with their reasons* as a PR comment. Which command to use:
@@ -443,9 +451,16 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   root pom names it. `just ci-maven-args --diff origin/main` reproduces the decision by hand.
   The old ignore list (`opentofu/**`, the tofu workflows, `**/README.md` / `**/CLAUDE.md` —
   the last two only because apache-rat's exclude list already carries exactly those patterns,
-  so no licence-header check is lost) lives twice on purpose: as the script's first
+  so no licence-header check is lost — plus everything under `.github/` that is **not** a
+  workflow or a composite action: templates, CODEOWNERS, `dependabot.yml`. That last one is a
+  rule, not a list, so a new template needs no edit here; the two directories that decide what
+  CI itself does are the named exception) lives twice on purpose: as the script's first
   classification rule, and as a real `paths-ignore` on the **push** trigger only, where no
-  required check can be blocked and a tofu-only merge stays free. A **root-only** change builds
+  required check can be blocked and a tofu-only merge stays free. The two are no longer
+  identical: the push list keeps naming the inert `.github/` files one by one, because
+  GitHub's `!` negation in `paths-ignore` is order-sensitive and a mistake there silently
+  stops CI on a real workflow change — while the cost of not mirroring the rule is one full
+  build per merge of a template. A **root-only** change builds
   `-pl .` alone: `docs/**`, `scripts/**` and the root uv project (`pyproject.toml`, `uv.lock`)
   are the paths whose only Maven-relevant consumer is the root module's rat run, which scans the
   whole working tree and is their only pre-merge licence check (#253 — a `scripts/tests/`-only
