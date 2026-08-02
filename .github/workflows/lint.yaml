@@ -28,6 +28,11 @@ on:
       # where those versions are declared, so leaving it out would skip the lint
       # in exactly the change that most needs it.
       - 'mise.toml'
+      # The scripts test suite's remaining inputs: the uv project at the
+      # repository root. A pytest bump lands in these two files and must run
+      # the suite, for the same reason mise.toml is listed.
+      - 'pyproject.toml'
+      - 'uv.lock'
       # tofu fmt -check reads these (opentofu/README.md doubles as markdownlint
       # input).
       - 'opentofu/**'
@@ -84,11 +89,12 @@ jobs:
         run: just lint
 
   # The scripts/tests suite (PR #247): pytest over the CI deriver and the CI
-  # gate. Here rather than in ci.yaml because its inputs are exactly this
-  # workflow's paths — scripts/** carries the code, the tests, pyproject.toml
-  # and uv.lock; mise.toml carries the uv pin — and because it reports in
-  # seconds beside the linters. uv resolves the interpreter itself (managed
-  # download on a bare runner), so mise installs nothing but uv here.
+  # gate. Here rather than in ci.yaml because its inputs are all in this
+  # workflow's paths — scripts/** carries the code and the tests, the root
+  # pyproject.toml and uv.lock carry the project, mise.toml carries the uv
+  # pin — and because it reports in seconds beside the linters. uv resolves
+  # the interpreter itself (managed download on a bare runner), so mise
+  # installs nothing but uv here.
   script_tests:
     name: Test the scripts
     runs-on: ubuntu-latest

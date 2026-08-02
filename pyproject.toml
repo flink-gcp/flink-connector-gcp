@@ -14,14 +14,18 @@
 #
 # The uv project behind `just test-scripts` (decided with the owner on PR
 # #247): dependency management for the scripts/tests suite and pytest
-# configuration, nothing more. The scripts themselves stay standard-library
-# executables — this project is never packaged (`package = false`) and they
-# are not importable modules; the tests load them by file path. Scoped to
-# scripts/ rather than the repository root so the Maven build's root stays
-# Maven's.
+# configuration, nothing more, at the repository root where uv expects a
+# project. The layout is not a Python package's — the code under test lives
+# in scripts/ as standard-library executables that are never importable —
+# so this project is never packaged (`package = false`) and the tests load
+# the scripts by file path; `testpaths` below is the one layout
+# customisation that needs saying. pytest's constraint is deliberately loose
+# (owner's call): uv.lock pins the version actually installed, and an
+# upgrade is an explicit `uv lock --upgrade`, so a tight constraint here
+# would only duplicate the lockfile's job.
 
 [project]
-name = "flink-connector-gcp-scripts"
+name = "flink-connector-gcp"
 version = "0.0.0"
 requires-python = ">=3.11"
 
@@ -30,8 +34,8 @@ package = false
 
 [dependency-groups]
 dev = [
-    "pytest==9.1.1",
+    "pytest>=9",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["scripts/tests"]

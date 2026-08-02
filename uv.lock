@@ -12,7 +12,7 @@ wheels = [
 ]
 
 [[package]]
-name = "flink-connector-gcp-scripts"
+name = "flink-connector-gcp"
 version = "0.0.0"
 source = { virtual = "." }
 
@@ -24,7 +24,7 @@ dev = [
 [package.metadata]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = "==9.1.1" }]
+dev = [{ name = "pytest", specifier = ">=9" }]
 
 [[package]]
 name = "iniconfig"

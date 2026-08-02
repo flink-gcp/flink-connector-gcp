@@ -89,12 +89,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   derived from the poms, never configured — the script's docstring is the specification, and
   the ci.yaml bullet under Version policy carries the design
 - `just test-scripts` — pytest over `scripts/` (the CI deriver and the CI gate today), through
-  the uv project scoped at `scripts/pyproject.toml` (decided with the user on PR #247): uv is
-  pinned in `mise.toml` like the linters, pytest in `scripts/uv.lock` (committed, rat-excluded
-  as machine-written), and the project is never packaged — the scripts stay stdlib-only
-  executables the tests load by file path. Runs as lint.yaml's `script_tests` job, whose paths
-  already cover its inputs. A new `scripts/*.py` checker owes its tests here, alongside the
-  curate-* skill the checker rule already demands
+  the uv project at the repository root (decided with the user on PR #247): `pyproject.toml`
+  holds a loose pytest constraint plus the one layout customisation (`testpaths`, since the
+  code under test is executables in `scripts/`, not a package — `package = false`), `uv.lock`
+  pins what actually installs (committed, rat-excluded as machine-written), uv itself is pinned
+  in `mise.toml` like the linters. Runs as lint.yaml's `script_tests` job, whose paths list the
+  root `pyproject.toml`/`uv.lock` for exactly the mise.toml reason. A new `scripts/*.py`
+  checker owes its tests here, alongside the curate-* skill the checker rule already demands
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
   the **rendered** markdown — `docs/content/` and the READMEs, never the `CLAUDE.md`s — at strict

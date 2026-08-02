@@ -90,15 +90,15 @@ verify-module module:
 ci-maven-args *args:
     scripts/ci-maven-args.py "$@"
 
-# pytest over scripts/ (the CI deriver and the CI gate today), through the uv
-# project scoped at scripts/pyproject.toml: uv is pinned in mise.toml like the
-# linters, pytest is pinned in scripts/uv.lock, and --locked makes a drifted
-# lockfile fail instead of silently re-resolving. The scripts themselves stay
+# pytest over scripts/ (the CI deriver and the CI gate today), through the
+# root uv project (pyproject.toml): uv is pinned in mise.toml like the
+# linters, pytest is pinned in uv.lock, and --locked makes a drifted lockfile
+# fail instead of silently re-resolving. The scripts themselves stay
 # standard-library executables; the tests load them by file path.
 #
 # Run the scripts/tests suite with pytest.
 test-scripts:
-    mise x uv -- uv run --project scripts --locked pytest scripts/tests
+    mise x uv -- uv run --locked pytest
 
 # Apply the formatter — CI fails on unformatted code, so run before committing.
 format:

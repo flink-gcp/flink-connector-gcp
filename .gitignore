@@ -11,7 +11,7 @@ tools/japicmp-output/
 
 # scripts/*.py. .ruff_cache/ needs no entry: ruff writes a self-ignoring
 # .gitignore inside it. .venv is the uv-managed environment behind
-# `just test-scripts` (scripts/pyproject.toml); uv.lock is committed, the
+# `just test-scripts` (the root pyproject.toml); uv.lock is committed, the
 # environment is not.
 __pycache__/
 *.pyc
