@@ -110,6 +110,28 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   lets the attribute set be pinned exactly without a live publisher — `Publisher` is final, so
   there is no other seam short of an internal interface. The topic is never auto-created: a
   dead-letter destination created on the fly is one nothing is consuming
+- **Pub/Sub sink metrics** (#208, the #37 series): `PubSubSinkWriterMetrics` (`sink.writer`) on the
+  `PubSubSourceReaderMetrics` model, but with **plain counters, not `ThreadSafeSimpleCounter`** —
+  every increment happens on the task thread here, since completions arrive as mailbox mails,
+  which is exactly what the source cannot say. Four decisions worth keeping. **`numRecordsSend` is
+  counted in `write()`, not in `publishTo`**, because the topic-creation repair re-enters
+  `publishTo` for every parked message: the `firstAttempt` parameter is what keeps the metric a
+  count of records rather than of publish attempts, and the repo-wide decision behind it (with what
+  it costs `numBytesSend`) is on #208 and in the base module's CLAUDE.md. **`parkedMessages` is a
+  new plain `int` field** maintained by the sole `park(...)` helper rather than a sum over
+  `states`, since the gauge is read from the reporter thread and walking those maps would race the
+  task thread; `close()` zeroes it, because parked messages are dropped with the writer.
+  **Error-class counters skip cascade cancellations**: under #78 a cancellation always trails a
+  root failure that is itself counted, and it carries no status, so counting it would both multiply
+  one incident by the key's queue length and bury real unclassifiable failures under
+  `UNCLASSIFIED`. The traversal that finds the code is `PubSubErrorClassifier.statusCode` — beside
+  `classify`, since this class owns the connector's cause-chain policy. **Per-destination counters
+  are resolved once per `DestinationState`**, not per record, so the topic's resource name (the
+  same `toTopicPath()` `describeDestination()` uses) is composed once. Measured, so it is not
+  re-investigated: `google-cloud-pubsub` 1.152.0 exposes **no** programmatic metric accessor on
+  `Publisher` — only `setEnableOpenTelemetryTracing`/`setOpenTelemetry`, and
+  `OpenTelemetryPubsubTracer` emits spans, not meters — so the flink-connector-kafka-style
+  passthrough of client-native metrics has no source to read here
 - **Pub/Sub source** (#79, #80, #81): FLIP-27 streaming-pull source; split = (subscription, uid),
   ack on checkpoint completion, nack on close. **The reader checkpoints no splits** — the
   enumerator is the only owner of split assignment, recomputing the deterministic plan
