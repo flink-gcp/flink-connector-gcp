@@ -140,7 +140,14 @@ public final class PubSubSinkWriterMetrics {
         errorClasses.count(code);
     }
 
-    /** Counts one topic created by the auto-creation repair. */
+    /**
+     * Counts one completed topic-creation repair.
+     *
+     * <p>Creations, not distinct topics: the admin treats {@code ALREADY_EXISTS} as success — a
+     * parallel subtask got there first — so a topic created once is counted by every subtask that
+     * repaired for it. Reading it as "how often did a missing topic stall this subtask" is right;
+     * reading it as "how many topics exist" is not.
+     */
     public void topicCreated() {
         topicsCreated.inc();
     }

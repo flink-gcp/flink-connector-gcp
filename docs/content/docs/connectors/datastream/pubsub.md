@@ -416,7 +416,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `inFlightMessages` | gauge | publishes not yet acknowledged |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
 | `parkedMessages` | gauge | messages held for a topic-creation republish |
-| `topicsCreated` | counter | topics this subtask created under `CREATE_IF_NEEDED` |
+| `topicsCreated` | counter | completed topic-creation repairs under `CREATE_IF_NEEDED` (see below) |
 | `errorClass.CODE.errors` | counter | failed publishes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `destination.TOPIC.recordsSend`, `destination.TOPIC.sendErrors` | counter | the same two counts per topic, **only** with `perDestinationMetrics(true)` |
 
@@ -433,6 +433,11 @@ exactly what reached `failedMessageHandler(...)` — a record the serializer rej
 the service answered `INVALID_ARGUMENT` — whether the handler then dropped the message or failed the
 job. A serializer bug that makes *every* message invalid is dropped one at a time under a dropping
 policy, and this counter is what shows it while the job stays green.
+
+**`topicsCreated` counts repairs, not distinct topics.** A creation that answers `ALREADY_EXISTS`
+— a parallel subtask got there first — is a success, so one new topic is counted once by every
+subtask that had to repair for it. It answers "how often did a missing topic stall this subtask",
+which is what a reader of this sink's auto-creation behaviour wants; it is not an inventory.
 
 `errorClass` counts **root** failures only. With message ordering enabled the SDK cancels an ordering
 key's queued publishes after that key's first failure; those cascades are not counted, since they
