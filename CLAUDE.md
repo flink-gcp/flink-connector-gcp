@@ -81,6 +81,21 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   belongs in — is `.claude/skills/curate-option-docs/`**, the third of the checker skills. Note
   what the check does *not* do: it compares the set of options, not their values, so a changed
   default has to be edited in the same commit
+- `just ci-maven-args` — CI's module-selection decision (#243): which Maven modules does a
+  change build? `ci.yaml`'s `changes` job calls it with `--diff HEAD^1` (the pull_request
+  checkout is the base-into-head merge commit, fetched at depth 2, so that diff is the pull
+  request's net change) or `--full`; `just ci-maven-args --diff origin/main` reproduces by hand
+  what a pull request with the current branch's committed diff would build. The mapping is
+  derived from the poms, never configured — the script's docstring is the specification, and
+  the ci.yaml bullet under Version policy carries the design
+- `just test-scripts` — pytest over `scripts/` (the CI deriver and the CI gate today), through
+  the uv project at the repository root (decided with the user on PR #247): `pyproject.toml`
+  holds a loose pytest constraint plus the one layout customisation (`testpaths`, since the
+  code under test is executables in `scripts/`, not a package — `package = false`), `uv.lock`
+  pins what actually installs (committed, rat-excluded as machine-written), uv itself is pinned
+  in `mise.toml` like the linters. Runs as lint.yaml's `script_tests` job, whose paths list the
+  root `pyproject.toml`/`uv.lock` for exactly the mise.toml reason. A new `scripts/*.py`
+  checker owes its tests here, alongside the curate-* skill the checker rule already demands
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
   the **rendered** markdown — `docs/content/` and the READMEs, never the `CLAUDE.md`s — at strict
@@ -404,15 +419,32 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `taiki-e/install-action` in every workflow: that rests on its own reason, one binary on `PATH` and
   no shims at all. `docs.yaml` takes java from `mise.toml` for the same reason since #88, rather
   than adding a second JDK installer for the shim rule above to have to disarm
-- `docs.yaml` and `lint.yaml` both carry `paths` filters, and `ci.yaml` carries a
-  `paths-ignore` for changes that cannot affect the Maven build: `opentofu/**`, the tofu
-  workflows, and `**/README.md` / `**/CLAUDE.md` — the last two only because apache-rat's
-  exclude list already carries exactly those patterns, so no licence-header check is lost.
-  `docs/` markdown is deliberately not ignored: rat scans it and `ci.yaml` is its only
-  pre-merge check. A pull request touching only ignored paths never reports these checks. Fine while they are optional — but **a
-  required check that never reports blocks a pull request forever**, so making any of them
-  required means dropping its filter or adding a job that reports success when the filter does
-  not match
+- **`ci.yaml` selects what a pull request builds instead of filtering whether it runs** (#243):
+  its `pull_request` trigger carries no paths filter — required checks made that impossible,
+  because **a required check that never reports blocks a pull request forever** — and a
+  `changes` job derives the Maven `-pl` subset instead. The changed-file list comes from git
+  alone — the pull_request checkout is the base-into-head merge commit, fetched at depth 2 so
+  `HEAD^1` is the current base tip; a third-party changed-files action was tried and removed on
+  PR #247 as avoidable supply-chain surface. The decision is `scripts/ci-maven-args.py`, whose
+  module mapping is
+  derived from the poms (`<modules>` for the set and reactor order, `io.github.flink-gcp`
+  dependencies for the edges — dependents of a changed module build transitively, its
+  dependencies ride along for reactor resolution), so a new module is covered the moment the
+  root pom names it. `just ci-maven-args --diff origin/main` reproduces the decision by hand.
+  The old ignore list (`opentofu/**`, the tofu workflows, `**/README.md` / `**/CLAUDE.md` —
+  the last two only because apache-rat's exclude list already carries exactly those patterns,
+  so no licence-header check is lost) lives twice on purpose: as the script's first
+  classification rule, and as a real `paths-ignore` on the **push** trigger only, where no
+  required check can be blocked and a tofu-only merge stays free. `docs/`-only changes build
+  `-pl .` alone — rat scans docs markdown from the root module and `ci.yaml` is its only
+  pre-merge check. Pushes to main and `workflow_dispatch` always build the full reactor. The
+  checks branch protection is to require — once it is available, which needs the repository
+  public (#6) or a paid plan; a private free-plan repository cannot set required checks at all —
+  are `CI passed` (the gate job that turns "nothing to build" into an explicit green — `build`
+  itself must never be required, it skips), `Audit Flink API tiers` and
+  `Check the configuration reference`; the never-reports caveat still applies verbatim to
+  `docs.yaml` and `lint.yaml`, which keep their `paths` filters and must stay optional as long
+  as they do
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual

@@ -10,9 +10,13 @@ target/
 tools/japicmp-output/
 
 # scripts/*.py. .ruff_cache/ needs no entry: ruff writes a self-ignoring
-# .gitignore inside it.
+# .gitignore inside it. .venv is the uv-managed environment behind
+# `just test-scripts` (the root pyproject.toml); uv.lock is committed, the
+# environment is not.
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/
 
 # OpenTofu (opentofu/). State lives in the flink-gcp-opentofu GCS bucket;
 # local state files only ever exist mid-bootstrap and must never be committed.

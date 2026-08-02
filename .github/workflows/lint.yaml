@@ -28,6 +28,18 @@ on:
       # where those versions are declared, so leaving it out would skip the lint
       # in exactly the change that most needs it.
       - 'mise.toml'
+      # The scripts test suite's remaining inputs: the uv project at the
+      # repository root (a pytest bump lands in these two files and must run
+      # the suite, for the same reason mise.toml is listed), and the poms and
+      # NOTICE.template markers the suite's real-repo CLI tests assert
+      # against — a new module or inter-module edge changes the deriver's
+      # expected output, and the stale expectation must fail on the pull
+      # request that made it stale, not on the next one to touch scripts/.
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'pom.xml'
+      - 'flink-*/pom.xml'
+      - 'flink-*/NOTICE.template'
       # tofu fmt -check reads these (opentofu/README.md doubles as markdownlint
       # input).
       - 'opentofu/**'
@@ -82,3 +94,28 @@ jobs:
 
       - name: Run the linters
         run: just lint
+
+  # The scripts/tests suite (PR #247): pytest over the CI deriver and the CI
+  # gate. Here rather than in ci.yaml because its inputs are all in this
+  # workflow's paths — scripts/** carries the code and the tests, the root
+  # pyproject.toml and uv.lock carry the project, mise.toml carries the uv
+  # pin — and because it reports in seconds beside the linters. uv resolves
+  # the interpreter itself (managed download on a bare runner), so mise
+  # installs nothing but uv here.
+  script_tests:
+    name: Test the scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          install_args: uv
+
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        with:
+          tool: just
+
+      - name: Run the scripts test suite
+        run: just test-scripts
