@@ -1,0 +1,90 @@
+# Copyright 2026 laughingman7743
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Sweep E2E leftovers
+
+# Deletes Bigtable instances an E2E run abandoned (issue #246).
+#
+# AbstractBigtableRealGcpITCase sweeps at the start of a gated class, which is
+# enough while runs finish. It is not enough when one does not: a killed
+# runner, a cancelled job or a JVM crash after @BeforeAll leaves a one-node
+# instance standing, and the only thing that schedules a gated class is
+# e2e.yaml, weekly. At $0.65 a node-hour that is ~$109 per leaked instance over
+# seven days, and two gated classes run per execution — the number this
+# workflow exists to bound, and a property of the sweep-on-next-run design
+# rather than of anything Bigtable does.
+#
+# Daily, so the worst case is ~$15 rather than ~$109. Detection of everything a
+# sweep cannot foresee is a separate question (a billing budget; see the issue),
+# deliberately not answered here: this needs no billing permissions, no API
+# enablement and no account identifier in the repository, which is why it lands
+# first.
+#
+# No Maven, no JDK: the sweep is a shell script over gcloud. It reads the
+# instance prefix and the staleness threshold out of the Java source, so the
+# two sweeps cannot drift apart.
+on:
+  schedule:
+    # Daily, well clear of e2e.yaml's Saturday 01:17 slot plus its 40-minute
+    # ceiling, so the two never sweep against each other. Off the hour and off
+    # the half hour, like every other schedule here.
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sweep:
+    # Scheduled workflows are inherited by forks; a fork could not authenticate
+    # anyway (the provider condition pins the repository and owner IDs), but
+    # this keeps them from trying.
+    if: github.repository_owner == 'laughingman7743'
+    name: Delete abandoned Bigtable instances
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The same provider and service account as e2e.yaml, and no OpenTofu
+      # change was needed for this workflow: the binding in e2e-sa.tf is on
+      # repository_id:event_name:ref, so it admits schedule and
+      # workflow_dispatch on main whatever the workflow is called. The account
+      # holds project-wide roles/bigtable.admin, which is what lets it delete.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/639248282241/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: github-actions-e2e@flink-gcp.iam.gserviceaccount.com
+          project_id: flink-gcp
+
+      # Installed rather than taken from the runner image, for the reason
+      # mise.toml gives for pinning shellcheck: an image migration must not
+      # change what CI runs, and "gcloud happens to be preinstalled" is exactly
+      # the kind of thing an image migration changes.
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        with:
+          tool: just
+
+      - name: Sweep
+        env:
+          BIGTABLE_IT_PROJECT: flink-gcp
+        run: just sweep-e2e

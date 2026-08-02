@@ -212,6 +212,20 @@ e2e:
     {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable surefire:test@integration-tests -Dtest="$(scripts/e2e-gated-its.sh)"
     scripts/e2e-gated-its.sh --assert-ran
 
+# Deletes Bigtable instances an E2E run abandoned (issue #246). The suite
+# already sweeps at the start of a gated class, but only the weekly E2E
+# workflow schedules one — so a run whose teardown never executed leaves a
+# one-node instance standing until the next Saturday, about $109. This is the
+# same sweep on a daily schedule (sweep-e2e.yaml), turning a 7-day worst case
+# into a 1-day one. The prefix and the two-hour threshold are read from
+# AbstractBigtableRealGcpITCase rather than repeated, so the two sweeps cannot
+# disagree. Needs BIGTABLE_IT_PROJECT and an authenticated gcloud;
+# `--dry-run` lists without deleting.
+#
+# Delete Bigtable instances left behind by a crashed E2E run.
+sweep-e2e *args:
+    scripts/sweep-bigtable-e2e.sh {{ args }}
+
 # Spotless and checkstyle cover the Java sources inside `just verify`; this is
 # everything else.
 #
