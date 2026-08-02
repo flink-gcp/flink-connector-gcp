@@ -20,6 +20,8 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.util.InstantiationUtil;
 
+import io.github.flink.gcp.connector.base.failure.FailedElement;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
 
@@ -182,6 +184,110 @@ class PubSubSinkBuilderTest {
         assertThatThrownBy(() -> PubSubSink.<String>builder().publisherOptions(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("publisherOptions must not be null");
+    }
+
+    @Test
+    void theFailedMessageHandlerDefaultsToFailJob() {
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder().topic(TOPIC).serializer(serializer()).build();
+
+        assertThat(sink.getConfig().getFailedMessageHandler()).isSameAs(FailureHandler.failJob());
+    }
+
+    @Test
+    void theFailedMessageHandlerPropagatesToConfig() {
+        FailureHandler<FailedMessage> handler = message -> {};
+
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder()
+                                .topic(TOPIC)
+                                .serializer(serializer())
+                                .failedMessageHandler(handler)
+                                .build();
+
+        assertThat(sink.getConfig().getFailedMessageHandler()).isSameAs(handler);
+    }
+
+    @Test
+    void acceptsACrossConnectorHandlerWithoutACast() {
+        // The contravariant parameter is the point: one handler written against the shared contract
+        // serves every connector in this repository.
+        FailureHandler<FailedElement> shared = FailureHandler.logAndDrop();
+
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder()
+                                .topic(TOPIC)
+                                .serializer(serializer())
+                                .failedMessageHandler(shared)
+                                .build();
+
+        assertThat(sink.getConfig().getFailedMessageHandler()).isSameAs(shared);
+    }
+
+    @Test
+    void rejectsNullFailedMessageHandler() {
+        assertThatThrownBy(() -> PubSubSink.<String>builder().failedMessageHandler(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("failedMessageHandler must not be null");
+    }
+
+    @Test
+    void rejectsANonDefaultFailedMessageHandlerAlongsideMessageOrdering() {
+        assertThatThrownBy(
+                        () ->
+                                PubSubSink.<String>builder()
+                                        .topic(TOPIC)
+                                        .serializer(serializer())
+                                        .failedMessageHandler(FailureHandler.logAndDrop())
+                                        .publisherOptions(
+                                                PubSubPublisherOptions.builder()
+                                                        .enableMessageOrdering(true)
+                                                        .build())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("enableMessageOrdering(true)")
+                .hasMessageContaining("issues/215");
+    }
+
+    @Test
+    void acceptsFailJobAlongsideMessageOrdering() {
+        // The check is about the policy, not about whether the setter was called: failJob() is the
+        // default's behavior however it got there.
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder()
+                                .topic(TOPIC)
+                                .serializer(serializer())
+                                .failedMessageHandler(FailureHandler.failJob())
+                                .publisherOptions(
+                                        PubSubPublisherOptions.builder()
+                                                .enableMessageOrdering(true)
+                                                .build())
+                                .build();
+
+        assertThat(sink.getConfig().getPublisherOptions().isEnableMessageOrdering()).isTrue();
+    }
+
+    @Test
+    void theFailedMessageHandlerSurvivesJavaSerialization() throws Exception {
+        // The handler travels to the task managers inside the sink; the fully-populated round trip
+        // below cannot cover it, since that fixture enables message ordering.
+        Sink<String> sink =
+                PubSubSink.<String>builder()
+                        .topic(TOPIC)
+                        .serializer(serializer())
+                        .failedMessageHandler(FailureHandler.logAndDrop())
+                        .build();
+
+        byte[] bytes = InstantiationUtil.serializeObject(sink);
+        PubSubPublisherSink<String> copy =
+                InstantiationUtil.deserializeObject(bytes, getClass().getClassLoader());
+
+        assertThat(copy.getConfig().getFailedMessageHandler())
+                .isSameAs(FailureHandler.logAndDrop());
     }
 
     @Test

@@ -20,7 +20,6 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
-import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.ThrowingRunnable;
@@ -28,11 +27,11 @@ import org.apache.flink.util.function.ThrowingRunnable;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
-import com.google.api.gax.rpc.StatusCode;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
-import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
+import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -49,7 +48,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
-import java.util.concurrent.CancellationException;
 
 /**
  * At-least-once writer publishing records to dynamic per-record Pub/Sub topic destinations.
@@ -78,6 +76,17 @@ import java.util.concurrent.CancellationException;
  * by Pub/Sub; discarding operator state can never lose sink-buffered records. Terminal publish
  * failures captured by completion callbacks are rethrown on the task thread from the next {@link
  * #write} or {@link #flush}, failing the job (retries within a publish are delegated to the SDK).
+ *
+ * <h2>Per-message failures</h2>
+ *
+ * <p>Failures {@link PubSubErrorClassifier} calls {@code MESSAGE_LEVEL}, plus records the
+ * serializer rejects, are handed to the configured {@link FailureHandler} instead of failing the
+ * job outright: they concern one message and republishing the same bytes cannot succeed. The
+ * handler drops the message by returning and fails the job by throwing; the default {@code
+ * failJob()} throws, which is why the classes it does <em>not</em> cover matter — an outage the SDK
+ * gave up on stays a job failure, so no drop policy can quietly discard a backlog. A handler
+ * failing inside a completion callback is captured into {@link #asyncError} like any other terminal
+ * failure, because a mailbox mail cannot throw a checked exception at its caller.
  *
  * <p>Unacknowledged publishes are capped along both dimensions that bound memory: their number
  * ({@code PubSubPublisherOptions.maxInFlightMessages}, default 1000) and their serialized size
@@ -149,6 +158,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private final long maxInFlightBytes;
     private final RetrySchedule recoverySchedule;
     private final boolean orderingEnabled;
+    private final FailureHandler<? super FailedMessage> failedMessageHandler;
 
     /** Lazily populated per-topic publisher state; touched only on the task thread. */
     private final Map<TopicDestination, DestinationState> states = new HashMap<>();
@@ -232,6 +242,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         this.maxInFlightBytes = options.getMaxInFlightBytes();
         this.recoverySchedule = recoverySchedule;
         this.orderingEnabled = options.isEnableMessageOrdering();
+        this.failedMessageHandler = config.getFailedMessageHandler();
     }
 
     @Override
@@ -248,8 +259,12 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         try {
             message = config.getSerializer().serialize(element);
         } catch (IOException | RuntimeException e) {
-            throw new IOException(
-                    "Failed to serialize a record for Pub/Sub topic " + destination + ".", e);
+            // The record never became a message, so there is nothing to carry but the destination:
+            // FailedMessage.getPayloadBytes() is null, as the shared contract prescribes. The
+            // description leaves the topic to describeDestination(), as routeFailedMessage does.
+            failedMessageHandler.handle(
+                    FailedMessage.of(destination, null, "The record could not be serialized.", e));
+            return;
         }
         if (!orderingEnabled && !message.getOrderingKey().isEmpty()) {
             throw new IOException(
@@ -281,6 +296,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             }
             drainInFlight();
         } while (repairNeeded);
+        // After the drain, never before it: the failures that reach the handler are discovered by
+        // the drain, so flushing first would checkpoint past dead letters the drain is about to
+        // produce.
+        failedMessageHandler.flush();
     }
 
     @Override
@@ -292,11 +311,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         // with the writer: they are not covered by a completed checkpoint, so the restart
         // replays them.
         try {
-            List<AutoCloseable> closeables = new ArrayList<>(states.size() + 1);
+            List<AutoCloseable> closeables = new ArrayList<>(states.size() + 2);
             for (DestinationState state : states.values()) {
                 closeables.add(state.publisher);
             }
             closeables.add(topicAdmin);
+            // Through closeAll, so the handler is closed even when a publisher's shutdown throws:
+            // the lifecycle contract promises close on the failure path too.
+            closeables.add(failedMessageHandler::close);
             IOUtils.closeAll(closeables);
         } finally {
             states.clear();
@@ -403,11 +425,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             int serializedSize,
             Throwable throwable) {
         releaseInFlight(serializedSize);
-        if (isRecoverableNotFound(throwable)) {
+        PubSubErrorClassifier.Kind kind = PubSubErrorClassifier.classify(throwable);
+        if (kind == PubSubErrorClassifier.Kind.TOPIC_NOT_FOUND && repairsTopics()) {
             state.pendingRetries.put(sequence, message);
             state.repairCause = throwable;
             repairNeeded = true;
-        } else if (repairsTopics() && orderingEnabled && isCancellation(throwable)) {
+        } else if (kind == PubSubErrorClassifier.Kind.CANCELLATION
+                && repairsTopics()
+                && orderingEnabled) {
             // With ordering enabled the SDK cancels an ordering key's queued publishes after the
             // key's first failure, so a cancellation is never a root cause — it always trails a
             // failure of an earlier publish this writer issued for the same key. Park it for the
@@ -424,8 +449,50 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 state.repairCause = throwable;
             }
             repairNeeded = true;
+        } else if (kind == PubSubErrorClassifier.Kind.MESSAGE_LEVEL) {
+            routeFailedMessage(state.destination, message, throwable);
         } else if (asyncError == null) {
-            asyncError = wrapPublishFailure(state.destination, throwable);
+            asyncError = wrapPublishFailure(state.destination, kind, throwable);
+        }
+    }
+
+    /**
+     * Hands a message-level publish failure to the configured handler. Runs as a mailbox mail, so a
+     * handler that fails the job cannot throw at a caller: its failure is captured into {@link
+     * #asyncError} and rethrown from the next {@link #write} or {@link #flush}, exactly as a
+     * terminal publish failure is. First failure wins, as everywhere else here.
+     *
+     * <p>Routing is <em>not</em> skipped once {@link #asyncError} is set. The writer is about to
+     * fail either way, but this message really did fail terminally, and a dead-letter destination
+     * that is missing it is worse than one holding a message a replay will produce again — the
+     * guarantee is at-least-once.
+     *
+     * <p>The description does not name the topic: every reader of it reaches the element's {@code
+     * describeDestination()} too — the built-in handlers compose the two — so naming it here would
+     * put the topic in the sentence twice, in two spellings.
+     */
+    private void routeFailedMessage(
+            TopicDestination destination, PubsubMessage message, Throwable throwable) {
+        try {
+            failedMessageHandler.handle(
+                    FailedMessage.of(
+                            destination,
+                            message,
+                            "The publish was rejected because "
+                                    + PubSubErrorClassifier.MESSAGE_LEVEL_REASON
+                                    + ".",
+                            throwable));
+        } catch (IOException | RuntimeException e) {
+            if (asyncError == null) {
+                asyncError =
+                        e instanceof IOException
+                                ? (IOException) e
+                                : new IOException(
+                                        "The failed-message handler failed for Pub/Sub topic "
+                                                + destination
+                                                + ".",
+                                        e);
+            }
         }
     }
 
@@ -518,10 +585,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
     }
 
-    private boolean isRecoverableNotFound(Throwable throwable) {
-        return repairsTopics() && isNotFound(throwable);
-    }
-
     /**
      * Whether a failed publish may be parked for a topic-creation repair at all. Under {@code
      * CREATE_NEVER} nothing is ever parked, so nothing reaches {@link #repairDestination} and no
@@ -532,36 +595,15 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED;
     }
 
-    private IOException wrapPublishFailure(TopicDestination destination, Throwable throwable) {
+    private IOException wrapPublishFailure(
+            TopicDestination destination, PubSubErrorClassifier.Kind kind, Throwable throwable) {
         String message = "A publish to Pub/Sub topic " + destination + " failed";
-        if (isNotFound(throwable)) {
+        if (kind == PubSubErrorClassifier.Kind.TOPIC_NOT_FOUND) {
             message += " because the topic does not exist and createDisposition is CREATE_NEVER";
-        } else if (orderingEnabled && isCancellation(throwable)) {
+        } else if (kind == PubSubErrorClassifier.Kind.CANCELLATION && orderingEnabled) {
             message += " because an earlier publish for its ordering key failed";
         }
         return new IOException(message + ".", throwable);
-    }
-
-    /**
-     * Whether the failure is a publish cancellation — with ordering enabled, the SDK publisher's
-     * cancellation of an ordering key's queued publishes after the key's first failure (the root
-     * failure carries the real cause; cascades carry a bare {@link CancellationException}).
-     */
-    private static boolean isCancellation(Throwable throwable) {
-        return ExceptionUtils.findThrowable(throwable, CancellationException.class).isPresent();
-    }
-
-    /**
-     * Whether the failure's cause chain carries a {@code NOT_FOUND} status — either as the gax
-     * {@code ApiException} the SDK publisher surfaces or as a raw gRPC {@code
-     * StatusRuntimeException} (defense in depth), both read through {@link StatusCodes#codeOf}.
-     *
-     * <p>A Pub/Sub fatal-exception classifier is tracked with issue #37.
-     */
-    private static boolean isNotFound(Throwable throwable) {
-        return ExceptionUtils.findThrowable(
-                        throwable, t -> StatusCodes.codeOf(t) == StatusCode.Code.NOT_FOUND)
-                .isPresent();
     }
 
     @VisibleForTesting

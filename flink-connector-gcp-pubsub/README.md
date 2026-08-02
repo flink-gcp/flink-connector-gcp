@@ -10,7 +10,7 @@ sink and multi-subscription consumption on the source.
 | SinkV2 at-least-once sink; per-record topic resolution; per-topic publishers; checkpoint flush | Implemented ([#18](https://github.com/laughingman7743/flink-connector-gcp/issues/18)) |
 | Topic auto-creation | Implemented ([#19](https://github.com/laughingman7743/flink-connector-gcp/issues/19)) |
 | Attributes/ordering-key conveniences; message ordering; batching/retry options; recovery knobs; in-flight message and byte caps | Implemented ([#20](https://github.com/laughingman7743/flink-connector-gcp/issues/20), byte cap [#85](https://github.com/laughingman7743/flink-connector-gcp/issues/85)) |
-| Per-record failure policy; fatal-exception classifier | Planned ([#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37)) |
+| Per-message failure policy; fatal-exception classifier | Implemented ([#206](https://github.com/laughingman7743/flink-connector-gcp/issues/206)) |
 | Emulator integration tests | Implemented ([#21](https://github.com/laughingman7743/flink-connector-gcp/issues/21)) |
 
 ## Source
@@ -134,5 +134,5 @@ the wake-up branch, and `shutdown()` mutating lock-guarded state without holding
 
 [apache/flink-connector-gcp-pubsub](https://github.com/apache/flink-connector-gcp-pubsub) is a
 **design reference only** — the mailbox-based backpressure model, the idea of a fatal-exception
-classifier ([#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37)), and its synchronous-pull decision record, which the source weighs and departs
+classifier ([#206](https://github.com/laughingman7743/flink-connector-gcp/issues/206)), and its synchronous-pull decision record, which the source weighs and departs
 from above — no code has been copied from it.

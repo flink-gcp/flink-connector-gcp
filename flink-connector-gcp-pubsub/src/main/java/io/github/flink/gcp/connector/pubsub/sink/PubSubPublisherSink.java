@@ -22,6 +22,7 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
+import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.writer.DefaultPublisherFactory;
@@ -67,6 +68,7 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T> {
         } catch (Exception e) {
             throw new IOException("Failed to open the Pub/Sub serialization schema.", e);
         }
+        config.getFailedMessageHandler().open(DefaultFailureHandlerContext.of(context));
         String emulatorEndpoint = config.getEmulatorEndpoint();
         return createWriter(
                 new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint),
@@ -74,6 +76,11 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T> {
                 context.getMailboxExecutor());
     }
 
+    /**
+     * Creates the writer against injected collaborators. Deliberately does <b>not</b> open the
+     * failure handler — that belongs to the production path above, so writer tests injecting fakes
+     * need no {@link WriterInitContext}.
+     */
     @VisibleForTesting
     public SinkWriter<T> createWriter(
             PublisherFactory publisherFactory,
