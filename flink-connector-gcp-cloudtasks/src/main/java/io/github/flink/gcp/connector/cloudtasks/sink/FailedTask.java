@@ -98,7 +98,9 @@ public final class FailedTask implements FailedElement {
         return "cloudtasks";
     }
 
-    /** Returns the queue in the {@code projects/<p>/locations/<l>/queues/<q>} form. */
+    /**
+     * Returns the queue in the {@code projects/<project>/locations/<location>/queues/<queue>} form.
+     */
     @Override
     public String describeDestination() {
         return destination.toQueuePath();
