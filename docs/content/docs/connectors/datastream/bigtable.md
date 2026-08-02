@@ -120,9 +120,11 @@ the last checkpoint are written again, and:
 
 Neither is wrong, but only one of them is a choice made on purpose. Setting the timestamp from the
 record — its event time, an updated-at column, `context.timestamp()` — is what makes a replay a
-no-op. Note that Bigtable stores cell timestamps at microsecond granularity and a table may
-restrict them further; a timestamp the table's granularity does not allow is rejected per mutation,
-which is a [row-level failure](#error-handling).
+no-op. Note that a cell timestamp is in microseconds but a table's granularity is milliseconds, so
+the value must be a multiple of 1000 — `context.timestamp()`, which is in milliseconds, has to be
+multiplied rather than passed through. Which [failure class](#error-handling) the service puts a
+violation in is not asserted here; it is one of the things
+[#218]({{< param BookRepo >}}/issues/218) measures.
 
 Deletes replay the same way and are naturally idempotent, with one caveat worth stating: a
 `deleteRow` replayed after later writes for the same key would delete those too. That is a property

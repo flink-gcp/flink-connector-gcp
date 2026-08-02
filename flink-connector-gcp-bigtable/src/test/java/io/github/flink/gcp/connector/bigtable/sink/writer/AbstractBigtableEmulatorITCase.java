@@ -23,6 +23,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -110,7 +111,9 @@ abstract class AbstractBigtableEmulatorITCase {
     /** Reads every row of the table, in row-key order. */
     static List<Row> readRows(TableDestination destination) {
         List<Row> rows = new ArrayList<>();
-        dataClient.readRows(Query.create(destination.getTable())).forEach(rows::add);
+        // The TargetId overload, as the production factory uses: Query.create(String) is
+        // deprecated.
+        dataClient.readRows(Query.create(TableId.of(destination.getTable()))).forEach(rows::add);
         return rows;
     }
 }

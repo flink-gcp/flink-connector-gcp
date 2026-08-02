@@ -29,6 +29,8 @@ import io.github.flink.gcp.connector.bigtable.sink.writer.DefaultMutationBatcher
 import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcher;
 import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcherFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 
 /**
@@ -76,21 +78,28 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
                         config.getAppProfileId(),
                         config.getWriterOptions(),
                         config.getEmulatorEndpoint());
+        MutationBatcher batcher = null;
         try {
-            return createWriter(
-                    factory.create(), context.getMailboxExecutor(), context.metricGroup());
+            batcher = factory.create();
+            return createWriter(batcher, context.getMailboxExecutor(), context.metricGroup());
         } catch (IOException | RuntimeException e) {
-            // The handler is open and no writer will ever close it: creating the client is the one
-            // step here that can fail after open(), and the SPI promises a close on the failure
-            // path too. A restart would otherwise open a second one per attempt.
-            closeHandlerSuppressing(e);
+            // Nothing downstream will ever close these: no writer exists to do it, and the failure
+            // handler's contract promises a close on the failure path too — a restart would
+            // otherwise open one more per attempt. Both are released, because the writer's
+            // constructor can fail after the client was built (its precondition on a deserialized
+            // options object is exactly that case), which would otherwise leak the client.
+            closeSuppressing(batcher, e);
+            closeSuppressing(config.getFailedMutationHandler()::close, e);
             throw e;
         }
     }
 
-    private void closeHandlerSuppressing(Exception failure) {
+    private static void closeSuppressing(@Nullable AutoCloseable closeable, Exception failure) {
+        if (closeable == null) {
+            return;
+        }
         try {
-            config.getFailedMutationHandler().close();
+            closeable.close();
         } catch (Exception e) {
             failure.addSuppressed(e);
         }
