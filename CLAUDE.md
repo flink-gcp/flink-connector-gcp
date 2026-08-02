@@ -39,6 +39,19 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   via WIF; locally the variables come from the uncommitted `.env`, which a fresh worktree does
   not have — run `just worktree-env` once there to symlink the main checkout's copy (#156; the same
   link also carries `just tofu`'s credentials)
+- `just sweep-e2e [--dry-run]` — deletes Bigtable instances an E2E run abandoned (#246).
+  `AbstractBigtableRealGcpITCase` already sweeps at the start of a gated class, but only the
+  weekly E2E workflow schedules one, so a run whose teardown never executed leaves a one-node
+  instance standing until the next Saturday — about **$109**, and two gated classes run per
+  execution. `sweep-e2e.yaml` runs this daily, which is what bounds that number; detection of
+  what a sweep cannot foresee (a billing budget) is the other half of #246 and deliberately
+  separate, since it needs a billing-account-level grant this project has never made. The
+  instance prefix and the two-hour threshold are **read out of the Java source**, in the
+  `e2e-gated-its.sh` tradition: a second copy of `flink-it-` would go stale silently, and a
+  sweep that matches nothing looks exactly like a sweep with nothing to do — so both greps are
+  hard errors. The listing is captured into a variable rather than piped into the loop for the
+  same reason: `set -e` does not see a failing process substitution, so the pipe form reports
+  "0 stale instances swept" and exits 0 on an unauthenticated gcloud
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
