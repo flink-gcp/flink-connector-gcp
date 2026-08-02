@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -39,6 +40,7 @@ class CloudTasksWriterTest {
     private final FakeTaskCreator creator = new FakeTaskCreator();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
     private final ManualTimeSource time = new ManualTimeSource();
+    private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
 
     @Test
     void writesOneTaskPerRecordIntoTheResolvedQueue() throws Exception {
@@ -355,7 +357,8 @@ class CloudTasksWriterTest {
     }
 
     private CloudTasksWriter<String> writer(CloudTasksSinkBuilder<String> builder) {
-        return new CloudTasksWriter<>(TestSinkConfigs.config(builder), creator, mailbox, time);
+        return new CloudTasksWriter<>(
+                TestSinkConfigs.config(builder), creator, mailbox, metrics, time);
     }
 
     /** A builder retrying transient failures with the given budget. */

@@ -394,8 +394,10 @@ That reasoning does not extend to a serializer that produces an *invalid task* f
 bug that puts a malformed URL or an over-long header on all of them. Cloud Tasks rejects each one
 individually, the sink cannot tell a systematic rejection from a per-record one (the classification
 is the response's status code, not a judgement about the whole stream), and a dropping policy
-discards the lot silently. Watch the failure count rather than the job status when running anything
-other than `failJob()` — per-sink error metrics are [#209]({{< param BookRepo >}}/issues/209).
+discards the lot silently. Watch
+[`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/cloudtasks" >}}#metrics) rather than
+the job status when running anything other than `failJob()`: it counts every task the handler
+received, so a systematic rejection shows up as a rate rather than as a failure.
 
 Dead-letter output is **at-least-once, for failures that recur on replay**: tasks are offered before
 the checkpoint covering their originating records completes, so a restart replays those records and
@@ -456,6 +458,55 @@ One limit is worth stating because the documentation contradicts itself: the max
 given as **100 KB** by the `CreateTask` API reference and the proto, and as **1 MiB** by the quotas
 page. The sink does not validate against either; an oversized task is rejected by the service.
 Bodies should be sized against the smaller number until this is verified empirically.
+
+## Metrics
+
+Registered on the sink writer's metric group, one set per subtask:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `numRecordsSend` | counter (Flink standard) | records handed to the client library for creation |
+| `numBytesSend` | counter (Flink standard) | their serialized size |
+| `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-task handler |
+| `inFlightTasks` | gauge | creations the service has not answered |
+| `parkedTasks` | gauge | creations waiting out a retry backoff |
+| `tasksDeduplicated` | counter | named tasks Cloud Tasks already held |
+| `errorClass.CODE.errors` | counter | failed creation attempts by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
+| `destination.QUEUE.recordsSend`, `destination.QUEUE.sendErrors` | counter | the same two counts per queue, **only** with `perDestinationMetrics(true)` |
+
+**`numRecordsSend` counts records, not creation attempts.** This sink owns its retries — a failed
+creation is parked and re-dispatched — and the record is counted once, at the write that admitted
+it, so a job working through an outage does not report itself as a busier one. Every connector in
+this repository counts the same way, whether its retries live in the sink or inside the SDK, which
+is what makes the number comparable across them. The consequence: `numBytesSend` is payload volume
+rather than wire volume.
+
+**`errorClass` counts every attempt, retryable ones included** — that is the difference from
+`numRecordsSend`, and it is deliberate: the sum over `UNAVAILABLE`, `DEADLINE_EXCEEDED` and
+`RESOURCE_EXHAUSTED` *is* the retry volume, which is why there is no separate retries counter. A
+`NOT_FOUND` run is visible the same way, under its own name.
+
+`tasksDeduplicated` counts the `ALREADY_EXISTS` answers that named tasks exist to produce. They are
+successes, not failures: they appear in neither `numRecordsSendErrors` nor `errorClass`, so a job
+whose replay is being deduplicated as intended shows a clean error picture. Compare it against
+`numRecordsSend` to see how much of a replay the service absorbed.
+
+**`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
+exactly what reached `failedTaskHandler(...)` — a record the serializer rejected, a task id
+extractor that threw, and a creation the service answered `INVALID_ARGUMENT` — whether the handler
+then dropped the task or failed the job. A serializer bug that makes *every* task invalid is dropped
+one at a time under a dropping policy, and this counter is what shows it while the job stays green.
+
+**`perDestinationMetrics` is off by default**, and should stay off with a per-record
+`destinationResolver`: Flink cannot unregister a metric, so every queue the job has written to keeps
+its counters for the lifetime of the task. A fixed `queue(...)` is the case to switch it on for. For
+the same reason the counters survive eviction — a queue seen again resumes its own totals rather
+than restarting at zero.
+
+`currentSendTime` is deliberately **not** set: a creation may sit parked through several backoffs,
+so the interval this writer could measure would describe its own retry budget rather than the
+service's response time. There is no committer either (the sink is single-phase), so Flink's
+committer metrics do not apply.
 
 ## Scope
 

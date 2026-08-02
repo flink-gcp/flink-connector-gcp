@@ -78,6 +78,7 @@ is under [Tuning]({{< relref "docs/connectors/datastream/cloudtasks" >}}#tuning)
 | `notFoundInitialBackoff` | 500 ms | First backoff of the separate `NOT_FOUND` budget |
 | `notFoundMaxBackoff` | 2 s | Cap of that backoff, before jitter |
 | `notFoundMaxAttempts` | 3 | `NOT_FOUND` attempts. Short on purpose, so a mistyped queue name fails quickly |
+| `perDestinationMetrics` | `false` | Registers per-queue `recordsSend` and `sendErrors` counters beside the writer's totals. Off by default: Flink cannot unregister a metric, so with a per-record `destinationResolver` every queue the job writes to keeps a row in the registry for the task's lifetime. See [Metrics]({{< relref "docs/connectors/datastream/cloudtasks" >}}#metrics) |
 
 `NOT_FOUND` has its own short budget because a queue idle for 30 days takes a few minutes to
 reactivate and may answer `NOT_FOUND` meanwhile — so it is not proof of a misconfigured queue, but a

@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import org.junit.jupiter.api.AfterAll;
@@ -159,7 +160,8 @@ abstract class AbstractCloudTasksEmulatorITCase {
         return new CloudTasksWriter<>(
                 TestSinkConfigs.config(builder),
                 new DefaultTaskCreatorFactory(emulatorEndpoint()).create(),
-                new FakeMailboxExecutor());
+                new FakeMailboxExecutor(),
+                TestSinkWriterMetricGroup.create());
     }
 
     /**

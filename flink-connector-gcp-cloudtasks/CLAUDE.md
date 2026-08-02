@@ -81,3 +81,21 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `flush()` runs after the drain loop, which exits only with nothing in flight *and* nothing parked,
   so a re-dispatched retry cannot land after the handler flushed. Coverage is unit tests only: the
   emulator's `INVALID_ARGUMENT` surface is not evidence about the service's (see the emulator rule)
+- **Sink metrics** (#209, the #37 series): `CloudTasksWriterMetrics` (`sink.writer`) over the shared
+  `base.metrics` helpers, with plain counters — completions arrive as mailbox mails, so every
+  increment is on the task thread. Four things not to re-litigate. **`numRecordsSend` is counted in
+  `write()`, not in `dispatch(...)`**, which `dispatchDueRetries` re-enters for every parked
+  creation: the metric counts records, and this sink's retries are its own (#24), so counting there
+  would report a job working through an outage as a busier one — the repo-wide decision is on #208
+  and in the base module's CLAUDE.md. **Error classes count every attempt, retryable ones
+  included**, which is the deliberate asymmetry with `numRecordsSend`: the sum over the transient
+  codes *is* the retry volume, and that is why the separate retries counter the issue considered was
+  declined. **`ALREADY_EXISTS` on a named task is `tasksDeduplicated`, not an error** — it is the
+  success naming exists to produce, so it appears in neither `numRecordsSendErrors` nor
+  `errorClass`, and the `metrics.createFailure(code)` call sits *after* that branch's early return
+  for exactly that reason. **The per-queue counters are looked up per record**, unlike the Pub/Sub
+  sink's cached-per-`DestinationState` handle: this writer keeps no per-destination state at all
+  (one client serves every queue, #23), so there is nowhere to cache one; the lookup is a map read
+  on the queue path the request already carries, and it is a no-op object when the option is off.
+  Assertions ride `CloudTasksWriterTest`'s fakes in a `CloudTasksWriterMetricsTest` beside it, all
+  by registered name
