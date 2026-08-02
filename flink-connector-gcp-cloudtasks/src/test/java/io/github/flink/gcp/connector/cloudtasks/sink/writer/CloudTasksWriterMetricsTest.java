@@ -31,9 +31,11 @@ import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the metrics {@link CloudTasksWriter} registers, against the same fake task creator and
@@ -183,6 +185,21 @@ class CloudTasksWriterMetricsTest {
         assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
         // Never handed to the client, so it is not a send.
         assertThat(counter("numRecordsSend")).isZero();
+    }
+
+    @Test
+    void doesNotCountARecordTheClientRejectedSynchronously() throws Exception {
+        // A creator throwing from createTask registers no callback, so the record never reached
+        // Cloud Tasks. Counting at admission — before the hand-off rather than after the client
+        // accepted it — would report it as sent, which is why the increment sits inside dispatch.
+        CloudTasksWriter<String> writer = writer(TestSinkConfigs.builder());
+        creator.createFailure = new IllegalStateException("client is shut down");
+
+        assertThatThrownBy(() -> writer.write("first", TestContexts.NO_OP))
+                .isInstanceOf(IOException.class);
+
+        assertThat(counter("numRecordsSend")).isZero();
+        assertThat(counter("numBytesSend")).isZero();
     }
 
     @Test

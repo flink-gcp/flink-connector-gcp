@@ -261,10 +261,6 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
             task = task.toBuilder().setName(taskName(destination, key)).build();
         }
         awaitCapacity();
-        // Counted here rather than in dispatch(...), which dispatchDueRetries re-enters for every
-        // parked creation: numRecordsSend is a count of records, so a record this sink retries
-        // must not be counted again. Its attempts are visible as error-class counters instead.
-        metrics.taskCreated(metrics.forQueue(destination), task.getSerializedSize());
         dispatch(
                 destination,
                 CreateTaskRequest.newBuilder()
@@ -352,6 +348,11 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     /**
      * Creates the task, counts it in flight and registers its completion callback. {@code pending}
      * carries the retry budgets already spent, and is {@code null} for a record's first attempt.
+     *
+     * <p>That null is also what keeps {@code numRecordsSend} a count of <em>records</em>: {@link
+     * #dispatchDueRetries} re-enters this method for every parked creation, and a record must be
+     * counted once however many attempts it took. The in-flight counter is the opposite — it tracks
+     * creations, so it is incremented on every call.
      */
     private void dispatch(
             QueueDestination destination,
@@ -366,6 +367,12 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                     "Failed to create a task in Cloud Tasks queue " + request.getParent() + ".", e);
         }
         inFlight++;
+        if (pending == null) {
+            // After the creator accepted it, never before: a synchronous throw above registers no
+            // callback, so the record never reached the client at all.
+            metrics.taskCreated(
+                    metrics.forQueue(destination), request.getTask().getSerializedSize());
+        }
         ApiFutures.addCallback(
                 future, new CreateCallback(destination, request, pending), Runnable::run);
     }
