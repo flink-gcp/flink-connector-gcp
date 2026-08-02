@@ -1172,6 +1172,46 @@ queue writes through synchronously). Exactly-once dead-letter output is delibera
 offered: it would require the dead-letter write to join the sink's own commit protocol, which
 no external destination can be enrolled in.
 
+### Dead-lettering to a Pub/Sub topic
+
+`PubSubDeadLetterQueue` is this repository's one shipped `DeadLetterQueue` implementation
+(experimental, [#211]({{< param BookRepo >}}/issues/211)). It publishes each failed element to a
+Pub/Sub topic, and it sees failures through the shared `FailedElement` contract — so **one instance
+serves every connector here**, including this one. It lives in the Pub/Sub module, so a BigQuery job
+dead-lettering this way adds `flink-connector-gcp-pubsub` as a dependency:
+
+```java
+BigQuerySink.<Order>builder()
+        .destination(TableDestination.of("my-project", "my_dataset", "orders"))
+        .serializer(new MyOrderProtoSerializer())
+        .failedRowHandler(
+                FailureHandler.sendToDeadLetterQueue(
+                        PubSubDeadLetterQueue.builder()
+                                .topic(TopicDestination.of("my-project", "dead-letters"))
+                                .build()))
+        .build();
+```
+
+| Attribute | Value |
+|---|---|
+| `dlq-connector` | `bigquery`, `pubsub` or `cloudtasks` |
+| `dlq-destination` | the resource the element was bound for |
+| `dlq-error` | the failure description, truncated to Pub/Sub's 1024-byte attribute-value limit and marked with `...` |
+| `dlq-timestamp` | when the element was offered, ISO-8601 |
+| `dlq-subtask` | the offering sink subtask's index |
+
+The message **data** is the element's payload bytes — empty when serialization itself failed, which
+is how a consumer tells the two apart. The failure's cause chain is not in the envelope (it has no
+bounded string form); enable `DEBUG` logging on `PubSubDeadLetterQueue` to see untruncated errors in
+the job logs.
+
+Publishes are batched and awaited in `flush()`, so a rare failure costs no round trip of its own.
+`maxOutstandingMessages` bounds what one checkpoint interval can accumulate when *every* record
+fails — the default is 1000, `0` publishes each element synchronously (the narrowest loss window,
+one round trip per element) and `-1` buffers until the flush. The topic must already exist: this
+queue never creates one, because a dead-letter destination created on the fly is one nothing is
+consuming.
+
 Retries preserve the at-least-once contract: a batch whose append outcome was lost may be
 re-appended in full, so duplicates are possible (as with any retry in this write method). Worst
 case, a single repair can take about a minute of SDK retries plus a minute of writer re-appends

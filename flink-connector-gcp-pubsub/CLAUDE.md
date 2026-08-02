@@ -87,6 +87,29 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   found races; lifting it is #215, and the error message says so. Coverage is unit tests only: the
   emulator validates nothing, and what real Pub/Sub answers `INVALID_ARGUMENT` to would have to be
   measured before a gated IT could assert it
+- **`PubSubDeadLetterQueue`** (#211, the #37 series): the repository's one shipped
+  `DeadLetterQueue`, in a **top-level `pubsub.deadletter` package** rather than under `sink` —
+  it is not sink API, it is driven by *any* connector's `FailureHandler`, so putting it under the
+  Pub/Sub sink would misfile it (the #119 layer test is about a family layer inside `sink`, and
+  this is not inside `sink` at all). It uses the SDK `Publisher` **directly**, not
+  `PublisherFactory`/`TopicPublisher`: those are sink internals parameterised by
+  `PubSubPublisherOptions`, and a DLQ has no publisher-tuning surface. The ~10 duplicated lines of
+  emulator-channel setup are the accepted price and are not a defect to fix by coupling the two.
+  `TopicDestination` *is* reused, since inventing a second topic identity in one module would be
+  worse. Three decisions worth keeping: the envelope's `dlq-error` is **truncated on a character
+  boundary** to Pub/Sub's 1024-byte attribute-value limit and marked `...` — cutting UTF-8 bytes
+  blindly leaves a partial character, which the service rejects, turning a dead letter into a job
+  failure, and the truncation is a `CharsetDecoder` with `IGNORE` rather than arithmetic on code
+  point widths; the cause chain is deliberately **not** in the envelope (no bounded string form)
+  and reaches the job log at DEBUG instead; and `maxOutstandingMessages` **bounds what one
+  checkpoint interval accumulates** (default 1000, `0` = write through per element, `-1` =
+  unbounded, one predicate covering all three) because a systematic failure turns every record
+  into a dead letter and the SDK publisher has no flow control by default — the issue text said
+  buffer-until-flush, and that shape can OOM where the pre-#37 behaviour merely failed the job.
+  `envelope(...)` is a **pure static** taking the subtask index and the instant, which is what
+  lets the attribute set be pinned exactly without a live publisher — `Publisher` is final, so
+  there is no other seam short of an internal interface. The topic is never auto-created: a
+  dead-letter destination created on the fly is one nothing is consuming
 - **Pub/Sub source** (#79, #80, #81): FLIP-27 streaming-pull source; split = (subscription, uid),
   ack on checkpoint completion, nack on close. **The reader checkpoints no splits** — the
   enumerator is the only owner of split assignment, recomputing the deterministic plan
