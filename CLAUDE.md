@@ -250,6 +250,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   the main checkout's uncommitted `.env` (#156)
 - All changes go through **draft PRs**; nothing is pushed directly to `main` after the initial
   skeleton
+- **A description follows `.github/PULL_REQUEST_TEMPLATE.md`: `## WHAT` and `## WHY`, both
+  filled** (#257). WHY is the half that does not survive in git — a diff shows what changed and
+  never why it was worth changing — so a description that only restates the diff is incomplete
+  even when it is long. The template is a floor, not a cap: everything this project already
+  expects of a description goes **under** those headings — the verification list, the mutant
+  table a change with new tests carries, the decisions weighed and declined. Squash before merge
+  (the review fix-ups are session bookkeeping), so the merged commit message carries the same
+  WHAT/WHY and the per-round detail stays in the PR comments
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency
   findings, not only correctness ones — and push the fixes before asking for review. Record the
   findings *and the deferrals, with their reasons* as a PR comment. Which command to use:
