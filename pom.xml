@@ -425,6 +425,16 @@ limitations under the License.
                     <consoleOutput>true</consoleOutput>
                     <excludeSubProjects>false</excludeSubProjects>
                     <numUnapprovedLicenses>0</numUnapprovedLicenses>
+                    <!-- Only the two patterns below may approve a file (issue #255). rat's
+                         built-in matchers otherwise stay active beside them, and its Apache
+                         one approves on the bare licence URL: measured 2026-08-02, deleting
+                         the `Licensed under the Apache License, Version 2.0` line from
+                         scripts/ci-gate.sh while leaving the URL kept the file approved, as
+                         AL rather than as this project's AL2. Turning the defaults off costs
+                         nothing — the tree passes unchanged with them off, so nothing here
+                         relies on them — and makes the header rule in CLAUDE.md enforced
+                         rather than merely conventional. -->
+                    <addDefaultLicenseMatchers>false</addDefaultLicenseMatchers>
                     <licenses>
                         <license implementation="org.apache.rat.analysis.license.SimplePatternBasedLicense">
                             <licenseFamilyCategory>AL2</licenseFamilyCategory>

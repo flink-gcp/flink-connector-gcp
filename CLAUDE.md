@@ -475,7 +475,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - Files written for this project carry the plain Apache-2.0 header
   (`Copyright 2026 laughingman7743`). Files copied from Apache projects keep their ASF header.
   apache-rat enforces this (configuration overridden in the root POM; new unheaderable file
-  types need a rat exclude there)
+  types need a rat exclude there) — and enforces *those two headers*, not "an Apache licence is
+  mentioned somewhere", since #255 turned rat's built-in matchers off. They had been approving a
+  file for carrying the bare licence URL, so a header could lose its first line and still pass.
+  Still **not** checked, deliberately: the contents of the copyright line, and which of the two
+  headers a given file carries. A third header would need its own configured pattern — which is
+  the point at which someone decides whether it belongs here at all
 - When adapting Apache-2.0 code from other projects (Beam, Dataproc connector,
   google/flink-connector-gcp, java-bigquerystorage, apache/flink-connector-gcp-pubsub):
   record the provenance in the module README and the repository `NOTICE`, and keep original
