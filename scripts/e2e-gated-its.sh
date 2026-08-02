@@ -16,8 +16,8 @@
 #
 # The single source of truth for which ITCases are gated on real-GCP
 # credentials: every test class annotated with
-# @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", ...) or
-# @EnabledIfEnvironmentVariable(named = "PUBSUB_IT_PROJECT", ...) is one.
+# @EnabledIfEnvironmentVariable(named = "<gate>", ...) for one of the gates in
+# the loop below is one.
 # Deriving the list from the gating annotation itself means a newly gated
 # ITCase joins the E2E run automatically — and one added outside the modules
 # the `e2e` recipe builds makes --assert-ran fail until the recipe learns to
@@ -46,7 +46,7 @@ set -euo pipefail
 # otherwise degenerate into a vacuous pass for that connector while the other
 # one keeps the union non-empty.
 sources=''
-for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT; do
+for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT; do
     matched=$(grep -rl --include='*.java' "named = \"$gate\"" ./*/src/test/java | sort) || {
         echo "::error::no test class is gated on $gate; the gating annotation moved or the tree layout changed" >&2
         exit 1
@@ -66,8 +66,12 @@ case "${1:-}" in
     --require-env)
         # The union of what the gates read: BQ_IT_PROJECT/BQ_IT_DATASET gate
         # every BigQuery class, BQ_IT_GCS_BUCKET additionally gates the
-        # FILE_LOADS ones, PUBSUB_IT_PROJECT gates the Pub/Sub suite.
-        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT; do
+        # FILE_LOADS ones, PUBSUB_IT_PROJECT gates the Pub/Sub suite, and
+        # BIGTABLE_IT_PROJECT the Bigtable one. Bigtable needs no companion
+        # variable: unlike the BigQuery dataset and the GCS bucket, nothing
+        # persistent is provisioned for it — the suite creates and deletes an
+        # instance of its own — so there is no resource name to pass in.
+        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT; do
             if [ -z "${!var:-}" ]; then
                 echo "::error::$var is not set, so the gated real-GCP ITCases would silently skip. Locally the variables come from the uncommitted .env at the repository root, which mise loads." >&2
                 exit 1

@@ -17,11 +17,17 @@ name: E2E
 # Runs the ITCases gated on real-GCP credentials — the ones `just verify`
 # silently skips, checking exactly what the emulator cannot (idempotent
 # re-flush, load jobs, the default-stream fan-out/restore suite, serializer
-# column-type fidelity; see the testing section of the BigQuery connector
-# documentation). The whole run is `just e2e`, which also asserts the
-# gated classes actually executed: @EnabledIfEnvironmentVariable makes a
-# missing variable a silent skip, so a workflow that lost its credentials would
-# otherwise go green — the worst failure mode for this job.
+# column-type fidelity, ordered Pub/Sub dispatch and dead-letter forwarding,
+# and which statuses Bigtable rejects a mutation with; see the testing section
+# of each connector's documentation). The whole run is `just e2e`, which also
+# asserts the gated classes actually executed: @EnabledIfEnvironmentVariable
+# makes a missing variable a silent skip, so a workflow that lost its
+# credentials would otherwise go green — the worst failure mode for this job.
+#
+# The Bigtable half creates and deletes a one-node instance per gated class, so
+# this job costs Bigtable node-hours on top of runner minutes; nothing
+# persistent is provisioned for it (opentofu/flink-gcp holds the API enablement
+# and the grant, not an instance).
 #
 # Weekly rather than nightly, and no push trigger, both on cost: the repository
 # is private, so runner minutes are billed, and the per-PR emulator coverage in
@@ -59,7 +65,12 @@ jobs:
     if: github.repository_owner == 'laughingman7743'
     name: Real-GCP gated ITCases
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Raised from 30 when the Bigtable suite joined: each of its gated classes
+    # waits on an instance being provisioned before its first test runs. The
+    # ceiling also bounds what a hung run can leave standing, since the sweep
+    # in AbstractBigtableRealGcpITCase treats anything older than two hours as
+    # abandoned.
+    timeout-minutes: 40
     steps:
       # Pinned to the commit for the same reason as weekly.yaml: a merge
       # landing mid-run must not change what this run tests.
@@ -107,4 +118,5 @@ jobs:
           BQ_IT_DATASET: flink_gcp_it
           BQ_IT_GCS_BUCKET: flink-gcp
           PUBSUB_IT_PROJECT: flink-gcp
+          BIGTABLE_IT_PROJECT: flink-gcp
         run: just e2e

@@ -15,7 +15,7 @@
 # Only the APIs this project's function needs are managed; the assortment a
 # fresh project ships enabled (logging, monitoring, ...) is left alone. A new
 # connector's E2E suite adds its API here in the pull request that first needs
-# it (Bigtable and Spanner are the known candidates), not in advance.
+# it (Spanner is the remaining known candidate), not in advance.
 resource "google_project_service" "this" {
   for_each = toset([
     # Workload Identity Federation and IAM management.
@@ -26,6 +26,11 @@ resource "google_project_service" "this" {
     # Connector E2E targets.
     "bigquery.googleapis.com",
     "bigquerystorage.googleapis.com",
+    # Two services, because the Bigtable E2E suite (#218) spans both planes: it
+    # creates and deletes an ephemeral instance through the admin API and then
+    # writes and reads rows through the data one.
+    "bigtable.googleapis.com",
+    "bigtableadmin.googleapis.com",
     "cloudtasks.googleapis.com",
     "pubsub.googleapis.com",
     "storage.googleapis.com",

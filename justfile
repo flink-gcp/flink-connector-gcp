@@ -175,11 +175,17 @@ worktree-env:
 # dispatch after #27 added this step failed exactly there, on a tree ci.yaml
 # had just passed). The header check is not lost: ci.yaml's verify runs rat on
 # every pull request, and this install only primes ~/.m2.
+#
+# This costs real money beyond runner minutes, which the BigQuery and Pub/Sub
+# halves do not: the Bigtable suite has no persistent instance to run against
+# (a one-node one stands at roughly $470 a month) and creates one per gated
+# class instead, deleting it afterwards. A killed run is swept by the next one,
+# not left standing — see AbstractBigtableRealGcpITCase.
 e2e:
     scripts/e2e-gated-its.sh --require-env
     {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-test-utils -DskipTests -Drat.skip=true install
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub test-compile
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub surefire:test@integration-tests -Dtest="$(scripts/e2e-gated-its.sh)"
+    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable test-compile
+    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable surefire:test@integration-tests -Dtest="$(scripts/e2e-gated-its.sh)"
     scripts/e2e-gated-its.sh --assert-ran
 
 # Spotless and checkstyle cover the Java sources inside `just verify`; this is

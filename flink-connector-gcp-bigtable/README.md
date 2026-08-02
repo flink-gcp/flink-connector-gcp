@@ -10,7 +10,7 @@ bulk `MutateRows` batcher into one fixed table.
 | Emulator integration tests | Implemented ([#33](https://github.com/laughingman7743/flink-connector-gcp/issues/33)) |
 | DataStream bounded scan source | Planned ([#216](https://github.com/laughingman7743/flink-connector-gcp/issues/216)) |
 | Table API / SQL support | Planned ([#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217)) |
-| Gated real-GCP integration tests | Planned ([#218](https://github.com/laughingman7743/flink-connector-gcp/issues/218)) |
+| Gated real-GCP integration tests | Implemented ([#218](https://github.com/laughingman7743/flink-connector-gcp/issues/218)) |
 | Change streams source | Planned ([#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35)) |
 
 ```java
@@ -29,8 +29,8 @@ Sink<OrderEvent> sink =
 
 The connector documentation — what the connector is for, the serialization SPI, why the table is
 fixed per sink, delivery guarantees and what a cell timestamp decides about replays, why retries
-belong to the client, tuning and the client's own flow controller, and how failures are classified —
-is in
+belong to the client, tuning and the client's own flow controller, how failures are classified, and
+where the emulator differs from the service — is in
 [docs/content/docs/connectors/datastream/bigtable.md](../docs/content/docs/connectors/datastream/bigtable.md)
 (rendered on the documentation site once it is published).
 

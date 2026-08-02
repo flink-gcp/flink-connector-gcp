@@ -14,10 +14,10 @@
 
 # The account the nightly real-GCP E2E workflow runs as. Scoped to the fixed
 # set of services the connectors touch; the fine-grained resources (tables,
-# topics, subscriptions, queues) are created and deleted by the tests
-# themselves, which is why the Pub/Sub and Cloud Tasks grants are
-# create-capable. A new connector's E2E suite adds its grant here in the pull
-# request that first needs it.
+# topics, subscriptions, queues, and the Bigtable instance itself) are created
+# and deleted by the tests themselves, which is why the Pub/Sub, Cloud Tasks
+# and Bigtable grants are create-capable. A new connector's E2E suite adds its
+# grant here in the pull request that first needs it.
 
 resource "google_service_account" "github_actions_e2e" {
   account_id   = "github-actions-e2e"
@@ -29,6 +29,15 @@ resource "google_project_iam_member" "e2e" {
   for_each = toset([
     # Load and query jobs; table data access is granted on the dataset below.
     "roles/bigquery.jobUser",
+    # Admin rather than roles/bigtable.user, and the widest grant in this list:
+    # the Bigtable suite (#218) creates and deletes an ephemeral instance per
+    # gated test class, and instance lifecycle is administrator-level. No
+    # narrower role covers it — roles/bigtable.user is data access only, and
+    # nothing short of admin can create an instance. The same role carries the
+    # table admin and data access the tests need, so this is one binding rather
+    # than two, and there is nothing persistent for it to reach: the instance a
+    # run works in was created by that run.
+    "roles/bigtable.admin",
     # Tests create and delete their own queues and tasks.
     "roles/cloudtasks.admin",
     # Tests create and delete their own topics and subscriptions.

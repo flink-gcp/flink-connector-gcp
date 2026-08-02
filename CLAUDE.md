@@ -551,8 +551,10 @@ are the trigger; they are not a summary, and none of them is safe to answer from
 - `flink-connector-gcp-bigtable/CLAUDE.md` — sink design and implementation (#33): implement rather
   than adopt or vendor, the four SDK facts the writer rests on (including the client's own blocking
   flow controller and two Google-internal annotations accepted deliberately), the row-level vs fatal
-  boundary and the one code in it that is unmeasured, one fixed table per sink, and why the send
-  metrics landed here rather than with #37
+  boundary — `INVALID_ARGUMENT` alone, settled on gRPC's definition plus AIP-194 rather than left
+  unmeasured — one fixed table per sink, and why the send metrics landed here rather than with #37.
+  Also the E2E enablement (#218): the ephemeral per-class instance and its sweep, what real Bigtable
+  answers each rejection with, and the emulator deviation table those measurements produced
 - `flink-connector-gcp-test-utils/CLAUDE.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its
