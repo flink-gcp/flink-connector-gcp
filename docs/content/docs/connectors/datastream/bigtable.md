@@ -187,10 +187,11 @@ mailbox, so the writer's state is touched from one thread only — and routed by
 Those two examples are the ones measured against the service, and they are the whole list this page
 will vouch for — see [what the gated suite measures](#testing). Two conditions that read like
 `INVALID_ARGUMENT` candidates are not: an entry carrying more than 100,000 mutations, or more than
-200 MiB of them, is rejected by the **client** inside `setCell`, before any RPC, so it arrives as a
-serialization failure rather than as a service rejection (see
+200 MiB of them, is rejected by the **client**, before any RPC, so it arrives as a serialization
+failure rather than as a service rejection (see
 [serializer failures](#failed-mutation-policy) — such a `FailedMutation` carries no entry and no row
-key).
+key). The check sits in the mutation list itself, so it covers `deleteCells` and `deleteRow` exactly
+as it covers `setCell`.
 
 The split's purpose is that a *dropping* handler never sees a condition. An outage would otherwise
 bleed the stream one mutation at a time instead of backpressuring it, and a missing column family —
@@ -286,7 +287,12 @@ nothing there asserts a rejection the real service would produce.
 
 A **gated suite against real Cloud Bigtable** covers what the emulator cannot
 ([#218]({{< param BookRepo >}}/issues/218)). It runs weekly, and locally when `BIGTABLE_IT_PROJECT`
-is set; without that variable its classes skip. Two things only it can show:
+is set; without that variable its classes skip. Note what setting it locally implies: the gate is
+read by the classes themselves, not by a build profile, so **an ordinary local build runs the gated
+suite too** and creates the instances it needs. That is the same shape the BigQuery and Pub/Sub gates
+have, but this is the first one that bills for a resource rather than using a standing one, so it is
+worth choosing deliberately whether the variable lives in a shell you build from every day. Two
+things only this suite can show:
 
 - **The client-construction path every real job takes.** Every emulator test passes
   `emulatorEndpoint(...)`, so the branch that builds a client over application-default credentials

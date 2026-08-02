@@ -95,17 +95,24 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   run. The cluster id is built from the run id rather than the instance id, which at 28 characters
   leaves no room under a cluster id's own 30-character limit. Measured 2026-08-02: the two classes
   together, instance provisioning included, take about 7½ minutes.
+  **`BIGTABLE_IT_PROJECT` in a local `.env` makes every `just verify` create instances**, because the
+  gate is on the classes and `verify` runs the same `integration-tests` execution `just e2e` does.
+  The BigQuery and Pub/Sub gates have had that shape all along; the difference is that this is the
+  first one whose resources are billed per run rather than standing, so ~7½ minutes and a node-hour
+  fraction join every full local build the variable is visible to. Scoping with `-Dtest=` or keeping
+  the variable out of the always-loaded environment are the two ways out; neither is enforced.
 - **What real Bigtable answers, measured 2026-08-02** (client 2.80.0), which is what the connector
   page's error-handling table now states rather than infers. Routed (`INVALID_ARGUMENT`): a cell
   timestamp that is not a multiple of 1000 ("Timestamp granularity mismatch"), and an empty row key
   ("Row keys must be non-empty"). Fatal (`NOT_FOUND`): a mutation naming a column family the table
   lacks — and the service reports it for **every** entry of the batch, the good ones included.
   **Two conditions #218's text expected to measure are unmeasurable through this connector**:
-  `Mutation` enforces its own limits inside `setCell`, so "more mutations than a row accepts" and an
-  oversized entry are thrown client-side and arrive as *serialization* failures with no entry and no
-  row key — the service never sees them. The mutation-count half was run (110,000 mutations, which
-  never reached the wire); the byte half is `MAX_BYTE_SIZE` = 200 MiB read from the client's class
-  file beside `MAX_MUTATIONS` = 100,000, not exercised. A
+  `Mutation` enforces its own limits in the private `addMutation` every mutation-adding method funnels
+  through — so `deleteCells` and `deleteRow` are covered as much as `setCell`, and "more mutations
+  than a row accepts" and an oversized entry are thrown client-side and arrive as *serialization*
+  failures with no entry and no row key; the service never sees them. The mutation-count half was run
+  (110,000 mutations, which never reached the wire); the byte half is `MAX_BYTE_SIZE` = 200 MiB read
+  from the client's class file beside `MAX_MUTATIONS` = 100,000, not exercised. A
   single-cell size violation is unreachable for a second reason too: the client's bulk flow
   controller caps accumulated size at 100 MB, below Bigtable's 256 MB per row.
 - **Two defects that run turned up, both filed rather than fixed here** (decided with the user):

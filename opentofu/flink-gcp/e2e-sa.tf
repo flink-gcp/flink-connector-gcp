@@ -31,12 +31,15 @@ resource "google_project_iam_member" "e2e" {
     "roles/bigquery.jobUser",
     # Admin rather than roles/bigtable.user, and the widest grant in this list:
     # the Bigtable suite (#218) creates and deletes an ephemeral instance per
-    # gated test class, and instance lifecycle is administrator-level. No
-    # narrower role covers it — roles/bigtable.user is data access only, and
-    # nothing short of admin can create an instance. The same role carries the
+    # gated test class, and no *predefined* role narrower than admin can create
+    # an instance (roles/bigtable.user is data access only). It also carries the
     # table admin and data access the tests need, so this is one binding rather
     # than two, and there is nothing persistent for it to reach: the instance a
-    # run works in was created by that run.
+    # run works in was created by that run. A custom role holding just the
+    # instance/cluster/table permissions would be narrower still, and was not
+    # taken — every other grant in this file is a predefined role too, and a
+    # custom one is a definition to maintain against an API that adds
+    # permissions.
     "roles/bigtable.admin",
     # Tests create and delete their own queues and tasks.
     "roles/cloudtasks.admin",

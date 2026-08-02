@@ -54,11 +54,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * rather than a status code in isolation.
  *
  * <p>Two conditions that look like they belong here do not, both because the client answers them
- * before the service ever does. {@code Mutation} enforces its own limits inside {@code setCell} —
- * 100,000 mutations and 200 MiB per entry — so "more mutations than a row accepts" and "an entry
- * over the size limit" are thrown by the serializer, never rejected by Bigtable, and the sink
- * routes them as serialization failures with no entry and no row key. Measured 2026-08-02 with
- * {@code google-cloud-bigtable} 2.80.0; a run at 110,000 mutations never reached the wire.
+ * before the service ever does. {@code Mutation} enforces its own limits — 100,000 mutations and
+ * 200 MiB per entry — in the private {@code addMutation} that every mutation-adding method funnels
+ * through, so "more mutations than a row accepts" and "an entry over the size limit" are thrown by
+ * the serializer, never rejected by Bigtable, and the sink routes them as serialization failures
+ * with no entry and no row key. Measured 2026-08-02 with {@code google-cloud-bigtable} 2.80.0; a
+ * run at 110,000 mutations never reached the wire.
  */
 @EnabledIfEnvironmentVariable(named = "BIGTABLE_IT_PROJECT", matches = ".+")
 class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
