@@ -100,6 +100,7 @@ def classify(mod, files):
         ".github/workflows/tofu-plan.yaml",
         ".github/workflows/tofu-apply.yaml",
         ".github/workflows/tofu-list.yaml",
+        ".github/PULL_REQUEST_TEMPLATE.md",
     ],
 )
 def test_ignored_paths_select_nothing(fake_repo, ci_maven_args, path):

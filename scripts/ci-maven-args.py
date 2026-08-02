@@ -129,6 +129,11 @@ IGNORED_FILES = {
     ".github/workflows/tofu-plan.yaml",
     ".github/workflows/tofu-apply.yaml",
     ".github/workflows/tofu-list.yaml",
+    # GitHub reads this one; no build does. And unlike scripts/, it does not
+    # even buy the root-only rat run: .github/** is rat-excluded. Named file by
+    # file rather than by a `.github/` prefix, because a *workflow* under there
+    # changes what CI runs — unknown territory on purpose.
+    ".github/PULL_REQUEST_TEMPLATE.md",
 }
 
 # Rule 3: nothing Maven builds from these, but the root module's rat run does

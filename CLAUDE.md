@@ -451,7 +451,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   root pom names it. `just ci-maven-args --diff origin/main` reproduces the decision by hand.
   The old ignore list (`opentofu/**`, the tofu workflows, `**/README.md` / `**/CLAUDE.md` —
   the last two only because apache-rat's exclude list already carries exactly those patterns,
-  so no licence-header check is lost) lives twice on purpose: as the script's first
+  so no licence-header check is lost — and `.github/PULL_REQUEST_TEMPLATE.md`, which is
+  rat-excluded like everything under `.github/`, named file by file because a *workflow*
+  there changes what CI runs) lives twice on purpose: as the script's first
   classification rule, and as a real `paths-ignore` on the **push** trigger only, where no
   required check can be blocked and a tofu-only merge stays free. A **root-only** change builds
   `-pl .` alone: `docs/**`, `scripts/**` and the root uv project (`pyproject.toml`, `uv.lock`)
