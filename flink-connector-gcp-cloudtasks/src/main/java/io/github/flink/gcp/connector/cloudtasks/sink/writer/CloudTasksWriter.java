@@ -127,10 +127,6 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                     StatusCode.Code.DEADLINE_EXCEEDED,
                     StatusCode.Code.RESOURCE_EXHAUSTED);
 
-    /** The one data-shaped status, as a set so it shares {@link #firstMatching}. */
-    private static final Set<StatusCode.Code> INVALID_ARGUMENT_ONLY =
-            EnumSet.of(StatusCode.Code.INVALID_ARGUMENT);
-
     private static final String COMPLETION_MAIL = "Complete a Cloud Tasks task creation";
     private static final String FAILURE_MAIL = "Fail a Cloud Tasks task creation";
 
@@ -423,14 +419,16 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                     request.getTask().getName());
             return;
         }
-        // Transient before data-shaped, decided by scanning the *whole* cause chain rather than
-        // by the first classifiable status: an unstable service must never produce a dead letter,
-        // so a failure carrying a transient status anywhere is transient even if it also carries
-        // an INVALID_ARGUMENT. One gax failure cannot carry both today — this is the property
-        // being made independent of that. Same reason PubSubErrorClassifier is a precedence
-        // rather than a first-match.
+        // Routed only when the failure is unambiguously data-shaped, which takes both halves of
+        // this condition. The transient lookup scans the *whole* chain, so an unstable service
+        // can never produce a dead letter even if a data-shaped status sits in front of it — a
+        // property of this code rather than of gax producing one status per failure, which is why
+        // the two forms are equivalent today. The INVALID_ARGUMENT half deliberately reads only
+        // the chain's *first* classifiable status: an INVALID_ARGUMENT buried under an INTERNAL or
+        // an UNKNOWN describes the inner call, and dropping the task on it would discard a record
+        // over a server-side failure.
         StatusCode.Code transientCode = firstMatching(throwable, TRANSIENT_CODES);
-        if (transientCode == null && firstMatching(throwable, INVALID_ARGUMENT_ONLY) != null) {
+        if (transientCode == null && code == StatusCode.Code.INVALID_ARGUMENT) {
             // Before the asyncError check below, deliberately: the writer is about to fail either
             // way, but this task really did fail terminally, and a dead-letter destination missing
             // it is worse than one holding a task a replay will produce again — the guarantee is

@@ -376,7 +376,10 @@ behavior: no gax failure carries two different statuses today, and the guarantee
 that staying true. `INVALID_ARGUMENT` is the one routed status because it is the one gRPC defines as
 *"arguments that are problematic regardless of the state of the system"* — explicitly unlike
 `FAILED_PRECONDITION` and `OUT_OF_RANGE`, whose problems *"may be fixed if the system state
-changes"*, and both of which fail the job here.
+changes"*, and both of which fail the job here. It is read from the chain's *first* classifiable
+status, not searched for: an `INVALID_ARGUMENT` buried under an `INTERNAL` or an `UNKNOWN` describes
+the inner call, and dropping a record over a server-side failure would be the mirror image of
+dropping one over an outage.
 
 **Only those three failures are routed, deliberately.** An outage must not reach a dropping handler,
 or a service incident would bleed the stream one record at a time instead of backpressuring and

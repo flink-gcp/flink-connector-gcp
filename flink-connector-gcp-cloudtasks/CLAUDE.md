@@ -61,11 +61,15 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   would leave an empty queue under a green job. The extractor is the pair worth not re-litigating —
   a throw is per-record and routed, a missing key is per-stream and fatal. `ALREADY_EXISTS` on a
   named task stays success and never reaches the handler. **Classification is a precedence over the
-  whole cause chain, not a first-match** (`firstMatching(throwable, TRANSIENT_CODES)` before the
-  `INVALID_ARGUMENT` lookup): a chain carrying a transient status anywhere is transient even when
-  the data-shaped status is found first, so "an unstable service can never produce a dead letter" is
-  a property of the code rather than of gax producing one status per failure — which it does today,
-  making the two forms equivalent *now*. Same shape as `PubSubErrorClassifier`'s precedence, adopted
+  whole cause chain, not a first-match** — but **only the transient half**: routing takes
+  `firstMatching(throwable, TRANSIENT_CODES) == null && code == INVALID_ARGUMENT`, where `code` is
+  the chain's first classifiable status. The transient lookup scans the whole chain, so "an unstable
+  service can never produce a dead letter" is a property of the code rather than of gax producing
+  one status per failure — which it does today, making the forms equivalent *now*. The
+  `INVALID_ARGUMENT` half deliberately does **not** scan: searching for it anywhere would drop a
+  task whose outermost status is `INTERNAL` or `UNKNOWN`, which is the mirror image of the mistake
+  the transient scan prevents. That asymmetry was found by mutation testing — the scanning variant's
+  mutant survived, and inspecting why showed the mutant was the better code. Same shape as `PubSubErrorClassifier`'s precedence, adopted
   there because Pub/Sub chains really can carry two. `INVALID_ARGUMENT` is the one routed status
   because gRPC defines it as arguments "problematic regardless of the state of the system" and
   AIP-194 puts it in must-not-retry ("retrying … will never succeed"), unlike `FAILED_PRECONDITION`

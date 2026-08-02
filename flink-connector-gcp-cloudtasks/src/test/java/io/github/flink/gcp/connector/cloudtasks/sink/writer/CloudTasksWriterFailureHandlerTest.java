@@ -238,6 +238,24 @@ class CloudTasksWriterFailureHandlerTest {
     }
 
     @Test
+    void failsTheJobOnAnInvalidArgumentBuriedUnderAServerError() throws Exception {
+        CloudTasksWriter<String> writer = writer(TestSinkConfigs.builder());
+        // INTERNAL outermost: whatever the inner INVALID_ARGUMENT describes, this call failed
+        // server-side, and dropping the record over that would be the mirror image of dropping it
+        // over an outage. Only a chain whose first classifiable status *is* the data-shaped one is
+        // routed.
+        creator.enqueueFailure(
+                FakeTaskCreator.apiException(
+                        StatusCode.Code.INTERNAL,
+                        FakeTaskCreator.apiException(StatusCode.Code.INVALID_ARGUMENT)));
+
+        writer.write("order-1", TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
+        assertThat(handler.handled).isEmpty();
+    }
+
+    @Test
     void routesAnInvalidArgumentNestedBehindAnUnclassifiableWrapper() throws Exception {
         CloudTasksWriter<String> writer = writer(TestSinkConfigs.builder());
         creator.enqueueFailure(
