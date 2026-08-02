@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.cloudtasks.sink;
 
 import org.apache.flink.annotation.Internal;
 
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -38,6 +39,7 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
     private final CloudTasksSerializationSchema<? super T> serializer;
     @Nullable private final TaskIdExtractor<? super T> taskIdExtractor;
     private final CloudTasksWriterOptions writerOptions;
+    private final FailureHandler<? super FailedTask> failedTaskHandler;
     @Nullable private final String emulatorEndpoint;
 
     CloudTasksSinkConfig(
@@ -45,11 +47,13 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
             CloudTasksSerializationSchema<? super T> serializer,
             @Nullable TaskIdExtractor<? super T> taskIdExtractor,
             CloudTasksWriterOptions writerOptions,
+            FailureHandler<? super FailedTask> failedTaskHandler,
             @Nullable String emulatorEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.taskIdExtractor = taskIdExtractor;
         this.writerOptions = writerOptions;
+        this.failedTaskHandler = failedTaskHandler;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -74,6 +78,11 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
     /** Returns the writer tuning options. */
     public CloudTasksWriterOptions getWriterOptions() {
         return writerOptions;
+    }
+
+    /** Returns the policy for tasks that terminally fail. */
+    public FailureHandler<? super FailedTask> getFailedTaskHandler() {
+        return failedTaskHandler;
     }
 
     /**

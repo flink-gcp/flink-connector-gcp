@@ -9,7 +9,7 @@ later, paced by the queue's rate limit.
 | SinkV2 at-least-once sink; HTTP targets; fixed and per-record queue destinations | Implemented ([#24](https://github.com/laughingman7743/flink-connector-gcp/issues/24)) |
 | Opt-in named-task deduplication | Implemented ([#24](https://github.com/laughingman7743/flink-connector-gcp/issues/24)) |
 | Emulator integration tests | Implemented ([#25](https://github.com/laughingman7743/flink-connector-gcp/issues/25)) |
-| Per-record failure policy | Planned ([#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37)) |
+| Per-task failure policy (fail, drop or dead-letter) | Implemented ([#207](https://github.com/laughingman7743/flink-connector-gcp/issues/207)) |
 | Table API / SQL support | Planned ([#99](https://github.com/laughingman7743/flink-connector-gcp/issues/99)) |
 
 ```java

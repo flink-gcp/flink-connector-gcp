@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.function.ThrowingRunnable;
 
 import com.google.api.core.ApiFuture;
@@ -30,10 +31,12 @@ import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
 import com.google.cloud.tasks.v2.TaskName;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
+import io.github.flink.gcp.connector.cloudtasks.sink.FailedTask;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.cloudtasks.sink.TaskIdExtractor;
 import org.slf4j.Logger;
@@ -46,7 +49,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.PriorityQueue;
+import java.util.Set;
 
 /**
  * At-least-once writer creating one Cloud Tasks task per record.
@@ -83,6 +88,21 @@ import java.util.PriorityQueue;
  * CloudTasksWriterOptions.maxInFlightTasks}, default 1000); at the cap {@link #write} yields to the
  * mailbox until completions bring the count down, bounding sink memory between checkpoints.
  *
+ * <h2>Per-task failures</h2>
+ *
+ * <p>Three data-shaped failures are handed to the configured {@link FailureHandler} instead of
+ * failing the job outright: a record the serializer rejects, a {@link TaskIdExtractor} that throws,
+ * and a creation the service rejects with {@code INVALID_ARGUMENT} (a malformed target URL, an
+ * oversized body, a header the service refuses). Each concerns one record, and re-sending the same
+ * bytes cannot succeed. Classification is a <em>precedence over the whole cause chain</em>, not a
+ * first-match: a failure carrying a transient status anywhere is transient even if it also carries
+ * an {@code INVALID_ARGUMENT}, so an unstable service can never produce a dead letter. The handler
+ * drops the task by returning and fails the job by throwing; the default {@code failJob()} throws,
+ * which is why the failures it does <em>not</em> cover matter — an exhausted retry budget stays a
+ * job failure, so no drop policy can quietly discard an outage's backlog. A handler failing inside
+ * a completion callback is captured into {@link #asyncError} like any other terminal failure,
+ * because a mailbox mail cannot throw a checked exception at its caller.
+ *
  * <h2>Task naming</h2>
  *
  * <p>Without a {@link TaskIdExtractor} the writer creates unnamed tasks and a replayed record calls
@@ -100,6 +120,13 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
+    /** Statuses the sink retries on its main budget; a chain carrying one is never data-shaped. */
+    private static final Set<StatusCode.Code> TRANSIENT_CODES =
+            EnumSet.of(
+                    StatusCode.Code.UNAVAILABLE,
+                    StatusCode.Code.DEADLINE_EXCEEDED,
+                    StatusCode.Code.RESOURCE_EXHAUSTED);
+
     private static final String COMPLETION_MAIL = "Complete a Cloud Tasks task creation";
     private static final String FAILURE_MAIL = "Fail a Cloud Tasks task creation";
 
@@ -111,6 +138,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     private final RetrySchedule retrySchedule;
     private final RetrySchedule notFoundSchedule;
     @Nullable private final TaskIdExtractor<? super T> taskIdExtractor;
+    private final FailureHandler<? super FailedTask> failedTaskHandler;
 
     /** SHA-256 of the extracted keys; task-thread only, {@code null} when tasks are unnamed. */
     @Nullable private final MessageDigest digest;
@@ -163,6 +191,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         this.notFoundSchedule = options.toNotFoundRetrySchedule();
         this.taskIdExtractor = config.getTaskIdExtractor();
         this.digest = taskIdExtractor == null ? null : sha256();
+        this.failedTaskHandler = config.getFailedTaskHandler();
     }
 
     private static MessageDigest sha256() {
@@ -186,8 +215,12 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         try {
             task = config.getSerializer().serialize(element);
         } catch (IOException | RuntimeException e) {
-            throw new IOException(
-                    "Failed to serialize a record for Cloud Tasks queue " + destination + ".", e);
+            // The record never became a task, so there is nothing to carry but the destination:
+            // FailedTask.getPayloadBytes() is null, as the shared contract prescribes. The
+            // description leaves the queue to describeDestination(), as routeFailedTask does.
+            failedTaskHandler.handle(
+                    FailedTask.of(destination, null, "The record could not be serialized.", e));
+            return;
         }
         if (!task.getName().isEmpty()) {
             throw new IOException(
@@ -200,10 +233,23 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                             + " the name unset.");
         }
         if (taskIdExtractor != null) {
-            task = task.toBuilder().setName(taskName(destination, element)).build();
+            String key;
+            try {
+                key = taskIdExtractor.extractTaskId(element);
+            } catch (RuntimeException e) {
+                failedTaskHandler.handle(
+                        FailedTask.of(
+                                destination,
+                                task,
+                                "The task id extractor failed for the record.",
+                                e));
+                return;
+            }
+            task = task.toBuilder().setName(taskName(destination, key)).build();
         }
         awaitCapacity();
         dispatch(
+                destination,
                 CreateTaskRequest.newBuilder()
                         .setParent(destination.toQueuePath())
                         .setTask(task)
@@ -221,10 +267,14 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                 continue;
             }
             if (parked.isEmpty()) {
-                return;
+                break;
             }
             sleepUntilDue();
         }
+        // After the loop, never inside it: the failures that reach the handler are discovered by
+        // the drain — and by the re-dispatch of parked retries, which the loop also waits out — so
+        // flushing earlier would checkpoint past dead letters still to come.
+        failedTaskHandler.flush();
     }
 
     @Override
@@ -233,26 +283,26 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         // path the writer creates nothing further, and creations parked for retry are dropped with
         // it — they are not covered by a completed checkpoint, so the restart replays their
         // records.
-        parked.clear();
-        creator.close();
+        try {
+            // Through closeAll, so the handler is closed even when the creator's shutdown throws:
+            // the lifecycle contract promises close on the failure path too.
+            IOUtils.closeAll(creator, failedTaskHandler::close);
+        } finally {
+            parked.clear();
+        }
     }
 
     /**
      * Composes the task name from the resolved queue and the SHA-256 digest of the extracted key.
      * The digest is 64 characters from {@code [0-9a-f]}, well inside the 500-character limit for a
      * task id.
+     *
+     * <p>A missing key fails the job rather than reaching the failure handler: {@code
+     * taskIdExtractor(...)} is set for the whole stream, so an extractor with no key to return
+     * fails every record alike, and dropping those would leave an empty queue under a green job. An
+     * extractor that <em>throws</em> is the opposite case — that is per-record, and it is routed.
      */
-    private String taskName(QueueDestination destination, T element) throws IOException {
-        String key;
-        try {
-            key = taskIdExtractor.extractTaskId(element);
-        } catch (RuntimeException e) {
-            throw new IOException(
-                    "The task id extractor failed for a record bound for Cloud Tasks queue "
-                            + destination
-                            + ".",
-                    e);
-        }
+    private String taskName(QueueDestination destination, @Nullable String key) throws IOException {
         if (key == null || key.isEmpty()) {
             throw new IOException(
                     "The task id extractor returned "
@@ -286,7 +336,10 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
      * Creates the task, counts it in flight and registers its completion callback. {@code pending}
      * carries the retry budgets already spent, and is {@code null} for a record's first attempt.
      */
-    private void dispatch(CreateTaskRequest request, @Nullable PendingCreate pending)
+    private void dispatch(
+            QueueDestination destination,
+            CreateTaskRequest request,
+            @Nullable PendingCreate pending)
             throws IOException {
         ApiFuture<Task> future;
         try {
@@ -296,7 +349,8 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                     "Failed to create a task in Cloud Tasks queue " + request.getParent() + ".", e);
         }
         inFlight++;
-        ApiFutures.addCallback(future, new CreateCallback(request, pending), Runnable::run);
+        ApiFutures.addCallback(
+                future, new CreateCallback(destination, request, pending), Runnable::run);
     }
 
     /** Re-dispatches every parked creation whose backoff has elapsed. */
@@ -307,7 +361,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         long now = timeSource.currentTimeMillis();
         while (!parked.isEmpty() && parked.peek().dueAtMillis <= now) {
             PendingCreate pending = parked.poll();
-            dispatch(pending.request, pending);
+            dispatch(pending.destination, pending.request, pending);
         }
     }
 
@@ -349,7 +403,10 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
 
     /** Task-thread handler for a failed creation, run as a mailbox mail. */
     private void onCreateFailed(
-            CreateTaskRequest request, @Nullable PendingCreate pending, Throwable throwable) {
+            QueueDestination destination,
+            CreateTaskRequest request,
+            @Nullable PendingCreate pending,
+            Throwable throwable) {
         inFlight--;
         StatusCode.Code code = statusCode(throwable);
         boolean named = !request.getTask().getName().isEmpty();
@@ -362,18 +419,33 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                     request.getTask().getName());
             return;
         }
+        // Routed only when the failure is unambiguously data-shaped, which takes both halves of
+        // this condition. The transient lookup scans the *whole* chain, so an unstable service
+        // can never produce a dead letter even if a data-shaped status sits in front of it — a
+        // property of this code rather than of gax producing one status per failure, which is why
+        // the two forms are equivalent today. The INVALID_ARGUMENT half deliberately reads only
+        // the chain's *first* classifiable status: an INVALID_ARGUMENT buried under an INTERNAL or
+        // an UNKNOWN describes the inner call, and dropping the task on it would discard a record
+        // over a server-side failure.
+        StatusCode.Code transientCode = firstMatching(throwable, TRANSIENT_CODES);
+        if (transientCode == null && code == StatusCode.Code.INVALID_ARGUMENT) {
+            // Before the asyncError check below, deliberately: the writer is about to fail either
+            // way, but this task really did fail terminally, and a dead-letter destination missing
+            // it is worse than one holding a task a replay will produce again — the guarantee is
+            // at-least-once.
+            routeFailedTask(destination, request.getTask(), throwable);
+            return;
+        }
         if (asyncError != null) {
             // An earlier failure already fails the job; nothing is gained by retrying this one.
             return;
         }
-        PendingCreate entry = pending != null ? pending : new PendingCreate(request);
-        if (code == StatusCode.Code.UNAVAILABLE
-                || code == StatusCode.Code.DEADLINE_EXCEEDED
-                || code == StatusCode.Code.RESOURCE_EXHAUSTED) {
+        PendingCreate entry = pending != null ? pending : new PendingCreate(destination, request);
+        if (transientCode != null) {
             if (++entry.attempts < retrySchedule.maxAttempts()) {
                 park(entry, retrySchedule.backoffMs(entry.attempts));
             } else {
-                asyncError = exhausted(request, entry.attempts, code, throwable);
+                asyncError = exhausted(request, entry.attempts, transientCode, throwable);
             }
             return;
         }
@@ -410,6 +482,38 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                         throwable);
     }
 
+    /**
+     * Hands a task-level creation failure to the configured handler. Runs as a mailbox mail, so a
+     * handler that fails the job cannot throw at a caller: its failure is captured into {@link
+     * #asyncError} and rethrown from the next {@link #write} or {@link #flush}, exactly as a
+     * terminal creation failure is. First failure wins, as everywhere else here.
+     *
+     * <p>The description does not name the queue: every reader of it reaches the element's {@code
+     * describeDestination()} too — the built-in handlers compose the two — so naming it here would
+     * put the queue in the sentence twice, in two spellings.
+     */
+    private void routeFailedTask(QueueDestination destination, Task task, Throwable throwable) {
+        try {
+            failedTaskHandler.handle(
+                    FailedTask.of(
+                            destination,
+                            task,
+                            "Cloud Tasks rejected the task with INVALID_ARGUMENT.",
+                            throwable));
+        } catch (IOException | RuntimeException e) {
+            if (asyncError == null) {
+                asyncError =
+                        e instanceof IOException
+                                ? (IOException) e
+                                : new IOException(
+                                        "The failed-task handler failed for Cloud Tasks queue "
+                                                + destination
+                                                + ".",
+                                        e);
+            }
+        }
+    }
+
     private void park(PendingCreate entry, long backoffMs) {
         entry.dueAtMillis = timeSource.currentTimeMillis() + backoffMs;
         parked.add(entry);
@@ -439,7 +543,25 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
      */
     @Nullable
     private static StatusCode.Code statusCode(Throwable throwable) {
-        return ExceptionUtils.findThrowable(throwable, t -> StatusCodes.codeOf(t) != null)
+        return firstMatching(throwable, null);
+    }
+
+    /**
+     * Returns the first status code in the cause chain that is one of {@code codes}, or {@code
+     * null} when the chain carries none; a null {@code codes} accepts any classifiable status.
+     *
+     * <p>Searching the chain for a <em>specific</em> set is what makes the routing decision in
+     * {@link #onCreateFailed} a precedence rather than a first-match.
+     */
+    @Nullable
+    private static StatusCode.Code firstMatching(
+            Throwable throwable, @Nullable Set<StatusCode.Code> codes) {
+        return ExceptionUtils.findThrowable(
+                        throwable,
+                        t -> {
+                            StatusCode.Code code = StatusCodes.codeOf(t);
+                            return code != null && (codes == null || codes.contains(code));
+                        })
                 .map(StatusCodes::codeOf)
                 .orElse(null);
     }
@@ -457,13 +579,15 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     /** A creation waiting out a retry backoff, with the budgets it has already spent. */
     private static final class PendingCreate {
 
+        private final QueueDestination destination;
         private final CreateTaskRequest request;
 
         private int attempts;
         private int notFoundAttempts;
         private long dueAtMillis;
 
-        private PendingCreate(CreateTaskRequest request) {
+        private PendingCreate(QueueDestination destination, CreateTaskRequest request) {
+            this.destination = destination;
             this.request = request;
         }
     }
@@ -471,10 +595,15 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     /** Re-dispatches creation completions onto the mailbox so state stays task-thread-only. */
     private final class CreateCallback implements ApiFutureCallback<Task> {
 
+        private final QueueDestination destination;
         private final CreateTaskRequest request;
         @Nullable private final PendingCreate pending;
 
-        private CreateCallback(CreateTaskRequest request, @Nullable PendingCreate pending) {
+        private CreateCallback(
+                QueueDestination destination,
+                CreateTaskRequest request,
+                @Nullable PendingCreate pending) {
+            this.destination = destination;
             this.request = request;
             this.pending = pending;
         }
@@ -487,7 +616,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         @Override
         public void onFailure(Throwable throwable) {
             mailboxExecutor.execute(
-                    () -> onCreateFailed(request, pending, throwable), FAILURE_MAIL);
+                    () -> onCreateFailed(destination, request, pending, throwable), FAILURE_MAIL);
         }
     }
 }

@@ -330,7 +330,7 @@ class CloudTasksWriterTest {
     }
 
     @Test
-    void wrapsASerializationFailure() {
+    void failsTheJobOnASerializationFailureUnderTheDefaultPolicy() {
         CloudTasksWriter<String> writer =
                 writer(
                         TestSinkConfigs.builder()
@@ -341,7 +341,7 @@ class CloudTasksWriterTest {
 
         assertThatThrownBy(() -> writer.write("order-1", TestContexts.NO_OP))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("Failed to serialize")
+                .hasMessageContaining("could not be serialized")
                 .hasRootCauseMessage("broken");
     }
 

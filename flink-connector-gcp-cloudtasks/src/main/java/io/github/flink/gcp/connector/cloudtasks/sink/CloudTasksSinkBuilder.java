@@ -20,6 +20,7 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -45,6 +46,7 @@ public class CloudTasksSinkBuilder<T> {
     private CloudTasksSerializationSchema<? super T> serializer;
     @Nullable private TaskIdExtractor<? super T> taskIdExtractor;
     private CloudTasksWriterOptions writerOptions = CloudTasksWriterOptions.defaults();
+    private FailureHandler<? super FailedTask> failedTaskHandler = FailureHandler.failJob();
     @Nullable private String emulatorEndpoint;
 
     CloudTasksSinkBuilder() {}
@@ -122,6 +124,26 @@ public class CloudTasksSinkBuilder<T> {
     }
 
     /**
+     * Sets the policy for a task that terminally fails — fail the job (the default), drop it, or
+     * send it to a dead-letter queue. Only data-shaped failures reach it: a record the serializer
+     * rejects, a task id extractor that throws, and a creation the service rejects with {@code
+     * INVALID_ARGUMENT}. Everything else keeps failing the job, including an exhausted retry budget
+     * and {@code PERMISSION_DENIED} — see the connector documentation for the full routing table.
+     *
+     * <p>The parameter is contravariant, so a handler written against the shared {@code
+     * FailedElement} contract serves every connector in this repository without a cast.
+     *
+     * @param failedTaskHandler the handler
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> failedTaskHandler(
+            FailureHandler<? super FailedTask> failedTaskHandler) {
+        this.failedTaskHandler =
+                Preconditions.checkNotNull(failedTaskHandler, "failedTaskHandler must not be null");
+        return this;
+    }
+
+    /**
      * Points the sink at a Cloud Tasks emulator instead of the production service. The connection
      * to the given {@code host:port} uses a plaintext channel with no credentials, so this must
      * only ever be used against an emulator. Optional; when unset the sink connects to Cloud Tasks
@@ -154,6 +176,7 @@ public class CloudTasksSinkBuilder<T> {
                         serializer,
                         taskIdExtractor,
                         writerOptions,
+                        failedTaskHandler,
                         emulatorEndpoint));
     }
 }
