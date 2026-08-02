@@ -224,8 +224,20 @@ def test_a_missing_source_file_is_an_infrastructure_error(sweep):
     assert sweep(instances=[instance(5)]).returncode == 2
 
 
-def test_an_unknown_flag_is_rejected(sweep):
-    assert sweep("--delete-everything").returncode == 2
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--delete-everything",),
+        # Not dropped on the floor: the argument a caller is most likely to
+        # invent is a narrowing one, and ignoring it would widen a delete.
+        ("--dry-run", "--only=flink-it-123"),
+        ("--dry-run", "extra"),
+    ],
+)
+def test_arguments_it_does_not_understand_are_rejected(sweep, args):
+    result = sweep(*args, instances=[instance(5)])
+    assert result.returncode == 2
+    assert result.deleted == []
 
 
 # --- against the real tree ---

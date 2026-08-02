@@ -47,6 +47,13 @@ case "${1:-}" in
         exit 2
         ;;
 esac
+# An argument this does not understand must not be dropped on the floor: the
+# one a caller is most likely to reach for is a narrowing flag, and silently
+# ignoring it would widen a delete rather than refuse it.
+if [ "$#" -gt 1 ]; then
+    echo "usage: $0 [--dry-run]" >&2
+    exit 2
+fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -112,6 +119,12 @@ while IFS= read -r name; do
         echo "would delete ${id} (created $(( ( $(date +%s) - stamp ) / 3600 ))h ago)"
         continue
     fi
+    # A concurrent sweeper (a manually dispatched E2E run) can win the race
+    # and leave this one a NOT_FOUND, which reports as a failed delete and
+    # turns the job red for something benign. Deliberately not special-cased:
+    # telling that apart means matching gcloud's error text, and a rare red
+    # job a human reads once beats a string match that silently swallows a
+    # real permission failure.
     echo "deleting ${id}"
     if ! gcloud bigtable instances delete "$id" \
         --project="$BIGTABLE_IT_PROJECT" --quiet; then

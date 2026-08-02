@@ -36,9 +36,13 @@ name: Sweep E2E leftovers
 # two sweeps cannot drift apart.
 on:
   schedule:
-    # Daily, well clear of e2e.yaml's Saturday 01:17 slot plus its 40-minute
-    # ceiling, so the two never sweep against each other. Off the hour and off
-    # the half hour, like every other schedule here.
+    # Daily, and off the hour and the half hour like every other schedule
+    # here. Clear of e2e.yaml's Saturday 01:17 slot plus its 40-minute ceiling,
+    # but that is tidiness rather than the safety property: what keeps this
+    # from deleting a running E2E instance is the two-hour threshold, which
+    # holds for a workflow_dispatch run at any time of day too. The coupling
+    # that would break it is raising e2e.yaml's timeout-minutes past two hours,
+    # which is why the note beside that ceiling says what depends on it.
     - cron: '23 6 * * *'
   workflow_dispatch:
 
