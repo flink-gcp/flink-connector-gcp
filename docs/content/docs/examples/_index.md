@@ -32,14 +32,16 @@ page, linked from each section.
 | [BigQuery]({{< relref "docs/examples/bigquery" >}}) | A table per day from the event timestamp, both exactly-once write methods and how to redeploy them, table auto-creation |
 | [Cloud Pub/Sub]({{< relref "docs/examples/pubsub" >}}) | A topic per record, topic and subscription auto-creation, the emulator |
 | [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Sharding across queues, the emulator |
+| [Bigtable]({{< relref "docs/examples/bigtable" >}}) | Several mutations per record, skipping records, dropping bad rows, the emulator |
 
-Two things cut across all of them, and are stated once here rather than three times.
+Two things cut across most of them, and are stated once here rather than four times.
 
 ## Dynamic per-record destinations share one shape
 
-All three sinks resolve their destination per record the same way — a `destinationResolver` in
-place of the fixed `destination` / `topic` / `queue` — so one sink instance fans out across tables,
-topics or queues, and what changes between them is only the destination type.
+The BigQuery, Pub/Sub and Cloud Tasks sinks resolve their destination per record the same way — a
+`destinationResolver` in place of the fixed `destination` / `topic` / `queue` — so one sink instance
+fans out across tables, topics or queues, and what changes between them is only the destination
+type. The Bigtable sink is the exception, writing to one fixed table; its page says why.
 
 **The resolver runs once per record on the write path.** That is the constraint every example is
 built around: it must be cheap, deterministic, and it should hand back cached destination instances

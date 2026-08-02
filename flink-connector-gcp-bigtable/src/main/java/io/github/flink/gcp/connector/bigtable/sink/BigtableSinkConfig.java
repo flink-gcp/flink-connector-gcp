@@ -1,0 +1,97 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigtable.sink;
+
+import org.apache.flink.annotation.Internal;
+
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
+
+import javax.annotation.Nullable;
+
+import java.io.Serializable;
+
+/**
+ * Immutable sink configuration assembled by {@link BigtableSinkBuilder}.
+ *
+ * @param <T> type of the records written by the sink
+ */
+@Internal
+public final class BigtableSinkConfig<T> implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private final TableDestination destination;
+    private final BigtableSerializationSchema<? super T> serializer;
+    @Nullable private final String appProfileId;
+    private final BigtableWriterOptions writerOptions;
+    private final FailureHandler<? super FailedMutation> failedMutationHandler;
+    @Nullable private final String emulatorEndpoint;
+
+    BigtableSinkConfig(
+            TableDestination destination,
+            BigtableSerializationSchema<? super T> serializer,
+            @Nullable String appProfileId,
+            BigtableWriterOptions writerOptions,
+            FailureHandler<? super FailedMutation> failedMutationHandler,
+            @Nullable String emulatorEndpoint) {
+        this.destination = destination;
+        this.serializer = serializer;
+        this.appProfileId = appProfileId;
+        this.writerOptions = writerOptions;
+        this.failedMutationHandler = failedMutationHandler;
+        this.emulatorEndpoint = emulatorEndpoint;
+    }
+
+    /** Returns the table every mutation is written to. */
+    public TableDestination getDestination() {
+        return destination;
+    }
+
+    /** Returns the record serialization schema. */
+    public BigtableSerializationSchema<? super T> getSerializer() {
+        return serializer;
+    }
+
+    /**
+     * Returns the application profile the client routes through, or {@code null} for the instance's
+     * default profile.
+     */
+    @Nullable
+    public String getAppProfileId() {
+        return appProfileId;
+    }
+
+    /** Returns the writer tuning options. */
+    public BigtableWriterOptions getWriterOptions() {
+        return writerOptions;
+    }
+
+    /** Returns the policy for mutations that terminally fail. */
+    public FailureHandler<? super FailedMutation> getFailedMutationHandler() {
+        return failedMutationHandler;
+    }
+
+    /**
+     * Returns the emulator endpoint ({@code host:port}), or {@code null} for production Bigtable.
+     */
+    @Nullable
+    public String getEmulatorEndpoint() {
+        return emulatorEndpoint;
+    }
+}

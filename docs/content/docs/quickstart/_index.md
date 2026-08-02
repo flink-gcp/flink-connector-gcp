@@ -30,6 +30,7 @@ have in common — getting the artifacts, and getting credentials in front of th
 | [BigQuery]({{< relref "docs/quickstart/bigquery" >}}) | Write a stream of JSON documents into a table |
 | [Cloud Pub/Sub]({{< relref "docs/quickstart/pubsub" >}}) | Publish to a topic, consume from a subscription, and the same in SQL |
 | [Cloud Tasks]({{< relref "docs/quickstart/cloudtasks" >}}) | Dispatch a stream as HTTP tasks the queue paces |
+| [Bigtable]({{< relref "docs/quickstart/bigtable" >}}) | Write a stream of row mutations into a table |
 
 The connector pages document *what each option does*; these are the shortest path to a job that
 runs. Everything here writes to real Google Cloud — to run without touching a project, see
@@ -82,8 +83,9 @@ That installs `0.1.0-SNAPSHOT` into `~/.m2`, from where an ordinary dependency r
 </dependency>
 ```
 
-The other connector artifact ids are `flink-connector-gcp-pubsub` and
-`flink-connector-gcp-cloudtasks`. All three are SNAPSHOTs of an unreleased project: the coordinates
+The other connector artifact ids are `flink-connector-gcp-pubsub`,
+`flink-connector-gcp-cloudtasks` and `flink-connector-gcp-bigtable`. All four are SNAPSHOTs of an
+unreleased project: the coordinates
 and the API behind them change without notice, and this section is rewritten when there is
 something published to point at. The Flink version above is the floor the connectors are compiled
 against, and one build covers the whole 2.x range — a job on 2.3 needs no different artifact.
@@ -125,8 +127,8 @@ Two environment facts a first run trips over:
 - **The BigQuery sink and the Pub/Sub sink need permission to *create* their destination**, since
   that is what they do by default. `createDisposition(CREATE_NEVER)` drops the requirement on
   both, at the price of a missing destination failing the job instead of being created. The
-  Pub/Sub source creates a subscription only when given creation settings, and the Cloud Tasks
-  sink never creates a queue at all.
+  Pub/Sub source creates a subscription only when given creation settings, and the Cloud Tasks and
+  Bigtable sinks never create their destination at all.
 
 What each connector asks for:
 
@@ -136,6 +138,7 @@ What each connector asks for:
 | Pub/Sub sink | `pubsub.topics.publish`, plus `pubsub.topics.create` (roles/pubsub.editor) when topic auto-creation may trigger |
 | Pub/Sub source | `pubsub.subscriptions.get` (roles/pubsub.viewer) on every configured subscription for the startup check, plus `create` when auto-creating and `update` when seeking — roles/pubsub.editor covers all three |
 | Cloud Tasks | `cloudtasks.tasks.create` ([roles/cloudtasks.enqueuer](https://cloud.google.com/tasks/docs/secure-queue-configuration)), which binds to a single queue as well as to the project. The sink never creates a queue |
+| Bigtable | `bigtable.tables.mutateRows` ([roles/bigtable.user](https://cloud.google.com/bigtable/docs/access-control)), which binds to a single table as well as to the instance. The sink creates neither the table nor its column families |
 
 ## Then
 

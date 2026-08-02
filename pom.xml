@@ -66,6 +66,7 @@ limitations under the License.
         <module>flink-connector-gcp-pubsub</module>
         <module>flink-sql-connector-gcp-pubsub</module>
         <module>flink-connector-gcp-cloudtasks</module>
+        <module>flink-connector-gcp-bigtable</module>
     </modules>
 
     <properties>
