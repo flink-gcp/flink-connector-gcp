@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.cloudtasks.sink;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.connector.sink2.Sink;
 
+import io.github.flink.gcp.connector.base.failure.FailedElement;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 import org.junit.jupiter.api.Test;
 
@@ -101,6 +103,44 @@ class CloudTasksSinkBuilderTest {
     }
 
     @Test
+    void defaultsToFailingTheJobOnAFailedTask() {
+        Sink<String> sink =
+                CloudTasksSink.<String>builder().queue(QUEUE).serializer(SERIALIZER).build();
+
+        assertThat(config(sink).getFailedTaskHandler()).isSameAs(FailureHandler.failJob());
+    }
+
+    @Test
+    void carriesTheFailedTaskHandler() {
+        FailureHandler<FailedTask> handler = FailureHandler.logAndDrop();
+
+        Sink<String> sink =
+                CloudTasksSink.<String>builder()
+                        .queue(QUEUE)
+                        .serializer(SERIALIZER)
+                        .failedTaskHandler(handler)
+                        .build();
+
+        assertThat(config(sink).getFailedTaskHandler()).isSameAs(handler);
+    }
+
+    @Test
+    void acceptsACrossConnectorHandlerWithoutACast() {
+        // The contravariant parameter is the point: one handler written against the shared contract
+        // serves every connector in this repository.
+        FailureHandler<FailedElement> shared = FailureHandler.logAndDrop();
+
+        Sink<String> sink =
+                CloudTasksSink.<String>builder()
+                        .queue(QUEUE)
+                        .serializer(SERIALIZER)
+                        .failedTaskHandler(shared)
+                        .build();
+
+        assertThat(config(sink).getFailedTaskHandler()).isSameAs(shared);
+    }
+
+    @Test
     void rejectsNullAndBlankSettings() {
         CloudTasksSinkBuilder<String> builder = CloudTasksSink.builder();
 
@@ -112,6 +152,9 @@ class CloudTasksSinkBuilderTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> builder.writerOptions(null))
                 .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> builder.failedTaskHandler(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("failedTaskHandler must not be null");
         assertThatThrownBy(() -> builder.emulatorEndpoint("  "))
                 .isInstanceOf(IllegalArgumentException.class);
     }

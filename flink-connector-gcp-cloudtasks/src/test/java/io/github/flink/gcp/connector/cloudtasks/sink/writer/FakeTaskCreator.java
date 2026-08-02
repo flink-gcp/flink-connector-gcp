@@ -41,6 +41,7 @@ final class FakeTaskCreator implements TaskCreator {
 
     int closeCalls;
     RuntimeException createFailure;
+    RuntimeException closeFailure;
 
     /** Scripts the next call to fail with the given status code. */
     void enqueueFailure(StatusCode.Code code) {
@@ -74,6 +75,9 @@ final class FakeTaskCreator implements TaskCreator {
     @Override
     public void close() {
         closeCalls++;
+        if (closeFailure != null) {
+            throw closeFailure;
+        }
     }
 
     static Exception apiException(StatusCode.Code code) {

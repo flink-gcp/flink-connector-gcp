@@ -316,14 +316,86 @@ a `queue.yaml`/`queue.xml` that omits it.
 Terminal failures fail the job. Failures captured by completion callbacks are rethrown on the task
 thread from the next `write()`/`flush()`, and `flush()` awaits every outstanding create, so a
 failure cannot slip past a checkpoint barrier. Only the first terminal failure is kept: once one is
-captured, later failures are not retried either, since the job is going to fail regardless. A
-per-task failure policy — the shared `FailureHandler` SPI the BigQuery module already uses — is
-tracked in [#207]({{< param BookRepo >}}/issues/207), part of the
-[#37]({{< param BookRepo >}}/issues/37) standardization.
+captured, later failures are not retried either, since the job is going to fail regardless.
 
 A failure that carries no gRPC status at all — neither a gax `ApiException` nor a raw
 `StatusRuntimeException` — is treated as terminal rather than retried, on the grounds that an
 unclassifiable failure is not evidence that retrying would help.
+
+| Class | What it covers | What happens |
+|---|---|---|
+| Transient | `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED` | Parked and re-dispatched within the retry budget; exhausting it fails the job |
+| Missing queue | `NOT_FOUND` | The same, on a [shorter budget of its own](#tuning); exhausting it fails the job |
+| Deduplicated | `ALREADY_EXISTS` on a named task | Success — this is what `taskIdExtractor(...)` asked for |
+| Task-level | `INVALID_ARGUMENT` (a malformed target URL, an oversized body, a header the service refuses) | Handed to the failed-task handler |
+| Record-level | The serializer throws, or the task id extractor throws | Handed to the failed-task handler, before anything is sent |
+| Terminal | `PERMISSION_DENIED`, failures carrying no status at all | Fail the ongoing write or checkpoint |
+
+### Failed-task policy
+
+Three data-shaped failures are pluggable: a record the serializer rejects, a task id extractor that
+throws, and a creation the service rejects with `INVALID_ARGUMENT`. The policy is
+`failedTaskHandler(...)`, taking the shared `FailureHandler<FailedTask>` SPI from
+`flink-connector-gcp-base` ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the
+connectors in this repository):
+
+```java
+Sink<OrderEvent> sink =
+        CloudTasksSink.<OrderEvent>builder()
+                .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
+                .serializer(serializer)
+                .failedTaskHandler(FailureHandler.logAndDrop())
+                .build();
+```
+
+- `FailureHandler.failJob()` (default) — every per-task failure fails the checkpoint, which is the
+  sink's behavior when nothing is configured
+- `FailureHandler.logAndDrop()` — logs each failed task at WARN and drops it
+- `FailureHandler.sendToDeadLetterQueue(...)` — forwards each failed task to a `DeadLetterQueue`
+  (experimental), whose implementation the sink drives through a lifecycle: `open(context)` once
+  when the writer is created (the context carries the subtask index and the writer's metric group),
+  `offer(element)` per failed task — buffering is allowed — `flush()` at every checkpoint barrier
+  and at end of input, always after the sink's own write path has drained (on return everything
+  offered must be durable, throwing fails the checkpoint), and `close()` when the writer closes,
+  which must not be relied on for persistence
+- Custom handlers implement `FailureHandler<FailedTask>` — or `FailureHandler<FailedElement>`,
+  which `failedTaskHandler(...)` accepts as-is (the parameter is contravariant), so one handler
+  written against the shared contract serves every connector in this repository. Throwing from
+  `handle` fails the checkpoint, returning drops the task. `FailedTask` carries the `Task` the
+  serializer produced, or `null` when serialization itself failed; under the shared `FailedElement`
+  contract it reports `getConnector()` (`"cloudtasks"`), `describeDestination()`
+  (`projects/<p>/locations/<l>/queues/<q>`) and `getPayloadBytes()` — the **whole** serialized task,
+  so a consumer recovers the target URL, the method, the headers and the authorization with
+  `Task.parseFrom(bytes)`
+
+**Only those three failures are routed, deliberately.** An outage must not reach a dropping handler,
+or a service incident would bleed the stream one record at a time instead of backpressuring and
+restarting; that is why an exhausted retry budget, an exhausted `NOT_FOUND` budget and
+`PERMISSION_DENIED` all stay job failures. Configuration failures stay fatal for the mirror-image
+reason: a destination resolver returning `null`, a serializer returning an already-named task, and a
+task id extractor returning `null` or an empty key fail every record alike, so dropping them would
+leave an empty queue under a green job — an extractor that *throws*, by contrast, is per-record, and
+is routed.
+
+That reasoning does not extend to a serializer that produces an *invalid task* for every record — a
+bug that puts a malformed URL or an over-long header on all of them. Cloud Tasks rejects each one
+individually, the sink cannot tell a systematic rejection from a per-record one (the classification
+is the response's status code, not a judgement about the whole stream), and a dropping policy
+discards the lot silently. Watch the failure count rather than the job status when running anything
+other than `failJob()` — per-sink error metrics are [#209]({{< param BookRepo >}}/issues/209).
+
+Dead-letter output is **at-least-once, for failures that recur on replay**: tasks are offered before
+the checkpoint covering their originating records completes, so a restart replays those records and
+a deterministic failure (an oversized body, a record the serializer cannot convert) is offered
+again — consume the dead-letter destination idempotently or deduplicate by key. A failure that does
+*not* recur on replay is preserved only if a completed checkpoint already flushed it. Exactly-once
+dead-letter output is deliberately not offered: it would require the dead-letter write to join the
+sink's own commit protocol, which no external destination can be enrolled in.
+
+Note what a dropped task means here, and that it is not what Cloud Tasks calls a failure: this is a
+task the service never accepted, so it never entered the queue and the queue's own retry
+configuration never applies to it. A task that *is* created and whose HTTP target then fails is
+retried by Cloud Tasks under the queue's `retryConfig`, entirely outside this sink's view.
 
 One limit is worth stating because the documentation contradicts itself: the maximum task size is
 given as **100 KB** by the `CreateTask` API reference and the proto, and as **1 MiB** by the quotas
@@ -341,7 +413,7 @@ Bodies should be sized against the smaller number until this is verified empiric
 | Queue management | None — the queue must exist and be configured |
 | Pacing | None in the sink; owned by the queue |
 | Delivery | At-least-once, flush on checkpoint, stateless writer |
-| Failure policy | Fail the job; per-task policy in [#207]({{< param BookRepo >}}/issues/207) |
+| Failure policy | Job failure by default; pluggable per-task handler ([#207]({{< param BookRepo >}}/issues/207)) |
 | Table API / SQL | Deferred to [#99]({{< param BookRepo >}}/issues/99) |
 
 ## Testing

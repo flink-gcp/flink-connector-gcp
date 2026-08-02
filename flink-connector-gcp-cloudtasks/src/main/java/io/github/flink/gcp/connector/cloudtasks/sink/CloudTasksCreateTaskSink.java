@@ -22,6 +22,7 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
+import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksWriter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
@@ -67,10 +68,16 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
         } catch (Exception e) {
             throw new IOException("Failed to open the Cloud Tasks serialization schema.", e);
         }
+        config.getFailedTaskHandler().open(DefaultFailureHandlerContext.of(context));
         TaskCreatorFactory factory = new DefaultTaskCreatorFactory(config.getEmulatorEndpoint());
         return createWriter(factory.create(), context.getMailboxExecutor());
     }
 
+    /**
+     * Creates the writer against injected collaborators. Deliberately does <b>not</b> open the
+     * failure handler: opening belongs to the production path above, and a test driving this
+     * overload opens whatever it needs itself.
+     */
     @VisibleForTesting
     public SinkWriter<T> createWriter(TaskCreator creator, MailboxExecutor mailboxExecutor) {
         return new CloudTasksWriter<>(config, creator, mailboxExecutor);
