@@ -217,6 +217,42 @@ class CloudTasksWriterFailureHandlerTest {
     }
 
     @Test
+    void treatsAChainCarryingBothStatusesAsTransient() throws Exception {
+        CloudTasksWriter<String> writer = writer(retrying(1));
+        // INVALID_ARGUMENT outermost, UNAVAILABLE underneath: the first classifiable status is the
+        // data-shaped one, and it must still not be dropped. Classification is a precedence over
+        // the whole chain, not a first-match, so an unstable service can never produce a dead
+        // letter. No gax failure carries both today — the point is that the guarantee does not
+        // rest on that.
+        creator.enqueueFailure(
+                FakeTaskCreator.apiException(
+                        StatusCode.Code.INVALID_ARGUMENT,
+                        FakeTaskCreator.apiException(StatusCode.Code.UNAVAILABLE)));
+
+        writer.write("order-1", TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("UNAVAILABLE");
+        assertThat(handler.handled).isEmpty();
+    }
+
+    @Test
+    void routesAnInvalidArgumentNestedBehindAnUnclassifiableWrapper() throws Exception {
+        CloudTasksWriter<String> writer = writer(TestSinkConfigs.builder());
+        creator.enqueueFailure(
+                new IllegalStateException(
+                        "wrapper", FakeTaskCreator.apiException(StatusCode.Code.INVALID_ARGUMENT)));
+
+        writer.write("order-1", TestContexts.NO_OP);
+        writer.flush(false);
+
+        // The other half of the precedence: with no transient status anywhere in the chain, the
+        // data-shaped one is still found however deep it sits.
+        assertThat(handler.handled).hasSize(1);
+    }
+
+    @Test
     void keepsFailingTheJobOnAnExhaustedTransientBudget() throws Exception {
         CloudTasksWriter<String> writer = writer(retrying(2));
         creator.enqueueFailures(2, StatusCode.Code.UNAVAILABLE);

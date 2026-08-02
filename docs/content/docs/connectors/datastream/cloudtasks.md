@@ -368,6 +368,16 @@ Sink<OrderEvent> sink =
   so a consumer recovers the target URL, the method, the headers and the authorization with
   `Task.parseFrom(bytes)`
 
+**Classification is a precedence over the whole cause chain, not the first status found.** A
+failure carrying a transient status *anywhere* in its chain is transient even if it also carries an
+`INVALID_ARGUMENT`, so service instability can never produce a dead letter — the worst an unstable
+Cloud Tasks does is fail the job. That is a property of the code rather than of the client library's
+behavior: no gax failure carries two different statuses today, and the guarantee does not rest on
+that staying true. `INVALID_ARGUMENT` is the one routed status because it is the one gRPC defines as
+*"arguments that are problematic regardless of the state of the system"* — explicitly unlike
+`FAILED_PRECONDITION` and `OUT_OF_RANGE`, whose problems *"may be fixed if the system state
+changes"*, and both of which fail the job here.
+
 **Only those three failures are routed, deliberately.** An outage must not reach a dropping handler,
 or a service incident would bleed the stream one record at a time instead of backpressuring and
 restarting; that is why an exhausted retry budget, an exhausted `NOT_FOUND` budget and

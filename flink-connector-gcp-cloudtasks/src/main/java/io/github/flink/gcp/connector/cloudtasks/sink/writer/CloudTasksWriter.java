@@ -49,7 +49,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.PriorityQueue;
+import java.util.Set;
 
 /**
  * At-least-once writer creating one Cloud Tasks task per record.
@@ -92,12 +94,14 @@ import java.util.PriorityQueue;
  * failing the job outright: a record the serializer rejects, a {@link TaskIdExtractor} that throws,
  * and a creation the service rejects with {@code INVALID_ARGUMENT} (a malformed target URL, an
  * oversized body, a header the service refuses). Each concerns one record, and re-sending the same
- * bytes cannot succeed. The handler drops the task by returning and fails the job by throwing; the
- * default {@code failJob()} throws, which is why the failures it does <em>not</em> cover matter —
- * an exhausted retry budget stays a job failure, so no drop policy can quietly discard an outage's
- * backlog. A handler failing inside a completion callback is captured into {@link #asyncError} like
- * any other terminal failure, because a mailbox mail cannot throw a checked exception at its
- * caller.
+ * bytes cannot succeed. Classification is a <em>precedence over the whole cause chain</em>, not a
+ * first-match: a failure carrying a transient status anywhere is transient even if it also carries
+ * an {@code INVALID_ARGUMENT}, so an unstable service can never produce a dead letter. The handler
+ * drops the task by returning and fails the job by throwing; the default {@code failJob()} throws,
+ * which is why the failures it does <em>not</em> cover matter — an exhausted retry budget stays a
+ * job failure, so no drop policy can quietly discard an outage's backlog. A handler failing inside
+ * a completion callback is captured into {@link #asyncError} like any other terminal failure,
+ * because a mailbox mail cannot throw a checked exception at its caller.
  *
  * <h2>Task naming</h2>
  *
@@ -115,6 +119,17 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     private static final Logger LOG = LoggerFactory.getLogger(CloudTasksWriter.class);
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
+
+    /** Statuses the sink retries on its main budget; a chain carrying one is never data-shaped. */
+    private static final Set<StatusCode.Code> TRANSIENT_CODES =
+            EnumSet.of(
+                    StatusCode.Code.UNAVAILABLE,
+                    StatusCode.Code.DEADLINE_EXCEEDED,
+                    StatusCode.Code.RESOURCE_EXHAUSTED);
+
+    /** The one data-shaped status, as a set so it shares {@link #firstMatching}. */
+    private static final Set<StatusCode.Code> INVALID_ARGUMENT_ONLY =
+            EnumSet.of(StatusCode.Code.INVALID_ARGUMENT);
 
     private static final String COMPLETION_MAIL = "Complete a Cloud Tasks task creation";
     private static final String FAILURE_MAIL = "Fail a Cloud Tasks task creation";
@@ -408,7 +423,14 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                     request.getTask().getName());
             return;
         }
-        if (code == StatusCode.Code.INVALID_ARGUMENT) {
+        // Transient before data-shaped, decided by scanning the *whole* cause chain rather than
+        // by the first classifiable status: an unstable service must never produce a dead letter,
+        // so a failure carrying a transient status anywhere is transient even if it also carries
+        // an INVALID_ARGUMENT. One gax failure cannot carry both today — this is the property
+        // being made independent of that. Same reason PubSubErrorClassifier is a precedence
+        // rather than a first-match.
+        StatusCode.Code transientCode = firstMatching(throwable, TRANSIENT_CODES);
+        if (transientCode == null && firstMatching(throwable, INVALID_ARGUMENT_ONLY) != null) {
             // Before the asyncError check below, deliberately: the writer is about to fail either
             // way, but this task really did fail terminally, and a dead-letter destination missing
             // it is worse than one holding a task a replay will produce again — the guarantee is
@@ -421,13 +443,11 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
             return;
         }
         PendingCreate entry = pending != null ? pending : new PendingCreate(destination, request);
-        if (code == StatusCode.Code.UNAVAILABLE
-                || code == StatusCode.Code.DEADLINE_EXCEEDED
-                || code == StatusCode.Code.RESOURCE_EXHAUSTED) {
+        if (transientCode != null) {
             if (++entry.attempts < retrySchedule.maxAttempts()) {
                 park(entry, retrySchedule.backoffMs(entry.attempts));
             } else {
-                asyncError = exhausted(request, entry.attempts, code, throwable);
+                asyncError = exhausted(request, entry.attempts, transientCode, throwable);
             }
             return;
         }
@@ -525,7 +545,25 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
      */
     @Nullable
     private static StatusCode.Code statusCode(Throwable throwable) {
-        return ExceptionUtils.findThrowable(throwable, t -> StatusCodes.codeOf(t) != null)
+        return firstMatching(throwable, null);
+    }
+
+    /**
+     * Returns the first status code in the cause chain that is one of {@code codes}, or {@code
+     * null} when the chain carries none; a null {@code codes} accepts any classifiable status.
+     *
+     * <p>Searching the chain for a <em>specific</em> set is what makes the routing decision in
+     * {@link #onCreateFailed} a precedence rather than a first-match.
+     */
+    @Nullable
+    private static StatusCode.Code firstMatching(
+            Throwable throwable, @Nullable Set<StatusCode.Code> codes) {
+        return ExceptionUtils.findThrowable(
+                        throwable,
+                        t -> {
+                            StatusCode.Code code = StatusCodes.codeOf(t);
+                            return code != null && (codes == null || codes.contains(code));
+                        })
                 .map(StatusCodes::codeOf)
                 .orElse(null);
     }

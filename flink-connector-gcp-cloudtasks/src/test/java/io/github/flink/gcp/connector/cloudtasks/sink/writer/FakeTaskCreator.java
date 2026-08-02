@@ -48,6 +48,11 @@ final class FakeTaskCreator implements TaskCreator {
         scripted.add(ApiFutures.immediateFailedFuture(apiException(code)));
     }
 
+    /** Scripts the next call to fail with the given throwable, chain and all. */
+    void enqueueFailure(Throwable throwable) {
+        scripted.add(ApiFutures.immediateFailedFuture(throwable));
+    }
+
     /** Scripts the given number of consecutive calls to fail with the given status code. */
     void enqueueFailures(int count, StatusCode.Code code) {
         for (int i = 0; i < count; i++) {
@@ -81,9 +86,12 @@ final class FakeTaskCreator implements TaskCreator {
     }
 
     static Exception apiException(StatusCode.Code code) {
+        return apiException(code, new RuntimeException("scripted " + code));
+    }
+
+    /** An exception of the given status whose cause is {@code cause}, for cause-chain tests. */
+    static Exception apiException(StatusCode.Code code, Throwable cause) {
         return ApiExceptionFactory.createException(
-                new RuntimeException("scripted " + code),
-                GrpcStatusCode.of(Status.Code.valueOf(code.name())),
-                false);
+                cause, GrpcStatusCode.of(Status.Code.valueOf(code.name())), false);
     }
 }

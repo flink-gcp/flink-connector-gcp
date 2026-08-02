@@ -60,7 +60,16 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   task, an extractor returning null or an empty key) fail *every* record alike, so dropping them
   would leave an empty queue under a green job. The extractor is the pair worth not re-litigating —
   a throw is per-record and routed, a missing key is per-stream and fatal. `ALREADY_EXISTS` on a
-  named task stays success and never reaches the handler. The `INVALID_ARGUMENT` branch sits
+  named task stays success and never reaches the handler. **Classification is a precedence over the
+  whole cause chain, not a first-match** (`firstMatching(throwable, TRANSIENT_CODES)` before the
+  `INVALID_ARGUMENT` lookup): a chain carrying a transient status anywhere is transient even when
+  the data-shaped status is found first, so "an unstable service can never produce a dead letter" is
+  a property of the code rather than of gax producing one status per failure — which it does today,
+  making the two forms equivalent *now*. Same shape as `PubSubErrorClassifier`'s precedence, adopted
+  there because Pub/Sub chains really can carry two. `INVALID_ARGUMENT` is the one routed status
+  because gRPC defines it as arguments "problematic regardless of the state of the system" and
+  AIP-194 puts it in must-not-retry ("retrying … will never succeed"), unlike `FAILED_PRECONDITION`
+  and `OUT_OF_RANGE`, which are state-dependent and stay job-level. The `INVALID_ARGUMENT` branch sits
   **before** the `asyncError` early-return, deliberately: the job is failing either way, but a
   dead-letter destination missing the task is worse than one holding a duplicate the replay will
   produce again. A handler failure inside `onCreateFailed` is captured into `asyncError` rather than
