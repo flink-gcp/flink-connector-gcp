@@ -15,9 +15,9 @@
 # limitations under the License.
 """Decide which Maven modules a change builds (issue #243).
 
-CI's Build-and-test job used to run the full reactor (~8 minutes measured on
-PR #241) on every pull request, whatever the change touched. This script turns
-a changed-file list into the smallest `-pl` argument list that still verifies
+A full-reactor `just verify` costs ~8 minutes of CI wall clock (measured on
+PR #241, 2026-08-01, one run; the breakdown is on #243). This script turns a
+changed-file list into the smallest `-pl` argument list that still verifies
 everything the change can affect, so the common case — a pull request touching
 one connector — builds that connector and its neighbours instead of the world.
 
@@ -235,8 +235,12 @@ def changed_files(args: argparse.Namespace) -> list[str]:
         if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
             infra("--files must be a JSON array of path strings")
         return files
+    # --no-renames because the CI side sees renames as dorny/paths-filter
+    # reports them — one deleted plus one added path — and git's default
+    # rename detection would show only the new name, letting a file moved out
+    # of a module hide that module from the local prediction.
     result = subprocess.run(
-        ["git", "diff", "--name-only", f"{args.diff}...HEAD"],
+        ["git", "diff", "--no-renames", "--name-only", f"{args.diff}...HEAD"],
         cwd=ROOT,
         capture_output=True,
         text=True,

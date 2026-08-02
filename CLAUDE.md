@@ -86,7 +86,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   dorny/paths-filter read off the pull request) or `--full`; `just ci-maven-args --diff
   origin/main` reproduces by hand what a pull request with the current branch's committed diff
   would build. The mapping is derived from the poms, never configured — the script's docstring
-  is the specification, and the Workflow-rules bullet below carries the design
+  is the specification, and the ci.yaml bullet under Version policy carries the design
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
   the **rendered** markdown — `docs/content/` and the READMEs, never the `CLAUDE.md`s — at strict
@@ -426,8 +426,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   required check can be blocked and a tofu-only merge stays free. `docs/`-only changes build
   `-pl .` alone — rat scans docs markdown from the root module and `ci.yaml` is its only
   pre-merge check. Pushes to main and `workflow_dispatch` always build the full reactor. The
-  required checks are `CI passed` (the gate job that turns "nothing to build" into an explicit
-  green — `build` itself must never be required, it skips), `Audit Flink API tiers` and
+  checks branch protection is to require — once it is available, which needs the repository
+  public (#6) or a paid plan; a private free-plan repository cannot set required checks at all —
+  are `CI passed` (the gate job that turns "nothing to build" into an explicit green — `build`
+  itself must never be required, it skips), `Audit Flink API tiers` and
   `Check the configuration reference`; the never-reports caveat still applies verbatim to
   `docs.yaml` and `lint.yaml`, which keep their `paths` filters and must stay optional as long
   as they do

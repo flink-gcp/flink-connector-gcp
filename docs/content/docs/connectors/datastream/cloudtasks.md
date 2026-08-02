@@ -481,7 +481,9 @@ sleeps, so backoff behaviour is asserted exactly instead of being waited out.
 Integration tests ([#25]({{< param BookRepo >}}/issues/25)) run against [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator)
 (MIT, published as `ghcr.io/aertje/cloud-tasks-emulator`) driven by testcontainers as a
 `GenericContainer` — testcontainers' GCloud module has no Cloud Tasks support, and Google publishes
-no official emulator. They need no cloud credentials and therefore run on every pull request. They
+no official emulator. They need no cloud credentials, so CI runs them with no cloud setup — on
+every pull request whose changes select this module
+([#243]({{< param BookRepo >}}/issues/243)). They
 reach the emulator the way a user would — through the production client factory in the mode
 `emulatorEndpoint("host:port")` selects, a plaintext channel with no credentials mirroring the
 Pub/Sub sink's — rather than through a test seam; the job tests additionally build the sink through
