@@ -88,14 +88,24 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   what a pull request with the current branch's committed diff would build. The mapping is
   derived from the poms, never configured — the script's docstring is the specification, and
   the ci.yaml bullet under Version policy carries the design
-- `just test-scripts` — pytest over `scripts/` (the CI deriver and the CI gate today), through
+- `just test-scripts` — pytest over `scripts/`: the CI deriver and the CI gate (#243), and the
+  three checkers (#249). Through
   the uv project at the repository root (decided with the user on PR #247): `pyproject.toml`
   holds a loose pytest constraint plus the one layout customisation (`testpaths`, since the
   code under test is executables in `scripts/`, not a package — `package = false`), `uv.lock`
   pins what actually installs (committed, rat-excluded as machine-written), uv itself is pinned
   in `mise.toml` like the linters. Runs as lint.yaml's `script_tests` job, whose paths list the
   root `pyproject.toml`/`uv.lock` for exactly the mise.toml reason. A new `scripts/*.py`
-  checker owes its tests here, alongside the curate-* skill the checker rule already demands
+  checker owes its tests here, alongside the curate-* skill the checker rule already demands.
+  **A checker's tests are synthetic — a tree built in `tmp_path` with `ROOT`/`CONFIG`/`SOURCES`
+  monkeypatched onto it — never assertions against the real repository**, which is what keeps
+  lint.yaml's paths filter from having to grow to every input those checkers read (every Java
+  source, for two of the three). `test_ci_maven_args.py`'s real-repo CLI layer is the exception
+  that names its own inputs in that filter, and it is why the poms and `NOTICE.template`s are
+  listed there. The direction the tests are aimed at is a checker quietly finding *less* than
+  it should: that reads exactly like a clean tree, so each rule is pinned by a case that fails
+  when the rule is removed (measured on #249 with ten mutants, two of which found tests that
+  did not in fact discriminate)
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
   the **rendered** markdown — `docs/content/` and the READMEs, never the `CLAUDE.md`s — at strict

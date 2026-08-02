@@ -40,3 +40,18 @@ def load_script(filename: str):
 @pytest.fixture(scope="session")
 def ci_maven_args():
     return load_script("ci-maven-args.py")
+
+
+@pytest.fixture(scope="session")
+def check_option_docs():
+    return load_script("check-option-docs.py")
+
+
+@pytest.fixture(scope="session")
+def check_flink_api_tiers():
+    return load_script("check-flink-api-tiers.py")
+
+
+@pytest.fixture(scope="session")
+def check_notice():
+    return load_script("check-notice.py")
