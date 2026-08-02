@@ -104,9 +104,10 @@ abstract class AbstractCloudTasksEmulatorITCase {
     /**
      * The target the emulator dispatches tasks to; see {@link #startReceiver()}. It is deliberately
      * never stopped: an {@link HttpServer} cannot be restarted, so stopping it when the first
-     * subclass finishes would silently starve the rest wherever they share a JVM — an IDE run, or a
-     * build without surefire's {@code reuseForks=false}. Surefire exits the fork regardless of the
-     * server's non-daemon dispatcher thread, so nothing is left running behind the build.
+     * subclass finishes would silently starve the rest wherever they share a JVM — every build
+     * since the #243 root-pom override turned on {@code reuseForks}, and any IDE run before it.
+     * Surefire exits the fork regardless of the server's non-daemon dispatcher thread, so nothing
+     * is left running behind the build.
      */
     private static final HttpServer RECEIVER = startReceiver();
 

@@ -37,9 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code AppendRows} request is durably applied — follow-up requests are acknowledged but their
  * rows never become queryable. The very first connection applies all its requests, and later
  * single-append connections are unaffected. This multi-flush scenario therefore lives in its own
- * test class, so its connection is guaranteed to be the container's first (each {@code *ITCase}
- * class runs in its own forked JVM with a fresh container). Real BigQuery applies every
- * acknowledged default-stream append.
+ * test class, so its connection is guaranteed to be the container's first: the testcontainers
+ * extension starts a fresh container per {@code *ITCase} class, and kept doing so when #243 made
+ * the classes share forked JVMs (measured there: one container per class). Real BigQuery applies
+ * every acknowledged default-stream append.
  */
 class BigQueryDefaultStreamWriterITCase extends AbstractBigQueryEmulatorITCase {
 

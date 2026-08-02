@@ -345,6 +345,30 @@ limitations under the License.
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <!-- The parent runs this execution with reuseForks=false, a fresh
+                             JVM per *ITCase class, and that JVM's session setup - the
+                             docker probe, the Ryuk sidecar, Flink classloading - was the
+                             dominant integration-test cost: reusing the fork cut the
+                             pubsub module's wall clock 66% and bigquery's 53% (measured
+                             2026-08-02 at forkCount=1, two runs each; the breakdown is on
+                             issue 243). The containers are untouched by this: the
+                             testcontainers extension still starts and stops every static
+                             container per test class - measured, not assumed: 15 creates
+                             for the 15 Pub/Sub IT classes sharing one JVM (junit 5.13.3,
+                             testcontainers 1.21.4) - which
+                             BigQueryDefaultStreamWriterITCase's first-connection guarantee
+                             rests on. Classes inside a fork run sequentially, which the
+                             real-GCP suites' static hand-offs assume; class-level
+                             parallelism is the one thing this must never be combined
+                             with (see AbstractPubSubRealGcpITCase). -->
+                        <id>integration-tests</id>
+                        <configuration>
+                            <reuseForks>true</reuseForks>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
 
             <plugin>

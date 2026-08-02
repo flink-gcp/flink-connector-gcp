@@ -82,11 +82,12 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   have meant shipping a sink with no metrics at all. Richer per-connector metrics still belong to
   that series' outcome.
 - **The E2E suite creates an ephemeral instance per gated *class*, not per run** (#218) — the one
-  deviation from that issue's settled design, and it is forced: the `integration-tests` surefire
-  execution `just e2e` invokes runs `forkCount=2` with `reuseForks=false` (measured in the effective
-  POM, both inherited from the Flink connector parent), so every gated class gets a fresh JVM and two
-  run at once. A JVM-scoped holder would create one instance per class anyway and a shared one would
-  be raced. Nothing persistent exists to run against because a one-node instance stands at roughly
+  deviation from that issue's settled design. When this landed it was forced: `reuseForks=false`
+  meant a fresh JVM per class, where a JVM-scoped holder buys nothing. #243's root-pom override
+  (`reuseForks=true`) changed the calculus — the two forks' classes now run sequentially in
+  long-lived JVMs, so a per-fork holder became possible — and per-class was kept anyway: a shared
+  holder would still be raced by the two forks, a single class must stay runnable by hand, and
+  best-effort deletion tracks per class. Nothing persistent exists to run against because a one-node instance stands at roughly
   $470/month, so `opentofu/flink-gcp` carries only the two API enablements and `roles/bigtable.admin`
   — admin because *instance* lifecycle is administrator-level, not because the data path needs it.
   Leak control is a name-encoded creation time (`flink-it-<epochSeconds>-<runId>`, 28 characters

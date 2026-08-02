@@ -55,11 +55,12 @@ import java.util.List;
  *
  * <p><b>Per class, not per run</b>, which is the one deviation from the design settled on #218. The
  * {@code integration-tests} surefire execution that {@code just e2e} invokes runs with {@code
- * forkCount=2} and {@code reuseForks=false} (measured in the effective POM; both come from the
- * Flink connector parent), so every gated class gets a fresh JVM and two run at once — a JVM-scoped
- * holder would create one instance per class anyway, and a shared one would be raced by the two
- * forks. The cost of the granularity is one instance per class for the length of that class; the
- * benefit is that a single class stays runnable by hand and the forks provision in parallel.
+ * forkCount=2} and, since the #243 root-pom override, {@code reuseForks=true} — classes run
+ * sequentially inside two long-lived JVMs, two at once across forks. A shared holder would be raced
+ * by those forks; a per-fork holder became possible with the fork reuse and was declined, because a
+ * single class must stay runnable by hand and the best-effort deletion below tracks per class. The
+ * cost of the granularity is one instance per class for the length of that class; the benefit is
+ * that the forks provision in parallel and every class cleans up after itself.
  *
  * <p>Deletion is best-effort, so instance names carry their creation time and {@link
  * #sweepStaleInstances} deletes anything older than {@link #STALE_AFTER} before creating this
