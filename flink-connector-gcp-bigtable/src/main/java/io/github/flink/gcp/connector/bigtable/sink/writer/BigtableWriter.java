@@ -73,10 +73,15 @@ import java.util.Arrays;
  *
  * <p>Failures {@link BigtableErrorClassifier} calls {@code ROW_LEVEL}, plus records the serializer
  * rejects, are handed to the configured {@link FailureHandler} instead of failing the job outright:
- * they concern one mutation and applying the same one again cannot succeed. The handler drops the
- * mutation by returning and fails the job by throwing; the default {@code failJob()} throws. A
- * handler failing inside a completion callback is captured into {@link #asyncError} like any other
- * terminal failure, because a mailbox mail cannot throw a checked exception at its caller.
+ * they concern one mutation and applying the same one again cannot succeed. Classification is a
+ * <em>precedence over the whole cause chain</em>, not a first match: a failure carrying a transient
+ * status anywhere is transient even when a data-shaped status sits in front of it, so an unstable
+ * service can never produce a dead letter. The handler drops the mutation by returning and fails
+ * the job by throwing; the default {@code failJob()} throws, which is why the classes it does
+ * <em>not</em> cover matter — an outage the client gave up on stays a job failure, so no drop
+ * policy can quietly discard a backlog. A handler failing inside a completion callback is captured
+ * into {@link #asyncError} like any other terminal failure, because a mailbox mail cannot throw a
+ * checked exception at its caller.
  *
  * <p>Unacknowledged mutations are capped along both dimensions that bound memory: their number
  * ({@code BigtableWriterOptions.maxInFlightMutations}, default 1000) and their serialized size

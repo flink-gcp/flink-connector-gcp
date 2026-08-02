@@ -131,8 +131,7 @@ class BigtableWriterTest {
 
         assertThat(handler.handled).hasSize(1);
         assertThat(handler.handled.get(0).getRowKey().toStringUtf8()).isEqualTo("row-1");
-        assertThat(handler.handled.get(0).getErrorMessage())
-                .contains("INVALID_ARGUMENT or FAILED_PRECONDITION");
+        assertThat(handler.handled.get(0).getErrorMessage()).contains("INVALID_ARGUMENT");
         assertThat(inFlight(writer)).isZero();
         // Dropped by the handler, so the writer carries on.
         writer.flush(false);

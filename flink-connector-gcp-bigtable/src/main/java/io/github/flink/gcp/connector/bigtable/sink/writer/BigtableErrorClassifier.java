@@ -22,15 +22,20 @@ import org.apache.flink.util.ExceptionUtils;
 import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 
+import javax.annotation.Nullable;
+
+import java.util.EnumSet;
+import java.util.Set;
+
 /**
  * Classifies failed row mutations into the classes the writer routes on.
  *
  * <ul>
  *   <li>{@link Kind#ROW_LEVEL} — the service rejected this mutation as invalid ({@code
- *       INVALID_ARGUMENT}, {@code FAILED_PRECONDITION}: over the size limit for a cell or a row,
- *       more mutations than a row accepts, a timestamp the table's granularity does not allow).
- *       Applying the same mutation again cannot succeed and the other entries of its batch are
- *       unaffected, so it is routed to the configured failure handler.
+ *       INVALID_ARGUMENT}: over the size limit for a cell or a row, more mutations than one row
+ *       accepts, a malformed qualifier). Applying the same mutation again cannot succeed and the
+ *       other entries of its batch are unaffected, so it is routed to the configured failure
+ *       handler.
  *   <li>{@link Kind#FATAL} — everything else. That includes {@code NOT_FOUND} (a missing table or
  *       column family), {@code PERMISSION_DENIED} and {@code UNAUTHENTICATED}, which are
  *       configuration-shaped and would fail every record alike; failures the client's own per-entry
@@ -39,11 +44,27 @@ import io.github.flink.gcp.connector.base.rpc.StatusCodes;
  *       or checkpoint.
  * </ul>
  *
- * <p>The split's purpose is that a dropping failure handler never sees a condition. An outage would
- * otherwise bleed the stream one mutation at a time instead of backpressuring it, and a missing
- * column family would empty the whole stream into the dead-letter destination under a green job.
+ * <p><b>Only a status that is unrecoverable by definition may be routed</b>, because the handler
+ * may drop what it is given and a dropping policy must never turn an unstable service into silent
+ * data loss. {@code INVALID_ARGUMENT} qualifies on gRPC's own definition — <em>"problematic
+ * regardless of the state of the system"</em> — and AIP-194 lists it as must-not-retry. {@code
+ * FAILED_PRECONDITION} does not, and is deliberately <em>not</em> routed despite naming failures
+ * that look data-shaped: gRPC defines it as the system not being in the required state, which is
+ * exactly the state-dependence that makes a drop unsafe.
  *
- * <p>The cause chain is walked, because the client wraps the status-carrying exception.
+ * <p>Routing therefore takes <b>both halves</b> of a condition, and the two halves read the cause
+ * chain differently on purpose:
+ *
+ * <ul>
+ *   <li>no transient status <em>anywhere</em> in the chain — so an unstable service can never
+ *       produce a dead letter even when a data-shaped status sits in front of it. That is a
+ *       property of this code rather than of the client happening to surface one status per
+ *       failure;
+ *   <li>and the chain's <em>first</em> classifiable status is {@code INVALID_ARGUMENT} — an {@code
+ *       INVALID_ARGUMENT} buried under an {@code INTERNAL} or an {@code UNKNOWN} describes the
+ *       inner call, and dropping the mutation over it would discard a record over a server-side
+ *       failure. The two mistakes are mirror images.
+ * </ul>
  */
 @Internal
 final class BigtableErrorClassifier {
@@ -55,12 +76,23 @@ final class BigtableErrorClassifier {
     }
 
     /**
-     * What {@link Kind#ROW_LEVEL} means, for the message a routed failure carries. It lives here
-     * rather than at the routing call site because it names the status codes this class is defined
-     * by, so widening the class cannot leave a stale reason behind elsewhere.
+     * Statuses that mean the service, not the mutation; a chain carrying one is never data-shaped.
+     * The first two are what the client itself retries {@code MutateRows} on, and the other two
+     * name an overloaded or contended service just as clearly.
      */
-    static final String ROW_LEVEL_REASON =
-            "the mutation is invalid (INVALID_ARGUMENT or FAILED_PRECONDITION)";
+    private static final Set<StatusCode.Code> TRANSIENT_CODES =
+            EnumSet.of(
+                    StatusCode.Code.UNAVAILABLE,
+                    StatusCode.Code.DEADLINE_EXCEEDED,
+                    StatusCode.Code.ABORTED,
+                    StatusCode.Code.RESOURCE_EXHAUSTED);
+
+    /**
+     * What {@link Kind#ROW_LEVEL} means, for the message a routed failure carries. It lives here
+     * rather than at the routing call site because it names the status this class is defined by, so
+     * widening the class cannot leave a stale reason behind elsewhere.
+     */
+    static final String ROW_LEVEL_REASON = "the mutation is invalid (INVALID_ARGUMENT)";
 
     private BigtableErrorClassifier() {}
 
@@ -71,20 +103,33 @@ final class BigtableErrorClassifier {
      * @return the error class
      */
     static Kind classify(Throwable throwable) {
-        if (hasCode(throwable, StatusCode.Code.INVALID_ARGUMENT)
-                || hasCode(throwable, StatusCode.Code.FAILED_PRECONDITION)) {
-            return Kind.ROW_LEVEL;
+        if (firstMatching(throwable, TRANSIENT_CODES) != null) {
+            return Kind.FATAL;
         }
-        return Kind.FATAL;
+        return firstMatching(throwable, null) == StatusCode.Code.INVALID_ARGUMENT
+                ? Kind.ROW_LEVEL
+                : Kind.FATAL;
     }
 
     /**
-     * Whether the cause chain carries the given status code — as the gax {@code ApiException} the
-     * client surfaces, or as a raw gRPC {@code StatusRuntimeException} (defense in depth), both
-     * read through {@link StatusCodes#codeOf}.
+     * Returns the first status code in the cause chain that is one of {@code codes}, or {@code
+     * null} when the chain carries none; a null {@code codes} accepts any classifiable status.
+     * Statuses are read through {@link StatusCodes#codeOf}, so a gax {@code ApiException} and a raw
+     * gRPC {@code StatusRuntimeException} (defense in depth) are both seen.
+     *
+     * <p>Searching the chain for a <em>specific</em> set is what makes {@link #classify} a
+     * precedence rather than a first-match.
      */
-    private static boolean hasCode(Throwable throwable, StatusCode.Code code) {
-        return ExceptionUtils.findThrowable(throwable, t -> StatusCodes.codeOf(t) == code)
-                .isPresent();
+    @Nullable
+    private static StatusCode.Code firstMatching(
+            Throwable throwable, @Nullable Set<StatusCode.Code> codes) {
+        return ExceptionUtils.findThrowable(
+                        throwable,
+                        t -> {
+                            StatusCode.Code code = StatusCodes.codeOf(t);
+                            return code != null && (codes == null || codes.contains(code));
+                        })
+                .map(StatusCodes::codeOf)
+                .orElse(null);
     }
 }

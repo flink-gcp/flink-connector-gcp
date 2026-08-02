@@ -39,15 +39,23 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
     nor its mutations. Accepted deliberately: nothing mechanical flags it, since
     `check-flink-api-tiers` audits `org.apache.flink` imports only. If it ever disappears, the byte
     bound and `FailedMutation.getPayloadBytes()`/`getRowKey()` are the call sites to revisit.
-- **`FAILED_PRECONDITION` is routed row-level on the strength of the design comment, not of a
-  measurement.** `INVALID_ARGUMENT` is the documented per-entry data rejection; the second code was
-  listed in #33's design and is kept, but no example of the service returning it per entry has been
-  observed. It is the one classification to re-check against the real service in #218 — the
-  repository's standing rule (from the Pub/Sub classifier) is that the routed class is widened only
-  with evidence that a code identifies one mutation rather than a condition, since a dropping
-  handler must never see a condition. Everything else — `NOT_FOUND` (a missing table *or column
-  family*), `PERMISSION_DENIED`, `UNAUTHENTICATED`, and anything the client's own retries gave up
-  on — is fatal.
+- **`INVALID_ARGUMENT` alone is routed, and `FAILED_PRECONDITION` deliberately is not** — reversing
+  #33's design comment, which listed both. The rule is the repository's, settled on #207 the same
+  day: only a status an authority defines as *state-independent* may reach a handler that may drop
+  it. gRPC defines `INVALID_ARGUMENT` as "problematic regardless of the state of the system" and
+  AIP-194 lists it must-not-retry, while `FAILED_PRECONDITION` and `OUT_OF_RANGE` are explicitly
+  state-dependent — so a mutation rejected with one of those might be accepted later, and dropping
+  it is data loss. Cite the definition rather than the plausibility of the failures a code names.
+  Everything else — `NOT_FOUND` (a missing table *or column family*), `PERMISSION_DENIED`,
+  `UNAUTHENTICATED`, and anything the client's own retries gave up on — is fatal.
+- **Routing takes both halves of a condition, and they read the cause chain differently.** No
+  transient status *anywhere* in the chain (so an unstable service cannot produce a dead letter even
+  behind a data-shaped status — a property of this code, not of the client surfacing one status per
+  failure), **and** the chain's *first* classifiable status is `INVALID_ARGUMENT` (so an
+  `INVALID_ARGUMENT` buried under an `INTERNAL` describes the inner call and does not discard a
+  record over a server-side failure). The two mistakes are mirror images; both are pinned by test.
+  `BigtableErrorClassifier.firstMatching(throwable, codes)` is the shared primitive, the same shape
+  `CloudTasksWriter` uses.
 - **Retries stay in the client, so this module has no `RetrySchedule` and no retry knobs.**
   `MutateRows` ships a non-empty retryable-code set and retries per entry
   (`EnhancedBigtableStubSettings`: `DEADLINE_EXCEEDED`, `UNAVAILABLE`, 10 ms doubling to 1 min, 10

@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.sink.writer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
@@ -76,13 +77,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
 
     @Override
     public MutationBatcher create() throws IOException {
-        BigtableDataSettings.Builder settings = newSettingsBuilder();
-        settings.setProjectId(destination.getProject()).setInstanceId(destination.getInstance());
-        if (appProfileId != null) {
-            settings.setAppProfileId(appProfileId);
-        }
-        applyBatchThresholds(settings);
-        BigtableDataClient client = BigtableDataClient.create(settings.build());
+        BigtableDataClient client = BigtableDataClient.create(settings());
         try {
             // The TargetId overload, not the String one: that one is deprecated. TableId is the
             // TargetId a table has; authorized views are the other one and are out of scope here.
@@ -93,6 +88,24 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
             client.close();
             throw e;
         }
+    }
+
+    /**
+     * Builds the client settings this factory would connect with. Separate from {@link #create()},
+     * and visible to the module's tests, because the options-to-settings mapping is otherwise only
+     * observable through the client's behaviour: a threshold that never reaches the client looks
+     * exactly like one that does. The same reasoning put every other connector's options mapping
+     * under a unit test of its own.
+     */
+    @VisibleForTesting
+    BigtableDataSettings settings() {
+        BigtableDataSettings.Builder settings = newSettingsBuilder();
+        settings.setProjectId(destination.getProject()).setInstanceId(destination.getInstance());
+        if (appProfileId != null) {
+            settings.setAppProfileId(appProfileId);
+        }
+        applyBatchThresholds(settings);
+        return settings.build();
     }
 
     private BigtableDataSettings.Builder newSettingsBuilder() {

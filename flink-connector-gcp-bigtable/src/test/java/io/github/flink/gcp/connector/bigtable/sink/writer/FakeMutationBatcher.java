@@ -85,9 +85,12 @@ final class FakeMutationBatcher implements MutationBatcher {
     }
 
     static Exception apiException(StatusCode.Code code) {
+        return apiException(code, new RuntimeException("scripted " + code));
+    }
+
+    /** Builds an exception carrying {@code code} over the given cause, for cause-chain tests. */
+    static Exception apiException(StatusCode.Code code, Throwable cause) {
         return ApiExceptionFactory.createException(
-                new RuntimeException("scripted " + code),
-                GrpcStatusCode.of(Status.Code.valueOf(code.name())),
-                false);
+                cause, GrpcStatusCode.of(Status.Code.valueOf(code.name())), false);
     }
 }

@@ -177,13 +177,27 @@ mailbox, so the writer's state is touched from one thread only — and routed by
 
 | Class | Examples | Behavior |
 |---|---|---|
-| Row-level | `INVALID_ARGUMENT`, `FAILED_PRECONDITION` — the row or a cell is over the size limit, the row carries more mutations than one accepts, the timestamp is not one the table allows | Routed to the configured [failed-mutation handler](#failed-mutation-policy); applying the same mutation again could not succeed, and the entries around it are unaffected |
-| Fatal | `NOT_FOUND` (a missing table or column family), `PERMISSION_DENIED`, `UNAUTHENTICATED`; an outage the client's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `ABORTED`, `RESOURCE_EXHAUSTED`); failures carrying no status at all | Fail the ongoing write or checkpoint |
+| Row-level | `INVALID_ARGUMENT` — the row or a cell is over the size limit, the row carries more mutations than one accepts, a qualifier is malformed | Routed to the configured [failed-mutation handler](#failed-mutation-policy); applying the same mutation again could not succeed, and the entries around it are unaffected |
+| Fatal | `NOT_FOUND` (a missing table or column family), `PERMISSION_DENIED`, `UNAUTHENTICATED`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`; an outage the client's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `ABORTED`, `RESOURCE_EXHAUSTED`); failures carrying no status at all | Fail the ongoing write or checkpoint |
 
 The split's purpose is that a *dropping* handler never sees a condition. An outage would otherwise
 bleed the stream one mutation at a time instead of backpressuring it, and a missing column family —
 which fails every record alike — would empty the whole stream into the dead-letter destination under
 a green job.
+
+**Only a status that is unrecoverable by definition is routed**, which is why the row-level class is
+`INVALID_ARGUMENT` alone. gRPC defines it as *"problematic regardless of the state of the system"*
+and [AIP-194](https://google.aip.dev/194) lists it as must-not-retry; `FAILED_PRECONDITION`, by the
+same definition, means the system is *not in the required state*, so a mutation rejected with it
+might well be accepted later — dropping it would be data loss, however data-shaped the failures it
+names look.
+
+Routing takes **both halves** of a condition, and each half reads the cause chain differently on
+purpose: no transient status *anywhere* in the chain, so an unstable service cannot produce a dead
+letter even when a data-shaped status sits in front of it; and the chain's *first* classifiable
+status is `INVALID_ARGUMENT`, because one buried under an `INTERNAL` or an `UNKNOWN` describes the
+inner call, and dropping the mutation over it would discard a record on a server-side failure. The
+two mistakes are mirror images, and the classifier's tests pin both.
 
 A failure captured in a completion callback is rethrown on the task thread from the next `write()`
 or `flush()`, and `flush()` waits for every outstanding mutation, so a failure can never slip past a

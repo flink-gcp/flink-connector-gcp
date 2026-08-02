@@ -31,12 +31,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Tests for {@link BigtableErrorClassifier}. */
 class BigtableErrorClassifierTest {
 
-    @ParameterizedTest
-    @EnumSource(
-            value = StatusCode.Code.class,
-            names = {"INVALID_ARGUMENT", "FAILED_PRECONDITION"})
-    void routesTheMutationRejectionsToTheHandler(StatusCode.Code code) {
-        assertThat(BigtableErrorClassifier.classify(apiException(code)))
+    @Test
+    void routesTheOneStatusThatIsInvalidRegardlessOfSystemState() {
+        assertThat(BigtableErrorClassifier.classify(apiException(StatusCode.Code.INVALID_ARGUMENT)))
                 .isEqualTo(BigtableErrorClassifier.Kind.ROW_LEVEL);
     }
 
@@ -44,6 +41,11 @@ class BigtableErrorClassifierTest {
     @EnumSource(
             value = StatusCode.Code.class,
             names = {
+                // State-dependent by gRPC's own definition, so a drop could discard a record the
+                // system would have accepted in another state — however data-shaped the failures
+                // it names look.
+                "FAILED_PRECONDITION",
+                "OUT_OF_RANGE",
                 // Configuration-shaped: they fail every record alike, so dropping them would empty
                 // the stream into the dead-letter destination under a green job.
                 "NOT_FOUND",
@@ -63,7 +65,7 @@ class BigtableErrorClassifierTest {
     }
 
     @Test
-    void findsTheStatusAnywhereInTheCauseChain() {
+    void findsTheStatusThroughTheWrappersTheClientAdds() {
         Throwable wrapped =
                 new IOException(
                         "outer",
@@ -79,6 +81,31 @@ class BigtableErrorClassifierTest {
 
         assertThat(BigtableErrorClassifier.classify(raw))
                 .isEqualTo(BigtableErrorClassifier.Kind.ROW_LEVEL);
+    }
+
+    @Test
+    void neverRoutesAChainThatCarriesATransientStatusAnywhere() {
+        // The first classifiable status is data-shaped, but the failure underneath it is the
+        // service being unavailable. Routing it would let an outage produce dead letters.
+        Throwable chain =
+                apiException(
+                        StatusCode.Code.INVALID_ARGUMENT,
+                        apiException(StatusCode.Code.UNAVAILABLE));
+
+        assertThat(BigtableErrorClassifier.classify(chain))
+                .isEqualTo(BigtableErrorClassifier.Kind.FATAL);
+    }
+
+    @Test
+    void readsTheDataShapedStatusFromTheFirstClassifiableOneOnly() {
+        // The mirror-image mistake: an INVALID_ARGUMENT buried under a server-side failure
+        // describes the inner call, so dropping the mutation over it would discard a record.
+        Throwable chain =
+                apiException(
+                        StatusCode.Code.INTERNAL, apiException(StatusCode.Code.INVALID_ARGUMENT));
+
+        assertThat(BigtableErrorClassifier.classify(chain))
+                .isEqualTo(BigtableErrorClassifier.Kind.FATAL);
     }
 
     @Test
