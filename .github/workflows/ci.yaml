@@ -5,16 +5,20 @@ on:
     branches:
       - main
     # Changes that cannot affect the Maven build skip it: a tofu or docs-note
-    # pull request otherwise pays ~7 runner-minutes for nothing (raised by the
-    # owner on #176/#178, right after a billing cut — private-repo minutes are
-    # metered). paths-ignore rather than paths: everything else must keep
-    # running this. READMEs and CLAUDE.md files are here because apache-rat
-    # excludes exactly those patterns (see the root pom), so skipping them
-    # cannot hide a missing licence header; docs/ markdown is deliberately
-    # NOT here, because rat does scan it and this job is its only pre-merge
-    # check. If this check ever becomes required, remember the CLAUDE.md
-    # caveat: a required check that never reports blocks a pull request
-    # forever.
+    # merge otherwise pays runner minutes for nothing (raised by the owner on
+    # #176/#178, right after a billing cut — private-repo minutes are metered).
+    # paths-ignore rather than paths: everything else must keep running this.
+    # READMEs and CLAUDE.md files are here because apache-rat excludes exactly
+    # those patterns (see the root pom), so skipping them cannot hide a missing
+    # licence header; docs/ markdown is deliberately NOT here, because rat does
+    # scan it and this workflow is its only pre-merge check.
+    #
+    # This filter exists on push only. Filtering the pull_request trigger the
+    # same way would block pull requests forever once a check here is required
+    # (a required check that never reports never turns green), so pull requests
+    # trigger unconditionally and the changes job below decides what to build —
+    # scripts/ci-maven-args.py applies this same ignore list as its first rule.
+    # Keep the two lists in sync.
     paths-ignore:
       - 'opentofu/**'
       - 'tfaction-root.yaml'
@@ -24,15 +28,6 @@ on:
       - '**/README.md'
       - '**/CLAUDE.md'
   pull_request:
-    # Keep in sync with push's list above.
-    paths-ignore:
-      - 'opentofu/**'
-      - 'tfaction-root.yaml'
-      - '.github/workflows/tofu-plan.yaml'
-      - '.github/workflows/tofu-apply.yaml'
-      - '.github/workflows/tofu-list.yaml'
-      - '**/README.md'
-      - '**/CLAUDE.md'
   workflow_dispatch:
 
 concurrency:
@@ -43,12 +38,69 @@ permissions:
   contents: read
 
 jobs:
+  # Decides what the build job runs (issue #243): a pull request builds the
+  # modules its changes affect instead of the whole reactor, which cuts the
+  # common case from ~8 minutes to ~2 while lowering billed minutes. Pushes to
+  # main and manual dispatches always build everything, so a mis-derived subset
+  # can never let a module rot on main.
+  #
+  # dorny/paths-filter is the changed-file *provider* — it reads the pull
+  # request's file list through the API, which is what the job-level
+  # pull-requests permission is for (same shape as tofu-list.yaml). The
+  # decision itself lives in one place, scripts/ci-maven-args.py, which
+  # derives the module mapping from the poms; `just ci-maven-args --diff
+  # origin/main` reproduces it by hand.
+  changes:
+    name: Detect what changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run_build: ${{ steps.derive.outputs.run_build }}
+      maven_args: ${{ steps.derive.outputs.maven_args }}
+      check_notice: ${{ steps.derive.outputs.check_notice }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        with:
+          tool: just
+
+      # The one filter matches every changed file; list-files is the output
+      # this job actually consumes. No setup-python for the deriver: unlike
+      # the tomllib scripts below, it needs nothing newer than any runner
+      # image's python3, and this job sits on every pull request's critical
+      # path.
+      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          list-files: json
+          filters: |
+            all:
+              - '**'
+
+      - name: Derive the Maven arguments
+        id: derive
+        env:
+          CHANGED_FILES: ${{ steps.filter.outputs.all_files }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = 'pull_request' ]; then
+            just ci-maven-args --files "$CHANGED_FILES" >> "$GITHUB_OUTPUT"
+          else
+            just ci-maven-args --full >> "$GITHUB_OUTPUT"
+          fi
+
   # Java sources only: spotless and checkstyle run inside `verify`. scripts/ and
   # anything else Maven does not see are linted by lint.yaml.
   build:
     name: Build and test
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    needs: changes
+    if: needs.changes.outputs.run_build == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -80,11 +132,13 @@ jobs:
 
       # Runs the full lifecycle: spotless/checkstyle (validate), compile,
       # unit tests (test), packaging, integration tests (integration-test)
-      # and the apache-rat license-header check (verify). Integration tests
+      # and the apache-rat license-header check (verify) — over the modules
+      # the changes job selected (empty args = the whole reactor; the
+      # interpolation is weekly.yaml's passthrough shape). Integration tests
       # use testcontainers-based emulators and require no cloud credentials,
       # so this job is safe to run on any pull request.
       - name: Build and verify
-        run: just verify
+        run: just verify ${{ needs.changes.outputs.maven_args }}
 
       # Holds each shaded module's generated META-INF/NOTICE and pinned licence
       # texts to what Maven resolves for its bundle. A step of its own rather than part of
@@ -93,7 +147,9 @@ jobs:
       # nothing (it reads POMs Maven already resolved). The recipe re-runs that
       # Maven half, which `just verify` above has already done — kept because a
       # self-contained recipe is the right default locally, and the duplicated
-      # work here is a few seconds of an incremental build. python3 comes from
+      # work here is a few seconds of an incremental build. Skipped when the
+      # built subset contains no shaded module — check_notice tracks whether
+      # the selection carries a NOTICE.template. python3 comes from
       # the runner image: the script is standard-library only, so there is no
       # version to pin (see mise.toml).
       # The NOTICE checker reads scripts/licence-sources.toml with tomllib,
@@ -105,11 +161,52 @@ jobs:
       # there is nothing to cache, and `cache: pip` without a requirements
       # file fails the step.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: needs.changes.outputs.check_notice == 'true'
         with:
           python-version: '3.12'
 
       - name: Check the SQL connector NOTICE
+        if: needs.changes.outputs.check_notice == 'true'
         run: just check-notice flink-sql-connector-gcp-pubsub
+
+  # The one required Maven-side check (issue #243): branch protection names
+  # this job, not `build`, because `build` is skipped when a change cannot
+  # affect the Maven build — and a required check that never reports blocks a
+  # pull request forever. This job always reports, turning that skip into an
+  # explicit green. Inline `run:` rather than a just recipe as the one standing
+  # exception to the #111 rule: its inputs are GitHub `needs` contexts with no
+  # local equivalent, and actionlint still shellchecks the block.
+  ci_passed:
+    name: CI passed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, build]
+    if: always()
+    steps:
+      - name: Evaluate the build result
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          RUN_BUILD: ${{ needs.changes.outputs.run_build }}
+        run: |
+          if [ "$CHANGES_RESULT" != 'success' ]; then
+            echo "::error::change detection did not succeed ($CHANGES_RESULT), so nothing downstream of it can be trusted"
+            exit 1
+          fi
+          case "$BUILD_RESULT" in
+            success)
+              echo "build succeeded" ;;
+            skipped)
+              if [ "$RUN_BUILD" = 'false' ]; then
+                echo "nothing in this change affects the Maven build"
+              else
+                echo "::error::the build was skipped although change detection asked for it"
+                exit 1
+              fi ;;
+            *)
+              echo "::error::build: $BUILD_RESULT"
+              exit 1 ;;
+          esac
 
   # The Flink API tier audit (issue #103): fails when the main sources add a
   # dependency on an @Internal, @Experimental or unannotated Flink type
@@ -122,7 +219,10 @@ jobs:
   # while lint.yaml's paths filter would have had to grow to every Java
   # source, losing its scripts-and-workflows character. A job of its own
   # rather than a step in `build` so it reports in seconds beside the
-  # integration tests instead of behind them, and needs no JDK.
+  # integration tests instead of behind them, and needs no JDK. Deliberately
+  # not behind the changes job: it is a required check, costs seconds, and
+  # skipping it would reopen the never-reports trap the gate job exists to
+  # close.
   api_tiers:
     name: Audit Flink API tiers
     runs-on: ubuntu-latest
@@ -150,9 +250,10 @@ jobs:
   # .claude/skills/curate-option-docs/ for how to respond to each failure).
   #
   # A job here for the same reason as api_tiers above, plus one of its own: its
-  # inputs are the Java main sources *and* docs/content/, and this workflow
-  # triggers on both (its paths-ignore excludes neither), while lint.yaml's
-  # paths filter covers neither today.
+  # inputs are the Java main sources *and* docs/content/, and this workflow's
+  # pull_request trigger fires on both (it carries no filter at all), while
+  # lint.yaml's paths filter covers neither today. Not behind the changes job,
+  # like api_tiers and for the same reasons.
   option_docs:
     name: Check the configuration reference
     runs-on: ubuntu-latest

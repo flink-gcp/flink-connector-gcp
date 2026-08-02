@@ -76,6 +76,16 @@ verify-flink version *extra:
 verify-module module:
     {{ mvn }} -pl {{ module }} verify
 
+# CI's module-selection decision (issue #243): ci.yaml's changes job calls this
+# with --files (the changed-file list dorny/paths-filter read off the pull
+# request) or --full (push and workflow_dispatch build the whole reactor). The
+# mapping is derived from the poms, never configured — the script's docstring
+# is the specification.
+#
+# Which Maven modules does a change build? e.g. `just ci-maven-args --diff origin/main`.
+ci-maven-args *args:
+    scripts/ci-maven-args.py {{ args }}
+
 # Apply the formatter — CI fails on unformatted code, so run before committing.
 format:
     {{ mvn }} spotless:apply
