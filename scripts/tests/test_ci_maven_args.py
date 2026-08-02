@@ -192,6 +192,28 @@ def test_changed_dependency_fans_out_to_all_dependents(fake_repo, ci_maven_args)
     assert close(ci_maven_args, ["base"]) == {"base", "a", "b", "shaded"}
 
 
+def test_a_stale_notice_input_stops_the_run(
+    fake_repo, ci_maven_args, monkeypatch, capsys
+):
+    # The one allowlist here whose staleness is unsafe: a renamed entry stops
+    # matching, its path rejoins the root-only class, and the licence check
+    # quietly stops running on licence changes. So every run refuses to
+    # proceed — asserted through main(), because the guard is only worth
+    # anything if it is wired into it. (ROOT_ONLY_FILES needs no such guard:
+    # a stale entry there over-builds, which announces itself in the clock.)
+    # fake_repo has no scripts/ at all, which is the stale state.
+    monkeypatch.setattr("sys.argv", ["ci-maven-args.py", "--files", "[]"])
+    with pytest.raises(SystemExit) as error:
+        ci_maven_args.main()
+    assert error.value.code == 2
+    assert "NOTICE_INPUTS names" in capsys.readouterr().err
+
+
+def test_the_real_notice_inputs_all_exist(ci_maven_args):
+    for path in ci_maven_args.NOTICE_INPUTS:
+        assert (ci_maven_args.ROOT / path).is_file(), path
+
+
 def test_unknown_flink_gcp_dependency_fails(fake_repo, ci_maven_args):
     write_pom(fake_repo, "a", deps=["no-such-module"])
     with pytest.raises(SystemExit) as e:
@@ -261,6 +283,17 @@ def test_base_change_collapses_to_the_full_reactor(ci_maven_args):
 def test_root_only_changes_build_the_root_rat_check(ci_maven_args, files):
     out = outputs(run_cli("--files", json.dumps(files)))
     assert out == {"run_build": "true", "maven_args": "-pl .", "check_notice": "false"}
+
+
+def test_a_root_only_path_does_not_swallow_a_module_selection(ci_maven_args):
+    out = outputs(
+        run_cli(
+            "--files",
+            json.dumps(["scripts/tests/test_ci_gate.py", "flink-connector-gcp-base/x"]),
+        )
+    )
+    assert out["maven_args"] == ""  # base fans out to everything
+    assert out["check_notice"] == "true"
 
 
 def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):

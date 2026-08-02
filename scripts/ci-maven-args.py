@@ -286,6 +286,28 @@ def changed_files(args: argparse.Namespace) -> list[str]:
     return result.stdout.splitlines()
 
 
+def check_notice_inputs_exist() -> None:
+    """Refuse to run if a NOTICE_INPUTS path is gone.
+
+    The two allowlists this script carries go stale in opposite directions, so
+    only one needs a guard. A stale ROOT_ONLY_FILES entry stops matching and
+    its path falls through to the full reactor: over-building, which is the
+    safe direction and announces itself in the wall clock. A stale
+    NOTICE_INPUTS entry falls through to the *root-only* class instead, and the
+    licence check silently stops running on the change that edits the licence
+    pins — the failure this set exists to prevent, reintroduced by a rename
+    nobody would connect to it.
+    """
+    missing = sorted(path for path in NOTICE_INPUTS if not (ROOT / path).is_file())
+    if missing:
+        infra(
+            f"NOTICE_INPUTS names {missing}, which no longer exist. A rename "
+            f"here does not fail loudly on its own: the path would quietly "
+            f"rejoin the root-only class and stop pulling in the reactor that "
+            f"makes check_notice true. Update the set in {Path(__file__).name}."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -300,6 +322,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    check_notice_inputs_exist()
     modules = pom_modules()
     edges = module_dependencies(modules)
 
