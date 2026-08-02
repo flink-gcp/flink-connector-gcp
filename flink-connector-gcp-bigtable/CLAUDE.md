@@ -81,6 +81,57 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   series is scoped to the three existing connectors and does not reach Bigtable, so waiting would
   have meant shipping a sink with no metrics at all. Richer per-connector metrics still belong to
   that series' outcome.
+- **The E2E suite creates an ephemeral instance per gated *class*, not per run** (#218) — the one
+  deviation from that issue's settled design, and it is forced: the `integration-tests` surefire
+  execution `just e2e` invokes runs `forkCount=2` with `reuseForks=false` (measured in the effective
+  POM, both inherited from the Flink connector parent), so every gated class gets a fresh JVM and two
+  run at once. A JVM-scoped holder would create one instance per class anyway and a shared one would
+  be raced. Nothing persistent exists to run against because a one-node instance stands at roughly
+  $470/month, so `opentofu/flink-gcp` carries only the two API enablements and `roles/bigtable.admin`
+  — admin because *instance* lifecycle is administrator-level, not because the data path needs it.
+  Leak control is a name-encoded creation time (`flink-it-<epochSeconds>-<runId>`, 28 characters
+  inside Bigtable's 33) plus a sweep of anything older than two hours at the start of each class;
+  the threshold sits far above the workflow's 40-minute ceiling, so the sweep cannot reach a live
+  run. The cluster id is built from the run id rather than the instance id, which at 28 characters
+  leaves no room under a cluster id's own 30-character limit. Measured 2026-08-02: the two classes
+  together, instance provisioning included, take about 7½ minutes.
+  **`BIGTABLE_IT_PROJECT` in a local `.env` makes every `just verify` create instances**, because the
+  gate is on the classes and `verify` runs the same `integration-tests` execution `just e2e` does.
+  The BigQuery and Pub/Sub gates have had that shape all along; the difference is that this is the
+  first one whose resources are billed per run rather than standing, so ~7½ minutes and a node-hour
+  fraction join every full local build the variable is visible to. Scoping with `-Dtest=` or keeping
+  the variable out of the always-loaded environment are the two ways out; neither is enforced.
+- **What real Bigtable answers, measured 2026-08-02** (client 2.80.0), which is what the connector
+  page's error-handling table now states rather than infers. Routed (`INVALID_ARGUMENT`): a cell
+  timestamp that is not a multiple of 1000 ("Timestamp granularity mismatch"), and an empty row key
+  ("Row keys must be non-empty"). Fatal (`NOT_FOUND`): a mutation naming a column family the table
+  lacks — and the service reports it for **every** entry of the batch, the good ones included.
+  **Two conditions #218's text expected to measure are unmeasurable through this connector**:
+  `Mutation` enforces its own limits in the private `addMutation` every mutation-adding method funnels
+  through — so `deleteCells` and `deleteRow` are covered as much as `setCell`, and "more mutations
+  than a row accepts" and an oversized entry are thrown client-side and arrive as *serialization*
+  failures with no entry and no row key; the service never sees them. The mutation-count half was run
+  (110,000 mutations, which never reached the wire); the byte half is `MAX_BYTE_SIZE` = 200 MiB read
+  from the client's class file beside `MAX_MUTATIONS` = 100,000, not exercised. A
+  single-cell size violation is unreachable for a second reason too: the client's bulk flow
+  controller caps accumulated size at 100 MB, below Bigtable's 256 MB per row.
+- **Two defects that run turned up, both filed rather than fixed here** (decided with the user):
+  a routed `INVALID_ARGUMENT` fails **every entry of its batch**, because Bigtable rejects the whole
+  `MutateRows` request and gax propagates that to every entry future — so a dropping policy discards
+  the good records batched with the bad one (#239; the docs now say so, and
+  `routesEveryEntryOfTheBatchWhenOneOfThemIsRejected` pins it so a fix has to come through there);
+  and `close()` throws gax's `BatchingException`, re-reporting every entry failure of the batcher's
+  lifetime whatever the policy already did with them, so a `logAndDrop` job fails at task close
+  anyway (#238). Both the gated and the emulator failure tests swallow the latter in a helper naming
+  the issue — that swallow is the marker to remove when #238 lands.
+- **`BigtableEmulatorDeviationITCase` asserts what the *emulator* does**, which is not a breach of
+  the emulator-is-not-an-authority rule but its enforcement: it records the traps so an image bump
+  has to declare them. The one that matters is the **status** — the emulator answers `INTERNAL`
+  where the service answers `INVALID_ARGUMENT` or `NOT_FOUND`, and `INTERNAL` is fatal to this sink,
+  so an emulator-only test would conclude "fails the job" for a condition the service makes
+  droppable. It also **accepts an empty row key**, storing a row that breaks the client's own read
+  state machine — a state the service cannot reach. Every row of the documentation page's deviation
+  table is asserted from both sides.
 - **`StubWriterInitContext` cannot drive this writer**, because its metric group is a
   null-returning proxy and the writer dereferences the group in its constructor. The emulator tests
   therefore build writers through the sink's injecting `createWriter(batcher, mailbox, metricGroup)`

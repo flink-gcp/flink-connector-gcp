@@ -92,12 +92,12 @@ siblings, which both take per-record destinations, and the reason is in the clie
 batcher is bound to one table, so per-record tables would mean a pool of batchers, a share of the
 in-flight budget for each, and an eviction policy for the tail. Writing to several tables means
 several sinks today; a batcher pool waits for a use case
-([#33]({{< param BookRepo >}}/issues/33) records the deferral).
+([#232]({{< param BookRepo >}}/issues/232) records the deferral).
 
-The sink also never **creates** a table or a column family, so both must exist. That is a smaller
-decision than it is for the Pub/Sub sink, where auto-creation is a real feature: a Bigtable table's
-schema is its column families and their garbage-collection policies, which is exactly the part a
-sink cannot guess.
+The sink also never **creates** a table or a column family, so both must exist
+([#233]({{< param BookRepo >}}/issues/233)). That is a smaller decision than it is for the Pub/Sub
+sink, where auto-creation is a real feature: a Bigtable table's schema is its column families and
+their garbage-collection policies, which is exactly the part a sink cannot guess.
 
 ## Delivery guarantees and state
 
@@ -122,9 +122,11 @@ Neither is wrong, but only one of them is a choice made on purpose. Setting the 
 record — its event time, an updated-at column, `context.timestamp()` — is what makes a replay a
 no-op. Note that a cell timestamp is in microseconds but a table's granularity is milliseconds, so
 the value must be a multiple of 1000 — `context.timestamp()`, which is in milliseconds, has to be
-multiplied rather than passed through. Which [failure class](#error-handling) the service puts a
-violation in is not asserted here; it is one of the things
-[#218]({{< param BookRepo >}}/issues/218) measures.
+multiplied rather than passed through. Bigtable answers a violation with `INVALID_ARGUMENT`
+(*"Timestamp granularity mismatch. Expected a multiple of 1000 (millisecond granularity)"*), which
+makes it a [row-level failure](#error-handling) and so droppable — measured against the service, not
+inferred. Read that together with the batch blast radius described there before running a dropping
+policy: a job that multiplies the timestamp wrongly produces the violation on *every* record.
 
 Deletes replay the same way and are naturally idempotent, with one caveat worth stating: a
 `deleteRow` replayed after later writes for the same key would delete those too. That is a property
@@ -179,13 +181,32 @@ mailbox, so the writer's state is touched from one thread only — and routed by
 
 | Class | Examples | Behavior |
 |---|---|---|
-| Row-level | `INVALID_ARGUMENT` — the row or a cell is over the size limit, the row carries more mutations than one accepts, a qualifier is malformed | Routed to the configured [failed-mutation handler](#failed-mutation-policy); applying the same mutation again could not succeed, and the entries around it are unaffected |
+| Row-level | `INVALID_ARGUMENT` — a cell timestamp that is not a multiple of 1000, an empty row key | Routed to the configured [failed-mutation handler](#failed-mutation-policy); applying the same mutation again could not succeed |
 | Fatal | `NOT_FOUND` (a missing table or column family), `PERMISSION_DENIED`, `UNAUTHENTICATED`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`; an outage the client's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `ABORTED`, `RESOURCE_EXHAUSTED`); failures carrying no status at all | Fail the ongoing write or checkpoint |
+
+Those two examples are the ones measured against the service, and they are the whole list this page
+will vouch for — see [what the gated suite measures](#testing). Two conditions that read like
+`INVALID_ARGUMENT` candidates are not: an entry carrying more than 100,000 mutations, or more than
+200 MiB of them, is rejected by the **client**, before any RPC, so it arrives as a serialization
+failure rather than as a service rejection (see
+[serializer failures](#failed-mutation-policy) — such a `FailedMutation` carries no entry and no row
+key). The check sits in the mutation list itself, so it covers `deleteCells` and `deleteRow` exactly
+as it covers `setCell`.
 
 The split's purpose is that a *dropping* handler never sees a condition. An outage would otherwise
 bleed the stream one mutation at a time instead of backpressuring it, and a missing column family —
 which fails every record alike — would empty the whole stream into the dead-letter destination under
 a green job.
+
+**A routed rejection is not confined to the mutation that caused it.** Bigtable rejects the whole
+`MutateRows` request, and the client then fails every entry of that batch with the same status, so
+one malformed record takes its whole batch with it: measured against the service, one bad record
+written beside a good one had **both** delivered to the handler and neither written. Under a
+dropping policy that is silent loss of the good records, bounded by the batch size
+(`batchElementCount`) rather than by anything about the bad record. Whether the sink should tell a
+request-level rejection from a per-entry one — the former is safe to retry, since a failed
+`MutateRows` wrote nothing — is [#239]({{< param BookRepo >}}/issues/239). Until it does, a
+dropping policy on this connector is a choice about batches, not about records.
 
 **Only a status that is unrecoverable by definition is routed**, which is why the row-level class is
 `INVALID_ARGUMENT` alone. gRPC defines it as *"problematic regardless of the state of the system"*
@@ -245,9 +266,6 @@ Not implemented, each with its issue rather than a promise:
   request-response primitives rather than a write path a sink batches: each is one RPC whose result
   the caller is expected to read, and neither participates in `MutateRows`.
 
-Real-GCP coverage is [#218]({{< param BookRepo >}}/issues/218); everything asserted today runs
-against the emulator.
-
 ## Testing
 
 Unit tests cover the writer against a fake batcher and a fake mailbox: the skip contract, both
@@ -260,13 +278,53 @@ Integration tests run against the
 [Bigtable emulator](https://cloud.google.com/bigtable/docs/emulator) in a container, through the
 production client-construction path in its emulator mode, plus two MiniCluster jobs — streaming with
 checkpoints while the source is still producing, and batch with nothing but the end-of-input flush —
-built through the public builder with no test seams.
+built through the public builder with no test seams. They need no credentials and run on every pull
+request.
 
 **The emulator is a convenience, not an authority.** It implements `MutateRows` and the table admin
 surface, which is enough to prove that mutations arrive and that a flush means what it says, and
-nothing here asserts a rejection the real service would produce: what Bigtable answers
-`INVALID_ARGUMENT` to, and how a table's timestamp granularity is enforced, are for the gated
-real-GCP suite ([#218]({{< param BookRepo >}}/issues/218)) to measure.
+nothing there asserts a rejection the real service would produce.
+
+A **gated suite against real Cloud Bigtable** covers what the emulator cannot
+([#218]({{< param BookRepo >}}/issues/218)). It runs weekly, and locally when `BIGTABLE_IT_PROJECT`
+is set; without that variable its classes skip. Note what setting it locally implies: the gate is
+read by the classes themselves, not by a build profile, so **an ordinary local build runs the gated
+suite too** and creates the instances it needs. That is the same shape the BigQuery and Pub/Sub gates
+have, but this is the first one that bills for a resource rather than using a standing one, so it is
+worth choosing deliberately whether the variable lives in a shell you build from every day. Two
+things only this suite can show:
+
+- **The client-construction path every real job takes.** Every emulator test passes
+  `emulatorEndpoint(...)`, so the branch that builds a client over application-default credentials
+  against the production endpoint runs nowhere else. A MiniCluster streaming job with checkpoints
+  covers it.
+- **Which status Bigtable rejects a mutation with**, and therefore which side of the
+  [row-level/fatal boundary](#error-handling) each rejection lands on. This is where the two
+  `INVALID_ARGUMENT` examples in that table come from, where the fatal `NOT_FOUND` of a missing
+  column family is pinned, and where the batch blast radius was found.
+
+There is no persistent instance to run it against: a one-node instance is a standing cost of roughly
+$470 a month, so each gated class **creates an instance and deletes it afterwards**, and a run that
+dies before deleting is swept by the next one — instance names carry their creation time, and
+anything older than two hours is reclaimed. That is why nothing in `opentofu/` declares a Bigtable
+instance, only the API enablement and the grant.
+
+### Where the emulator differs from the service
+
+Measured 2026-08-02, against the pinned `google-cloud-cli:441.0.0-emulators` image and real Bigtable
+in `us-central1`, for the same three inputs. Every row is asserted from both sides, so an emulator
+image bump has to state what it changed rather than making this table quietly wrong.
+
+| Input | Real Bigtable | Emulator |
+|---|---|---|
+| Cell timestamp not a multiple of 1000 | `INVALID_ARGUMENT`, the whole request rejected: every entry of the batch routed to the handler, nothing written | `INTERNAL` ("invalid timestamp 1234"), the offending entry only — the rest of the batch is written |
+| Empty row key | `INVALID_ARGUMENT`, "Row keys must be non-empty" | **Accepted.** The row it stores then breaks the client's own read state machine ("rowKey missing"), a state the service cannot reach |
+| Mutation naming a column family the table does not have | `NOT_FOUND`, reported for **every** entry of the batch, nothing written | `INTERNAL` ("unknown family"), the offending entry only |
+
+The status is the deviation that matters. `INTERNAL` is [fatal](#error-handling) to this sink while
+`INVALID_ARGUMENT` is routed, so an emulator test would conclude "fails the job" for a condition the
+service makes droppable — the wrong lesson, learned cheaply. It is also why the emulator suite
+asserts no rejection except in the class that exists to record these differences.
 
 ## Provenance and attribution
 
