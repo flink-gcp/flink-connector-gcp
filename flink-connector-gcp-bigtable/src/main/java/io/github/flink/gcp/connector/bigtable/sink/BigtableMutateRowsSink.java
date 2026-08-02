@@ -76,7 +76,24 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
                         config.getAppProfileId(),
                         config.getWriterOptions(),
                         config.getEmulatorEndpoint());
-        return createWriter(factory.create(), context.getMailboxExecutor(), context.metricGroup());
+        try {
+            return createWriter(
+                    factory.create(), context.getMailboxExecutor(), context.metricGroup());
+        } catch (IOException | RuntimeException e) {
+            // The handler is open and no writer will ever close it: creating the client is the one
+            // step here that can fail after open(), and the SPI promises a close on the failure
+            // path too. A restart would otherwise open a second one per attempt.
+            closeHandlerSuppressing(e);
+            throw e;
+        }
+    }
+
+    private void closeHandlerSuppressing(Exception failure) {
+        try {
+            config.getFailedMutationHandler().close();
+        } catch (Exception e) {
+            failure.addSuppressed(e);
+        }
     }
 
     /**
