@@ -29,7 +29,6 @@ import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.util.UserCodeClassLoader;
 
-import java.lang.reflect.Proxy;
 import java.util.OptionalLong;
 
 /**
@@ -37,9 +36,12 @@ import java.util.OptionalLong;
  * no reason to touch is unsupported, so a new dependency on the context shows up as a failing test
  * rather than as a silent null.
  *
- * <p>The metric group is a no-op proxy rather than a real group: a test can then assert by identity
- * that the group reached whatever it was handed to, without this class implementing the interface's
- * many methods. It is a field, so repeated calls return the same instance.
+ * <p>The metric group is a real {@link TestSinkWriterMetricGroup} held in a field, so repeated
+ * calls return the same instance: a test can still assert by identity that the group reached
+ * whatever it was handed to, and — unlike the no-op {@code Proxy} this replaced — a writer that
+ * captures counters in its constructor gets counters rather than nulls. Every sink writer here does
+ * since #208, so the proxy would fail each of them with a {@code NullPointerException}. {@link
+ * #getSinkWriterMetricGroup()} reads back what the writer registered.
  */
 @Internal
 public final class StubWriterInitContext implements WriterInitContext {
@@ -48,12 +50,7 @@ public final class StubWriterInitContext implements WriterInitContext {
     private final JobInfo jobInfo = new StubJobInfo();
     private final FakeMailboxExecutor mailboxExecutor = new FakeMailboxExecutor();
 
-    private final SinkWriterMetricGroup metricGroup =
-            (SinkWriterMetricGroup)
-                    Proxy.newProxyInstance(
-                            SinkWriterMetricGroup.class.getClassLoader(),
-                            new Class<?>[] {SinkWriterMetricGroup.class},
-                            (proxy, method, args) -> null);
+    private final TestSinkWriterMetricGroup metricGroup = TestSinkWriterMetricGroup.create();
 
     /**
      * Creates a context for a single-subtask writer.
@@ -86,6 +83,11 @@ public final class StubWriterInitContext implements WriterInitContext {
 
     @Override
     public SinkWriterMetricGroup metricGroup() {
+        return metricGroup;
+    }
+
+    /** Returns the same group as {@link #metricGroup()}, typed so its metrics can be read back. */
+    public TestSinkWriterMetricGroup getSinkWriterMetricGroup() {
         return metricGroup;
     }
 

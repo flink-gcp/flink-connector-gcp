@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
@@ -68,6 +69,7 @@ class PubSubWriterFailureHandlerTest {
     private final FakePublisherFactory factory = new FakePublisherFactory();
     private final FakeTopicAdmin admin = new FakeTopicAdmin();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
+    private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
 
     /** Records what it is handed, and optionally fails. */
     private static final class RecordingHandler implements FailureHandler<FailedMessage> {
@@ -132,6 +134,7 @@ class PubSubWriterFailureHandlerTest {
                 factory,
                 admin,
                 mailbox,
+                metrics,
                 UNUSED_RECOVERY);
     }
 

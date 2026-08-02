@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.github.flink.gcp.connector.testutils.pubsub.PubSubEmulatorContainers;
 import io.github.flink.gcp.connector.testutils.pubsub.PubSubTestClients;
 import org.junit.jupiter.api.AfterAll;
@@ -112,6 +113,7 @@ abstract class AbstractPubSubEmulatorITCase {
                 new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint()),
                 newTopicAdmin(),
                 mailbox,
+                TestSinkWriterMetricGroup.create(),
                 EMULATOR_RECOVERY_SCHEDULE);
     }
 

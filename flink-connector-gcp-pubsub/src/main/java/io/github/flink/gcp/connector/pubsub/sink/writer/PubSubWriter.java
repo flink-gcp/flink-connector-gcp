@@ -20,6 +20,8 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.metrics.Gauge;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.ThrowingRunnable;
@@ -29,6 +31,7 @@ import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
@@ -159,6 +162,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private final RetrySchedule recoverySchedule;
     private final boolean orderingEnabled;
     private final FailureHandler<? super FailedMessage> failedMessageHandler;
+    private final PubSubSinkWriterMetrics metrics;
 
     /** Lazily populated per-topic publisher state; touched only on the task thread. */
     private final Map<TopicDestination, DestinationState> states = new HashMap<>();
@@ -180,6 +184,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private long nextPublishSequence;
 
     /**
+     * Messages held for a topic-creation repair, across every destination. A plain counter rather
+     * than a sum over {@code states} because the gauge reading it runs on the reporter thread:
+     * walking the destination maps from there would race with the task thread mutating them.
+     */
+    private int parkedMessages;
+
+    /**
      * First terminal publish failure; set and read only on the task thread (failure callbacks
      * re-dispatch through the mailbox).
      */
@@ -198,17 +209,20 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * @param publisherFactory factory for per-topic publishers
      * @param topicAdmin admin used to create missing topics; closed with the writer
      * @param mailboxExecutor the task mailbox, used to run publish completions on the task thread
+     * @param metricGroup the writer's metric group
      */
     public PubSubWriter(
             PubSubSinkConfig<T> config,
             PublisherFactory publisherFactory,
             TopicAdmin topicAdmin,
-            MailboxExecutor mailboxExecutor) {
+            MailboxExecutor mailboxExecutor,
+            SinkWriterMetricGroup metricGroup) {
         this(
                 config,
                 publisherFactory,
                 topicAdmin,
                 mailboxExecutor,
+                metricGroup,
                 config.getPublisherOptions().toRecoverySchedule());
     }
 
@@ -223,6 +237,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             PublisherFactory publisherFactory,
             TopicAdmin topicAdmin,
             MailboxExecutor mailboxExecutor,
+            SinkWriterMetricGroup metricGroup,
             RetrySchedule recoverySchedule) {
         this.config = config;
         this.publisherFactory = publisherFactory;
@@ -243,6 +258,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         this.recoverySchedule = recoverySchedule;
         this.orderingEnabled = options.isEnableMessageOrdering();
         this.failedMessageHandler = config.getFailedMessageHandler();
+        this.metrics = new PubSubSinkWriterMetrics(metricGroup, options.isPerDestinationMetrics());
+        this.metrics.bindWriterState(
+                (Gauge<Integer>) this::getInFlightMessages,
+                (Gauge<Long>) this::getInFlightBytes,
+                (Gauge<Integer>) this::getParkedMessages);
     }
 
     @Override
@@ -262,6 +282,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             // The record never became a message, so there is nothing to carry but the destination:
             // FailedMessage.getPayloadBytes() is null, as the shared contract prescribes. The
             // description leaves the topic to describeDestination(), as routeFailedMessage does.
+            metrics.messageFailed(metrics.forTopic(destination));
             failedMessageHandler.handle(
                     FailedMessage.of(destination, null, "The record could not be serialized.", e));
             return;
@@ -278,7 +299,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
         DestinationState state = stateFor(destination);
         awaitCapacity();
-        publishTo(state, message);
+        publishTo(state, message, true);
     }
 
     @Override
@@ -322,6 +343,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             IOUtils.closeAll(closeables);
         } finally {
             states.clear();
+            // Dropped with the writer, so the gauge must not keep reporting them.
+            parkedMessages = 0;
         }
     }
 
@@ -344,8 +367,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     /**
      * Publishes the message to the destination's publisher, counts it in flight and registers its
      * completion callback.
+     *
+     * <p>{@code firstAttempt} is what keeps {@code numRecordsSend} a count of <em>records</em>: the
+     * topic-creation repair re-enters this method for every parked message, and a record must be
+     * counted once however many publishes it took. The in-flight counters are the opposite — they
+     * track publishes, so they are adjusted on every call.
      */
-    private void publishTo(DestinationState state, PubsubMessage message) throws IOException {
+    private void publishTo(DestinationState state, PubsubMessage message, boolean firstAttempt)
+            throws IOException {
         // Memoized by protobuf, so recomputing it in the callback would be equivalent; taking it
         // once keeps a single source of the number the counter is adjusted by.
         int serializedSize = message.getSerializedSize();
@@ -360,6 +389,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         // nothing would ever release it.
         inFlightMessages++;
         inFlightBytes += serializedSize;
+        if (firstAttempt) {
+            metrics.messagePublished(state.metrics, serializedSize);
+        }
         ApiFutures.addCallback(
                 future,
                 new PublishCallback(state, message, nextPublishSequence++, serializedSize),
@@ -370,6 +402,18 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private void releaseInFlight(int serializedSize) {
         inFlightMessages--;
         inFlightBytes -= serializedSize;
+    }
+
+    /**
+     * Holds a failed publish for the destination's topic-creation repair, keyed by its publish
+     * sequence so the batch keeps publish order. Sole entry point, so the {@link #parkedMessages}
+     * gauge cannot drift from the pending buffers it reports.
+     */
+    private void park(DestinationState state, long sequence, PubsubMessage message) {
+        if (state.pendingRetries.put(sequence, message) == null) {
+            parkedMessages++;
+        }
+        repairNeeded = true;
     }
 
     /**
@@ -426,10 +470,17 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             Throwable throwable) {
         releaseInFlight(serializedSize);
         PubSubErrorClassifier.Kind kind = PubSubErrorClassifier.classify(throwable);
+        if (kind != PubSubErrorClassifier.Kind.CANCELLATION) {
+            // Root failures only. A cascade cancellation is not one — it always trails a failure of
+            // an earlier publish for the same ordering key (#78), and that root is counted here
+            // itself, so counting the cascade too would multiply one incident by the length of the
+            // key's queue. It carries no status of its own either, so it would land under
+            // UNCLASSIFIED and hide genuinely unclassifiable failures.
+            metrics.publishFailure(PubSubErrorClassifier.statusCode(throwable));
+        }
         if (kind == PubSubErrorClassifier.Kind.TOPIC_NOT_FOUND && repairsTopics()) {
-            state.pendingRetries.put(sequence, message);
+            park(state, sequence, message);
             state.repairCause = throwable;
-            repairNeeded = true;
         } else if (kind == PubSubErrorClassifier.Kind.CANCELLATION
                 && repairsTopics()
                 && orderingEnabled) {
@@ -442,15 +493,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             // need to be knowable — repairPendingTopics drains the writer completely before
             // repairing, and that drain surfaces a fatal root through checkAsyncError, so a
             // cascade is only ever republished once the root is known to be recoverable.
-            state.pendingRetries.put(sequence, message);
+            park(state, sequence, message);
             // Only as a fallback: a real NOT_FOUND is the better budget-exhaustion cause, and it
             // wins whether it is observed before or after its cascades.
             if (state.repairCause == null) {
                 state.repairCause = throwable;
             }
-            repairNeeded = true;
         } else if (kind == PubSubErrorClassifier.Kind.MESSAGE_LEVEL) {
-            routeFailedMessage(state.destination, message, throwable);
+            routeFailedMessage(state, message, throwable);
         } else if (asyncError == null) {
             asyncError = wrapPublishFailure(state.destination, kind, throwable);
         }
@@ -472,7 +522,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * put the topic in the sentence twice, in two spellings.
      */
     private void routeFailedMessage(
-            TopicDestination destination, PubsubMessage message, Throwable throwable) {
+            DestinationState state, PubsubMessage message, Throwable throwable) {
+        TopicDestination destination = state.destination;
+        metrics.messageFailed(state.metrics);
         try {
             failedMessageHandler.handle(
                     FailedMessage.of(
@@ -532,16 +584,19 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                         + " creating it (CREATE_IF_NEEDED).",
                 state.destination);
         topicAdmin.createTopic(state.destination, config.getTopicCreateOptions());
+        metrics.topicCreated();
         for (int attempt = 1; ; attempt++) {
             // Keyed by publish sequence, so the batch is in the order the messages were originally
             // published however their failure mails interleaved.
             List<PubsubMessage> batch = new ArrayList<>(state.pendingRetries.values());
             state.pendingRetries.clear();
+            parkedMessages -= batch.size();
             // Every attempt resumes the batch's ordering keys first: the failure that parked the
             // batch — and every failed republish attempt since — paused them in the publisher.
             resumeOrderingKeys(state, batch);
             for (PubsubMessage message : batch) {
-                publishTo(state, message);
+                // Not a first attempt: these records were counted by the write that admitted them.
+                publishTo(state, message, false);
             }
             state.publisher.flushOutstanding();
             drainInFlight();
@@ -616,6 +671,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         return inFlightBytes;
     }
 
+    @VisibleForTesting
+    int getParkedMessages() {
+        return parkedMessages;
+    }
+
     /** Per-topic publisher plus the destination's repair and completion state. */
     private final class DestinationState {
 
@@ -639,11 +699,18 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         private final String completionDescription;
         private final String failureDescription;
 
+        /**
+         * The destination's optional per-destination counters, resolved once here rather than per
+         * record — the topic's resource name is composed by the lookup.
+         */
+        private final DestinationMetrics.Counters metrics;
+
         private DestinationState(TopicDestination destination, TopicPublisher publisher) {
             this.destination = destination;
             this.publisher = publisher;
             this.completionDescription = "Complete a Pub/Sub publish to " + destination;
             this.failureDescription = "Fail a Pub/Sub publish to " + destination;
+            this.metrics = PubSubWriter.this.metrics.forTopic(destination);
         }
     }
 

@@ -1,0 +1,349 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.pubsub.sink.writer;
+
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.connector.sink2.SinkWriter;
+
+import com.google.api.core.ApiFutures;
+import com.google.api.core.SettableApiFuture;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
+import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
+import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
+import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
+import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.io.IOException;
+import java.util.concurrent.CancellationException;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Tests for the metrics {@link PubSubWriter} registers, against the same fake publishers, fake
+ * topic admin and fake mailbox its behavioural tests use.
+ *
+ * <p>Every assertion goes through the name a metric registered under rather than through a counter
+ * object, so renaming one — or failing to register it — fails here.
+ *
+ * <p>Timed out as a class for the reason {@link PubSubWriterTest} records: the fake mailbox blocks
+ * on an empty queue exactly as the real one does.
+ */
+@Timeout(30)
+class PubSubWriterMetricsTest {
+
+    private static final String PROJECT = "test-project";
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
+
+    /** Fast, so a repair's backoff stays out of the test's wall clock. */
+    private static final RetrySchedule FAST_SCHEDULE = new RetrySchedule(1, 1, 5, 0);
+
+    private final FakePublisherFactory factory = new FakePublisherFactory();
+    private final FakeTopicAdmin admin = new FakeTopicAdmin();
+    private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
+    private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+
+    /** Routes each record to the topic named by the record itself. */
+    private PubSubWriter<String> newWriter() {
+        return newWriter(PubSubPublisherOptions.defaults());
+    }
+
+    private PubSubWriter<String> newWriter(PubSubPublisherOptions options) {
+        return newWriter(
+                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                options,
+                FailureHandler.failJob(),
+                CreateDisposition.CREATE_IF_NEEDED);
+    }
+
+    private PubSubWriter<String> newWriter(
+            PubSubSerializationSchema<String> serializer,
+            PubSubPublisherOptions options,
+            FailureHandler<? super FailedMessage> handler,
+            CreateDisposition disposition) {
+        return new PubSubWriter<>(
+                TestSinkConfigs.forResolver(
+                        (element, context) -> TopicDestination.of(PROJECT, element),
+                        serializer,
+                        options,
+                        handler,
+                        disposition),
+                factory,
+                admin,
+                mailbox,
+                metrics,
+                FAST_SCHEDULE);
+    }
+
+    private static TopicDestination topic(String topic) {
+        return TopicDestination.of(PROJECT, topic);
+    }
+
+    private static int sizeOf(String payload) throws IOException {
+        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                .serialize(payload)
+                .getSerializedSize();
+    }
+
+    private static StatusRuntimeException status(Status status) {
+        return new StatusRuntimeException(status);
+    }
+
+    private long counter(String... identifier) {
+        return metrics.counterValue(identifier);
+    }
+
+    private long errors(String errorClass) {
+        return counter("errorClass", errorClass, "errors");
+    }
+
+    @Test
+    void countsEveryRecordHandedToTheClientWithItsSerializedSize() throws Exception {
+        PubSubWriter<String> writer = newWriter();
+
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-b", CONTEXT);
+
+        assertThat(counter("numRecordsSend")).isEqualTo(2);
+        assertThat(counter("numBytesSend")).isEqualTo(sizeOf("topic-a") + sizeOf("topic-b"));
+        assertThat(counter("numRecordsSendErrors")).isZero();
+    }
+
+    @Test
+    void countsARepublishedRecordOnlyOnce() throws Exception {
+        // The metric is named numRecordsSend, not numPublishAttempts: the topic-creation repair
+        // publishes this record a second time, and counting it again would inflate the throughput
+        // of a job that is merely recovering. The retry is visible as errorClass.NOT_FOUND.errors
+        // instead. A mutant moving the increment into publishTo's unconditional path dies here.
+        PubSubWriter<String> writer = newWriter();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.NOT_FOUND)));
+
+        writer.write("topic-a", CONTEXT);
+        writer.flush(false);
+
+        assertThat(factory.publishers.get(topic("topic-a")).published).hasSize(2);
+        assertThat(counter("numRecordsSend")).isEqualTo(1);
+        assertThat(counter("numBytesSend")).isEqualTo(sizeOf("topic-a"));
+        assertThat(counter("topicsCreated")).isEqualTo(1);
+        assertThat(errors("NOT_FOUND")).isEqualTo(1);
+    }
+
+    @Test
+    void gaugesReportTheWritersInFlightAndParkedCounts() throws Exception {
+        PubSubWriter<String> writer = newWriter();
+        SettableApiFuture<String> pending = SettableApiFuture.create();
+        factory.enqueueFuture(pending);
+
+        writer.write("topic-a", CONTEXT);
+
+        assertThat(metrics.<Integer>gaugeValue("inFlightMessages")).isEqualTo(1);
+        assertThat(metrics.<Long>gaugeValue("inFlightBytes")).isEqualTo(sizeOf("topic-a"));
+        assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isZero();
+
+        pending.setException(status(Status.NOT_FOUND));
+        mailbox.drain();
+
+        // The failure mail released the publish from both in-flight counters and parked the
+        // message for the repair, so the three gauges together account for it at every step.
+        assertThat(metrics.<Integer>gaugeValue("inFlightMessages")).isZero();
+        assertThat(metrics.<Long>gaugeValue("inFlightBytes")).isZero();
+        assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isEqualTo(1);
+
+        writer.flush(false);
+
+        assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isZero();
+    }
+
+    @Test
+    void theParkedGaugeIsClearedWhenTheWriterIsClosed() throws Exception {
+        // Parked messages are dropped with the writer (no checkpoint covered them), so a gauge
+        // still reporting them would outlive what it describes.
+        PubSubWriter<String> writer = newWriter();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.NOT_FOUND)));
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isEqualTo(1);
+
+        writer.close();
+
+        assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isZero();
+    }
+
+    @Test
+    void countsAFailedPublishUnderItsStatusCode() throws Exception {
+        PubSubWriter<String> writer = newWriter();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.PERMISSION_DENIED)));
+
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+
+        assertThat(errors("PERMISSION_DENIED")).isEqualTo(1);
+    }
+
+    @Test
+    void countsAFailureCarryingNoStatusAsUnclassified() throws Exception {
+        PubSubWriter<String> writer = newWriter();
+        factory.enqueueFuture(
+                ApiFutures.immediateFailedFuture(new RuntimeException("publish exploded")));
+
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+
+        assertThat(errors("UNCLASSIFIED")).isEqualTo(1);
+    }
+
+    @Test
+    void doesNotCountACascadeCancellationBesideItsRoot() throws Exception {
+        // With ordering enabled the SDK cancels an ordering key's queued publishes after the key's
+        // first failure. Those cancellations are not incidents of their own — counting them would
+        // multiply one NOT_FOUND by the length of the key's queue, and they carry no status, so
+        // they would pile up under UNCLASSIFIED where genuinely unclassifiable failures live.
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> element.split(":")[0]),
+                        PubSubPublisherOptions.builder().enableMessageOrdering(true).build(),
+                        FailureHandler.failJob(),
+                        CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.NOT_FOUND)));
+        factory.enqueueFuture(
+                ApiFutures.immediateFailedFuture(
+                        new CancellationException(
+                                "Execution cancelled because executing previous runnable"
+                                        + " failed.")));
+
+        writer.write("k1:first", CONTEXT);
+        writer.write("k1:second", CONTEXT);
+        writer.flush(false);
+
+        assertThat(errors("NOT_FOUND")).isEqualTo(1);
+        assertThat(metrics.hasMetric("errorClass", "CANCELLED", "errors")).isFalse();
+        assertThat(metrics.hasMetric("errorClass", "UNCLASSIFIED", "errors")).isFalse();
+    }
+
+    @Test
+    void countsARecordTheSerializerRejectedAsASendError() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(
+                        element -> {
+                            throw new IOException("bad record");
+                        },
+                        PubSubPublisherOptions.defaults(),
+                        FailureHandler.logAndDrop(),
+                        CreateDisposition.CREATE_IF_NEEDED);
+
+        writer.write("topic-a", CONTEXT);
+
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        // Never handed to the client, so it is not a send.
+        assertThat(counter("numRecordsSend")).isZero();
+    }
+
+    @Test
+    void countsAMessageTheServiceRejectedAsASendError() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubPublisherOptions.defaults(),
+                        FailureHandler.logAndDrop(),
+                        CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
+
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+
+        assertThat(counter("numRecordsSend")).isEqualTo(1);
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
+    }
+
+    @Test
+    void registersNoPerDestinationCountersByDefault() throws Exception {
+        PubSubWriter<String> writer = newWriter();
+
+        writer.write("topic-a", CONTEXT);
+
+        // Off means nothing registered, not a counter sitting at zero: Flink cannot unregister a
+        // metric, so the switch has to be checked before registration.
+        assertThat(metrics.hasMetric("destination", topic("topic-a").toTopicPath(), "recordsSend"))
+                .isFalse();
+        assertThat(counter("numRecordsSend")).isEqualTo(1);
+    }
+
+    @Test
+    void countsPerTopicWhenPerDestinationMetricsAreOn() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubPublisherOptions.builder().perDestinationMetrics(true).build(),
+                        FailureHandler.logAndDrop(),
+                        CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
+
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-b", CONTEXT);
+        mailbox.drain();
+
+        String topicA = topic("topic-a").toTopicPath();
+        String topicB = topic("topic-b").toTopicPath();
+        assertThat(counter("destination", topicA, "recordsSend")).isEqualTo(2);
+        assertThat(counter("destination", topicA, "sendErrors")).isEqualTo(1);
+        assertThat(counter("destination", topicB, "recordsSend")).isEqualTo(1);
+        assertThat(metrics.hasMetric("destination", topicB, "sendErrors")).isTrue();
+        assertThat(counter("destination", topicB, "sendErrors")).isZero();
+    }
+
+    @Test
+    void leavesCurrentSendTimeUnset() throws Exception {
+        // Deliberate (#37): the SDK batches publishes and completes their futures asynchronously,
+        // so any latency this writer could report would measure its own bookkeeping.
+        PubSubWriter<String> writer = newWriter();
+
+        writer.write("topic-a", CONTEXT);
+
+        assertThat(metrics.getCurrentSendTimeGauge()).isNull();
+    }
+
+    @Test
+    void countsTheSendErrorEvenWhenTheHandlerFailsTheJob() throws Exception {
+        // The counter is what a user watching a non-default handler is told to trust, so it must
+        // not depend on what the handler then does with the message.
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubPublisherOptions.defaults(),
+                        FailureHandler.failJob(),
+                        CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
+
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        assertThatThrownBy(() -> writer.write("topic-a", CONTEXT)).isInstanceOf(IOException.class);
+    }
+}

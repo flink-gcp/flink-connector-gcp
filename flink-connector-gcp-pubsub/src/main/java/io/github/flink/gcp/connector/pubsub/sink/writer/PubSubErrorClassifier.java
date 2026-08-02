@@ -22,6 +22,8 @@ import org.apache.flink.util.ExceptionUtils;
 import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 
+import javax.annotation.Nullable;
+
 import java.util.concurrent.CancellationException;
 
 /**
@@ -90,6 +92,24 @@ final class PubSubErrorClassifier {
             return Kind.MESSAGE_LEVEL;
         }
         return Kind.FATAL;
+    }
+
+    /**
+     * Returns the status code the failure is counted under, or {@code null} when its chain carries
+     * none — a raw {@link CancellationException}, or anything the client library surfaced without a
+     * status. The first classifiable element of the chain wins, which is the same "match anywhere"
+     * traversal {@link #classify} performs; it lives here rather than at the metric call site
+     * because this class owns the connector's traversal policy, exactly as {@code
+     * StatusCodes.codeOf} leaves that policy to its callers.
+     *
+     * @param throwable the failure reported by the publish future
+     * @return the status code, or {@code null}
+     */
+    @Nullable
+    static StatusCode.Code statusCode(Throwable throwable) {
+        return ExceptionUtils.findThrowable(throwable, t -> StatusCodes.codeOf(t) != null)
+                .map(StatusCodes::codeOf)
+                .orElse(null);
     }
 
     /**

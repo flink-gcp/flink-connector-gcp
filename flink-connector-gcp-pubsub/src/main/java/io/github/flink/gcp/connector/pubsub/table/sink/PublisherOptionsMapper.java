@@ -87,6 +87,9 @@ public final class PublisherOptionsMapper {
         config.getOptional(PubSubConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS)
                 .ifPresent(builder::recoveryMaxAttempts);
 
+        config.getOptional(PubSubConnectorOptions.SINK_METRICS_PER_DESTINATION)
+                .ifPresent(builder::perDestinationMetrics);
+
         return builder.build();
     }
 }

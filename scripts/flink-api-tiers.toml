@@ -43,7 +43,10 @@
 # the pom-pinned flink.version (the supported floor). Not flink-streaming-java:
 # since the 2.x restructuring the streaming.api.* types this project uses ship
 # in flink-runtime's sources jar, and flink-core-api (split out of flink-core
-# in 2.0) owns util.function.*.
+# in 2.0) owns util.function.*. flink-test-utils owns MetricListener, which the
+# test-utils module's sink metric-group harness sits on — that module keeps its
+# helpers in src/main/java so siblings can consume the plain jar at test scope,
+# which is exactly why they are audited here like any other main source.
 artifacts = [
     "flink-annotations",
     "flink-core",
@@ -52,6 +55,7 @@ artifacts = [
     "flink-runtime",
     "flink-connector-base",
     "flink-table-common",
+    "flink-test-utils",
 ]
 
 # ---------------------------------------------------------------------------
@@ -81,6 +85,14 @@ reason = """
 The Pub/Sub source reader counts records outside the mailbox thread, and this
 is Flink's own thread-safe Counter. The fallback is a trivial
 LongAdder-backed Counter implementation in this repository."""
+
+[internal."org.apache.flink.metrics.groups.UnregisteredMetricsGroup"]
+reason = """
+Only its static createOperatorIOMetricGroup(), for the one method of
+SinkWriterMetricGroup the test harness in flink-connector-gcp-test-utils has to
+answer and no sink here calls (issue #208). Test-support code, so a change
+breaks a test rather than a job, and the fallback is a four-method stub of
+OperatorIOMetricGroup in this repository."""
 
 [internal."org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval"]
 reason = """
@@ -130,6 +142,25 @@ ByteArrayInputStream — which is what the kafka connector's serializers use."""
 reason = """
 Write-side twin of DataInputDeserializer in the same serializers; same
 rationale and same fallback."""
+
+[unannotated."org.apache.flink.runtime.metrics.groups.ProxyMetricGroup"]
+reason = """
+Base class of the sink metric-group test harness in
+flink-connector-gcp-test-utils (issue #208): it delegates every registration to
+a parent group, which is what lets the harness put a writer's metrics into a
+MetricListener and read them back by the names a reporter would see. Flink's own
+InternalSinkWriterMetricGroup extends it for the same reason and offers no mock()
+factory to use instead. Test-support code, and the fallback is implementing
+MetricGroup's dozen delegating methods here."""
+
+[unannotated."org.apache.flink.metrics.testutils.MetricListener"]
+reason = """
+The registry behind that harness, and Flink's own test utility for the job —
+the Pub/Sub source's TestReaderMetrics already uses it, in test sources. It is
+named here only because the sink harness is shared and therefore lives in
+src/main/java. Fallback is a metric-recording MetricGroup of this repository's
+own, which would reimplement Flink's identifier composition — the very thing the
+name-based assertions rest on."""
 
 [unannotated."org.apache.flink.util.IOUtils"]
 reason = """

@@ -512,5 +512,15 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "The cap on republish attempts of the topic auto-creation recovery.");
 
+    public static final ConfigOption<Boolean> SINK_METRICS_PER_DESTINATION =
+            ConfigOptions.key("sink.metrics.per-destination")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the sink registers per-topic send counters beside its totals."
+                                    + " Off by default: Flink cannot unregister a metric, so with"
+                                    + " dynamic destinations every topic the job writes to keeps a row"
+                                    + " in the metric registry for the lifetime of the task.");
+
     private PubSubConnectorOptions() {}
 }
