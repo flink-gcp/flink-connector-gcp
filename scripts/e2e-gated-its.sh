@@ -24,41 +24,61 @@
 # run it, which is the point: joining the E2E workflow is a decision, not an
 # accident.
 #
-# Three modes, all called by the `e2e` recipe in the justfile (which the E2E
-# workflow runs — see .github/workflows/e2e.yaml):
+# Four modes. The first three are called by the `e2e` recipe in the justfile
+# (which the E2E workflow runs — see .github/workflows/e2e.yaml); the fourth is
+# a per-pull-request check in ci.yaml, via `just check-gated-tags`:
 #
 #   (default)      print the gated class names, comma-joined, for -Dtest=
 #   --require-env  fail unless every variable the gates read is set.
 #                  @EnabledIfEnvironmentVariable turns a missing variable into
 #                  a silent skip; this turns it into an error before any build
-#                  minutes are spent
+#                  minutes are spent. Still as strict as it was before the tag
+#                  below existed (issue #245 asked): the tag makes the suite
+#                  opt-in per command, and `just e2e` *is* that opt-in, so a
+#                  variable missing inside it is a broken run, not a choice
 #   --assert-ran   fail unless every gated class has a surefire report showing
 #                  tests ran and none skipped — the after-the-fact proof that
 #                  green meant "ran", not "skipped". Without it, a workflow
 #                  that lost its credentials would go green, the worst failure
 #                  mode for a job whose purpose is catching what the emulator
 #                  cannot.
+#   --check-tags   fail unless the environment gate and @Tag("gated") sit
+#                  together on every class carrying either (issue #245)
+#
+# The tag is what keeps these classes out of an ordinary build: surefire
+# excludes it by default (test.excluded.groups in the root pom), because the
+# environment gate alone is all-or-nothing for a *shell* — a `just verify` in
+# one carrying BIGTABLE_IT_PROJECT creates two one-node Bigtable instances.
+# Forgetting the tag therefore fails in the expensive direction, which is what
+# --check-tags exists to catch.
 
 set -euo pipefail
 
-# Fatal when a gate matches nothing: zero gated ITCases for a connector means
-# the annotation moved or the tree layout changed, and every mode below would
-# otherwise degenerate into a vacuous pass for that connector while the other
-# one keeps the union non-empty.
-sources=''
-for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT; do
-    matched=$(grep -rl --include='*.java' "named = \"$gate\"" ./*/src/test/java | sort) || {
-        echo "::error::no test class is gated on $gate; the gating annotation moved or the tree layout changed" >&2
-        exit 1
-    }
-    sources="$sources$matched"$'\n'
-done
-sources=$(printf '%s' "$sources" | sort -u)
+# The E2E suite: every test class gated on one of the variables that workflow
+# sets. Fatal when a gate matches nothing, since zero gated ITCases for a
+# connector means the annotation moved or the tree layout changed, and the
+# modes below would otherwise degenerate into a vacuous pass for that connector
+# while the others keep the union non-empty.
+#
+# A function rather than a top-level block: --check-tags is deliberately
+# gate-agnostic (see there) and must not require this particular list to match.
+gated_sources() {
+    local sources='' gate matched
+    for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT; do
+        matched=$(grep -rl --include='*.java' "named = \"$gate\"" ./*/src/test/java | sort) || {
+            echo "::error::no test class is gated on $gate; the gating annotation moved or the tree layout changed" >&2
+            return 1
+        }
+        sources="$sources$matched"$'\n'
+    done
+    printf '%s' "$sources" | sort -u
+}
 
 case "${1:-}" in
     '')
         # Simple class names: -Dtest= matches on them, and every module keeps
         # its test classes uniquely named.
+        sources=$(gated_sources)
         while IFS= read -r src; do
             basename "$src" .java
         done <<< "$sources" | paste -sd, -
@@ -80,6 +100,7 @@ case "${1:-}" in
         ;;
     --assert-ran)
         failed=0
+        sources=$(gated_sources)
         while IFS= read -r src; do
             module=${src%%/src/test/java/*}
             fqcn=${src#*/src/test/java/}
@@ -109,8 +130,54 @@ case "${1:-}" in
         done <<< "$sources"
         exit "$failed"
         ;;
+    --check-tags)
+        # Deliberately gate-agnostic — any variable, not just the three the E2E
+        # workflow sets: BigQueryDefaultStreamSchemaEvolutionITCase gates on
+        # BQ_IT_SCHEMA_EVOLUTION precisely to stay out of that suite, and at a
+        # measured ~2 hours against the real service it is the class an
+        # ordinary build can least afford to pick up.
+        #
+        # Matching on the annotation's own name and its first argument keeps
+        # the javadoc that discusses it (RealBigQuery, the two Abstract*RealGcp
+        # base classes) out of the result: those write {@code
+        # @EnabledIfEnvironmentVariable} with no argument list. The leading @ is
+        # deliberately not part of the pattern, so this and the gate-by-gate
+        # discovery above agree on what an annotation looks like — a
+        # fully-qualified one would otherwise be discovered and not checked,
+        # which is the direction that costs money.
+        failed=0
+        env_gated=$(grep -rl --include='*.java' 'EnabledIfEnvironmentVariable(named = "' ./*/src/test/java | sort) || {
+            echo "::error::no test class carries @EnabledIfEnvironmentVariable(named = \"…\"); the gating annotation moved or the tree layout changed, and this check would pass vacuously" >&2
+            exit 1
+        }
+        while IFS= read -r src; do
+            if ! grep -q '@Tag("gated")' "$src"; then
+                echo "::error::$src is gated on an environment variable but carries no @Tag(\"gated\"), so any build in a shell where that variable is set runs it — for the real-GCP suites, at the cost of billed resources. Add @Tag(\"gated\") beside the gate, or remove the gate if the class is not part of a gated suite." >&2
+                failed=1
+            fi
+        done <<< "$env_gated"
+        # Kept separate rather than diffed against the list above: a class may
+        # be tagged and not gated, which is the mirror failure and needs its
+        # own message. This side has no javadoc exemption to make — the literal
+        # is short enough to appear in prose — so a class whose *comment*
+        # quotes @Tag("gated") reads as tagged: document the convention in a
+        # CLAUDE.md rather than in javadoc, as the base classes do.
+        tagged=$(grep -rl --include='*.java' '@Tag("gated")' ./*/src/test/java | sort) || true
+        if [ -n "$tagged" ]; then
+            while IFS= read -r src; do
+                if ! grep -q 'EnabledIfEnvironmentVariable(named = "' "$src"; then
+                    echo "::error::$src carries @Tag(\"gated\") but no @EnabledIfEnvironmentVariable(named = \"…\"), so nothing runs it: ordinary builds exclude the tag and \`just e2e\` selects classes by the environment gate. Add the gate, or remove the tag." >&2
+                    failed=1
+                fi
+            done <<< "$tagged"
+        fi
+        if [ "$failed" -eq 0 ]; then
+            echo "gated classes carrying both markers: $(printf '%s\n' "$env_gated" | wc -l | tr -d ' ')"
+        fi
+        exit "$failed"
+        ;;
     *)
-        echo "usage: $0 [--require-env | --assert-ran]" >&2
+        echo "usage: $0 [--require-env | --assert-ran | --check-tags]" >&2
         exit 2
         ;;
 esac

@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -54,6 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * documentation page's Testing section and the correction on issue #82). The emulator ITs assert
  * only the parts that survive there: single-subtask consumption without stalling idle subtasks.
  */
+@Tag("gated")
 @EnabledIfEnvironmentVariable(named = "PUBSUB_IT_PROJECT", matches = ".+")
 class PubSubSourceOrderingRealGcpITCase extends AbstractPubSubRealGcpITCase {
 

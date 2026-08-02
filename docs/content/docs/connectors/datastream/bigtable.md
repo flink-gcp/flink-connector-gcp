@@ -286,13 +286,15 @@ surface, which is enough to prove that mutations arrive and that a flush means w
 nothing there asserts a rejection the real service would produce.
 
 A **gated suite against real Cloud Bigtable** covers what the emulator cannot
-([#218]({{< param BookRepo >}}/issues/218)). It runs weekly, and locally when `BIGTABLE_IT_PROJECT`
-is set; without that variable its classes skip. Note what setting it locally implies: the gate is
-read by the classes themselves, not by a build profile, so **an ordinary local build runs the gated
-suite too** and creates the instances it needs. That is the same shape the BigQuery and Pub/Sub gates
-have, but this is the first one that bills for a resource rather than using a standing one, so it is
-worth choosing deliberately whether the variable lives in a shell you build from every day. Two
-things only this suite can show:
+([#218]({{< param BookRepo >}}/issues/218)). It runs weekly, and locally through `just e2e` with
+`BIGTABLE_IT_PROJECT` set; without that variable its classes skip. Because this suite bills for the
+instances it creates rather than using a standing resource, running it is **opt-in per command**
+([#245]({{< param BookRepo >}}/issues/245)): its classes carry `@Tag("gated")`, which the build
+excludes from every test run by default, so an ordinary `mvn verify` does not select them at all,
+whatever the environment holds. `just e2e` clears that exclusion (`-Dtest.excluded.groups=`, which
+is also how to run a single gated class by hand). The exclusion is Maven's, so a run started
+straight from an IDE bypasses it — there the environment variable is again the only thing standing
+between you and a new instance. Two things only this suite can show:
 
 - **The client-construction path every real job takes.** Every emulator test passes
   `emulatorEndpoint(...)`, so the branch that builds a client over application-default credentials

@@ -21,6 +21,7 @@ import com.google.pubsub.v1.Subscription;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.PubSubSubscriptionAdmin;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and seek on an ordering-enabled subscription, which the emulator refuses outright (its seek
  * support is unordered-only, measured in issue #81's PR).
  */
+@Tag("gated")
 @EnabledIfEnvironmentVariable(named = "PUBSUB_IT_PROJECT", matches = ".+")
 class PubSubSubscriptionAdminRealGcpITCase extends AbstractPubSubRealGcpITCase {
 

@@ -96,12 +96,15 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   run. The cluster id is built from the run id rather than the instance id, which at 28 characters
   leaves no room under a cluster id's own 30-character limit. Measured 2026-08-02: the two classes
   together, instance provisioning included, take about 7½ minutes.
-  **`BIGTABLE_IT_PROJECT` in a local `.env` makes every `just verify` create instances**, because the
-  gate is on the classes and `verify` runs the same `integration-tests` execution `just e2e` does.
-  The BigQuery and Pub/Sub gates have had that shape all along; the difference is that this is the
-  first one whose resources are billed per run rather than standing, so ~7½ minutes and a node-hour
-  fraction join every full local build the variable is visible to. Scoping with `-Dtest=` or keeping
-  the variable out of the always-loaded environment are the two ways out; neither is enforced.
+  **`BIGTABLE_IT_PROJECT` in a shell used to make every `just verify` create instances**, because
+  the gate is on the classes and `verify` runs the same `integration-tests` execution `just e2e`
+  does — ~7½ minutes and a node-hour fraction on every full build the variable was visible to. The
+  BigQuery and Pub/Sub gates had that shape all along and were merely cheap; being the first one
+  billed per run is what forced #245, which closed it: every gated class also carries
+  `@Tag("gated")`, which surefire excludes by default, so the suite is opt-in per *command*
+  (`just e2e`, or `-Dtest.excluded.groups=` by hand) rather than per shell. The variable is still
+  required to run the suite — the environment gate is unchanged — but setting it no longer costs
+  anything by itself.
 - **What real Bigtable answers, measured 2026-08-02** (client 2.80.0), which is what the connector
   page's error-handling table now states rather than infers. Routed (`INVALID_ARGUMENT`): a cell
   timestamp that is not a multiple of 1000 ("Timestamp granularity mismatch"), and an empty row key

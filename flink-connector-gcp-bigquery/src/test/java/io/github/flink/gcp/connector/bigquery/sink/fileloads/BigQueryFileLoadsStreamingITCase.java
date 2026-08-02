@@ -46,6 +46,7 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -67,6 +68,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Same environment variables and skip behavior as {@link BigQueryFileLoadsITCase}.
  */
+@Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_DATASET", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_GCS_BUCKET", matches = ".+")

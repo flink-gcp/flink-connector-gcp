@@ -30,9 +30,17 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   cannot resolve inter-module dependencies from the reactor — same mechanism as the licence-goal
   rule below, bitten via the SQL uber-jar in #181 — and it primes `~/.m2` with
   `io.github.flink-gcp` SNAPSHOTs when run by hand (the recipe comment has the cleanup line)
-- `just e2e` — the ITCases gated on the `BQ_IT_*` / `PUBSUB_IT_PROJECT` variables, which
-  `just verify` silently skips,
-  with a pre-flight that makes a missing variable an error and a post-run assertion
+- `just e2e` — the ITCases gated on the `BQ_IT_*` / `PUBSUB_IT_PROJECT` / `BIGTABLE_IT_PROJECT`
+  variables, **and the only thing that runs them** (#245): each gated class also carries
+  `@Tag("gated")`, which the root pom's `test.excluded.groups` excludes from every surefire
+  execution, and this recipe is what clears it with `-Dtest.excluded.groups=`. The environment
+  gate alone was all-or-nothing for a *shell* — `just verify` runs the same `integration-tests`
+  execution, so a shell holding `BIGTABLE_IT_PROJECT` created two one-node instances on every
+  full build — and the tag is what makes the choice per command instead, for `./mvnw verify` as
+  much as for `just verify`. The `@EnabledIfEnvironmentVariable` stays exactly where it is (the
+  discovery greps it), so the two markers must be kept together, which
+  `just check-gated-tags` enforces. Around that: a pre-flight that makes a missing variable an
+  error — as strict as before, because this recipe *is* now the opt-in — and a post-run assertion
   (`scripts/e2e-gated-its.sh`, which derives the class list from the gating annotation) that the
   gated classes actually executed. Its `-pl`-scoped builds install the base and test-utils modules
   first, for the same reactor-resolution reason `binary-compat` installs (#27, #61). The weekly E2E workflow (`e2e.yaml`) runs this same recipe
@@ -94,6 +102,20 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   belongs in — is `.claude/skills/curate-option-docs/`**, the third of the checker skills. Note
   what the check does *not* do: it compares the set of options, not their values, so a changed
   default has to be edited in the same commit
+- `just check-gated-tags` — the two markers a gated real-GCP ITCase carries have to stay together
+  (#245): the `@EnabledIfEnvironmentVariable` the E2E suite is *discovered* by, and the
+  `@Tag("gated")` that keeps the class out of every ordinary build. `scripts/e2e-gated-its.sh
+  --check-tags` fails in both directions — a gate with no tag runs the suite during any
+  `just verify` in a shell holding the variable (billed Bigtable instances), a tag with no gate
+  runs nowhere at all, since `just e2e` selects by the gate. Deliberately **gate-agnostic**,
+  matching the annotation rather than the three variables the E2E workflow sets, so
+  `BigQueryDefaultStreamSchemaEvolutionITCase` — outside that suite on purpose, ~2 h against the
+  real service — is covered too. Its own `ci.yaml` job for `check-flink-api-tiers`'s reason (its
+  inputs are the Java *test* sources, exactly `ci.yaml`'s trigger set), and it needs no JDK, no
+  Python and no network. **The one checker with no `curate-*` skill**, and the exemption is
+  argued rather than an oversight: those skills exist for allowlist judgment — which entry, with
+  what reason — and this check has no allowlist and exactly two mechanical fixes, both named in
+  the failure message
 - `just ci-maven-args` — CI's module-selection decision (#243): which Maven modules does a
   change build? `ci.yaml`'s `changes` job calls it with `--diff HEAD^1` (the pull_request
   checkout is the base-into-head merge commit, fetched at depth 2, so that diff is the pull
@@ -109,7 +131,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   pins what actually installs (committed, rat-excluded as machine-written), uv itself is pinned
   in `mise.toml` like the linters. Runs as lint.yaml's `script_tests` job, whose paths list the
   root `pyproject.toml`/`uv.lock` for exactly the mise.toml reason. A new `scripts/*.py`
-  checker owes its tests here, alongside the curate-* skill the checker rule already demands.
+  checker owes its tests here, alongside the curate-* skill the checker rule already demands —
+  a skill being owed for *judgment*, which is why `check-gated-tags` (#245) has tests here and
+  no skill.
   **A checker's tests are synthetic — a tree built in `tmp_path` with `ROOT`/`CONFIG`/`SOURCES`
   monkeypatched onto it — never assertions against the real repository**, which is what keeps
   lint.yaml's paths filter from having to grow to every input those checkers read (every Java
@@ -486,13 +510,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   nothing about them depends on what the deriver picks. The `justfile` stays full-reactor too:
   it carries the Maven invocations themselves.
   Pushes to main and `workflow_dispatch` always build the full reactor. The
-  checks branch protection is to require — once it is available, which needs the repository
-  public (#6) or a paid plan; a private free-plan repository cannot set required checks at all —
-  are `CI passed` (the gate job that turns "nothing to build" into an explicit green — `build`
-  itself must never be required, it skips), `Audit Flink API tiers` and
-  `Check the configuration reference`; the never-reports caveat still applies verbatim to
-  `docs.yaml` and `lint.yaml`, which keep their `paths` filters and must stay optional as long
-  as they do
+  checks branch protection requires (#250, live since the plan upgrade — a private free-plan
+  repository cannot set required checks at all) are `CI passed` (the gate job that turns
+  "nothing to build" into an explicit green — `build` itself must never be required, it skips),
+  `Audit Flink API tiers` and `Check the configuration reference`. `Check the gated-suite
+  tagging` (#245) is a candidate for the same treatment and reports unconditionally, but adding
+  it is a repository-settings change, not a change to this file. The never-reports caveat still
+  applies verbatim to `docs.yaml` and `lint.yaml`, which keep their `paths` filters and must
+  stay optional as long as they do
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual

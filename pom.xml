@@ -129,6 +129,18 @@ limitations under the License.
         <license-maven-plugin.version>2.7.1</license-maven-plugin.version>
         <!-- Adds the per-major compat source root; see the flink.compat property above. -->
         <build-helper-maven-plugin.version>3.6.1</build-helper-maven-plugin.version>
+
+        <!-- Test execution -->
+        <!-- The JUnit tags surefire excludes (issue #245). "gated" is the real-GCP
+             suites, which every ordinary build must skip: their @EnabledIfEnvironmentVariable
+             gate is read by the classes, so it is all-or-nothing for a *shell* — a
+             `just verify` in one carrying BIGTABLE_IT_PROJECT creates two one-node Bigtable
+             instances. Excluding the tag here makes the gate per *command* instead, for
+             `./mvnw verify` as much as for `just verify`; `just e2e` — and the manual probe
+             documented in BigQueryDefaultStreamSchemaEvolutionITCase — opt in by clearing
+             this property with -Dtest.excluded.groups=. Every gated class carries both
+             markers, which `just check-gated-tags` enforces in both directions. -->
+        <test.excluded.groups>gated</test.excluded.groups>
     </properties>
 
     <dependencyManagement>
@@ -345,6 +357,20 @@ limitations under the License.
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
+                <!-- Plugin level, so this reaches both executions rather than only
+                     integration-tests: -Dtest= overrides an execution's includes, so
+                     `./mvnw test -Dtest=BigtableSinkRealGcpITCase` would otherwise run a
+                     gated class through default-test. Maven merges plugin configuration
+                     into every execution parameter by parameter, so the integration-tests
+                     configuration below keeps its own reuseForks and inherits this.
+
+                     Configuring the parameter at all takes surefire's own -DexcludedGroups
+                     out of play (an explicitly configured parameter beats the user property
+                     it would otherwise default to), which is why the property above carries
+                     a different name: -Dtest.excluded.groups is the knob. -->
+                <configuration>
+                    <excludedGroups>${test.excluded.groups}</excludedGroups>
+                </configuration>
                 <executions>
                     <execution>
                         <!-- The parent runs this execution with reuseForks=false, a fresh
