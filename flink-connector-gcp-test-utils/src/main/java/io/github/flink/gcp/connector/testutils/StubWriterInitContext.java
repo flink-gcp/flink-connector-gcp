@@ -19,9 +19,7 @@ package io.github.flink.gcp.connector.testutils;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobInfo;
-import org.apache.flink.api.common.JobInfoImpl;
 import org.apache.flink.api.common.TaskInfo;
-import org.apache.flink.api.common.TaskInfoImpl;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.common.serialization.SerializationSchema;
@@ -46,8 +44,8 @@ import java.util.OptionalLong;
 @Internal
 public final class StubWriterInitContext implements WriterInitContext {
 
-    private final int subtaskIndex;
-    private final int parallelism;
+    private final TaskInfo taskInfo;
+    private final JobInfo jobInfo = new StubJobInfo();
     private final FakeMailboxExecutor mailboxExecutor = new FakeMailboxExecutor();
 
     private final SinkWriterMetricGroup metricGroup =
@@ -73,18 +71,17 @@ public final class StubWriterInitContext implements WriterInitContext {
      * @param parallelism the parallelism the context reports
      */
     public StubWriterInitContext(int subtaskIndex, int parallelism) {
-        this.subtaskIndex = subtaskIndex;
-        this.parallelism = parallelism;
+        this.taskInfo = new StubTaskInfo(subtaskIndex, parallelism);
     }
 
     @Override
     public TaskInfo getTaskInfo() {
-        return new TaskInfoImpl("task", parallelism, subtaskIndex, parallelism, 0);
+        return taskInfo;
     }
 
     @Override
     public JobInfo getJobInfo() {
-        return new JobInfoImpl(new JobID(), "job");
+        return jobInfo;
     }
 
     @Override
@@ -135,5 +132,73 @@ public final class StubWriterInitContext implements WriterInitContext {
     @Override
     public <IN> TypeSerializer<IN> createInputSerializer() {
         throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Implements the {@code @PublicEvolving} interface rather than instantiating Flink's {@code
+     * TaskInfoImpl}, which is {@code @Internal} — and would be the one unstable import this module
+     * carries, since {@code scripts/check-flink-api-tiers.py} audits main sources and these live in
+     * {@code src/main/java}. Seven methods, identical in 1.20 and 2.x.
+     */
+    private static final class StubTaskInfo implements TaskInfo {
+
+        private final int subtaskIndex;
+        private final int parallelism;
+
+        private StubTaskInfo(int subtaskIndex, int parallelism) {
+            this.subtaskIndex = subtaskIndex;
+            this.parallelism = parallelism;
+        }
+
+        @Override
+        public String getTaskName() {
+            return "task";
+        }
+
+        @Override
+        public int getMaxNumberOfParallelSubtasks() {
+            return parallelism;
+        }
+
+        @Override
+        public int getIndexOfThisSubtask() {
+            return subtaskIndex;
+        }
+
+        @Override
+        public int getNumberOfParallelSubtasks() {
+            return parallelism;
+        }
+
+        @Override
+        public int getAttemptNumber() {
+            return 0;
+        }
+
+        @Override
+        public String getTaskNameWithSubtasks() {
+            return "task (" + (subtaskIndex + 1) + "/" + parallelism + ")";
+        }
+
+        @Override
+        public String getAllocationIDAsString() {
+            return "stub-allocation";
+        }
+    }
+
+    /** The {@code @PublicEvolving} interface, for the reason {@link StubTaskInfo} records. */
+    private static final class StubJobInfo implements JobInfo {
+
+        private final JobID jobId = new JobID();
+
+        @Override
+        public JobID getJobId() {
+            return jobId;
+        }
+
+        @Override
+        public String getJobName() {
+            return "job";
+        }
     }
 }
