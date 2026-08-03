@@ -421,8 +421,8 @@ Registered on the sink writer's metric group, one set per subtask:
 | `destination.TOPIC.recordsSend`, `destination.TOPIC.sendErrors` | counter | the same two counts per topic, **only** with `perDestinationMetrics(true)` |
 
 **`numRecordsSend` counts records, not publish attempts.** A message the topic-creation repair
-republishes is counted once, at the write that admitted it, so a job recovering from a missing topic
-does not report itself as a busier one. Every connector in this repository counts the same way,
+republishes is counted once, when the client first accepted it, so a job recovering from a missing
+topic does not report itself as a busier one. Every connector in this repository counts the same way,
 whether its retries live in the sink or inside the SDK, so the number is comparable across them. The
 consequence to know: `numBytesSend` is payload volume rather than wire volume — a record republished
 three times moved three times its size across the network. Retry volume is what

@@ -114,10 +114,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `PubSubSourceReaderMetrics` model, but with **plain counters, not `ThreadSafeSimpleCounter`** —
   every increment happens on the task thread here, since completions arrive as mailbox mails,
   which is exactly what the source cannot say. Four decisions worth keeping. **`numRecordsSend` is
-  counted in `write()`, not in `publishTo`**, because the topic-creation repair re-enters
-  `publishTo` for every parked message: the `firstAttempt` parameter is what keeps the metric a
-  count of records rather than of publish attempts, and the repo-wide decision behind it (with what
-  it costs `numBytesSend`) is on #208 and in the base module's CLAUDE.md. **`parkedMessages` is a
+  counted inside `publishTo`, guarded by its `firstAttempt` parameter** — not at the `write()` call
+  site, and not unguarded. Two properties have to hold at once, and only that placement gives both:
+  the topic-creation repair re-enters `publishTo` for every parked message, so an unguarded
+  increment would count publish *attempts* rather than records; and counting at the call site would
+  count a record whose `publisher.publish(...)` threw synchronously, which registers no callback and
+  reached the client not at all. So the counter sits beside `inFlightMessages++`, after the publish
+  was accepted, under the flag. The repo-wide decision behind counting once (with what it costs
+  `numBytesSend`) is on #208 and in the base module's CLAUDE.md. **`parkedMessages` is a
   new plain `int` field** maintained by the sole `park(...)` helper rather than a sum over
   `states`, since the gauge is read from the reporter thread and walking those maps would race the
   task thread; `close()` zeroes it, because parked messages are dropped with the writer.

@@ -83,11 +83,16 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   emulator's `INVALID_ARGUMENT` surface is not evidence about the service's (see the emulator rule)
 - **Sink metrics** (#209, the #37 series): `CloudTasksWriterMetrics` (`sink.writer`) over the shared
   `base.metrics` helpers, with plain counters — completions arrive as mailbox mails, so every
-  increment is on the task thread. Four things not to re-litigate. **`numRecordsSend` is counted in
-  `write()`, not in `dispatch(...)`**, which `dispatchDueRetries` re-enters for every parked
-  creation: the metric counts records, and this sink's retries are its own (#24), so counting there
-  would report a job working through an outage as a busier one — the repo-wide decision is on #208
-  and in the base module's CLAUDE.md. **Error classes count every attempt, retryable ones
+  increment is on the task thread. Four things not to re-litigate. **`numRecordsSend` is counted inside
+  `dispatch(...)`, guarded by `pending == null`** — that argument already means "first attempt", so
+  the retry-safety property is carried by the method's own signature rather than by a call-site
+  convention. `dispatchDueRetries` re-enters `dispatch` for every parked creation, and this sink's
+  retries are its own (#24), so an unguarded increment would report a job working through an outage
+  as a busier one. Counting in `write()` instead — where it sat until the second review round of
+  PR #242 — was wrong for the mirror reason: a `TaskCreator` throwing synchronously registers no
+  callback, so that record reached Cloud Tasks not at all and must not count as sent. The Pub/Sub
+  sink resolves the same pair with an explicit `firstAttempt` flag on `publishTo`. The repo-wide
+  decision is on #208 and in the base module's CLAUDE.md. **Error classes count every attempt, retryable ones
   included**, which is the deliberate asymmetry with `numRecordsSend`: the sum over the transient
   codes *is* the retry volume, and that is why the separate retries counter the issue considered was
   declined. **`ALREADY_EXISTS` on a named task is `tasksDeduplicated`, not an error** — it is the
