@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -188,7 +189,7 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
                         .create();
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(
-                        batcher, new FakeMailboxExecutor(), new RecordingSinkWriterMetricGroup());
+                        batcher, new FakeMailboxExecutor(), TestSinkWriterMetricGroup.create());
     }
 
     /** A handler that drops every mutation, recording what it saw. */

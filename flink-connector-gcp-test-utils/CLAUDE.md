@@ -40,15 +40,16 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
   group cannot satisfy). It brings `flink-test-utils` into this module at `provided`, so **a module
   using the harness declares `flink-test-utils` at test scope itself** — provided being
   non-transitive is the property this pom rests on, not an oversight. Bigtable's private
-  `RecordingSinkWriterMetricGroup` predates it and is **superseded**: #237 deletes it when it brings
-  that sink up to the series' standard, so until then it is a leftover, not a second pattern to
-  copy.
+  `RecordingSinkWriterMetricGroup` predated it and **was deleted by #237**, which brought that sink
+  up to the series' standard: assert-by-registered-name is what its gauges and `errorClass`
+  subgroups needed, and a counter-holding stub reaches neither. So this is the one sink
+  metric-group harness in the tree, with no second pattern beside it.
 - **`TestSinkCommitterMetricGroup` is its committer sibling** (#210, which #208 deferred it to for
   want of a consumer): the same `ProxyMetricGroup`-over-`MetricListener` shape for
   `SinkCommitterMetricGroup`, and the one type here admitted with a **single** consumer — the
   FILE_LOADS committer's `loadJobsSubmitted` is the only custom committer metric in the repository,
   so the multiple-consumer bar would keep it out forever, and the alternative is a private
-  module-local copy of exactly what #237 is deleting on the Bigtable side. It registers the
+  module-local copy of exactly what #237 then deleted on the Bigtable side. It registers the
   framework's five committer counters under the names a **reporter** sees — `totalCommittables`,
   `successfulCommittables`, `alreadyCommittedCommittables`, `failedCommittables`,
   `retriedCommittables`, read from `MetricNames` in flink-runtime 2.2.1 — which are *not* the

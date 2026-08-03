@@ -112,6 +112,25 @@ final class BigtableErrorClassifier {
     }
 
     /**
+     * Returns the status code a failed mutation is <em>reported</em> under — the chain's outermost
+     * classifiable status — or {@code null} when it carries none.
+     *
+     * <p>Deliberately not the code {@link #classify} acted on. That is a precedence over the whole
+     * chain, so a transient status buried under a data-shaped one decides the routing while this
+     * returns the outer one; reporting the routing decision instead would answer "why was this not
+     * dropped" rather than "what did it fail with", and the latter is what an error-class counter
+     * is read for. {@code PubSubErrorClassifier.statusCode} has the same shape and the same
+     * divergence.
+     *
+     * @param throwable the failure reported by the mutation's future
+     * @return the outermost classifiable status, or {@code null}
+     */
+    @Nullable
+    static StatusCode.Code statusCode(Throwable throwable) {
+        return firstMatching(throwable, null);
+    }
+
+    /**
      * Returns the first status code in the cause chain that is one of {@code codes}, or {@code
      * null} when the chain carries none; a null {@code codes} accepts any classifiable status.
      * Statuses are read through {@link StatusCodes#codeOf}, so a gax {@code ApiException} and a raw

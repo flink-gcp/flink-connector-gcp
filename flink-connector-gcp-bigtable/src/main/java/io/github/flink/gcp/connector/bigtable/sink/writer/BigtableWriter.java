@@ -20,7 +20,6 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
-import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
@@ -108,8 +107,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     private final int maxInFlightMutations;
     private final long maxInFlightBytes;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
-    private final Counter numRecordsSend;
-    private final Counter numBytesSend;
+    private final BigtableWriterMetrics metrics;
 
     private final String completionDescription;
     private final String failureDescription;
@@ -132,7 +130,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * @param config the sink configuration
      * @param batcher the mutation batcher; closed with the writer
      * @param mailboxExecutor the task mailbox, used to run mutation completions on the task thread
-     * @param metricGroup the writer's metric group, source of the send counters
+     * @param metricGroup the writer's metric group, which {@link BigtableWriterMetrics} registers
+     *     this sink's counters and gauges on
      */
     public BigtableWriter(
             BigtableSinkConfig<T> config,
@@ -156,8 +155,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         this.maxInFlightMutations = options.getMaxInFlightMutations();
         this.maxInFlightBytes = options.getMaxInFlightBytes();
         this.failedMutationHandler = config.getFailedMutationHandler();
-        this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
-        this.numBytesSend = metricGroup.getNumBytesSendCounter();
+        this.metrics = new BigtableWriterMetrics(metricGroup);
+        this.metrics.bindWriterState(this::getInFlightMutations, this::getInFlightBytes);
         this.completionDescription = "Complete a Bigtable mutation of " + destination;
         this.failureDescription = "Fail a Bigtable mutation of " + destination;
     }
@@ -172,6 +171,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             // The record never became a mutation, so there is nothing to carry but the destination:
             // FailedMutation.getPayloadBytes() is null, as the shared contract prescribes. Handled
             // on the task thread, so a handler that fails the job throws at the caller directly.
+            // Counted before the handler runs, because the counter says "routed", not "dropped" —
+            // a handler that fails the job routed the record just as one that discarded it did.
+            // Not counted under errorClass: a serialization failure carries no status.
+            metrics.mutationFailed();
             failedMutationHandler.handle(
                     FailedMutation.of(destination, null, "The record could not be serialized.", e));
             return;
@@ -198,8 +201,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // nothing would ever release it.
         inFlightMutations++;
         inFlightBytes += serializedSize;
-        numRecordsSend.inc();
-        numBytesSend.inc(serializedSize);
+        metrics.mutationSent(serializedSize);
         ApiFutures.addCallback(future, new MutationCallback(entry, serializedSize), Runnable::run);
     }
 
@@ -223,6 +225,17 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // path the writer applies no further records itself; note the batcher's own shutdown still
         // sends what is buffered inside it, which at-least-once tolerates as duplicates after the
         // restart.
+        // Both counters back gauges a reporter may still sample between this call and the metric
+        // group's own close, and nothing decrements them afterwards: the completions that would do
+        // so run as mailbox mails, which no longer run once the task is torn down. So a writer
+        // closed mid-flight would keep reporting mutations it will never wait for again. Zeroed
+        // *before* closeAll rather than after it, because the batcher's shutdown throws a
+        // BatchingException re-reporting every entry failure of its lifetime (#238) — which is
+        // precisely the failure path this matters on, so a clear placed after the call would be
+        // skipped exactly when it is needed. Same reason PubSubWriter.close() zeroes its parked
+        // count and the BigQuery writers clear their in-flight maps.
+        inFlightMutations = 0;
+        inFlightBytes = 0;
         // Through closeAll, so the handler is closed even when the batcher's shutdown throws: the
         // lifecycle contract promises close on the failure path too.
         IOUtils.closeAll(Arrays.<AutoCloseable>asList(batcher, failedMutationHandler::close));
@@ -279,6 +292,12 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     /** Task-thread handler for a failed mutation, run as a mailbox mail. */
     private void onMutationFailed(RowMutationEntry entry, int serializedSize, Throwable throwable) {
         releaseInFlight(serializedSize);
+        // Every failure that gets here is counted, fatal ones included and fatal ones after the
+        // first: the client has already spent its own retries, so each is a distinct give-up rather
+        // than an attempt. Which means the sum over the transient codes is not this connector's
+        // retry volume, unlike the Cloud Tasks sink's — the retries it would measure are inside the
+        // SDK and never surface here.
+        metrics.applyFailure(BigtableErrorClassifier.statusCode(throwable));
         if (BigtableErrorClassifier.classify(throwable) == BigtableErrorClassifier.Kind.ROW_LEVEL) {
             routeFailedMutation(entry, throwable);
         } else if (asyncError == null) {
@@ -304,6 +323,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * put the table in the sentence twice.
      */
     private void routeFailedMutation(RowMutationEntry entry, Throwable throwable) {
+        metrics.mutationFailed();
         try {
             failedMutationHandler.handle(
                     FailedMutation.of(
