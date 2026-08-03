@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.bigquery.JobInfo;
@@ -116,6 +117,7 @@ public final class LoadJobOrchestrator {
     private final StagingStorage storage;
     private final String flinkJobId;
     @Nullable private final Long checkpointId;
+    private final Counter loadJobsSubmitted;
 
     /** Per-run memo of {@link #ensureFinalTable}; see {@link #finalTableSchema}. */
     private final Map<TableDestination, Schema> finalTableSchemas = new HashMap<>();
@@ -132,6 +134,9 @@ public final class LoadJobOrchestrator {
      * @param checkpointId the checkpoint whose files this run loads, or {@code null} for a batch
      *     run; a non-null id selects the streaming behavior (visible job-id segment, direct loads
      *     on overflow)
+     * @param loadJobsSubmitted the committer's load-job counter. Passed as the counter rather than
+     *     as a metric group because this type is constructed once per commit, while the metric it
+     *     feeds is registered once per committer
      */
     public LoadJobOrchestrator(
             BigQuerySinkConfig<?> config,
@@ -140,7 +145,8 @@ public final class LoadJobOrchestrator {
             TableAdmin tableAdmin,
             StagingStorage storage,
             String flinkJobId,
-            @Nullable Long checkpointId) {
+            @Nullable Long checkpointId,
+            Counter loadJobsSubmitted) {
         this.config = config;
         this.options = options;
         this.schemaReconcileSchedule = options.toSchemaReconcileSchedule();
@@ -148,6 +154,7 @@ public final class LoadJobOrchestrator {
         this.tableAdmin = tableAdmin;
         this.storage = storage;
         this.flinkJobId = flinkJobId;
+        this.loadJobsSubmitted = loadJobsSubmitted;
         this.checkpointId = checkpointId;
     }
 
@@ -267,6 +274,7 @@ public final class LoadJobOrchestrator {
             load.tempTables.add(tempTable);
             String jobId = jobId("flink-bq-load", destination, uris, "p" + i);
             load.loadJobIds.add(jobId);
+            loadJobsSubmitted.inc();
             runner.submitLoad(
                     jobId,
                     new LoadJobSpec(
@@ -293,6 +301,7 @@ public final class LoadJobOrchestrator {
         Schema schema = finalTableSchema(destination);
         List<String> uris = urisOf(partition);
         String jobId = jobId("flink-bq-load", destination, uris, suffix);
+        loadJobsSubmitted.inc();
         runner.submitLoad(
                 jobId,
                 new LoadJobSpec(

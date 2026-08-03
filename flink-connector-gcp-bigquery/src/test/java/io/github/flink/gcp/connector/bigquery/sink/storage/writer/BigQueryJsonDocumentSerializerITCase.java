@@ -29,6 +29,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentS
 import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializerOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -151,7 +152,8 @@ class BigQueryJsonDocumentSerializerITCase extends AbstractBigQueryEmulatorITCas
         SinkWriter<String> writer =
                 sink.createWriter(
                         new EmulatorAppenderFactory(grpcEndpoint()),
-                        new BigQueryTableAdmin(restClient));
+                        new BigQueryTableAdmin(restClient),
+                        TestSinkWriterMetricGroup.create());
         try {
             writer.write(event("alice", "3", "host-a"), CONTEXT);
             writer.write(event("bob", "null", "host-b"), CONTEXT);

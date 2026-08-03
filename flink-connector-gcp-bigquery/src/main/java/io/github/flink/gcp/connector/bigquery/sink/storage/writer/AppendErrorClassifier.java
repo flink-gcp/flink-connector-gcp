@@ -20,13 +20,17 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.ExceptionUtils;
 
 import com.google.api.gax.rpc.ApiException;
+import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.StorageError;
 import com.google.protobuf.Any;
 import com.google.protobuf.InvalidProtocolBufferException;
+import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+
+import javax.annotation.Nullable;
 
 import java.util.Collections;
 import java.util.EnumSet;
@@ -218,6 +222,29 @@ public final class AppendErrorClassifier {
      */
     public static boolean hasCode(Throwable t, Status.Code code) {
         return ExceptionUtils.findThrowable(t, cause -> codeOf(cause) == code).isPresent();
+    }
+
+    /**
+     * Returns the gax status code an append failure is counted under by the writers' error-class
+     * metric, or {@code null} when the chain carries none — a response error synthesized by the
+     * writer, or the SDK's callback-wait watchdog timeout, which is a plain {@code
+     * RuntimeException}.
+     *
+     * <p>Deliberately separate from the routing predicates above, which read {@link Status.Code}
+     * with gRPC-first precedence and feed typed code sets: the shared metric helper takes gax
+     * codes, and converting the routing to them would churn the classifier for no gain (the base
+     * module's do-not-converge decision). The <b>outermost</b> classifiable element wins, matching
+     * {@link #classify}'s own first-match-in-chain rule, so the counter and the branch the writer
+     * took name the same status.
+     *
+     * @param t the failure
+     * @return the status code, or {@code null}
+     */
+    @Nullable
+    static StatusCode.Code statusCode(Throwable t) {
+        return ExceptionUtils.findThrowable(t, cause -> StatusCodes.codeOf(cause) != null)
+                .map(StatusCodes::codeOf)
+                .orElse(null);
     }
 
     /**

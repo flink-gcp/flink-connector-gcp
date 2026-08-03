@@ -104,6 +104,7 @@ public final class FileLoadsOptions implements Serializable {
     private final Duration schemaReconcileInitialBackoff;
     private final Duration schemaReconcileMaxBackoff;
     private final int schemaReconcileMaxAttempts;
+    private final boolean perDestinationMetrics;
 
     private FileLoadsOptions(Builder builder) {
         this.loadJobPollInitialBackoff = builder.loadJobPollInitialBackoff;
@@ -115,6 +116,7 @@ public final class FileLoadsOptions implements Serializable {
         this.tempDataset = builder.tempDataset;
         this.writeDisposition = builder.writeDisposition;
         this.minCheckpointInterval = builder.minCheckpointInterval;
+        this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
     /**
@@ -178,6 +180,11 @@ public final class FileLoadsOptions implements Serializable {
         return schemaReconcileMaxAttempts;
     }
 
+    /** Returns whether per-destination send counters are registered. */
+    public boolean isPerDestinationMetrics() {
+        return perDestinationMetrics;
+    }
+
     /**
      * Returns the load-job completion polling schedule. Effectively unbounded in attempts, so a
      * long-running batch load is awaited rather than abandoned.
@@ -218,7 +225,8 @@ public final class FileLoadsOptions implements Serializable {
                 && loadJobPollMaxBackoff.equals(that.loadJobPollMaxBackoff)
                 && schemaReconcileInitialBackoff.equals(that.schemaReconcileInitialBackoff)
                 && schemaReconcileMaxBackoff.equals(that.schemaReconcileMaxBackoff)
-                && schemaReconcileMaxAttempts == that.schemaReconcileMaxAttempts;
+                && schemaReconcileMaxAttempts == that.schemaReconcileMaxAttempts
+                && perDestinationMetrics == that.perDestinationMetrics;
     }
 
     @Override
@@ -232,7 +240,8 @@ public final class FileLoadsOptions implements Serializable {
                 loadJobPollMaxBackoff,
                 schemaReconcileInitialBackoff,
                 schemaReconcileMaxBackoff,
-                schemaReconcileMaxAttempts);
+                schemaReconcileMaxAttempts,
+                perDestinationMetrics);
     }
 
     @Override
@@ -255,6 +264,8 @@ public final class FileLoadsOptions implements Serializable {
                 + schemaReconcileMaxBackoff
                 + ", schemaReconcileMaxAttempts="
                 + schemaReconcileMaxAttempts
+                + ", perDestinationMetrics="
+                + perDestinationMetrics
                 + "}";
     }
 
@@ -271,6 +282,7 @@ public final class FileLoadsOptions implements Serializable {
         private Duration schemaReconcileInitialBackoff = DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF;
         private Duration schemaReconcileMaxBackoff = DEFAULT_SCHEMA_RECONCILE_MAX_BACKOFF;
         private int schemaReconcileMaxAttempts = DEFAULT_SCHEMA_RECONCILE_MAX_ATTEMPTS;
+        private boolean perDestinationMetrics;
 
         private Builder() {}
 
@@ -420,6 +432,23 @@ public final class FileLoadsOptions implements Serializable {
                     "schemaReconcileMaxAttempts must be positive: %s",
                     schemaReconcileMaxAttempts);
             this.schemaReconcileMaxAttempts = schemaReconcileMaxAttempts;
+            return this;
+        }
+
+        /**
+         * Registers per-table {@code recordsSend} and {@code sendErrors} counters beside the
+         * writer's totals. Defaults to {@code false}.
+         *
+         * <p>Off by default because Flink cannot unregister a metric: with a per-record {@code
+         * destinationResolver} the table set is unbounded — a table per day, a table per tenant —
+         * so every table the job ever writes to keeps a row in the metric registry for the lifetime
+         * of the task. Switch it on for a sink whose destinations are few and known.
+         *
+         * @param perDestinationMetrics whether to register per-table counters
+         * @return this builder
+         */
+        public Builder perDestinationMetrics(boolean perDestinationMetrics) {
+            this.perDestinationMetrics = perDestinationMetrics;
             return this;
         }
 

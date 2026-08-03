@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.committer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.Committer;
+import org.apache.flink.metrics.Counter;
+import org.apache.flink.metrics.groups.SinkCommitterMetricGroup;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -68,11 +70,23 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
 
     private static final long QUOTA_WARN_THROTTLE_MS = 10 * 60 * 1_000L;
 
+    /**
+     * Load jobs this committer has submitted to BigQuery. The one custom metric of the FILE_LOADS
+     * path's commit side: it is what turns "the checkpoint took a while" into "the checkpoint
+     * issued N load jobs", against a quota of 1,500 per table per day. The overflow path's copy job
+     * is deliberately not counted — the name says load jobs, and a copy is a different quota.
+     *
+     * <p>The framework registers the standard committer metrics ({@code totalCommittables} and
+     * friends) itself; nothing here has to.
+     */
+    static final String LOAD_JOBS_SUBMITTED = "loadJobsSubmitted";
+
     private final BigQuerySinkConfig<?> config;
     private final FileLoadsOptions options;
     private final StagingStorage storage;
     private final Supplier<LoadJobRunner> runnerFactory;
     private final Supplier<TableAdmin> tableAdminFactory;
+    private final Counter loadJobsSubmitted;
 
     /** Committer-lifetime collaborators; the clients they hold are expensive to build. */
     private LoadJobRunner runner;
@@ -88,13 +102,18 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
      * @param config the sink configuration
      * @param options the FILE_LOADS options
      * @param storage the staging storage (post-load cleanup)
+     * @param metricGroup the committer's metric group
      */
     public FileLoadsCommitter(
-            BigQuerySinkConfig<?> config, FileLoadsOptions options, StagingStorage storage) {
+            BigQuerySinkConfig<?> config,
+            FileLoadsOptions options,
+            StagingStorage storage,
+            SinkCommitterMetricGroup metricGroup) {
         this(
                 config,
                 options,
                 storage,
+                metricGroup,
                 () ->
                         new BigQueryLoadJobRunner(
                                 config.getLocation(), options.toLoadJobPollSchedule()),
@@ -106,11 +125,13 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
             BigQuerySinkConfig<?> config,
             FileLoadsOptions options,
             StagingStorage storage,
+            SinkCommitterMetricGroup metricGroup,
             Supplier<LoadJobRunner> runnerFactory,
             Supplier<TableAdmin> tableAdminFactory) {
         this.config = config;
         this.options = options;
         this.storage = storage;
+        this.loadJobsSubmitted = metricGroup.counter(LOAD_JOBS_SUBMITTED);
         this.runnerFactory = runnerFactory;
         this.tableAdminFactory = tableAdminFactory;
     }
@@ -150,7 +171,8 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
                         tableAdmin(),
                         storage,
                         first.getFlinkJobId(),
-                        checkpointId)
+                        checkpointId,
+                        loadJobsSubmitted)
                 .run(committables);
         // Requests left unsignaled are treated as committed.
     }

@@ -136,6 +136,7 @@ public class BigQueryBufferedStreamSink<T>
                 options,
                 serviceFactory,
                 tableAdmin,
+                context.metricGroup(),
                 context.getTaskInfo().getIndexOfThisSubtask(),
                 recoveredState);
     }

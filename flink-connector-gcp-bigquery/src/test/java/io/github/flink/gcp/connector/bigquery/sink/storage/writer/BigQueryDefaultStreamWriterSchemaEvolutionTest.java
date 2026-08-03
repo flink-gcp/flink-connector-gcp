@@ -44,6 +44,7 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStream
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
@@ -259,6 +260,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                 config,
                 factory,
                 admin,
+                TestSinkWriterMetricGroup.create(),
                 BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                 BigQueryDefaultStreamWriterTest.fastSchedule(3),
                 BigQueryDefaultStreamWriterTest.fastSchedule(3));

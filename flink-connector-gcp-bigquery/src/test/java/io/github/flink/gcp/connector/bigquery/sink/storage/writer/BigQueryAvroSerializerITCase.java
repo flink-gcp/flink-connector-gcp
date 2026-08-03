@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSer
 import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
@@ -172,7 +173,8 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
         SinkWriter<GenericRecord> writer =
                 sink.createWriter(
                         new EmulatorAppenderFactory(grpcEndpoint()),
-                        new BigQueryTableAdmin(restClient));
+                        new BigQueryTableAdmin(restClient),
+                        TestSinkWriterMetricGroup.create());
         try {
             writer.write(event(schema, "alice", 3L, "host-a"), CONTEXT);
             writer.write(event(schema, "bob", null, "host-b"), CONTEXT);
@@ -244,7 +246,8 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
         SinkWriter<GenericRecord> writer =
                 sink.createWriter(
                         new EmulatorAppenderFactory(grpcEndpoint()),
-                        new BigQueryTableAdmin(restClient));
+                        new BigQueryTableAdmin(restClient),
+                        TestSinkWriterMetricGroup.create());
         try {
             writer.write(event(schema, "alice", 3L, "host-a"), CONTEXT);
             writer.write(event(schema, "bob", null, "host-b"), CONTEXT);

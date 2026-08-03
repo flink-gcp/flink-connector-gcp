@@ -95,6 +95,7 @@ adopts whichever stream writer is built first.
 |---|---|---|
 | `destinationIdleTimeout` | 1 h | How long a destination may go without records before its stream writer is closed and dropped. Set a very large duration to never evict |
 | `flushInterval` | disabled | Periodic processing-time flush, for streaming jobs running without checkpointing. A mitigation, not a substitute for the guarantee |
+| `perDestinationMetrics` | `false` | Register `recordsSend`/`sendErrors` counters per destination table. Off by default because Flink cannot unregister a metric — see [Metrics]({{< relref "docs/connectors/datastream/bigquery" >}}#metrics) |
 
 ## `BufferedStreamOptions`
 
@@ -135,6 +136,7 @@ where the load-job quota that shapes `minCheckpointInterval` is set out.
 | `schemaReconcileInitialBackoff` | 500 ms | First backoff after losing an etag race while reconciling a table's schema |
 | `schemaReconcileMaxBackoff` | 10 s | Cap of that backoff, before jitter |
 | `schemaReconcileMaxAttempts` | 10 | Attempt cap of the schema reconcile |
+| `perDestinationMetrics` | `false` | Register `recordsSend`/`sendErrors` counters per destination table. Off by default because Flink cannot unregister a metric — see [Metrics]({{< relref "docs/connectors/datastream/bigquery" >}}#metrics) |
 
 ## `TableCreateOptions`
 

@@ -260,8 +260,15 @@ class FileLoadsOptionsTest {
                         .minCheckpointInterval(Duration.ofMinutes(10))
                         .build();
 
+        FileLoadsOptions e =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .perDestinationMetrics(true)
+                        .build();
+
         assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
         assertThat(a).isNotEqualTo(c);
         assertThat(a).isNotEqualTo(d);
+        assertThat(a).isNotEqualTo(e);
     }
 }

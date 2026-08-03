@@ -54,6 +54,7 @@ import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypesChild;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
@@ -142,7 +143,8 @@ class BigQuerySerializerFidelityITCase {
         SinkWriter<T> writer =
                 sink.createWriter(
                         new StreamWriterRowAppenderFactory(sink.getOptions()),
-                        new BigQueryTableAdmin());
+                        new BigQueryTableAdmin(),
+                        TestSinkWriterMetricGroup.create());
         try {
             for (T row : rows) {
                 writer.write(row, CONTEXT);

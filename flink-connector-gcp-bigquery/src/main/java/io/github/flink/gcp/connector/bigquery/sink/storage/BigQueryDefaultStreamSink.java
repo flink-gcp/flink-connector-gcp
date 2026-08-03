@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -79,13 +80,18 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
                 config,
                 new StreamWriterRowAppenderFactory(options),
                 new BigQueryTableAdmin(),
+                context.metricGroup(),
                 options,
                 context.getProcessingTimeService());
     }
 
     /** Test entry point; unlike the production path it does not open the failure handler. */
     @VisibleForTesting
-    public SinkWriter<T> createWriter(RowAppenderFactory appenderFactory, TableAdmin tableAdmin) {
-        return new BigQueryDefaultStreamWriter<>(config, appenderFactory, tableAdmin, options);
+    public SinkWriter<T> createWriter(
+            RowAppenderFactory appenderFactory,
+            TableAdmin tableAdmin,
+            SinkWriterMetricGroup metricGroup) {
+        return new BigQueryDefaultStreamWriter<>(
+                config, appenderFactory, tableAdmin, metricGroup, options);
     }
 }

@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
@@ -196,6 +197,7 @@ class BigQueryDefaultStreamWriterEvictionTest {
                 config(),
                 factory,
                 NOOP_ADMIN,
+                new DefaultStreamWriterMetrics(TestSinkWriterMetricGroup.create(), false),
                 BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                 fastSchedule(1),
                 fastSchedule(1),
@@ -300,6 +302,7 @@ class BigQueryDefaultStreamWriterEvictionTest {
                         config(),
                         factory,
                         NOOP_ADMIN,
+                        TestSinkWriterMetricGroup.create(),
                         DefaultStreamOptions.builder()
                                 .destinationIdleTimeout(Duration.ofNanos(1))
                                 .build(),
@@ -325,6 +328,7 @@ class BigQueryDefaultStreamWriterEvictionTest {
                 config(),
                 factory,
                 NOOP_ADMIN,
+                TestSinkWriterMetricGroup.create(),
                 DefaultStreamOptions.builder().flushInterval(FLUSH_INTERVAL).build(),
                 timers);
 

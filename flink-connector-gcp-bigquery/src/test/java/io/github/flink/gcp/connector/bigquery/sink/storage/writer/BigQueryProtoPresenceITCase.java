@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaO
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.testproto.Presence;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -79,7 +80,8 @@ class BigQueryProtoPresenceITCase extends AbstractBigQueryEmulatorITCase {
         SinkWriter<Presence> writer =
                 sink.createWriter(
                         new EmulatorAppenderFactory(grpcEndpoint()),
-                        new BigQueryTableAdmin(restClient));
+                        new BigQueryTableAdmin(restClient),
+                        TestSinkWriterMetricGroup.create());
         try {
             writer.write(
                     Presence.newBuilder()

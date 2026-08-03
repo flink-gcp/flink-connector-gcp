@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
+import org.apache.flink.metrics.SimpleCounter;
+
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
@@ -128,6 +130,7 @@ class LoadJobOrchestratorTest {
         private final FakeLoadJobRunner runner = new FakeLoadJobRunner();
         private final FakeTableAdmin tableAdmin = new FakeTableAdmin();
         private final InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        private final SimpleCounter loadJobsSubmitted = new SimpleCounter();
         private final LoadJobOrchestrator orchestrator;
 
         Harness(FileLoadsOptions options, Consumer<BigQuerySinkBuilder<Object>> customizer) {
@@ -163,7 +166,8 @@ class LoadJobOrchestratorTest {
                             tableAdmin,
                             storage,
                             FLINK_JOB_ID,
-                            checkpointId);
+                            checkpointId,
+                            loadJobsSubmitted);
         }
 
         static Harness plain() {
@@ -358,6 +362,11 @@ class LoadJobOrchestratorTest {
                         });
 
         assertThat(harness.runner.copies).hasSize(1);
+        // The counter names load jobs: the copy job that follows them is a different quota and is
+        // deliberately not counted.
+        assertThat(harness.loadJobsSubmitted.getCount())
+                .isEqualTo(harness.runner.loads.size())
+                .isEqualTo(3);
         CopyJobSpec copy = harness.runner.copies.values().iterator().next();
         assertThat(copy.getDestination()).isEqualTo(T1);
         assertThat(copy.getSourceTables()).hasSize(3);

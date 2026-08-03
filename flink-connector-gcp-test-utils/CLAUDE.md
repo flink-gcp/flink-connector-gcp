@@ -42,9 +42,20 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
   non-transitive is the property this pom rests on, not an oversight. Bigtable's private
   `RecordingSinkWriterMetricGroup` predates it and is **superseded**: #237 deletes it when it brings
   that sink up to the series' standard, so until then it is a leftover, not a second pattern to
-  copy. A **committer sibling was deliberately not added**: #208 has no consumer for one, and it
-  arrives with #210's FILE_LOADS committer counter under the multiple-consumer bar everything else
-  here clears.
+  copy.
+- **`TestSinkCommitterMetricGroup` is its committer sibling** (#210, which #208 deferred it to for
+  want of a consumer): the same `ProxyMetricGroup`-over-`MetricListener` shape for
+  `SinkCommitterMetricGroup`, and the one type here admitted with a **single** consumer — the
+  FILE_LOADS committer's `loadJobsSubmitted` is the only custom committer metric in the repository,
+  so the multiple-consumer bar would keep it out forever, and the alternative is a private
+  module-local copy of exactly what #237 is deleting on the Bigtable side. It registers the
+  framework's five committer counters under the names a **reporter** sees — `totalCommittables`,
+  `successfulCommittables`, `alreadyCommittedCommittables`, `failedCommittables`,
+  `retriedCommittables`, read from `MetricNames` in flink-runtime 2.2.1 — which are *not* the
+  `getNumCommittables*Counter` accessor names on the interface. #210's issue text called them
+  `numCommittables*`, and a docs page written from that would have named metrics no reporter emits.
+  The pending-committables gauge is captured rather than registered, as the writer harness captures
+  `currentSendTime`.
 - **Real-GCP gating annotations never move here.** `scripts/e2e-gated-its.sh` discovers the gated
   suite by grepping the `@EnabledIfEnvironmentVariable` literal on concrete classes under the
   connector modules and expects a surefire report per match — a meta-annotation or a base class in

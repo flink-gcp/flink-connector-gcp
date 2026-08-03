@@ -1,0 +1,605 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
+
+import org.apache.flink.api.connector.sink2.SinkWriter;
+
+import com.google.api.core.ApiFuture;
+import com.google.api.core.ApiFutures;
+import com.google.api.core.SettableApiFuture;
+import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
+import com.google.cloud.bigquery.storage.v1.Exceptions;
+import com.google.cloud.bigquery.storage.v1.ProtoRows;
+import com.google.cloud.bigquery.storage.v1.StorageError;
+import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
+import com.google.cloud.bigquery.storage.v1.TableSchema;
+import com.google.protobuf.Any;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Descriptors;
+import com.google.protobuf.Empty;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
+import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
+import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Tests for the metrics {@link BigQueryDefaultStreamWriter} registers.
+ *
+ * <p>Every assertion goes through the name a metric registered under, so renaming one — or failing
+ * to register it — fails here. The fakes are this class's own: the writer's behavioural tests keep
+ * theirs private, and the cases below need pieces of all three of them (scripted append failures, a
+ * recording table admin, a dropping failure handler).
+ */
+class BigQueryDefaultStreamWriterMetricsTest {
+
+    private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
+    private static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
+
+    private static final TableSchema LIVE =
+            TableSchema.newBuilder()
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("name")
+                                    .setType(TableFieldSchema.Type.STRING)
+                                    .setMode(TableFieldSchema.Mode.NULLABLE))
+                    .build();
+
+    private static final TableSchema SERIALIZER_SCHEMA =
+            LIVE.toBuilder()
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("email")
+                                    .setType(TableFieldSchema.Type.STRING)
+                                    .setMode(TableFieldSchema.Mode.NULLABLE))
+                    .build();
+
+    private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+    private final ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+    private final RecordingTableAdmin admin = new RecordingTableAdmin(LIVE);
+    private final DroppingHandler handler = new DroppingHandler();
+
+    // ------------------------------------------------------------------
+    // Sends
+    // ------------------------------------------------------------------
+
+    @Test
+    void countsEveryRowHandedToTheClientWithItsPayloadBytes() throws Exception {
+        BigQueryDefaultStreamWriter<String> writer = writer();
+
+        writer.write("aa", CONTEXT);
+        writer.write("bbb", CONTEXT);
+        writer.flush(false);
+
+        assertThat(counter("numRecordsSend")).isEqualTo(2);
+        assertThat(counter("numBytesSend")).isEqualTo(5);
+        assertThat(counter("numRecordsSendErrors")).isZero();
+        // A clean run registers no error class at all — not even UNCLASSIFIED, which is what a
+        // failure counted before the success branch would produce.
+        assertThat(metrics.hasMetric("errorClass", "UNCLASSIFIED", "errors")).isFalse();
+    }
+
+    @Test
+    void countsARetriedBatchOnlyOnceAndNamesTheStatusItFailedWith() throws Exception {
+        // The batch is handed over once and re-appended once; numRecordsSend must report the rows
+        // and appendRetries the attempt. A mutant counting the send in retryBatches dies here.
+        factory.scriptedResults.add(failedWith(Status.Code.UNAVAILABLE));
+        BigQueryDefaultStreamWriter<String> writer = writer();
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        assertThat(factory.allAppendedRows()).containsExactly("aa", "aa");
+        assertThat(counter("numRecordsSend")).isEqualTo(1);
+        assertThat(counter("numBytesSend")).isEqualTo(2);
+        assertThat(counter(DefaultStreamWriterMetrics.APPEND_RETRIES)).isEqualTo(1);
+        assertThat(errors("UNAVAILABLE")).isEqualTo(1);
+    }
+
+    @Test
+    void countsNothingAsSentWhenTheClientRejectsTheAppendSynchronously() throws Exception {
+        factory.throwOnAppend = true;
+        BigQueryDefaultStreamWriter<String> writer = writer();
+
+        writer.write("aa", CONTEXT);
+
+        assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(RuntimeException.class);
+        assertThat(counter("numRecordsSend")).isZero();
+        assertThat(counter("numBytesSend")).isZero();
+    }
+
+    // ------------------------------------------------------------------
+    // Send errors
+    // ------------------------------------------------------------------
+
+    @Test
+    void countsARecordTheSerializerRejectedAsASendError() throws Exception {
+        BigQueryDefaultStreamWriter<String> writer = writer(new FailingSerializer(), null);
+
+        writer.write("aa", CONTEXT);
+
+        assertThat(handler.rows).hasSize(1);
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(counter("numRecordsSend")).isZero();
+    }
+
+    @Test
+    void countsAnOversizedRowAsASendError() throws Exception {
+        BigQueryDefaultStreamWriter<String> writer = writer(new OversizedSerializer(), null);
+
+        writer.write("aa", CONTEXT);
+
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(counter("numRecordsSend")).isZero();
+    }
+
+    @Test
+    void countsTheRowsTheServiceRejectedByIndexAsSendErrors() throws Exception {
+        factory.scriptedResults.add(rowLevelError(Map.of(0, "bad row")));
+        BigQueryDefaultStreamWriter<String> writer = writer();
+
+        writer.write("aa", CONTEXT);
+        writer.write("bb", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.rows).hasSize(1);
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        // Both rows reached the client, so both were counted as sent; only the survivor was
+        // re-appended.
+        assertThat(counter("numRecordsSend")).isEqualTo(2);
+        assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
+        // The re-append that carried the survivors succeeded, and a success is not an error class.
+        assertThat(metrics.hasMetric("errorClass", "UNCLASSIFIED", "errors")).isFalse();
+    }
+
+    // ------------------------------------------------------------------
+    // Repairs
+    // ------------------------------------------------------------------
+
+    @Test
+    void countsTheTablesTheSinkCreates() throws Exception {
+        factory.scriptedResults.add(failedWith(Status.Code.NOT_FOUND));
+        BigQueryDefaultStreamWriter<String> writer = writer();
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        assertThat(admin.creates).containsExactly(DESTINATION);
+        assertThat(counter(DefaultStreamWriterMetrics.TABLES_CREATED)).isEqualTo(1);
+        assertThat(counter(DefaultStreamWriterMetrics.SCHEMA_RECONCILIATIONS)).isZero();
+        assertThat(errors("NOT_FOUND")).isEqualTo(1);
+    }
+
+    @Test
+    void countsTheSchemaUpdatesTheSinkApplies() throws Exception {
+        factory.scriptedResults.add(schemaMismatch());
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        new StringSerializer(),
+                        SchemaUpdateOptions.builder().allowNewFields().build());
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        assertThat(admin.updates).hasSize(1);
+        assertThat(counter(DefaultStreamWriterMetrics.SCHEMA_RECONCILIATIONS)).isEqualTo(1);
+        // A reconciliation is not a creation: the table was there.
+        assertThat(counter(DefaultStreamWriterMetrics.TABLES_CREATED)).isZero();
+    }
+
+    @Test
+    void countsATableRecreatedDuringReconciliationAsACreation() throws Exception {
+        // Degenerate reconciliation: the table has meanwhile disappeared, so the sink creates it
+        // instead of updating a schema. That is a creation and must not also count as a
+        // reconciliation — the two counters answer different questions.
+        RecordingTableAdmin vanished = new RecordingTableAdmin(null);
+        factory.scriptedResults.add(schemaMismatch());
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config(
+                                new StringSerializer(),
+                                SchemaUpdateOptions.builder().allowNewFields().build(),
+                                (element, context) -> DESTINATION),
+                        factory,
+                        vanished,
+                        metrics,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3));
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        assertThat(vanished.creates).containsExactly(DESTINATION);
+        assertThat(vanished.updates).isEmpty();
+        assertThat(counter(DefaultStreamWriterMetrics.TABLES_CREATED)).isEqualTo(1);
+        assertThat(counter(DefaultStreamWriterMetrics.SCHEMA_RECONCILIATIONS)).isZero();
+    }
+
+    @Test
+    void countsATerminalFailureUnderItsStatusExactlyOnce() throws Exception {
+        // The completion callback owns a terminal failure — it never reaches handleFailedAppend —
+        // so checkAsyncError counts it, and only the first time: it is called on every write and
+        // flush while the task is torn down.
+        factory.scriptedResults.add(failedWith(Status.Code.PERMISSION_DENIED));
+        BigQueryDefaultStreamWriter<String> writer = writer();
+
+        writer.write("aa", CONTEXT);
+        assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
+        assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
+
+        assertThat(errors("PERMISSION_DENIED")).isEqualTo(1);
+    }
+
+    // ------------------------------------------------------------------
+    // Gauges
+    // ------------------------------------------------------------------
+
+    @Test
+    void gaugesReportTheInFlightBatchesAndOpenDestinations() throws Exception {
+        // A one-byte batching cap sends each record's batch as the next record arrives, so the
+        // append that stays unacknowledged is issued without a flush and the whole test runs on
+        // one thread — as the writer itself does.
+        SettableApiFuture<AppendRowsResponse> unacknowledged = SettableApiFuture.create();
+        factory.scriptedResults.add(unacknowledged);
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config(new StringSerializer(), null, (e, context) -> destination(e)),
+                        factory,
+                        admin,
+                        metrics,
+                        1,
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3));
+
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isZero();
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isZero();
+
+        writer.write("a", CONTEXT);
+        writer.write("b", CONTEXT);
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(2);
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isZero();
+
+        // Same destination as the first record, so its buffered batch is appended and stays in
+        // flight until the scripted future completes.
+        writer.write("a", CONTEXT);
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isEqualTo(1);
+
+        unacknowledged.set(AppendRowsResponse.getDefaultInstance());
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isZero();
+    }
+
+    @Test
+    void gaugesAreClearedWhenTheWriterIsClosed() throws Exception {
+        // A writer torn down mid-flight must not keep reporting appends nobody will wait for: the
+        // reporter can still sample the gauge between close() and the metric group's own close.
+        SettableApiFuture<AppendRowsResponse> unacknowledged = SettableApiFuture.create();
+        factory.scriptedResults.add(unacknowledged);
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config(new StringSerializer(), null, (e, context) -> destination(e)),
+                        factory,
+                        admin,
+                        metrics,
+                        1,
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3));
+
+        writer.write("a", CONTEXT);
+        writer.write("a", CONTEXT);
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isEqualTo(1);
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(1);
+
+        writer.close();
+
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isZero();
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isZero();
+    }
+
+    // ------------------------------------------------------------------
+    // Per-destination counters
+    // ------------------------------------------------------------------
+
+    @Test
+    void registersNoPerDestinationCountersByDefault() throws Exception {
+        BigQueryDefaultStreamWriter<String> writer = writer();
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        assertThat(counter("numRecordsSend")).isEqualTo(1);
+        assertThat(metrics.hasMetric("destination", "p.d.t", "recordsSend")).isFalse();
+        assertThat(metrics.hasMetric("destination", "p.d.t", "sendErrors")).isFalse();
+    }
+
+    @Test
+    void countsPerTableWhenPerDestinationMetricsAreOn() throws Exception {
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config(new StringSerializer(), null, (element, context) -> DESTINATION),
+                        factory,
+                        admin,
+                        metrics,
+                        DefaultStreamOptions.builder().perDestinationMetrics(true).build());
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        assertThat(metrics.counterValue("destination", "p.d.t", "recordsSend")).isEqualTo(1);
+        assertThat(metrics.counterValue("destination", "p.d.t", "sendErrors")).isZero();
+    }
+
+    @Test
+    void countsPerTableSendErrorsWhenPerDestinationMetricsAreOn() throws Exception {
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config(new FailingSerializer(), null, (element, context) -> DESTINATION),
+                        factory,
+                        admin,
+                        metrics,
+                        DefaultStreamOptions.builder().perDestinationMetrics(true).build());
+
+        writer.write("aa", CONTEXT);
+
+        assertThat(metrics.counterValue("destination", "p.d.t", "sendErrors")).isEqualTo(1);
+    }
+
+    // ------------------------------------------------------------------
+    // Fixtures
+    // ------------------------------------------------------------------
+
+    private long counter(String... identifier) {
+        return metrics.counterValue(identifier);
+    }
+
+    private long errors(String errorClass) {
+        return counter("errorClass", errorClass, "errors");
+    }
+
+    private <T> T gauge(String name) {
+        return metrics.gaugeValue(name);
+    }
+
+    private static TableDestination destination(String element) {
+        return TableDestination.of("p", "d", element);
+    }
+
+    private BigQueryDefaultStreamWriter<String> writer() {
+        return writer(new StringSerializer(), null);
+    }
+
+    private BigQueryDefaultStreamWriter<String> writer(
+            BigQueryProtoSerializer<String> serializer, SchemaUpdateOptions schemaUpdateOptions) {
+        return writer(serializer, schemaUpdateOptions, (element, context) -> DESTINATION);
+    }
+
+    private BigQueryDefaultStreamWriter<String> writer(
+            BigQueryProtoSerializer<String> serializer,
+            SchemaUpdateOptions schemaUpdateOptions,
+            io.github.flink.gcp.connector.bigquery.sink.DestinationResolver<? super String>
+                    resolver) {
+        return new BigQueryDefaultStreamWriter<>(
+                config(serializer, schemaUpdateOptions, resolver),
+                factory,
+                admin,
+                metrics,
+                BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                BigQueryDefaultStreamWriterTest.fastSchedule(3));
+    }
+
+    private BigQuerySinkConfig<String> config(
+            BigQueryProtoSerializer<String> serializer,
+            SchemaUpdateOptions schemaUpdateOptions,
+            io.github.flink.gcp.connector.bigquery.sink.DestinationResolver<? super String>
+                    resolver) {
+        var builder =
+                BigQuerySink.<String>builder()
+                        .destinationResolver(resolver)
+                        .serializer(serializer)
+                        .failedRowHandler(handler);
+        if (schemaUpdateOptions != null) {
+            builder.schemaUpdateOptions(schemaUpdateOptions);
+        }
+        return ((BigQueryDefaultStreamSink<String>) builder.build()).getConfig();
+    }
+
+    private static ApiFuture<AppendRowsResponse> failedWith(Status.Code code) {
+        return ApiFutures.immediateFailedFuture(new StatusRuntimeException(Status.fromCode(code)));
+    }
+
+    private static ApiFuture<AppendRowsResponse> rowLevelError(Map<Integer, String> rowErrors) {
+        return ApiFutures.immediateFailedFuture(
+                new Exceptions.AppendSerializtionError(
+                        Status.Code.INVALID_ARGUMENT.value(), "bad rows", "stream", rowErrors));
+    }
+
+    private static ApiFuture<AppendRowsResponse> schemaMismatch() {
+        return ApiFutures.immediateFailedFuture(
+                Exceptions.toStorageException(
+                        com.google.rpc.Status.newBuilder()
+                                .setCode(Status.Code.INVALID_ARGUMENT.value())
+                                .setMessage("synthesized schema mismatch")
+                                .addDetails(
+                                        Any.pack(
+                                                StorageError.newBuilder()
+                                                        .setCode(
+                                                                StorageError.StorageErrorCode
+                                                                        .SCHEMA_MISMATCH_EXTRA_FIELDS)
+                                                        .setEntity("t")
+                                                        .setErrorMessage("extra fields")
+                                                        .build()))
+                                .build(),
+                        null));
+    }
+
+    /** Serializer writing the record's UTF-8 bytes, with a schema the live table does not cover. */
+    private static class StringSerializer extends BigQueryProtoSerializer<String> {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return SERIALIZER_SCHEMA;
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            return Empty.getDescriptor();
+        }
+
+        @Override
+        public ByteString serialize(String element) throws IOException {
+            return ByteString.copyFromUtf8(element);
+        }
+    }
+
+    /** Serializer rejecting every record. */
+    private static final class FailingSerializer extends StringSerializer {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public ByteString serialize(String element) throws IOException {
+            throw new IOException("cannot serialize " + element);
+        }
+    }
+
+    /** Serializer emitting one oversized row. */
+    private static final class OversizedSerializer extends StringSerializer {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public ByteString serialize(String element) {
+            return ByteString.copyFrom(new byte[BigQueryDefaultStreamWriter.MAX_ROW_BYTES + 1]);
+        }
+    }
+
+    /** Handler recording every routed row and dropping it. */
+    private static final class DroppingHandler implements FailureHandler<FailedRow> {
+        private static final long serialVersionUID = 1L;
+
+        private final transient List<FailedRow> rows = new ArrayList<>();
+
+        @Override
+        public void handle(FailedRow row) {
+            rows.add(row);
+        }
+    }
+
+    /** Admin recording creations and schema updates, answering with a mutable live schema. */
+    private static final class RecordingTableAdmin implements TableAdmin {
+
+        private final List<TableDestination> creates = new ArrayList<>();
+        private final List<TableSchema> updates = new ArrayList<>();
+        private TableSchema liveSchema;
+
+        RecordingTableAdmin(TableSchema liveSchema) {
+            this.liveSchema = liveSchema;
+        }
+
+        @Override
+        public void create(
+                TableDestination destination, TableSchema schema, TableCreateOptions options) {
+            creates.add(destination);
+            liveSchema = schema;
+        }
+
+        @Override
+        public TableSchemaSnapshot getSchema(TableDestination destination) {
+            return liveSchema == null ? null : TableSchemaSnapshot.of(liveSchema, null);
+        }
+
+        @Override
+        public boolean updateSchema(
+                TableDestination destination, TableSchemaSnapshot base, TableSchema proposed) {
+            updates.add(proposed);
+            liveSchema = proposed;
+            return true;
+        }
+    }
+
+    /** Appender factory with a global append-result script (empty script means success). */
+    private static final class ScriptedAppenderFactory implements RowAppenderFactory {
+        private static final long serialVersionUID = 1L;
+
+        private final transient List<FakeAppender> created = new ArrayList<>();
+        private final transient Deque<ApiFuture<AppendRowsResponse>> scriptedResults =
+                new ArrayDeque<>();
+
+        private transient boolean throwOnAppend;
+
+        @Override
+        public RowAppender create(
+                TableDestination destination,
+                Descriptors.Descriptor rowDescriptor,
+                String location) {
+            FakeAppender appender = new FakeAppender();
+            created.add(appender);
+            return appender;
+        }
+
+        private List<String> allAppendedRows() {
+            List<String> rows = new ArrayList<>();
+            for (FakeAppender appender : created) {
+                for (ProtoRows batch : appender.appends) {
+                    batch.getSerializedRowsList().forEach(b -> rows.add(b.toStringUtf8()));
+                }
+            }
+            return rows;
+        }
+
+        private final class FakeAppender implements RowAppender {
+            private final List<ProtoRows> appends = new ArrayList<>();
+
+            @Override
+            public ApiFuture<AppendRowsResponse> append(ProtoRows rows) {
+                if (throwOnAppend) {
+                    throw new IllegalStateException("the client rejected the request");
+                }
+                appends.add(rows);
+                if (scriptedResults.isEmpty()) {
+                    return ApiFutures.immediateFuture(AppendRowsResponse.getDefaultInstance());
+                }
+                return scriptedResults.poll();
+            }
+
+            @Override
+            public void close() {}
+        }
+    }
+}

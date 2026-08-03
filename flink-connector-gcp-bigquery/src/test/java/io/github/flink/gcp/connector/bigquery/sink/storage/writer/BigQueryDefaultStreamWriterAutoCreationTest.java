@@ -38,6 +38,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
@@ -185,6 +186,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                 config,
                 factory,
                 creator,
+                TestSinkWriterMetricGroup.create(),
                 maxAppendRequestBytes,
                 BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts),
                 BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts));

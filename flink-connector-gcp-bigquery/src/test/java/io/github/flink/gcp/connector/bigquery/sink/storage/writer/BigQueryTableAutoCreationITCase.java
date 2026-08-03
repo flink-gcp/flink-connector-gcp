@@ -24,6 +24,7 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -51,6 +52,7 @@ class BigQueryTableAutoCreationITCase extends AbstractBigQueryEmulatorITCase {
                 config,
                 new EmulatorAppenderFactory(grpcEndpoint()),
                 new BigQueryTableAdmin(restClient),
+                TestSinkWriterMetricGroup.create(),
                 BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                 new RetrySchedule(100, 1_000, 30, 0),
                 new RetrySchedule(100, 1_000, 30, 0));

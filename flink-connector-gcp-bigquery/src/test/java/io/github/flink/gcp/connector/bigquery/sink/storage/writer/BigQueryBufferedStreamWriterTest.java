@@ -40,6 +40,7 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommitt
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
@@ -154,7 +155,13 @@ class BigQueryBufferedStreamWriterTest {
             TableAdmin tableAdmin,
             BufferedStreamWriterState... restoredStates) {
         return new BigQueryBufferedStreamWriter<>(
-                config, options, service.asFactory(), tableAdmin, 0, List.of(restoredStates));
+                config,
+                options,
+                service.asFactory(),
+                tableAdmin,
+                TestSinkWriterMetricGroup.create(),
+                0,
+                List.of(restoredStates));
     }
 
     static List<String> rowsOf(ProtoRows rows) {
@@ -474,6 +481,7 @@ class BigQueryBufferedStreamWriterTest {
                         fastOptions(3),
                         service.asFactory(),
                         BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
+                        TestSinkWriterMetricGroup.create(),
                         0,
                         Collections.emptyList());
 

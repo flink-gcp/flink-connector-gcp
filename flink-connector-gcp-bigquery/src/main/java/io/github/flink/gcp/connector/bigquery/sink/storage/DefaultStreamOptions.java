@@ -148,6 +148,7 @@ public final class DefaultStreamOptions implements Serializable {
     private final int maxConnectionsPerRegion;
     private final Duration destinationIdleTimeout;
     @Nullable private final Duration flushInterval;
+    private final boolean perDestinationMetrics;
 
     private DefaultStreamOptions(Builder builder) {
         this.maxAppendRequestBytes = builder.maxAppendRequestBytes;
@@ -165,6 +166,7 @@ public final class DefaultStreamOptions implements Serializable {
         this.maxConnectionsPerRegion = builder.maxConnectionsPerRegion;
         this.destinationIdleTimeout = builder.destinationIdleTimeout;
         this.flushInterval = builder.flushInterval;
+        this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
     /**
@@ -266,6 +268,11 @@ public final class DefaultStreamOptions implements Serializable {
         return flushInterval;
     }
 
+    /** Returns whether per-destination send counters are registered. */
+    public boolean isPerDestinationMetrics() {
+        return perDestinationMetrics;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -289,7 +296,8 @@ public final class DefaultStreamOptions implements Serializable {
                 && retryMaxDelay.equals(that.retryMaxDelay)
                 && maxRetryDuration.equals(that.maxRetryDuration)
                 && destinationIdleTimeout.equals(that.destinationIdleTimeout)
-                && Objects.equals(flushInterval, that.flushInterval);
+                && Objects.equals(flushInterval, that.flushInterval)
+                && perDestinationMetrics == that.perDestinationMetrics;
     }
 
     @Override
@@ -309,7 +317,8 @@ public final class DefaultStreamOptions implements Serializable {
                 minConnectionsPerRegion,
                 maxConnectionsPerRegion,
                 destinationIdleTimeout,
-                flushInterval);
+                flushInterval,
+                perDestinationMetrics);
     }
 
     @Override
@@ -344,6 +353,8 @@ public final class DefaultStreamOptions implements Serializable {
                 + destinationIdleTimeout
                 + ", flushInterval="
                 + flushInterval
+                + ", perDestinationMetrics="
+                + perDestinationMetrics
                 + "}";
     }
 
@@ -366,6 +377,7 @@ public final class DefaultStreamOptions implements Serializable {
         private int maxConnectionsPerRegion = DEFAULT_MAX_CONNECTIONS_PER_REGION;
         private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
         @Nullable private Duration flushInterval;
+        private boolean perDestinationMetrics;
 
         private Builder() {}
 
@@ -638,6 +650,25 @@ public final class DefaultStreamOptions implements Serializable {
                     "flushInterval must be positive: %s",
                     flushInterval);
             this.flushInterval = flushInterval;
+            return this;
+        }
+
+        /**
+         * Registers per-table {@code recordsSend} and {@code sendErrors} counters beside the
+         * writer's totals. Defaults to {@code false}.
+         *
+         * <p>Off by default because Flink cannot unregister a metric: with a per-record {@code
+         * destinationResolver} the table set is unbounded — a table per day, a table per tenant —
+         * so every table the job ever writes to keeps a row in the metric registry for the lifetime
+         * of the task, which is exactly the growth {@code destinationIdleTimeout} evicts the
+         * writer's own state to avoid. Switch it on for a sink whose destinations are few and
+         * known. Counters survive eviction: a destination seen again resumes its own totals.
+         *
+         * @param perDestinationMetrics whether to register per-table counters
+         * @return this builder
+         */
+        public Builder perDestinationMetrics(boolean perDestinationMetrics) {
+            this.perDestinationMetrics = perDestinationMetrics;
             return this;
         }
 
