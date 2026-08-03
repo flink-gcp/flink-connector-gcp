@@ -56,12 +56,17 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
   goal-only / `-pl`-scoped Maven, which cannot resolve a reactor sibling from source (#181), so
   both install this module into `~/.m2` first. A rename or a new similarly-consumed module must
   update those recipes.
-- This module has no tests of its own: it produces no surefire reports, which
-  `scripts/surefire-fingerprint.sh` correctly ignores (its `find` simply matches nothing here).
-  `e2e-gated-its.sh --assert-ran` ignores the module for a different reason — it has no gated
-  class for the annotation grep to find; a gated class *without* a report is fatal there, not
-  ignored. If the module ever gains tests, `binary-compat`'s same-tests diff picks them up
-  automatically.
+- **The module has tests since #244, and the bar for adding one is narrow**: a helper here is
+  normally exercised by the sibling that consumes it, so a test in this module earns its place
+  only when the consumer *cannot* reach the behaviour. `AwaitsTest` is the first — `Awaits`'s
+  diagnosis runs only after an await has already timed out, so no green build executes it and a
+  broken diagnosis would first be discovered by the CI failure it exists to explain. Anything
+  covered incidentally by a consumer's ITs stays uncovered here. Consequences of the module now
+  producing surefire reports: `scripts/surefire-fingerprint.sh` picks them up (its `find` had
+  simply matched nothing before), so `binary-compat`'s same-tests diff covers them automatically.
+  `e2e-gated-its.sh --assert-ran` still ignores the module, and for an unrelated reason — it has
+  no gated class for the annotation grep to find; a gated class *without* a report is fatal there,
+  not ignored.
 - No compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here implements `Sink`
   across the 1.x/2.x API gap. Adding a sink test-double that does would need the seam — prefer
   keeping such doubles in the module that needs them.

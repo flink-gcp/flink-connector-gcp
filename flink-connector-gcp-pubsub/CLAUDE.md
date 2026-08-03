@@ -201,6 +201,25 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `scripts/e2e-gated-its.sh` greps the annotation literal and then expects a surefire report per
   matching file. `PubSubSubscriptionAdmin` carries a `@VisibleForTesting` `CredentialsProvider`
   constructor for exactly the impersonation tests; no production path uses it
+- **The emulator never answers the client library's keepalive ping, so an idle streaming pull is
+  torn down and reopened on a cycle** (measured 2026-08-03 on `google-cloud-pubsub` 1.152.0, four
+  runs, while investigating #244). `StreamingSubscriberConnection` sends an empty
+  `StreamingPullRequest` every 30 s and closes the stream when the last ping is unanswered for
+  ≥15 s; against the emulator that is *every* ping, so an idle stream logs `No response from
+  server for 20 seconds since last ping. Closing stream.` at ~50 s after open and then roughly
+  every 20 s (the first cycle is longer because the stream's own opening response answers the
+  ping sent at open). Three consequences worth keeping. The line is **routine on an idle emulator
+  stream, not a fault** — it says only that the stream received nothing, which any subscription
+  with no messages satisfies; healthy emulator ITs never show it because none of them idles that
+  long, which is also why its appearance in a *failing* run is worth reading. Simultaneous idle
+  streams fire **together, within milliseconds** (measured: two streams, lines 5 ms apart, at
+  50045/50050 ms and 50025/50028 ms across two runs), so the *spacing* of the lines carries
+  information the count does not — two lines tens of seconds apart are not two streams idling in
+  parallel. And a stream reset this way still delivers normally: publishing after an idle window,
+  messages arrived in 105 ms and 104 ms. That last measurement is the one that makes prolonged
+  silence on a subscription with a backlog abnormal rather than expected. Real Pub/Sub answers the
+  ping, so none of this reaches a production job — it is a property of the harness, in the
+  tradition of every other emulator deviation recorded here
 - **Pub/Sub Table API / SQL** (#47, split into #135–#138): the `table` layer is a *mapping* onto the
   DataStream builders, never a second implementation — one typed `ConfigOption` per builder setter,
   applied with `getOptional(...).ifPresent(...)` so "absent from the DDL" and "left at the
