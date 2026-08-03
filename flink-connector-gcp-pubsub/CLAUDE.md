@@ -45,10 +45,11 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   deciding whether to park a cascade by whether something is parked already: that was the #78
   flake, and it was *also* the only thing hiding a silent ordering violation, since the parked
   list was appended in observation order too. Consequences to keep: a cancellation is never a root
-  cause, so under `CREATE_IF_NEEDED` one is parked unconditionally and a fatal root is caught by
+  cause, so one is parked unconditionally and a fatal root is caught by
   the pre-repair drain (`drainInFlight()` → `checkAsyncError`) rather than by classifying
-  the cascade; under `CREATE_NEVER` nothing is parked at all, which every parking branch must
-  check, since parking is what leads to `createTopic`. Emulator
+  the cascade. **The disposition no longer gates parking** — #215 moved that guarantee onto
+  `topicMissing`, so read the #215 bullet before restoring any `repairsTopics()` check on a
+  parking branch. Emulator
   support (#21) is a builder option `emulatorEndpoint(host:port)` — plaintext + no credentials
   for publishers (each owning its channel) and the auto-creation admin, mirroring the Apache
   connector's `withHostAndPortForEmulator`; the emulator ITs (including a MiniCluster streaming
@@ -80,13 +81,54 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   per-message one. Nothing in this PR's scope closes that; the answer is the #208 error metrics,
   and BigQuery carries the identical exposure. A `MESSAGE_LEVEL` handler failure is captured into
   `asyncError` rather than thrown, because it happens inside a mailbox mail; an unchecked one is
-  wrapped naming the topic. `build()` rejects a non-default handler beside
-  `enableMessageOrdering(true)` — compared by **identity against `FailureHandler.failJob()`**, so
-  the rule is about the policy and not about whether the setter was called — because dropping a
-  message reaches into the parked-batch/resume/publish-sequence-sort repair, exactly where #78
-  found races; lifting it is #215, and the error message says so. Coverage is unit tests only: the
+  wrapped naming the topic. Coverage is unit tests only: the
   emulator validates nothing, and what real Pub/Sub answers `INVALID_ARGUMENT` to would have to be
   measured before a gated IT could assert it
+- **Ordering beside a dropping failure policy** (#215, lifting the `build()` precondition #206
+  shipped): allowed, with the gap documented rather than mechanised. The SDK facts the design turns
+  on — read from `google-cloud-pubsub` 1.152.0 sources, not assumed — are that
+  `SequentialExecutorService.cancelQueuedTasks` adds the ordering key to `keysWithErrors`
+  **unconditionally**, taking a bare `Throwable` it never inspects, so an `INVALID_ARGUMENT` poisons
+  a key exactly as a `NOT_FOUND` does; that nothing auto-resumes (`keysWithErrors.remove` has one
+  caller, the public `resumePublish`); and that a later `publish()` on a paused key **returns an
+  already-failed future** carrying the shared static `CancellationException` rather than throwing —
+  which is what makes the "leave it paused" design below work at all. A naive lift would have let
+  one dropped keyed message kill its key for the writer's lifetime. Three changes, each with a
+  reason not to re-litigate:
+  **(a) parking a cascade no longer depends on the create disposition** — a cascade's root may be a
+  dropped message, which `CREATE_NEVER` needs repaired too. The tempting narrower form (park only
+  when a drop is recorded for that key) **is #78's bug rebuilt**: the drop mail and the cascade mail
+  arrive in either order, so a cascade observed first would find nothing recorded and become
+  `asyncError`. Unconditional parking also makes a root's error message win over a cascade's under
+  `CREATE_NEVER`, which used to depend on mail order.
+  **(b) the repair carries a reason** — `DestinationState.topicMissing`, set only where a
+  `TOPIC_NOT_FOUND` is parked, so only that repair creates a topic. This is what preserves
+  "`CREATE_NEVER` creates nothing" once (a) removed the disposition guard from the parking branches,
+  and the invariant is now asserted directly rather than through "nothing is parked". Creation is
+  decided **per attempt but performed at most once per repair**: a batch parked for another reason
+  can turn out to need it (its republish being the first publish to meet the missing topic), while
+  the retry loop itself is for metadata propagating over a topic that by then exists.
+  **(c) a dropped keyed message registers its key** — `keysToResume`, drained by
+  `resumeOrderingKeys` — and **the resume is deliberately not in `routeFailedMessage`**: `write()`
+  tests `repairNeeded` *before* `awaitCapacity()`, and mails run inside it, so a key resumed from
+  the failure mail could be published to by the rest of that same `write()` while its cascades were
+  still parked, putting a newer message ahead of older ones. Left paused, that racing publish comes
+  back cancelled, is parked, and is republished in sequence order with the rest. Without (c) the
+  writer is still correct — the next message for the key fails and is repaired — but (c) is what
+  makes `flush()`'s `while (repairNeeded)` loop mean *no checkpoint completes with a key paused*.
+  The `return` after a throwing handler is **belt and braces, and measured as such**: a mutant
+  deleting it survives, because `asyncError` gates every path into a repair anyway, and the test
+  says so rather than claiming a discrimination it does not have. Note what the fake publisher
+  cannot check — it holds no paused-key state, so it accepts publishes the real SDK would reject,
+  and the resume is only ever observable through `resumedKeys`. Two findings from the same SDK
+  reading are filed rather than fixed: a request-level `INVALID_ARGUMENT` is reported against every
+  co-batched message (#264, the Pub/Sub counterpart of #239), and messages cancelled in
+  `Publisher.onFailure` are never returned to `messagesWaiter`, so `shutdown()` can hang before our
+  `awaitTermination` applies (#265). A third fell out of the self-review: the recovery budget now
+  bounds draining a poisoned ordering key as well as topic-metadata propagation, so a run of
+  consecutively invalid messages longer than the budget fails the job under a dropping policy —
+  #269, deliberately not answered before #264's measurement says whether a batch or a message is
+  dropped per attempt
 - **`PubSubDeadLetterQueue`** (#211, the #37 series): the repository's one shipped
   `DeadLetterQueue`, in a **top-level `pubsub.deadletter` package** rather than under `sink` —
   it is not sink API, it is driven by *any* connector's `FailureHandler`, so putting it under the

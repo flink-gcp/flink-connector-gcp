@@ -239,8 +239,9 @@ enforcement, and retention-driven replay belong to the real-GCP suite
 
 With message ordering enabled, the repair preserves per-key order: after a per-key failure the
 SDK publisher pauses the key and cancels its queued publishes; those cascade cancellations are
-parked alongside the `NOT_FOUND` that caused them, each repair attempt calls `resumePublish` for
-the batch's keys before republishing, and the batch is republished in **publish order**.
+parked alongside the failure that caused them — a `NOT_FOUND`, or a message the
+[failed-message policy](#failed-message-policy) dropped — each repair attempt calls `resumePublish`
+for the batch's keys before republishing, and the batch is republished in **publish order**.
 Cross-key and cross-topic order are unaffected.
 
 Publish order is recovered by sorting the parked batch on a per-writer publish sequence, not by
@@ -248,8 +249,15 @@ the order the failures are observed in. The SDK cancels queued publishes from it
 cascade can be reported *before* the failure that caused it — anything derived from that
 observation order, including deciding whether to park a cascade based on whether something is
 parked already, is a race ([#78]({{< param BookRepo >}}/issues/78)). One consequence is worth knowing: since a cancellation is never
-itself a root cause, one is always parked for repair under `CREATE_IF_NEEDED` rather than failing
-the job. Under `CREATE_NEVER` nothing is parked at all, so no topic is ever created.
+itself a root cause, one is always parked for repair — whatever the create disposition — rather
+than failing the job. Only a parked `NOT_FOUND` makes the repair create a topic, so `CREATE_NEVER`
+still never creates one; the disposition decides that directly rather than by refusing to park.
+
+That separation is what lets one repair serve a second root cause: a message the
+[failed-message policy](#failed-message-policy) dropped. The SDK pauses an ordering key on *any*
+non-retryable failure without inspecting it, and never resumes one by itself, so a dropped keyed
+message hands its key to the next repair — which resumes it and republishes the messages queued
+behind it, creating no topic.
 
 The repair republishes its parked batch **without re-checking the in-flight caps**, so both
 counters can transiently exceed them by one destination's batch size. This is bounded — the parked
@@ -275,8 +283,9 @@ routing bug).
 Any terminally failed publish fails the ongoing write or checkpoint: failures captured by
 completion callbacks are rethrown on the task thread from the next `write()`/`flush()`
 (capture-and-rethrow), and `flush()` awaits every in-flight publish, so a failure can never
-slip past a checkpoint barrier — `flush()` also repairs any `NOT_FOUND` failure it discovers
-while draining, so a completed checkpoint never leaves messages parked for topic creation.
+slip past a checkpoint barrier — `flush()` also repairs anything it discovers while draining, so a
+completed checkpoint never leaves messages parked for republish, nor an ordering key paused by a
+dropped message.
 Publish completion callbacks carry their message (one small callback object per publish) so the
 `NOT_FOUND` repair can republish it, plus its serialized size so both in-flight counters can be
 released; the callback *is* the success mail, so the success path allocates nothing beyond it.
@@ -287,9 +296,9 @@ Failed publishes are classified on the task thread and routed by class:
 
 | Class | Examples | Behavior |
 |---|---|---|
-| Message-level | `INVALID_ARGUMENT` — the message is over the size limit, its attributes break a limit, its ordering key is unusable | Routed to the configured [failed-message handler](#failed-message-policy); republishing the same bytes could not succeed, and the messages around it are unaffected |
+| Message-level | `INVALID_ARGUMENT` — the message is over the size limit, its attributes break a limit, its ordering key is unusable | Routed to the configured [failed-message handler](#failed-message-policy); republishing the same bytes could not succeed. With ordering off its neighbours are unaffected; with ordering on, the messages queued behind it on its key are cancelled by the SDK and republished by the repair (see [Ordering and a dropping policy](#ordering-and-a-dropping-policy)) |
 | Topic not found | `NOT_FOUND` | Under `CREATE_IF_NEEDED` the topic is created and the message republished (see [Topic auto-creation](#topic-auto-creation)). Under `CREATE_NEVER` the job fails |
-| Cancellation | The SDK cancelling an ordering key's queued publishes after an earlier failure for that key | Never a root cause. Under `CREATE_IF_NEEDED` with ordering enabled it is parked alongside the failure that caused it; otherwise it fails the job |
+| Cancellation | The SDK cancelling an ordering key's queued publishes after an earlier failure for that key | Never a root cause. With ordering enabled it is parked alongside the failure that caused it — a `NOT_FOUND`, or a message the handler dropped — and republished; with ordering disabled it fails the job |
 | Terminal | An outage the SDK's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, …), `PERMISSION_DENIED`, failures carrying no status at all | Fail the ongoing write or checkpoint |
 
 ### Failed-message policy
@@ -346,10 +355,42 @@ whole stream), and a dropping policy discards the lot silently. Watch
 than the job status when running anything other than `failJob()`: it counts every message the
 handler received, so a systematic rejection shows up as a rate rather than as a failure.
 
-**A non-default handler is rejected together with `enableMessageOrdering(true)`**, at `build()`.
-Dropping a message would reach into the ordering repair, which republishes a parked batch whole and
-in publish order — the machinery [#78]({{< param BookRepo >}}/issues/78) found races in. Lifting
-the restriction is [#215]({{< param BookRepo >}}/issues/215).
+One more exposure the classification cannot see: `Publish` is a **batch** RPC, so an
+`INVALID_ARGUMENT` is a *request*-level status that the SDK reports against every message in the
+batch. One oversized message therefore routes its co-batched neighbours too, and a dropping policy
+discards them all — see [#264]({{< param BookRepo >}}/issues/264), which is where the fix and the
+measurement it needs are tracked.
+
+#### Ordering and a dropping policy
+
+A dropping policy and `enableMessageOrdering(true)` work together, and what a drop means on an
+ordered stream is worth being precise about.
+
+**The survivors of the key keep their relative order.** When Pub/Sub rejects a keyed message the
+SDK publisher pauses that ordering key and cancels every publish queued behind it — on *any*
+non-retryable failure, without inspecting it, and it never resumes a key by itself. So a drop
+leaves work behind, and the sink does it: the key is handed to the same repair the missing-topic
+path uses, which resumes it and republishes the cancelled messages in publish order. `flush()`
+repairs until nothing is pending, so **no checkpoint completes with an ordering key left paused**.
+
+**The dropped message leaves a gap that a consumer cannot distinguish from a lost message.** That
+is inherent to dropping — the sink cannot fill a hole in a sequence it does not retain — and it
+matters more here than on an unordered topic, because a consumer of an ordered stream is more
+likely to be a state machine a gap corrupts. The dead-letter record is the only place the gap is
+written down, and it is enough to close it: `getPayloadBytes()` is the whole serialized message, so
+a consumer recovers the ordering key with `PubsubMessage.parseFrom(bytes)` and can replay what was
+dropped.
+
+If that trade is not acceptable for a given topic, `failJob()` — the default — is the policy that
+never leaves a gap.
+
+**One bound to know about.** Draining a key whose messages are rejected one after another happens
+through the same repair, and the same `recoveryMaxAttempts` budget, as a topic-creation republish:
+each attempt drops the head of the key's queue and re-parks the rest. A run of consecutively
+invalid messages longer than the budget allows therefore fails the job rather than dropping them
+all — the outcome the policy exists to avoid. How long that run has to be depends on batching, so
+it is tracked with [#264]({{< param BookRepo >}}/issues/264) rather than guessed at; the analysis
+and the candidate answers are on [#269]({{< param BookRepo >}}/issues/269).
 
 Dead-letter output is **at-least-once, for failures that recur on replay**: messages are offered
 before the checkpoint covering their originating records completes, so a restart replays those
@@ -440,7 +481,9 @@ policy, and this counter is what shows it while the job stays green.
 **`topicsCreated` counts repairs, not distinct topics.** A creation that answers `ALREADY_EXISTS`
 — a parallel subtask got there first — is a success, so one new topic is counted once by every
 subtask that had to repair for it. It answers "how often did a missing topic stall this subtask",
-which is what a reader of this sink's auto-creation behaviour wants; it is not an inventory.
+which is what a reader of this sink's auto-creation behaviour wants; it is not an inventory. Only a
+repair that saw a `NOT_FOUND` is counted: a repair triggered by a dropped message's ordering key
+creates nothing and increments nothing.
 
 `errorClass` counts **root** failures only. With message ordering enabled the SDK cancels an ordering
 key's queued publishes after that key's first failure; those cascades are not counted, since they

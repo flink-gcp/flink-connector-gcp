@@ -40,7 +40,7 @@ The `WITH` options of the `pubsub` table connector are a separate surface, docum
 | `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing topic is created or fails the job |
 | `topicCreateOptions` | Pub/Sub's own defaults | [Settings](#topiccreateoptions) for topics the sink creates. Rejected with `CREATE_NEVER` |
 | `publisherOptions` | [defaults](#pubsubpublisheroptions) | Publisher and writer tuning |
-| `failedMessageHandler` | `FailureHandler.failJob()` | What happens to a message that terminally fails — fail, drop, or dead-letter. Rejected with `enableMessageOrdering(true)` |
+| `failedMessageHandler` | `FailureHandler.failJob()` | What happens to a message that terminally fails — fail, drop, or dead-letter. Under `enableMessageOrdering(true)`, dropping a keyed message leaves a gap in that key's stream |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
 
 ## `PubSubPublisherOptions`
@@ -74,14 +74,14 @@ for how the caps are sized.
 | `retryMaxRpcTimeout` | *unset ⇒ SDK default* | Cap on a publish RPC attempt's timeout |
 | `retryMaxAttempts` | *unset ⇒ SDK default* | Cap on publish attempts |
 
-**Ordering, in-flight caps and the auto-creation recovery**, all the connector's own.
+**Ordering, in-flight caps and the republish recovery**, all the connector's own.
 
 | Option | Default | What it does |
 |---|---|---|
-| `enableMessageOrdering` | `false` | Honours ordering keys. Without it, a message carrying one is rejected with an error naming this option |
+| `enableMessageOrdering` | `false` | Honours ordering keys. Without it, a message carrying one is rejected with an error naming this option. With it, a dropping `failedMessageHandler` leaves a gap in the dropped message's key |
 | `maxInFlightMessages` | 1000 | Caps the writer's unacknowledged publishes; a write at the cap yields to the mailbox |
 | `maxInFlightBytes` | 64 MiB | Caps their total serialized size. `Long.MAX_VALUE` bounds by count only |
-| `recoveryInitialBackoff` | 500 ms | First backoff of the topic auto-creation republish |
+| `recoveryInitialBackoff` | 500 ms | First backoff of a republish — after creating a missing topic, or after resuming an ordering key |
 | `recoveryMaxBackoff` | 10 s | Cap of that backoff, before ±25% jitter |
 | `recoveryMaxAttempts` | 10 | Republish attempts per destination |
 

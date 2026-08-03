@@ -236,51 +236,40 @@ class PubSubSinkBuilderTest {
     }
 
     @Test
-    void rejectsANonDefaultFailedMessageHandlerAlongsideMessageOrdering() {
-        assertThatThrownBy(
-                        () ->
-                                PubSubSink.<String>builder()
-                                        .topic(TOPIC)
-                                        .serializer(serializer())
-                                        .failedMessageHandler(FailureHandler.logAndDrop())
-                                        .publisherOptions(
-                                                PubSubPublisherOptions.builder()
-                                                        .enableMessageOrdering(true)
-                                                        .build())
-                                        .build())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("enableMessageOrdering(true)")
-                .hasMessageContaining("issues/215");
-    }
-
-    @Test
-    void acceptsFailJobAlongsideMessageOrdering() {
-        // The check is about the policy, not about whether the setter was called: failJob() is the
-        // default's behavior however it got there.
+    void acceptsADroppingFailedMessageHandlerAlongsideMessageOrdering() {
+        // The combination #215 settled. What makes it safe is the writer, not the builder: a
+        // dropped message leaves its ordering key paused in the SDK publisher, and PubSubWriter
+        // hands that key to the repair. Whether to drop at all is the user's call.
         PubSubPublisherSink<String> sink =
                 (PubSubPublisherSink<String>)
                         PubSubSink.<String>builder()
                                 .topic(TOPIC)
                                 .serializer(serializer())
-                                .failedMessageHandler(FailureHandler.failJob())
+                                .failedMessageHandler(FailureHandler.logAndDrop())
                                 .publisherOptions(
                                         PubSubPublisherOptions.builder()
                                                 .enableMessageOrdering(true)
                                                 .build())
                                 .build();
 
+        assertThat(sink.getConfig().getFailedMessageHandler())
+                .isSameAs(FailureHandler.logAndDrop());
         assertThat(sink.getConfig().getPublisherOptions().isEnableMessageOrdering()).isTrue();
     }
 
     @Test
     void theFailedMessageHandlerSurvivesJavaSerialization() throws Exception {
-        // The handler travels to the task managers inside the sink; the fully-populated round trip
-        // below cannot cover it, since that fixture enables message ordering.
+        // The handler travels to the task managers inside the sink. Ordering is enabled so the
+        // combination #215 settled is the one round-tripped, rather than the handler alone.
         Sink<String> sink =
                 PubSubSink.<String>builder()
                         .topic(TOPIC)
                         .serializer(serializer())
                         .failedMessageHandler(FailureHandler.logAndDrop())
+                        .publisherOptions(
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .build())
                         .build();
 
         byte[] bytes = InstantiationUtil.serializeObject(sink);
@@ -289,6 +278,7 @@ class PubSubSinkBuilderTest {
 
         assertThat(copy.getConfig().getFailedMessageHandler())
                 .isSameAs(FailureHandler.logAndDrop());
+        assertThat(copy.getConfig().getPublisherOptions().isEnableMessageOrdering()).isTrue();
     }
 
     @Test
