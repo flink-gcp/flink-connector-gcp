@@ -180,6 +180,51 @@ class PubSubWriterMetricsTest {
     }
 
     @Test
+    void theParkedGaugeCountsAnOrderingKeyPausedByADroppedMessage() throws Exception {
+        // parkedMessages is not a topic-creation gauge: since #215 a dropped message's ordering key
+        // is repaired the same way, and its cascade waits in the same parked batch. Under
+        // CREATE_NEVER deliberately — that is the disposition under which nothing was parked at
+        // all before #215, so this is the assertion the widened behaviour actually needs, and
+        // nothing else pins it. It is how the gauge's documented wording stayed "held for a
+        // topic-creation republish" after the behaviour widened.
+        PubSubWriter<String> writer =
+                new PubSubWriter<>(
+                        TestSinkConfigs.forResolver(
+                                (element, context) -> topic("ordered"),
+                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                        .withOrderingKey(element -> element.split(":")[0]),
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .build(),
+                                FailureHandler.logAndDrop(),
+                                CreateDisposition.CREATE_NEVER),
+                        factory,
+                        admin,
+                        mailbox,
+                        metrics,
+                        FAST_SCHEDULE);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
+        factory.enqueueFuture(
+                ApiFutures.immediateFailedFuture(
+                        new CancellationException(
+                                "Execution cancelled because executing previous runnable"
+                                        + " failed.")));
+
+        writer.write("k1:first", CONTEXT);
+        writer.write("k1:second", CONTEXT);
+        mailbox.drain();
+
+        // The root was dropped by the handler; its cascade is held for the resume-and-republish,
+        // and no topic is missing anywhere in this test.
+        assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isEqualTo(1);
+        assertThat(counter(PubSubSinkWriterMetrics.TOPICS_CREATED)).isZero();
+
+        writer.flush(false);
+
+        assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isZero();
+    }
+
+    @Test
     void theParkedGaugeIsClearedWhenTheWriterIsClosed() throws Exception {
         // Parked messages are dropped with the writer (no checkpoint covered them), so a gauge
         // still reporting them would outlive what it describes.

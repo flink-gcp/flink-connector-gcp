@@ -86,7 +86,7 @@ public final class PubSubSinkWriterMetrics {
      *
      * @param inFlightMessages publishes not yet acknowledged
      * @param inFlightBytes serialized size of those publishes
-     * @param parkedMessages messages held for a topic-creation repair
+     * @param parkedMessages messages held for a destination's next repair
      */
     public void bindWriterState(
             Gauge<Integer> inFlightMessages,
