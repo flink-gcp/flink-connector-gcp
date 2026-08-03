@@ -60,6 +60,7 @@ public final class CloudTasksWriterOptions implements Serializable {
     private final Duration notFoundInitialBackoff;
     private final Duration notFoundMaxBackoff;
     private final int notFoundMaxAttempts;
+    private final boolean perDestinationMetrics;
 
     private CloudTasksWriterOptions(Builder builder) {
         this.maxInFlightTasks = builder.maxInFlightTasks;
@@ -69,6 +70,7 @@ public final class CloudTasksWriterOptions implements Serializable {
         this.notFoundInitialBackoff = builder.notFoundInitialBackoff;
         this.notFoundMaxBackoff = builder.notFoundMaxBackoff;
         this.notFoundMaxAttempts = builder.notFoundMaxAttempts;
+        this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
     /**
@@ -126,6 +128,11 @@ public final class CloudTasksWriterOptions implements Serializable {
         return notFoundMaxAttempts;
     }
 
+    /** Returns whether the writer registers per-queue send counters. */
+    public boolean isPerDestinationMetrics() {
+        return perDestinationMetrics;
+    }
+
     /**
      * Returns the schedule retrying {@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED} and {@code
      * RESOURCE_EXHAUSTED} creations.
@@ -164,6 +171,7 @@ public final class CloudTasksWriterOptions implements Serializable {
         }
         CloudTasksWriterOptions that = (CloudTasksWriterOptions) o;
         return maxInFlightTasks == that.maxInFlightTasks
+                && perDestinationMetrics == that.perDestinationMetrics
                 && retryMaxAttempts == that.retryMaxAttempts
                 && notFoundMaxAttempts == that.notFoundMaxAttempts
                 && retryInitialBackoff.equals(that.retryInitialBackoff)
@@ -181,7 +189,8 @@ public final class CloudTasksWriterOptions implements Serializable {
                 retryMaxAttempts,
                 notFoundInitialBackoff,
                 notFoundMaxBackoff,
-                notFoundMaxAttempts);
+                notFoundMaxAttempts,
+                perDestinationMetrics);
     }
 
     @Override
@@ -200,6 +209,8 @@ public final class CloudTasksWriterOptions implements Serializable {
                 + notFoundMaxBackoff
                 + ", notFoundMaxAttempts="
                 + notFoundMaxAttempts
+                + ", perDestinationMetrics="
+                + perDestinationMetrics
                 + "}";
     }
 
@@ -211,6 +222,7 @@ public final class CloudTasksWriterOptions implements Serializable {
         private Duration retryInitialBackoff = Duration.ofMillis(100);
         private Duration retryMaxBackoff = Duration.ofSeconds(10);
         private int retryMaxAttempts = 8;
+        private boolean perDestinationMetrics;
         private Duration notFoundInitialBackoff = Duration.ofMillis(500);
         private Duration notFoundMaxBackoff = Duration.ofSeconds(2);
         private int notFoundMaxAttempts = 3;
@@ -306,6 +318,23 @@ public final class CloudTasksWriterOptions implements Serializable {
             Preconditions.checkArgument(
                     notFoundMaxAttempts > 0, "notFoundMaxAttempts must be positive");
             this.notFoundMaxAttempts = notFoundMaxAttempts;
+            return this;
+        }
+
+        /**
+         * Registers per-queue {@code recordsSend} and {@code sendErrors} counters beside the
+         * writer's totals. Defaults to {@code false}.
+         *
+         * <p>Off by default because Flink cannot unregister a metric: with a per-record {@code
+         * destinationResolver} the queue set is unbounded, so every queue the job ever writes to
+         * keeps a row in the metric registry for the lifetime of the task. Switch it on for a sink
+         * whose queues are few and known — a fixed {@code queue(...)} especially.
+         *
+         * @param perDestinationMetrics whether to register per-queue counters
+         * @return this builder
+         */
+        public Builder perDestinationMetrics(boolean perDestinationMetrics) {
+            this.perDestinationMetrics = perDestinationMetrics;
             return this;
         }
 

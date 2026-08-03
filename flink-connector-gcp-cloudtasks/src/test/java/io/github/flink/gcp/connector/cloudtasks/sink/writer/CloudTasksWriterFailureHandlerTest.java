@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.FailedTask;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -53,6 +54,7 @@ class CloudTasksWriterFailureHandlerTest {
     private final FakeTaskCreator creator = new FakeTaskCreator();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
     private final ManualTimeSource time = new ManualTimeSource();
+    private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
     private final RecordingHandler handler = new RecordingHandler();
 
     /** Records what it is handed, and optionally fails. */
@@ -474,7 +476,11 @@ class CloudTasksWriterFailureHandlerTest {
 
     private CloudTasksWriter<String> writer(CloudTasksSinkBuilder<String> builder) {
         return new CloudTasksWriter<>(
-                TestSinkConfigs.config(builder.failedTaskHandler(handler)), creator, mailbox, time);
+                TestSinkConfigs.config(builder.failedTaskHandler(handler)),
+                creator,
+                mailbox,
+                metrics,
+                time);
     }
 
     /** A builder whose transient retry budget is the given number of attempts. */

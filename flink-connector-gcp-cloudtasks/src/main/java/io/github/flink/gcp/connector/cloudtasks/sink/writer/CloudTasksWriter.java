@@ -20,6 +20,8 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.metrics.Gauge;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.function.ThrowingRunnable;
@@ -139,6 +141,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     private final RetrySchedule notFoundSchedule;
     @Nullable private final TaskIdExtractor<? super T> taskIdExtractor;
     private final FailureHandler<? super FailedTask> failedTaskHandler;
+    private final CloudTasksWriterMetrics metrics;
 
     /** SHA-256 of the extracted keys; task-thread only, {@code null} when tasks are unnamed. */
     @Nullable private final MessageDigest digest;
@@ -169,10 +172,14 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
      * @param config the sink configuration
      * @param creator the task creator; closed with the writer
      * @param mailboxExecutor the task mailbox, used to run creation completions on the task thread
+     * @param metricGroup the writer's metric group
      */
     public CloudTasksWriter(
-            CloudTasksSinkConfig<T> config, TaskCreator creator, MailboxExecutor mailboxExecutor) {
-        this(config, creator, mailboxExecutor, TimeSource.SYSTEM);
+            CloudTasksSinkConfig<T> config,
+            TaskCreator creator,
+            MailboxExecutor mailboxExecutor,
+            SinkWriterMetricGroup metricGroup) {
+        this(config, creator, mailboxExecutor, metricGroup, TimeSource.SYSTEM);
     }
 
     @VisibleForTesting
@@ -180,6 +187,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
             CloudTasksSinkConfig<T> config,
             TaskCreator creator,
             MailboxExecutor mailboxExecutor,
+            SinkWriterMetricGroup metricGroup,
             TimeSource timeSource) {
         this.config = config;
         this.creator = creator;
@@ -192,6 +200,9 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         this.taskIdExtractor = config.getTaskIdExtractor();
         this.digest = taskIdExtractor == null ? null : sha256();
         this.failedTaskHandler = config.getFailedTaskHandler();
+        this.metrics = new CloudTasksWriterMetrics(metricGroup, options.isPerDestinationMetrics());
+        this.metrics.bindWriterState(
+                (Gauge<Integer>) this::getInFlightTasks, (Gauge<Integer>) this::getParkedTasks);
     }
 
     private static MessageDigest sha256() {
@@ -218,6 +229,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
             // The record never became a task, so there is nothing to carry but the destination:
             // FailedTask.getPayloadBytes() is null, as the shared contract prescribes. The
             // description leaves the queue to describeDestination(), as routeFailedTask does.
+            metrics.taskFailed(metrics.forQueue(destination));
             failedTaskHandler.handle(
                     FailedTask.of(destination, null, "The record could not be serialized.", e));
             return;
@@ -237,6 +249,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
             try {
                 key = taskIdExtractor.extractTaskId(element);
             } catch (RuntimeException e) {
+                metrics.taskFailed(metrics.forQueue(destination));
                 failedTaskHandler.handle(
                         FailedTask.of(
                                 destination,
@@ -335,6 +348,11 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     /**
      * Creates the task, counts it in flight and registers its completion callback. {@code pending}
      * carries the retry budgets already spent, and is {@code null} for a record's first attempt.
+     *
+     * <p>That null is also what keeps {@code numRecordsSend} a count of <em>records</em>: {@link
+     * #dispatchDueRetries} re-enters this method for every parked creation, and a record must be
+     * counted once however many attempts it took. The in-flight counter is the opposite — it tracks
+     * creations, so it is incremented on every call.
      */
     private void dispatch(
             QueueDestination destination,
@@ -349,6 +367,12 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                     "Failed to create a task in Cloud Tasks queue " + request.getParent() + ".", e);
         }
         inFlight++;
+        if (pending == null) {
+            // After the creator accepted it, never before: a synchronous throw above registers no
+            // callback, so the record never reached the client at all.
+            metrics.taskCreated(
+                    metrics.forQueue(destination), request.getTask().getSerializedSize());
+        }
         ApiFutures.addCallback(
                 future, new CreateCallback(destination, request, pending), Runnable::run);
     }
@@ -417,8 +441,13 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
             LOG.debug(
                     "Cloud Tasks already holds task {}; treating the duplicate create as success.",
                     request.getTask().getName());
+            metrics.taskDeduplicated();
             return;
         }
+        // Every remaining failure is counted, retryable ones included: those are this sink's own
+        // retries, and the sum over the retryable codes is what a separate retries counter would
+        // have said. The deduplication above is not one — it is the success naming asked for.
+        metrics.createFailure(code);
         // Routed only when the failure is unambiguously data-shaped, which takes both halves of
         // this condition. The transient lookup scans the *whole* chain, so an unstable service
         // can never produce a dead letter even if a data-shaped status sits in front of it — a
@@ -493,6 +522,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
      * put the queue in the sentence twice, in two spellings.
      */
     private void routeFailedTask(QueueDestination destination, Task task, Throwable throwable) {
+        metrics.taskFailed(metrics.forQueue(destination));
         try {
             failedTaskHandler.handle(
                     FailedTask.of(

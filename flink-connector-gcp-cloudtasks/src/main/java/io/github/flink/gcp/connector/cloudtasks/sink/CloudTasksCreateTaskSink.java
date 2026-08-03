@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksWriter;
@@ -70,7 +71,7 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
         }
         config.getFailedTaskHandler().open(DefaultFailureHandlerContext.of(context));
         TaskCreatorFactory factory = new DefaultTaskCreatorFactory(config.getEmulatorEndpoint());
-        return createWriter(factory.create(), context.getMailboxExecutor());
+        return createWriter(factory.create(), context.getMailboxExecutor(), context.metricGroup());
     }
 
     /**
@@ -79,7 +80,10 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
      * overload opens whatever it needs itself.
      */
     @VisibleForTesting
-    public SinkWriter<T> createWriter(TaskCreator creator, MailboxExecutor mailboxExecutor) {
-        return new CloudTasksWriter<>(config, creator, mailboxExecutor);
+    public SinkWriter<T> createWriter(
+            TaskCreator creator,
+            MailboxExecutor mailboxExecutor,
+            SinkWriterMetricGroup metricGroup) {
+        return new CloudTasksWriter<>(config, creator, mailboxExecutor, metricGroup);
     }
 }
