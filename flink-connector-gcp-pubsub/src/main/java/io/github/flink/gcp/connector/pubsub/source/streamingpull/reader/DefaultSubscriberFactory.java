@@ -26,6 +26,7 @@ import com.google.cloud.pubsub.v1.MessageReceiverWithAckResponse;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.cloud.pubsub.v1.SubscriberShutdownSettings;
 import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
@@ -73,20 +74,20 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
 
     private final PubSubSubscriberOptions options;
     private final OrderingMode orderingMode;
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
      * Creates the factory.
      *
      * @param options the subscriber tuning options
      * @param orderingMode the ordering mode, which decides the streaming-pull connection count
-     * @param emulatorEndpoint the emulator endpoint as {@code host:port} (plaintext, no
-     *     credentials), or {@code null} for production Pub/Sub
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for production Pub/Sub
      */
     public DefaultSubscriberFactory(
             PubSubSubscriberOptions options,
             OrderingMode orderingMode,
-            @Nullable String emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.options = options;
         this.orderingMode = orderingMode;
         this.emulatorEndpoint = emulatorEndpoint;
@@ -101,7 +102,7 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
             if (emulatorEndpoint != null) {
                 builder.setChannelProvider(
                                 SubscriberStubSettings.defaultGrpcTransportProviderBuilder()
-                                        .setEndpoint(emulatorEndpoint)
+                                        .setEndpoint(emulatorEndpoint.getTarget())
                                         .setChannelConfigurator(ManagedChannelBuilder::usePlaintext)
                                         .build())
                         .setCredentialsProvider(NoCredentialsProvider.create());

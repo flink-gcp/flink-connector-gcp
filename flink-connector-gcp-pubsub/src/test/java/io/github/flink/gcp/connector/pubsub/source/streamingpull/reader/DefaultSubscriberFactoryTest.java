@@ -20,6 +20,7 @@ import com.google.api.gax.batching.FlowControlSettings;
 import com.google.cloud.pubsub.v1.MessageReceiver;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.cloud.pubsub.v1.SubscriberShutdownSettings;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
@@ -157,7 +158,8 @@ class DefaultSubscriberFactoryTest {
                         .build();
 
         Subscriber subscriber =
-                new DefaultSubscriberFactory(options, OrderingMode.NONE, "localhost:1")
+                new DefaultSubscriberFactory(
+                                options, OrderingMode.NONE, EmulatorEndpoint.parse("localhost:1"))
                         .create(SUBSCRIPTION, NO_OP_CONSUMER);
 
         assertThat(subscriber.getFlowControlSettings().getMaxOutstandingElementCount())
@@ -173,7 +175,7 @@ class DefaultSubscriberFactoryTest {
                 new DefaultSubscriberFactory(
                                 PubSubSubscriberOptions.defaults(),
                                 OrderingMode.NONE,
-                                "localhost:1")
+                                EmulatorEndpoint.parse("localhost:1"))
                         .create(SUBSCRIPTION, NO_OP_CONSUMER);
         Subscriber confirming =
                 new DefaultSubscriberFactory(
@@ -181,7 +183,7 @@ class DefaultSubscriberFactoryTest {
                                         .awaitAckConfirmation(Duration.ofSeconds(30))
                                         .build(),
                                 OrderingMode.NONE,
-                                "localhost:1")
+                                EmulatorEndpoint.parse("localhost:1"))
                         .create(SUBSCRIPTION, NO_OP_CONSUMER);
 
         assertThat(field(fireAndForget, "receiver")).isNotNull();

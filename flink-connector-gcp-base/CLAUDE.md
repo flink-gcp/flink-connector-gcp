@@ -116,6 +116,22 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   deliberately does not use this helper, since it targets `io.grpc.Status.Code` with
   gRPC-first precedence and feeds typed code sets, and converting it would churn the classifier
   for no dedup gain.
+- **`EmulatorEndpoint` is the parsed form of every connector's `emulatorEndpoint(String)`, and
+  the only form that travels past the setter** (#235). It shares `base.rpc` with `StatusCodes`
+  rather than taking a package of its own — that package is the client seam in both directions,
+  codes out of client exceptions and an address into client settings, and a one-class package
+  would fail the #119 layer test. The five setters (four connectors plus `PubSubDeadLetterQueue`)
+  parse at `build()` time, and the configs, factories and admins behind them carry the type, so a
+  client can never be handed an endpoint nothing has checked; the Bigtable factory's inline parse,
+  which was the only one anywhere, moved here. Public signatures stay `String`: the type is
+  `@Internal` and must not leak into a `@PublicEvolving` one. Two parse decisions not to
+  re-litigate — **whitespace is rejected, never trimmed** (a trimmed value is silently a different
+  endpoint from the one configured, and the stray space is one of the typos #235 exists to catch),
+  and **the host is split at the last colon and kept verbatim**, which is exactly what
+  `DefaultMutationBatcherFactory` did before, so a bracketed IPv6 literal reaches the client
+  unchanged and `getTarget()` reconstructs the input. One message covers every malformed value
+  (`emulatorEndpoint must be host:port, was '<value>'`), which is why the old "must not be blank"
+  is gone: a blank endpoint is not a separate kind of mistake.
 - **Dependencies are `flink-core` (provided) plus `gax`/`grpc-api`/`protobuf-java`
   (BOM-managed).** Unlike
   test-utils, consumers depend on this module at **compile** scope, so it is bundled into the

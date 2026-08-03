@@ -199,8 +199,11 @@ class PubSubDeadLetterQueueTest {
         assertThatThrownBy(() -> builder.topic(null)).isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> builder.emulatorEndpoint(null))
                 .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> builder.emulatorEndpoint("  "))
-                .isInstanceOf(IllegalArgumentException.class);
+        // Parsed at the setter, so a typo fails on the client rather than in open() on a
+        // TaskManager; the full parse table is EmulatorEndpointTest's.
+        assertThatThrownBy(() -> builder.emulatorEndpoint("localhost8085"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulatorEndpoint must be host:port, was 'localhost8085'");
         assertThatThrownBy(() -> builder.maxOutstandingMessages(-2))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("write through");

@@ -31,6 +31,7 @@ import com.google.cloud.tasks.v2.RateLimits;
 import com.google.cloud.tasks.v2.Task;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
@@ -159,7 +160,7 @@ abstract class AbstractCloudTasksEmulatorITCase {
             throws IOException {
         return new CloudTasksWriter<>(
                 TestSinkConfigs.config(builder),
-                new DefaultTaskCreatorFactory(emulatorEndpoint()).create(),
+                new DefaultTaskCreatorFactory(EmulatorEndpoint.parse(emulatorEndpoint())).create(),
                 new FakeMailboxExecutor(),
                 TestSinkWriterMetricGroup.create());
     }

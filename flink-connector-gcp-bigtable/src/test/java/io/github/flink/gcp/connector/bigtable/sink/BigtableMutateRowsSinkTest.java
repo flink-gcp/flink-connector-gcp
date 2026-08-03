@@ -28,6 +28,8 @@ import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializat
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -40,22 +42,29 @@ class BigtableMutateRowsSinkTest {
             (element, context) -> RowMutationEntry.create(element).setCell("cf", "q", element);
 
     @Test
-    void closesTheFailureHandlerWhenTheClientCannotBeCreated() {
+    void closesTheFailureHandlerWhenTheWriterCannotBeCreated() throws Exception {
         LifecycleRecordingHandler handler = new LifecycleRecordingHandler();
-        // Malformed on purpose: the endpoint is only parsed when the client is built, which is the
-        // one step that can fail after the handler has been opened.
+        // The writer's own precondition is what fails here, after the handler has been opened and
+        // the batcher built. A non-positive in-flight cap is the case that precondition exists
+        // for: the options builder rejects it, and Java deserialization does not run the builder.
         Sink<String> sink =
                 BigtableSink.<String>builder()
                         .table(TABLE)
                         .serializer(SERIALIZER)
                         .failedMutationHandler(handler)
-                        .emulatorEndpoint("not-a-host-port")
+                        .writerOptions(forgedOptions("maxInFlightMutations", 0))
+                        // A well-formed endpoint the client never has to reach: gRPC connects
+                        // lazily, so the batcher is built offline and the failure stays the
+                        // writer's.
+                        .emulatorEndpoint("localhost:8086")
                         .build();
 
         assertThatThrownBy(() -> sink.createWriter(new StubWriterInitContext(0)))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("maxInFlightMutations must be positive");
 
         // No writer exists to close it, and a restart would otherwise open one more per attempt.
+        // The batcher built just before the failure is released on the same path.
         assertThat(handler.opens).isEqualTo(1);
         assertThat(handler.closes).isEqualTo(1);
     }
@@ -76,6 +85,17 @@ class BigtableMutateRowsSinkTest {
 
         assertThat(handler.opens).isZero();
         assertThat(handler.closes).isZero();
+    }
+
+    /**
+     * Returns options carrying a value their builder rejects, as a deserialized options object can.
+     */
+    private static BigtableWriterOptions forgedOptions(String name, int value) throws Exception {
+        BigtableWriterOptions options = BigtableWriterOptions.defaults();
+        Field field = BigtableWriterOptions.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.setInt(options, value);
+        return options;
     }
 
     /** A serialization schema whose {@code open} fails, so nothing after it may run. */

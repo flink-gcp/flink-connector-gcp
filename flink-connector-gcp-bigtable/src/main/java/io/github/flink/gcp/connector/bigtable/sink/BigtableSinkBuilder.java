@@ -21,6 +21,7 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 
@@ -47,7 +48,7 @@ public class BigtableSinkBuilder<T> {
     @Nullable private String appProfileId;
     private BigtableWriterOptions writerOptions = BigtableWriterOptions.defaults();
     private FailureHandler<? super FailedMutation> failedMutationHandler = FailureHandler.failJob();
-    @Nullable private String emulatorEndpoint;
+    @Nullable private EmulatorEndpoint emulatorEndpoint;
 
     BigtableSinkBuilder() {}
 
@@ -128,14 +129,16 @@ public class BigtableSinkBuilder<T> {
      * ever be used against an emulator. Optional; when unset the sink connects to Bigtable with
      * application-default credentials.
      *
+     * <p>The value is parsed here, so a malformed {@code host:port} is rejected on the client
+     * instead of surfacing as a connection failure once the job has been deployed.
+     *
      * @param emulatorEndpoint the emulator endpoint as {@code host:port}
      * @return this builder
+     * @throws IllegalArgumentException if the endpoint is not {@code host:port} with a port in
+     *     1..65535
      */
     public BigtableSinkBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
-        Preconditions.checkNotNull(emulatorEndpoint, "emulatorEndpoint must not be null");
-        Preconditions.checkArgument(
-                !emulatorEndpoint.trim().isEmpty(), "emulatorEndpoint must not be blank");
-        this.emulatorEndpoint = emulatorEndpoint;
+        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
         return this;
     }
 

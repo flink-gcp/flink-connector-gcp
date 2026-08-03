@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.sink;
 import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -41,7 +42,7 @@ public final class PubSubSinkConfig<T> implements Serializable {
     @Nullable private final TopicCreateOptions topicCreateOptions;
     private final PubSubPublisherOptions publisherOptions;
     private final FailureHandler<? super FailedMessage> failedMessageHandler;
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     PubSubSinkConfig(
             DestinationResolver<? super T> destinationResolver,
@@ -50,7 +51,7 @@ public final class PubSubSinkConfig<T> implements Serializable {
             @Nullable TopicCreateOptions topicCreateOptions,
             PubSubPublisherOptions publisherOptions,
             FailureHandler<? super FailedMessage> failedMessageHandler,
-            @Nullable String emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.createDisposition = createDisposition;
@@ -94,11 +95,9 @@ public final class PubSubSinkConfig<T> implements Serializable {
         return failedMessageHandler;
     }
 
-    /**
-     * Returns the emulator endpoint ({@code host:port}), or {@code null} for production Pub/Sub.
-     */
+    /** Returns the emulator endpoint, or {@code null} for production Pub/Sub. */
     @Nullable
-    public String getEmulatorEndpoint() {
+    public EmulatorEndpoint getEmulatorEndpoint() {
         return emulatorEndpoint;
     }
 }

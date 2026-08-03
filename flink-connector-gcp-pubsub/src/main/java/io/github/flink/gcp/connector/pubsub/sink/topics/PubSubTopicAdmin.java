@@ -26,6 +26,7 @@ import com.google.cloud.pubsub.v1.TopicAdminSettings;
 import com.google.pubsub.v1.MessageStoragePolicy;
 import com.google.pubsub.v1.Topic;
 import com.google.pubsub.v1.TopicName;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannelBuilder;
@@ -53,7 +54,7 @@ public class PubSubTopicAdmin implements TopicAdmin {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubTopicAdmin.class);
 
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /** Creates an admin using application-default credentials. */
     public PubSubTopicAdmin() {
@@ -63,10 +64,10 @@ public class PubSubTopicAdmin implements TopicAdmin {
     /**
      * Creates the admin.
      *
-     * @param emulatorEndpoint the emulator endpoint as {@code host:port} (plaintext, no
-     *     credentials), or {@code null} for production Pub/Sub with application-default credentials
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for production Pub/Sub with application-default credentials
      */
-    public PubSubTopicAdmin(@Nullable String emulatorEndpoint) {
+    public PubSubTopicAdmin(@Nullable EmulatorEndpoint emulatorEndpoint) {
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -138,7 +139,7 @@ public class PubSubTopicAdmin implements TopicAdmin {
                             .setCredentialsProvider(NoCredentialsProvider.create())
                             .setTransportChannelProvider(
                                     TopicAdminSettings.defaultGrpcTransportProviderBuilder()
-                                            .setEndpoint(emulatorEndpoint)
+                                            .setEndpoint(emulatorEndpoint.getTarget())
                                             .setChannelConfigurator(
                                                     ManagedChannelBuilder::usePlaintext)
                                             .build())

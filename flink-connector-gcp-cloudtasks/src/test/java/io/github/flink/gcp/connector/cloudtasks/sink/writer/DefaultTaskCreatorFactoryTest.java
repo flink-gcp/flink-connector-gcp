@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,7 +30,8 @@ class DefaultTaskCreatorFactoryTest {
     void buildsAndClosesAnEmulatorBackedCreatorWithoutCredentials() throws Exception {
         // Nothing here talks to the endpoint: the channel connects lazily, so this covers the
         // plaintext/no-credentials wiring the emulator integration tests (#25) build on.
-        TaskCreator creator = new DefaultTaskCreatorFactory("localhost:8123").create();
+        TaskCreator creator =
+                new DefaultTaskCreatorFactory(EmulatorEndpoint.parse("localhost:8123")).create();
 
         assertThat(creator).isNotNull();
         creator.close();
@@ -37,7 +39,8 @@ class DefaultTaskCreatorFactoryTest {
 
     @Test
     void isSerializableIntoTheJobGraph() throws Exception {
-        DefaultTaskCreatorFactory factory = new DefaultTaskCreatorFactory("localhost:8123");
+        DefaultTaskCreatorFactory factory =
+                new DefaultTaskCreatorFactory(EmulatorEndpoint.parse("localhost:8123"));
 
         Object restored =
                 InstantiationUtil.deserializeObject(

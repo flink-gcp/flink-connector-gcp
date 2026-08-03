@@ -18,14 +18,12 @@ package io.github.flink.gcp.connector.bigtable.sink.writer;
 
 import com.google.api.gax.batching.BatchingSettings;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the settings {@link DefaultMutationBatcherFactory} builds — the options-to-settings
@@ -86,15 +84,6 @@ class DefaultMutationBatcherFactoryTest {
                 .isEqualTo("NoCredentialsProvider");
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"localhost", "localhost:", ":8086", "localhost:port"})
-    void rejectsAnEndpointThatIsNotHostAndPort(String endpoint) {
-        DefaultMutationBatcherFactory factory =
-                factory(null, BigtableWriterOptions.defaults(), endpoint);
-
-        assertThatThrownBy(factory::settings).isInstanceOf(IllegalArgumentException.class);
-    }
-
     private static BatchingSettings batchingSettings(BigtableWriterOptions options) {
         return factory(null, options, "localhost:8086")
                 .settings()
@@ -105,6 +94,7 @@ class DefaultMutationBatcherFactoryTest {
 
     private static DefaultMutationBatcherFactory factory(
             String appProfileId, BigtableWriterOptions options, String emulatorEndpoint) {
-        return new DefaultMutationBatcherFactory(TABLE, appProfileId, options, emulatorEndpoint);
+        return new DefaultMutationBatcherFactory(
+                TABLE, appProfileId, options, EmulatorEndpoint.parse(emulatorEndpoint));
     }
 }

@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.bigtable.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.batching.Batcher;
@@ -28,6 +27,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.stub.BigtableBatchingCallSettings;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 
@@ -51,7 +51,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
     private final TableDestination destination;
     @Nullable private final String appProfileId;
     private final BigtableWriterOptions writerOptions;
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
      * Creates the factory.
@@ -61,14 +61,14 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
      *     instance's default
      * @param writerOptions the writer tuning options, whose batch thresholds are applied to the
      *     client
-     * @param emulatorEndpoint the emulator endpoint as {@code host:port} (plaintext, no
-     *     credentials), or {@code null} for production Bigtable
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for production Bigtable
      */
     public DefaultMutationBatcherFactory(
             TableDestination destination,
             @Nullable String appProfileId,
             BigtableWriterOptions writerOptions,
-            @Nullable String emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.destination = destination;
         this.appProfileId = appProfileId;
         this.writerOptions = writerOptions;
@@ -112,20 +112,8 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
         if (emulatorEndpoint == null) {
             return BigtableDataSettings.newBuilder();
         }
-        int separator = emulatorEndpoint.lastIndexOf(':');
-        Preconditions.checkArgument(
-                separator > 0 && separator < emulatorEndpoint.length() - 1,
-                "emulatorEndpoint must be host:port, was '%s'",
-                emulatorEndpoint);
-        String host = emulatorEndpoint.substring(0, separator);
-        int port;
-        try {
-            port = Integer.parseInt(emulatorEndpoint.substring(separator + 1));
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(
-                    "emulatorEndpoint must be host:port, was '" + emulatorEndpoint + "'", e);
-        }
-        return BigtableDataSettings.newBuilderForEmulator(host, port);
+        return BigtableDataSettings.newBuilderForEmulator(
+                emulatorEndpoint.getHost(), emulatorEndpoint.getPort());
     }
 
     /**

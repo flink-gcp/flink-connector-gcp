@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.sink;
 import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 
@@ -41,7 +42,7 @@ public final class BigtableSinkConfig<T> implements Serializable {
     @Nullable private final String appProfileId;
     private final BigtableWriterOptions writerOptions;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     BigtableSinkConfig(
             TableDestination destination,
@@ -49,7 +50,7 @@ public final class BigtableSinkConfig<T> implements Serializable {
             @Nullable String appProfileId,
             BigtableWriterOptions writerOptions,
             FailureHandler<? super FailedMutation> failedMutationHandler,
-            @Nullable String emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.destination = destination;
         this.serializer = serializer;
         this.appProfileId = appProfileId;
@@ -87,11 +88,9 @@ public final class BigtableSinkConfig<T> implements Serializable {
         return failedMutationHandler;
     }
 
-    /**
-     * Returns the emulator endpoint ({@code host:port}), or {@code null} for production Bigtable.
-     */
+    /** Returns the emulator endpoint, or {@code null} for production Bigtable. */
     @Nullable
-    public String getEmulatorEndpoint() {
+    public EmulatorEndpoint getEmulatorEndpoint() {
         return emulatorEndpoint;
     }
 }

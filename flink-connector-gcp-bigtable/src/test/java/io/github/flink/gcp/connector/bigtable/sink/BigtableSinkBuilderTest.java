@@ -20,6 +20,7 @@ import org.apache.flink.api.connector.sink2.Sink;
 
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import org.junit.jupiter.api.Test;
@@ -57,7 +58,8 @@ class BigtableSinkBuilderTest {
         assertThat(config.getAppProfileId()).isEqualTo("batch-profile");
         assertThat(config.getWriterOptions()).isSameAs(writerOptions);
         assertThat(config.getFailedMutationHandler()).isSameAs(handler);
-        assertThat(config.getEmulatorEndpoint()).isEqualTo("localhost:8086");
+        assertThat(config.getEmulatorEndpoint())
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8086"));
     }
 
     @Test
@@ -110,8 +112,13 @@ class BigtableSinkBuilderTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> builder.appProfileId("  "))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> builder.emulatorEndpoint("  "))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> builder.emulatorEndpoint(null))
+                .isInstanceOf(NullPointerException.class);
+        // Parsed at the setter, so a typo fails on the client rather than when the writer is
+        // created; the full parse table is EmulatorEndpointTest's.
+        assertThatThrownBy(() -> builder.emulatorEndpoint("localhost8086"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulatorEndpoint must be host:port, was 'localhost8086'");
     }
 
     @SuppressWarnings("unchecked")

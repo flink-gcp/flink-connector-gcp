@@ -43,7 +43,7 @@ execute. That inversion is the connector's whole reason for existing, and it is 
 | `taskIdExtractor` | — | Opts into named tasks, deduplicating by the extracted key. The sink hashes it with SHA-256 |
 | `writerOptions` | [defaults](#cloudtaskswriteroptions) | The in-flight cap and the two retry budgets |
 | `failedTaskHandler` | `FailureHandler.failJob()` | What happens to a task that terminally fails — fail, drop, or dead-letter |
-| `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production |
+| `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
 
 **The task itself is configured on the serialization schema, not here.** `httpTarget(url)` starts a
 fluent chain — `withBody`, `withMethod`, `withUrl`, `withHeaders`, `withOidcToken`, `withOAuthToken`
