@@ -24,6 +24,7 @@ import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
@@ -72,11 +73,31 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T> {
         }
         config.getFailedMessageHandler().open(DefaultFailureHandlerContext.of(context));
         EmulatorEndpoint emulatorEndpoint = config.getEmulatorEndpoint();
-        return createWriter(
-                new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint),
-                new PubSubTopicAdmin(emulatorEndpoint),
-                context.getMailboxExecutor(),
-                context.metricGroup());
+        TopicAdmin topicAdmin = null;
+        try {
+            topicAdmin = new PubSubTopicAdmin(emulatorEndpoint);
+            return createWriter(
+                    new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint),
+                    topicAdmin,
+                    context.getMailboxExecutor(),
+                    context.metricGroup());
+        } catch (Throwable e) {
+            // Nothing downstream will ever close these: no writer exists to do it, and the failure
+            // handler's contract promises a close on the failure path too — Flink rebuilds the
+            // writer on every restart attempt, so an opened handler accumulates per attempt on a
+            // task manager that stays alive, holding a publisher and a channel when it is a
+            // dead-letter queue. What fails here is the writer's constructor, which rejects
+            // in-flight caps a deserialized options object never ran the builder's checks over.
+            // The admin is released too although its close() frees nothing today: the writer would
+            // have owned it, so this is the same contract rather than a new claim about it.
+            //
+            // Throwable, not Exception: a client's first classload can fail with a
+            // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past
+            // this guard. Precise rethrow keeps the declared throws clause honest, and it also
+            // means a checked exception added to anything above stays covered.
+            Closers.closeAllSuppressing(e, topicAdmin, config.getFailedMessageHandler()::close);
+            throw e;
+        }
     }
 
     /**

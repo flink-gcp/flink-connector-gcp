@@ -36,6 +36,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -115,14 +116,28 @@ public class BigQueryFileLoadsSink<T>
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
         config.getFailedRowHandler().open(DefaultFailureHandlerContext.of(context));
-        return new FileLoadsWriter<>(
-                config,
-                options,
-                storage,
-                context.metricGroup(),
-                context.getJobInfo().getJobId().toString(),
-                context.getTaskInfo().getIndexOfThisSubtask(),
-                context.getTaskInfo().getAttemptNumber());
+        try {
+            return new FileLoadsWriter<>(
+                    config,
+                    options,
+                    storage,
+                    context.metricGroup(),
+                    context.getJobInfo().getJobId().toString(),
+                    context.getTaskInfo().getIndexOfThisSubtask(),
+                    context.getTaskInfo().getAttemptNumber());
+        } catch (Throwable e) {
+            // The handler is the only thing to release: the staging storage is a field of the sink
+            // and opens no client until the writer asks it to. Nothing downstream would close it —
+            // no writer exists to do it — and Flink rebuilds the writer on every restart attempt,
+            // so an opened handler would accumulate per attempt on a task manager that stays alive.
+            //
+            // Throwable, not Exception: a client's first classload can fail with a
+            // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past
+            // this guard. Precise rethrow keeps the declared throws clause honest, and it also
+            // means a checked exception added to anything above stays covered.
+            Closers.closeAllSuppressing(e, config.getFailedRowHandler()::close);
+            throw e;
+        }
     }
 
     @Override
