@@ -112,6 +112,11 @@ at every checkpoint barrier: it sends what the client has buffered and then wait
 outstanding mutation has been acknowledged. So a completed checkpoint means Bigtable has applied
 every record up to the barrier, and discarding operator state can never lose sink-buffered records.
 
+That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
+`sendToDeadLetterQueue(...)` a completed checkpoint means every record up to the barrier was either
+applied, [skipped by the serializer](#api-notes), or handed to the
+[failed-mutation policy](#failed-mutation-policy), which says which failures reach it.
+
 Checkpointing must be enabled in a streaming job. Without it `flush()` never runs mid-stream and
 outstanding mutations are lost on a failure; batch execution is covered by the end-of-input flush.
 

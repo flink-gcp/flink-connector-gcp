@@ -26,6 +26,11 @@ import org.apache.flink.annotation.PublicEvolving;
  * replayed record overwrites the same cells only when the serializer sets explicit cell timestamps;
  * see {@code BigtableSerializationSchema}.
  *
+ * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
+ * Under a dropping policy configured through {@link BigtableSinkBuilder#failedMutationHandler}, a
+ * completed checkpoint means every record up to the barrier was either applied, skipped by the
+ * serializer, or handed to that handler.
+ *
  * <p>The sink writes to one fixed table and never creates it: the table and its column families
  * must exist.
  *

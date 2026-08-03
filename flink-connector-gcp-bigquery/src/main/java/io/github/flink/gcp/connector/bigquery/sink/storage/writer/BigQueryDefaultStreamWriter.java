@@ -88,6 +88,11 @@ import java.util.function.LongSupplier;
  * mode). Checkpointing must be enabled for the at-least-once guarantee in streaming jobs; without
  * it {@code flush()} is only invoked at end of input.
  *
+ * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
+ * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every row up to the barrier was
+ * either acknowledged by BigQuery or handed to the {@link FailureHandler}; the append-failure
+ * routing below says which failures reach it.
+ *
  * <p>Append failures are routed by {@link AppendErrorClassifier} on the task thread. Transient
  * failures that surface past the SDK's own in-stream retries — and failures reporting the stream
  * writer itself as stale (finalized, unknown, closed) — are re-appended on a rebuilt stream writer

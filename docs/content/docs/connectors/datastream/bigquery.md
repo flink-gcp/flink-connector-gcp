@@ -789,6 +789,11 @@ sink-buffered data**. This is a deliberate decision: the alternative `AsyncSinkW
 model persists unflushed buffers into writer state instead of flushing at the barrier, which
 silently loses those buffers whenever state is dropped.
 
+That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
+`sendToDeadLetterQueue(...)` a successful checkpoint means every row up to the barrier was
+either acknowledged by BigQuery or handed to the failure policy — see
+[Error handling](#error-handling) for which failures reach it.
+
 Checkpointing must be enabled for the at-least-once guarantee in streaming jobs: without it,
 Flink never calls `flush()` mid-stream, so sub-threshold buffers are lost on failure. For jobs
 that must run without checkpointing, `DefaultStreamOptions`' `flushInterval` (see
@@ -837,6 +842,12 @@ Neither method is uniformly safer — their loss paths are disjoint:
 **BUFFERED** streams committed with a two-phase commit protocol on Flink checkpoints: writers
 append rows at explicit offsets (invisible while buffered), and when a checkpoint completes the
 committer makes exactly that checkpoint's rows visible with `FlushRows`.
+
+That contract assumes the default `FailureHandler.failJob()` policy, as the
+[loss-path table](#delivery-guarantees-and-state) records. Under `logAndDrop()` or
+`sendToDeadLetterQueue(...)` the commit makes every row up to the barrier visible except those
+handed to the failure policy, which are never appended and so never become visible at all — see
+[Error handling](#error-handling).
 
 ```java
 Sink<MyEvent> sink =

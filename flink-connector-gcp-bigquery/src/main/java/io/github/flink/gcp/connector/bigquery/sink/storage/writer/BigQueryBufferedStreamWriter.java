@@ -64,6 +64,11 @@ import java.util.concurrent.ExecutionException;
  * API stream at explicit offsets. Rows stay invisible until the committer flushes them ({@code
  * FlushRows}) as part of a completed checkpoint's commit — the two-phase-commit contract.
  *
+ * <p>That contract assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
+ * {@code sendToDeadLetterQueue(...)} a completed checkpoint's commit makes every row up to the
+ * barrier visible except those handed to the {@link FailureHandler}, which are never appended and
+ * so never become visible at all; the error handling below says which failures reach it.
+ *
  * <p><b>Stream lifecycle.</b> Each subtask owns one buffered stream, created lazily on the first
  * append and <em>reused across checkpoints</em> (frequent {@code CreateWriteStream} churn is
  * explicitly not intended usage of the API). The stream name and the next append offset are Flink

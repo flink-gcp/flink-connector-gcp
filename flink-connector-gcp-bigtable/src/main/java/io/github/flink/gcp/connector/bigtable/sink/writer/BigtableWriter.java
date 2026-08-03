@@ -58,6 +58,11 @@ import java.util.Arrays;
  * and outstanding mutations are lost on failure. Batch execution is covered by the end-of-input
  * flush.
  *
+ * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
+ * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every record up to the barrier
+ * was either applied, skipped by the serializer, or handed to the {@link FailureHandler}; the
+ * per-mutation failures below say which ones reach it.
+ *
  * <p>A record replayed after a restart is applied again. Whether that is idempotent is the
  * serializer's decision, not the writer's: a {@code setCell} with an explicit timestamp overwrites
  * the same cell, one without writes another cell version.

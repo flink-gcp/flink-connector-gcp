@@ -26,6 +26,11 @@ import org.apache.flink.annotation.PublicEvolving;
  * paces execution on the queue, so the queue's rate limits and retry policy — applied by whoever
  * created it — decide how fast the tasks run. The sink only decides how fast tasks are handed over.
  *
+ * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
+ * Under a dropping policy configured through {@link CloudTasksSinkBuilder#failedTaskHandler}, a
+ * completed checkpoint means every record up to the barrier was either durably accepted or handed
+ * to that handler.
+ *
  * <p>Example:
  *
  * <pre>{@code
