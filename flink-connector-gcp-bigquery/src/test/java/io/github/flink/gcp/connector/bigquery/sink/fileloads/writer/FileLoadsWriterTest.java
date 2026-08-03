@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittabl
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.apache.avro.file.DataFileReader;
 import org.apache.avro.file.SeekableByteArrayInput;
 import org.apache.avro.generic.GenericDatumReader;
@@ -42,7 +43,9 @@ import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
@@ -64,12 +67,19 @@ class FileLoadsWriterTest {
                                     .setName("value")
                                     .setType(TableFieldSchema.Type.INT64)
                                     .setMode(TableFieldSchema.Mode.NULLABLE))
+                    // A column whose Avro conversion can fail on the value, which INT64 and STRING
+                    // cannot: the writer routes those failures differently from parse failures.
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("amount")
+                                    .setType(TableFieldSchema.Type.NUMERIC)
+                                    .setMode(TableFieldSchema.Mode.NULLABLE))
                     .build();
 
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     /** A record routed to a table, optionally failing serialization or producing bad bytes. */
-    private static final class TestRow {
+    static final class TestRow {
         private final String table;
         private final String name;
         private final Long value;
@@ -140,12 +150,24 @@ class FileLoadsWriterTest {
             if (element.value != null) {
                 row.setField(descriptor().findFieldByName("value"), element.value);
             }
+            if ("unconvertible".equals(element.name)) {
+                // A NUMERIC too wide for the column's decimal precision: the row parses, and then
+                // fails on the value — the writer's other row-level failure path.
+                Descriptors.FieldDescriptor amount = descriptor().findFieldByName("amount");
+                byte[] huge = new byte[32];
+                Arrays.fill(huge, (byte) 0x7F);
+                row.setField(
+                        amount,
+                        amount.getJavaType() == Descriptors.FieldDescriptor.JavaType.STRING
+                                ? new BigInteger(huge).toString()
+                                : ByteString.copyFrom(huge));
+            }
             return row.build().toByteString();
         }
     }
 
     /** Collects failed rows instead of failing the job. */
-    private static final class CollectingHandler implements FailureHandler<FailedRow> {
+    static final class CollectingHandler implements FailureHandler<FailedRow> {
         private static final long serialVersionUID = 1L;
 
         private final List<FailedRow> rows = new ArrayList<>();
@@ -172,7 +194,7 @@ class FileLoadsWriterTest {
         }
     }
 
-    private static BigQuerySinkConfig<TestRow> config(FailureHandler<FailedRow> handler) {
+    static BigQuerySinkConfig<TestRow> config(FailureHandler<FailedRow> handler) {
         BigQueryFileLoadsSink<TestRow> sink =
                 (BigQueryFileLoadsSink<TestRow>)
                         BigQuerySink.<TestRow>builder()
@@ -196,6 +218,7 @@ class FileLoadsWriterTest {
                 config,
                 FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
                 storage,
+                TestSinkWriterMetricGroup.create(),
                 "0123456789abcdef0123456789abcdef",
                 3,
                 1,

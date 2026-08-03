@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeLoadJob
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.testutils.TestSinkCommitterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -119,6 +120,7 @@ class FileLoadsCommitterTest {
         final FakeLoadJobRunner runner = new FakeLoadJobRunner();
         final FakeTableAdmin tableAdmin = new FakeTableAdmin();
         final InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        final TestSinkCommitterMetricGroup metrics = TestSinkCommitterMetricGroup.create();
         final FileLoadsCommitter committer;
 
         Harness() {
@@ -135,7 +137,7 @@ class FileLoadsCommitterTest {
                             .getConfig();
             this.committer =
                     new FileLoadsCommitter(
-                            config, options, storage, () -> runner, () -> tableAdmin);
+                            config, options, storage, metrics, () -> runner, () -> tableAdmin);
         }
 
         void commit(FileLoadsCommittable... committables) throws IOException {
@@ -226,6 +228,27 @@ class FileLoadsCommitterTest {
                 .isInstanceOf(IOException.class);
 
         assertThat(harness.storage.getDeleted()).isEmpty();
+    }
+
+    @Test
+    void countsEveryLoadJobSubmitted() throws IOException {
+        Harness harness = new Harness();
+
+        harness.commit(file("a"));
+        harness.commit(file("b").withCheckpointId(1));
+
+        assertThat(harness.runner.loads).hasSize(2);
+        assertThat(harness.metrics.counterValue(FileLoadsCommitter.LOAD_JOBS_SUBMITTED))
+                .isEqualTo(2);
+    }
+
+    @Test
+    void countsNoLoadJobForAnEmptyCommit() throws IOException {
+        Harness harness = new Harness();
+
+        harness.commit();
+
+        assertThat(harness.metrics.counterValue(FileLoadsCommitter.LOAD_JOBS_SUBMITTED)).isZero();
     }
 
     @Test

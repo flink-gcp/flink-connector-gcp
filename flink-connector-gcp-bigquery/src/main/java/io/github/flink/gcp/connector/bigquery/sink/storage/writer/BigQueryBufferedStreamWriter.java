@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.api.connector.sink2.StatefulSinkWriter;
+import org.apache.flink.metrics.Gauge;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
@@ -112,6 +114,7 @@ public class BigQueryBufferedStreamWriter<T>
     private final long maxAppendRequestBytes;
     private final RetrySchedule retrySchedule;
     private final BufferedStreamOptions options;
+    private final BufferedStreamWriterMetrics metrics;
 
     @Nullable private BufferedStreamService service;
     @Nullable private OffsetRowAppender appender;
@@ -138,6 +141,7 @@ public class BigQueryBufferedStreamWriter<T>
      * @param options the buffered-stream options
      * @param serviceFactory the Storage Write API service factory
      * @param tableAdmin the admin for creating the destination table
+     * @param metricGroup the writer's metric group
      * @param subtaskId the subtask index (diagnostics and committable attribution)
      * @param restoredStates the restored writer states; empty for a fresh writer
      */
@@ -146,6 +150,7 @@ public class BigQueryBufferedStreamWriter<T>
             BufferedStreamOptions options,
             BufferedStreamServiceFactory serviceFactory,
             TableAdmin tableAdmin,
+            SinkWriterMetricGroup metricGroup,
             int subtaskId,
             Collection<BufferedStreamWriterState> restoredStates) {
         this.config = Preconditions.checkNotNull(config, "config must not be null");
@@ -163,6 +168,12 @@ public class BigQueryBufferedStreamWriter<T>
         this.maxAppendRequestBytes = options.getMaxAppendRequestBytes();
         this.retrySchedule = options.toRecoverySchedule();
         this.options = options;
+        this.metrics =
+                new BufferedStreamWriterMetrics(
+                        Preconditions.checkNotNull(metricGroup, "metricGroup must not be null"));
+        // The deque is the task thread's; a reporter thread sampling it can see a size mid-update,
+        // which is what "best-effort" means for a gauge over live writer state.
+        this.metrics.bindWriterState((Gauge<Integer>) inFlight::size);
 
         BufferedStreamWriterState adopted = null;
         for (BufferedStreamWriterState state : restoredStates) {
@@ -199,6 +210,7 @@ public class BigQueryBufferedStreamWriter<T>
             // without creating a stream (or auto-creating a table) it may never need.
             row = config.getSerializer().serialize(element);
         } catch (IOException | RuntimeException e) {
+            metrics.rowFailed();
             failedRowHandler.handle(
                     FailedRow.of(
                             destination,
@@ -208,6 +220,7 @@ public class BigQueryBufferedStreamWriter<T>
             return;
         }
         if (row.size() > BigQueryDefaultStreamWriter.MAX_ROW_BYTES) {
+            metrics.rowFailed();
             failedRowHandler.handle(
                     FailedRow.of(
                             destination,
@@ -278,6 +291,11 @@ public class BigQueryBufferedStreamWriter<T>
             closeables.add(service);
             service = null;
         }
+        // The deque backs the inFlightAppends gauge, which a reporter may still sample between
+        // this call and the metric group's own close; a writer torn down mid-flight must not keep
+        // reporting appends it will never wait for again. The appends themselves are unaffected —
+        // this writer never awaited them after close.
+        inFlight.clear();
         closeables.add(failedRowHandler::close);
         IOUtils.closeAll(closeables);
     }
@@ -314,6 +332,10 @@ public class BigQueryBufferedStreamWriter<T>
         ensureStream();
         try {
             ApiFuture<AppendRowsResponse> future = appender.append(batch, nextOffset);
+            // Counted after the hand-off, so a batch the client rejects synchronously — reaching
+            // BigQuery not at all — is not reported as sent. Everything re-appended later counts
+            // as an appendRetries instead.
+            metrics.batchAppended(batch);
             inFlight.addLast(new InFlightAppend(future, nextOffset, batch));
             nextOffset += batch.getSerializedRowsCount();
         } catch (RuntimeException e) {
@@ -336,9 +358,11 @@ public class BigQueryBufferedStreamWriter<T>
             inFlight.removeFirst();
             if (failure == null || AppendErrorClassifier.isOffsetAlreadyExists(failure)) {
                 // OFFSET_ALREADY_EXISTS outside a replay means a retry of an append that had
-                // already landed (the SDK's in-stream retries can race the acknowledgement).
+                // already landed (the SDK's in-stream retries can race the acknowledgement), so
+                // it is a success and is counted as neither a failure nor a send.
                 continue;
             }
+            metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
             recover(head, failure);
         }
     }
@@ -387,10 +411,11 @@ public class BigQueryBufferedStreamWriter<T>
                 offset,
                 initialFailure.toString());
         for (int attempt = 1; attempt <= retrySchedule.maxAttempts(); attempt++) {
-            Throwable failure = syncAppend(rows, offset);
+            Throwable failure = syncAppend(rows, offset, false);
             if (failure == null || AppendErrorClassifier.isOffsetAlreadyExists(failure)) {
                 return null;
             }
+            metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
             Exceptions.AppendSerializtionError rowLevel =
                     AppendErrorClassifier.findRowLevel(failure).orElse(null);
             if (rowLevel != null) {
@@ -434,6 +459,10 @@ public class BigQueryBufferedStreamWriter<T>
         replay.addLast(routeRowLevel(rows, rowLevel));
         while (!inFlight.isEmpty()) {
             InFlightAppend entry = inFlight.removeFirst();
+            // Deliberately not counted under an error class: every append behind a rejected offset
+            // fails *because* of that rejection, which is itself counted, so counting these would
+            // multiply one incident by the depth of the pipeline. Same rule as the Pub/Sub sink's
+            // cascade cancellations.
             Throwable failure = awaitFailure(entry.future, entry.expectedOffset);
             if (failure == null || AppendErrorClassifier.isOffsetAlreadyExists(failure)) {
                 // Nothing can land beyond a rejected request's offset; an acknowledged later
@@ -472,13 +501,14 @@ public class BigQueryBufferedStreamWriter<T>
                 replay.removeFirst();
                 continue;
             }
-            Throwable failure = syncAppend(batch, nextOffset);
+            Throwable failure = syncAppend(batch, nextOffset, false);
             if (failure == null) {
                 replay.removeFirst();
                 nextOffset += batch.getSerializedRowsCount();
                 attempt = 0;
                 continue;
             }
+            metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
             Exceptions.AppendSerializtionError rowLevel =
                     AppendErrorClassifier.findRowLevel(failure).orElse(null);
             if (rowLevel != null) {
@@ -558,6 +588,7 @@ public class BigQueryBufferedStreamWriter<T>
             if (errorMessage == null) {
                 survivors.addSerializedRows(rows.getSerializedRows(i));
             } else {
+                metrics.rowFailed();
                 failedRowHandler.handle(
                         FailedRow.of(
                                 destination, rows.getSerializedRows(i), errorMessage, rowLevel));
@@ -587,7 +618,10 @@ public class BigQueryBufferedStreamWriter<T>
                     return;
                 }
             }
-            Throwable failure = syncAppend(batch, nextOffset);
+            // The probe carries the batch sendAppend handed over, so its first attempt is that
+            // batch's hand-off; later attempts (and the replay onto a fresh stream, if the
+            // restored one is abandoned) re-append rows already counted.
+            Throwable failure = syncAppend(batch, nextOffset, attempt == 1);
             if (failure == null) {
                 LOG.info(
                         "Restored stream {} accepted the probe append at offset {}, reusing it",
@@ -597,6 +631,7 @@ public class BigQueryBufferedStreamWriter<T>
                 probePending = false;
                 return;
             }
+            metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
             if (AppendErrorClassifier.isOffsetAlreadyExists(failure)
                     || AppendErrorClassifier.isOffsetOutOfRange(failure)
                     || AppendErrorClassifier.requiresWriterRefresh(failure)) {
@@ -737,12 +772,21 @@ public class BigQueryBufferedStreamWriter<T>
 
     /** Appends synchronously and returns the failure, or {@code null} on success. */
     @Nullable
-    private Throwable syncAppend(ProtoRows rows, long offset) throws IOException {
+    private Throwable syncAppend(ProtoRows rows, long offset, boolean firstAttempt)
+            throws IOException {
         ApiFuture<AppendRowsResponse> future;
         try {
             future = appender.append(rows, offset);
         } catch (RuntimeException e) {
             return e;
+        }
+        // The flag carries the metric's whole contract: exactly one caller hands a batch over for
+        // the first time (the restored-stream probe), and every other caller here is re-appending
+        // rows sendAppend or that probe already counted.
+        if (firstAttempt) {
+            metrics.batchAppended(rows);
+        } else {
+            metrics.appendRetried();
         }
         return awaitFailure(future, offset);
     }

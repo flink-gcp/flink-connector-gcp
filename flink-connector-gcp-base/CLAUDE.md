@@ -53,7 +53,11 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   evicted and rebuilt reuses its counters, since re-registering the name would be refused. It hands
   out a `Counters` handle rather than taking a destination name per record, so the name is composed
   once per destination and a disabled instance costs two null checks; call sites cache the handle
-  beside their own per-destination state. Both types are **task-thread only** — plain
+  beside their own per-destination state, or look it up per request where they keep none (Cloud
+  Tasks; BigQuery's default-stream writer, which counts per *batch* and rebuilds that state on
+  every repair). `Counters.recordsSent(long)` is `recordSent()`'s batching form and the same
+  counter, added for BigQuery (#210), where one append carries n rows. Both types are
+  **task-thread only** — plain
   `SimpleCounter`s, valid because every sink increment site in this repository runs on the task
   thread, unlike the Pub/Sub *source*, whose SDK callback threads forced `ThreadSafeSimpleCounter`.
   A connector counting from a callback thread must not reuse them as they stand. `flink-test-utils`

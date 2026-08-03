@@ -119,6 +119,7 @@ public class BigQueryFileLoadsSink<T>
                 config,
                 options,
                 storage,
+                context.metricGroup(),
                 context.getJobInfo().getJobId().toString(),
                 context.getTaskInfo().getIndexOfThisSubtask(),
                 context.getTaskInfo().getAttemptNumber());
@@ -126,7 +127,7 @@ public class BigQueryFileLoadsSink<T>
 
     @Override
     public Committer<FileLoadsCommittable> createCommitter(CommitterInitContext context) {
-        return new FileLoadsCommitter(config, options, storage);
+        return new FileLoadsCommitter(config, options, storage, context.metricGroup());
     }
 
     @Override

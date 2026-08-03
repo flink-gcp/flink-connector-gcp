@@ -540,3 +540,60 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   writer calls `serialize` before `getDescriptor`, so that is where the first build happens there.
   An empty schema is rejected outright, since a table with no columns is a misconfiguration rather
   than a degenerate case worth supporting
+- **Sink metrics** (#210, the #37 series' last metrics sub-issue): three writer metrics classes over
+  the shared `base.metrics` helpers — `DefaultStreamWriterMetrics`, `BufferedStreamWriterMetrics`
+  (both `sink.storage.writer`) and `FileLoadsWriterMetrics` (`sink.fileloads.writer`) — plus one
+  committer counter. Three classes rather than one conditionally-registering class, so **no writer
+  registers a metric it can never increment**: the buffered path has one fixed destination with a
+  schema pinned at stream creation, so `openDestinations`, `tablesCreated`, `schemaReconciliations`
+  and the per-destination pair would all be constants there, and FILE_LOADS makes no per-record
+  request, so it has no error-class dimension at all. What not to re-litigate:
+  **`numRecordsSend` is counted where the batch is first handed to the client**, which is
+  `appendPending` on the default-stream path (the repair path re-appends from `retryBatches`, a
+  different call site, so no flag is needed) and a `firstAttempt` parameter on `syncAppend` for the
+  buffered path (whose probe, resend and replay all share that one call). Both count *after* the
+  client call returns, so a synchronous rejection — which registers no future and reaches BigQuery
+  not at all — is not reported as sent. The repo-wide rule and its cost are in the base module's
+  CLAUDE.md.
+  **`errorClass.CODE.errors` counts every failed append the task thread classifies**, not just the
+  first of a repair episode (the issue text named only `handleFailedAppend`; widened with the user,
+  2026-08-03): `collectFailedSiblings`, the `retryBatches` failure branch, and the buffered path's
+  drain/resend/replay/probe sites count too, which makes the sum over the transient codes the retry
+  volume — the same claim the Cloud Tasks page already makes, so one dashboard reads both. **Nothing
+  is ever counted from a gRPC callback thread** (the counters are plain), which is why the one
+  failure a callback owns outright — a terminal one, removed from `inFlight` by `park()` — is
+  counted in `checkAsyncError()` instead, behind an `asyncErrorCounted` flag because that method
+  runs on every write and flush while the task is torn down. Two failures are deliberately
+  **uncounted**: `OFFSET_ALREADY_EXISTS` outside a replay is a success (the original append landed),
+  and the appends stranded behind a rejected offset in `recoverRowLevel` are cascades of a failure
+  that is itself counted — the Pub/Sub sink's cascade-cancellation rule, applied to the shape this
+  writer has. The gax code comes from a new `AppendErrorClassifier.statusCode`, which mirrors
+  `PubSubErrorClassifier.statusCode` and leaves the classifier's own `io.grpc.Status.Code` routing
+  untouched (#61's do-not-converge decision).
+  **Every gauge's backing collection is cleared in `close()`** — `inFlight` on both storage writers
+  and `destinations` on FILE_LOADS, beside the `states.clear()` the default writer already did. A
+  reporter can sample a gauge between the writer's teardown and its metric group's, and on the
+  failure path those collections are never drained, so without this a dead writer goes on reporting
+  appends nobody will wait for; `PubSubWriter.close()` zeroing its parked count is the precedent.
+  Safe because nothing re-adds an entry afterwards — the completion callbacks only remove.
+  **`appendRetries` counts re-issued appends, `tablesCreated` counts creations and
+  `schemaReconciliations` counts applied schema updates only** — `reconcileSchema`'s
+  table-had-vanished branch is a creation and is counted as one, not as a reconciliation.
+  `perDestinationMetrics` is on `DefaultStreamOptions` and `FileLoadsOptions` (default false, no
+  `ConfigOption`: this module has no Table API layer yet, #57), and its handle is **looked up per
+  batch rather than cached on `DestinationState`**, unlike the Pub/Sub sink's: this writer counts
+  per batch, not per record, and its state is rebuilt by every repair, so caching would buy one map
+  read per append at the cost of threading the handle through the rebuild path.
+  `DestinationMetrics.Counters.recordsSent(long)` was added to the base helper for the same reason —
+  a batching connector counts n records in one call.
+  **The FILE_LOADS committer's `loadJobsSubmitted` counts load jobs only**, not the overflow path's
+  copy job (a different quota, and the name is the contract), and is threaded into
+  `LoadJobOrchestrator` as a `Counter` because that type is constructed per commit while the metric
+  is registered once per committer. It is the whole job's rate, not a subtask's: `prepared.global()`
+  means one committer subtask. The framework's own committer metrics are **documented, not built**,
+  under the names a reporter sees (`totalCommittables` &c. — see the test-utils CLAUDE.md for why
+  those are not the accessor names the issue text used).
+  Coverage is one `*MetricsTest` per writer, asserting **by registered name** through
+  `TestSinkWriterMetricGroup`; the buffered and FILE_LOADS ones ride their behavioural tests' fakes,
+  while the default-stream one carries its own because the cases it needs are spread across three
+  test classes whose fixtures are private

@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
+import org.apache.flink.metrics.Gauge;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.util.IOUtils;
 
 import com.google.cloud.bigquery.storage.v1.TableSchema;
@@ -26,6 +28,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
+import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
@@ -91,6 +94,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
     private final String pathPrefix;
     private final String filePrefix;
     private final long maxFileBytes;
+    private final FileLoadsWriterMetrics metrics;
 
     private final Map<TableDestination, DestinationState> destinations = new HashMap<>();
     private final List<FileLoadsCommittable> finishedFiles = new ArrayList<>();
@@ -101,6 +105,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
      * @param config the sink configuration
      * @param options the FILE_LOADS options
      * @param storage the staging storage
+     * @param metricGroup the writer's metric group
      * @param flinkJobId the Flink job id (hex), scoping this run's staging directory
      * @param subtaskIndex the subtask index
      * @param attemptNumber the attempt number
@@ -109,6 +114,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
             BigQuerySinkConfig<T> config,
             FileLoadsOptions options,
             StagingStorage storage,
+            SinkWriterMetricGroup metricGroup,
             String flinkJobId,
             int subtaskIndex,
             int attemptNumber) {
@@ -116,6 +122,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                 config,
                 options,
                 storage,
+                metricGroup,
                 flinkJobId,
                 subtaskIndex,
                 attemptNumber,
@@ -127,6 +134,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
             BigQuerySinkConfig<T> config,
             FileLoadsOptions options,
             StagingStorage storage,
+            SinkWriterMetricGroup metricGroup,
             String flinkJobId,
             int subtaskIndex,
             int attemptNumber,
@@ -142,17 +150,23 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                         + "-"
                         + UUID.randomUUID().toString().substring(0, 8);
         this.maxFileBytes = maxFileBytes;
+        this.metrics = new FileLoadsWriterMetrics(metricGroup, options.isPerDestinationMetrics());
+        // The map is the task thread's; a reporter thread sampling it can see a size mid-update,
+        // which is what "best-effort" means for a gauge over live writer state.
+        this.metrics.bindWriterState((Gauge<Integer>) destinations::size);
     }
 
     @Override
     public void write(T element, Context context) throws IOException, InterruptedException {
         TableDestination destination = config.getDestinationResolver().resolve(element, context);
+        DestinationMetrics.Counters table = metrics.forTable(destination);
         ByteString rowBytes;
         try {
             // A poison record must reach the handler no matter how the serializer fails,
             // matching the streaming writer's contract.
             rowBytes = config.getSerializer().serialize(element);
         } catch (IOException | RuntimeException e) {
+            metrics.recordFailed(table);
             config.getFailedRowHandler()
                     .handle(
                             FailedRow.of(
@@ -168,6 +182,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
             DynamicMessage row = DynamicMessage.parseFrom(state.descriptor, rowBytes);
             record = state.converter.convert(row);
         } catch (InvalidProtocolBufferException e) {
+            metrics.recordFailed(table);
             config.getFailedRowHandler()
                     .handle(
                             FailedRow.of(
@@ -180,6 +195,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                                     e));
             return;
         } catch (IOException e) {
+            metrics.recordFailed(table);
             config.getFailedRowHandler()
                     .handle(
                             FailedRow.of(
@@ -194,9 +210,11 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
             state.file = openFile(destination, state);
         }
         state.file.append(record);
+        // The staging file is this write path's hand-off, so the record counts here — the bytes
+        // cannot, since an Avro block's encoded size is only known once the file is finished.
+        metrics.recordStaged(table);
         if (state.file.bytesWritten() >= maxFileBytes) {
-            finishedFiles.add(state.file.finish());
-            state.file = null;
+            finishFile(state);
         }
     }
 
@@ -213,8 +231,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
     public Collection<FileLoadsCommittable> prepareCommit() throws IOException {
         for (DestinationState state : destinations.values()) {
             if (state.file != null) {
-                finishedFiles.add(state.file.finish());
-                state.file = null;
+                finishFile(state);
             }
         }
         List<FileLoadsCommittable> committables = new ArrayList<>(finishedFiles);
@@ -235,8 +252,20 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                 closeables.add(file::abort);
             }
         }
+        // The map backs the openDestinations gauge, which a reporter may still sample between this
+        // call and the metric group's own close; the conversion state is dead once the files are
+        // aborted. Cleared after the loop above has taken every open file.
+        destinations.clear();
         closeables.add(config.getFailedRowHandler()::close);
         IOUtils.closeAll(closeables);
+    }
+
+    /** Finalizes the destination's open file, collecting its committable and counting its bytes. */
+    private void finishFile(DestinationState state) throws IOException {
+        FileLoadsCommittable committable = state.file.finish();
+        state.file = null;
+        finishedFiles.add(committable);
+        metrics.fileFinished(committable.getByteCount());
     }
 
     private DestinationState stateFor(TableDestination destination) {

@@ -115,8 +115,18 @@ public final class DestinationMetrics {
 
         /** Counts one record handed to the client library for this destination. */
         public void recordSent() {
+            recordsSent(1);
+        }
+
+        /**
+         * Counts the records of one request handed to the client library for this destination — the
+         * batching connectors' form of {@link #recordSent()}, which is the same counter.
+         *
+         * @param count the number of records the request carries
+         */
+        public void recordsSent(long count) {
             if (recordsSend != null) {
-                recordsSend.inc();
+                recordsSend.inc(count);
             }
         }
 

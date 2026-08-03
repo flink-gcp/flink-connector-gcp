@@ -42,6 +42,7 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStream
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -221,7 +222,8 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
         SinkWriter<String> writer =
                 sink.createWriter(
                         new StreamWriterRowAppenderFactory(sink.getOptions()),
-                        new BigQueryTableAdmin());
+                        new BigQueryTableAdmin(),
+                        TestSinkWriterMetricGroup.create());
         NonPooledCanary canary = new NonPooledCanary(destination);
         try {
             LOG.info("PROBE steady-state append starting");

@@ -272,6 +272,8 @@ class DefaultStreamOptionsTest {
                 .isNotEqualTo(defaults);
         assertThat(DefaultStreamOptions.builder().maxInflightRequests(1).build())
                 .isNotEqualTo(defaults);
+        assertThat(DefaultStreamOptions.builder().perDestinationMetrics(true).build())
+                .isNotEqualTo(defaults);
         assertThat(DefaultStreamOptions.builder().maxInflightBytes(1).build())
                 .isNotEqualTo(defaults);
         assertThat(DefaultStreamOptions.builder().minConnectionsPerRegion(1).build())

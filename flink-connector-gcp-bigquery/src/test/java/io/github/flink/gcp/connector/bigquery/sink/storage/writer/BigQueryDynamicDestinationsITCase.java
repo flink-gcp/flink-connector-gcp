@@ -22,6 +22,7 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,7 +55,8 @@ class BigQueryDynamicDestinationsITCase extends AbstractBigQueryEmulatorITCase {
         SinkWriter<String> writer =
                 sink.createWriter(
                         new EmulatorAppenderFactory(grpcEndpoint()),
-                        new BigQueryTableAdmin(restClient));
+                        new BigQueryTableAdmin(restClient),
+                        TestSinkWriterMetricGroup.create());
         try {
             writer.write("dave", CONTEXT);
             writer.write("eve", CONTEXT);

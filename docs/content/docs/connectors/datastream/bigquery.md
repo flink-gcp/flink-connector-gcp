@@ -1223,6 +1223,111 @@ schedules are configurable via `DefaultStreamOptions` (see [Tuning](#tuning)); o
 buffered-stream path the SDK schedule stays fixed and only the writer's own re-append budget is
 configurable, via `BufferedStreamOptions`.
 
+## Metrics
+
+Registered on the sink writer's metric group, one set per subtask. The three write methods report
+different sets, because they are three different topologies — but the names they share mean the
+same thing in each.
+
+**`STORAGE_API_AT_LEAST_ONCE`** (default stream):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `numRecordsSend` | counter (Flink standard) | rows handed to the client library in an append |
+| `numBytesSend` | counter (Flink standard) | their serialized row bytes |
+| `numRecordsSendErrors` | counter (Flink standard) | rows routed to the failed-row handler |
+| `inFlightBatches` | gauge | appends the service has not answered |
+| `openDestinations` | gauge | destinations holding a live stream writer, after eviction |
+| `appendRetries` | counter | appends re-issued while repairing a destination |
+| `tablesCreated` | counter | tables created under `CREATE_IF_NEEDED` |
+| `schemaReconciliations` | counter | table schema updates applied under `schemaUpdateOptions(...)` |
+| `errorClass.CODE.errors` | counter | failed appends by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
+| `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
+
+**`STORAGE_API_EXACTLY_ONCE`** (buffered stream) reports `numRecordsSend`, `numBytesSend`,
+`numRecordsSendErrors`, `appendRetries` and `errorClass.CODE.errors` with the same meanings, plus
+`inFlightAppends` (appends the service has not acknowledged). It has no `openDestinations`,
+`tablesCreated`, `schemaReconciliations` or per-destination counters: this write method takes one
+fixed destination whose schema is pinned when the stream is created, so each would be a constant.
+
+**`FILE_LOADS`**:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `numRecordsSend` | counter (Flink standard) | records written to a staging file |
+| `numBytesSend` | counter (Flink standard) | bytes of the staging files finished so far |
+| `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-row handler |
+| `openDestinations` | gauge | destinations holding conversion state |
+| `stagedFiles` | counter | staging files finished (rolled at 1.5 GiB, and at every commit) |
+| `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
+
+There is deliberately **no `errorClass` on the FILE_LOADS writer**: it makes no per-record request,
+so a record either reaches the staging file or is rejected by the serializer or the Avro conversion,
+and neither failure carries a service status. Its `numBytesSend` is also the only one that is not
+payload volume — it is what was staged, Avro-encoded and compressed, which is the number that
+predicts what the load job reads. Because a file's encoded size is only known when it is closed,
+that counter advances in file-sized steps and lags `numRecordsSend` by the currently open files.
+
+**`numRecordsSend` counts records, not append attempts.** A batch re-appended while repairing a
+destination — a missing table, a schema update, a transient failure past the SDK's own retries — is
+counted once, when the client first accepted it, so a job working through an incident does not
+report itself as a busier one. Every connector in this repository counts the same way, which is what
+makes the number comparable across them. The consequence: `numBytesSend` on the two Storage Write
+API paths is payload volume, not wire volume.
+
+**`errorClass` counts every failed append**, first attempts and re-appends alike — the deliberate
+asymmetry with `numRecordsSend`, and the reason there is no separate "retry attempts by status"
+metric: the sum over the transient codes *is* the retry volume, and `appendRetries` measures the
+same thing from the other side without the status breakdown. Two exclusions on the buffered-stream
+path: an `OFFSET_ALREADY_EXISTS` outside a replay is a *success* (the original append landed), and
+the appends stranded behind a rejected offset are not counted either — they fail because of that
+rejection, which is itself counted, and counting them would multiply one incident by the depth of
+the pipeline. A terminal failure that fails the job is counted once, under its own status, before
+the exception is thrown.
+
+**`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
+exactly what reached `failedRowHandler(...)`: a record the serializer rejected, a row over the
+per-row limit, a row the service rejected by index, and — on FILE_LOADS — a row the Avro conversion
+could not encode. A serializer bug that makes *every* row invalid is dropped one at a time under a
+dropping policy, and this counter is what shows it while the job stays green.
+
+**`perDestinationMetrics` is off by default, and should stay off with a per-record
+`destinationResolver`.** Flink cannot unregister a metric, so every table the job has ever written
+to keeps its counters for the lifetime of the task — which is exactly the growth
+`destinationIdleTimeout` evicts the writer's own state to avoid. For the same reason the counters
+survive eviction: a table seen again resumes its own totals rather than restarting at zero. The
+switch is on [`DefaultStreamOptions`]({{< relref "docs/reference/bigquery" >}}#defaultstreamoptions)
+and [`FileLoadsOptions`]({{< relref "docs/reference/bigquery" >}}#fileloadsoptions).
+
+**The gauges drop to zero when the writer closes**, on the failure path too: a reporter can still
+sample them between the writer's teardown and its metric group's, and a writer that will never wait
+for an append again must not go on reporting one as in flight.
+
+`currentSendTime` is deliberately **not** set: an append may be re-issued across several backoffs, a
+table creation and a schema update, so the interval this writer could measure would describe its own
+repair budget rather than the service's response time. A missing number beats a wrong one.
+
+### Committer metrics
+
+The two write methods with a commit phase — `STORAGE_API_EXACTLY_ONCE` and `FILE_LOADS` — get
+Flink's own committer metrics for free, on the committer's metric group: `totalCommittables`,
+`successfulCommittables`, `alreadyCommittedCommittables`, `failedCommittables`,
+`retriedCommittables` and the `pendingCommittables` gauge. The connector registers none of them, and
+documents them here because they are what to read for commit health.
+
+`FILE_LOADS` adds one of its own:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `loadJobsSubmitted` | counter | BigQuery load jobs submitted by this committer |
+
+It is what turns "this checkpoint took a while" into "this checkpoint issued *N* load jobs", against
+the quota of 1,500 load jobs per table per day that shapes `minCheckpointInterval` (see
+[File loads](#file-loads)). Only load jobs are counted: the overflow path's copy job is a different
+quota and does not appear here. The FILE_LOADS committer runs on **one subtask** (its pre-commit
+topology ends in `global()`), so this counter is the whole job's load-job rate rather than one
+subtask's share.
+
 ## Tuning
 
 Each write method exposes its tuning knobs on its own options class, and every knob with its

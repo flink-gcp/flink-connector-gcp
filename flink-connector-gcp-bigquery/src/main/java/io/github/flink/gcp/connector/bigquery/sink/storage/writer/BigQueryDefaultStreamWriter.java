@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.metrics.Gauge;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
@@ -32,6 +34,7 @@ import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -191,6 +194,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     @Nullable private final Duration flushInterval;
     @Nullable private final ProcessingTimeService timerService;
     private final LongSupplier nanoClock;
+    private final DefaultStreamWriterMetrics metrics;
 
     /**
      * Stops the periodic-flush timer from re-arming (and from flushing closed appenders) once the
@@ -207,6 +211,14 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             new ConcurrentHashMap<>();
 
     private final AtomicReference<Throwable> asyncError = new AtomicReference<>();
+
+    /**
+     * Whether the captured terminal failure has been counted under its error class. Read and
+     * written on the task thread only, by {@link #checkAsyncError()}: the capture happens on a
+     * callback thread, which counts nothing, and every later call would otherwise re-count the same
+     * failure while the task is torn down.
+     */
+    private boolean asyncErrorCounted;
 
     /**
      * Set by completion callbacks when an append failed in a way the task thread can repair
@@ -229,12 +241,20 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * @param config the sink configuration
      * @param appenderFactory the appender factory
      * @param tableAdmin the admin for creating and updating destination tables
+     * @param metricGroup the writer's metric group
      */
     public BigQueryDefaultStreamWriter(
             BigQuerySinkConfig<T> config,
             RowAppenderFactory appenderFactory,
-            TableAdmin tableAdmin) {
-        this(config, appenderFactory, tableAdmin, DefaultStreamOptions.builder().build(), null);
+            TableAdmin tableAdmin,
+            SinkWriterMetricGroup metricGroup) {
+        this(
+                config,
+                appenderFactory,
+                tableAdmin,
+                metricGroup,
+                DefaultStreamOptions.builder().build(),
+                null);
     }
 
     /**
@@ -243,14 +263,16 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * @param config the sink configuration
      * @param appenderFactory the appender factory
      * @param tableAdmin the admin for creating and updating destination tables
+     * @param metricGroup the writer's metric group
      * @param options the default-stream options
      */
     public BigQueryDefaultStreamWriter(
             BigQuerySinkConfig<T> config,
             RowAppenderFactory appenderFactory,
             TableAdmin tableAdmin,
+            SinkWriterMetricGroup metricGroup,
             DefaultStreamOptions options) {
-        this(config, appenderFactory, tableAdmin, options, null);
+        this(config, appenderFactory, tableAdmin, metricGroup, options, null);
     }
 
     /**
@@ -268,6 +290,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * @param config the sink configuration
      * @param appenderFactory the appender factory
      * @param tableAdmin the admin for creating and updating destination tables
+     * @param metricGroup the writer's metric group
      * @param options the default-stream options
      * @param timerService the processing-time service driving the periodic flush, or {@code null}
      */
@@ -275,12 +298,14 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             BigQuerySinkConfig<T> config,
             RowAppenderFactory appenderFactory,
             TableAdmin tableAdmin,
+            SinkWriterMetricGroup metricGroup,
             DefaultStreamOptions options,
             @Nullable ProcessingTimeService timerService) {
         this(
                 config,
                 appenderFactory,
                 tableAdmin,
+                new DefaultStreamWriterMetrics(metricGroup, options.isPerDestinationMetrics()),
                 options.getMaxAppendRequestBytes(),
                 options.toRecoverySchedule(),
                 DEFAULT_SCHEMA_WAIT_SCHEDULE,
@@ -294,6 +319,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             BigQuerySinkConfig<T> config,
             RowAppenderFactory appenderFactory,
             TableAdmin tableAdmin,
+            SinkWriterMetricGroup metricGroup,
             long maxAppendRequestBytes,
             RetrySchedule recoverySchedule,
             RetrySchedule schemaWaitSchedule) {
@@ -301,6 +327,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 config,
                 appenderFactory,
                 tableAdmin,
+                new DefaultStreamWriterMetrics(metricGroup, false),
                 maxAppendRequestBytes,
                 recoverySchedule,
                 schemaWaitSchedule,
@@ -314,6 +341,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             BigQuerySinkConfig<T> config,
             RowAppenderFactory appenderFactory,
             TableAdmin tableAdmin,
+            DefaultStreamWriterMetrics metrics,
             long maxAppendRequestBytes,
             RetrySchedule recoverySchedule,
             RetrySchedule schemaWaitSchedule,
@@ -339,6 +367,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         this.flushInterval = flushInterval;
         this.timerService = timerService;
         this.nanoClock = Preconditions.checkNotNull(nanoClock, "nanoClock must not be null");
+        this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
+        // Both gauges read collections the task thread owns; a reporter thread sampling them can
+        // see a size mid-update, which is what "best-effort" means for a gauge over a live map.
+        this.metrics.bindWriterState(
+                (Gauge<Integer>) inFlight::size, (Gauge<Integer>) states::size);
         if (flushInterval != null && timerService != null) {
             scheduleFlush();
         }
@@ -384,6 +417,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             // failures, by contrast, are configuration errors and propagate.
             row = config.getSerializer().serialize(element);
         } catch (IOException | RuntimeException e) {
+            metrics.rowFailed(metrics.forTable(destination));
             failedRowHandler.handle(
                     FailedRow.of(
                             destination,
@@ -393,6 +427,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             return;
         }
         if (row.size() > MAX_ROW_BYTES) {
+            metrics.rowFailed(metrics.forTable(destination));
             failedRowHandler.handle(
                     FailedRow.of(
                             destination,
@@ -500,6 +535,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             closeables.add(state.appender);
         }
         states.clear();
+        // Both maps back gauges a reporter may still sample between this call and the metric
+        // group's own close, so a writer torn down mid-flight must not keep reporting appends it
+        // will never wait for again. Nothing re-adds an entry: the completion callbacks only
+        // remove. Same reason PubSubWriter.close() zeroes its parked count.
+        inFlight.clear();
         closeables.add(failedRowHandler::close);
         IOUtils.closeAll(closeables);
     }
@@ -620,8 +660,15 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     private void appendPending(TableDestination destination, DestinationState state) {
+        long rowBytes = state.pendingBytes;
         ProtoRows rows = state.take();
         ApiFuture<AppendRowsResponse> future = state.appender.append(rows);
+        // Counted here and nowhere else: this is the append that first hands the batch to the
+        // client library, and it is counted after the call, so a synchronous rejection (which
+        // registers no callback, and reaches BigQuery not at all) is not reported as sent. The
+        // re-appends of a repair go through retryBatches, which counts appendRetries instead.
+        metrics.batchAppended(
+                metrics.forTable(destination), rows.getSerializedRowsCount(), rowBytes);
         inFlight.put(future, new InFlightBatch(destination, rows));
         ApiFutures.addCallback(
                 future,
@@ -733,9 +780,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             throws IOException {
         InFlightBatch batch = inFlight.remove(future);
         if (batch == null) {
-            // The completion callback owned this failure; it is surfaced via checkAsyncError.
+            // The completion callback owned this failure; it is surfaced — and counted — via
+            // checkAsyncError.
             return;
         }
+        metrics.appendFailed(AppendErrorClassifier.statusCode(cause));
         RepairAction action = repairActionFor(cause);
         if (action == RepairAction.FAIL) {
             throw terminalFailure(batch.destination, cause);
@@ -817,6 +866,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             if (sibling == null) {
                 continue;
             }
+            metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
             switch (repairActionFor(failure)) {
                 case ROUTE_ROWS:
                     ProtoRows survivors =
@@ -867,12 +917,14 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             Exceptions.AppendSerializtionError rowLevel)
             throws IOException {
         Map<Integer, String> rowErrors = rowLevel.getRowIndexToErrorMessage();
+        DestinationMetrics.Counters table = metrics.forTable(destination);
         ProtoRows.Builder survivors = ProtoRows.newBuilder();
         for (int i = 0; i < rows.getSerializedRowsCount(); i++) {
             String errorMessage = rowErrors.get(i);
             if (errorMessage == null) {
                 survivors.addSerializedRows(rows.getSerializedRows(i));
             } else {
+                metrics.rowFailed(table);
                 failedRowHandler.handle(
                         FailedRow.of(
                                 destination, rows.getSerializedRows(i), errorMessage, rowLevel));
@@ -897,6 +949,10 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 destination,
                 config.getSerializer().getTableSchema(destination),
                 config.getTableCreateOptionsProvider().optionsFor(destination));
+        // The single creation site, so the counter needs no guard against the repair paths that
+        // reach it. Creation is idempotent across subtasks, so this counts what this subtask
+        // asked for, not what BigQuery had to do.
+        metrics.tableCreated();
     }
 
     /**
@@ -943,6 +999,9 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             }
             if (tableAdmin.updateSchema(destination, live, union.getSchema())) {
                 LOG.info("Updated the schema of {} to cover the serializer schema", destination);
+                // Only the update counts as a reconciliation: the branch above, where the table
+                // had meanwhile disappeared, is a creation and is counted as one.
+                metrics.schemaReconciled();
                 return true;
             }
             sleepJitter();
@@ -1001,15 +1060,20 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             boolean backOff = state == null;
             while (state != null && !remaining.isEmpty() && !backOff) {
                 ProtoRows head = remaining.get(0);
+                ApiFuture<AppendRowsResponse> reappend = state.appender.append(head);
+                // Re-appends are counted here rather than as sends: the rows they carry were
+                // counted when appendPending first handed them over.
+                metrics.appendRetried();
                 Throwable failure =
                         awaitFailure(
                                 destination,
-                                state.appender.append(head),
+                                reappend,
                                 "Interrupted while re-appending to BigQuery table " + destination);
                 if (failure == null) {
                     remaining.remove(0);
                     continue;
                 }
+                metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
                 // Schema-mismatch reconciliation is checked before row-level routing, mirroring
                 // repairActionFor: a mismatch fails the batch as a whole, and a schema update can
                 // save rows that per-row routing would drop.
@@ -1295,6 +1359,13 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private void checkAsyncError() throws IOException {
         Throwable error = asyncError.get();
         if (error != null) {
+            if (!asyncErrorCounted) {
+                // The one failure class a completion callback owns outright, counted here because
+                // this is where the task thread first sees it — and counted once, since the
+                // captured error is never cleared and this method runs on every write and flush.
+                asyncErrorCounted = true;
+                metrics.appendFailed(AppendErrorClassifier.statusCode(error));
+            }
             if (error instanceof IOException) {
                 throw (IOException) error;
             }

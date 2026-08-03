@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
@@ -230,6 +231,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 config,
                 factory,
                 BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
+                TestSinkWriterMetricGroup.create(),
                 maxAppendRequestBytes,
                 BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts),
                 BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts));
