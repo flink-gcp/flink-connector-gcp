@@ -458,18 +458,22 @@ class PubSubWriterAutoCreationTest {
     }
 
     @Test
-    void aCascadeIsNotParkedUnderCreateNever() throws Exception {
-        // Parking is what leads to createTopic, so every parking branch — not only the NOT_FOUND
-        // one — has to honour the disposition, or CREATE_NEVER creates a topic.
+    void aCascadeIsParkedUnderCreateNeverButCreatesNoTopic() throws Exception {
+        // Parking does not imply createTopic: only a parked NOT_FOUND does (#215), which is what
+        // lets a cascade be parked whatever the disposition. That matters because a cascade's root
+        // may be a message the failure handler dropped, and repairing that is something
+        // CREATE_NEVER needs too. So the CREATE_NEVER guarantee to assert here is that no topic is
+        // created, directly — "nothing is parked" is a proxy for it that does not hold.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_NEVER);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
         writer.write("k1:a", CONTEXT);
         mailbox.drain();
 
-        assertThatThrownBy(() -> writer.flush(false))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("ordering key");
+        writer.flush(false);
+
         assertThat(admin.created).isEmpty();
+        assertThat(publisher().resumedKeys).containsExactly("k1");
+        assertThat(publishedPayloads()).containsExactly("k1:a", "k1:a");
     }
 
     @Test
@@ -568,10 +572,31 @@ class PubSubWriterAutoCreationTest {
 
         assertThat(publishedPayloads()).containsExactly("k1:a", "k1:a");
         assertThat(publisher().resumedKeys).containsExactly("k1");
-        // The surprising consequence, worth stating outright: it provokes a topic-creation RPC
-        // even though no NOT_FOUND was ever observed. Harmless — createTopic is idempotent, and
-        // CREATE_NEVER is excluded — but not something to discover by accident.
+        // And it creates no topic, because no NOT_FOUND was ever observed (#215). The rootless
+        // cascade is in fact the SDK's paused-key path — a publish onto a key some earlier failure
+        // stopped — where the topic is present and creating it would answer nothing. If the topic
+        // really is missing, the republish below meets the NOT_FOUND and the next attempt creates
+        // it, which aRepairCreatesTheTopicWhenOnlyTheRepublishMeetsItMissing covers.
+        assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void aRepairCreatesTheTopicWhenOnlyTheRepublishMeetsItMissing() throws Exception {
+        // Creation is decided per attempt, not once before the loop: a batch parked for another
+        // reason can turn out to need it. Here the rootless cascade is republished, that republish
+        // is the first publish to see NOT_FOUND, and the following attempt creates the topic. That
+        // it is created at most once per repair, however many attempts re-set the flag, is pinned
+        // by retryBudgetExhaustionFailsWithCause, whose second attempt does exactly that.
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        writer.write("k1:a", CONTEXT);
+        mailbox.drain();
+
+        writer.flush(false);
+
         assertThat(admin.created).containsExactly(TOPIC);
+        assertThat(publishedPayloads()).containsExactly("k1:a", "k1:a", "k1:a");
     }
 
     @Test
@@ -593,5 +618,31 @@ class PubSubWriterAutoCreationTest {
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("2 attempt(s)")
                 .hasCause(failure);
+    }
+
+    @Test
+    void aRepairedIncidentsCauseDoesNotSurviveIntoTheNextOne() throws Exception {
+        // A cascade fills the budget-exhaustion cause in only while it is still empty, so a cause
+        // left behind by a repair that succeeded would be reported as the reason a later,
+        // unrelated failure ran out of attempts. The first incident here is repaired; the second
+        // must be explained by its own cancellation, not by the first one's NOT_FOUND.
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        CreateDisposition.CREATE_IF_NEEDED, new RetrySchedule(1, 1, 1, 0));
+        StatusRuntimeException firstIncident = notFound();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(firstIncident));
+        writer.write("k1:a", CONTEXT);
+        mailbox.drain();
+        writer.flush(false);
+
+        CancellationException secondIncident = cascade();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(secondIncident));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        writer.write("k1:b", CONTEXT);
+        mailbox.drain();
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasCause(secondIncident);
     }
 }

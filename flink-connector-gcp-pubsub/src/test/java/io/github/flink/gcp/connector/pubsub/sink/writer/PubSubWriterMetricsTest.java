@@ -247,6 +247,53 @@ class PubSubWriterMetricsTest {
     }
 
     @Test
+    void doesNotCountACascadeCancellationBesideADroppedRoot() throws Exception {
+        // The same rule with a dropped message as the root instead of a NOT_FOUND (#215). The
+        // cascade is republished rather than counted, so one bad message stays one incident however
+        // many of its neighbours the SDK cancelled — and its republish is not a second record,
+        // since numRecordsSend counts records rather than publish attempts.
+        //
+        // One fixed topic, not this class's usual element-as-topic resolver: a cascade only trails
+        // its root through the publisher's queue for one ordering key, so two topics would be two
+        // unrelated failures that happen to assert the same numbers.
+        PubSubWriter<String> writer =
+                new PubSubWriter<>(
+                        TestSinkConfigs.forResolver(
+                                (element, context) -> topic("ordered"),
+                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                        .withOrderingKey(element -> element.split(":")[0]),
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .build(),
+                                FailureHandler.logAndDrop(),
+                                CreateDisposition.CREATE_IF_NEEDED),
+                        factory,
+                        admin,
+                        mailbox,
+                        metrics,
+                        FAST_SCHEDULE);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
+        factory.enqueueFuture(
+                ApiFutures.immediateFailedFuture(
+                        new CancellationException(
+                                "Execution cancelled because executing previous runnable"
+                                        + " failed.")));
+
+        writer.write("k1:first", CONTEXT);
+        writer.write("k1:second", CONTEXT);
+        writer.flush(false);
+
+        assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
+        assertThat(metrics.hasMetric("errorClass", "CANCELLED", "errors")).isFalse();
+        assertThat(metrics.hasMetric("errorClass", "UNCLASSIFIED", "errors")).isFalse();
+        assertThat(counter("numRecordsSend")).isEqualTo(2);
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        // The repair a drop provokes creates no topic, so it counts none either. The counter is
+        // registered unconditionally, so this has to read its value rather than its presence.
+        assertThat(counter("topicsCreated")).isZero();
+    }
+
+    @Test
     void countsARecordTheSerializerRejectedAsASendError() throws Exception {
         PubSubWriter<String> writer =
                 newWriter(

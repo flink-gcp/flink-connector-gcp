@@ -20,6 +20,7 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import com.google.api.core.ApiFutures;
+import com.google.api.core.SettableApiFuture;
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.pubsub.v1.PubsubMessage;
@@ -44,6 +45,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -65,6 +67,10 @@ class PubSubWriterFailureHandlerTest {
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     private static final RetrySchedule UNUSED_RECOVERY = new RetrySchedule(1, 1, 1, 0);
+
+    private static final RetrySchedule FAST_SCHEDULE = new RetrySchedule(1, 1, 5, 0);
+
+    private static final TopicDestination ORDERED_TOPIC = TopicDestination.of(PROJECT, "ordered");
 
     private final FakePublisherFactory factory = new FakePublisherFactory();
     private final FakeTopicAdmin admin = new FakeTopicAdmin();
@@ -138,6 +144,55 @@ class PubSubWriterFailureHandlerTest {
                 UNUSED_RECOVERY);
     }
 
+    /**
+     * A writer publishing every record to one topic with message ordering enabled, taking the
+     * ordering key from the record's prefix before {@code ':'} — the fixture {@link
+     * PubSubWriterAutoCreationTest} uses, so the two ordering suites read alike.
+     *
+     * <p>The recovery schedule is a real one rather than {@link #UNUSED_RECOVERY}: these tests do
+     * reach the repair.
+     */
+    private PubSubWriter<String> newOrderingWriter(CreateDisposition disposition) {
+        return newOrderingWriter(
+                PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        .withOrderingKey(element -> element.split(":")[0]),
+                disposition);
+    }
+
+    private PubSubWriter<String> newOrderingWriter(
+            PubSubSerializationSchema<String> serializer, CreateDisposition disposition) {
+        return newOrderingWriter(serializer, disposition, FAST_SCHEDULE);
+    }
+
+    private PubSubWriter<String> newOrderingWriter(
+            PubSubSerializationSchema<String> serializer,
+            CreateDisposition disposition,
+            RetrySchedule recoverySchedule) {
+        return new PubSubWriter<>(
+                TestSinkConfigs.forResolver(
+                        (element, context) -> ORDERED_TOPIC,
+                        serializer,
+                        PubSubPublisherOptions.builder().enableMessageOrdering(true).build(),
+                        handler,
+                        disposition),
+                factory,
+                admin,
+                mailbox,
+                metrics,
+                recoverySchedule);
+    }
+
+    private FakePublisherFactory.FakeTopicPublisher orderedPublisher() {
+        return factory.publishers.get(ORDERED_TOPIC);
+    }
+
+    private List<String> orderedPayloads() {
+        return orderedPublisher().published.stream()
+                .map(PubsubMessage::getData)
+                .map(data -> data.toString(StandardCharsets.UTF_8))
+                .collect(Collectors.toList());
+    }
+
     private static TopicDestination topic(String topic) {
         return TopicDestination.of(PROJECT, topic);
     }
@@ -145,6 +200,12 @@ class PubSubWriterFailureHandlerTest {
     private static StatusRuntimeException invalidArgument() {
         return new StatusRuntimeException(
                 Status.INVALID_ARGUMENT.withDescription("message too large"));
+    }
+
+    /** The SDK publisher's cancellation of an ordering key's queued publishes (no cause). */
+    private static CancellationException cascade() {
+        return new CancellationException(
+                "Execution cancelled because executing previous runnable failed.");
     }
 
     @Test
@@ -325,8 +386,10 @@ class PubSubWriterFailureHandlerTest {
 
     @Test
     void aCancellationIsNeverRouted() throws Exception {
-        // Ordering is off here (the builder rejects it beside a handler), so a cancellation is not
-        // parked either — it must fail the job, never be dead-lettered as if it were the cause.
+        // Ordering is off in this writer, so a cancellation is not parked either — it must fail the
+        // job, never be dead-lettered as if it were the cause. With ordering on it is parked and
+        // republished instead, which theCascadesOfADroppedMessageAreRepublishedInPublishOrder
+        // covers; either way it never reaches the handler, because it is never a root cause (#78).
         PubSubWriter<String> writer = newWriter();
         factory.enqueueFuture(
                 ApiFutures.immediateFailedFuture(new CancellationException("key paused")));
@@ -334,6 +397,215 @@ class PubSubWriterFailureHandlerTest {
 
         assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
         assertThat(handler.handled).isEmpty();
+    }
+
+    // --- Message ordering (#215) -------------------------------------------------------------
+    //
+    // Note what the fake publisher cannot do: it holds no paused-key state, so it accepts a publish
+    // the real SDK would reject outright with a cancellation. That the writer hands a dropped
+    // message's key back is therefore only observable through resumedKeys, never through a publish
+    // that would otherwise fail.
+    //
+    // And only one test below discriminates it: aDroppedKeyedMessageResumesItsOrderingKey, whose
+    // batch is empty. Wherever a cascade is parked, the batch carries the same key and would resume
+    // it anyway — so those tests pin the republish, not the registration.
+
+    @Test
+    void aDroppedKeyedMessageResumesItsOrderingKey() throws Exception {
+        // The SDK pauses an ordering key on any non-retryable failure without inspecting it, and
+        // never resumes one itself. So dropping the message is not the end of the writer's
+        // obligations: without this the key is dead for the rest of the writer's life.
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+
+        writer.write("k1:a", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(1);
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
+        // Nothing to republish — the only message for the key was the dropped one — and no topic
+        // was missing, so the repair creates none.
+        assertThat(orderedPayloads()).containsExactly("k1:a");
+        assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void theCascadesOfADroppedMessageAreRepublishedInPublishOrder() throws Exception {
+        // The messages queued behind the dropped one were cancelled by the SDK, not rejected by the
+        // service. They are perfectly publishable, and republishing them in publish sequence is
+        // what keeps the survivors of the key in their relative order.
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        writer.write("k1:c", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(1);
+        assertThat(handler.handled.get(0).getPubsubMessage().getOrderingKey()).isEqualTo("k1");
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
+        // b and c republished, in that order; a is the gap the drop leaves behind.
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b", "k1:c", "k1:b", "k1:c");
+    }
+
+    @Test
+    void aCascadeObservedBeforeItsDroppedRootIsStillRepublished() throws Exception {
+        // #78's shape with a drop as the root rather than a NOT_FOUND. The SDK cancels a key's
+        // queued publishes from its own thread, so the cascade's mail can reach the mailbox first;
+        // completing the futures out of publish order reproduces that, since the callbacks run
+        // inline here. The pre-repair drainInFlight() is what makes it safe: every mail, the drop
+        // among them, has run before a batch is snapshotted.
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        SettableApiFuture<String> root = SettableApiFuture.create();
+        SettableApiFuture<String> cascade = SettableApiFuture.create();
+        factory.enqueueFuture(root);
+        factory.enqueueFuture(cascade);
+        writer.write("k1:first", CONTEXT);
+        writer.write("k1:second", CONTEXT);
+
+        cascade.setException(cascade());
+        root.setException(invalidArgument());
+        mailbox.drain();
+
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(1);
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
+        assertThat(orderedPayloads()).containsExactly("k1:first", "k1:second", "k1:second");
+    }
+
+    @Test
+    void aDropUnderCreateNeverParksTheCascadeAndCreatesNoTopic() throws Exception {
+        // The case that forces cascade parking to be independent of the disposition: routing a
+        // cascade to asyncError under CREATE_NEVER would fail the job over a dropped message's
+        // queued neighbours, the opposite of the configured policy. The disposition still decides
+        // that no topic is created, which is asserted here rather than assumed.
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_NEVER);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(1);
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b", "k1:b");
+        assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void aResumedKeyIsNotCarriedIntoTheNextRepair() throws Exception {
+        // The registered keys are drained, not accumulated. Resuming an unpaused key is a no-op, so
+        // what this protects is the set itself: kept, it would grow with every distinct key ever
+        // dropped on the destination and make each later repair re-resume all of them.
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        writer.write("k1:a", CONTEXT);
+        writer.flush(false);
+
+        factory.enqueueFuture(
+                ApiFutures.immediateFailedFuture(new StatusRuntimeException(Status.NOT_FOUND)));
+        writer.write("k2:b", CONTEXT);
+        writer.flush(false);
+
+        // k1 once, by the repair that drained it — not again alongside k2.
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k2");
+        assertThat(admin.created).containsExactly(ORDERED_TOPIC);
+    }
+
+    @Test
+    void aRepairThatCreatedNoTopicSaysSoWhenItRunsOutOfAttempts() throws Exception {
+        // The budget bounds any repair, not only a topic-creation one, so the exhaustion message
+        // must not claim a creation that never happened. Here the root is a dropped message and the
+        // cascade's republishes keep being cancelled.
+        //
+        // This also pins the bound itself: a key whose messages are rejected one batch per attempt
+        // fails the job once the budget runs out, rather than being drained. Whether that is the
+        // right bound is #269, and this test is what changes when it is answered.
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> element.split(":")[0]),
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        new RetrySchedule(1, 1, 2, 0));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        for (int i = 0; i < 3; i++) {
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        }
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        mailbox.drain();
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("2 attempt(s)")
+                .hasMessageNotContaining("after creating the topic");
+        assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void aThrowingHandlerOnAKeyedMessageResumesNothing() throws Exception {
+        // Returning from handle() is the SPI's only way of saying "dropped". A handler that threw
+        // refused, so the job is failing and its key is never published to again.
+        //
+        // The outcome is enforced twice over, and this test cannot tell the two apart: routing
+        // returns early on a throw, and asyncError gates every path into a repair regardless. So a
+        // mutant that deletes that early return survives — measured, not assumed. What is asserted
+        // here is the outcome a user sees, which holds either way.
+        PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
+        handler.failure = new IOException("refused");
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        writer.write("k1:a", CONTEXT);
+
+        assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
+        assertThat(orderedPublisher().resumedKeys).isEmpty();
+    }
+
+    @Test
+    void aDroppedUnkeyedMessageResumesNothing() throws Exception {
+        // An unkeyed message never enters the SDK's sequential executor — every ordering branch in
+        // Publisher is guarded on a non-empty key — so it pauses nothing, even with ordering on.
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+
+        writer.write("unkeyed", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(1);
+        assertThat(orderedPublisher().resumedKeys).isEmpty();
+    }
+
+    @Test
+    void aDroppedSerializationFailureResumesNothing() throws Exception {
+        // The record never became a message, so no key ever reached the publisher — and the key is
+        // not even knowable, since deriving it is part of what failed. A second record publishes
+        // successfully so the destination does have a publisher: asserting on an absent one would
+        // pass whatever the drop did.
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        element -> {
+                            if (element.startsWith("bad")) {
+                                throw new IOException("bad record");
+                            }
+                            return PubsubMessage.newBuilder()
+                                    .setOrderingKey(element.split(":")[0])
+                                    .build();
+                        },
+                        CreateDisposition.CREATE_IF_NEEDED);
+
+        writer.write("k1:good", CONTEXT);
+        writer.write("bad:k1", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(1);
+        assertThat(orderedPublisher().resumedKeys).isEmpty();
     }
 
     @Test

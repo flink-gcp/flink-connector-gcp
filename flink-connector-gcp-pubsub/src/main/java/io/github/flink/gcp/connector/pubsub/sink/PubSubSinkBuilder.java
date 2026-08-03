@@ -149,8 +149,11 @@ public class PubSubSinkBuilder<T> {
      * write or checkpoint. The parameter is contravariant, so a cross-connector {@code
      * FailureHandler<FailedElement>} is accepted as-is.
      *
-     * <p>A non-default handler is rejected together with {@code
-     * PubSubPublisherOptions.builder().enableMessageOrdering(true)}; see {@link #build()}.
+     * <p>Under {@code PubSubPublisherOptions.builder().enableMessageOrdering(true)}, dropping a
+     * message that carries an ordering key leaves a gap in that key's stream which a consumer
+     * cannot tell apart from a lost message. The messages queued behind it keep their relative
+     * order — the sink resumes the key and republishes them — and the dead-letter record carries
+     * the whole serialized message, so the gap can be replayed from it.
      *
      * @param failedMessageHandler the handler
      * @return this builder
@@ -186,11 +189,6 @@ public class PubSubSinkBuilder<T> {
     /**
      * Builds the sink.
      *
-     * <p>Rejects a non-default {@link #failedMessageHandler(FailureHandler)} combined with message
-     * ordering: dropping a message would reach into the ordering repair (a parked batch is resumed,
-     * sorted on publish sequence and republished whole), which is where issue #78 found races.
-     * Lifting the restriction is issue #215.
-     *
      * @return the sink
      */
     public Sink<T> build() {
@@ -203,17 +201,6 @@ public class PubSubSinkBuilder<T> {
                 "topicCreateOptions(...) configures topics the sink creates, but"
                         + " createDisposition(CREATE_NEVER) never creates one. Remove the options"
                         + " or use CREATE_IF_NEEDED.");
-        // Compared against the built-in rather than against "was the setter called": what the
-        // repair cannot survive is a policy that drops, and failJob() passed explicitly is the
-        // same policy as the default.
-        Preconditions.checkState(
-                failedMessageHandler == FailureHandler.failJob()
-                        || !publisherOptions.isEnableMessageOrdering(),
-                "failedMessageHandler(...) is not supported together with"
-                        + " enableMessageOrdering(true): dropping a message would reach into the"
-                        + " ordering repair, which republishes a parked batch whole and in publish"
-                        + " order. Remove one of the two, or follow"
-                        + " https://github.com/laughingman7743/flink-connector-gcp/issues/215.");
         return new PubSubPublisherSink<>(
                 new PubSubSinkConfig<>(
                         destinationResolver,

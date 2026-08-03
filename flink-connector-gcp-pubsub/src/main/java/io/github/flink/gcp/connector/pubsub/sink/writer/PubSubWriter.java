@@ -146,6 +146,14 @@ import java.util.TreeMap;
  * mail order — including deciding whether to park a cascade by whether something is parked already
  * — is a race (see #78).
  *
+ * <p>A message-level failure the handler drops is a second root a cascade can trail, and the
+ * publisher pauses an ordering key for it exactly as it does for a missing topic: the SDK marks the
+ * key on any non-retryable failure without inspecting it, and never resumes one by itself. So a
+ * dropped keyed message hands its key to the next repair, which resumes it and republishes the
+ * cascades in publish sequence. The survivors keep their relative order; the dropped message leaves
+ * a gap in the key's stream that a consumer cannot distinguish from a loss, which is the price of a
+ * dropping policy and is why the dead-letter record carries the whole serialized message.
+ *
  * @param <T> type of the records written by the sink
  */
 @Internal
@@ -305,9 +313,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     @Override
     public void flush(boolean endOfInput) throws IOException, InterruptedException {
         checkAsyncError();
-        // Loop: the final drain can process a NOT_FOUND failure mail that parks messages for
-        // repair instead of setting asyncError; returning then would complete a checkpoint with
-        // unpublished messages.
+        // Loop: the final drain can process a failure mail that owes a repair rather than setting
+        // asyncError — a NOT_FOUND that parks messages, or a message-level rejection the handler
+        // drops, leaving its ordering key paused with nothing parked at all. Returning then would
+        // complete a checkpoint with unpublished messages, or with a key no later publish for it
+        // could get past. This loop is what makes "a completed checkpoint leaves neither" true.
         do {
             if (repairNeeded) {
                 repairPendingTopics();
@@ -405,9 +415,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Holds a failed publish for the destination's topic-creation repair, keyed by its publish
-     * sequence so the batch keeps publish order. Sole entry point, so the {@link #parkedMessages}
-     * gauge cannot drift from the pending buffers it reports.
+     * Holds a failed publish for the destination's next repair, keyed by its publish sequence so
+     * the batch keeps publish order. Sole entry point, so the {@link #parkedMessages} gauge cannot
+     * drift from the pending buffers it reports.
+     *
+     * <p>Parking does not decide that a topic will be created: only {@link
+     * DestinationState#topicMissing} does, which is why a cascade may be parked under {@code
+     * CREATE_NEVER}.
      */
     private void park(DestinationState state, long sequence, PubsubMessage message) {
         if (state.pendingRetries.put(sequence, message) == null) {
@@ -480,10 +494,12 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
         if (kind == PubSubErrorClassifier.Kind.TOPIC_NOT_FOUND && repairsTopics()) {
             park(state, sequence, message);
+            // The only thing that makes the repair create a topic. Everything else it does —
+            // resuming ordering keys, republishing the batch in order — is needed whatever parked
+            // the batch, and a repair that has not seen a NOT_FOUND must not issue a createTopic.
+            state.topicMissing = true;
             state.repairCause = throwable;
-        } else if (kind == PubSubErrorClassifier.Kind.CANCELLATION
-                && repairsTopics()
-                && orderingEnabled) {
+        } else if (kind == PubSubErrorClassifier.Kind.CANCELLATION && orderingEnabled) {
             // With ordering enabled the SDK cancels an ordering key's queued publishes after the
             // key's first failure, so a cancellation is never a root cause — it always trails a
             // failure of an earlier publish this writer issued for the same key. Park it for the
@@ -493,6 +509,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             // need to be knowable — repairPendingTopics drains the writer completely before
             // repairing, and that drain surfaces a fatal root through checkAsyncError, so a
             // cascade is only ever republished once the root is known to be recoverable.
+            //
+            // Deliberately not conditioned on the create disposition, unlike the NOT_FOUND branch
+            // above. A cascade's root may be a message the failure handler dropped, which is a
+            // repair CREATE_NEVER needs too. What keeps CREATE_NEVER from creating a topic is
+            // topicMissing, which only a parked NOT_FOUND sets, so the guard is not needed here.
+            // Asking instead whether this key has a recorded drop would be the #78 bug again:
+            // the drop mail and the cascade mail arrive in either order, so a cascade observed
+            // first would find nothing recorded and be misread as a root cause.
             park(state, sequence, message);
             // Only as a fallback: a real NOT_FOUND is the better budget-exhaustion cause, and it
             // wins whether it is observed before or after its cascades.
@@ -520,6 +544,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * <p>The description does not name the topic: every reader of it reaches the element's {@code
      * describeDestination()} too — the built-in handlers compose the two — so naming it here would
      * put the topic in the sentence twice, in two spellings.
+     *
+     * <p>Dropping a message the SDK rejected leaves work behind when it carried an ordering key:
+     * the publisher paused that key and cancelled its queued publishes, and it never resumes a key
+     * on its own. So a drop registers the key for the repair to resume — see {@link
+     * #resumeOrderingKeys}, which is also where the reason it cannot be resumed here is recorded.
      */
     private void routeFailedMessage(
             DestinationState state, PubsubMessage message, Throwable throwable) {
@@ -545,10 +574,27 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                                                 + ".",
                                         e);
             }
+            // The handler refused to drop, so the job is failing and its paused key will never be
+            // published to again. Belt and braces rather than load-bearing: asyncError is set by
+            // the block above, and every path into a repair opens with checkAsyncError, so falling
+            // through would register resume work nothing would ever run. Returning keeps the
+            // method's own reading straight — a resume registered below means a drop happened.
+            return;
+        }
+        // Returning from handle() is the SPI's only way of saying "dropped", so this is the point
+        // the message stops being the writer's business — and the point its key has to be handed
+        // back. An unkeyed message never entered the SDK's sequential executor, so it pauses
+        // nothing.
+        if (orderingEnabled && !message.getOrderingKey().isEmpty()) {
+            state.keysToResume.add(message.getOrderingKey());
+            repairNeeded = true;
         }
     }
 
-    /** Repairs every destination with parked messages until none remain (or the repair fails). */
+    /**
+     * Repairs every destination that owes one — messages parked for republish, an ordering key a
+     * dropped message left paused, or both — until none remain (or the repair fails).
+     */
     private void repairPendingTopics() throws IOException, InterruptedException {
         while (repairNeeded) {
             repairNeeded = false;
@@ -562,7 +608,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             // Iterate a snapshot: repairDestination yields to the mailbox, so hardening against
             // a mail ever reaching stateFor() keeps this loop safe from map mutation.
             for (DestinationState state : new ArrayList<>(states.values())) {
-                if (!state.pendingRetries.isEmpty()) {
+                // A destination with nothing parked can still owe a repair: a dropped message's
+                // ordering key is paused in the publisher with no message left to republish.
+                if (!state.pendingRetries.isEmpty() || !state.keysToResume.isEmpty()) {
                     repairDestination(state);
                 }
             }
@@ -570,22 +618,40 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Creates the destination's topic and republishes its parked messages, retrying within the
-     * recovery schedule while topic metadata propagates. Each attempt drains the writer completely
-     * (repair is rare, so waiting on unrelated destinations' publishes is acceptable for the
-     * simplicity of reusing {@link #drainInFlight}). Failures during a retry re-enter the pending
-     * buffer through the normal callback path; non-{@code NOT_FOUND} failures abort the repair from
-     * within the drain.
+     * Republishes the destination's parked messages — creating its topic first when that is what
+     * they are parked for — retrying within the recovery schedule while topic metadata propagates.
+     * Each attempt drains the writer completely (repair is rare, so waiting on unrelated
+     * destinations' publishes is acceptable for the simplicity of reusing {@link #drainInFlight}).
+     * Failures during a retry re-enter the pending buffer through the normal callback path;
+     * non-{@code NOT_FOUND} failures abort the repair from within the drain.
+     *
+     * <p>Only a parked {@code NOT_FOUND} creates a topic. Every other reason a batch is here — a
+     * cascade of a message the failure handler dropped, or a publish that reached an ordering key
+     * still paused from one — needs the resume and the republish and nothing else, and issuing a
+     * {@code createTopic} for them would both misreport {@code topicsCreated} and create a topic
+     * under {@code CREATE_NEVER}.
      */
     private void repairDestination(DestinationState state)
             throws IOException, InterruptedException {
-        LOG.info(
-                "A publish to Pub/Sub topic {} failed because the topic does not exist;"
-                        + " creating it (CREATE_IF_NEEDED).",
-                state.destination);
-        topicAdmin.createTopic(state.destination, config.getTopicCreateOptions());
-        metrics.topicCreated();
+        // Creation is checked per attempt, not once up front: a batch parked for another reason
+        // can turn out to need it, when its republish is the publish that first meets the missing
+        // topic. At most once per repair all the same — the retry loop exists for topic metadata
+        // propagating to the publisher, where the topic already exists and creating it again would
+        // answer nothing.
+        boolean topicCreated = false;
         for (int attempt = 1; ; attempt++) {
+            if (state.topicMissing) {
+                state.topicMissing = false;
+                if (!topicCreated) {
+                    topicCreated = true;
+                    LOG.info(
+                            "A publish to Pub/Sub topic {} failed because the topic does not exist;"
+                                    + " creating it (CREATE_IF_NEEDED).",
+                            state.destination);
+                    topicAdmin.createTopic(state.destination, config.getTopicCreateOptions());
+                    metrics.topicCreated();
+                }
+            }
             // Keyed by publish sequence, so the batch is in the order the messages were originally
             // published however their failure mails interleaved.
             List<PubsubMessage> batch = new ArrayList<>(state.pendingRetries.values());
@@ -601,21 +667,29 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             state.publisher.flushOutstanding();
             drainInFlight();
             if (state.pendingRetries.isEmpty()) {
+                // The incident is over, so its cause must not outlive it: a cascade only fills
+                // repairCause in when it is still null, so a value left behind here would be
+                // reported as the cause of some later destination-level failure it had nothing to
+                // do with. A dropped message provokes a repair of its own, so incidents on one
+                // destination are not rare enough to leave that to chance.
+                state.repairCause = null;
                 return;
             }
             if (attempt >= recoverySchedule.maxAttempts()) {
                 throw new IOException(
                         "Republishing to Pub/Sub topic "
                                 + state.destination
-                                + " kept failing after creating the topic ("
+                                + (topicCreated
+                                        ? " kept failing after creating the topic ("
+                                        : " kept failing (")
                                 + attempt
                                 + " attempt(s)).",
                         state.repairCause);
             }
             long backoffMs = recoverySchedule.backoffMs(attempt);
             LOG.info(
-                    "Republishing to Pub/Sub topic {} still fails with NOT_FOUND; backing off"
-                            + " {} ms (attempt {}/{}).",
+                    "Republishing to Pub/Sub topic {} still fails; backing off {} ms"
+                            + " (attempt {}/{}).",
                     state.destination,
                     backoffMs,
                     attempt,
@@ -624,7 +698,25 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
     }
 
-    /** Resumes the distinct ordering keys of the batch on the destination's publisher. */
+    /**
+     * Resumes the distinct ordering keys of the batch, plus those of the messages the failure
+     * handler dropped, on the destination's publisher.
+     *
+     * <p>This is the only place a key is resumed, and deliberately not {@link #routeFailedMessage}.
+     * {@link #write} tests {@code repairNeeded} <em>before</em> {@link #awaitCapacity()}, and
+     * mailbox mails — the drop among them — run inside it, so a key resumed from the failure mail
+     * could be published to by the rest of that same {@code write} while the key's cascades were
+     * still parked: a newer message ahead of older ones, the one thing the repair exists to
+     * prevent. Left paused, that racing publish comes back cancelled, is parked, and is republished
+     * in publish-sequence order with the rest.
+     *
+     * <p>Dropped keys are drained here rather than re-resumed on every attempt: a later attempt
+     * only re-pauses keys the batch republished, which the batch itself covers, and a dropped key
+     * with nothing left to republish cannot be paused again by this repair.
+     *
+     * <p>{@code resumePublish} is a no-op for a key that is not paused, and rejects a shut-down
+     * publisher — unreachable here, since a repair runs only from {@link #write} or {@link #flush}.
+     */
     private void resumeOrderingKeys(DestinationState state, List<PubsubMessage> batch) {
         if (!orderingEnabled) {
             return;
@@ -635,6 +727,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 orderingKeys.add(message.getOrderingKey());
             }
         }
+        orderingKeys.addAll(state.keysToResume);
+        state.keysToResume.clear();
         for (String orderingKey : orderingKeys) {
             state.publisher.resumePublish(orderingKey);
         }
@@ -650,13 +744,17 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED;
     }
 
+    /**
+     * Wraps a failure the writer is not repairing. A {@code CANCELLATION} reaching here always has
+     * ordering disabled — with it enabled every cancellation is parked — so there is no ordering
+     * wording to add: a cancellation without ordering is not the SDK's per-key cascade and saying
+     * so would misdescribe it.
+     */
     private IOException wrapPublishFailure(
             TopicDestination destination, PubSubErrorClassifier.Kind kind, Throwable throwable) {
         String message = "A publish to Pub/Sub topic " + destination + " failed";
         if (kind == PubSubErrorClassifier.Kind.TOPIC_NOT_FOUND) {
             message += " because the topic does not exist and createDisposition is CREATE_NEVER";
-        } else if (kind == PubSubErrorClassifier.Kind.CANCELLATION && orderingEnabled) {
-            message += " because an earlier publish for its ordering key failed";
         }
         return new IOException(message + ".", throwable);
     }
@@ -689,6 +787,20 @@ public class PubSubWriter<T> implements SinkWriter<T> {
          * break the very guarantee the repair exists to preserve.
          */
         private final SortedMap<Long, PubsubMessage> pendingRetries = new TreeMap<>();
+
+        /**
+         * Ordering keys of messages the failure handler dropped, which the publisher paused and
+         * will never resume on its own. Drained by the next repair. Separate from {@link
+         * #pendingRetries} because the dropped message itself is gone: the key needs handing back
+         * even when there is nothing left to republish for it.
+         */
+        private final Set<String> keysToResume = new LinkedHashSet<>();
+
+        /**
+         * Whether a {@code NOT_FOUND} is among the reasons this destination owes a repair — the
+         * only one that calls for creating the topic. Cleared by the repair that answers it.
+         */
+        private boolean topicMissing;
 
         /**
          * Retained as the cause of a budget-exhaustion failure: the destination's {@code
