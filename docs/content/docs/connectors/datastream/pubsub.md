@@ -338,9 +338,10 @@ That reasoning does not extend to a serializer that produces an *invalid message
 record — a bug that puts a malformed attribute or an over-long ordering key on all of them.
 Pub/Sub rejects each one individually, the sink cannot tell a systematic rejection from a
 per-message one (the classification is the response's status code, not a judgement about the
-whole stream), and a dropping policy discards the lot silently. Watch the failure count rather
-than the job status when running anything other than `failJob()` — per-sink error metrics are
-[#208]({{< param BookRepo >}}/issues/208).
+whole stream), and a dropping policy discards the lot silently. Watch
+[`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/pubsub" >}}#sink-metrics) rather
+than the job status when running anything other than `failJob()`: it counts every message the
+handler received, so a systematic rejection shows up as a rate rather than as a failure.
 
 **A non-default handler is rejected together with `enableMessageOrdering(true)`**, at `build()`.
 Dropping a message would reach into the ordering repair, which republishes a parked batch whole and
@@ -402,6 +403,65 @@ fails — the default is 1000, `0` publishes each element synchronously (the nar
 one round trip per element) and `-1` buffers until the flush. The topic must already exist: this
 queue never creates one, because a dead-letter destination created on the fly is one nothing is
 consuming.
+
+## Sink metrics
+
+Registered on the sink writer's metric group, one set per subtask:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `numRecordsSend` | counter (Flink standard) | records handed to the client library for publishing |
+| `numBytesSend` | counter (Flink standard) | their serialized size |
+| `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-message handler |
+| `inFlightMessages` | gauge | publishes not yet acknowledged |
+| `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
+| `parkedMessages` | gauge | messages held for a topic-creation republish |
+| `topicsCreated` | counter | completed topic-creation repairs under `CREATE_IF_NEEDED` (see below) |
+| `errorClass.CODE.errors` | counter | failed publishes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
+| `destination.TOPIC.recordsSend`, `destination.TOPIC.sendErrors` | counter | the same two counts per topic, **only** with `perDestinationMetrics(true)` |
+
+**`numRecordsSend` counts records, not publish attempts.** A message the topic-creation repair
+republishes is counted once, at the write that admitted it, so a job recovering from a missing topic
+does not report itself as a busier one. Every connector in this repository counts the same way,
+whether its retries live in the sink or inside the SDK, so the number is comparable across them. The
+consequence to know: `numBytesSend` is payload volume rather than wire volume — a record republished
+three times moved three times its size across the network. Retry volume is what
+`errorClass.CODE.errors` measures, and it measures it per status code.
+
+**`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
+exactly what reached `failedMessageHandler(...)` — a record the serializer rejected, and a publish
+the service answered `INVALID_ARGUMENT` — whether the handler then dropped the message or failed the
+job. A serializer bug that makes *every* message invalid is dropped one at a time under a dropping
+policy, and this counter is what shows it while the job stays green.
+
+**`topicsCreated` counts repairs, not distinct topics.** A creation that answers `ALREADY_EXISTS`
+— a parallel subtask got there first — is a success, so one new topic is counted once by every
+subtask that had to repair for it. It answers "how often did a missing topic stall this subtask",
+which is what a reader of this sink's auto-creation behaviour wants; it is not an inventory.
+
+`errorClass` counts **root** failures only. With message ordering enabled the SDK cancels an ordering
+key's queued publishes after that key's first failure; those cascades are not counted, since they
+carry no status of their own and would multiply one incident by the length of the key's queue. The
+failure that caused them is counted.
+
+**`perDestinationMetrics` is off by default, and should stay off for dynamic destinations.** Flink
+cannot unregister a metric, so every topic the job has ever written to keeps its counters for the
+lifetime of the task — and, for the same reason, a topic whose writer state was evicted and later
+rebuilt resumes its old counters rather than restarting at zero. Switch it on when the topic set is
+small and known; the option is in
+[`PubSubPublisherOptions`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions).
+
+`currentSendTime` is deliberately **not** set. The SDK batches publishes and completes their futures
+asynchronously, so any latency this writer could report would measure its own bookkeeping rather
+than the service's response time — a missing number beats a wrong one. There is no committer here
+either (the sink is single-phase), so Flink's committer metrics do not apply.
+
+**The SDK contributes nothing to these numbers**, measured against `google-cloud-pubsub` 1.152.0
+(libraries-bom 26.85.1): `Publisher` exposes no metric or statistics accessor, and its only telemetry
+surface is `setEnableOpenTelemetryTracing`/`setOpenTelemetry`, which emits **spans** — not meters —
+into an OpenTelemetry instance a Flink job need not have configured. A Kafka-style passthrough of
+client-native metrics therefore has nothing to read. The connector leaves that tracing switch alone;
+a job that wants publish spans configures OpenTelemetry itself.
 
 ## Source
 

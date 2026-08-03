@@ -20,11 +20,31 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
   second consumer — it arrived with #205 in the BigQuery test tree and moved when Pub/Sub needed
   it). The unsupported methods are the point: a sink growing a new dependency on the context shows
   up as a failing test rather than as a silent null. Two things are deliberate. The metric group is
-  a null-returning `Proxy` held in a **field**, so a test can assert by identity that it reached
-  whatever it was handed to without this class implementing that interface's many methods; and the
-  mailbox is a real `FakeMailboxExecutor`, because the Pub/Sub sink's production `createWriter`
-  takes one — where BigQuery's stub had thrown. No compat source root is needed: `WriterInitContext`
-  and every method overridden here exist identically in 1.20 and 2.x.
+  held in a **field**, so a test can assert by identity that it reached whatever it was handed to;
+  and the mailbox is a real `FakeMailboxExecutor`, because the Pub/Sub sink's production
+  `createWriter` takes one — where BigQuery's stub had thrown. No compat source root is needed:
+  `WriterInitContext` and every method overridden here exist identically in 1.20 and 2.x.
+  That field was a **null-returning `Proxy` until #208**, and the replacement was forced rather than
+  chosen: once a writer captures counters in its constructor, every test building one through
+  `createWriter(context)` dies on a `NullPointerException`, so the proxy and the metrics half could
+  not coexist. It is now a real `TestSinkWriterMetricGroup`, which keeps the identity property and
+  adds read-back.
+- **`TestSinkWriterMetricGroup` is the shared sink metric-group harness** (#208): a
+  `ProxyMetricGroup` over a `MetricListener` group, with the FLIP-33 standard counters registered
+  under their documented names rather than merely held. Everything is asserted **by registered
+  name**, so a renamed or unregistered metric fails its test — which is why the two obvious
+  alternatives are unusable: `UnregisteredMetricsGroup.createSinkWriterMetricGroup()` hands out a
+  fresh `SimpleCounter` per call, leaving what the writer captured unreachable, and
+  `InternalSinkWriterMetricGroup` has no `mock(...)` in either supported Flink line (measured on
+  1.20.4 and 2.2.1: a package-private constructor and `wrap(OperatorMetricGroup)`, which a listener
+  group cannot satisfy). It brings `flink-test-utils` into this module at `provided`, so **a module
+  using the harness declares `flink-test-utils` at test scope itself** — provided being
+  non-transitive is the property this pom rests on, not an oversight. Bigtable's private
+  `RecordingSinkWriterMetricGroup` predates it and is **superseded**: #237 deletes it when it brings
+  that sink up to the series' standard, so until then it is a leftover, not a second pattern to
+  copy. A **committer sibling was deliberately not added**: #208 has no consumer for one, and it
+  arrives with #210's FILE_LOADS committer counter under the multiple-consumer bar everything else
+  here clears.
 - **Real-GCP gating annotations never move here.** `scripts/e2e-gated-its.sh` discovers the gated
   suite by grepping the `@EnabledIfEnvironmentVariable` literal on concrete classes under the
   connector modules and expects a surefire report per match — a meta-annotation or a base class in

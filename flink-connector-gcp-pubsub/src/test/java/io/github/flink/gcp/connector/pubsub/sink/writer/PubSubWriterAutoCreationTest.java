@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
@@ -66,6 +67,7 @@ class PubSubWriterAutoCreationTest {
     private final FakePublisherFactory factory = new FakePublisherFactory();
     private final FakeTopicAdmin admin = new FakeTopicAdmin();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
+    private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
 
     /** Publishes every record (the payload) to the fixed {@link #TOPIC}. */
     private PubSubWriter<String> newWriter(CreateDisposition disposition) {
@@ -83,6 +85,7 @@ class PubSubWriterAutoCreationTest {
                 factory,
                 admin,
                 mailbox,
+                metrics,
                 recoverySchedule);
     }
 
@@ -117,6 +120,7 @@ class PubSubWriterAutoCreationTest {
                 factory,
                 admin,
                 mailbox,
+                metrics,
                 recoverySchedule);
     }
 
@@ -186,6 +190,7 @@ class PubSubWriterAutoCreationTest {
                         factory,
                         admin,
                         mailbox,
+                        metrics,
                         FAST_SCHEDULE);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
 

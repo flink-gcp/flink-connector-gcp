@@ -69,6 +69,7 @@ public final class PubSubPublisherOptions implements Serializable {
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
+    private final boolean perDestinationMetrics;
 
     private PubSubPublisherOptions(Builder builder) {
         this.batchElementCountThreshold = builder.batchElementCountThreshold;
@@ -88,6 +89,7 @@ public final class PubSubPublisherOptions implements Serializable {
         this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
+        this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
     /**
@@ -209,6 +211,11 @@ public final class PubSubPublisherOptions implements Serializable {
         return recoveryMaxAttempts;
     }
 
+    /** Returns whether the writer registers per-topic send counters. */
+    public boolean isPerDestinationMetrics() {
+        return perDestinationMetrics;
+    }
+
     /**
      * Returns the topic auto-creation recovery schedule the {@code recovery*} knobs describe.
      * Jittered: every subtask that parked publishes for the same missing topic resumes against the
@@ -252,6 +259,7 @@ public final class PubSubPublisherOptions implements Serializable {
         }
         PubSubPublisherOptions that = (PubSubPublisherOptions) o;
         return enableMessageOrdering == that.enableMessageOrdering
+                && perDestinationMetrics == that.perDestinationMetrics
                 && maxInFlightMessages == that.maxInFlightMessages
                 && maxInFlightBytes == that.maxInFlightBytes
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
@@ -289,7 +297,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 maxInFlightBytes,
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
-                recoveryMaxAttempts);
+                recoveryMaxAttempts,
+                perDestinationMetrics);
     }
 
     @Override
@@ -328,6 +337,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 + recoveryMaxBackoff
                 + ", recoveryMaxAttempts="
                 + recoveryMaxAttempts
+                + ", perDestinationMetrics="
+                + perDestinationMetrics
                 + "}";
     }
 
@@ -352,6 +363,7 @@ public final class PubSubPublisherOptions implements Serializable {
         private Duration recoveryInitialBackoff = Duration.ofMillis(500);
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
         private int recoveryMaxAttempts = 10;
+        private boolean perDestinationMetrics;
 
         private Builder() {}
 
@@ -583,6 +595,23 @@ public final class PubSubPublisherOptions implements Serializable {
             Preconditions.checkArgument(
                     recoveryMaxAttempts > 0, "recoveryMaxAttempts must be positive");
             this.recoveryMaxAttempts = recoveryMaxAttempts;
+            return this;
+        }
+
+        /**
+         * Registers per-topic {@code recordsSend} and {@code sendErrors} counters beside the
+         * writer's totals. Defaults to {@code false}.
+         *
+         * <p>Off by default because Flink cannot unregister a metric: with per-record destinations
+         * the topic set is unbounded, so every topic the job ever writes to keeps a row in the
+         * metric registry for the lifetime of the task. Switch it on for a sink whose destinations
+         * are few and known.
+         *
+         * @param perDestinationMetrics whether to register per-topic counters
+         * @return this builder
+         */
+        public Builder perDestinationMetrics(boolean perDestinationMetrics) {
+            this.perDestinationMetrics = perDestinationMetrics;
             return this;
         }
 

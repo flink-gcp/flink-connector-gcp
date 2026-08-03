@@ -85,6 +85,12 @@ for how the caps are sized.
 | `recoveryMaxBackoff` | 10 s | Cap of that backoff, before ±25% jitter |
 | `recoveryMaxAttempts` | 10 | Republish attempts per destination |
 
+**Metrics.**
+
+| Option | Default | What it does |
+|---|---|---|
+| `perDestinationMetrics` | `false` | Registers per-topic `recordsSend` and `sendErrors` counters beside the writer's totals. Off by default: Flink cannot unregister a metric, so with dynamic destinations every topic the job writes to keeps a row in the registry for the task's lifetime. See [Sink metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#sink-metrics) |
+
 ## `TopicCreateOptions`
 
 Applied to topics the sink creates. **Creation only** — an existing topic keeps its own settings,

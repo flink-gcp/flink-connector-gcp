@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -62,6 +63,7 @@ class PubSubWriterTest {
     private final FakePublisherFactory factory = new FakePublisherFactory();
     private final FakeTopicAdmin admin = new FakeTopicAdmin();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
+    private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
 
     /** Routes each record to the topic named by the record itself. */
     private PubSubWriter<String> newWriter() {
@@ -82,6 +84,7 @@ class PubSubWriterTest {
                 factory,
                 admin,
                 mailbox,
+                metrics,
                 UNUSED_RECOVERY);
     }
 
@@ -238,7 +241,8 @@ class PubSubWriterTest {
                                 byteCap(2L * sizeOf("topic-a"))),
                         factory,
                         admin,
-                        mailbox);
+                        mailbox,
+                        metrics);
         SettableApiFuture<String> first = SettableApiFuture.create();
         factory.enqueueFuture(first);
         factory.enqueueFuture(SettableApiFuture.create());

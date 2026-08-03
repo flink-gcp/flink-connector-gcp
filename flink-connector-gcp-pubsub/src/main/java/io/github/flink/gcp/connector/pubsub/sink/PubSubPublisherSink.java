@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
@@ -73,7 +74,8 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T> {
         return createWriter(
                 new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint),
                 new PubSubTopicAdmin(emulatorEndpoint),
-                context.getMailboxExecutor());
+                context.getMailboxExecutor(),
+                context.metricGroup());
     }
 
     /**
@@ -85,7 +87,9 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T> {
     public SinkWriter<T> createWriter(
             PublisherFactory publisherFactory,
             TopicAdmin topicAdmin,
-            MailboxExecutor mailboxExecutor) {
-        return new PubSubWriter<>(config, publisherFactory, topicAdmin, mailboxExecutor);
+            MailboxExecutor mailboxExecutor,
+            SinkWriterMetricGroup metricGroup) {
+        return new PubSubWriter<>(
+                config, publisherFactory, topicAdmin, mailboxExecutor, metricGroup);
     }
 }

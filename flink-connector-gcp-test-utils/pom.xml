@@ -53,6 +53,15 @@ limitations under the License.
             <artifactId>flink-connector-base</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <!-- MetricListener behind TestSinkWriterMetricGroup, plus the flink-runtime
+                 ProxyMetricGroup it extends, which arrives transitively with it. Provided
+                 like everything else here, so a module using that helper declares
+                 flink-test-utils at test scope itself. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-test-utils</artifactId>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- The Pub/Sub half (testutils.pubsub). Versions managed by the libraries BOM. -->
         <dependency>

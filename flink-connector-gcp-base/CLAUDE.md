@@ -37,6 +37,37 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   per-connector under #61; the Pub/Sub adoption is #206 (its module CLAUDE.md records where that
   connector puts the boundary and why), Cloud Tasks' is #207. `protobuf-java`
   (BOM-managed) is here for `ByteString` on `FailedElement`.
+- **`base.metrics` is the shared sink-metric helper package** (#208, first consumers Pub/Sub #208
+  and Cloud Tasks #209), and unlike `base.failure` it is `@Internal` throughout — nothing here is
+  implemented by a user, so the module's default rule applies without an exception. Two types.
+  `ErrorClassCounters` registers `errorClass.CODE.errors`, `CODE` being a gax `StatusCode.Code`
+  name or `UNCLASSIFIED`; child counters are created on first use, because registering ~17 rows per
+  subtask for statuses a job never sees is what the laziness avoids, and **which throwable in a
+  chain classifies a failure stays at the call site**, exactly as `StatusCodes.codeOf` leaves
+  traversal there (Pub/Sub matches any element, Cloud Tasks the first classifiable one — the #61
+  do-not-converge decision, extended to metrics). `DestinationMetrics` is the opt-in per-destination
+  pair (`recordsSend`/`sendErrors`, `perDestinationMetrics` default false on every connector's
+  options object): **Flink cannot unregister a metric**, so an unconditional subgroup per
+  destination would grow the registry for the task's lifetime against an unbounded destination set,
+  and the same fact is why **entries are never removed** — a destination whose writer state was
+  evicted and rebuilt reuses its counters, since re-registering the name would be refused. It hands
+  out a `Counters` handle rather than taking a destination name per record, so the name is composed
+  once per destination and a disabled instance costs two null checks; call sites cache the handle
+  beside their own per-destination state. Both types are **task-thread only** — plain
+  `SimpleCounter`s, valid because every sink increment site in this repository runs on the task
+  thread, unlike the Pub/Sub *source*, whose SDK callback threads forced `ThreadSafeSimpleCounter`.
+  A connector counting from a callback thread must not reuse them as they stand. `flink-test-utils`
+  is a *test*-scope dependency here for `MetricListener`, so the helpers are asserted through the
+  names they register under rather than through the counter objects they hold.
+- **`numRecordsSend` counts each record once, at the first hand-off, in every connector** (decided
+  on #208, superseding the #37 design's "retries re-count"): a sink-owned retry — Pub/Sub's
+  topic-creation republish, Cloud Tasks' park-and-redispatch, BigQuery's re-append — must not count
+  the record again, which is why the increment sits at the *admission* site rather than at the send
+  call the retry path re-enters. Bigtable already counts once because its retries are inside the SDK
+  batcher, so the four connectors report one quantity and a dashboard comparing them is honest. What
+  is given up is stated on the docs pages: `numBytesSend` is payload volume, not wire volume. Retry
+  volume is read from the `errorClass.CODE.errors` counters instead, which is per status code and
+  strictly more informative than a re-counted send.
 - **Every schedule jitters, at one shared ratio, and the ratio is never a knob** (#197). The
   maintainer's standing posture is exponential backoff *with* jitter, so
   `RetrySchedule.DEFAULT_JITTER_RATIO` is the only ratio in the repository — a connector passing
