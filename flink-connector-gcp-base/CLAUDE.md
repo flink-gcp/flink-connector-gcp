@@ -136,6 +136,29 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   unchanged and `getTarget()` reconstructs the input. One message covers every malformed value
   (`emulatorEndpoint must be host:port, was '<value>'`), which is why the old "must not be blank"
   is gone: a blank endpoint is not a separate kind of mistake.
+- **`base.lifecycle` is one method** (#229, six consumers on arrival): `Closers
+  .closeAllSuppressing(failure, closeables...)` releases what a failed writer creation already
+  built, reporting a close failure as *suppressed* on the exception the caller is about to rethrow
+  rather than in place of it. It exists because that is the one thing
+  `IOUtils.closeAll(AutoCloseable...)` — which every writer's `close()` here already uses — does
+  not do: it throws its collected failure, which is right when closing *is* the operation and
+  wrong when something else already failed. **It delegates to that method rather than
+  reimplementing it**, so the semantics it depends on stay Flink's: nulls skipped (a caller passes
+  a local it had not reached yet) and *every* resource closed before anything is reported (a
+  resource must not be left open because an earlier one refused). **The second only holds with
+  `Throwable.class`, which is why the two-argument `closeAll(Iterable, Class)` is called and not
+  the one-argument varargs form** — that one passes `Exception.class`, and `closeAll` *rethrows
+  from inside its loop* anything the class does not cover, so one `Error` would leave every later
+  resource open and escape `Closers` itself, skipping the caller's rethrow: the leak this class
+  exists to prevent, reached through it. Found in review, not by reasoning about it in advance;
+  `ClosersTest` now has the `Error` case, and it fails against the one-argument form. For the same
+  reason the six call sites catch **`Throwable`, not `Exception`** — a client's first classload
+  failing with `NoClassDefFoundError` repeats on every restart attempt — which precise rethrow
+  makes compile without widening any `throws` clause. It cleared the
+  module's multiple-consumers bar on arrival with six call sites — the five sinks #229 fixed plus
+  `BigtableMutateRowsSink`, whose private `closeSuppressing` it replaced so the tree keeps one
+  idiom. `IOUtils` is unannotated in Flink and already carries an allowlist entry in
+  `scripts/flink-api-tiers.toml`, so this added none.
 - **Dependencies are `flink-core` (provided) plus `gax`/`grpc-api`/`protobuf-java`
   (BOM-managed).** Unlike
   test-utils, consumers depend on this module at **compile** scope, so it is bundled into the

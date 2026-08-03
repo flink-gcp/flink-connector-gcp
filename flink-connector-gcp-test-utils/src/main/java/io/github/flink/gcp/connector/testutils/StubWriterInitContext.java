@@ -36,6 +36,10 @@ import java.util.OptionalLong;
  * no reason to touch is unsupported, so a new dependency on the context shows up as a failing test
  * rather than as a silent null.
  *
+ * <p>Subclassable on purpose: a test that needs one accessor to misbehave — a sink that reads the
+ * context after a point of no return, say — overrides that method and inherits the rest, rather
+ * than reimplementing every method of the interface to change one.
+ *
  * <p>The metric group is a real {@link TestSinkWriterMetricGroup} held in a field, so repeated
  * calls return the same instance: a test can still assert by identity that the group reached
  * whatever it was handed to, and — unlike the no-op {@code Proxy} this replaced — a writer that
@@ -44,7 +48,7 @@ import java.util.OptionalLong;
  * #getSinkWriterMetricGroup()} reads back what the writer registered.
  */
 @Internal
-public final class StubWriterInitContext implements WriterInitContext {
+public class StubWriterInitContext implements WriterInitContext {
 
     private final TaskInfo taskInfo;
     private final JobInfo jobInfo = new StubJobInfo();

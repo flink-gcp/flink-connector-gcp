@@ -24,6 +24,7 @@ import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksWriter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
@@ -60,6 +61,21 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
+        return createWriter(context, new DefaultTaskCreatorFactory(config.getEmulatorEndpoint()));
+    }
+
+    /**
+     * The production path, against an injectable factory.
+     *
+     * <p>The seam exists for one assertion the sink cannot otherwise make observable: that a failed
+     * creation releases the {@link TaskCreator} it had already built, and not only the failure
+     * handler. This is the only sink here that owns a client at that point, so it is the only one
+     * where that half of the guard is worth a seam — the production overload above is what a job
+     * calls, and it is one line, so the two cannot drift.
+     */
+    @VisibleForTesting
+    SinkWriter<T> createWriter(WriterInitContext context, TaskCreatorFactory factory)
+            throws IOException {
         try {
             config.getSerializer().open(context.asSerializationSchemaInitializationContext());
         } catch (InterruptedException e) {
@@ -70,8 +86,26 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
             throw new IOException("Failed to open the Cloud Tasks serialization schema.", e);
         }
         config.getFailedTaskHandler().open(DefaultFailureHandlerContext.of(context));
-        TaskCreatorFactory factory = new DefaultTaskCreatorFactory(config.getEmulatorEndpoint());
-        return createWriter(factory.create(), context.getMailboxExecutor(), context.metricGroup());
+        TaskCreator creator = null;
+        try {
+            creator = factory.create();
+            return createWriter(creator, context.getMailboxExecutor(), context.metricGroup());
+        } catch (Throwable e) {
+            // Nothing downstream will ever release these: no writer exists to do it, and the
+            // failure handler's contract promises a close on the failure path too — Flink rebuilds
+            // the writer on every restart attempt, so one more client and one more opened handler
+            // would accumulate per attempt on a task manager that stays alive. The creator is
+            // released as well as the handler because the writer's constructor can fail with the
+            // client already built: it reads options that a deserialized object never ran the
+            // builder's checks over.
+            //
+            // Throwable, not Exception: a client's first classload can fail with a
+            // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past
+            // this guard. Precise rethrow keeps the declared throws clause honest, and it also
+            // means a checked exception added to anything above stays covered.
+            Closers.closeAllSuppressing(e, creator, config.getFailedTaskHandler()::close);
+            throw e;
+        }
     }
 
     /**

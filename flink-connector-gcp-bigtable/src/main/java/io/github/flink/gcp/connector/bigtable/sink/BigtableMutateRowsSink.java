@@ -24,12 +24,11 @@ import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigtable.sink.writer.BigtableWriter;
 import io.github.flink.gcp.connector.bigtable.sink.writer.DefaultMutationBatcherFactory;
 import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcher;
 import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcherFactory;
-
-import javax.annotation.Nullable;
 
 import java.io.IOException;
 
@@ -82,26 +81,19 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
         try {
             batcher = factory.create();
             return createWriter(batcher, context.getMailboxExecutor(), context.metricGroup());
-        } catch (IOException | RuntimeException e) {
+        } catch (Throwable e) {
             // Nothing downstream will ever close these: no writer exists to do it, and the failure
             // handler's contract promises a close on the failure path too — a restart would
             // otherwise open one more per attempt. Both are released, because the writer's
             // constructor can fail after the client was built (its precondition on a deserialized
             // options object is exactly that case), which would otherwise leak the client.
-            closeSuppressing(batcher, e);
-            closeSuppressing(config.getFailedMutationHandler()::close, e);
+            //
+            // Throwable, not Exception: a client's first classload can fail with a
+            // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past
+            // this guard. Precise rethrow keeps the declared throws clause honest, and it also
+            // means a checked exception added to anything above stays covered.
+            Closers.closeAllSuppressing(e, batcher, config.getFailedMutationHandler()::close);
             throw e;
-        }
-    }
-
-    private static void closeSuppressing(@Nullable AutoCloseable closeable, Exception failure) {
-        if (closeable == null) {
-            return;
-        }
-        try {
-            closeable.close();
-        } catch (Exception e) {
-            failure.addSuppressed(e);
         }
     }
 

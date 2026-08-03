@@ -23,6 +23,7 @@ import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -73,16 +74,30 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
         config.getFailedRowHandler().open(DefaultFailureHandlerContext.of(context));
-        // The context's processing-time service fires timer callbacks on the mailbox (task)
-        // thread, which is what makes the writer's periodic flush safe against its
-        // task-thread-only state.
-        return new BigQueryDefaultStreamWriter<>(
-                config,
-                new StreamWriterRowAppenderFactory(options),
-                new BigQueryTableAdmin(),
-                context.metricGroup(),
-                options,
-                context.getProcessingTimeService());
+        try {
+            // The context's processing-time service fires timer callbacks on the mailbox (task)
+            // thread, which is what makes the writer's periodic flush safe against its
+            // task-thread-only state.
+            return new BigQueryDefaultStreamWriter<>(
+                    config,
+                    new StreamWriterRowAppenderFactory(options),
+                    new BigQueryTableAdmin(),
+                    context.metricGroup(),
+                    options,
+                    context.getProcessingTimeService());
+        } catch (Throwable e) {
+            // The handler is the only thing to release: the appender factory and the table admin
+            // hold no client until the writer asks them for one. Nothing downstream would close it
+            // — no writer exists to do it — and Flink rebuilds the writer on every restart attempt,
+            // so an opened handler would accumulate per attempt on a task manager that stays alive.
+            //
+            // Throwable, not Exception: a client's first classload can fail with a
+            // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past
+            // this guard. Precise rethrow keeps the declared throws clause honest, and it also
+            // means a checked exception added to anything above stays covered.
+            Closers.closeAllSuppressing(e, config.getFailedRowHandler()::close);
+            throw e;
+        }
     }
 
     /** Test entry point; unlike the production path it does not open the failure handler. */
