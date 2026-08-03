@@ -21,6 +21,7 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -47,7 +48,7 @@ public class CloudTasksSinkBuilder<T> {
     @Nullable private TaskIdExtractor<? super T> taskIdExtractor;
     private CloudTasksWriterOptions writerOptions = CloudTasksWriterOptions.defaults();
     private FailureHandler<? super FailedTask> failedTaskHandler = FailureHandler.failJob();
-    @Nullable private String emulatorEndpoint;
+    @Nullable private EmulatorEndpoint emulatorEndpoint;
 
     CloudTasksSinkBuilder() {}
 
@@ -149,14 +150,16 @@ public class CloudTasksSinkBuilder<T> {
      * only ever be used against an emulator. Optional; when unset the sink connects to Cloud Tasks
      * with application-default credentials.
      *
+     * <p>The value is parsed here, so a malformed {@code host:port} is rejected on the client
+     * instead of surfacing as a connection failure once the job has been deployed.
+     *
      * @param emulatorEndpoint the emulator endpoint as {@code host:port}
      * @return this builder
+     * @throws IllegalArgumentException if the endpoint is not {@code host:port} with a port in
+     *     1..65535
      */
     public CloudTasksSinkBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
-        Preconditions.checkNotNull(emulatorEndpoint, "emulatorEndpoint must not be null");
-        Preconditions.checkArgument(
-                !emulatorEndpoint.trim().isEmpty(), "emulatorEndpoint must not be blank");
-        this.emulatorEndpoint = emulatorEndpoint;
+        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
         return this;
     }
 

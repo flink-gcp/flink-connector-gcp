@@ -21,6 +21,7 @@ import org.apache.flink.api.connector.sink2.Sink;
 
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 import org.junit.jupiter.api.Test;
 
@@ -71,7 +72,8 @@ class CloudTasksSinkBuilderTest {
         CloudTasksSinkConfig<String> config = config(sink);
         assertThat(config.getTaskIdExtractor()).isSameAs(extractor);
         assertThat(config.getWriterOptions()).isSameAs(options);
-        assertThat(config.getEmulatorEndpoint()).isEqualTo("localhost:8123");
+        assertThat(config.getEmulatorEndpoint())
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8123"));
     }
 
     @Test
@@ -155,8 +157,13 @@ class CloudTasksSinkBuilderTest {
         assertThatThrownBy(() -> builder.failedTaskHandler(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("failedTaskHandler must not be null");
-        assertThatThrownBy(() -> builder.emulatorEndpoint("  "))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> builder.emulatorEndpoint(null))
+                .isInstanceOf(NullPointerException.class);
+        // Parsed at the setter, so a typo fails on the client rather than at connect time; the
+        // full parse table is EmulatorEndpointTest's.
+        assertThatThrownBy(() -> builder.emulatorEndpoint("localhost8123"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulatorEndpoint must be host:port, was 'localhost8123'");
     }
 
     @SuppressWarnings("unchecked")

@@ -41,7 +41,7 @@ The `WITH` options of the `pubsub` table connector are a separate surface, docum
 | `topicCreateOptions` | Pub/Sub's own defaults | [Settings](#topiccreateoptions) for topics the sink creates. Rejected with `CREATE_NEVER` |
 | `publisherOptions` | [defaults](#pubsubpublisheroptions) | Publisher and writer tuning |
 | `failedMessageHandler` | `FailureHandler.failJob()` | What happens to a message that terminally fails — fail, drop, or dead-letter. Rejected with `enableMessageOrdering(true)` |
-| `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production |
+| `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
 
 ## `PubSubPublisherOptions`
 
@@ -115,7 +115,7 @@ the sink creates. See
 | `subscriberOptions` | [defaults](#pubsubsubscriberoptions) | Subscriber and reader tuning |
 | `deserializationFailurePolicy` | `FAIL` | What happens to a message the schema cannot convert — fail, drop, or nack |
 | `startPosition` | `continueFromSubscription()` | Where the source begins. Any other value issues a seek, once, at first start |
-| `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. `PUBSUB_EMULATOR_HOST` is deliberately ignored |
+| `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. `PUBSUB_EMULATOR_HOST` is deliberately ignored. Given as `host:port`, and rejected at `build()` if it is not |
 
 ## `PubSubSubscriberOptions`
 

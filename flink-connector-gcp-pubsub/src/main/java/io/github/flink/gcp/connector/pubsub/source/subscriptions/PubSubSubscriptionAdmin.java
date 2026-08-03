@@ -31,6 +31,7 @@ import com.google.pubsub.v1.DeadLetterPolicy;
 import com.google.pubsub.v1.ExpirationPolicy;
 import com.google.pubsub.v1.SeekRequest;
 import com.google.pubsub.v1.Subscription;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.grpc.ManagedChannelBuilder;
@@ -58,7 +59,7 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubSubscriptionAdmin.class);
 
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final CredentialsProvider credentialsOverride;
 
     /** Creates an admin using application-default credentials. */
@@ -69,10 +70,10 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
     /**
      * Creates the admin.
      *
-     * @param emulatorEndpoint the emulator endpoint as {@code host:port} (plaintext, no
-     *     credentials), or {@code null} for production Pub/Sub with application-default credentials
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for production Pub/Sub with application-default credentials
      */
-    public PubSubSubscriptionAdmin(@Nullable String emulatorEndpoint) {
+    public PubSubSubscriptionAdmin(@Nullable EmulatorEndpoint emulatorEndpoint) {
         this(emulatorEndpoint, null);
     }
 
@@ -82,13 +83,14 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
      * impersonate a deliberately unauthorized identity to assert the operator-facing messages of
      * the catch blocks above, which no production path needs.
      *
-     * @param emulatorEndpoint see {@link #PubSubSubscriptionAdmin(String)}; the override is ignored
-     *     against an emulator, whose channel carries no credentials at all
+     * @param emulatorEndpoint see {@link #PubSubSubscriptionAdmin(EmulatorEndpoint)}; the override
+     *     is ignored against an emulator, whose channel carries no credentials at all
      * @param credentialsOverride the credentials to use, or {@code null} for application-default
      */
     @VisibleForTesting
     public PubSubSubscriptionAdmin(
-            @Nullable String emulatorEndpoint, @Nullable CredentialsProvider credentialsOverride) {
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable CredentialsProvider credentialsOverride) {
         this.emulatorEndpoint = emulatorEndpoint;
         this.credentialsOverride = credentialsOverride;
     }
@@ -294,7 +296,7 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                             .setCredentialsProvider(NoCredentialsProvider.create())
                             .setTransportChannelProvider(
                                     SubscriptionAdminSettings.defaultGrpcTransportProviderBuilder()
-                                            .setEndpoint(emulatorEndpoint)
+                                            .setEndpoint(emulatorEndpoint.getTarget())
                                             .setChannelConfigurator(
                                                     ManagedChannelBuilder::usePlaintext)
                                             .build())

@@ -23,6 +23,7 @@ import com.google.api.gax.batching.BatchingException;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
@@ -182,7 +183,8 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
                         .emulatorEndpoint(emulatorEndpoint())
                         .build();
         MutationBatcher batcher =
-                new DefaultMutationBatcherFactory(table, null, options, emulatorEndpoint())
+                new DefaultMutationBatcherFactory(
+                                table, null, options, EmulatorEndpoint.parse(emulatorEndpoint()))
                         .create();
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(

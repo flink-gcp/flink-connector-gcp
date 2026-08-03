@@ -22,6 +22,7 @@ import com.google.pubsub.v1.PushConfig;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.PubSubSubscriptionAdmin;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
@@ -134,7 +135,7 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
      * given, so it must not receive a harness-owned client.
      */
     public static SubscriptionAdmin newSubscriptionAdmin() {
-        return new PubSubSubscriptionAdmin(emulatorEndpoint());
+        return new PubSubSubscriptionAdmin(EmulatorEndpoint.parse(emulatorEndpoint()));
     }
 
     /** Returns whether the topic exists. */

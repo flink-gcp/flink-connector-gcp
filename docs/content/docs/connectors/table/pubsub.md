@@ -193,7 +193,7 @@ not `'topic' = 'projects/my-project/topics/orders'`.
 |---|---|---|
 | `project` | String, required | the project component of `TopicDestination.of(...)` / `SubscriptionDestination.of(...)` |
 | `format` | String, required | format factory discovery, encoding or decoding as the direction needs |
-| `emulator-endpoint` | String | `emulatorEndpoint(...)` |
+| `emulator-endpoint` | String | `emulatorEndpoint(...)`, which parses it — a malformed `host:port` fails when the planner builds the source or sink |
 
 Credentials are not configurable: the connector uses application default credentials, exactly as
 the DataStream API does. Making them configurable is tracked in

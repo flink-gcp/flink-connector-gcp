@@ -85,6 +85,12 @@ additive whenever there is a use case asking for it.
 `context` is Flink's write context, so `context.timestamp()` is the record's event time — usually
 the right cell timestamp when the record carries none of its own.
 
+`emulatorEndpoint("host:port")` points the sink at a Bigtable emulator over a plaintext channel with
+no credentials, so it must only ever be used against an emulator — never against production
+Bigtable. The setter parses it into the host and port the client's emulator settings take, so a
+malformed value is rejected at `build()` on the client rather than when the writer builds its client
+on a task manager ([#235]({{< param BookRepo >}}/issues/235)).
+
 ## One table per sink
 
 The table is fixed at build time. This is the one place the Bigtable sink is narrower than its

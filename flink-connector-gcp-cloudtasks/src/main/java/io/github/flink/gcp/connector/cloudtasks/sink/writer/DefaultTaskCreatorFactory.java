@@ -27,6 +27,7 @@ import com.google.cloud.tasks.v2.CloudTasksClient;
 import com.google.cloud.tasks.v2.CloudTasksSettings;
 import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
@@ -54,7 +55,7 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
 
     private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
 
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
      * Creates a factory connecting to production Cloud Tasks with application-default credentials.
@@ -66,10 +67,10 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
     /**
      * Creates the factory.
      *
-     * @param emulatorEndpoint the emulator endpoint as {@code host:port} (plaintext, no
-     *     credentials), or {@code null} for production Cloud Tasks
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for production Cloud Tasks
      */
-    public DefaultTaskCreatorFactory(@Nullable String emulatorEndpoint) {
+    public DefaultTaskCreatorFactory(@Nullable EmulatorEndpoint emulatorEndpoint) {
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -80,7 +81,9 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
             CloudTasksSettings.Builder settings = CloudTasksSettings.newBuilder();
             if (emulatorEndpoint != null) {
                 ownedChannel =
-                        ManagedChannelBuilder.forTarget(emulatorEndpoint).usePlaintext().build();
+                        ManagedChannelBuilder.forTarget(emulatorEndpoint.getTarget())
+                                .usePlaintext()
+                                .build();
                 settings.setTransportChannelProvider(
                                 FixedTransportChannelProvider.create(
                                         GrpcTransportChannel.create(ownedChannel)))

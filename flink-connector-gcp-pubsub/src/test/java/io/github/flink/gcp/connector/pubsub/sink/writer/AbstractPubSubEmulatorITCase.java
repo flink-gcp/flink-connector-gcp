@@ -26,6 +26,7 @@ import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubSinkConfig;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
@@ -99,7 +100,7 @@ abstract class AbstractPubSubEmulatorITCase {
      * emulator-endpoint mode, so the integration tests exercise its client construction.
      */
     static TopicAdmin newTopicAdmin() {
-        return new PubSubTopicAdmin(emulatorEndpoint());
+        return new PubSubTopicAdmin(EmulatorEndpoint.parse(emulatorEndpoint()));
     }
 
     /**
@@ -110,7 +111,8 @@ abstract class AbstractPubSubEmulatorITCase {
             PubSubSinkConfig<String> config, FakeMailboxExecutor mailbox) {
         return new PubSubWriter<>(
                 config,
-                new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint()),
+                new DefaultPublisherFactory(
+                        config.getPublisherOptions(), EmulatorEndpoint.parse(emulatorEndpoint())),
                 newTopicAdmin(),
                 mailbox,
                 TestSinkWriterMetricGroup.create(),

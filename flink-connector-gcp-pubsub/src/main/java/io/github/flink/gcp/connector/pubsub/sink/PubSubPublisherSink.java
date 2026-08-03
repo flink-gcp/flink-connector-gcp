@@ -24,6 +24,7 @@ import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.writer.DefaultPublisherFactory;
@@ -70,7 +71,7 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T> {
             throw new IOException("Failed to open the Pub/Sub serialization schema.", e);
         }
         config.getFailedMessageHandler().open(DefaultFailureHandlerContext.of(context));
-        String emulatorEndpoint = config.getEmulatorEndpoint();
+        EmulatorEndpoint emulatorEndpoint = config.getEmulatorEndpoint();
         return createWriter(
                 new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint),
                 new PubSubTopicAdmin(emulatorEndpoint),

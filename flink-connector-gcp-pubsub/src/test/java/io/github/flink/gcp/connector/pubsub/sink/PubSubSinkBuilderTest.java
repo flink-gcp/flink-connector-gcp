@@ -22,6 +22,7 @@ import org.apache.flink.util.InstantiationUtil;
 
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import org.junit.jupiter.api.Test;
 
@@ -309,7 +310,8 @@ class PubSubSinkBuilderTest {
                                 .emulatorEndpoint("localhost:8085")
                                 .build();
 
-        assertThat(sink.getConfig().getEmulatorEndpoint()).isEqualTo("localhost:8085");
+        assertThat(sink.getConfig().getEmulatorEndpoint())
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8085"));
     }
 
     @Test
@@ -320,10 +322,12 @@ class PubSubSinkBuilderTest {
     }
 
     @Test
-    void rejectsBlankEmulatorEndpoint() {
-        assertThatThrownBy(() -> PubSubSink.<String>builder().emulatorEndpoint("  "))
+    void rejectsAMalformedEmulatorEndpoint() {
+        // Parsed at the setter, so a typo fails on the client rather than at connect time on a
+        // TaskManager; the full parse table is EmulatorEndpointTest's.
+        assertThatThrownBy(() -> PubSubSink.<String>builder().emulatorEndpoint("localhost8085"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("emulatorEndpoint must not be blank");
+                .hasMessage("emulatorEndpoint must be host:port, was 'localhost8085'");
     }
 
     @Test
@@ -351,6 +355,7 @@ class PubSubSinkBuilderTest {
         assertThat(copy.getConfig().getCreateDisposition())
                 .isEqualTo(CreateDisposition.CREATE_NEVER);
         assertThat(copy.getConfig().getPublisherOptions()).isEqualTo(options);
-        assertThat(copy.getConfig().getEmulatorEndpoint()).isEqualTo("localhost:8085");
+        assertThat(copy.getConfig().getEmulatorEndpoint())
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8085"));
     }
 }

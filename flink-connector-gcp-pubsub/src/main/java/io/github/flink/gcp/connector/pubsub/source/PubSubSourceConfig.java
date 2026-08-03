@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.source;
 
 import org.apache.flink.annotation.Internal;
 
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 
 import javax.annotation.Nullable;
@@ -44,7 +45,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
     private final PubSubSubscriberOptions subscriberOptions;
     private final DeserializationFailurePolicy deserializationFailurePolicy;
     private final StartPosition startPosition;
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     PubSubSourceConfig(
             List<SubscriptionDestination> subscriptions,
@@ -54,7 +55,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
             PubSubSubscriberOptions subscriberOptions,
             DeserializationFailurePolicy deserializationFailurePolicy,
             StartPosition startPosition,
-            @Nullable String emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.subscriptions = subscriptions;
         this.createOptions = createOptions;
         this.deserializationSchema = deserializationSchema;
@@ -105,7 +106,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
 
     /** Returns the emulator endpoint, or {@code null} for production Pub/Sub. */
     @Nullable
-    public String getEmulatorEndpoint() {
+    public EmulatorEndpoint getEmulatorEndpoint() {
         return emulatorEndpoint;
     }
 }

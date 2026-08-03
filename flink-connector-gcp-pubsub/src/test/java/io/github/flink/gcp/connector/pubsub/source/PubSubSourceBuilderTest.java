@@ -21,6 +21,7 @@ import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.util.InstantiationUtil;
 
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
@@ -208,10 +209,12 @@ class PubSubSourceBuilderTest {
     }
 
     @Test
-    void rejectsBlankEmulatorEndpoint() {
-        assertThatThrownBy(() -> PubSubSource.<String>builder().emulatorEndpoint("  "))
+    void rejectsAMalformedEmulatorEndpoint() {
+        // Parsed at the setter, so a typo fails on the client rather than at connect time on a
+        // TaskManager; the full parse table is EmulatorEndpointTest's.
+        assertThatThrownBy(() -> PubSubSource.<String>builder().emulatorEndpoint("localhost8085"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("emulatorEndpoint must not be blank");
+                .hasMessage("emulatorEndpoint must be host:port, was 'localhost8085'");
     }
 
     @Test
@@ -246,7 +249,8 @@ class PubSubSourceBuilderTest {
         assertThat(restoredConfig.getSubscriberOptions()).isEqualTo(options);
         assertThat(restoredConfig.getCreateOptions()).containsExactly(entry(SUB_A, createOptions));
         assertThat(restoredConfig.getStartPosition()).isEqualTo(startPosition);
-        assertThat(restoredConfig.getEmulatorEndpoint()).isEqualTo("localhost:8085");
+        assertThat(restoredConfig.getEmulatorEndpoint())
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8085"));
     }
 
     @Test

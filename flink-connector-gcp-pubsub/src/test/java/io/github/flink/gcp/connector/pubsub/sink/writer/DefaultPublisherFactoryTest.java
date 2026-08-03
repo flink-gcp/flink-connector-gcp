@@ -23,6 +23,7 @@ import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
@@ -182,7 +183,8 @@ class DefaultPublisherFactoryTest {
         // offline; the behavioral emulator coverage lives in the *ITCase classes, which all
         // publish through this factory's emulator mode.
         DefaultPublisherFactory factory =
-                new DefaultPublisherFactory(PubSubPublisherOptions.defaults(), "localhost:1");
+                new DefaultPublisherFactory(
+                        PubSubPublisherOptions.defaults(), EmulatorEndpoint.parse("localhost:1"));
         TopicPublisher publisher = factory.create(TopicDestination.of("test-project", "t"));
         publisher.close();
     }

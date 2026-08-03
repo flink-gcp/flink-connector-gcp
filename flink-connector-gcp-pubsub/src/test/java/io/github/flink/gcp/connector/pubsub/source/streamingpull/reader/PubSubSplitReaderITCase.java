@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.AbstractPubSubSourceEmulatorITCase;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
@@ -145,7 +146,8 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
         PubSubSubscriberOptions options =
                 PubSubSubscriberOptions.builder().maxRecordsPerFetch(MAX_RECORDS_PER_FETCH).build();
         return new PubSubSplitReader(
-                new DefaultSubscriberFactory(options, OrderingMode.NONE, emulatorEndpoint()),
+                new DefaultSubscriberFactory(
+                        options, OrderingMode.NONE, EmulatorEndpoint.parse(emulatorEndpoint())),
                 ackTracker,
                 options,
                 new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount));

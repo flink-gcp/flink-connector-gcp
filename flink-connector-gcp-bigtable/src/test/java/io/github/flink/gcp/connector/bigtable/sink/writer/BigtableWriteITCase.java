@@ -22,6 +22,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
@@ -145,7 +146,8 @@ class BigtableWriteITCase extends AbstractBigtableEmulatorITCase {
                         .emulatorEndpoint(emulatorEndpoint())
                         .build();
         MutationBatcher batcher =
-                new DefaultMutationBatcherFactory(table, null, options, emulatorEndpoint())
+                new DefaultMutationBatcherFactory(
+                                table, null, options, EmulatorEndpoint.parse(emulatorEndpoint()))
                         .create();
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(

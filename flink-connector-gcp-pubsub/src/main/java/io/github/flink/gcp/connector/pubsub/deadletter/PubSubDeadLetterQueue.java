@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.base.failure.DeadLetterQueue;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -138,7 +139,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
 
     private final TopicDestination topic;
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final int maxOutstandingMessages;
 
     private transient Publisher publisher;
@@ -152,7 +153,9 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     private transient int subtaskIndex;
 
     private PubSubDeadLetterQueue(
-            TopicDestination topic, @Nullable String emulatorEndpoint, int maxOutstandingMessages) {
+            TopicDestination topic,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            int maxOutstandingMessages) {
         this.topic = Preconditions.checkNotNull(topic, "topic must not be null");
         this.emulatorEndpoint = emulatorEndpoint;
         this.maxOutstandingMessages = maxOutstandingMessages;
@@ -175,7 +178,9 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         try {
             if (emulatorEndpoint != null) {
                 ownedChannel =
-                        ManagedChannelBuilder.forTarget(emulatorEndpoint).usePlaintext().build();
+                        ManagedChannelBuilder.forTarget(emulatorEndpoint.getTarget())
+                                .usePlaintext()
+                                .build();
                 builder.setChannelProvider(
                                 FixedTransportChannelProvider.create(
                                         GrpcTransportChannel.create(ownedChannel)))
@@ -338,7 +343,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     public static final class Builder {
 
         private TopicDestination topic;
-        @Nullable private String emulatorEndpoint;
+        @Nullable private EmulatorEndpoint emulatorEndpoint;
         private int maxOutstandingMessages = DEFAULT_MAX_OUTSTANDING_MESSAGES;
 
         private Builder() {}
@@ -362,14 +367,16 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
          * only ever be used against an emulator. Optional; when unset the queue publishes with
          * application-default credentials.
          *
+         * <p>The value is parsed here, so a malformed {@code host:port} is rejected on the client
+         * instead of surfacing as a connection failure once the job has been deployed.
+         *
          * @param emulatorEndpoint the emulator endpoint as {@code host:port}
          * @return this builder
+         * @throws IllegalArgumentException if the endpoint is not {@code host:port} with a port in
+         *     1..65535
          */
         public Builder emulatorEndpoint(String emulatorEndpoint) {
-            Preconditions.checkNotNull(emulatorEndpoint, "emulatorEndpoint must not be null");
-            Preconditions.checkArgument(
-                    !emulatorEndpoint.trim().isEmpty(), "emulatorEndpoint must not be blank");
-            this.emulatorEndpoint = emulatorEndpoint;
+            this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
             return this;
         }
 

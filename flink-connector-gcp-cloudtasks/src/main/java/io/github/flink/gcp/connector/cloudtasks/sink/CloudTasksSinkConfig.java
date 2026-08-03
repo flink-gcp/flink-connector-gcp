@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.cloudtasks.sink;
 import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -40,7 +41,7 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
     @Nullable private final TaskIdExtractor<? super T> taskIdExtractor;
     private final CloudTasksWriterOptions writerOptions;
     private final FailureHandler<? super FailedTask> failedTaskHandler;
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     CloudTasksSinkConfig(
             DestinationResolver<? super T> destinationResolver,
@@ -48,7 +49,7 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
             @Nullable TaskIdExtractor<? super T> taskIdExtractor,
             CloudTasksWriterOptions writerOptions,
             FailureHandler<? super FailedTask> failedTaskHandler,
-            @Nullable String emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.taskIdExtractor = taskIdExtractor;
@@ -85,12 +86,9 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
         return failedTaskHandler;
     }
 
-    /**
-     * Returns the emulator endpoint ({@code host:port}), or {@code null} for production Cloud
-     * Tasks.
-     */
+    /** Returns the emulator endpoint, or {@code null} for production Cloud Tasks. */
     @Nullable
-    public String getEmulatorEndpoint() {
+    public EmulatorEndpoint getEmulatorEndpoint() {
         return emulatorEndpoint;
     }
 }

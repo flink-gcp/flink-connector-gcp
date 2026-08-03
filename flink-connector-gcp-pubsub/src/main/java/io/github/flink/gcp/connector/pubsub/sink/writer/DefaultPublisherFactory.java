@@ -27,6 +27,7 @@ import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
@@ -77,7 +78,7 @@ public final class DefaultPublisherFactory implements PublisherFactory {
                     .build();
 
     private final PubSubPublisherOptions options;
-    @Nullable private final String emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
      * Creates a factory connecting to production Pub/Sub with application-default credentials.
@@ -92,11 +93,11 @@ public final class DefaultPublisherFactory implements PublisherFactory {
      * Creates the factory.
      *
      * @param options the publisher tuning options
-     * @param emulatorEndpoint the emulator endpoint as {@code host:port} (plaintext, no
-     *     credentials), or {@code null} for production Pub/Sub
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for production Pub/Sub
      */
     public DefaultPublisherFactory(
-            PubSubPublisherOptions options, @Nullable String emulatorEndpoint) {
+            PubSubPublisherOptions options, @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.options = options;
         this.emulatorEndpoint = emulatorEndpoint;
     }
@@ -108,7 +109,9 @@ public final class DefaultPublisherFactory implements PublisherFactory {
         try {
             if (emulatorEndpoint != null) {
                 ownedChannel =
-                        ManagedChannelBuilder.forTarget(emulatorEndpoint).usePlaintext().build();
+                        ManagedChannelBuilder.forTarget(emulatorEndpoint.getTarget())
+                                .usePlaintext()
+                                .build();
                 builder.setChannelProvider(
                                 FixedTransportChannelProvider.create(
                                         GrpcTransportChannel.create(ownedChannel)))
