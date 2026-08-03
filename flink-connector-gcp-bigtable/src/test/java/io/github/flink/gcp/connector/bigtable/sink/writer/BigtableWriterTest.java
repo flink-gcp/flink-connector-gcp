@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -55,7 +56,7 @@ class BigtableWriterTest {
 
     private final FakeMutationBatcher batcher = new FakeMutationBatcher();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
-    private final RecordingSinkWriterMetricGroup metricGroup = new RecordingSinkWriterMetricGroup();
+    private final TestSinkWriterMetricGroup metricGroup = TestSinkWriterMetricGroup.create();
 
     @Test
     void appliesOneMutationPerRecordAndCountsItSent() throws Exception {
@@ -65,8 +66,8 @@ class BigtableWriterTest {
         writer.write("row-2", TestContexts.NO_OP);
 
         assertThat(batcher.entries).hasSize(2);
-        assertThat(metricGroup.getNumRecordsSendCounter().getCount()).isEqualTo(2);
-        assertThat(metricGroup.getNumBytesSendCounter().getCount())
+        assertThat(metricGroup.counterValue("numRecordsSend")).isEqualTo(2);
+        assertThat(metricGroup.counterValue("numBytesSend"))
                 .isEqualTo(serializedSize("row-1") + serializedSize("row-2"));
         assertThat(inFlight(writer)).isEqualTo(2);
     }
@@ -80,7 +81,7 @@ class BigtableWriterTest {
 
         // Skipped, not failed and not counted: nothing was sent anywhere.
         assertThat(batcher.entries).isEmpty();
-        assertThat(metricGroup.getNumRecordsSendCounter().getCount()).isZero();
+        assertThat(metricGroup.counterValue("numRecordsSend")).isZero();
         assertThat(inFlight(writer)).isZero();
     }
 
@@ -265,7 +266,7 @@ class BigtableWriterTest {
                 .hasMessageContaining("p.i.orders");
         // Nothing registered a callback, so nothing may be counted in flight.
         assertThat(inFlight(writer)).isZero();
-        assertThat(metricGroup.getNumRecordsSendCounter().getCount()).isZero();
+        assertThat(metricGroup.counterValue("numRecordsSend")).isZero();
     }
 
     private SinkWriter<String> writer(BigtableWriterOptions options) {

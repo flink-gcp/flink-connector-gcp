@@ -259,6 +259,64 @@ failed), the row key, and — as the shared contract's payload — the **seriali
 handled elements is at-least-once for failures that recur on replay; the SPI's own page states that
 guarantee in full.
 
+Watch [`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/bigtable" >}}#metrics) rather
+than the job status when running anything other than `failJob()`: it counts every mutation the
+handler received, so a serializer bug rejecting every record — which this sink cannot tell from a
+one-off, the classification being a response status code rather than a judgement about the stream —
+shows up as a rate rather than as a failure. Read it beside the batch blast radius above: the count
+is bounded by batches, not by bad records.
+
+## Metrics
+
+Registered on the sink writer's metric group, one set per subtask:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `numRecordsSend` | counter (Flink standard) | records handed to the client library for application |
+| `numBytesSend` | counter (Flink standard) | their serialized size |
+| `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-mutation handler |
+| `inFlightMutations` | gauge | mutations the service has not acknowledged, against `maxInFlightMutations` |
+| `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
+| `errorClass.CODE.errors` | counter | failed mutations by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
+
+**`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
+exactly what reached `failedMutationHandler(...)` — a record the serializer rejected, and a mutation
+the service answered `INVALID_ARGUMENT` — whether the handler then dropped it or failed the job. A
+serializer bug that makes *every* record invalid is dropped one at a time under a dropping policy,
+and this counter is what shows it while the job stays green.
+
+**It is also what makes the batch blast radius visible.** As
+[the error-handling section](#error-handling) describes, one rejected entry fails every entry of its
+`MutateRows` batch, so a single malformed record shows up here as a count near `batchElementCount`
+rather than as `1` — and the same multiple appears under `errorClass.INVALID_ARGUMENT.errors`. That
+gap between "records I sent" and "records that came back rejected" is the measurement to reach for
+when judging what a dropping policy is actually costing, until
+[#239]({{< param BookRepo >}}/issues/239) narrows the rejection.
+
+**`errorClass` does not measure retry volume here, unlike the Cloud Tasks sink.** That connector
+owns its retries, so the sum over its transient codes *is* its retry count; this one leaves retrying
+to the client (see [Retries belong to the client](#retries-belong-to-the-client)), which retries per
+entry inside the batcher and surfaces nothing until it gives up. Every code counted here is
+therefore a mutation the client already exhausted its budget on — `UNAVAILABLE` here means an outage
+that outlasted ten minutes of backoff, not one slow call. The client's own retry attempts are
+invisible to this sink, and no metric in this table reports them.
+
+**`numRecordsSend` counts records, not attempts**, as it does in every connector here, which is what
+makes the number comparable across them. This sink gets that for free rather than by arranging it:
+with retries inside the SDK there is no re-entered call site that could double-count. The
+consequence is the same one the other pages state — `numBytesSend` is payload volume rather than
+wire volume, since a mutation the client retried three times moved three times its size.
+
+There are **no per-destination counters**. A sink writes [one fixed table](#one-table-per-sink), so
+`destination.TABLE.*` could only restate the totals above; the connectors with dynamic destinations
+carry that pair behind a `perDestinationMetrics` option, and this one has no option because it has
+nothing to distinguish.
+
+`currentSendTime` is deliberately **not** set: the client batches mutations and completes their
+futures asynchronously, so any latency this writer could report would measure its own bookkeeping
+rather than the service's response time — a missing number beats a wrong one. There is no committer
+either (the sink is single-phase), so Flink's committer metrics do not apply.
+
 ## Scope
 
 Not implemented, each with its issue rather than a promise:

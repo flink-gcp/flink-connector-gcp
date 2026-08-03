@@ -75,12 +75,46 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `checkAndMutateRow` and `readModifyWriteRow` are request-response primitives, not batched write
   paths), so `BigtableMutateRowsSink` sits beside its facade as the single-family modules' rule
   allows, and `FailedMutation` sits at the `sink` root as the post-#213 placement rule prescribes.
-- **The send metrics live here rather than with #37.** `numRecordsSend`/`numBytesSend` are
-  incremented at admission (the Kafka connector's placement), with bytes from
-  `entry.toProto().getSerializedSize()`. No other sink in this repository has them yet: the #37
-  series is scoped to the three existing connectors and does not reach Bigtable, so waiting would
-  have meant shipping a sink with no metrics at all. Richer per-connector metrics still belong to
-  that series' outcome.
+- **The metrics are the #37 series' standard, reached late** (#237, which also absorbed #234 —
+  its "counter for *dropped* elements" is `numRecordsSendErrors`, the series having settled on one
+  counter for everything routed rather than a second one for what a handler then discarded).
+  #33 shipped `numRecordsSend`/`numBytesSend` ahead of the series because it was scoped to the
+  three connectors that existed when it was designed; the rest arrived here. Bytes come from
+  `entry.toProto().getSerializedSize()`, counted at admission (the Kafka connector's placement).
+  Five decisions:
+  - **No per-destination counters, and so no `perDestinationMetrics` option.** One fixed table per
+    sink means `destination.TABLE.*` restates the writer's totals — the same reason #210 leaves
+    them off the buffered-stream path, under its rule that no writer registers a metric it can
+    never increment. A batcher pool (see the one-table decision above) is what would change this.
+  - **`errorClass` counts RPC failures only, never the serializer's.** A serialization failure
+    carries no status, so counting it would put every one under `UNCLASSIFIED` beside the RPC
+    failures that genuinely carry none. Both sibling sinks draw the line in the same place: one
+    `errorClass` call site against three routing ones.
+  - **`BigtableErrorClassifier.statusCode` reports the chain's outermost classifiable status, not
+    the code `classify` acted on**, mirroring `PubSubErrorClassifier.statusCode`. The two diverge
+    exactly when a transient status is buried under a data-shaped one: routing scans the whole
+    chain and calls it fatal, while the counter names what the failure was reported with. That is a
+    real divergence rather than a theoretical one, and it is pinned by
+    `namesTheOutermostStatusOfAChainItTreatsAsFatalForABuriedTransientOne` — added because the
+    mutant reporting the routing decision instead **survived** the first test set.
+  - **`close()` zeroes the two gauge-backing counters, and does it *before* `closeAll`.** A
+    reporter can sample between `close()` and the metric group's own close, and nothing decrements
+    them afterwards (the completions that would run as mailbox mails no longer run), so a writer
+    torn down mid-flight would keep reporting mutations it will never wait for — the same
+    lifecycle gap #210 found in the BigQuery writers and #208 had already closed in
+    `PubSubWriter`. The *placement* is this module's own: `close()` throws a `BatchingException`
+    on the failure path (#238), so a clear after `closeAll` would be skipped in exactly the case
+    it exists for. Found in review round 2, having been missed by a round 1 that looked only at
+    increment sites — **when a series brings the same shape to another connector, diff the
+    `close()` paths too.**
+  - **Every failure reaching the writer is counted, fatal ones included and fatal ones after the
+    first.** Only the first becomes `asyncError`, but each is a mutation the client gave up on.
+    The consequence, stated on the docs page rather than left to a reader to infer: since the
+    retries are the client's, the sum over the transient codes is *not* this connector's retry
+    volume, which is exactly what that sum means on the Cloud Tasks page. The client's own attempts
+    are invisible here. The other reading the page owes: #239's batch blast radius makes both
+    `numRecordsSendErrors` and `errorClass.INVALID_ARGUMENT.errors` count a whole batch per bad
+    record, which is the metric that measures what a dropping policy costs.
 - **The E2E suite creates an ephemeral instance per gated *class*, not per run** (#218) — the one
   deviation from that issue's settled design. When this landed it was forced: `reuseForks=false`
   meant a fresh JVM per class, where a JVM-scoped holder buys nothing. #243's root-pom override
@@ -140,8 +174,10 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   null-returning proxy and the writer dereferences the group in its constructor. The emulator tests
   therefore build writers through the sink's injecting `createWriter(batcher, mailbox, metricGroup)`
   overload with a batcher the production factory created — the Cloud Tasks emulator tests' shape —
-  and the MiniCluster job tests are what cover the `WriterInitContext` path end to end. Widening the
-  shared stub was considered and left alone: it is test-utils, shared with concurrent work, and this
-  module needed a counter-recording group of its own anyway (`UnregisteredMetricsGroup`'s sink
-  writer group hands out a fresh `SimpleCounter` per call, so what the writer captured is
-  unreachable from it).
+  and the MiniCluster job tests are what cover the `WriterInitContext` path end to end. The
+  module's own `RecordingSinkWriterMetricGroup` is **gone since #237**: it predated test-utils'
+  `TestSinkWriterMetricGroup` and was superseded by it, and the shared one is strictly better here —
+  it asserts by *registered name*, which is what a gauge or an `errorClass` subgroup needs and what
+  a counter-holding stub cannot offer. (`UnregisteredMetricsGroup`'s own sink writer group remains
+  unusable for either: it hands out a fresh `SimpleCounter` per call, leaving what the writer
+  captured unreachable.)
