@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.source;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.common.state.CheckpointListener;
@@ -38,6 +39,7 @@ import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializat
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -49,7 +51,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -70,12 +74,38 @@ import static org.assertj.core.api.Assertions.assertThat;
  * checkpoints no splits, so a restore leaves the enumerator's recomputed plan as the only source of
  * split ownership. What these tests add is the end-to-end half — the checkpoint and savepoint state
  * round-trips through a real restore and the job keeps consuming.
+ *
+ * <p>Every wait here carries a {@linkplain #diagnose diagnosis} and runs on this class's own {@link
+ * #RECOVERY_TIMEOUT} rather than the harness-wide {@code COLLECT_TIMEOUT}; both are consequences of
+ * issue #244 and the reason for the raise is on that member.
+ *
+ * <p>The class timeout overrides the harness's 180 s, which applies per test method. One slow wait
+ * still fits inside that (measured: a method whose first wait ran the full 120 s took 138 s end to
+ * end), but each method here has three sequential bounded operations, so a run that {@link
+ * #RECOVERY_TIMEOUT} rescues after a long first wait would then be killed by the class timeout
+ * instead, and the raise would buy nothing. Two slow waits fit in 300 s; a third means the run is
+ * failing whatever the budget. The pair (120 s wait, 300 s class) is the one {@code
+ * AbstractPubSubRealGcpITCase} already uses.
  */
+@Timeout(300)
 class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
 
     /**
+     * Bound on every wait in this class, in place of the harness-wide {@code COLLECT_TIMEOUT}.
+     *
+     * <p>Raised from that 60 s for issue #244, where the first wait of {@link
+     * #aFailureAfterACompletedCheckpointRestartsTheJobWithoutLosingMessages} timed out in CI while
+     * the streaming pull sat open receiving nothing. It is a hedge and not a fix: the observed
+     * silence spanned two subscriber-side stream resets, and whether a third would have recovered
+     * it was never measured, so this only buys the run more chances to recover — if the stall is
+     * permanent it makes the failure slower rather than rarer, which is why the diagnosis is the
+     * load-bearing half of that change and why the shared constant was left alone.
+     */
+    private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(120);
+
+    /**
      * Short enough that even a lost nack (redelivery then waits out the ack deadline) stays well
-     * inside {@link #COLLECT_TIMEOUT}.
+     * inside {@link #RECOVERY_TIMEOUT}.
      */
     private static final int ACK_DEADLINE_SECONDS = 10;
 
@@ -123,6 +153,15 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
                 .sinkTo(new DiscardingSink<>());
 
         JobClient job = env.executeAsync();
+        Supplier<String> beforeTheFailure =
+                () ->
+                        diagnose(
+                                job,
+                                runId,
+                                "before-a",
+                                beforeFromFirst,
+                                "before-b",
+                                beforeFromSecond);
         try {
             // The failure fires on the first record processed after a completed checkpoint —
             // possibly mid-first-batch, which is fine. Waiting for both the batch and a checkpoint
@@ -130,14 +169,16 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
             // enough to leave the failure unexercised.
             await(
                     "the job to consume everything published before the failure",
-                    COLLECT_TIMEOUT,
+                    RECOVERY_TIMEOUT,
                     () ->
                             RecordingMap.records(runId).containsAll(beforeFromFirst)
-                                    && RecordingMap.records(runId).containsAll(beforeFromSecond));
+                                    && RecordingMap.records(runId).containsAll(beforeFromSecond),
+                    beforeTheFailure);
             await(
                     "a checkpoint to complete",
-                    COLLECT_TIMEOUT,
-                    () -> ThrowOnceAfterCompletedCheckpoint.checkpointCompleted(runId));
+                    RECOVERY_TIMEOUT,
+                    () -> ThrowOnceAfterCompletedCheckpoint.checkpointCompleted(runId),
+                    beforeTheFailure);
             List<String> afterFromFirst = payloads("after-a", 5);
             List<String> afterFromSecond = payloads("after-b", 5);
             publish("recovery-a", afterFromFirst.toArray(new String[0]));
@@ -145,10 +186,18 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
 
             await(
                     "the restarted job to consume everything published around the failure",
-                    COLLECT_TIMEOUT,
+                    RECOVERY_TIMEOUT,
                     () ->
                             RecordingMap.records(runId).containsAll(afterFromFirst)
-                                    && RecordingMap.records(runId).containsAll(afterFromSecond));
+                                    && RecordingMap.records(runId).containsAll(afterFromSecond),
+                    () ->
+                            diagnose(
+                                    job,
+                                    runId,
+                                    "after-a",
+                                    afterFromFirst,
+                                    "after-b",
+                                    afterFromSecond));
             assertThat(ThrowOnceAfterCompletedCheckpoint.fired(runId))
                     .as("the injected failure fired, so a restart actually happened")
                     .isTrue();
@@ -205,25 +254,39 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
         String savepointPath;
         JobClient firstJob =
                 runRecording(firstRunId, fromParallelism, null, taggingSource(first, second));
+        // The savepoint stops the job, so the cancel is the failure path only - but it has to be a
+        // finally, not a catch: a timed-out await throws AssertionError, which `catch (Exception)`
+        // does not see, and this job is unbounded with no restart strategy, so skipping the cancel
+        // leaks it and its MiniCluster into every later class sharing the fork (reuseForks=true).
+        boolean savepointTaken = false;
         try {
             await(
                     "the first run to consume everything published before the savepoint",
-                    COLLECT_TIMEOUT,
+                    RECOVERY_TIMEOUT,
                     () ->
                             RecordingMap.records(firstRunId)
                                             .containsAll(tagged(beforeSavepoint, first))
                                     && RecordingMap.records(firstRunId)
-                                            .containsAll(tagged(beforeSavepoint, second)));
+                                            .containsAll(tagged(beforeSavepoint, second)),
+                    () ->
+                            diagnose(
+                                    firstJob,
+                                    firstRunId,
+                                    first.getSubscription(),
+                                    tagged(beforeSavepoint, first),
+                                    second.getSubscription(),
+                                    tagged(beforeSavepoint, second)));
             savepointPath =
                     firstJob.stopWithSavepoint(
                                     false,
                                     savepointDirectory.toUri().toString(),
                                     SavepointFormatType.CANONICAL)
-                            .get(COLLECT_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
-        } catch (Exception e) {
-            cancelQuietly(firstJob);
-            throw e;
+                            .get(RECOVERY_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+            savepointTaken = true;
         } finally {
+            if (!savepointTaken) {
+                cancelQuietly(firstJob);
+            }
             RecordingMap.forget(firstRunId);
         }
 
@@ -239,12 +302,20 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
             await(
                     "the restored run to consume everything published after the savepoint, from"
                             + " both subscriptions",
-                    COLLECT_TIMEOUT,
+                    RECOVERY_TIMEOUT,
                     () ->
                             RecordingMap.records(secondRunId)
                                             .containsAll(tagged(afterSavepoint, first))
                                     && RecordingMap.records(secondRunId)
-                                            .containsAll(tagged(afterSavepoint, second)));
+                                            .containsAll(tagged(afterSavepoint, second)),
+                    () ->
+                            diagnose(
+                                    secondJob,
+                                    secondRunId,
+                                    first.getSubscription(),
+                                    tagged(afterSavepoint, first),
+                                    second.getSubscription(),
+                                    tagged(afterSavepoint, second)));
         } finally {
             cancelQuietly(secondJob);
             RecordingMap.forget(secondRunId);
@@ -309,6 +380,69 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
         } catch (Exception e) {
             // Best effort only.
         }
+    }
+
+    /**
+     * Reports what a timed-out wait in this class was looking at, as one greppable line.
+     *
+     * <p>Written for issue #244, where a CI timeout left nothing to read: the module logs nothing
+     * below ERROR, and the surviving evidence — the arithmetic that put the whole minute after job
+     * submission, and the client library's own keepalive tear-down lines — could say that a
+     * streaming pull sat open receiving nothing, but not which subscription's, nor whether both
+     * readers had started at all. Three states have to be told apart — the pipeline never started,
+     * it started and nothing was delivered, one subscription fell short — and two facts separate
+     * them:
+     *
+     * <ul>
+     *   <li><b>Which subtasks opened.</b> {@link JobStatus#RUNNING} does not answer this — a job
+     *       reports RUNNING once scheduling starts, while its tasks may still be deploying — so the
+     *       map's own {@code open()} is what separates "the pipeline never started" from "it
+     *       started and nothing was delivered". The status is reported beside it because the two
+     *       disagreeing (a finished or failed job behind a still-waiting assertion) is its own
+     *       answer.
+     *   <li><b>Which subscription fell short.</b> The two counts are what tell one stalled
+     *       streaming pull from a source that delivered nothing anywhere, which is the split issue
+     *       #244 could not make.
+     * </ul>
+     */
+    private static String diagnose(
+            JobClient job,
+            String runId,
+            String firstLabel,
+            List<String> firstExpected,
+            String secondLabel,
+            List<String> secondExpected) {
+        Set<String> arrived = RecordingMap.records(runId);
+        return "job status: "
+                + jobStatus(job)
+                + "; map opened on subtask(s) "
+                + RecordingMap.openedSubtasks(runId)
+                + "; "
+                + firstLabel
+                + " "
+                + count(arrived, firstExpected)
+                + ", "
+                + secondLabel
+                + " "
+                + count(arrived, secondExpected)
+                + " arrived.";
+    }
+
+    /** The job's status, or why it could not be read — a diagnosis may not throw. */
+    private static String jobStatus(JobClient job) {
+        try {
+            return job.getJobStatus().get(10, TimeUnit.SECONDS).toString();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "unreadable (interrupted)";
+        } catch (Exception e) {
+            return "unreadable (" + e + ")";
+        }
+    }
+
+    private static String count(Set<String> arrived, List<String> expected) {
+        long present = expected.stream().filter(arrived::contains).count();
+        return present + "/" + expected.size();
     }
 
     private static List<String> payloads(String prefix, int count) {
@@ -408,17 +542,28 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
      * driven by {@code executeAsync} whose output has no collect iterator to drain. Static for the
      * same reason as {@link ThrowOnceAfterCompletedCheckpoint}'s flags: the MiniCluster shares the
      * JVM with the test.
+     *
+     * <p>It also records which subtasks reached {@code open()}, which is the only evidence {@link
+     * #diagnose} has that the pipeline started at all — the map runs immediately downstream of the
+     * source, so its open is a task actually deployed and running rather than a job merely
+     * scheduled.
      */
     private static class RecordingMap extends RichMapFunction<String, String> {
 
         private static final long serialVersionUID = 1L;
 
         private static final Map<String, Set<String>> RECORDS = new ConcurrentHashMap<>();
+        private static final Map<String, Set<Integer>> OPENED = new ConcurrentHashMap<>();
 
         private final String runId;
 
         RecordingMap(String runId) {
             this.runId = runId;
+        }
+
+        @Override
+        public void open(OpenContext openContext) {
+            openedSubtasks(runId).add(getRuntimeContext().getTaskInfo().getIndexOfThisSubtask());
         }
 
         @Override
@@ -431,8 +576,14 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
             return RECORDS.computeIfAbsent(runId, unused -> ConcurrentHashMap.newKeySet());
         }
 
+        /** The subtask indexes whose {@code open()} ran, in a set ordered for the message. */
+        static Set<Integer> openedSubtasks(String runId) {
+            return OPENED.computeIfAbsent(runId, unused -> new ConcurrentSkipListSet<>());
+        }
+
         static void forget(String runId) {
             RECORDS.remove(runId);
+            OPENED.remove(runId);
         }
     }
 }
