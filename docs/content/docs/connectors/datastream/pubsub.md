@@ -459,19 +459,18 @@ Registered on the sink writer's metric group, one set per subtask:
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-message handler |
 | `inFlightMessages` | gauge | publishes not yet acknowledged |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
-| `parkedMessages` | gauge | messages held for a destination's next republish — a missing topic, or an ordering key a dropped message paused |
+| `parkedMessages` | gauge | messages held for a destination's next republish — after a missing topic, or after an ordering key was paused by a dropped message |
 | `topicsCreated` | counter | completed topic-creation repairs under `CREATE_IF_NEEDED` (see below) |
 | `errorClass.CODE.errors` | counter | failed publishes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `destination.TOPIC.recordsSend`, `destination.TOPIC.sendErrors` | counter | the same two counts per topic, **only** with `perDestinationMetrics(true)` |
 
-**`numRecordsSend` counts records, not publish attempts.** A message a repair republishes is
-counted once, when the client first accepted it, so a job recovering from a missing topic — or from
-an ordering key the failure handler dropped a message from — does not report itself as a busier
-one. Every connector in this repository counts the same way,
-whether its retries live in the sink or inside the SDK, so the number is comparable across them. The
-consequence to know: `numBytesSend` is payload volume rather than wire volume — a record republished
-three times moved three times its size across the network. Retry volume is what
-`errorClass.CODE.errors` measures, and it measures it per status code.
+**`numRecordsSend` counts records, not publish attempts.** A message a repair republishes is counted
+once, when the client first accepted it, so a job recovering from a missing topic — or from an
+ordering key paused by a dropped message — does not report itself as a busier one. Every connector
+in this repository counts the same way, whether its retries live in the sink or inside the SDK, so
+the number is comparable across them. The consequence to know: `numBytesSend` is payload volume
+rather than wire volume — a record republished three times moved three times its size across the
+network. Retry volume is what `errorClass.CODE.errors` measures, and it measures it per status code.
 
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
 exactly what reached `failedMessageHandler(...)` — a record the serializer rejected, and a publish
