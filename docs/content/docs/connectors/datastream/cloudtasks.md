@@ -475,9 +475,9 @@ Registered on the sink writer's metric group, one set per subtask:
 | `destination.QUEUE.recordsSend`, `destination.QUEUE.sendErrors` | counter | the same two counts per queue, **only** with `perDestinationMetrics(true)` |
 
 **`numRecordsSend` counts records, not creation attempts.** This sink owns its retries — a failed
-creation is parked and re-dispatched — and the record is counted once, at the write that admitted
-it, so a job working through an outage does not report itself as a busier one. Every connector in
-this repository counts the same way, whether its retries live in the sink or inside the SDK, which
+creation is parked and re-dispatched — and the record is counted once, when the client first
+accepted it, so a job working through an outage does not report itself as a busier one. Every
+connector in this repository counts the same way, whether its retries live in the sink or inside the SDK, which
 is what makes the number comparable across them. The consequence: `numBytesSend` is payload volume
 rather than wire volume.
 

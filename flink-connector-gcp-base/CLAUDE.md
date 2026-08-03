@@ -62,8 +62,10 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
 - **`numRecordsSend` counts each record once, at the first hand-off, in every connector** (decided
   on #208, superseding the #37 design's "retries re-count"): a sink-owned retry — Pub/Sub's
   topic-creation republish, Cloud Tasks' park-and-redispatch, BigQuery's re-append — must not count
-  the record again, which is why the increment sits at the *admission* site rather than at the send
-  call the retry path re-enters. Bigtable already counts once because its retries are inside the SDK
+  the record again. The increment therefore goes **inside the send call, guarded by a first-attempt
+  flag** (`PubSubWriter.publishTo`'s `firstAttempt`, `CloudTasksWriter.dispatch`'s `pending == null`)
+  — not at the `write()` call site, which would count a record the client rejected synchronously,
+  and not unguarded, which would count attempts. Bigtable already counts once because its retries are inside the SDK
   batcher, so the four connectors report one quantity and a dashboard comparing them is honest. What
   is given up is stated on the docs pages: `numBytesSend` is payload volume, not wire volume. Retry
   volume is read from the `errorClass.CODE.errors` counters instead, which is per status code and
