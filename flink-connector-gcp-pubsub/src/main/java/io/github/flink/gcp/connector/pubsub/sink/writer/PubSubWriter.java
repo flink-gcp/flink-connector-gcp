@@ -736,9 +736,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /**
      * Whether a missing topic may be repaired by creating it. Gates the {@code NOT_FOUND} parking
-     * branch and that one only: since #215 the disposition does not gate parking at all — a
-     * cascade, or an ordering key a dropped message paused, is parked under {@code CREATE_NEVER}
-     * too, because those repairs create nothing. What decides a creation is {@link
+     * branch and that one only: since #215 the disposition does not gate parking at all — a cascade
+     * is parked under {@code CREATE_NEVER} too, including one behind a message the handler dropped,
+     * because repairing an ordering key creates nothing. What decides a creation is {@link
      * DestinationState#topicMissing}, which only this branch sets.
      */
     private boolean repairsTopics() {

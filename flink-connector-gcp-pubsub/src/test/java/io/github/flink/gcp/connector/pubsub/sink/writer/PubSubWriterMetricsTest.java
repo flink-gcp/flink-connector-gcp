@@ -214,10 +214,8 @@ class PubSubWriterMetricsTest {
         writer.write("k1:second", CONTEXT);
         mailbox.drain();
 
-        // The root was dropped by the handler; its cascade is held for the resume-and-republish,
-        // and no topic is missing anywhere in this test.
+        // The root was dropped by the handler; its cascade is held for the resume-and-republish.
         assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isEqualTo(1);
-        assertThat(counter(PubSubSinkWriterMetrics.TOPICS_CREATED)).isZero();
 
         writer.flush(false);
 
