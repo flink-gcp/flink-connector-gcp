@@ -76,6 +76,11 @@ import java.util.Set;
  * and outstanding creations are lost on failure. Batch execution is covered by the end-of-input
  * flush.
  *
+ * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
+ * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every record up to the barrier
+ * was either durably accepted or handed to the {@link FailureHandler}; the per-task failures below
+ * say which ones reach it.
+ *
  * <h2>Retries</h2>
  *
  * <p>Retrying is this sink's own responsibility: {@code CloudTasksStubSettings} gives {@code

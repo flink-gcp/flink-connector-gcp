@@ -108,6 +108,11 @@ A successful checkpoint therefore means *all* records up to the barrier are pers
 Pub/Sub, and the writer stores nothing in Flink state — **discarding operator state
 (savepoint-less redeploys, state resets) can never lose sink-buffered data**.
 
+That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
+`sendToDeadLetterQueue(...)` a successful checkpoint means every record up to the barrier was
+either persisted by Pub/Sub or handed to the [failed-message policy](#failed-message-policy),
+which says which failures reach it.
+
 **FLIP-171 `AsyncSinkBase` was evaluated and rejected** for this sink:
 
 - The Pub/Sub `Publisher` SDK already batches; layering `AsyncSinkWriter`'s

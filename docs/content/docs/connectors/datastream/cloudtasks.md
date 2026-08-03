@@ -217,6 +217,11 @@ successfully written to Cloud Tasks storage" — and the writer keeps nothing in
 discarding operator state can never lose buffered records. This is the same model the Pub/Sub and
 BigQuery sinks use, and the reasoning against `AsyncSinkBase` recorded there applies unchanged.
 
+That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
+`sendToDeadLetterQueue(...)` a successful checkpoint means every record up to the barrier was either
+durably accepted or handed to the [failed-task policy](#failed-task-policy), which says which
+failures reach it.
+
 Checkpointing must be enabled in streaming jobs; without it `flush()` is never called mid-stream
 and outstanding creates are lost on failure. Batch execution is covered by the end-of-input flush.
 

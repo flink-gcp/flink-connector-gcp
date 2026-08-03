@@ -25,6 +25,11 @@ import org.apache.flink.annotation.PublicEvolving;
  * instances, resolving the destination topic per record (dynamic destinations) and flushing all
  * outstanding publishes at every checkpoint barrier.
  *
+ * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
+ * Under a dropping policy configured through {@link PubSubSinkBuilder#failedMessageHandler}, a
+ * completed checkpoint means every record up to the barrier was either published or handed to that
+ * handler.
+ *
  * <p>Example:
  *
  * <pre>{@code

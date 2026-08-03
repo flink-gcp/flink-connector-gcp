@@ -80,6 +80,11 @@ import java.util.TreeMap;
  * failures captured by completion callbacks are rethrown on the task thread from the next {@link
  * #write} or {@link #flush}, failing the job (retries within a publish are delegated to the SDK).
  *
+ * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
+ * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every record up to the barrier
+ * was either persisted by Pub/Sub or handed to the {@link FailureHandler}; the per-message failures
+ * below say which ones reach it.
+ *
  * <h2>Per-message failures</h2>
  *
  * <p>Failures {@link PubSubErrorClassifier} calls {@code MESSAGE_LEVEL}, plus records the
