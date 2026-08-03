@@ -31,7 +31,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   "empty, and `checkAsyncError`" — #78/#110 made that load-bearing; admission is "below the cap",
   never "does this message fit", since `yield()` blocks until a mail arrives and no mail can
   arrive at zero in flight, so a fits-predicate would hang the task on an oversized message
-  instead of backpressuring it; and the topic-creation repair republishes its parked batch
+  instead of backpressuring it; and a repair republishes its parked batch
   **exempt from both caps**, because yielding between a key's republishes reorders it. Parked
   messages are counted by neither cap (their failure mail released them). The two writer test
   classes carry `@Timeout(30)`: the fake mailbox blocks like the real one, so a broken predicate
@@ -158,7 +158,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   which is exactly what the source cannot say. Four decisions worth keeping. **`numRecordsSend` is
   counted inside `publishTo`, guarded by its `firstAttempt` parameter** — not at the `write()` call
   site, and not unguarded. Two properties have to hold at once, and only that placement gives both:
-  the topic-creation repair re-enters `publishTo` for every parked message, so an unguarded
+  a repair re-enters `publishTo` for every parked message, so an unguarded
   increment would count publish *attempts* rather than records; and counting at the call site would
   count a record whose `publisher.publish(...)` threw synchronously, which registers no callback and
   reached the client not at all. So the counter sits beside `inFlightMessages++`, after the publish

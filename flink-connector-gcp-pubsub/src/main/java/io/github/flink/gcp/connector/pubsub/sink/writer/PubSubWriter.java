@@ -107,10 +107,10 @@ import java.util.TreeMap;
  *       completes. This is deliberate: a "does it fit" predicate would never admit such a message,
  *       and since {@link MailboxExecutor#yield()} blocks until a mail arrives and no mail can
  *       arrive with nothing in flight, that would be a task hang rather than backpressure.
- *   <li>A topic-creation repair republishes its parked batch without re-checking either cap, so
- *       both counters can transiently exceed it by the batch size. Parked messages were themselves
- *       admitted under the caps, and {@link #repairPendingTopics} drains to empty before
- *       republishing, so the peak is one destination's parked batch.
+ *   <li>A repair republishes its parked batch without re-checking either cap, so both counters can
+ *       transiently exceed it by the batch size. Parked messages were themselves admitted under the
+ *       caps, and {@link #repairPendingTopics} drains to empty before republishing, so the peak is
+ *       one destination's parked batch.
  * </ul>
  *
  * <p>Messages parked for a repair are released from both counters by their failure mail, so under a
@@ -180,8 +180,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /**
      * Serialized size of the publishes not yet acknowledged; touched only on the task thread.
-     * Excludes messages parked for a topic-creation repair — their failure mail released them
-     * before parking, and the repair republishes those same objects.
+     * Excludes parked messages — their failure mail released them before parking, and the repair
+     * republishes those same objects.
      */
     private long inFlightBytes;
 
@@ -192,9 +192,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private long nextPublishSequence;
 
     /**
-     * Messages held for a topic-creation repair, across every destination. A plain counter rather
-     * than a sum over {@code states} because the gauge reading it runs on the reporter thread:
-     * walking the destination maps from there would race with the task thread mutating them.
+     * Messages held for a destination's next repair, across every destination. A plain counter
+     * rather than a sum over {@code states} because the gauge reading it runs on the reporter
+     * thread: walking the destination maps from there would race with the task thread mutating
+     * them.
      */
     private int parkedMessages;
 
@@ -338,9 +339,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         // No explicit flush here: on success Flink calls flush(true) before close. On the failure
         // path the writer publishes no further records itself; note the SDK publisher's graceful
         // shutdown still sends messages buffered inside it, which at-least-once tolerates as
-        // duplicates after the restart. Messages parked for topic-creation repair are dropped
-        // with the writer: they are not covered by a completed checkpoint, so the restart
-        // replays them.
+        // duplicates after the restart. Parked messages are dropped with the writer: they are
+        // not covered by a completed checkpoint, so the restart replays them.
         try {
             List<AutoCloseable> closeables = new ArrayList<>(states.size() + 2);
             for (DestinationState state : states.values()) {
@@ -378,10 +378,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Publishes the message to the destination's publisher, counts it in flight and registers its
      * completion callback.
      *
-     * <p>{@code firstAttempt} is what keeps {@code numRecordsSend} a count of <em>records</em>: the
-     * topic-creation repair re-enters this method for every parked message, and a record must be
-     * counted once however many publishes it took. The in-flight counters are the opposite — they
-     * track publishes, so they are adjusted on every call.
+     * <p>{@code firstAttempt} is what keeps {@code numRecordsSend} a count of <em>records</em>: a
+     * repair re-enters this method for every parked message, and a record must be counted once
+     * however many publishes it took. The in-flight counters are the opposite — they track
+     * publishes, so they are adjusted on every call.
      */
     private void publishTo(DestinationState state, PubsubMessage message, boolean firstAttempt)
             throws IOException {
@@ -735,10 +735,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Whether a failed publish may be parked for a topic-creation repair at all. Under {@code
-     * CREATE_NEVER} nothing is ever parked, so nothing reaches {@link #repairDestination} and no
-     * topic is created — a guarantee that has to be checked on every parking branch, not only the
-     * {@code NOT_FOUND} one.
+     * Whether a missing topic may be repaired by creating it. Gates the {@code NOT_FOUND} parking
+     * branch and that one only: since #215 the disposition does not gate parking at all — a
+     * cascade, or an ordering key a dropped message paused, is parked under {@code CREATE_NEVER}
+     * too, because those repairs create nothing. What decides a creation is {@link
+     * DestinationState#topicMissing}, which only this branch sets.
      */
     private boolean repairsTopics() {
         return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED;

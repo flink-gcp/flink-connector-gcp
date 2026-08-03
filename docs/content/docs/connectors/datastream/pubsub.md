@@ -153,7 +153,7 @@ Two bounded ways the byte cap is exceeded, both deliberate:
   "does it fit" predicate would never admit such a message: yielding blocks until a mail arrives,
   and with nothing in flight no mail can arrive, so it would hang the task rather than backpressure
   it.
-- A topic-creation repair republishes its parked batch without re-checking either cap (see below).
+- A repair republishes its parked batch without re-checking either cap (see below).
 
 ## Publisher lifecycle
 
@@ -459,14 +459,15 @@ Registered on the sink writer's metric group, one set per subtask:
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-message handler |
 | `inFlightMessages` | gauge | publishes not yet acknowledged |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
-| `parkedMessages` | gauge | messages held for a topic-creation republish |
+| `parkedMessages` | gauge | messages held for a destination's next republish — a missing topic, or an ordering key a dropped message paused |
 | `topicsCreated` | counter | completed topic-creation repairs under `CREATE_IF_NEEDED` (see below) |
 | `errorClass.CODE.errors` | counter | failed publishes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `destination.TOPIC.recordsSend`, `destination.TOPIC.sendErrors` | counter | the same two counts per topic, **only** with `perDestinationMetrics(true)` |
 
-**`numRecordsSend` counts records, not publish attempts.** A message the topic-creation repair
-republishes is counted once, when the client first accepted it, so a job recovering from a missing
-topic does not report itself as a busier one. Every connector in this repository counts the same way,
+**`numRecordsSend` counts records, not publish attempts.** A message a repair republishes is
+counted once, when the client first accepted it, so a job recovering from a missing topic — or from
+an ordering key the failure handler dropped a message from — does not report itself as a busier
+one. Every connector in this repository counts the same way,
 whether its retries live in the sink or inside the SDK, so the number is comparable across them. The
 consequence to know: `numBytesSend` is payload volume rather than wire volume — a record republished
 three times moved three times its size across the network. Retry volume is what
