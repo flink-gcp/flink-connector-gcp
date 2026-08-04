@@ -9,7 +9,12 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   Storage Write API connection multiplexing is delegated to the client SDK connection pool
   (`setEnableConnectionPool`); no self-built keyed writer pool. The serializer SPI is an abstract
   class (`BigQueryProtoSerializer`) with `getDescriptor(TableDestination)` + `ByteString`
-  rows — not a functional interface (descriptors are not Java-serializable)
+  rows — not a functional interface (descriptors are not Java-serializable). `serialize` returning
+  null skips the record, in all three writers (#230; the root `CLAUDE.md` carries the contract and
+  its three implementation rules) — which does **not** loosen the eager-derivation rule below. A
+  schema problem must still not surface from `serialize()`, and returning null instead of throwing
+  would hide it *better* than the trap that rule exists for: a skip is not routed anywhere, so it
+  is invisible outside `numRecordsSkipped`
 - **BigQuery error handling** (#13; SPI extracted to the base module by #37/#205): the row-level
   failure policy is the shared `FailureHandler<FailedRow>` from `base.failure` — fail-job
   (default), log-and-drop, DLQ routing — and the base module's CLAUDE.md owns the lifecycle

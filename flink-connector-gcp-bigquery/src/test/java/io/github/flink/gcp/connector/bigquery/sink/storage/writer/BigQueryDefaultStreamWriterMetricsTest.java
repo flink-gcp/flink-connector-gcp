@@ -133,6 +133,26 @@ class BigQueryDefaultStreamWriterMetricsTest {
     }
 
     @Test
+    void skipsRecordsTheSerializerReturnsNullFor() throws Exception {
+        // Each record resolves to its own table, so a skip that opened a stream — or created a
+        // table — for the destination it would have gone to shows up as a second open destination.
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(new SkippingSerializer(), null, (e, context) -> destination(e));
+
+        writer.write("skip-me", CONTEXT);
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        // Skipped, not failed: appended nowhere, and never offered to the handler.
+        assertThat(factory.allAppendedRows()).containsExactly("aa");
+        assertThat(handler.rows).isEmpty();
+        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(1);
+        assertThat(counter("numRecordsSend")).isEqualTo(1);
+        assertThat(counter("numRecordsSendErrors")).isZero();
+        assertThat(counter(DefaultStreamWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+    }
+
+    @Test
     void countsNothingAsSentWhenTheClientRejectsTheAppendSynchronously() throws Exception {
         factory.throwOnAppend = true;
         BigQueryDefaultStreamWriter<String> writer = writer();
@@ -496,6 +516,16 @@ class BigQueryDefaultStreamWriterMetricsTest {
         @Override
         public ByteString serialize(String element) throws IOException {
             throw new IOException("cannot serialize " + element);
+        }
+    }
+
+    /** Serializer skipping the record {@code skip-me} and writing every other one. */
+    private static final class SkippingSerializer extends StringSerializer {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public ByteString serialize(String element) throws IOException {
+            return element.equals("skip-me") ? null : super.serialize(element);
         }
     }
 

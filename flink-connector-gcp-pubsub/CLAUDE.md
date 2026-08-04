@@ -68,7 +68,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `TOPIC_NOT_FOUND` → `CANCELLATION` → `MESSAGE_LEVEL` → `FATAL`, each walking the cause chain;
   the order is pinned by test, because a chain can carry both a cancellation and a status.
   **Exactly two failures are routed, and the boundary is the decision**: a record the serializer
-  rejects, and a publish rejected `INVALID_ARGUMENT`. Not routed, in two directions and for two
+  rejects, and a publish rejected `INVALID_ARGUMENT`. A record the serializer *skips* by returning
+  null is in neither class (#230): it is not a failure, no publisher is even opened for it — the
+  check sits ahead of `stateFor(...)` — and `numRecordsSkipped` is the only thing that reports it.
+  `MetadataSerializationSchema` propagates a skip unchanged and calls neither extractor for it, so
+  the writer's check stays the single decision point; `dataOnly(...)` and the table layer's
+  `RowDataSerializationSchema` cannot skip at all, because Flink's `SerializationSchema` contract
+  has no null in it and reading one as a skip would silently drop every record a format failed on.
+  The root `CLAUDE.md` carries the whole contract. Not routed, in two directions and for two
   different reasons — outage-shaped failures (an unavailable service, an exhausted SDK retry
   budget) must never reach a dropping handler, or an incident bleeds the stream one message at a
   time rather than backpressuring; and configuration-shaped failures (a `DestinationResolver`

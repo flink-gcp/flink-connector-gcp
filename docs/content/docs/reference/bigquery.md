@@ -34,7 +34,7 @@ section; the three forms of the Default column are explained
 | `writeMethod` | `STORAGE_API_AT_LEAST_ONCE` | Which write path the sink dispatches to at graph construction |
 | `destination` | **required**, unless `destinationResolver` is set | Writes every record to one fixed table |
 | `destinationResolver` | — | Resolves the table per record. Rejected under `STORAGE_API_EXACTLY_ONCE` |
-| `serializer` | **required** | Converts each record into the protobuf row the Storage Write API accepts |
+| `serializer` | **required** | Converts each record into the protobuf row the Storage Write API accepts, or into `null` to skip it |
 | `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing destination table is created or fails the job |
 | `tableCreateOptions` | plain tables | [Creation settings](#tablecreateoptions) for every table the sink creates |
 | `tableCreateOptionsProvider` | — | The same, resolved per destination. Overrides `tableCreateOptions` |

@@ -48,10 +48,10 @@ import java.io.Serializable;
  * the timestamp from the record — the event time, or {@code context.timestamp()} — is what makes a
  * replay idempotent.
  *
- * <p>Returning {@code null} skips the record: it is written nowhere and is not a failure. The
- * signature and that convention are taken from the {@code BaseRowMutationSerializer} of
- * google/flink-connector-gcp, so a serializer written against that connector ports by changing the
- * interface name.
+ * <p>Returning {@code null} skips the record: it is written nowhere and is not a failure. Every
+ * serializer of this connector family reads {@code null} that way, and so does the {@code
+ * BaseRowMutationSerializer} of google/flink-connector-gcp, whose signature this one shares — a
+ * serializer written against that connector ports by changing the interface name.
  *
  * @param <T> type of the records written by the sink
  */

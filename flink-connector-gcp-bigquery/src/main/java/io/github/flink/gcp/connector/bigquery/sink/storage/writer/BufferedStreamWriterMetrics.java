@@ -53,11 +53,13 @@ final class BufferedStreamWriterMetrics {
 
     static final String IN_FLIGHT_APPENDS = "inFlightAppends";
     static final String APPEND_RETRIES = "appendRetries";
+    static final String NUM_RECORDS_SKIPPED = "numRecordsSkipped";
 
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
+    private final Counter numRecordsSkipped;
     private final Counter appendRetries;
     private final ErrorClassCounters errorClasses;
 
@@ -71,6 +73,7 @@ final class BufferedStreamWriterMetrics {
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
+        this.numRecordsSkipped = metricGroup.counter(NUM_RECORDS_SKIPPED);
         this.appendRetries = metricGroup.counter(APPEND_RETRIES);
         this.errorClasses = new ErrorClassCounters(metricGroup);
     }
@@ -101,6 +104,18 @@ final class BufferedStreamWriterMetrics {
      */
     void rowFailed() {
         numRecordsSendErrors.inc();
+    }
+
+    /**
+     * Counts one record the serializer skipped by returning {@code null}.
+     *
+     * <p>Named after the record rather than the row, unlike its siblings here: a skipped record
+     * never became one. It is neither a send nor a failure, and nothing else in the writer reports
+     * it — without this counter a serializer skipping every record is indistinguishable from a
+     * stream that carried none, which is the one way the skip contract can hide a bug.
+     */
+    void recordSkipped() {
+        numRecordsSkipped.inc();
     }
 
     /** Counts one append re-issued while recovering. */

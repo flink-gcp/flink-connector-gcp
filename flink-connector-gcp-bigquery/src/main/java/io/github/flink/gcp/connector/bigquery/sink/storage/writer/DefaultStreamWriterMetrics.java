@@ -55,11 +55,13 @@ final class DefaultStreamWriterMetrics {
     static final String APPEND_RETRIES = "appendRetries";
     static final String TABLES_CREATED = "tablesCreated";
     static final String SCHEMA_RECONCILIATIONS = "schemaReconciliations";
+    static final String NUM_RECORDS_SKIPPED = "numRecordsSkipped";
 
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
+    private final Counter numRecordsSkipped;
     private final Counter appendRetries;
     private final Counter tablesCreated;
     private final Counter schemaReconciliations;
@@ -78,6 +80,7 @@ final class DefaultStreamWriterMetrics {
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
+        this.numRecordsSkipped = metricGroup.counter(NUM_RECORDS_SKIPPED);
         this.appendRetries = metricGroup.counter(APPEND_RETRIES);
         this.tablesCreated = metricGroup.counter(TABLES_CREATED);
         this.schemaReconciliations = metricGroup.counter(SCHEMA_RECONCILIATIONS);
@@ -132,6 +135,23 @@ final class DefaultStreamWriterMetrics {
     void rowFailed(DestinationMetrics.Counters table) {
         numRecordsSendErrors.inc();
         table.sendFailed();
+    }
+
+    /**
+     * Counts one record the serializer skipped by returning {@code null}.
+     *
+     * <p>Named after the record rather than the row, unlike its siblings here: a skipped record
+     * never became one. It is neither a send nor a failure, and nothing else in the writer reports
+     * it — without this counter a serializer skipping every record is indistinguishable from a
+     * stream that carried none, which is the one way the skip contract can hide a bug.
+     *
+     * <p>Takes no {@link DestinationMetrics.Counters}, so it is not broken down per table even when
+     * {@code perDestinationMetrics} is set: the serializer is handed the record alone, so its
+     * decision cannot depend on the destination, and attributing a skip to the table the record
+     * would have gone to would read as a property of that table.
+     */
+    void recordSkipped() {
+        numRecordsSkipped.inc();
     }
 
     /** Counts one append re-issued while repairing a destination. */

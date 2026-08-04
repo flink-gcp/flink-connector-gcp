@@ -79,8 +79,9 @@ import java.util.function.LongSupplier;
  * and appended asynchronously; backpressure is provided by the stream writer's own in-flight
  * limits. {@link #flush(boolean)} appends all pending batches and awaits every in-flight append,
  * inspecting each response directly, so records never pass a checkpoint barrier unacknowledged —
- * this is what makes the sink at-least-once. Asynchronous append failures are additionally captured
- * by completion callbacks and handled on the next {@link #write} or {@link #flush} call.
+ * this is what makes the sink at-least-once. Records the serializer skips by returning {@code null}
+ * are written nowhere and so are outside that claim. Asynchronous append failures are additionally
+ * captured by completion callbacks and handled on the next {@link #write} or {@link #flush} call.
  *
  * <p>The writer is <em>stateless</em>: it stores nothing in Flink state, so discarding operator
  * state can never lose sink-buffered data (the {@code AsyncSinkWriter}-style alternative of
@@ -90,8 +91,8 @@ import java.util.function.LongSupplier;
  *
  * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
  * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every row up to the barrier was
- * either acknowledged by BigQuery or handed to the {@link FailureHandler}; the append-failure
- * routing below says which failures reach it.
+ * either acknowledged by BigQuery, skipped by the serializer, or handed to the {@link
+ * FailureHandler}; the append-failure routing below says which failures reach it.
  *
  * <p>Append failures are routed by {@link AppendErrorClassifier} on the task thread. Transient
  * failures that surface past the SDK's own in-stream retries — and failures reporting the stream
@@ -429,6 +430,13 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                             null,
                             "Failed to serialize a record for " + destination + ": " + e,
                             e));
+            return;
+        }
+        if (row == null) {
+            // Skip by contract, not a failure. Like a rejected record it costs no per-destination
+            // state. Counted, because nothing else reports it: a serializer skipping every record
+            // leaves an empty table under a green job.
+            metrics.recordSkipped();
             return;
         }
         if (row.size() > MAX_ROW_BYTES) {

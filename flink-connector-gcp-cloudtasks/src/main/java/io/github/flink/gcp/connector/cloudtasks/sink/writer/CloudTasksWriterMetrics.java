@@ -49,11 +49,13 @@ final class CloudTasksWriterMetrics {
     static final String IN_FLIGHT_TASKS = "inFlightTasks";
     static final String PARKED_TASKS = "parkedTasks";
     static final String TASKS_DEDUPLICATED = "tasksDeduplicated";
+    static final String NUM_RECORDS_SKIPPED = "numRecordsSkipped";
 
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
+    private final Counter numRecordsSkipped;
     private final Counter tasksDeduplicated;
     private final ErrorClassCounters errorClasses;
     private final DestinationMetrics destinations;
@@ -70,6 +72,7 @@ final class CloudTasksWriterMetrics {
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
+        this.numRecordsSkipped = metricGroup.counter(NUM_RECORDS_SKIPPED);
         this.tasksDeduplicated = metricGroup.counter(TASKS_DEDUPLICATED);
         this.errorClasses = new ErrorClassCounters(metricGroup);
         this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics);
@@ -120,6 +123,23 @@ final class CloudTasksWriterMetrics {
     void taskFailed(DestinationMetrics.Counters queue) {
         numRecordsSendErrors.inc();
         queue.sendFailed();
+    }
+
+    /**
+     * Counts one record the serializer skipped by returning {@code null}.
+     *
+     * <p>Named after the record rather than the task, unlike its siblings here: a skipped record
+     * never became one. It is neither a send nor a failure, and nothing else in the writer reports
+     * it — without this counter a serializer skipping every record is indistinguishable from a
+     * stream that carried none, which is the one way the skip contract can hide a bug.
+     *
+     * <p>Takes no {@link DestinationMetrics.Counters}, so it is not broken down per queue even when
+     * {@code perDestinationMetrics} is set: the serializer is handed the record alone, so its
+     * decision cannot depend on the destination, and attributing a skip to the queue the record
+     * would have gone to would read as a property of that queue.
+     */
+    void recordSkipped() {
+        numRecordsSkipped.inc();
     }
 
     /**

@@ -59,7 +59,9 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   configuration-shaped ones (a resolver returning null, a serializer returning an already-named
   task, an extractor returning null or an empty key) fail *every* record alike, so dropping them
   would leave an empty queue under a green job. The extractor is the pair worth not re-litigating —
-  a throw is per-record and routed, a missing key is per-stream and fatal. `ALREADY_EXISTS` on a
+  a throw is per-record and routed, a missing key is per-stream and fatal. A serializer returning
+  **null** is in neither class: since #230 that is a skip, counted by `numRecordsSkipped` and never
+  offered to the handler. `ALREADY_EXISTS` on a
   named task stays success and never reaches the handler. **Classification is a precedence over the
   whole cause chain, not a first-match** — but **only the transient half**: routing takes
   `firstMatching(throwable, TRANSIENT_CODES) == null && code == INVALID_ARGUMENT`, where `code` is

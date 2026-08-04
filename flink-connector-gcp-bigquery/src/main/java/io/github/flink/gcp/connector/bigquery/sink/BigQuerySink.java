@@ -35,7 +35,8 @@ import org.apache.flink.annotation.PublicEvolving;
  *
  * <p>Those semantics assume the default {@code FailureHandler.failJob()} policy. Under a dropping
  * policy configured through {@link BigQuerySinkBuilder#failedRowHandler}, they cover every row
- * except those handed to that handler, which are never written at all.
+ * except those handed to that handler, which are never written at all. A record the serializer
+ * skips by returning {@code null} is written nowhere either, under any policy.
  *
  * <p>Write methods that are not implemented yet are rejected by {@link BigQuerySinkBuilder#build()}
  * with an {@link UnsupportedOperationException}.

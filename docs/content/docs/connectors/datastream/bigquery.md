@@ -53,6 +53,14 @@ API notes:
   of a destination (table auto-creation, write-stream and load-job schemas). Protobuf
   `Descriptor`s are not Java-serializable — obtain them statically or lazily, don't store them in
   instance fields.
+- `serialize` returning `null` **skips** the record — it is written nowhere, is not a failure, and
+  never reaches the failed-row handler — which is how a filter that depends on the row being built
+  belongs in the serializer rather than upstream of the sink. Every serializer in this connector
+  family reads `null` that way, and all three write methods honour it. A skip is counted by
+  [`numRecordsSkipped`](#metrics), the only thing that reports it: a serializer skipping every
+  record would otherwise leave an empty table under a green job. The destination is resolved
+  *before* the serializer runs, so a record the serializer would skip still needs a resolvable
+  table — resolver failures are configuration errors and propagate.
 - `DestinationResolver.resolve(element, context)` receives the writer context (event timestamp,
   watermark) so time-based routing such as daily tables is expressible. Resolvers run per record:
   cache and reuse `TableDestination` instances.
@@ -783,7 +791,8 @@ The `STORAGE_API_AT_LEAST_ONCE` writer is **stateless by design**: rows are appe
 asynchronously as batches fill, and on **every checkpoint** Flink invokes the writer's `flush()`
 (before the barrier is emitted), which appends all pending batches and awaits every in-flight
 append with direct response inspection. A successful checkpoint therefore means *all* records up
-to the barrier are acknowledged by BigQuery, and the writer stores nothing in Flink state —
+to the barrier are acknowledged by BigQuery — other than those the serializer skipped by returning
+`null`, which are written nowhere by design — and the writer stores nothing in Flink state —
 **discarding operator state (savepoint-less redeploys, state resets) can never lose
 sink-buffered data**. This is a deliberate decision: the alternative `AsyncSinkWriter`-style
 model persists unflushed buffers into writer state instead of flushing at the barrier, which
@@ -791,7 +800,7 @@ silently loses those buffers whenever state is dropped.
 
 That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
 `sendToDeadLetterQueue(...)` a successful checkpoint means every row up to the barrier was
-either acknowledged by BigQuery or handed to the failure policy — see
+either acknowledged by BigQuery, skipped by the serializer, or handed to the failure policy — see
 [Error handling](#error-handling) for which failures reach it.
 
 Checkpointing must be enabled for the at-least-once guarantee in streaming jobs: without it,
@@ -847,7 +856,8 @@ That contract assumes the default `FailureHandler.failJob()` policy, as the
 [loss-path table](#delivery-guarantees-and-state) records. Under `logAndDrop()` or
 `sendToDeadLetterQueue(...)` the commit makes every row up to the barrier visible except those
 handed to the failure policy, which are never appended and so never become visible at all — see
-[Error handling](#error-handling).
+[Error handling](#error-handling). A record the serializer skipped is never appended either, under
+any policy.
 
 ```java
 Sink<MyEvent> sink =
@@ -1143,6 +1153,10 @@ Append failures are classified on the task thread and routed by class:
 | Terminal | `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `NOT_FOUND` under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
 | Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured failure handler; surviving rows of the batch are re-appended. A row-detailed error whose own status code is transient is classified transient, not row-level: outage-shaped failures never reach the handler |
 
+A record the serializer *skips* by returning `null` is in none of those classes: it is not a
+failure, so it never reaches the handler and is counted by [`numRecordsSkipped`](#metrics) rather
+than `numRecordsSendErrors`.
+
 The failed-row policy is pluggable via `failedRowHandler(...)`, taking the shared
 `FailureHandler<FailedRow>` SPI from `flink-connector-gcp-base`
 ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the connectors in this
@@ -1247,6 +1261,7 @@ same thing in each.
 | `numRecordsSend` | counter (Flink standard) | rows handed to the client library in an append |
 | `numBytesSend` | counter (Flink standard) | their serialized row bytes |
 | `numRecordsSendErrors` | counter (Flink standard) | rows routed to the failed-row handler |
+| `numRecordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
 | `inFlightBatches` | gauge | appends the service has not answered |
 | `openDestinations` | gauge | destinations holding a live stream writer, after eviction |
 | `appendRetries` | counter | appends re-issued while repairing a destination |
@@ -1256,10 +1271,11 @@ same thing in each.
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
 
 **`STORAGE_API_EXACTLY_ONCE`** (buffered stream) reports `numRecordsSend`, `numBytesSend`,
-`numRecordsSendErrors`, `appendRetries` and `errorClass.CODE.errors` with the same meanings, plus
-`inFlightAppends` (appends the service has not acknowledged). It has no `openDestinations`,
-`tablesCreated`, `schemaReconciliations` or per-destination counters: this write method takes one
-fixed destination whose schema is pinned when the stream is created, so each would be a constant.
+`numRecordsSendErrors`, `numRecordsSkipped`, `appendRetries` and `errorClass.CODE.errors` with the
+same meanings, plus `inFlightAppends` (appends the service has not acknowledged). It has no
+`openDestinations`, `tablesCreated`, `schemaReconciliations` or per-destination counters: this write
+method takes one fixed destination whose schema is pinned when the stream is created, so each would
+be a constant.
 
 **`FILE_LOADS`**:
 
@@ -1268,13 +1284,14 @@ fixed destination whose schema is pinned when the stream is created, so each wou
 | `numRecordsSend` | counter (Flink standard) | records written to a staging file |
 | `numBytesSend` | counter (Flink standard) | bytes of the staging files finished so far |
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-row handler |
+| `numRecordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
 | `openDestinations` | gauge | destinations holding conversion state |
 | `stagedFiles` | counter | staging files finished (rolled at 1.5 GiB, and at every commit) |
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
 
 There is deliberately **no `errorClass` on the FILE_LOADS writer**: it makes no per-record request,
-so a record either reaches the staging file or is rejected by the serializer or the Avro conversion,
-and neither failure carries a service status. Its `numBytesSend` is also the only one that is not
+so a record either reaches the staging file, is skipped by the serializer, or is rejected by the
+serializer or the Avro conversion, and neither failure carries a service status. Its `numBytesSend` is also the only one that is not
 payload volume — it is what was staged, Avro-encoded and compressed, which is the number that
 predicts what the load job reads. Because a file's encoded size is only known when it is closed,
 that counter advances in file-sized steps and lags `numRecordsSend` by the currently open files.

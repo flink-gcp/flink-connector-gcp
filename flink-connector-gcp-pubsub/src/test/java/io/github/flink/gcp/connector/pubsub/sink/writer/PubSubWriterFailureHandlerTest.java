@@ -239,6 +239,27 @@ class PubSubWriterFailureHandlerTest {
     }
 
     @Test
+    void skipsRecordsTheSerializerReturnsNullFor() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(
+                        element ->
+                                element.equals("topic-a")
+                                        ? null
+                                        : PubsubMessage.newBuilder().build());
+
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-b", CONTEXT);
+
+        // Skipped, not failed: never offered to the handler, and no publisher was opened for the
+        // topic the skipped record would have gone to.
+        assertThat(handler.handled).isEmpty();
+        assertThat(factory.publishers.keySet()).containsExactly(topic("topic-b"));
+        assertThat(metrics.counterValue("numRecordsSend")).isEqualTo(1);
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isZero();
+        assertThat(metrics.counterValue("numRecordsSkipped")).isEqualTo(1);
+    }
+
+    @Test
     void anInvalidArgumentPublishIsRoutedWithItsMessage() throws Exception {
         PubSubWriter<String> writer = newWriter();
         StatusRuntimeException failure = invalidArgument();

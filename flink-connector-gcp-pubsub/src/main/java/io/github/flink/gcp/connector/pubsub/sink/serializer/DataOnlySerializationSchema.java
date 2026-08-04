@@ -23,9 +23,15 @@ import org.apache.flink.util.Preconditions;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 
+import java.io.IOException;
+
 /**
  * A {@link PubSubSerializationSchema} producing messages whose payload is the record serialized by
  * a wrapped Flink {@link SerializationSchema}, with no attributes or ordering key.
+ *
+ * <p>This schema never skips a record. Flink's {@code SerializationSchema} contract has no {@code
+ * null} in it, so a {@code null} payload is reported as a serialization failure — reading it as a
+ * skip would silently drop the records a payload schema failed on.
  *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0).
@@ -49,9 +55,17 @@ final class DataOnlySerializationSchema<T> implements PubSubSerializationSchema<
     }
 
     @Override
-    public PubsubMessage serialize(T element) {
-        return PubsubMessage.newBuilder()
-                .setData(ByteString.copyFrom(schema.serialize(element)))
-                .build();
+    public PubsubMessage serialize(T element) throws IOException {
+        byte[] payload = schema.serialize(element);
+        if (payload == null) {
+            throw new IOException(
+                    "The payload schema "
+                            + schema.getClass().getName()
+                            + " returned null for a record. Flink's SerializationSchema contract"
+                            + " has no null in it, so this is a serialization failure rather than"
+                            + " a skip; implement PubSubSerializationSchema directly to skip a"
+                            + " record.");
+        }
+        return PubsubMessage.newBuilder().setData(ByteString.copyFrom(payload)).build();
     }
 }

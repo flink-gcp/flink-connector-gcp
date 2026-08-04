@@ -141,6 +141,9 @@ class FileLoadsWriterTest {
             if ("runtime-boom".equals(element.name)) {
                 throw new IllegalStateException("unchecked boom");
             }
+            if ("skip-me".equals(element.name)) {
+                return null;
+            }
             if (element.produceGarbageBytes) {
                 // Missing the REQUIRED name field; parsing rejects it.
                 return ByteString.EMPTY;

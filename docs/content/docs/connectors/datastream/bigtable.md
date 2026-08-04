@@ -71,12 +71,14 @@ public interface BigtableSerializationSchema<T> extends Serializable {
 Returning a `RowMutationEntry` rather than a narrower value type is deliberate: it is the client's
 own mutation builder, so `setCell`, `deleteCells`, `deleteFamily` and `deleteRow` are all
 expressible, several of them per record, and the sink adds no vocabulary of its own to learn.
-Returning `null` **skips** the record — it is written nowhere and is not a failure — which is how a
-filter that depends on the mutation being built belongs in the serializer rather than upstream of
-the sink.
+Returning `null` **skips** the record — it is written nowhere, is not a failure, and never reaches
+the failed-mutation handler — which is how a filter that depends on the mutation being built belongs
+in the serializer rather than upstream of the sink. Every serializer in this connector family reads
+`null` that way. A skip is counted by [`numRecordsSkipped`](#metrics), the only thing that reports
+it: a serializer skipping every record would otherwise leave an empty table under a green job.
 
-The signature and the null-means-skip convention are taken from the `BaseRowMutationSerializer` of
-[google/flink-connector-gcp](https://github.com/GoogleCloudPlatform/flink-connector-gcp), so a
+The signature and the null-means-skip convention are shared with the `BaseRowMutationSerializer` of
+[google/flink-connector-gcp](https://github.com/google/flink-connector-gcp), so a
 serializer written against that connector ports by changing the interface name. Its built-in
 `GenericRecord` and `RowData` serializers are deliberately not ported: `RowData` conversion belongs
 to the Table API layer ([#217]({{< param BookRepo >}}/issues/217)), and an Avro convenience is
@@ -110,7 +112,8 @@ their garbage-collection policies, which is exactly the part a sink cannot guess
 **At-least-once.** The writer is stateless — it stores nothing in Flink state — and `flush()` runs
 at every checkpoint barrier: it sends what the client has buffered and then waits until every
 outstanding mutation has been acknowledged. So a completed checkpoint means Bigtable has applied
-every record up to the barrier, and discarding operator state can never lose sink-buffered records.
+every record up to the barrier — other than those the [serializer skipped](#api-notes), which are
+written nowhere by design — and discarding operator state can never lose sink-buffered records.
 
 That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
 `sendToDeadLetterQueue(...)` a completed checkpoint means every record up to the barrier was either
@@ -240,6 +243,9 @@ checkpoint barrier.
 ### Failed-mutation policy
 
 Two data-shaped failures are pluggable: a record the serializer rejects, and a row-level rejection.
+A record the serializer *skips* by returning `null` is neither: it is not a failure, so it never
+reaches the handler and is counted by [`numRecordsSkipped`](#metrics) rather than
+`numRecordsSendErrors`.
 The policy is `failedMutationHandler(...)`, taking the shared `FailureHandler<FailedMutation>` SPI
 from `flink-connector-gcp-base` ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the
 connectors in this repository):
@@ -280,6 +286,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `numRecordsSend` | counter (Flink standard) | records handed to the client library for application |
 | `numBytesSend` | counter (Flink standard) | their serialized size |
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-mutation handler |
+| `numRecordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed |
 | `inFlightMutations` | gauge | mutations the service has not acknowledged, against `maxInFlightMutations` |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
 | `errorClass.CODE.errors` | counter | failed mutations by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
@@ -400,8 +407,8 @@ asserts no rejection except in the class that exists to record these differences
 ## Provenance and attribution
 
 No code is copied from any other project. The serializer's shape — the `RowMutationEntry` return
-type and null-means-skip — is adopted from
-[google/flink-connector-gcp](https://github.com/GoogleCloudPlatform/flink-connector-gcp)
+type and null-means-skip — is shared with
+[google/flink-connector-gcp](https://github.com/google/flink-connector-gcp)
 (Apache-2.0) so its users migrate mechanically, and Apache Beam's `BigtableIO` (Apache-2.0) was read
 as a design reference for how a runner drives the bulk mutation batcher. Depending on the former, or
 vendoring it, was evaluated and rejected on

@@ -111,6 +111,49 @@ class MetadataSerializationSchemaTest {
     }
 
     @Test
+    void passesASkipThroughWhateverTheExtractorsWouldHaveAdded() throws Exception {
+        // Both branches are asserted because only one of them rebuilds the message: an extraction
+        // that fires is the branch a missing propagation dereferences, and one that does not fire
+        // reaches the same return by another route. A skip must not depend on which.
+        PubSubSerializationSchema<String> skipping = element -> null;
+
+        assertThat(skipping.withAttributes(element -> Map.of("source", element)).serialize("hello"))
+                .isNull();
+        assertThat(skipping.withOrderingKey(element -> "key-" + element).serialize("hello"))
+                .isNull();
+        assertThat(skipping.withAttributes(element -> null).serialize("hello")).isNull();
+        assertThat(skipping.withOrderingKey(element -> null).serialize("hello")).isNull();
+        assertThat(
+                        skipping.withAttributes(element -> Map.of("source", element))
+                                .withOrderingKey(element -> "key-" + element)
+                                .serialize("hello"))
+                .isNull();
+    }
+
+    @Test
+    void doesNotCallTheExtractorsForASkippedRecord() throws Exception {
+        // Not merely an optimisation: an extractor is user code, and running it for a record the
+        // sink is not going to send would surface its failures as failures of that record.
+        int[] calls = new int[2];
+        PubSubSerializationSchema<String> schema =
+                ((PubSubSerializationSchema<String>) element -> null)
+                        .withAttributes(
+                                element -> {
+                                    calls[0]++;
+                                    return Map.of("source", element);
+                                })
+                        .withOrderingKey(
+                                element -> {
+                                    calls[1]++;
+                                    return "key";
+                                });
+
+        assertThat(schema.serialize("hello")).isNull();
+
+        assertThat(calls).containsExactly(0, 0);
+    }
+
+    @Test
     void rejectsNullAttributeEntriesWithAClearMessage() {
         Map<String, String> attributes = new HashMap<>();
         attributes.put("valid", null);

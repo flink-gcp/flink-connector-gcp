@@ -35,6 +35,9 @@ import java.util.Map;
  * chained compositions nest wrappers (one message rebuild per layer), the outermost layer winning
  * for the ordering key and same-named attributes.
  *
+ * <p>A {@code null} from the wrapped schema — the skip of {@link
+ * PubSubSerializationSchema#serialize} — is returned unchanged, with no extractor called.
+ *
  * @param <T> type of the records written by the sink
  */
 @Internal
@@ -60,9 +63,18 @@ final class MetadataSerializationSchema<T> implements PubSubSerializationSchema<
         inner.open(context);
     }
 
+    @Nullable
     @Override
     public PubsubMessage serialize(T element) throws IOException {
         PubsubMessage message = inner.serialize(element);
+        if (message == null) {
+            // A skip passes through unchanged: there is nothing to layer metadata onto, and the
+            // writer's check is the one place a record's fate is decided. Without this the
+            // extractors would still run and the message be rebuilt, turning a skip into a
+            // NullPointerException the writer routes to the failure handler — for the records an
+            // extractor happened to fire on, and not for the others.
+            return null;
+        }
         PubsubMessage.Builder builder = null;
         if (attributesExtractor != null) {
             Map<String, String> attributes = attributesExtractor.extractAttributes(element);

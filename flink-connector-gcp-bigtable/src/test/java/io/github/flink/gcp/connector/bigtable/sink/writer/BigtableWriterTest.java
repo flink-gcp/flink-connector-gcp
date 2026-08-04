@@ -74,15 +74,23 @@ class BigtableWriterTest {
 
     @Test
     void skipsRecordsTheSerializerReturnsNullFor() throws Exception {
+        // Under failJob(), the policy that turns anything reaching the handler into a thrown
+        // IOException — so this pins "a skip is not a failure" more strongly than an assertion
+        // about a recording handler could.
         SinkWriter<String> writer =
-                writer(BigtableWriterOptions.defaults(), (element, context) -> null, failJob());
+                writer(
+                        BigtableWriterOptions.defaults(),
+                        (element, context) -> element.equals("skip-me") ? null : entry(element),
+                        failJob());
 
+        writer.write("skip-me", TestContexts.NO_OP);
         writer.write("row-1", TestContexts.NO_OP);
 
-        // Skipped, not failed and not counted: nothing was sent anywhere.
-        assertThat(batcher.entries).isEmpty();
-        assertThat(metricGroup.counterValue("numRecordsSend")).isZero();
-        assertThat(inFlight(writer)).isZero();
+        // Written nowhere, and holding nothing: only the record that became a mutation is in
+        // flight, and only its bytes are.
+        assertThat(batcher.entries).hasSize(1);
+        assertThat(inFlight(writer)).isEqualTo(1);
+        assertThat(inFlightBytes(writer)).isEqualTo(serializedSize("row-1"));
     }
 
     @Test

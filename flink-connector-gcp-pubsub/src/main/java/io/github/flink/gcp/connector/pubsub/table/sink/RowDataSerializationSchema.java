@@ -75,6 +75,14 @@ final class RowDataSerializationSchema implements PubSubSerializationSchema<RowD
     @Override
     public PubsubMessage serialize(RowData element) throws IOException {
         byte[] data = physical.serialize(metadata.length == 0 ? element : projected(element));
+        if (data == null) {
+            throw new IOException(
+                    "The format "
+                            + physical.getClass().getName()
+                            + " returned null for a row. Flink's SerializationSchema contract has"
+                            + " no null in it, so this is a serialization failure rather than the"
+                            + " sink's skip-the-record convention, which SQL cannot express.");
+        }
         PubsubMessage.Builder builder =
                 PubsubMessage.newBuilder().setData(ByteString.copyFrom(data));
         for (int i = 0; i < metadata.length; i++) {

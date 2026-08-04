@@ -67,7 +67,8 @@ import java.util.concurrent.ExecutionException;
  * <p>That contract assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
  * {@code sendToDeadLetterQueue(...)} a completed checkpoint's commit makes every row up to the
  * barrier visible except those handed to the {@link FailureHandler}, which are never appended and
- * so never become visible at all; the error handling below says which failures reach it.
+ * so never become visible at all; the error handling below says which failures reach it. A record
+ * the serializer skips by returning {@code null} is never appended either, under any policy.
  *
  * <p><b>Stream lifecycle.</b> Each subtask owns one buffered stream, created lazily on the first
  * append and <em>reused across checkpoints</em> (frequent {@code CreateWriteStream} churn is
@@ -222,6 +223,13 @@ public class BigQueryBufferedStreamWriter<T>
                             null,
                             "Failed to serialize a record for " + destination + ": " + e,
                             e));
+            return;
+        }
+        if (row == null) {
+            // Skip by contract, not a failure. Like a rejected record it creates no stream.
+            // Counted, because nothing else reports it: a serializer skipping every record leaves
+            // an empty table under a green job.
+            metrics.recordSkipped();
             return;
         }
         if (row.size() > BigQueryDefaultStreamWriter.MAX_ROW_BYTES) {

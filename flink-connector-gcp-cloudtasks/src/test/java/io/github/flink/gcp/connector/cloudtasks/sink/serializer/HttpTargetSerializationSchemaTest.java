@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink.serializer;
 
+import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
 import com.google.cloud.tasks.v2.HttpMethod;
@@ -23,6 +24,7 @@ import com.google.cloud.tasks.v2.HttpRequest;
 import com.google.cloud.tasks.v2.Task;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -118,6 +120,20 @@ class HttpTargetSerializationSchemaTest {
     }
 
     @Test
+    void reportsANullBodyAsAFailureRatherThanASkip() {
+        // Flink's SerializationSchema contract has no null in it, so a null body is a broken
+        // format, not the sink's skip convention — reading it as a skip would silently drop every
+        // record such a format failed on.
+        CloudTasksSerializationSchema<String> schema =
+                CloudTasksSerializationSchema.httpTarget(URL).withBody(new NullReturningSchema());
+
+        assertThatThrownBy(() -> schema.serialize("order-1"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(NullReturningSchema.class.getName())
+                .hasMessageContaining("returned null");
+    }
+
+    @Test
     void resolvesTheUrlPerRecord() throws Exception {
         HttpTargetSerializationSchema<String> schema =
                 schema().withUrl(element -> URL + "/" + element);
@@ -196,5 +212,16 @@ class HttpTargetSerializationSchemaTest {
 
     private static HttpTargetSerializationSchema<String> schema() {
         return CloudTasksSerializationSchema.httpTarget(URL).withBody(new SimpleStringSchema());
+    }
+
+    /** A body schema breaking Flink's contract by returning no bytes. */
+    private static final class NullReturningSchema implements SerializationSchema<String> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public byte[] serialize(String element) {
+            return null;
+        }
     }
 }

@@ -679,3 +679,47 @@ are the trigger; they are not a summary, and none of them is safe to answer from
 
 Decisions that span connectors stay here: the package layout convention above, the version policy
 and the licensing rules. A new connector gets its own module file rather than a section here.
+
+## A serializer returning `null` skips the record (#230)
+
+Every serialization SPI in this repository — `BigtableSerializationSchema`,
+`CloudTasksSerializationSchema`, `PubSubSerializationSchema`, `BigQueryProtoSerializer` — is
+`@Nullable` on `serialize`, and every one of the six writers checks it: the record is written
+nowhere, is **not** a failure, and never reaches the `FailureHandler`. Decided with the user rather
+than the alternative the issue also offered (reject `null` with a named message): a user may
+legitimately return `null` to filter, and that is what Flink's own `KafkaWriter` does
+(`@Nullable ProducerRecord`, skipped silently) and what `google/flink-connector-gcp`'s
+`BaseRowMutationSerializer` does — Bigtable already shipped it here for that reason. What that
+argument does **not** rest on is Kafka's javadoc, which reads *"or null if the given element cannot
+be serialized"*: that is `null` overloaded to mean *failure*, silently dropped, and #37 replaced it
+here with a real failure channel. So `null` means filter, and only filter.
+
+Three rules the implementation turns on, none of them re-derivable from the contract alone:
+
+- **The check goes immediately after the serializer's `catch`, ahead of any per-destination
+  state.** `PubSubWriter.stateFor(...)` opens a publisher and `FileLoadsWriter.stateFor(...)` opens
+  a staging file, so a record written nowhere must not reach either. The three BigQuery writers
+  already serialized before creating a stream or auto-creating a table, for the sibling reason
+  their comments give.
+- **A combinator over one of our own SPIs propagates the `null` unchanged, so the writer's check is
+  the single decision point.** `MetadataSerializationSchema` is the case that made this a bug
+  rather than a tidiness point: it used to pass the `null` through when no extractor fired and NPE
+  on `message.toBuilder()` when one did, so *one* skipping serializer became a dead letter for some
+  records of a stream and a silent skip for the rest, depending on the record. Its extractors are
+  not called for a skipped record either — they are user code, and running them for a record the
+  sink will not send would surface their failures as failures of that record.
+- **A `null` from a wrapped Flink `SerializationSchema` is a serialization failure, not a skip** —
+  `DataOnlySerializationSchema`, `HttpTargetSerializationSchema.withBody(...)`,
+  `table.sink.RowDataSerializationSchema`. That SPI's contract has no `null` in it (checked against
+  `apache/flink` master: `@return The serialized element`), so reading one as a skip would silently
+  drop every record a format failed on. Each throws an `IOException` naming the wrapped class and
+  pointing at the SPI-level skip; the routing is unchanged, the message is what is new. The Table
+  API layer therefore cannot skip at all, which is correct — SQL has no way to express it.
+
+`numRecordsSkipped` is registered by all six writer metrics classes and is the **only** thing that
+reports a skip. That is the honest cost of the contract: a serializer skipping every record leaves
+an empty destination under a green job, which no failure counter sees — the #206 exposure in
+another shape, and the reason the counter is not optional. It is deliberately **not** broken down
+per destination even where `perDestinationMetrics` is on: the serializer is handed the record
+alone, so its decision cannot depend on the destination, and `destination.X.skipped` would read as
+a property of X.

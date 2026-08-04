@@ -62,7 +62,10 @@ class BigQueryBufferedStreamWriterTest {
 
     static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
-    /** Serializer writing the record string bytes; descriptor is irrelevant for the fake. */
+    /**
+     * Serializer writing the record string bytes; descriptor is irrelevant for the fake. Records
+     * starting with {@code poison} fail, those starting with {@code skip} are skipped.
+     */
     static class StringSerializer extends BigQueryProtoSerializer<String> {
         private static final long serialVersionUID = 1L;
 
@@ -87,6 +90,9 @@ class BigQueryBufferedStreamWriterTest {
         public ByteString serialize(String element) {
             if (element.startsWith("poison")) {
                 throw new IllegalStateException("cannot serialize " + element);
+            }
+            if (element.startsWith("skip")) {
+                return null;
             }
             return ByteString.copyFromUtf8(element);
         }
