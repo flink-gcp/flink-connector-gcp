@@ -82,12 +82,14 @@ class AvroSchemaRoundTripTest {
                         stagedType("{\"type\":\"int\",\"logicalType\":\"time-millis\"}")
                                 .getLogicalType())
                 .isEqualTo(LogicalTypes.timeMicros());
-        // BigQuery DATETIME has no Avro logical type BigQuery loads accept, so it is staged as a
-        // civil-time string. Losing the annotation here is the documented shape, not a defect.
         assertThat(
                         stagedType("{\"type\":\"long\",\"logicalType\":\"local-timestamp-micros\"}")
-                                .getType())
-                .isEqualTo(Schema.Type.STRING);
+                                .getLogicalType())
+                .isEqualTo(LogicalTypes.localTimestampMicros());
+        assertThat(
+                        stagedType("{\"type\":\"long\",\"logicalType\":\"local-timestamp-millis\"}")
+                                .getLogicalType())
+                .isEqualTo(LogicalTypes.localTimestampMicros());
     }
 
     @Test

@@ -36,7 +36,12 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.ByteBuffer;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.ResolverStyle;
+import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -55,11 +60,11 @@ import java.util.Map;
  * per-record conversion is a flat loop over the plan.
  *
  * <p>Value conversions decode the Storage API wire forms: {@code TIME}/{@code DATETIME} packed
- * civil-time longs via {@link CivilTimeEncoder} (a string wire form is passed through for {@code
- * DATETIME} and rejected at plan time for {@code TIME}, which Avro represents as {@code
- * time-micros}), {@code NUMERIC}/{@code BIGNUMERIC} bytes via {@link BigDecimalByteStringEncoder}
- * (a string wire form is parsed as a decimal literal) re-encoded as big-endian Avro decimals, and
- * {@code TIMESTAMP} epoch-micros longs kept as-is.
+ * civil-time longs via {@link CivilTimeEncoder} (a {@code DATETIME} string wire form is parsed as a
+ * BigQuery datetime literal; the {@code TIME} one is rejected at plan time), {@code NUMERIC}/{@code
+ * BIGNUMERIC} bytes via {@link BigDecimalByteStringEncoder} (a string wire form is parsed as a
+ * decimal literal) re-encoded as big-endian Avro decimals, and {@code TIMESTAMP} epoch-micros longs
+ * kept as-is.
  *
  * <p>{@link #convert} throws {@link IOException} for per-row value failures (for example a decimal
  * exceeding the column's scale), mirroring the serializer contract so callers can route the row to
@@ -71,8 +76,50 @@ import java.util.Map;
 @Internal
 public final class ProtoToAvroConverter {
 
-    private static final DateTimeFormatter DATETIME_FORMAT =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+    /**
+     * BigQuery's {@code DATETIME} literal grammar, {@code YYYY-[M]M-[D]D[( |T)[H]H:[M]M:[S]S[.F]]}:
+     * either separator, unpadded month/day/hour, an optional time part. A serializer sending the
+     * string wire form writes for the Storage Write API, whose server parses that grammar, so
+     * accepting less here would make one serializer work under {@code STORAGE_API_*} and fail under
+     * {@code FILE_LOADS}. {@code parseLenient} is what allows the unpadded fields — it makes a
+     * fixed-width {@code appendValue} accept 1 to 19 characters — and it applies to the appended
+     * ISO formatters too, because it is a parse-time setting on the shared context.
+     *
+     * <p>It accepts a superset of that grammar — omitted seconds, a lowercase {@code t}, either
+     * separator written where the other would do, a year of other than four digits, a signed year.
+     * Every one of those has exactly one reading, so accepting it writes the value the author
+     * meant, and that is the whole licence: {@link ResolverStyle#STRICT} is what keeps "accept
+     * more" from becoming "write something else". Appending {@code ISO_LOCAL_DATE} copies its
+     * printer-parser but <b>not</b> its resolver style, and under the {@code SMART} default {@code
+     * 2026-02-30} resolves to the 28th and {@code 24:00:00} rolls into the next day — silently,
+     * where BigQuery answers with an error.
+     */
+    private static final DateTimeFormatter DATETIME_LITERAL =
+            new DateTimeFormatterBuilder()
+                    .parseLenient()
+                    .parseCaseInsensitive()
+                    .append(DateTimeFormatter.ISO_LOCAL_DATE)
+                    .optionalStart()
+                    .optionalStart()
+                    .appendLiteral(' ')
+                    .optionalEnd()
+                    .optionalStart()
+                    .appendLiteral('T')
+                    .optionalEnd()
+                    .append(DateTimeFormatter.ISO_LOCAL_TIME)
+                    .optionalEnd()
+                    // A date-only literal is legal and means midnight; without this the parse
+                    // resolves to a LocalDate and LocalDateTime.from rejects it. One field is
+                    // enough — java.time resolves an hour with no minute or second to LocalTime,
+                    // and ISO_LOCAL_TIME never yields a minute without an hour.
+                    .parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
+                    .toFormatter(Locale.ROOT)
+                    .withResolverStyle(ResolverStyle.STRICT);
+
+    /** BigQuery's documented {@code DATETIME} range, which no column can hold a value outside. */
+    private static final int MIN_YEAR = 1;
+
+    private static final int MAX_YEAR = 9999;
 
     private final RecordPlan plan;
 
@@ -107,8 +154,10 @@ public final class ProtoToAvroConverter {
         BYTES,
         /** Packed civil-time long to micros-of-day. */
         TIME_PACKED,
-        /** Packed civil-time long to a canonical datetime string. */
+        /** Packed civil-time long to micros of the civil epoch. */
         DATETIME_PACKED,
+        /** BigQuery datetime literal to micros of the civil epoch. */
+        DATETIME_STRING,
         /** {@code NUMERIC} bytes or decimal literal string to an Avro decimal. */
         NUMERIC,
         /** {@code BIGNUMERIC} bytes or decimal literal string to an Avro decimal. */
@@ -219,7 +268,7 @@ public final class ProtoToAvroConverter {
                 return Kind.TIME_PACKED;
             case DATETIME:
                 if (wire == Descriptors.FieldDescriptor.JavaType.STRING) {
-                    return Kind.IDENTITY;
+                    return Kind.DATETIME_STRING;
                 }
                 checkWire(wire, Descriptors.FieldDescriptor.JavaType.LONG, path);
                 return Kind.DATETIME_PACKED;
@@ -253,6 +302,34 @@ public final class ProtoToAvroConverter {
                 path,
                 expected,
                 actual);
+    }
+
+    /**
+     * Encodes a civil datetime as {@code local-timestamp-micros}: microseconds from {@code
+     * 1970-01-01T00:00:00}, the civil instant being read at {@link ZoneOffset#UTC} because Avro
+     * fixes that epoch rather than any zone. The inverse of {@code
+     * AvroRowConverter.toLocalDateTime}, which reads the same logical type back.
+     *
+     * <p>A year outside BigQuery's range is rejected rather than staged: the load job is
+     * all-or-nothing, so a value no column can hold would fail the whole job instead of the one row
+     * that carries it. This fires on the literal path only — {@link
+     * CivilTimeEncoder#decodePacked64DatetimeMicrosLocalDateTime} applies the same bound itself, so
+     * the packed path cannot reach it (measured against SDK 3.30.0; the check stays because that is
+     * the SDK's invariant, not ours).
+     */
+    private static long toCivilMicros(LocalDateTime value) {
+        if (value.getYear() < MIN_YEAR || value.getYear() > MAX_YEAR) {
+            throw new IllegalArgumentException(
+                    "year "
+                            + value.getYear()
+                            + " is outside BigQuery's DATETIME range "
+                            + MIN_YEAR
+                            + " to "
+                            + MAX_YEAR);
+        }
+        return Math.addExact(
+                Math.multiplyExact(value.toEpochSecond(ZoneOffset.UTC), 1_000_000L),
+                value.getNano() / 1_000L);
     }
 
     private static void checkDecimalWire(Descriptors.FieldDescriptor.JavaType wire, String path) {
@@ -344,9 +421,11 @@ public final class ProtoToAvroConverter {
                                         .toNanoOfDay()
                                 / 1_000L;
                     case DATETIME_PACKED:
-                        return DATETIME_FORMAT.format(
+                        return toCivilMicros(
                                 CivilTimeEncoder.decodePacked64DatetimeMicrosLocalDateTime(
                                         (Long) value));
+                    case DATETIME_STRING:
+                        return toCivilMicros(LocalDateTime.parse((String) value, DATETIME_LITERAL));
                     case NUMERIC:
                         return toDecimalBytes(
                                 value instanceof ByteString

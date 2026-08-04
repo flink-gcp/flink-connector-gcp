@@ -1116,10 +1116,12 @@ by starting without state).
 staging). A load job itself is all-or-nothing: there is no per-row policy at load time, and a
 failed load fails the Flink job.
 
-**Type mapping.** `TIMESTAMP`/`DATE`/`TIME` use Avro logical types, `DATETIME` travels as a
-canonical civil-time string, `NUMERIC`/`BIGNUMERIC` as Avro decimals (parameterized
-precision/scale respected), `JSON`/`GEOGRAPHY` as strings, `STRUCT`/`REPEATED` nest naturally.
-`INTERVAL` and `RANGE` columns are not supported by this write method.
+**Type mapping.** `TIMESTAMP`/`DATE`/`TIME`/`DATETIME` use Avro logical types
+(`timestamp-micros`, `date`, `time-micros`, `local-timestamp-micros`), `NUMERIC`/`BIGNUMERIC`
+travel as Avro decimals (parameterized precision/scale respected), `JSON`/`GEOGRAPHY` as strings,
+`STRUCT`/`REPEATED` nest naturally. `INTERVAL` and `RANGE` columns are not supported by this write
+method. Every mapping above is covered end to end against the service, described
+[below](#testing).
 
 The integration tests (`BigQueryFileLoadsITCase` for batch, `BigQueryFileLoadsStreamingITCase`
 for checkpoint-triggered streaming loads, `BigQueryFileLoadsSchemaEvolutionITCase` for loads
@@ -1555,7 +1557,10 @@ credential-less CI:
 - load jobs: goccy/bigquery-emulator supports neither `gs://` load jobs nor a Cloud Storage
   endpoint, so the whole `FILE_LOADS` path runs against real services
   (`BigQueryFileLoadsITCase` and `BigQueryFileLoadsStreamingITCase`, env-gated as described
-  [above](#file-loads))
+  [above](#file-loads)). `BigQueryFileLoadsITCase` also carries the staging-format fidelity
+  suite — every column type this write method supports, loaded and read back with typed
+  accessors, which is the only way a staged encoding the service refuses can be caught
+  ([#282]({{< param BookRepo >}}/issues/282))
 - buffered-stream exactly-once semantics: idempotent re-flush, the restore probe, and the
   [issue #30]({{< param BookRepo >}}/issues/30) acceptance criterion — a MiniCluster streaming job
   with an induced mid-run restart showing no duplicates and no gaps — plus a clean streaming run

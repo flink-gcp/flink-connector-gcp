@@ -32,6 +32,7 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,8 +50,14 @@ class ProtoToAvroConverterTest {
         private final ProtoToAvroConverter converter;
 
         Setup(TableSchema schema) throws Descriptors.DescriptorValidationException {
-            this.descriptor =
-                    BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(schema);
+            this(
+                    schema,
+                    BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(schema));
+        }
+
+        /** For the wire forms {@code BQTableSchemaToProtoDescriptor} does not derive. */
+        Setup(TableSchema schema, Descriptors.Descriptor descriptor) {
+            this.descriptor = descriptor;
             this.converter =
                     new ProtoToAvroConverter(
                             schema, descriptor, TableSchemaToAvroConverter.convert(schema));
@@ -72,6 +79,36 @@ class ProtoToAvroConverterTest {
             schema.addFields(f);
         }
         return schema.build();
+    }
+
+    /**
+     * A {@code DATETIME} column whose descriptor field is a proto {@code string}. The two sides are
+     * derived independently — the plan reads the column type from the table schema and the wire
+     * form from the descriptor — so declaring the descriptor's schema {@code STRING} produces
+     * exactly the pairing a hand-written serializer creates.
+     */
+    private static Setup stringDatetimeSetup() throws Descriptors.DescriptorValidationException {
+        return new Setup(
+                schemaOf(
+                        field(
+                                "dtt",
+                                TableFieldSchema.Type.DATETIME,
+                                TableFieldSchema.Mode.NULLABLE)),
+                BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
+                        schemaOf(
+                                field(
+                                        "dtt",
+                                        TableFieldSchema.Type.STRING,
+                                        TableFieldSchema.Mode.NULLABLE))));
+    }
+
+    private static Object convertDatetime(Setup setup, String literal) throws IOException {
+        return setup.converter
+                .convert(
+                        DynamicMessage.newBuilder(setup.descriptor)
+                                .setField(setup.field("dtt"), literal)
+                                .build())
+                .get("dtt");
     }
 
     @Test
@@ -216,7 +253,98 @@ class ProtoToAvroConverterTest {
         assertThat(record.get("ts")).isEqualTo(1_700_000_000_000_000L);
         assertThat(record.get("dt")).isEqualTo(19_000);
         assertThat(record.get("tm")).isEqualTo(time.toNanoOfDay() / 1_000);
-        assertThat(record.get("dtt")).isEqualTo("2024-03-05T06:07:08.000009");
+        // local-timestamp-micros: micros from 1970-01-01T00:00:00, the civil instant read at UTC.
+        assertThat(record.get("dtt"))
+                .isEqualTo(datetime.toEpochSecond(ZoneOffset.UTC) * 1_000_000L + 9L);
+    }
+
+    /**
+     * The other {@code DATETIME} wire form: the Storage Write API takes a datetime literal as well
+     * as a packed civil-time long, so a hand-written serializer may send one, and it reaches the
+     * same {@code local-timestamp-micros} value the packed form does.
+     *
+     * <p>The spellings are BigQuery's documented grammar, {@code YYYY-[M]M-[D]D[(
+     * |T)[H]H:[M]M:[S]S[.F]]} — accepting less would make one serializer work under {@code
+     * STORAGE_API_*} and fail under {@code FILE_LOADS} — plus the three unambiguous readings the
+     * formatter also takes: omitted seconds, a lowercase separator, and a short year.
+     */
+    @Test
+    void parsesTheDatetimeStringWireForm() throws Exception {
+        Setup setup = stringDatetimeSetup();
+        long midnight =
+                LocalDateTime.of(2026, 8, 4, 0, 0).toEpochSecond(ZoneOffset.UTC) * 1_000_000L;
+        long noonish =
+                LocalDateTime.of(2026, 8, 4, 12, 34, 56).toEpochSecond(ZoneOffset.UTC) * 1_000_000L;
+
+        assertThat(convertDatetime(setup, "2026-08-04T12:34:56.123456"))
+                .isEqualTo(noonish + 123_456L);
+        assertThat(convertDatetime(setup, "2026-08-04 12:34:56")).isEqualTo(noonish);
+        assertThat(convertDatetime(setup, "2026-8-4 12:34:56")).isEqualTo(noonish);
+        assertThat(convertDatetime(setup, "2026-08-04T12:34")).isEqualTo(noonish - 56_000_000L);
+        assertThat(convertDatetime(setup, "2026-08-04t12:34:56")).isEqualTo(noonish);
+        assertThat(convertDatetime(setup, "2026-08-04")).isEqualTo(midnight);
+        // Sub-microsecond digits are truncated, as they are on every other path into BigQuery.
+        assertThat(convertDatetime(setup, "2026-08-04T12:34:56.123456789"))
+                .isEqualTo(noonish + 123_456L);
+    }
+
+    /**
+     * The micros are signed, and the two directions have to agree about which way: {@code
+     * LocalDateTime.getNano()} is non-negative even for a negative epoch second, so an
+     * implementation adding a signed sub-second part would be wrong only here.
+     */
+    @Test
+    void convertsDatetimesBeforeTheEpoch() throws Exception {
+        Setup setup = stringDatetimeSetup();
+
+        assertThat(convertDatetime(setup, "1969-12-31T23:59:59.500000")).isEqualTo(-500_000L);
+        assertThat(convertDatetime(setup, "1969-12-31T23:59:59.999999")).isEqualTo(-1L);
+        assertThat(convertDatetime(setup, "1970-01-01")).isEqualTo(0L);
+    }
+
+    /**
+     * A literal the service would reject must not be quietly rewritten into one it accepts. The
+     * default {@code SMART} resolver does exactly that — {@code 2026-02-30} resolves to the 28th
+     * and {@code 24:00:00} rolls into the next day — so the staged file would carry a date nobody
+     * wrote, under a green job.
+     */
+    @Test
+    void datetimeStringOutsideTheCalendarIsRowLevelFailure() throws Exception {
+        Setup setup = stringDatetimeSetup();
+
+        assertThatThrownBy(() -> convertDatetime(setup, "2026-02-30"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("dtt");
+        assertThatThrownBy(() -> convertDatetime(setup, "2027-02-29"))
+                .isInstanceOf(IOException.class);
+        assertThatThrownBy(() -> convertDatetime(setup, "2026-08-04 24:00:00"))
+                .isInstanceOf(IOException.class);
+    }
+
+    /**
+     * A load job is all-or-nothing, so a year no {@code DATETIME} column can hold has to fail its
+     * own row here rather than the whole job at load time.
+     */
+    @Test
+    void datetimeOutsideBigQuerysYearRangeIsRowLevelFailure() throws Exception {
+        Setup setup = stringDatetimeSetup();
+
+        assertThat(convertDatetime(setup, "0001-01-01")).isNotNull();
+        assertThat(convertDatetime(setup, "9999-12-31 23:59:59.999999")).isNotNull();
+        assertThatThrownBy(() -> convertDatetime(setup, "12026-08-04"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("DATETIME range");
+    }
+
+    @Test
+    void unparseableDatetimeStringIsRowLevelFailure() throws Exception {
+        Setup setup = stringDatetimeSetup();
+
+        assertThatThrownBy(() -> convertDatetime(setup, "04/08/2026"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("dtt");
+        // An explicitly-set empty string is a bad value, not a NULL: only an *unset* field is null.
+        assertThatThrownBy(() -> convertDatetime(setup, "")).isInstanceOf(IOException.class);
     }
 
     @Test
