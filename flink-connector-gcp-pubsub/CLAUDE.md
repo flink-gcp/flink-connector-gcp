@@ -70,7 +70,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   **Exactly two failures are routed, and the boundary is the decision**: a record the serializer
   rejects, and a publish rejected `INVALID_ARGUMENT`. A record the serializer *skips* by returning
   null is in neither class (#230): it is not a failure, no publisher is even opened for it — the
-  check sits ahead of `stateFor(...)` — and `numRecordsSkipped` is the only thing that reports it.
+  check sits ahead of `stateFor(...)` — and `recordsSkipped` is the only thing that reports it.
   `MetadataSerializationSchema` propagates a skip unchanged and calls neither extractor for it, so
   the writer's check stays the single decision point; `dataOnly(...)` and the table layer's
   `RowDataSerializationSchema` cannot skip at all, because Flink's `SerializationSchema` contract

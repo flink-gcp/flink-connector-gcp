@@ -25,6 +25,7 @@ import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
+import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
 
 import javax.annotation.Nullable;
 
@@ -51,15 +52,11 @@ import javax.annotation.Nullable;
 @Internal
 final class BufferedStreamWriterMetrics {
 
-    static final String IN_FLIGHT_APPENDS = "inFlightAppends";
-    static final String APPEND_RETRIES = "appendRetries";
-    static final String NUM_RECORDS_SKIPPED = "numRecordsSkipped";
-
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
-    private final Counter numRecordsSkipped;
+    private final Counter recordsSkipped;
     private final Counter appendRetries;
     private final ErrorClassCounters errorClasses;
 
@@ -73,8 +70,8 @@ final class BufferedStreamWriterMetrics {
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
-        this.numRecordsSkipped = metricGroup.counter(NUM_RECORDS_SKIPPED);
-        this.appendRetries = metricGroup.counter(APPEND_RETRIES);
+        this.recordsSkipped = metricGroup.counter(BigQueryMetricNames.RECORDS_SKIPPED);
+        this.appendRetries = metricGroup.counter(BigQueryMetricNames.APPEND_RETRIES);
         this.errorClasses = new ErrorClassCounters(metricGroup);
     }
 
@@ -85,7 +82,7 @@ final class BufferedStreamWriterMetrics {
      * @param inFlightAppends appends the service has not acknowledged
      */
     void bindWriterState(Gauge<Integer> inFlightAppends) {
-        metricGroup.gauge(IN_FLIGHT_APPENDS, inFlightAppends);
+        metricGroup.gauge(BigQueryMetricNames.IN_FLIGHT_APPENDS, inFlightAppends);
     }
 
     /**
@@ -115,7 +112,7 @@ final class BufferedStreamWriterMetrics {
      * stream that carried none, which is the one way the skip contract can hide a bug.
      */
     void recordSkipped() {
-        numRecordsSkipped.inc();
+        recordsSkipped.inc();
     }
 
     /** Counts one append re-issued while recovering. */

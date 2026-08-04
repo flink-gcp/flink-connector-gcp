@@ -14,7 +14,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   its three implementation rules) — which does **not** loosen the eager-derivation rule below. A
   schema problem must still not surface from `serialize()`, and returning null instead of throwing
   would hide it *better* than the trap that rule exists for: a skip is not routed anywhere, so it
-  is invisible outside `numRecordsSkipped`
+  is invisible outside `recordsSkipped`
 - **BigQuery error handling** (#13; SPI extracted to the base module by #37/#205): the row-level
   failure policy is the shared `FailureHandler<FailedRow>` from `base.failure` — fail-job
   (default), log-and-drop, DLQ routing — and the base module's CLAUDE.md owns the lifecycle

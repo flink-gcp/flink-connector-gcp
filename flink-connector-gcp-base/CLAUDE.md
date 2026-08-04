@@ -74,6 +74,71 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   is given up is stated on the docs pages: `numBytesSend` is payload volume, not wire volume. Retry
   volume is read from the `errorClass.CODE.errors` counters instead, which is per status code and
   strictly more informative than a re-counted send.
+- **Every connector declares its metric names in one `<Product>MetricNames` class at its module
+  root** (#280), and that file is the connector's inventory: what it reports can be read there
+  without opening a writer, a reader or the enumerator. Two things follow. A connector's metric
+  names stay **inside that connector**, so implementing one needs nothing from `base` — a shared
+  holder for the names several connectors happen to share was built first and **withdrawn**, because
+  it split each connector's inventory across two modules to close one narrow drift, and the
+  connector-local file is what a maintainer reads. And cross-connector consistency is checked by
+  **diffing those four files**, which is the whole mechanism: a name meaning the same thing in two
+  connectors should be spelled the same way, and nothing automated says so. What the class does not
+  hold: Flink's standard names, which come from metric-group accessors rather than from a name, and
+  the subgroup leaves `base.metrics` registers on a connector's behalf. The registering classes take
+  every name from it — a `*Metrics` class declaring its own constant puts the inventory back in two
+  places.
+- **A metric this repository registers itself is a lowerCamelCase noun phrase, and its shape says
+  which kind it is** (#280) — the convention every connector here follows, with **no exceptions in
+  the tree**:
+  - a **counter** names the *event* it counts, `<plural noun><past participle>`: `tablesCreated`,
+    `topicsCreated`, `tasksDeduplicated`, `messagesReceived`/`Acked`/`Nacked`/`Dropped`,
+    `recordsSkipped`, `loadJobsSubmitted`, `filesStaged`. A count of occurrences with no actor to
+    name is a plain noun phrase instead — `appendRetries`, `schemaReconciliations`, `errors`;
+  - a **gauge** names the *state* it reports, `<adjective or participle><plural noun>`:
+    `openDestinations`, `inFlightBatches`/`Appends`/`Mutations`/`Messages`/`Tasks`/`Bytes`,
+    `parkedMessages`, `parkedTasks`, `assignedSplits`, `unassignedReaders`, `pendingAcks`,
+    `pendingCheckpoints`.
+
+  Read it as a test, not decoration: a name in the wrong shape reports the wrong kind of quantity
+  to whoever reads the dashboard. #280 found exactly two that did and renamed both — `stagedFiles`
+  (a *counter* of finished staging files, which read as "how many are staging right now") and
+  `checkpointsPendingAck` (a *gauge*, which read as a count of events) — so a later addition that
+  does not fit the shape is a review finding rather than a precedent.
+  **Flink prescribes nothing here**: FLIP-33 standardizes a *list of names* and explicitly leaves a
+  connector's own names alone, so the convention is this repository's to keep. It is not invented,
+  though — Flink's own connectors have the same shape, checked before this was written: Kafka's
+  `commitsSucceeded`/`commitsFailed` (counters) beside `committedOffsets`/`currentOffsets`
+  (gauges), Kinesis's `millisBehindLatest`, `averageRecordSizeBytes`, `loopFrequencyHz`, HBase's
+  `lookupCacheHitRate`.
+  The one deliberate departure is `DestinationMetrics`' subgroup leaves, `recordsSend` and
+  `sendErrors`: they are not a pair by this rule, and are not meant to be — each is Flink's
+  standard name with the `num` prefix dropped, so `destination.X.recordsSend` reads against
+  `numRecordsSend`, which is the quantity it partitions.
+- **A metric this repository registers itself never takes Flink's `num` prefix** (#280), which is
+  the one part of the shape rule above that is mechanical enough to check. `num…` is Flink's own
+  vocabulary — `MetricNames` spells 22 such names, and `SinkWriterMetricGroup` exposes four
+  (`numRecordsOutErrors`, `numRecordsSendErrors`, `numRecordsSend`, `numBytesSend`), of which every
+  writer here takes three — so a custom counter inside it costs two things. A reader cannot tell it
+  from a Flink-defined one except by the docs table's `counter (Flink standard)` column; nothing in
+  the source says which it is. And it can be silently dropped: `AbstractMetricGroup.addMetric`
+  resolves a name collision by keeping the metric **already** registered and logging `Name
+  collision: Group already contains a Metric with the name '…'. Metric will not be reported.`, and
+  `InternalSinkWriterMetricGroup` registers all four in its **constructor** — so ours is always the
+  later one, and so the one dropped. That second cost is what aims the rule at the sink writer group
+  in particular, and it is also why `pendingAcks` and `pendingCheckpoints`
+  (`PubSubSourceReaderMetrics`) are **not** counter-examples despite sitting in the family of
+  Flink's `pendingRecords`/`pendingBytes`: those two are registered only when a connector calls
+  `setPendingRecordsGauge`/`setPendingBytesGauge`, and this source calls neither (`pendingRecords`
+  deliberately, for the reason that class's javadoc gives), so there is nothing there to collide
+  with. `pending…` is also plain English for what a gauge reports, which the shape rule above
+  requires; `num…` is not a word.
+  The one counter that had taken the `num` prefix was `recordsSkipped` (#230, `numRecordsSkipped`
+  until #280 renamed it), and the argument offered for keeping it is recorded here as **measured
+  false** so it is not re-argued: `numRecordsSend`, `numRecordsSendErrors` and the skip counter do
+  *not* partition every record the writer is handed, in five of the six writers. `numRecordsSend`
+  counts records handed **to the client**, so a record the service then rejects is counted by it
+  and by `numRecordsSendErrors` both. `FileLoadsWriter` alone partitions, and only because it makes
+  no per-record request.
 - **Every schedule jitters, at one shared ratio, and the ratio is never a knob** (#197). The
   maintainer's standing posture is exponential backoff *with* jitter, so
   `RetrySchedule.DEFAULT_JITTER_RATIO` is the only ratio in the repository — a connector passing

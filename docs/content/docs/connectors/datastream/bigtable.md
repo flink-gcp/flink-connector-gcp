@@ -74,7 +74,7 @@ expressible, several of them per record, and the sink adds no vocabulary of its 
 Returning `null` **skips** the record — it is written nowhere, is not a failure, and never reaches
 the failed-mutation handler — which is how a filter that depends on the mutation being built belongs
 in the serializer rather than upstream of the sink. Every serializer in this connector family reads
-`null` that way. A skip is counted by [`numRecordsSkipped`](#metrics), the only thing that reports
+`null` that way. A skip is counted by [`recordsSkipped`](#metrics), the only thing that reports
 it: a serializer skipping every record would otherwise leave an empty table under a green job.
 
 The signature and the null-means-skip convention are shared with the `BaseRowMutationSerializer` of
@@ -244,7 +244,7 @@ checkpoint barrier.
 
 Two data-shaped failures are pluggable: a record the serializer rejects, and a row-level rejection.
 A record the serializer *skips* by returning `null` is neither: it is not a failure, so it never
-reaches the handler and is counted by [`numRecordsSkipped`](#metrics) rather than
+reaches the handler and is counted by [`recordsSkipped`](#metrics) rather than
 `numRecordsSendErrors`.
 The policy is `failedMutationHandler(...)`, taking the shared `FailureHandler<FailedMutation>` SPI
 from `flink-connector-gcp-base` ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the
@@ -286,7 +286,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `numRecordsSend` | counter (Flink standard) | records handed to the client library for application |
 | `numBytesSend` | counter (Flink standard) | their serialized size |
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-mutation handler |
-| `numRecordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed |
+| `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed |
 | `inFlightMutations` | gauge | mutations the service has not acknowledged, against `maxInFlightMutations` |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
 | `errorClass.CODE.errors` | counter | failed mutations by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |

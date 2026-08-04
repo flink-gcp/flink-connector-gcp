@@ -65,7 +65,7 @@ class BigtableWriterMetricsTest {
         writer.write("skip-me", TestContexts.NO_OP);
         writer.write("row-1", TestContexts.NO_OP);
 
-        assertThat(counter(BigtableWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+        assertThat(counter("recordsSkipped")).isEqualTo(1);
         // The record that did become a mutation is the control: the skip is counted apart from
         // both of the counters a record normally lands in.
         assertThat(counter("numRecordsSend")).isEqualTo(1);

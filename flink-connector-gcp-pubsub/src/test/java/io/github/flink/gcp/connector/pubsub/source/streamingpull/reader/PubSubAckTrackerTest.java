@@ -201,6 +201,19 @@ class PubSubAckTrackerTest {
     }
 
     @Test
+    void everyMessageHandedOverIsCountedWhenItsAckIsRegistered() {
+        TestReaderMetrics testMetrics = new TestReaderMetrics();
+        PubSubAckTracker counting = new PubSubAckTracker(testMetrics.metrics(), null);
+
+        counting.addPendingAck(SPLIT_A, "m1", new RecordingAckHandle("m1"));
+        counting.addPendingAck(SPLIT_B, "m2", new RecordingAckHandle("m2"));
+
+        // addPendingAck is the sole increment site for messagesReceived, and this is the only
+        // assertion in the tree that reaches that counter by the name a reporter sees.
+        assertThat(testMetrics.counter("messagesReceived")).isEqualTo(2);
+    }
+
+    @Test
     void awaitingConfirmationFailsTheCheckpointOnTimeout() {
         // On a subscription without exactly-once delivery a failed acknowledgement never completes
         // its future, so the timeout is the only signal there is.

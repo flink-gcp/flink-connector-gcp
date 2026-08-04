@@ -23,6 +23,7 @@ import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
+import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 
 import javax.annotation.Nullable;
 
@@ -51,15 +52,11 @@ import javax.annotation.Nullable;
 @Internal
 final class BigtableWriterMetrics {
 
-    static final String IN_FLIGHT_MUTATIONS = "inFlightMutations";
-    static final String IN_FLIGHT_BYTES = "inFlightBytes";
-    static final String NUM_RECORDS_SKIPPED = "numRecordsSkipped";
-
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
-    private final Counter numRecordsSkipped;
+    private final Counter recordsSkipped;
     private final ErrorClassCounters errorClasses;
 
     /**
@@ -72,7 +69,7 @@ final class BigtableWriterMetrics {
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
-        this.numRecordsSkipped = metricGroup.counter(NUM_RECORDS_SKIPPED);
+        this.recordsSkipped = metricGroup.counter(BigtableMetricNames.RECORDS_SKIPPED);
         this.errorClasses = new ErrorClassCounters(metricGroup);
     }
 
@@ -85,8 +82,8 @@ final class BigtableWriterMetrics {
      * @param inFlightBytes their serialized size, against {@code maxInFlightBytes}
      */
     void bindWriterState(Gauge<Integer> inFlightMutations, Gauge<Long> inFlightBytes) {
-        metricGroup.gauge(IN_FLIGHT_MUTATIONS, inFlightMutations);
-        metricGroup.gauge(IN_FLIGHT_BYTES, inFlightBytes);
+        metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_MUTATIONS, inFlightMutations);
+        metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
     }
 
     /**
@@ -116,7 +113,7 @@ final class BigtableWriterMetrics {
      * from a stream that carried none, which is the one way the skip contract can hide a bug.
      */
     void recordSkipped() {
-        numRecordsSkipped.inc();
+        recordsSkipped.inc();
     }
 
     /**

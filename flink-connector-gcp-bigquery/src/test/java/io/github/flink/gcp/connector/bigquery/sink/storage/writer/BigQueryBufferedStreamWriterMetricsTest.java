@@ -81,7 +81,7 @@ class BigQueryBufferedStreamWriterMetricsTest {
         assertThat(service.appends).hasSize(2);
         assertThat(counter("numRecordsSend")).isEqualTo(1);
         assertThat(counter("numBytesSend")).isEqualTo(2);
-        assertThat(counter(BufferedStreamWriterMetrics.APPEND_RETRIES)).isEqualTo(1);
+        assertThat(counter("appendRetries")).isEqualTo(1);
         assertThat(errors("UNAVAILABLE")).isEqualTo(1);
     }
 
@@ -109,7 +109,7 @@ class BigQueryBufferedStreamWriterMetricsTest {
         assertThat(handler.rows).isEmpty();
         assertThat(counter("numRecordsSend")).isEqualTo(1);
         assertThat(counter("numRecordsSendErrors")).isZero();
-        assertThat(counter(BufferedStreamWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+        assertThat(counter("recordsSkipped")).isEqualTo(1);
     }
 
     @Test
@@ -125,7 +125,7 @@ class BigQueryBufferedStreamWriterMetricsTest {
         assertThat(service.createdStreams).isEmpty();
         assertThat(service.appends).isEmpty();
         assertThat(writer.prepareCommit()).isEmpty();
-        assertThat(counter(BufferedStreamWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+        assertThat(counter("recordsSkipped")).isEqualTo(1);
     }
 
     @Test
@@ -149,7 +149,7 @@ class BigQueryBufferedStreamWriterMetricsTest {
         // retry rather than a second send.
         assertThat(counter("numRecordsSend")).isEqualTo(2);
         assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
-        assertThat(counter(BufferedStreamWriterMetrics.APPEND_RETRIES)).isEqualTo(1);
+        assertThat(counter("appendRetries")).isEqualTo(1);
         // The replay that carried the survivors succeeded, and a success is not an error class.
         assertThat(metrics.hasMetric("errorClass", "UNCLASSIFIED", "errors")).isFalse();
     }
@@ -164,7 +164,7 @@ class BigQueryBufferedStreamWriterMetricsTest {
 
         assertThat(service.appends).hasSize(1);
         assertThat(counter("numRecordsSend")).isEqualTo(1);
-        assertThat(counter(BufferedStreamWriterMetrics.APPEND_RETRIES)).isZero();
+        assertThat(counter("appendRetries")).isZero();
     }
 
     @Test
@@ -179,12 +179,12 @@ class BigQueryBufferedStreamWriterMetricsTest {
                                 .recoveryMaxAttempts(2)
                                 .build());
 
-        assertThat(this.<Integer>gauge(BufferedStreamWriterMetrics.IN_FLIGHT_APPENDS)).isZero();
+        assertThat(this.<Integer>gauge("inFlightAppends")).isZero();
 
         writer.write("aa", CONTEXT);
         writer.write("bb", CONTEXT);
 
-        assertThat(this.<Integer>gauge(BufferedStreamWriterMetrics.IN_FLIGHT_APPENDS)).isEqualTo(1);
+        assertThat(this.<Integer>gauge("inFlightAppends")).isEqualTo(1);
     }
 
     @Test
@@ -257,11 +257,11 @@ class BigQueryBufferedStreamWriterMetricsTest {
 
         writer.write("aa", CONTEXT);
         writer.write("bb", CONTEXT);
-        assertThat(this.<Integer>gauge(BufferedStreamWriterMetrics.IN_FLIGHT_APPENDS)).isEqualTo(1);
+        assertThat(this.<Integer>gauge("inFlightAppends")).isEqualTo(1);
 
         writer.close();
 
-        assertThat(this.<Integer>gauge(BufferedStreamWriterMetrics.IN_FLIGHT_APPENDS)).isZero();
+        assertThat(this.<Integer>gauge("inFlightAppends")).isZero();
     }
 
     // ------------------------------------------------------------------

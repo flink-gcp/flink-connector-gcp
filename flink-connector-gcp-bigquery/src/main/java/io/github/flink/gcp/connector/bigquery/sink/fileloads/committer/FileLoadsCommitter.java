@@ -23,6 +23,7 @@ import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.groups.SinkCommitterMetricGroup;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -79,9 +80,8 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
      * <p>The framework registers the standard committer metrics ({@code totalCommittables} and
      * friends) itself; nothing here has to.
      */
-    static final String LOAD_JOBS_SUBMITTED = "loadJobsSubmitted";
-
     private final BigQuerySinkConfig<?> config;
+
     private final FileLoadsOptions options;
     private final StagingStorage storage;
     private final Supplier<LoadJobRunner> runnerFactory;
@@ -131,7 +131,7 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
         this.config = config;
         this.options = options;
         this.storage = storage;
-        this.loadJobsSubmitted = metricGroup.counter(LOAD_JOBS_SUBMITTED);
+        this.loadJobsSubmitted = metricGroup.counter(BigQueryMetricNames.LOAD_JOBS_SUBMITTED);
         this.runnerFactory = runnerFactory;
         this.tableAdminFactory = tableAdminFactory;
     }

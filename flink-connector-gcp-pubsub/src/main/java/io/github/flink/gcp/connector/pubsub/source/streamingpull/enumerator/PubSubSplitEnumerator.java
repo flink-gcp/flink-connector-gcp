@@ -25,6 +25,7 @@ import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 
+import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
 import io.github.flink.gcp.connector.pubsub.source.StartPosition;
@@ -79,9 +80,6 @@ public class PubSubSplitEnumerator
         implements SplitEnumerator<SubscriptionSplit, PubSubEnumeratorState> {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubSplitEnumerator.class);
-
-    static final String ASSIGNED_SPLITS = "assignedSplits";
-    static final String UNASSIGNED_READERS = "unassignedReaders";
 
     private final SplitEnumeratorContext<SubscriptionSplit> context;
     private final PubSubSourceConfig<?> config;
@@ -370,8 +368,10 @@ public class PubSubSplitEnumerator
         if (metricGroup == null) {
             return;
         }
-        metricGroup.gauge(ASSIGNED_SPLITS, (Gauge<Integer>) this::assignedSplitCount);
-        metricGroup.gauge(UNASSIGNED_READERS, (Gauge<Integer>) subtasksWithoutSplits::size);
+        metricGroup.gauge(
+                PubSubMetricNames.ASSIGNED_SPLITS, (Gauge<Integer>) this::assignedSplitCount);
+        metricGroup.gauge(
+                PubSubMetricNames.UNASSIGNED_READERS, (Gauge<Integer>) subtasksWithoutSplits::size);
         metricGroup.setUnassignedSplitsGauge(
                 () -> (long) (plan.splitCount() - assignedSplitCount()));
     }

@@ -128,7 +128,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
         assertThat(factory.allAppendedRows()).containsExactly("aa", "aa");
         assertThat(counter("numRecordsSend")).isEqualTo(1);
         assertThat(counter("numBytesSend")).isEqualTo(2);
-        assertThat(counter(DefaultStreamWriterMetrics.APPEND_RETRIES)).isEqualTo(1);
+        assertThat(counter("appendRetries")).isEqualTo(1);
         assertThat(errors("UNAVAILABLE")).isEqualTo(1);
     }
 
@@ -146,10 +146,10 @@ class BigQueryDefaultStreamWriterMetricsTest {
         // Skipped, not failed: appended nowhere, and never offered to the handler.
         assertThat(factory.allAppendedRows()).containsExactly("aa");
         assertThat(handler.rows).isEmpty();
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(1);
+        assertThat(this.<Integer>gauge("openDestinations")).isEqualTo(1);
         assertThat(counter("numRecordsSend")).isEqualTo(1);
         assertThat(counter("numRecordsSendErrors")).isZero();
-        assertThat(counter(DefaultStreamWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+        assertThat(counter("recordsSkipped")).isEqualTo(1);
     }
 
     @Test
@@ -221,8 +221,8 @@ class BigQueryDefaultStreamWriterMetricsTest {
         writer.flush(false);
 
         assertThat(admin.creates).containsExactly(DESTINATION);
-        assertThat(counter(DefaultStreamWriterMetrics.TABLES_CREATED)).isEqualTo(1);
-        assertThat(counter(DefaultStreamWriterMetrics.SCHEMA_RECONCILIATIONS)).isZero();
+        assertThat(counter("tablesCreated")).isEqualTo(1);
+        assertThat(counter("schemaReconciliations")).isZero();
         assertThat(errors("NOT_FOUND")).isEqualTo(1);
     }
 
@@ -238,9 +238,9 @@ class BigQueryDefaultStreamWriterMetricsTest {
         writer.flush(false);
 
         assertThat(admin.updates).hasSize(1);
-        assertThat(counter(DefaultStreamWriterMetrics.SCHEMA_RECONCILIATIONS)).isEqualTo(1);
+        assertThat(counter("schemaReconciliations")).isEqualTo(1);
         // A reconciliation is not a creation: the table was there.
-        assertThat(counter(DefaultStreamWriterMetrics.TABLES_CREATED)).isZero();
+        assertThat(counter("tablesCreated")).isZero();
     }
 
     @Test
@@ -268,8 +268,8 @@ class BigQueryDefaultStreamWriterMetricsTest {
 
         assertThat(vanished.creates).containsExactly(DESTINATION);
         assertThat(vanished.updates).isEmpty();
-        assertThat(counter(DefaultStreamWriterMetrics.TABLES_CREATED)).isEqualTo(1);
-        assertThat(counter(DefaultStreamWriterMetrics.SCHEMA_RECONCILIATIONS)).isZero();
+        assertThat(counter("tablesCreated")).isEqualTo(1);
+        assertThat(counter("schemaReconciliations")).isZero();
     }
 
     @Test
@@ -308,21 +308,21 @@ class BigQueryDefaultStreamWriterMetricsTest {
                         BigQueryDefaultStreamWriterTest.fastSchedule(3),
                         BigQueryDefaultStreamWriterTest.fastSchedule(3));
 
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isZero();
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isZero();
+        assertThat(this.<Integer>gauge("openDestinations")).isZero();
+        assertThat(this.<Integer>gauge("inFlightBatches")).isZero();
 
         writer.write("a", CONTEXT);
         writer.write("b", CONTEXT);
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(2);
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isZero();
+        assertThat(this.<Integer>gauge("openDestinations")).isEqualTo(2);
+        assertThat(this.<Integer>gauge("inFlightBatches")).isZero();
 
         // Same destination as the first record, so its buffered batch is appended and stays in
         // flight until the scripted future completes.
         writer.write("a", CONTEXT);
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isEqualTo(1);
+        assertThat(this.<Integer>gauge("inFlightBatches")).isEqualTo(1);
 
         unacknowledged.set(AppendRowsResponse.getDefaultInstance());
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isZero();
+        assertThat(this.<Integer>gauge("inFlightBatches")).isZero();
     }
 
     @Test
@@ -343,13 +343,13 @@ class BigQueryDefaultStreamWriterMetricsTest {
 
         writer.write("a", CONTEXT);
         writer.write("a", CONTEXT);
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isEqualTo(1);
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(1);
+        assertThat(this.<Integer>gauge("inFlightBatches")).isEqualTo(1);
+        assertThat(this.<Integer>gauge("openDestinations")).isEqualTo(1);
 
         writer.close();
 
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.IN_FLIGHT_BATCHES)).isZero();
-        assertThat(this.<Integer>gauge(DefaultStreamWriterMetrics.OPEN_DESTINATIONS)).isZero();
+        assertThat(this.<Integer>gauge("inFlightBatches")).isZero();
+        assertThat(this.<Integer>gauge("openDestinations")).isZero();
     }
 
     // ------------------------------------------------------------------

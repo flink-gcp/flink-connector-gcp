@@ -24,6 +24,7 @@ import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
+import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 import javax.annotation.Nullable;
@@ -50,18 +51,11 @@ import javax.annotation.Nullable;
 @Internal
 final class DefaultStreamWriterMetrics {
 
-    static final String IN_FLIGHT_BATCHES = "inFlightBatches";
-    static final String OPEN_DESTINATIONS = "openDestinations";
-    static final String APPEND_RETRIES = "appendRetries";
-    static final String TABLES_CREATED = "tablesCreated";
-    static final String SCHEMA_RECONCILIATIONS = "schemaReconciliations";
-    static final String NUM_RECORDS_SKIPPED = "numRecordsSkipped";
-
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
-    private final Counter numRecordsSkipped;
+    private final Counter recordsSkipped;
     private final Counter appendRetries;
     private final Counter tablesCreated;
     private final Counter schemaReconciliations;
@@ -80,10 +74,11 @@ final class DefaultStreamWriterMetrics {
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
-        this.numRecordsSkipped = metricGroup.counter(NUM_RECORDS_SKIPPED);
-        this.appendRetries = metricGroup.counter(APPEND_RETRIES);
-        this.tablesCreated = metricGroup.counter(TABLES_CREATED);
-        this.schemaReconciliations = metricGroup.counter(SCHEMA_RECONCILIATIONS);
+        this.recordsSkipped = metricGroup.counter(BigQueryMetricNames.RECORDS_SKIPPED);
+        this.appendRetries = metricGroup.counter(BigQueryMetricNames.APPEND_RETRIES);
+        this.tablesCreated = metricGroup.counter(BigQueryMetricNames.TABLES_CREATED);
+        this.schemaReconciliations =
+                metricGroup.counter(BigQueryMetricNames.SCHEMA_RECONCILIATIONS);
         this.errorClasses = new ErrorClassCounters(metricGroup);
         this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics);
     }
@@ -96,8 +91,8 @@ final class DefaultStreamWriterMetrics {
      * @param openDestinations destinations holding a live stream writer
      */
     void bindWriterState(Gauge<Integer> inFlightBatches, Gauge<Integer> openDestinations) {
-        metricGroup.gauge(IN_FLIGHT_BATCHES, inFlightBatches);
-        metricGroup.gauge(OPEN_DESTINATIONS, openDestinations);
+        metricGroup.gauge(BigQueryMetricNames.IN_FLIGHT_BATCHES, inFlightBatches);
+        metricGroup.gauge(BigQueryMetricNames.OPEN_DESTINATIONS, openDestinations);
     }
 
     /**
@@ -151,7 +146,7 @@ final class DefaultStreamWriterMetrics {
      * would have gone to would read as a property of that table.
      */
     void recordSkipped() {
-        numRecordsSkipped.inc();
+        recordsSkipped.inc();
     }
 
     /** Counts one append re-issued while repairing a destination. */

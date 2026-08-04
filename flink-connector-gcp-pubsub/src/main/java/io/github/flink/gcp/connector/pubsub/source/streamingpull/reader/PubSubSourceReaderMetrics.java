@@ -22,6 +22,8 @@ import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 
+import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
+
 /**
  * The reader's Pub/Sub-specific metrics.
  *
@@ -42,13 +44,6 @@ import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 @Internal
 public final class PubSubSourceReaderMetrics {
 
-    static final String MESSAGES_RECEIVED = "messagesReceived";
-    static final String MESSAGES_ACKED = "messagesAcked";
-    static final String MESSAGES_NACKED = "messagesNacked";
-    static final String MESSAGES_DROPPED = "messagesDropped";
-    static final String PENDING_ACKS = "pendingAcks";
-    static final String CHECKPOINTS_PENDING_ACK = "checkpointsPendingAck";
-
     private final SourceReaderMetricGroup metricGroup;
     private final Counter messagesReceived;
     private final Counter messagesAcked;
@@ -64,10 +59,17 @@ public final class PubSubSourceReaderMetrics {
     public PubSubSourceReaderMetrics(SourceReaderMetricGroup metricGroup) {
         this.metricGroup = metricGroup;
         this.messagesReceived =
-                metricGroup.counter(MESSAGES_RECEIVED, new ThreadSafeSimpleCounter());
-        this.messagesAcked = metricGroup.counter(MESSAGES_ACKED, new ThreadSafeSimpleCounter());
-        this.messagesNacked = metricGroup.counter(MESSAGES_NACKED, new ThreadSafeSimpleCounter());
-        this.messagesDropped = metricGroup.counter(MESSAGES_DROPPED, new ThreadSafeSimpleCounter());
+                metricGroup.counter(
+                        PubSubMetricNames.MESSAGES_RECEIVED, new ThreadSafeSimpleCounter());
+        this.messagesAcked =
+                metricGroup.counter(
+                        PubSubMetricNames.MESSAGES_ACKED, new ThreadSafeSimpleCounter());
+        this.messagesNacked =
+                metricGroup.counter(
+                        PubSubMetricNames.MESSAGES_NACKED, new ThreadSafeSimpleCounter());
+        this.messagesDropped =
+                metricGroup.counter(
+                        PubSubMetricNames.MESSAGES_DROPPED, new ThreadSafeSimpleCounter());
         // Flink's own standard counter, so a deserialization failure shows up in the same place as
         // every other connector's.
         this.deserializationErrors = metricGroup.getNumRecordsInErrorsCounter();
@@ -80,9 +82,11 @@ public final class PubSubSourceReaderMetrics {
      * @param ackTracker the tracker to read
      */
     public void bindAckTracker(PubSubAckTracker ackTracker) {
-        metricGroup.gauge(PENDING_ACKS, (Gauge<Integer>) ackTracker::outstandingAckCount);
         metricGroup.gauge(
-                CHECKPOINTS_PENDING_ACK, (Gauge<Integer>) ackTracker::checkpointsPendingAckCount);
+                PubSubMetricNames.PENDING_ACKS, (Gauge<Integer>) ackTracker::outstandingAckCount);
+        metricGroup.gauge(
+                PubSubMetricNames.PENDING_CHECKPOINTS,
+                (Gauge<Integer>) ackTracker::checkpointsPendingAckCount);
     }
 
     /** Counts one message handed over by the client library. */
