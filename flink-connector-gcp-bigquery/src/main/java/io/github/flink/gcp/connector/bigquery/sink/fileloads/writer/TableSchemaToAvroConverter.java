@@ -35,9 +35,8 @@ import java.util.List;
  *
  * <ul>
  *   <li>{@code TIMESTAMP} → {@code long} + {@code timestamp-micros}, {@code DATE} → {@code int} +
- *       {@code date}, {@code TIME} → {@code long} + {@code time-micros}
- *   <li>{@code DATETIME} → {@code string} in canonical civil-time form (Avro has no timezone-less
- *       datetime logical type universally accepted by BigQuery loads)
+ *       {@code date}, {@code TIME} → {@code long} + {@code time-micros}, {@code DATETIME} → {@code
+ *       long} + {@code local-timestamp-micros}
  *   <li>{@code NUMERIC}/{@code BIGNUMERIC} → {@code bytes} + {@code decimal} with the field's
  *       parameterized precision/scale when set, else the type maximum (38,9)/(77,38)
  *   <li>{@code JSON} and {@code GEOGRAPHY} → {@code string} (typed by the explicit load schema)
@@ -105,7 +104,6 @@ public final class TableSchemaToAvroConverter {
             case STRING:
             case JSON:
             case GEOGRAPHY:
-            case DATETIME:
                 return Schema.create(Schema.Type.STRING);
             case BYTES:
                 return Schema.create(Schema.Type.BYTES);
@@ -121,6 +119,9 @@ public final class TableSchemaToAvroConverter {
                 return LogicalTypes.date().addToSchema(Schema.create(Schema.Type.INT));
             case TIME:
                 return LogicalTypes.timeMicros().addToSchema(Schema.create(Schema.Type.LONG));
+            case DATETIME:
+                return LogicalTypes.localTimestampMicros()
+                        .addToSchema(Schema.create(Schema.Type.LONG));
             case NUMERIC:
                 return decimal(field, 38, 9);
             case BIGNUMERIC:

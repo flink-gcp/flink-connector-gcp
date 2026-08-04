@@ -76,11 +76,12 @@ class TableSchemaToAvroConverterTest {
         assertThat(time.getType()).isEqualTo(Schema.Type.LONG);
         assertThat(time.getLogicalType()).isEqualTo(LogicalTypes.timeMicros());
 
-        // Avro has no timezone-less datetime logical type BigQuery loads accept everywhere;
-        // DATETIME travels as a canonical civil-time string.
+        // A staged string against a DATETIME destination column fails the load job outright
+        // (measured, #282) — unlike the JSON and GEOGRAPHY columns beside it, which BigQuery does
+        // coerce from text. local-timestamp-micros is what it accepts.
         Schema datetime = requiredSchemaOf(TableFieldSchema.Type.DATETIME);
-        assertThat(datetime.getType()).isEqualTo(Schema.Type.STRING);
-        assertThat(datetime.getLogicalType()).isNull();
+        assertThat(datetime.getType()).isEqualTo(Schema.Type.LONG);
+        assertThat(datetime.getLogicalType()).isEqualTo(LogicalTypes.localTimestampMicros());
     }
 
     @Test
