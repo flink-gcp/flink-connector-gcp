@@ -21,6 +21,8 @@ import org.apache.flink.api.common.serialization.SerializationSchema;
 
 import com.google.cloud.tasks.v2.Task;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.io.Serializable;
 
@@ -37,6 +39,10 @@ import java.io.Serializable;
  * CloudTasksSinkBuilder#taskIdExtractor(TaskIdExtractor)}, so an implementation must leave it
  * unset. The writer rejects a named task rather than passing the name through, which is what keeps
  * the hashing free of a second path around it.
+ *
+ * <p>Returning {@code null} skips the record: it is written nowhere and is not a failure. Every
+ * serializer of this connector family reads {@code null} that way, so a filter that depends on the
+ * task being built belongs here rather than upstream of the sink.
  *
  * <p>The common case — an HTTP target whose body is a serialized record — is covered by {@link
  * #httpTarget(String)}:
@@ -66,9 +72,11 @@ public interface CloudTasksSerializationSchema<T> extends Serializable {
      * Serializes the given record into a Cloud Tasks task.
      *
      * @param element the record
-     * @return the task to create; must carry no name
-     * @throws IOException if the record cannot be serialized; fails the ongoing write
+     * @return the task to create, carrying no name, or {@code null} to skip the record
+     * @throws IOException if the record cannot be serialized; the record is handed to the sink's
+     *     failed-task handler, which fails the job by default
      */
+    @Nullable
     Task serialize(T element) throws IOException;
 
     /**

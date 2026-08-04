@@ -76,14 +76,15 @@ import java.util.TreeMap;
  * runs at every checkpoint barrier, sends all messages buffered inside the SDK publishers and
  * blocks until every in-flight publish is acknowledged — republishing messages whose topic had to
  * be created first — so a successful checkpoint means every record up to the barrier is persisted
- * by Pub/Sub; discarding operator state can never lose sink-buffered records. Terminal publish
- * failures captured by completion callbacks are rethrown on the task thread from the next {@link
- * #write} or {@link #flush}, failing the job (retries within a publish are delegated to the SDK).
+ * by Pub/Sub, other than those the serializer skipped by returning {@code null}; discarding
+ * operator state can never lose sink-buffered records. Terminal publish failures captured by
+ * completion callbacks are rethrown on the task thread from the next {@link #write} or {@link
+ * #flush}, failing the job (retries within a publish are delegated to the SDK).
  *
  * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
  * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every record up to the barrier
- * was either persisted by Pub/Sub or handed to the {@link FailureHandler}; the per-message failures
- * below say which ones reach it.
+ * was either persisted by Pub/Sub, skipped by the serializer, or handed to the {@link
+ * FailureHandler}; the per-message failures below say which ones reach it.
  *
  * <h2>Per-message failures</h2>
  *
@@ -299,6 +300,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             metrics.messageFailed(metrics.forTopic(destination));
             failedMessageHandler.handle(
                     FailedMessage.of(destination, null, "The record could not be serialized.", e));
+            return;
+        }
+        if (message == null) {
+            // Skip by contract, not a failure. Ahead of stateFor(...), so a record written nowhere
+            // opens no publisher. Counted, because nothing else reports it: a serializer skipping
+            // every record leaves an empty topic under a green job.
+            metrics.recordSkipped();
             return;
         }
         if (!orderingEnabled && !message.getOrderingKey().isEmpty()) {

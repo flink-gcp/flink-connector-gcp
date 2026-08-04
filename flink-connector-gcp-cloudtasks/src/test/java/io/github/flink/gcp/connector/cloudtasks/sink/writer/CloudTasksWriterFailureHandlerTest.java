@@ -24,6 +24,7 @@ import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.FailedTask;
+import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -122,6 +123,32 @@ class CloudTasksWriterFailureHandlerTest {
         // Dropped, so nothing was sent and the record does not hold the writer.
         assertThat(creator.requests).isEmpty();
         assertThat(writer.getInFlightTasks()).isZero();
+    }
+
+    @Test
+    void skipsRecordsTheSerializerReturnsNullFor() throws Exception {
+        CloudTasksSerializationSchema<String> delegate = TestSinkConfigs.serializer();
+        CloudTasksWriter<String> writer =
+                writer(
+                        TestSinkConfigs.builder()
+                                .serializer(
+                                        element ->
+                                                element.equals("skip-me")
+                                                        ? null
+                                                        : delegate.serialize(element)));
+
+        writer.write("skip-me", TestContexts.NO_OP);
+        writer.write("order-1", TestContexts.NO_OP);
+        writer.flush(false);
+
+        // Skipped, not failed: created nowhere, and never offered to the handler.
+        assertThat(creator.requests).hasSize(1);
+        assertThat(creator.requests.get(0).getTask().getHttpRequest().getBody().toStringUtf8())
+                .isEqualTo("order-1");
+        assertThat(handler.handled).isEmpty();
+        assertThat(metrics.counterValue("numRecordsSend")).isEqualTo(1);
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isZero();
+        assertThat(metrics.counterValue("numRecordsSkipped")).isEqualTo(1);
     }
 
     @Test

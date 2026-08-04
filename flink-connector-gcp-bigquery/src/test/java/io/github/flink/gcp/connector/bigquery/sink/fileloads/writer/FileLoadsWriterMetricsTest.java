@@ -95,6 +95,32 @@ class FileLoadsWriterMetricsTest {
     }
 
     @Test
+    void skipsRecordsTheSerializerReturnsNullFor() throws Exception {
+        // Per-destination metrics on, or the last assertion below could not fail: with them off
+        // every destination lookup is a no-op and registers nothing whatever the writer does.
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .perDestinationMetrics(true)
+                                .build(),
+                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+
+        writer.write(new TestRow("skipped-table", "skip-me", 1L), CONTEXT);
+        writer.write(new TestRow("t", "alice", 1L), CONTEXT);
+
+        // Skipped, not failed: staged nowhere, and no file — nor a per-destination counter, which
+        // registers on first use and can never be unregistered — for the table it would have gone
+        // to. The staged record is the control that keeps this from passing on a counter that
+        // counted every record.
+        assertThat(counter(FileLoadsWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+        assertThat(counter("numRecordsSend")).isEqualTo(1);
+        assertThat(counter("numRecordsSendErrors")).isZero();
+        assertThat(this.<Integer>gauge(FileLoadsWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(1);
+        assertThat(metrics.hasMetric("destination", "p.d.skipped-table", "recordsSend")).isFalse();
+    }
+
+    @Test
     void countsARowThatDoesNotConformToTheDescriptorAsASendError() throws Exception {
         FileLoadsWriter<TestRow> writer = writer();
 

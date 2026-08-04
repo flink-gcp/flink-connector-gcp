@@ -60,6 +60,10 @@ import java.util.Map;
  * <p>Tasks produced here never carry a name — naming is the sink's, through {@code
  * CloudTasksSinkBuilder#taskIdExtractor(TaskIdExtractor)}.
  *
+ * <p>This schema never skips a record either. Flink's {@code SerializationSchema} contract has no
+ * {@code null} in it, so a {@code null} body is reported as a serialization failure — reading it as
+ * a skip would silently drop the records a body schema failed on.
+ *
  * @param <T> type of the records written by the sink
  */
 @PublicEvolving
@@ -280,7 +284,17 @@ public final class HttpTargetSerializationSchema<T> implements CloudTasksSeriali
             request.setUrl(checkUrl(urlExtractor.extractUrl(element), "extracted url"));
         }
         if (carriesBody) {
-            request.setBody(ByteString.copyFrom(body.serialize(element)));
+            byte[] payload = body.serialize(element);
+            if (payload == null) {
+                throw new IOException(
+                        "The body schema "
+                                + body.getClass().getName()
+                                + " returned null for a record. Flink's SerializationSchema"
+                                + " contract has no null in it, so this is a serialization failure"
+                                + " rather than a skip; implement CloudTasksSerializationSchema"
+                                + " directly to skip a record.");
+            }
+            request.setBody(ByteString.copyFrom(payload));
         }
         if (headersExtractor != null) {
             Map<String, String> headers = headersExtractor.extractHeaders(element);

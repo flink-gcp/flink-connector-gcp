@@ -24,6 +24,8 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.io.Serializable;
 
@@ -50,6 +52,10 @@ import java.io.Serializable;
  * <p>Exception contract: {@link #serialize(Object)} throws {@link IOException} for per-record
  * serialization failures (which sinks may route to error handling); configuration errors (for
  * example schema mapping problems) surface as unchecked exceptions at initialization time.
+ *
+ * <p>Returning {@code null} from {@link #serialize(Object)} skips the record: it is written nowhere
+ * and is not a failure. Every serializer of this connector family reads {@code null} that way, so a
+ * filter that depends on the row being built belongs here rather than upstream of the sink.
  *
  * @param <T> type of the records written by the sink
  */
@@ -123,8 +129,10 @@ public abstract class BigQueryProtoSerializer<T> implements Serializable {
      * message.toByteString()}.
      *
      * @param element the record
-     * @return the serialized protobuf row
-     * @throws IOException if the record cannot be serialized
+     * @return the serialized protobuf row, or {@code null} to skip the record
+     * @throws IOException if the record cannot be serialized; the record is handed to the sink's
+     *     failed-row handler, which fails the job by default
      */
+    @Nullable
     public abstract ByteString serialize(T element) throws IOException;
 }

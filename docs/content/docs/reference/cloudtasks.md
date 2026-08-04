@@ -39,7 +39,7 @@ execute. That inversion is the connector's whole reason for existing, and it is 
 |---|---|---|
 | `queue` | **required**, unless `destinationResolver` is set | Writes every task to one fixed queue |
 | `destinationResolver` | — | Resolves the queue per record. Costs nothing here: one client serves every queue |
-| `serializer` | **required** | Builds the `Task` — URL, method, headers, body, schedule, authorization. It must carry no name |
+| `serializer` | **required** | Builds the `Task` — URL, method, headers, body, schedule, authorization — or returns `null` to skip the record. It must carry no name |
 | `taskIdExtractor` | — | Opts into named tasks, deduplicating by the extracted key. The sink hashes it with SHA-256 |
 | `writerOptions` | [defaults](#cloudtaskswriteroptions) | The in-flight cap and the two retry budgets |
 | `failedTaskHandler` | `FailureHandler.failJob()` | What happens to a task that terminally fails — fail, drop, or dead-letter |

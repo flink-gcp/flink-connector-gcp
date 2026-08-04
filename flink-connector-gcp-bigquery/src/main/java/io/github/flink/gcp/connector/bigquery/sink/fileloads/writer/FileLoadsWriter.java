@@ -28,7 +28,6 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
-import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
@@ -53,12 +52,12 @@ import java.util.UUID;
  * FileLoadsCommittable} per finalized file from {@link #prepareCommit()} — once at end of input in
  * batch execution, once per checkpoint in streaming execution.
  *
- * <p>Rows never accumulate on the heap: each record is appended to an Avro writer that streams into
- * a GCS resumable upload, so memory use is proportional to the number of concurrently open
- * destinations (one upload chunk plus one Avro block each), not to the data volume or job length.
- * In streaming execution the inter-checkpoint buffer therefore <em>is</em> GCS. Files are rolled at
- * {@link #DEFAULT_MAX_FILE_BYTES} so the common case stays within a single direct load job (10,000
- * files x 1.5 GiB well exceeds typical batches).
+ * <p>Rows never accumulate on the heap: a record the serializer converts is appended to an Avro
+ * writer that streams into a GCS resumable upload, so memory use is proportional to the number of
+ * concurrently open destinations (one upload chunk plus one Avro block each), not to the data
+ * volume or job length. In streaming execution the inter-checkpoint buffer therefore <em>is</em>
+ * GCS. Files are rolled at {@link #DEFAULT_MAX_FILE_BYTES} so the common case stays within a single
+ * direct load job (10,000 files x 1.5 GiB well exceeds typical batches).
  *
  * <p>Staging object names include the Flink job id, subtask index, attempt number and a random
  * component, so files written by failed attempts can neither collide with live ones nor be loaded:
@@ -70,7 +69,8 @@ import java.util.UUID;
  *
  * <p>Serialization and Avro-conversion failures are row-level and routed to the configured {@link
  * io.github.flink.gcp.connector.base.failure.FailureHandler}; staging I/O failures fail the job.
- * There is no row-level policy at load time — a BigQuery load job is all-or-nothing.
+ * There is no row-level policy at load time — a BigQuery load job is all-or-nothing. A record the
+ * serializer skips by returning {@code null} is neither: it reaches no staging file and no handler.
  *
  * <p>The schema per destination is captured when its first record arrives and cached for the
  * writer's lifetime; mid-run serializer schema changes are only picked up after a restart.
@@ -159,14 +159,13 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
     @Override
     public void write(T element, Context context) throws IOException, InterruptedException {
         TableDestination destination = config.getDestinationResolver().resolve(element, context);
-        DestinationMetrics.Counters table = metrics.forTable(destination);
         ByteString rowBytes;
         try {
             // A poison record must reach the handler no matter how the serializer fails,
             // matching the streaming writer's contract.
             rowBytes = config.getSerializer().serialize(element);
         } catch (IOException | RuntimeException e) {
-            metrics.recordFailed(table);
+            metrics.recordFailed(metrics.forTable(destination));
             config.getFailedRowHandler()
                     .handle(
                             FailedRow.of(
@@ -176,13 +175,23 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                                     e));
             return;
         }
+        if (rowBytes == null) {
+            // Skip by contract, not a failure. Ahead of stateFor(...), so a record written nowhere
+            // opens no file — and ahead of every metrics.forTable(...), which registers a
+            // destination's counters on first use and can never unregister them, so a table only
+            // skipped records resolve to gains no counters reading zero. Counted here, because
+            // nothing else reports it: a serializer skipping every record leaves an empty table
+            // under a green job.
+            metrics.recordSkipped();
+            return;
+        }
         DestinationState state = stateFor(destination);
         GenericRecord record;
         try {
             DynamicMessage row = DynamicMessage.parseFrom(state.descriptor, rowBytes);
             record = state.converter.convert(row);
         } catch (InvalidProtocolBufferException e) {
-            metrics.recordFailed(table);
+            metrics.recordFailed(metrics.forTable(destination));
             config.getFailedRowHandler()
                     .handle(
                             FailedRow.of(
@@ -195,7 +204,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                                     e));
             return;
         } catch (IOException e) {
-            metrics.recordFailed(table);
+            metrics.recordFailed(metrics.forTable(destination));
             config.getFailedRowHandler()
                     .handle(
                             FailedRow.of(
@@ -212,7 +221,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
         state.file.append(record);
         // The staging file is this write path's hand-off, so the record counts here — the bytes
         // cannot, since an Avro block's encoded size is only known once the file is finished.
-        metrics.recordStaged(table);
+        metrics.recordStaged(metrics.forTable(destination));
         if (state.file.bytesWritten() >= maxFileBytes) {
             finishFile(state);
         }

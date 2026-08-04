@@ -56,6 +56,25 @@ class BigtableWriterMetricsTest {
     private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
 
     @Test
+    void countsARecordTheSerializerSkippedAsNeitherASendNorAnError() throws Exception {
+        SinkWriter<String> writer =
+                writer(
+                        (element, context) -> element.equals("skip-me") ? null : entry(element),
+                        dropping());
+
+        writer.write("skip-me", TestContexts.NO_OP);
+        writer.write("row-1", TestContexts.NO_OP);
+
+        assertThat(counter(BigtableWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+        // The record that did become a mutation is the control: the skip is counted apart from
+        // both of the counters a record normally lands in.
+        assertThat(counter("numRecordsSend")).isEqualTo(1);
+        assertThat(counter("numRecordsSendErrors")).isZero();
+        // A skip carries no status, so it must not appear beside the RPC failures either.
+        assertThat(metrics.hasMetric("errorClass", "UNCLASSIFIED", "errors")).isFalse();
+    }
+
+    @Test
     void countsARecordTheSerializerRejectedAsASendErrorAndUnderNoStatus() throws Exception {
         SinkWriter<String> writer =
                 writer(

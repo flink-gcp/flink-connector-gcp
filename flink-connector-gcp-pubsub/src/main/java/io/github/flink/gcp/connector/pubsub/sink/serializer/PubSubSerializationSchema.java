@@ -21,6 +21,8 @@ import org.apache.flink.api.common.serialization.SerializationSchema;
 
 import com.google.pubsub.v1.PubsubMessage;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Map;
@@ -33,6 +35,13 @@ import java.util.Map;
  * Flink {@link SerializationSchema} with {@link #dataOnly(SerializationSchema)}; attributes and an
  * ordering key extracted from the record can be layered onto any schema with {@link
  * #withAttributes(AttributesExtractor)} and {@link #withOrderingKey(OrderingKeyExtractor)}.
+ *
+ * <p>Returning {@code null} skips the record: it is written nowhere and is not a failure. Every
+ * serializer of this connector family reads {@code null} that way, so a filter that depends on the
+ * message being built belongs here rather than upstream of the sink. A {@code null} travels
+ * unchanged through {@link #withAttributes(AttributesExtractor)} and {@link
+ * #withOrderingKey(OrderingKeyExtractor)}, which extract nothing from a record they are not going
+ * to send.
  *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0).
@@ -93,14 +102,20 @@ public interface PubSubSerializationSchema<T> extends Serializable {
      * Serializes the given record into a Pub/Sub message.
      *
      * @param element the record
-     * @return the message to publish
-     * @throws IOException if the record cannot be serialized; fails the ongoing write
+     * @return the message to publish, or {@code null} to skip the record
+     * @throws IOException if the record cannot be serialized; the record is handed to the sink's
+     *     failed-message handler, which fails the job by default
      */
+    @Nullable
     PubsubMessage serialize(T element) throws IOException;
 
     /**
      * Wraps a plain Flink {@link SerializationSchema} into a schema producing messages whose
      * payload is the serialized record, with no attributes or ordering key.
+     *
+     * <p>A payload-only schema cannot skip a record: Flink's {@code SerializationSchema} contract
+     * has no {@code null} in it, so a {@code null} payload is treated as a serialization failure
+     * rather than as a skip. Implement this interface directly to skip.
      *
      * @param schema the payload schema
      * @param <T> type of the records written by the sink

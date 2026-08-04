@@ -28,8 +28,8 @@ import org.apache.flink.annotation.PublicEvolving;
  *
  * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
  * Under a dropping policy configured through {@link CloudTasksSinkBuilder#failedTaskHandler}, a
- * completed checkpoint means every record up to the barrier was either durably accepted or handed
- * to that handler.
+ * completed checkpoint means every record up to the barrier was either durably accepted, skipped by
+ * the serializer, or handed to that handler.
  *
  * <p>Example:
  *

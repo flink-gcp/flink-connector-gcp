@@ -71,15 +71,15 @@ import java.util.Set;
  * runs at every checkpoint barrier and waits for every outstanding creation — including those
  * waiting out a retry backoff — so a successful checkpoint means Cloud Tasks has durably accepted
  * every record up to the barrier (the service returns {@code OK} only once a task has been written
- * to its storage), and discarding operator state can never lose sink-buffered records.
- * Checkpointing must be enabled in streaming jobs; without it {@code flush()} never runs mid-stream
- * and outstanding creations are lost on failure. Batch execution is covered by the end-of-input
- * flush.
+ * to its storage) other than those the serializer skipped by returning {@code null}, and discarding
+ * operator state can never lose sink-buffered records. Checkpointing must be enabled in streaming
+ * jobs; without it {@code flush()} never runs mid-stream and outstanding creations are lost on
+ * failure. Batch execution is covered by the end-of-input flush.
  *
  * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
  * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every record up to the barrier
- * was either durably accepted or handed to the {@link FailureHandler}; the per-task failures below
- * say which ones reach it.
+ * was either durably accepted, skipped by the serializer, or handed to the {@link FailureHandler};
+ * the per-task failures below say which ones reach it.
  *
  * <h2>Retries</h2>
  *
@@ -237,6 +237,12 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
             metrics.taskFailed(metrics.forQueue(destination));
             failedTaskHandler.handle(
                     FailedTask.of(destination, null, "The record could not be serialized.", e));
+            return;
+        }
+        if (task == null) {
+            // Skip by contract, not a failure. Counted, because nothing else reports it: a
+            // serializer skipping every record leaves an empty queue under a green job.
+            metrics.recordSkipped();
             return;
         }
         if (!task.getName().isEmpty()) {

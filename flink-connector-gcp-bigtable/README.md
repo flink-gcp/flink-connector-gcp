@@ -43,9 +43,9 @@ default, is in the [configuration reference](../docs/content/docs/reference/bigt
 ## Provenance and attribution
 
 This module is an original implementation.
-[GoogleCloudPlatform/flink-connector-gcp](https://github.com/GoogleCloudPlatform/flink-connector-gcp)
+[google/flink-connector-gcp](https://github.com/google/flink-connector-gcp)
 (Apache-2.0) is a **design reference** only: the serialization SPI's shape — returning a
-`RowMutationEntry`, with `null` meaning skip — is adopted from its `BaseRowMutationSerializer` so
+`RowMutationEntry`, with `null` meaning skip — is shared with its `BaseRowMutationSerializer` so
 that its users can migrate mechanically. Depending on that artifact, and vendoring its sources, were
 both evaluated and rejected; the grounds are recorded on
 [#33](https://github.com/laughingman7743/flink-connector-gcp/issues/33). Apache Beam's `BigtableIO`

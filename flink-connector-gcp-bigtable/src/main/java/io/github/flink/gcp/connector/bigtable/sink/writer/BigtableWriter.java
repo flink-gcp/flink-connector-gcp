@@ -53,10 +53,10 @@ import java.util.Arrays;
  * <p>The writer is stateless by design: it stores nothing in Flink state. {@link #flush(boolean)}
  * runs at every checkpoint barrier, sends what the client has buffered and blocks until every
  * outstanding mutation is acknowledged, so a successful checkpoint means Bigtable has applied every
- * record up to the barrier and discarding operator state can never lose sink-buffered records.
- * Checkpointing must be enabled in streaming jobs; without it {@code flush()} never runs mid-stream
- * and outstanding mutations are lost on failure. Batch execution is covered by the end-of-input
- * flush.
+ * record up to the barrier — other than those the serializer skipped by returning {@code null} —
+ * and discarding operator state can never lose sink-buffered records. Checkpointing must be enabled
+ * in streaming jobs; without it {@code flush()} never runs mid-stream and outstanding mutations are
+ * lost on failure. Batch execution is covered by the end-of-input flush.
  *
  * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
  * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every record up to the barrier
@@ -185,7 +185,9 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             return;
         }
         if (entry == null) {
-            // Skip by contract, not a failure.
+            // Skip by contract, not a failure. Counted, because nothing else reports it: a
+            // serializer skipping every record leaves an empty table under a green job.
+            metrics.recordSkipped();
             return;
         }
         // Not memoized by the entry, which builds a fresh proto per call, so it is taken once here

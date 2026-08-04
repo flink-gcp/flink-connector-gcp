@@ -97,6 +97,38 @@ class BigQueryBufferedStreamWriterMetricsTest {
     }
 
     @Test
+    void skipsRecordsTheSerializerReturnsNullFor() throws Exception {
+        BigQueryBufferedStreamWriter<String> writer = writer();
+
+        writer.write("skip-me", CONTEXT);
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        // Skipped, not failed: appended nowhere, and never offered to the handler.
+        assertThat(service.appends).hasSize(1);
+        assertThat(handler.rows).isEmpty();
+        assertThat(counter("numRecordsSend")).isEqualTo(1);
+        assertThat(counter("numRecordsSendErrors")).isZero();
+        assertThat(counter(BufferedStreamWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+    }
+
+    @Test
+    void createsNoStreamForACheckpointInWhichEveryRecordWasSkipped() throws Exception {
+        // The claim the writer's own comment makes: a skip costs no per-destination state. With a
+        // second record in the run the stream is created anyway, so only an all-skipped one shows
+        // it — and an empty checkpoint must still produce no committable to flush.
+        BigQueryBufferedStreamWriter<String> writer = writer();
+
+        writer.write("skip-me", CONTEXT);
+        writer.flush(false);
+
+        assertThat(service.createdStreams).isEmpty();
+        assertThat(service.appends).isEmpty();
+        assertThat(writer.prepareCommit()).isEmpty();
+        assertThat(counter(BufferedStreamWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+    }
+
+    @Test
     void countsTheRowsTheServiceRejectedByIndexAsSendErrors() throws Exception {
         service.appendResults.add(
                 FakeBufferedStreamService.failure(

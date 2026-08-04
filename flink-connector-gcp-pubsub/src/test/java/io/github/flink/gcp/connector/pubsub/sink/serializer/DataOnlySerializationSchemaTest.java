@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for the {@link PubSubSerializationSchema#dataOnly(SerializationSchema)} adapter. */
 class DataOnlySerializationSchemaTest {
@@ -40,6 +41,20 @@ class DataOnlySerializationSchemaTest {
         assertThat(message.getData().toString(StandardCharsets.UTF_8)).isEqualTo("hello");
         assertThat(message.getAttributesMap()).isEmpty();
         assertThat(message.getOrderingKey()).isEmpty();
+    }
+
+    @Test
+    void reportsANullPayloadAsAFailureRatherThanASkip() {
+        // Flink's SerializationSchema contract has no null in it, so a null payload is a broken
+        // format, not the sink's skip convention — reading it as a skip would silently drop every
+        // record such a format failed on.
+        PubSubSerializationSchema<String> schema =
+                PubSubSerializationSchema.dataOnly(new NullReturningSchema());
+
+        assertThatThrownBy(() -> schema.serialize("hello"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(NullReturningSchema.class.getName())
+                .hasMessageContaining("returned null");
     }
 
     @Test
@@ -67,6 +82,17 @@ class DataOnlySerializationSchemaTest {
         @Override
         public byte[] serialize(String element) {
             return element.getBytes(StandardCharsets.UTF_8);
+        }
+    }
+
+    /** A payload schema breaking Flink's contract by returning no bytes. */
+    private static final class NullReturningSchema implements SerializationSchema<String> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public byte[] serialize(String element) {
+            return null;
         }
     }
 }

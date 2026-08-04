@@ -194,6 +194,21 @@ class RowDataSerializationSchemaTest {
     }
 
     @Test
+    void aNullFromTheFormatFailsTheWriteRatherThanSkippingTheRow() {
+        // The DataStream serializers read null as "skip the record"; a format's null is not that.
+        // Flink's SerializationSchema contract has no null in it, and SQL has no way to ask for a
+        // skip, so the row is reported as a serialization failure naming the format.
+        RowDataSerializationSchema schema =
+                new RowDataSerializationSchema(
+                        new NullReturningEncoder(), 1, new WritableMetadata[0]);
+
+        assertThatThrownBy(() -> schema.serialize(row(str("a"))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(NullReturningEncoder.class.getName())
+                .hasMessageContaining("returned null");
+    }
+
+    @Test
     void anAttributeWithANullValueFailsTheWrite() {
         RowDataSerializationSchema schema =
                 new RowDataSerializationSchema(
@@ -234,5 +249,16 @@ class RowDataSerializationSchemaTest {
         assertThat(schema.serialize(row(str("b"), str("k2"))).getData().toStringUtf8())
                 .isEqualTo("b");
         assertThat(encoder.seen).containsExactly("a", "b");
+    }
+
+    /** A format breaking Flink's contract by returning no bytes. */
+    private static final class NullReturningEncoder implements SerializationSchema<RowData> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public byte[] serialize(RowData element) {
+            return null;
+        }
     }
 }

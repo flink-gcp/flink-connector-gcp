@@ -12,7 +12,9 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   normalization, AutoValue→builder conversion, options objects, `CrossVersionSink` and
   `base.failure` wiring have changed essentially every line. What *is* adopted is its
   `BaseRowMutationSerializer`'s **shape** — `@Nullable RowMutationEntry serialize(element,
-  context)`, null = skip — so its users port by changing the interface name. Its built-in
+  context)` — so its users port by changing the interface name. Null = skip is no longer an
+  adoption but the repository's own contract, decided in #230 and now carried by all four SPIs;
+  the root `CLAUDE.md` has the reasoning and the three implementation rules. Its built-in
   `GenericRecord`/`RowData` serializers are deliberately not ported: `RowData` belongs to #217, and
   an Avro convenience is additive whenever a use case appears.
 - **Four SDK facts this module is built on**, each checked against `google-cloud-bigtable` sources
