@@ -66,7 +66,7 @@ import java.util.Set;
  * REQUIRED} is the mode that cannot be walked back: BigQuery cannot add a {@code REQUIRED} column
  * to an existing table, and relaxing one is a schema update rather than an edit.
  *
- * <p>This is the normative mapping for every serializer, because every write path ends in a
+ * <p>This is the normative mapping for every serializer, because every write path goes through a
  * protobuf row — the Storage Write API takes protobuf, and the Avro and JSON serializers convert
  * into one. {@link io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions
  * AvroSchemaOptions} carries the same default and the same {@code deriveRequiredColumns()} name;

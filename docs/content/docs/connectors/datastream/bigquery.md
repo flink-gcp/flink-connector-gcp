@@ -101,9 +101,10 @@ Why the policy runs this way:
   rather than an edit — needing `allowFieldRelaxation`, which is off by default. Defaulting to the
   irreversible choice is the wrong way round.
 - **The protobuf mapping is the normative one**, which is why Avro follows it rather than the other
-  way round: every write path ends in a protobuf row — `STORAGE_API_*` writes protobuf directly, the
-  Avro and JSON serializers convert into one, and File loads stages Avro only incidentally, a staging
-  format rather than a contract. Where a front end disagrees, the front end moves.
+  way round: every write path goes through a protobuf row — `STORAGE_API_*` writes protobuf
+  directly, the Avro and JSON serializers convert into one, and File loads converts that same row
+  into the file it stages, so the staging format sits downstream of the mapping. Where a front end
+  disagrees, the front end moves.
 - **A source schema's "mandatory" is not always a statement about mandatoriness.** On the protobuf
   side especially: a plain proto3 scalar has no way to say "unset", which is a property of the syntax
   rather than a decision its author made, so deriving `REQUIRED` from it would constrain nearly every

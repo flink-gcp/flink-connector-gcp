@@ -54,13 +54,13 @@ import java.util.Set;
  * <p>Two reasons {@code NULLABLE} is the default. {@code REQUIRED} is the mode BigQuery cannot walk
  * back — it cannot be added to an existing table, so such a column only ever appears at creation
  * time and relaxing one afterwards is a schema update rather than an edit. And the protobuf mapping
- * is the normative one for every serializer, because every write path ends in a protobuf row: the
- * Storage Write API takes protobuf, and this serializer converts into one. FILE_LOADS stages Avro,
- * but only incidentally — a staging format rather than a contract, and Parquet is equally possible
- * — so that is not a reason for the Avro mapping to lead. An Avro {@code ["null", T]} union is
- * admittedly the schema author's own statement, which makes {@code REQUIRED} the more faithful
- * reading of an Avro schema taken alone — that is why this side used to default to it — but
- * faithfulness to one front end does not outweigh agreeing with the wire form every path shares.
+ * is the normative one for every serializer, because every write path goes through a protobuf row:
+ * the Storage Write API takes protobuf, this serializer converts into one, and FILE_LOADS converts
+ * that same row into the file it stages. So the staging format sits downstream of this mapping and
+ * is not a reason for the Avro mapping to lead. An Avro {@code ["null", T]} union is admittedly the
+ * schema author's own statement, which makes {@code REQUIRED} the more faithful reading of an Avro
+ * schema taken alone — that is why this side used to default to it — but faithfulness to one front
+ * end does not outweigh agreeing with the wire form every path shares.
  */
 @PublicEvolving
 public final class AvroSchemaOptions implements Serializable {
