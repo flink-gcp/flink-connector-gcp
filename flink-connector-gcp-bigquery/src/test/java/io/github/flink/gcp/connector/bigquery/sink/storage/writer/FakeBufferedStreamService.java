@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
+import org.apache.flink.util.ExceptionUtils;
+
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
@@ -81,8 +83,18 @@ public class FakeBufferedStreamService implements BufferedStreamService {
 
     public boolean closed;
 
-    /** When set, {@link #close()} throws it after recording the close. */
-    public RuntimeException closeFailure;
+    /**
+     * When set, {@link #close()} throws it after recording the close. Typed {@code Throwable} so a
+     * test can script an {@code Error}, which is thrown as itself.
+     */
+    public Throwable closeFailure;
+
+    /**
+     * When set, every appender this service handed out throws it on close. Separate from {@link
+     * #closeFailure} because the appender is <em>first</em> in the writer's close list and the
+     * service second, so only this one exercises a failure that has resources after it.
+     */
+    public Throwable appenderCloseFailure;
 
     private int streamSequence;
 
@@ -129,7 +141,11 @@ public class FakeBufferedStreamService implements BufferedStreamService {
             }
 
             @Override
-            public void close() {}
+            public void close() {
+                if (appenderCloseFailure != null) {
+                    ExceptionUtils.rethrow(appenderCloseFailure);
+                }
+            }
         };
     }
 
@@ -150,7 +166,7 @@ public class FakeBufferedStreamService implements BufferedStreamService {
     public void close() {
         closed = true;
         if (closeFailure != null) {
-            throw closeFailure;
+            ExceptionUtils.rethrow(closeFailure);
         }
     }
 

@@ -406,6 +406,25 @@ class FileLoadsWriterTest {
     }
 
     @Test
+    void closeStillClosesTheHandlerWhenAbortingAStagedFileThrowsAnError() throws Exception {
+        // #276: the handler is last after every open staged file, and Flink's IOUtils.closeAll
+        // rethrew an Error from inside its loop, leaving it open. StagedFileWriter.abort() swallows
+        // an IOException or a RuntimeException by design, so an Error is the only failure this list
+        // can carry at all — which is what makes the failure path pinnable here.
+        CollectingHandler handler = new CollectingHandler();
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(config(handler), storage, FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+        writer.write(new TestRow("t1", "a", 1L), CONTEXT);
+        storage.closeFailure = new NoClassDefFoundError("staged file close blew up");
+
+        assertThatThrownBy(writer::close)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("staged file close blew up");
+        assertThat(handler.closed).isTrue();
+    }
+
+    @Test
     void multiplePrepareCommitCyclesYieldDistinctUris() throws Exception {
         // Streaming execution calls prepareCommit once per checkpoint; the per-destination file
         // sequence must keep growing so a later checkpoint's file never reuses an earlier URI.

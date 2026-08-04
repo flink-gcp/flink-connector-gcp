@@ -222,6 +222,55 @@ class PubSubSplitReaderTest {
     }
 
     @Test
+    void closeShutsDownEverySubscriberEvenWhenOneCloseThrowsAnError() throws Exception {
+        // #276: Flink's IOUtils.closeAll rethrows an Error from inside its loop, so the second
+        // subscriber was left open — holding messages Pub/Sub only redelivers once their
+        // acknowledgement deadline expires. That the Error reaches the caller as an Error is the
+        // other half: Flink halts the JVM on a fatal one, and only if it arrives unwrapped.
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        subscriberOf(SPLIT_A).failOnClose(new NoClassDefFoundError("close blew up"));
+
+        assertThatThrownBy(reader::close)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("close blew up");
+
+        assertThat(subscriberOf(SPLIT_A).isClosed()).isTrue();
+        assertThat(subscriberOf(SPLIT_B).isClosed()).isTrue();
+    }
+
+    @Test
+    void closeShutsDownAndClosesEverySubscriberEvenWhenOneShutdownThrows() throws Exception {
+        // #297: shutdown() declares no checked exception, and the loop that called it was a bare
+        // for loop — so one unchecked failure skipped every later nack *and* skipped the closeAll
+        // entirely, leaving even the already-shut-down subscribers open. Both halves are asserted
+        // here: B is shut down (nacked) and both are closed.
+        List<String> calls = new ArrayList<>();
+        this.calls = calls;
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        subscriberOf(SPLIT_A).failOnShutdown(new IllegalStateException("shutdown blew up"));
+
+        assertThatThrownBy(reader::close)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("shutdown blew up");
+
+        assertThat(subscriberOf(SPLIT_B).isShutdownRequested()).isTrue();
+        assertThat(subscriberOf(SPLIT_A).isClosed()).isTrue();
+        assertThat(subscriberOf(SPLIT_B).isClosed()).isTrue();
+        // The failing shutdown does not cost the ordering either: still every shutdown before any
+        // close, which is what keeps the waits overlapping. Same shape as the test below, which
+        // owns that property on the success path.
+        assertThat(calls).hasSize(4);
+        assertThat(calls.subList(0, 2))
+                .containsExactlyInAnyOrder(
+                        "shutdown:" + SPLIT_A.splitId(), "shutdown:" + SPLIT_B.splitId());
+        assertThat(calls.subList(2, 4))
+                .containsExactlyInAnyOrder(
+                        "close:" + SPLIT_A.splitId(), "close:" + SPLIT_B.splitId());
+    }
+
+    @Test
     void closeStartsEverySubscriberShutdownBeforeWaitingOnAny() throws Exception {
         // shutdown() nacks the split.s messages and returns at once; close() then waits up to the
         // shutdown timeout. Interleaving the two costs splits × timeout, and past roughly six

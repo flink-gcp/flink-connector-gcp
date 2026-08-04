@@ -22,7 +22,6 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
-import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.ThrowingRunnable;
 
@@ -31,6 +30,7 @@ import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
@@ -360,10 +360,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 closeables.add(state.publisher);
             }
             closeables.add(topicAdmin);
-            // Through closeAll, so the handler is closed even when a publisher's shutdown throws:
-            // the lifecycle contract promises close on the failure path too.
+            // Through Closers.closeAll, so the handler is closed even when a publisher's shutdown
+            // throws: the lifecycle contract promises close on the failure path too.
             closeables.add(failedMessageHandler::close);
-            IOUtils.closeAll(closeables);
+            Closers.closeAll(closeables);
         } finally {
             states.clear();
             // Dropped with the writer, so the gauge must not keep reporting them.

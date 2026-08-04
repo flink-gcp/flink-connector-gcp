@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.util.ExceptionUtils;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
@@ -168,6 +169,12 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         private final List<FakeAppender> created = new ArrayList<>();
         private final Deque<ApiFuture<AppendRowsResponse>> scriptedResults = new ArrayDeque<>();
 
+        /**
+         * When set, every appender throws it on close. Typed {@code Throwable} so a test can script
+         * an {@code Error}, which is thrown as itself.
+         */
+        private Throwable closeFailure;
+
         @Override
         public RowAppender create(
                 TableDestination destination,
@@ -204,6 +211,9 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
             @Override
             public void close() {
                 closed = true;
+                if (closeFailure != null) {
+                    ExceptionUtils.rethrow(closeFailure);
+                }
             }
         }
     }
@@ -713,6 +723,30 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         writer.flush(false);
         writer.close();
 
+        assertThat(handler.closed).isTrue();
+    }
+
+    @Test
+    void closeStillClosesTheHandlerWhenAnAppenderCloseThrowsAnError() throws Exception {
+        // #276: the handler is last after every destination's appender, and Flink's
+        // IOUtils.closeAll rethrew an Error from inside its loop, leaving it open. That the Error
+        // reaches the caller as an Error is the other half — Flink halts the JVM on a fatal one,
+        // and only if it arrives unwrapped.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        RecordingFailedRowHandler handler = new RecordingFailedRowHandler();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler),
+                        factory,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+        factory.closeFailure = new NoClassDefFoundError("appender close blew up");
+
+        assertThatThrownBy(writer::close)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("appender close blew up");
         assertThat(handler.closed).isTrue();
     }
 }

@@ -77,8 +77,10 @@ changes; not worth avoiding until then."""
 [internal."org.apache.flink.util.ExceptionUtils"]
 reason = """
 findThrowable in every writer's error classification (cause-chain walks in
-AppendErrorClassifier, PubSubWriter, CloudTasksWriter). Small,
-stable-in-practice utility; inlining the helper is the fallback."""
+AppendErrorClassifier, PubSubWriter, CloudTasksWriter), plus firstOrSuppressed
+and rethrowException in base.lifecycle.Closers, which is what lets a close
+failure keep its own type. Small, stable-in-practice utility; inlining the
+helpers is the fallback."""
 
 [internal."org.apache.flink.metrics.ThreadSafeSimpleCounter"]
 reason = """
@@ -161,9 +163,3 @@ named here only because the sink harness is shared and therefore lives in
 src/main/java. Fallback is a metric-recording MetricGroup of this repository's
 own, which would reimplement Flink's identifier composition — the very thing the
 name-based assertions rest on."""
-
-[unannotated."org.apache.flink.util.IOUtils"]
-reason = """
-closeAll in the writers' and split reader's close paths, where closing every
-resource before rethrowing the first failure is the point. A few lines of
-try/catch aggregation replace it if needed."""

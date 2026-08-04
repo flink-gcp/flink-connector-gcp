@@ -21,7 +21,6 @@ import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
-import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
@@ -34,6 +33,7 @@ import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
@@ -553,8 +553,10 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         // will never wait for again. Nothing re-adds an entry: the completion callbacks only
         // remove. Same reason PubSubWriter.close() zeroes its parked count.
         inFlight.clear();
+        // Closers.closeAll, not sequential closes: the handler must be closed on the failure path
+        // too, even when closing an appender throws.
         closeables.add(failedRowHandler::close);
-        IOUtils.closeAll(closeables);
+        Closers.closeAll(closeables);
     }
 
     /**

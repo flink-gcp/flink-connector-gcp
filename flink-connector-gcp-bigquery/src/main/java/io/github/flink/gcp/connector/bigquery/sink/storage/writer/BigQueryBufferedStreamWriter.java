@@ -21,7 +21,6 @@ import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.api.connector.sink2.StatefulSinkWriter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
-import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
@@ -32,6 +31,7 @@ import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -293,8 +293,8 @@ public class BigQueryBufferedStreamWriter<T>
         // closes; a crash leaves restored committables behind), and BigQuery rejects FlushRows
         // on a finalized stream — finalizing here could make those commits permanently fail.
         // An unflushable tail past the last snapshot stays invisible without any cleanup.
-        // closeAll, not sequential closes: the handler must be closed on the failure path too,
-        // even when closing the appender or service throws.
+        // Closers.closeAll, not sequential closes: the handler must be closed on the failure path
+        // too, even when closing the appender or service throws.
         List<AutoCloseable> closeables = new ArrayList<>();
         if (appender != null) {
             closeables.add(appender);
@@ -310,7 +310,7 @@ public class BigQueryBufferedStreamWriter<T>
         // this writer never awaited them after close.
         inFlight.clear();
         closeables.add(failedRowHandler::close);
-        IOUtils.closeAll(closeables);
+        Closers.closeAll(closeables);
     }
 
     // ------------------------------------------------------------------

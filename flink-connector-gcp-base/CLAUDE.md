@@ -136,29 +136,50 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   unchanged and `getTarget()` reconstructs the input. One message covers every malformed value
   (`emulatorEndpoint must be host:port, was '<value>'`), which is why the old "must not be blank"
   is gone: a blank endpoint is not a separate kind of mistake.
-- **`base.lifecycle` is one method** (#229, six consumers on arrival): `Closers
-  .closeAllSuppressing(failure, closeables...)` releases what a failed writer creation already
-  built, reporting a close failure as *suppressed* on the exception the caller is about to rethrow
-  rather than in place of it. It exists because that is the one thing
-  `IOUtils.closeAll(AutoCloseable...)` — which every writer's `close()` here already uses — does
-  not do: it throws its collected failure, which is right when closing *is* the operation and
-  wrong when something else already failed. **It delegates to that method rather than
-  reimplementing it**, so the semantics it depends on stay Flink's: nulls skipped (a caller passes
-  a local it had not reached yet) and *every* resource closed before anything is reported (a
-  resource must not be left open because an earlier one refused). **The second only holds with
-  `Throwable.class`, which is why the two-argument `closeAll(Iterable, Class)` is called and not
-  the one-argument varargs form** — that one passes `Exception.class`, and `closeAll` *rethrows
-  from inside its loop* anything the class does not cover, so one `Error` would leave every later
-  resource open and escape `Closers` itself, skipping the caller's rethrow: the leak this class
-  exists to prevent, reached through it. Found in review, not by reasoning about it in advance;
-  `ClosersTest` now has the `Error` case, and it fails against the one-argument form. For the same
-  reason the six call sites catch **`Throwable`, not `Exception`** — a client's first classload
-  failing with `NoClassDefFoundError` repeats on every restart attempt — which precise rethrow
-  makes compile without widening any `throws` clause. It cleared the
-  module's multiple-consumers bar on arrival with six call sites — the five sinks #229 fixed plus
-  `BigtableMutateRowsSink`, whose private `closeSuppressing` it replaced so the tree keeps one
-  idiom. `IOUtils` is unannotated in Flink and already carries an allowlist entry in
-  `scripts/flink-api-tiers.toml`, so this added none.
+- **`base.lifecycle` is two methods, one loop** (#229 then #276), and every `close()`-shaped call
+  site in this repository goes through one of them — nothing calls `IOUtils.closeAll` any more, so
+  its `scripts/flink-api-tiers.toml` entry is gone and `ExceptionUtils`' covers both users.
+  `closeAll(closeables)` is for when **closing is the operation**: it closes everything, then
+  throws the first failure with any later one suppressed onto it.
+  `closeAllSuppressing(failure, closeables...)` is for when **something else already failed** —
+  a writer creation that got part-way — and reports a close failure as *suppressed* on the
+  exception the caller is about to rethrow rather than in place of it, because what went wrong is
+  why the resources are being released. Both skip nulls (a caller passes a local it had not
+  reached yet) and close *every* resource before reporting (a resource must not be left open
+  because an earlier one refused).
+  **The loop is written out rather than delegated to `IOUtils.closeAll`, and that is #276's whole
+  decision** — reversing #229's "delegate rather than reimplement", which is worth stating because
+  the reversal was argued, not drifted into. `IOUtils.closeAll` rethrows *from inside its loop*
+  anything its `Class` argument does not cover, so `Exception.class` (what the one-argument
+  varargs form passes) abandons every later resource on an `Error`: that was the live bug at nine
+  sites, with the failure handler last in six of the lists and, since #211, owning an SDK
+  `Publisher` and a gRPC `ManagedChannel`. `Throwable.class` closes everything but collects a
+  non-`Exception` as `new Exception(e)` — and **a wrapped `Error` is a different thing to Flink**:
+  `Task.preProcessException` tests the throwable itself (it unwraps only `WrappingRuntimeException`)
+  and halts the JVM on `isJvmFatalError(t) || t instanceof OutOfMemoryError`, so a wrapped
+  `OutOfMemoryError` from a teardown fails the task into a restart loop instead. Ten lines over
+  `ExceptionUtils.firstOrSuppressed` and `ExceptionUtils.rethrowException` keep the type, which is
+  what both `closeAll` tests and every site's `Error` test assert. Consequence for the second
+  method: it catches **`Throwable`**, not `Exception`, since an `Error` is no longer wrapped into
+  one — and its suppressed entry is now the `Error` itself rather than an `Exception` around it.
+  **`closeAllSuppressing` has exactly one exception to "the caller's failure is never replaced",
+  and it is `ExceptionUtils.isJvmFatalOrOutOfMemoryError`**: such a failure takes the top slot with
+  the caller's suppressed onto it. Same argument as above, applied one level down — `Task
+  .preProcessException` inspects only the throwable it is handed, so a fatal one in a suppressed
+  slot is one nothing halts on, and for an `OutOfMemoryError` that means our code silently
+  overriding whatever the operator set `taskmanager.jvm-exit-on-oom` to. The diagnostic cost is
+  bounded (the real failure is one `getSuppressed()` away, and stack traces walk those
+  recursively) and the set is narrow by construction: `isJvmFatalError` is `InternalError` /
+  `UnknownError` / `ThreadDeath`, so **`NoClassDefFoundError` is deliberately *not* escalated** and
+  stays suppressed — which is what keeps this from degenerating into "any `Error` wins". The
+  escalation runs after the loop, never from inside it, so it costs no resource. Not extended to
+  `closeAll`, which has nothing to escalate over.
+  For the same reason the six creation-guard call sites catch **`Throwable`, not `Exception`** —
+  a client's first classload failing with `NoClassDefFoundError` repeats on every restart attempt
+  — which precise rethrow makes compile without widening any `throws` clause. The module's
+  multiple-consumers bar was cleared on arrival with six call sites — the five sinks #229 fixed
+  plus `BigtableMutateRowsSink`, whose private `closeSuppressing` it replaced so the tree keeps
+  one idiom — and #276 added nine more.
 - **Dependencies are `flink-core` (provided) plus `gax`/`grpc-api`/`protobuf-java`
   (BOM-managed).** Unlike
   test-utils, consumers depend on this module at **compile** scope, so it is bundled into the

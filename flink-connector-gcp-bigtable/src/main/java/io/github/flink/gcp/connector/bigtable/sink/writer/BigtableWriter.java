@@ -21,7 +21,6 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
-import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.ThrowingRunnable;
 
@@ -30,13 +29,13 @@ import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkConfig;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 
 import java.io.IOException;
-import java.util.Arrays;
 
 /**
  * At-least-once writer applying row mutations to one fixed Bigtable table.
@@ -243,9 +242,9 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // count and the BigQuery writers clear their in-flight maps.
         inFlightMutations = 0;
         inFlightBytes = 0;
-        // Through closeAll, so the handler is closed even when the batcher's shutdown throws: the
-        // lifecycle contract promises close on the failure path too.
-        IOUtils.closeAll(Arrays.<AutoCloseable>asList(batcher, failedMutationHandler::close));
+        // Through Closers.closeAll, so the handler is closed even when the batcher's shutdown
+        // throws: the lifecycle contract promises close on the failure path too.
+        Closers.closeAll(batcher, failedMutationHandler::close);
     }
 
     /** Releases one completed mutation from both in-flight counters. */

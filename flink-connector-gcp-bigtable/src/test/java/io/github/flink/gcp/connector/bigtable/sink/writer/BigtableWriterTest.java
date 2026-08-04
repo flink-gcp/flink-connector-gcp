@@ -265,6 +265,22 @@ class BigtableWriterTest {
     }
 
     @Test
+    void closesTheHandlerEvenWhenTheBatcherShutdownThrowsAnError() {
+        // #276: the handler is last, and Flink's IOUtils.closeAll rethrew an Error from inside its
+        // loop, leaving it open — since #211 it can own an SDK publisher and a gRPC channel. That
+        // the Error reaches the caller as an Error is the other half: Flink halts the JVM on a
+        // fatal one, and only if it arrives unwrapped.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
+        batcher.closeFailure = new NoClassDefFoundError("batcher shutdown blew up");
+
+        assertThatThrownBy(writer::close)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("batcher shutdown blew up");
+        assertThat(handler.closes).isEqualTo(1);
+    }
+
+    @Test
     void wrapsASynchronousBatcherFailure() {
         SinkWriter<String> writer = writer(BigtableWriterOptions.defaults());
         batcher.addFailure = new IllegalStateException("batcher is closed");

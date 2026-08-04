@@ -30,10 +30,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   the buffered sink's `@VisibleForTesting` 3-arg `restoreWriter` is the production delegate and
   **does** open (its writer tests bypass the sink and construct the writer directly). The three
   writers call the handler's `flush()` after their drains, and their `close()` uses
-  `IOUtils.closeAll` so the handler is closed even when closing an appender/service or aborting
-  a staged file throws (the lifecycle contract promises close on the failure path too; note
-  `StagedFileWriter.abort()` swallows by design, so the FILE_LOADS `closeAll` is belt-and-braces
-  and only the buffered path's failure-path close is pinnable by test).
+  `Closers.closeAll` (`base.lifecycle`, never Flink's `IOUtils.closeAll` — #276, whose reasoning
+  is in the base module's CLAUDE.md) so the handler is closed even when closing an appender or
+  service, or aborting a staged file, throws: the lifecycle contract promises close on the failure
+  path too. On the FILE_LOADS path that promise is testable in exactly one shape, and the shape is
+  the point rather than an accident — `StagedFileWriter.abort()` swallows an `IOException` or a
+  `RuntimeException` by design, so an `Error` is the only failure that list can carry, which is
+  what `closeStillClosesTheHandlerWhenAbortingAStagedFileThrowsAnError` drives through the staging
+  storage's own close.
   **`findRowLevel` rejects a row-detailed error whose own status code is transient** (#213
   round-2 review): the SDK copies the response's status code verbatim onto
   `AppendSerializationError` after its in-stream retries, so row details under `UNAVAILABLE` &c.

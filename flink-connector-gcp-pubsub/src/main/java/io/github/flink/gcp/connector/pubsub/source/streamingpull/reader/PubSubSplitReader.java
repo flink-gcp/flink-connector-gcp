@@ -24,9 +24,9 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
-import org.apache.flink.util.IOUtils;
 
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.slf4j.Logger;
@@ -35,6 +35,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -233,13 +234,18 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             // the splits whose turn never came would not have been nacked at all, leaving their
             // messages to expire instead. Starting them all first overlaps the waits, so the total
             // is one timeout however many splits the reader owns.
+            //
+            // One list rather than a loop and then a call (#297): closeAll runs every entry before
+            // reporting anything, so a shutdown that throws no longer skips the later nacks — nor
+            // the closes, which a bare loop skipped wholesale, leaving every subscriber open
+            // holding messages Pub/Sub would only redeliver once their acknowledgement deadline
+            // expired. The order within the list is the property the paragraph above argues for.
+            List<AutoCloseable> steps = new ArrayList<>(subscribers.size() * 2);
             for (NotifyingPullSubscriber subscriber : subscribers.values()) {
-                subscriber.shutdown();
+                steps.add(subscriber::shutdown);
             }
-            // closeAll keeps closing after a failure and reports the rest as suppressed: every
-            // subscriber left open holds messages Pub/Sub would only redeliver once their
-            // acknowledgement deadline expires.
-            IOUtils.closeAll(subscribers.values());
+            steps.addAll(subscribers.values());
+            Closers.closeAll(steps);
         } finally {
             subscribers.clear();
             pausedSplits.clear();

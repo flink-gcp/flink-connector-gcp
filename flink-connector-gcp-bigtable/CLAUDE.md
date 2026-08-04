@@ -99,15 +99,15 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
     real divergence rather than a theoretical one, and it is pinned by
     `namesTheOutermostStatusOfAChainItTreatsAsFatalForABuriedTransientOne` — added because the
     mutant reporting the routing decision instead **survived** the first test set.
-  - **`close()` zeroes the two gauge-backing counters, and does it *before* `closeAll`.** A
+  - **`close()` zeroes the two gauge-backing counters, and does it *before* `Closers.closeAll`.** A
     reporter can sample between `close()` and the metric group's own close, and nothing decrements
     them afterwards (the completions that would run as mailbox mails no longer run), so a writer
     torn down mid-flight would keep reporting mutations it will never wait for — the same
     lifecycle gap #210 found in the BigQuery writers and #208 had already closed in
     `PubSubWriter`. The *placement* is this module's own: `close()` throws a `BatchingException`
-    on the failure path (#238), so a clear after `closeAll` would be skipped in exactly the case
-    it exists for. Found in review round 2, having been missed by a round 1 that looked only at
-    increment sites — **when a series brings the same shape to another connector, diff the
+    on the failure path (#238), so a clear after `Closers.closeAll` would be skipped in exactly
+    the case it exists for. Found in review round 2, having been missed by a round 1 that looked
+    only at increment sites — **when a series brings the same shape to another connector, diff the
     `close()` paths too.**
   - **Every failure reaching the writer is counted, fatal ones included and fatal ones after the
     first.** Only the first becomes `asyncError`, but each is a mutation the client gave up on.

@@ -653,6 +653,27 @@ class PubSubWriterFailureHandlerTest {
     }
 
     @Test
+    void closeClosesTheHandlerEvenWhenAPublisherCloseThrowsAnError() throws Exception {
+        // #276: the comment above this close() said the handler is closed even when a publisher's
+        // shutdown throws, and Flink's IOUtils.closeAll made that false for an Error — it rethrows
+        // from inside its loop, so both the topic admin and the handler stayed open. Since #211
+        // the handler can own an SDK publisher and a gRPC channel, and a gax shutdown is a
+        // plausible place for a NoClassDefFoundError. That the Error reaches the caller as an
+        // Error is the other half: Flink halts the JVM on a fatal one, and only if it arrives
+        // unwrapped.
+        PubSubWriter<String> writer = newWriter();
+        writer.write("topic-a", CONTEXT);
+        factory.publishers.get(topic("topic-a")).closeFailure =
+                new NoClassDefFoundError("shutdown blew up");
+
+        assertThatThrownBy(writer::close)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("shutdown blew up");
+        assertThat(admin.closeCalls).isEqualTo(1);
+        assertThat(handler.closeCalls).isEqualTo(1);
+    }
+
+    @Test
     void theWriterDoesNotOpenTheHandler() throws Exception {
         // Opening belongs to the production createWriter (PubSubSinkFailureHandlerOpenTest), so a
         // writer built against injected fakes must not open a second time.

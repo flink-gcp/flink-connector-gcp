@@ -157,7 +157,13 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   buffer-until-flush, and that shape can OOM where the pre-#37 behaviour merely failed the job.
   `envelope(...)` is a **pure static** taking the subtask index and the instant, which is what
   lets the attribute set be pinned exactly without a live publisher — `Publisher` is final, so
-  there is no other seam short of an internal interface. The topic is never auto-created: a
+  every seam here has to be arranged deliberately. The second one is `close()`'s: its two steps
+  are held as `@VisibleForTesting` `AutoCloseable` fields (`publisherShutdown`, `channelShutdown`)
+  that `open()` assigns, rather than being called as private methods, so #276's test can make the
+  publisher's shutdown throw an `Error` and assert the channel is shut down anyway. **The
+  not-open guard reads `publisherShutdown`, not `publisher`** — they are set and cleared together,
+  so it means the same thing, and it is what lets the test drive `close()` without opening a real
+  publisher and stranding a gax executor in the test JVM. The topic is never auto-created: a
   dead-letter destination created on the fly is one nothing is consuming
 - **Pub/Sub sink metrics** (#208, the #37 series): `PubSubSinkWriterMetrics` (`sink.writer`) on the
   `PubSubSourceReaderMetrics` model, but with **plain counters, not `ThreadSafeSimpleCounter`** —
@@ -200,6 +206,15 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `WAIT_FOR_PROCESSING` waits for acknowledgements that only arrive at checkpoint completion, which
   never happens during close; only `shutdownTimeout` is a knob (an SDK enum on the public API would
   also break the #47 SQL mapping);
+  (a′) **`close()` puts the shutdowns and the closes in one list through `Closers.closeAll`**, never
+  a loop followed by a call (#297). `shutdown()` declares no checked exception, so an unchecked one
+  from the first subscriber used to skip every later nack *and* skip the `closeAll` wholesale —
+  leaving even the already-shut-down subscribers open, holding messages Pub/Sub only redelivers once
+  their acknowledgement deadline expires. Both comments in that method asserted the opposite. The
+  single list keeps the ordering those comments argue for (every shutdown before any close, so the
+  waits overlap) because `closeAll` runs entries in order, and it is what makes the ordering
+  survive a failure — pinned by asserting the recorded call order in the failing case too, not just
+  on the success path;
   (b) the "**fail when running without checkpointing**" guard **cannot read the configuration** —
   `SourceReaderContext.getConfiguration()` is the TaskManager configuration
   (`SourceOperatorFactory` passes `getTaskManagerInfo().getConfiguration()`), while

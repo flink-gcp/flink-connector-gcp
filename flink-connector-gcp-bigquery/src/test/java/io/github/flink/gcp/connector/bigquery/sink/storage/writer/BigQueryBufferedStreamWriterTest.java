@@ -272,6 +272,34 @@ class BigQueryBufferedStreamWriterTest {
     }
 
     @Test
+    void closeStillClosesTheHandlerWhenTheAppenderCloseThrowsAnError() throws Exception {
+        // #276: Flink's IOUtils.closeAll rethrows an Error from inside its loop, so everything
+        // after it was left open — here the service *and* the handler, which since #211 owns an
+        // SDK publisher and a gRPC channel. The appender is deliberately the thing that throws:
+        // it is first in the close list, so this is the only ordering that leaves resources
+        // behind it to strand. A NoClassDefFoundError from a client's first classload is the
+        // realistic shape. That the Error reaches the caller as an Error is the other half:
+        // Flink halts the JVM on a fatal one, and only if it arrives unwrapped.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.appenderCloseFailure = new NoClassDefFoundError("appender close blew up");
+        RecordingHandler handler = new RecordingHandler();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler, null),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+        writer.write("a", CONTEXT);
+        writer.flush(false);
+
+        assertThatThrownBy(writer::close)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("appender close blew up");
+        assertThat(service.closed).isTrue();
+        assertThat(handler.closed).isTrue();
+    }
+
+    @Test
     void appendsAndEmitsOneCommittablePerCheckpoint() throws Exception {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         BigQueryBufferedStreamWriter<String> writer =
