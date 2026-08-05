@@ -41,7 +41,9 @@ import java.util.function.UnaryOperator;
 /**
  * Shared harness for the gated integration tests that run against real Cloud Pub/Sub — the
  * properties the emulator cannot verify: ordered dispatch, dead-letter forwarding, seek on an
- * ordering-enabled subscription, retention and expiration settings taking effect, and IAM.
+ * ordering-enabled subscription, retention and expiration settings taking effect, IAM, and the
+ * sink's batch-rejection outcome. It is not source-only: sink-side classes extend it from their own
+ * packages, which the {@code protected} members exist to allow.
  *
  * <p>Clients authenticate with application-default credentials through the ADC transport of {@link
  * PubSubTestClients}; the project comes from {@code PUBSUB_IT_PROJECT}. Topics and subscriptions
@@ -90,12 +92,12 @@ public abstract class AbstractPubSubRealGcpITCase {
     private static PubSubTestClients clients;
 
     @BeforeAll
-    static void createClients() throws IOException {
+    protected static void createClients() throws IOException {
         clients = PubSubTestClients.withApplicationDefaultCredentials();
     }
 
     @AfterAll
-    static void deleteCreatedResourcesAndCloseClients() {
+    protected static void deleteCreatedResourcesAndCloseClients() {
         // Subscriptions before topics: a subscription without its topic lingers detached.
         for (SubscriptionName subscription : createdSubscriptions) {
             try {
