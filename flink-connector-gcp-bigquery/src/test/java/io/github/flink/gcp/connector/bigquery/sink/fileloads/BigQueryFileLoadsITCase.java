@@ -339,7 +339,11 @@ class BigQueryFileLoadsITCase {
                                 "SELECT ST_ASTEXT(boundary) FROM "
                                         + tableAPath
                                         + " WHERE name = 'alpha'"))
-                .extracting(row -> row.get(0).getStringValue())
+                // OrDefault(null) rather than getStringValue(): a NULL cell means the load stored
+                // no
+                // geometry, and that has to fail this assertion rather than throw inside it — which
+                // is what the retired queryStrings did.
+                .extracting(row -> row.get(0).getStringValueOrDefault(null))
                 .containsExactly("POINT(1 2)");
         assertThat(
                         RealBigQuery.queryLongs(

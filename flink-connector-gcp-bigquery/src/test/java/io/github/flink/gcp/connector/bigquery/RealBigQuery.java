@@ -23,6 +23,7 @@ import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardTableDefinition;
+import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
@@ -60,8 +61,12 @@ public final class RealBigQuery {
         return System.getenv("BQ_IT_DATASET");
     }
 
-    /** A REST client over application-default credentials. */
-    public static BigQuery client() {
+    /**
+     * A REST client over application-default credentials. Private because every gated ITCase now
+     * reads through the methods below (#292); a case they do not cover earns a method here rather
+     * than a second client at the call site.
+     */
+    private static BigQuery client() {
         return BigQueryOptions.newBuilder().setProjectId(project()).build().getService();
     }
 
@@ -99,10 +104,11 @@ public final class RealBigQuery {
 
     /** Returns the live columns of {@code table}, in order. */
     public static FieldList tableFields(String table) {
-        Schema schema =
-                client().getTable(TableId.of(project(), dataset(), table))
-                        .<StandardTableDefinition>getDefinition()
-                        .getSchema();
+        Table live = client().getTable(TableId.of(project(), dataset(), table));
+        // Named rather than left to a bare NPE below: a table the sink was expected to auto-create
+        // is exactly what a caller of this asserts about, and the run that finds out is a paid one.
+        assertThat(live).as("table %s exists", table).isNotNull();
+        Schema schema = live.<StandardTableDefinition>getDefinition().getSchema();
         assertThat(schema).isNotNull();
         return schema.getFields();
     }

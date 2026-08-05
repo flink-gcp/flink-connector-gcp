@@ -36,13 +36,17 @@ public final class RealGcs {
 
     private RealGcs() {}
 
-    /** The bucket the gated FILE_LOADS ITCases stage into ({@code BQ_IT_GCS_BUCKET}). */
-    public static String bucket() {
+    /**
+     * The bucket the gated FILE_LOADS ITCases stage into ({@code BQ_IT_GCS_BUCKET}). Private, as
+     * {@link #client()} is: a caller wants a URI or the objects under a prefix, not the bucket
+     * name, and keeping it that way is what stops a second {@code gs://} concatenation appearing.
+     */
+    private static String bucket() {
         return System.getenv("BQ_IT_GCS_BUCKET");
     }
 
     /** A client over application-default credentials, in {@link RealBigQuery#project()}. */
-    public static Storage client() {
+    private static Storage client() {
         return StorageOptions.newBuilder()
                 .setProjectId(RealBigQuery.project())
                 .build()
