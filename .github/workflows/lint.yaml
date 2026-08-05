@@ -1,22 +1,23 @@
 name: Lint
 
 # Linters for the parts of the repository Maven does not cover. Spotless and
-# checkstyle handle the Java sources inside `just verify` (ci.yaml); this is
-# where everything else goes — shellcheck, ruff, actionlint, markdownlint and
-# `tofu fmt -check` today (`tofu validate` is subsumed by the plan the
-# tofu-plan workflow runs on exactly the pull requests that touch opentofu/).
+# checkstyle handle the Java sources inside `just verify` (verify.yaml); this
+# is where everything else goes — shellcheck, ruff, actionlint, markdownlint
+# and `tofu fmt -check` today (`tofu validate` is subsumed by the plan the
+# tofu-plan workflow runs whenever a pull request touches opentofu/).
 #
-# Split out of ci.yaml so it reports in seconds instead of behind the
-# integration tests. That is the whole reason: keeping mise away from
-# setup-java was also claimed, but the shims only lead the JDK because
-# add_shims_to_path defaults to true, which a job that needs both can simply
-# turn off.
+# A workflow of its own rather than jobs in verify.yaml so it reports in
+# seconds instead of behind the integration tests. On pull requests it runs
+# as a reusable workflow called by ci.yaml, with no filter at all — its
+# failures redden the required `CI passed` gate there. The push-side paths
+# filter below is cost-saving only, and protection does not rest on it.
 on:
+  workflow_call:
   push:
     branches:
       - main
       - v1.20
-    paths: &lint_paths
+    paths:
       - 'scripts/**'
       # actionlint lints every workflow, so every workflow is an input here —
       # not just this one.
@@ -50,19 +51,11 @@ on:
       - 'docs/content/**'
       - 'README.md'
       - 'flink-*/README.md'
-  pull_request:
-    paths: *lint_paths
   workflow_dispatch:
 
-# NOTE: the paths filter means pull requests that touch none of the above never
-# report this workflow at all. That is fine while it is optional, but a required
-# check that never reports blocks a pull request forever — so making this one
-# required means either dropping the filter or adding a job that reports success
-# when the filter does not match. Same exposure as docs.yaml.
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# No concurrency group here: inside a workflow_call, github.workflow is the
+# caller's name, so a group defined here would collide with every sibling
+# ci.yaml calls. ci.yaml owns concurrency for pull requests.
 
 permissions:
   contents: read
@@ -87,7 +80,7 @@ jobs:
           install_args: shellcheck actionlint ruff opentofu node npm:markdownlint-cli2
 
       # just comes from install-action even though mise is right here, so that
-      # every workflow installs it the same way. See the note in ci.yaml.
+      # every workflow installs it the same way. See the note in verify.yaml.
       - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: just
@@ -96,8 +89,8 @@ jobs:
         run: just lint
 
   # The scripts/tests suite (PR #247): pytest over the CI deriver and the CI
-  # gate. Here rather than in ci.yaml because its inputs are all in this
-  # workflow's paths — scripts/** carries the code and the tests, the root
+  # gate. Here rather than in verify.yaml because its inputs are all in this
+  # workflow's push-side paths — scripts/** carries the code and the tests, the root
   # pyproject.toml and uv.lock carry the project, mise.toml carries the uv
   # pin — and because it reports in seconds beside the linters. uv resolves
   # the interpreter itself (managed download on a bare runner), so mise

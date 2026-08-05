@@ -1,11 +1,17 @@
 name: Docs
 
+# On pull requests this runs as a reusable workflow called by ci.yaml, with
+# no filter at all — a broken site build reddens the required `CI passed`
+# gate there. The push-side paths filter below is cost-saving only; before
+# the gate it was also what decided whether pull requests built the site,
+# which already matched nearly every one, so requiring it costs little.
 on:
+  workflow_call:
   push:
     branches:
       - main
       - v1.20
-    paths: &docs_paths
+    paths:
       - 'docs/**'
       # A hugo or go version bump must build the site, and mise.toml is where
       # those versions are declared — the same reasoning as lint.yaml. The
@@ -29,13 +35,11 @@ on:
       - 'tools/**'
       - 'mvnw'
       - '.mvn/**'
-  pull_request:
-    paths: *docs_paths
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# No concurrency group here: inside a workflow_call, github.workflow is the
+# caller's name, so a group defined here would collide with every sibling
+# ci.yaml calls. ci.yaml owns concurrency for pull requests.
 
 permissions:
   contents: read
@@ -64,7 +68,7 @@ jobs:
       # (#88). It comes from mise rather than from actions/setup-java so that
       # this job keeps exactly one tool installer for the JDK, which is also
       # what keeps the sentence below true — mise is safe here in a way it would
-      # not be in ci.yaml: there is no setup-java for its java shim to shadow.
+      # not be in verify.yaml: there is no setup-java for its java shim to shadow.
       # Maven itself is not installed; the recipe uses the ./mvnw wrapper.
       #
       # Go now comes from mise.toml rather than from `go-version-file:
@@ -78,7 +82,7 @@ jobs:
           install_args: hugo-extended go java
 
       # just comes from install-action even though mise is right above it, so
-      # that every workflow installs it the same way. See the note in ci.yaml.
+      # that every workflow installs it the same way. See the note in verify.yaml.
       - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: just
@@ -95,7 +99,7 @@ jobs:
           restore-keys: hugo-${{ hashFiles('mise.toml') }}-
 
       # Generating the API reference resolves the whole libraries-bom tree, so
-      # the Maven repository is worth caching. ci.yaml gets this from
+      # the Maven repository is worth caching. verify.yaml gets this from
       # actions/setup-java's `cache: maven`, which is not available here because
       # the JDK comes from mise. ~/.m2/wrapper joins it because the wrapper is
       # `distributionType=only-script`, so Maven itself is downloaded per run and

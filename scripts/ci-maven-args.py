@@ -62,20 +62,20 @@ Each changed file is classified by the first matching rule:
    (issue #253; measured at 7m41s on PR #252, which changed `scripts/tests/`
    alone). That `-pl .` really does licence-check these paths is measured too,
    not inferred from the rat configuration: deleting the header block from
-   scripts/ci-gate.sh fails `just verify -pl .` with "Unapproved: 1"
+   the gate script (then scripts/ci-gate.sh) fails `just verify -pl .` with "Unapproved: 1"
    (2026-08-02, one run).
    The exception is NOTICE_INPUTS below, and the reason is mechanical: the
    NOTICE check is a step *inside* the build job, gated on `check_notice`,
    which is true only when the built set carries a NOTICE.template. Routing
    those two here would compute `false` and silently skip the licence check on
    exactly the change that edits the licence pins. The other two checkers run
-   as unconditional ci.yaml jobs, so their inputs are genuinely Maven-free.
+   as unconditional verify.yaml jobs, so their inputs are genuinely Maven-free.
 4. **Anything else** — the full reactor: the root pom, `mise.toml`, the
    justfile (it carries the Maven invocations themselves), the workflows, a
    new top-level directory. Unknown means everything; that is the safe
    direction.
 
-Modes (ci.yaml's changes job passes the last two; no third-party
+Modes (verify.yaml's changes job passes the last two; no third-party
 changed-files action is involved — a pull_request checkout is the
 base-into-head merge commit, so its own git history already carries the
 changed-file list, decided on PR #247 after weighing the supply-chain
@@ -103,7 +103,7 @@ Output, one `$GITHUB_OUTPUT`-style line each:
                           covers root-level and docs files).
   check_notice=true|false whether the built set contains a shaded module —
                           one whose directory carries a NOTICE.template —
-                          which is what decides whether ci.yaml runs
+                          which is what decides whether verify.yaml runs
                           `just check-notice`.
 
 Exit codes: 0 clean, 1 a module pom names an `io.github.flink-gcp` dependency
@@ -126,8 +126,8 @@ GROUP_ID = "io.github.flink-gcp"
 
 POM_NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 
-# Rule 1 above: the pull_request half of the old ci.yaml paths-ignore. Keep in
-# sync with the push trigger's paths-ignore in .github/workflows/ci.yaml.
+# Rule 1 above: the pull-request half of the Maven workflow's paths-ignore. Keep in
+# sync with the push trigger's paths-ignore in .github/workflows/verify.yaml.
 IGNORED_BASENAMES = {"README.md", "CLAUDE.md"}
 IGNORED_PREFIXES = ("opentofu/",)
 IGNORED_FILES = {
@@ -156,7 +156,7 @@ ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock"}
 # check_notice is true, and the module's own packaging tests run too. Not a
 # list of "scripts that matter": it is exactly the Maven-gated checker's
 # inputs, which is why check-option-docs.py and flink-api-tiers.toml are
-# absent (their ci.yaml jobs run unconditionally).
+# absent (their verify.yaml jobs run unconditionally).
 NOTICE_INPUTS = {"scripts/licence-sources.toml", "scripts/check-notice.py"}
 
 

@@ -11,127 +11,132 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""The full truth table of scripts/ci-gate.sh (issue #243).
+"""The truth table and wiring of scripts/ci-gate.py (issue #243).
 
-The gate is the one check branch protection requires, and it vouches for the
-unconditional checker jobs too, so every row matters: a wrong green here is a
-pull request merging unverified, and a wrong red is one blocked forever.
+ci.yaml's gate is the one check branch protection requires, and the same
+script is the internal verdict of the children with a legitimately skippable
+job, so every row matters: a wrong green is a pull request merging
+unverified, and a wrong red is one blocked forever. The wiring tests pin the
+one drift deriving the verdict from `needs` cannot see — a job that never
+joined a `needs` list at all.
 """
 
+import json
 import re
 import subprocess
 
 import pytest
 from conftest import SCRIPTS
 
-CHECKERS_GREEN = "api_tiers:success option_docs:success"
 
-
-def run_gate(changes=None, build=None, run_build=None, checkers=CHECKERS_GREEN):
+def run_gate(needs, skipped_ok=None):
     env = {}
-    if changes is not None:
-        env["CHANGES_RESULT"] = changes
-    if build is not None:
-        env["BUILD_RESULT"] = build
-    if run_build is not None:
-        env["RUN_BUILD"] = run_build
-    if checkers is not None:
-        env["CHECKER_RESULTS"] = checkers
+    if needs is not None:
+        env["NEEDS"] = needs if isinstance(needs, str) else json.dumps(needs)
+    if skipped_ok is not None:
+        env["SKIPPED_OK"] = skipped_ok
     return subprocess.run(
-        [str(SCRIPTS / "ci-gate.sh")], env=env, capture_output=True, check=False
+        [str(SCRIPTS / "ci-gate.py")], env=env, capture_output=True, check=False
     )
 
 
+def results(**jobs):
+    return {job: {"result": result} for job, result in jobs.items()}
+
+
+# --- the truth table ---
+
+
 @pytest.mark.parametrize(
-    ("changes", "build", "run_build", "expected"),
+    ("needs", "skipped_ok", "expected"),
     [
-        # The two greens: the build ran and passed, or was skipped on purpose.
-        ("success", "success", "true", 0),
-        ("success", "skipped", "false", 0),
-        # A skip the changes job did not ask for must not read as green.
-        ("success", "skipped", "true", 1),
-        ("success", "skipped", "", 1),
-        # Build failures and cancellations.
-        ("success", "failure", "true", 1),
-        ("success", "cancelled", "true", 1),
-        # Change detection itself failed: nothing downstream is trustworthy.
-        ("failure", "skipped", "false", 1),
-        ("cancelled", "skipped", "false", 1),
-        ("skipped", "skipped", "false", 1),
+        # The greens: everything succeeded, or a permitted job skipped.
+        (results(build="success", lint="success"), None, 0),
+        (results(build="skipped", checker="success"), "build", 0),
+        (results(build="skipped", plan="skipped"), "build plan", 0),
+        # A skip nothing permitted must not read as green — that is the
+        # rewiring-mistake defense, and it is per job name.
+        (results(build="skipped"), None, 1),
+        (results(build="skipped"), "plan", 1),
+        (results(build="success", plan="skipped"), "build", 1),
+        # Failures and cancellations, permitted-to-skip or not.
+        (results(build="failure"), None, 1),
+        (results(build="cancelled"), None, 1),
+        (results(build="failure"), "build", 1),
+        # One bad job among good ones is enough.
+        (results(a="success", b="failure", c="success"), None, 1),
     ],
 )
-def test_truth_table(changes, build, run_build, expected):
-    result = run_gate(changes, build, run_build)
+def test_truth_table(needs, skipped_ok, expected):
+    result = run_gate(needs, skipped_ok)
     assert result.returncode == expected, result.stderr
 
 
+def test_the_failing_job_is_named():
+    result = run_gate(results(lint="success", docs="failure"))
+    assert result.returncode == 1
+    assert b"docs: failure" in result.stderr
+    assert b"lint" not in result.stderr
+
+
 @pytest.mark.parametrize(
-    "checkers",
+    "needs",
     [
-        # A failed checker, first or last in the list.
-        "api_tiers:failure option_docs:success",
-        "api_tiers:success option_docs:failure",
-        # A skipped checker cannot happen through ci.yaml's wiring — the
-        # checkers are unconditional — so it can only mean a rewiring mistake,
-        # which must be a red gate rather than a silent pass.
-        "api_tiers:skipped option_docs:success",
-        # A pair that lost its result half.
-        "api_tiers: option_docs:success",
+        # A gate handed nothing has silently stopped vouching.
+        None,
+        "",
+        "not json",
+        "{}",
+        "[]",
     ],
 )
-def test_a_checker_not_succeeding_fails_the_gate(checkers):
-    result = run_gate("success", "success", "true", checkers=checkers)
-    assert result.returncode == 1, result.stderr
+def test_an_unreadable_needs_fails_loudly(needs):
+    assert run_gate(needs).returncode == 1
 
 
-def test_the_failing_checker_is_named():
-    result = run_gate(
-        "success", "success", "true", checkers="api_tiers:success option_docs:failure"
-    )
-    assert result.returncode == 1
-    assert b"option_docs: failure" in result.stderr
-
-
-def test_missing_required_inputs_fail_loudly():
-    assert run_gate(changes=None, build="success").returncode != 0
-    assert run_gate(changes="success", build=None).returncode != 0
-    # A gate invoked without CHECKER_RESULTS is a gate that silently stopped
-    # vouching for the checkers.
-    assert run_gate(changes="success", build="success", checkers=None).returncode != 0
-
-
-# --- the wiring the truth table cannot see ---
+# --- the wiring the verdict cannot see ---
 #
-# The gate only judges what ci.yaml hands it, so a checker added to `needs`
-# but forgotten in CHECKER_RESULTS would fail without reddening the gate —
-# the silent-unprotection failure mode this design exists to remove, in a new
-# shape. These read the real workflow; lint.yaml's paths carry both
-# .github/workflows/** and scripts/**, so they run on every edit to either
-# side of the contract.
+# The script judges whatever `needs` context it is handed, so a job that
+# never joined the calling job's `needs` list is invisible to it — its
+# failure would not redden the gate. These read the real workflows and hold
+# each gate's `needs` to the full job list of its file; lint.yaml's push
+# paths carry .github/workflows/** and scripts/**, and on pull requests the
+# suite always runs, so they fire on every edit to either side.
 
-CI_YAML = (SCRIPTS.parent / ".github" / "workflows" / "ci.yaml").read_text()
+WORKFLOWS = SCRIPTS.parent / ".github" / "workflows"
 
-
-def gate_block():
-    match = re.search(r"^  ci_passed:\n(?:^(?:    .*|)\n)+", CI_YAML, re.MULTILINE)
-    assert match, "ci.yaml no longer has a ci_passed job"
-    return match.group(0)
-
-
-def test_every_gate_dependency_is_vouched_for():
-    block = gate_block()
-    needs = re.search(r"needs:\s*\[([^\]]+)\]", block)
-    assert needs, "ci_passed has no needs list"
-    needed = {job.strip() for job in needs.group(1).split(",")}
-    pairs = dict(re.findall(r"(\w+):\$\{\{ needs\.(\w+)\.result \}\}", block))
-    # changes and build have their own variables and skip logic; every other
-    # dependency must appear in CHECKER_RESULTS, and under its own name.
-    assert set(pairs) == needed - {"changes", "build"}
-    for label, job in pairs.items():
-        assert label == job, f"CHECKER_RESULTS labels {job}'s result as {label}"
+# workflow file -> its gate/verdict job. lint.yaml and docs.yaml carry no
+# verdict on purpose: nothing in them may skip, so any failure already
+# reddens the child workflow, which ci.yaml's gate sees.
+GATES = {
+    "ci.yaml": "ci_passed",
+    "verify.yaml": "verify_passed",
+    "tofu-plan.yaml": "tofu_plan_passed",
+}
 
 
-def test_every_vouched_checker_is_a_real_job():
-    jobs = set(re.findall(r"^  (\w+):\n", CI_YAML, re.MULTILINE))
-    pairs = dict(re.findall(r"(\w+):\$\{\{ needs\.(\w+)\.result \}\}", gate_block()))
-    assert set(pairs) <= jobs
+def jobs_and_needs(filename, gate):
+    # Triggers are 2-space keys too, so only what follows `jobs:` counts.
+    text = (WORKFLOWS / filename).read_text().split("\njobs:\n", 1)[1]
+    jobs = re.findall(r"^  ([\w-]+):\n", text, re.MULTILINE)
+    block = re.search(rf"^  {gate}:\n(?:^(?:    .*|)\n)+", text, re.MULTILINE)
+    assert block, f"{filename} has no {gate} job"
+    needs = re.search(r"needs:\s*\[([^\]]+)\]", block.group(0))
+    assert needs, f"{filename}: {gate} has no needs list"
+    return set(jobs), {job.strip() for job in needs.group(1).split(",")}
+
+
+@pytest.mark.parametrize(("filename", "gate"), sorted(GATES.items()))
+def test_every_job_is_enrolled_in_its_gates_needs(filename, gate):
+    jobs, needs = jobs_and_needs(filename, gate)
+    assert needs == jobs - {gate}
+
+
+def test_every_child_the_orchestrator_calls_declares_workflow_call():
+    text = (WORKFLOWS / "ci.yaml").read_text()
+    children = re.findall(r"uses: \./\.github/workflows/([\w-]+\.yaml)", text)
+    assert children, "ci.yaml calls no reusable workflows"
+    for child in children:
+        assert re.search(
+            r"^  workflow_call:", (WORKFLOWS / child).read_text(), re.MULTILINE
+        ), f"{child} is called by ci.yaml but declares no workflow_call trigger"

@@ -22,7 +22,7 @@ runs, and bills, in any shell where the variable happens to be set.
 The tree is synthetic: a real-tree assertion would make every Java test source
 an input to lint.yaml, whose paths filter has to list every input to a lint.
 What that costs is coverage of the real annotations' formatting, which is
-bought back by `just check-gated-tags` running over the real tree in ci.yaml.
+bought back by `just check-gated-tags` running over the real tree in verify.yaml.
 The one exception is the root pom at the end, which the same filter already
 lists for test_ci_maven_args.py's sake.
 """

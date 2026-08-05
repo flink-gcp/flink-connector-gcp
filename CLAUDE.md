@@ -75,9 +75,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `flink.version` (never class files: their constant pool lists method-level annotations too,
   the #103 miscount). `@Internal`, `@Experimental` and unannotated types each need a reasoned
   allowlist entry in `scripts/flink-api-tiers.toml`; a new one — or a stale entry — fails.
-  Runs as its own `ci.yaml` job, not in `lint.yaml` and not inside `just lint`: its inputs (the
-  main sources, `pom.xml`) are exactly `ci.yaml`'s trigger set, where lint.yaml's paths filter
-  would have had to grow to every Java source — and it downloads the sources jars (into
+  Runs as its own `verify.yaml` job, not in `lint.yaml` and not inside `just lint`: its inputs (the
+  main sources, `pom.xml`) are what every pull-request run covers, where lint.yaml's push-side
+  paths filter would have had to grow to every Java source — and it downloads the sources jars (into
   `target/flink-api-tiers/`) while `just lint` stays offline
 - `just check-option-docs` — holds `docs/content/docs/reference/` to the options the connectors
   actually take (#89), both directions: every public builder setter and every Table API
@@ -95,9 +95,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   **hand-written, not generated** — their tables group knobs (one Pub/Sub row covers eight
   `retry*` setters) and carry defaults the sources do not hold, since an unset knob's default
   belongs to the client library; this check buys back the one property generation would have given
-  free. Its own `ci.yaml` job for the same reason as `check-flink-api-tiers`, plus one of its own:
-  its inputs are the main sources *and* `docs/content/` — `lint.yaml`'s paths carry docs/content
-  only for markdownlint, and would have had to grow to every Java source.
+  free. Its own `verify.yaml` job for the same reason as `check-flink-api-tiers`, plus one of its own:
+  its inputs are the main sources *and* `docs/content/` — `lint.yaml`'s push-side paths carry
+  docs/content only for markdownlint, and would have had to grow to every Java source.
   **How to respond to each failure — where a row goes, what its Default column may say,
   and which of `[exempt]` (a setter with no row) and `[extra]` (a row with no setter) a case
   belongs in — is `.claude/skills/curate-option-docs/`**, one of the checker skills. Note
@@ -117,7 +117,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   (no `num`-prefixed name; the event/state morphology half stays with review): every registration
   goes through a `*MetricNames` constant, every constant is registered, no name has two kinds.
   Both allowlists (`[exempt]` keyed `Class.name`, `[extra]` keyed as the table writes it) are
-  empty today, and an entry that never fires fails. Its own `ci.yaml` job for exactly
+  empty today, and an entry that never fires fails. Its own `verify.yaml` job for exactly
   `check-option-docs`'s reason. **How to respond to each failure is
   `.claude/skills/curate-metric-docs/`**. What it does *not* check: Meaning cells and the prose
   around the tables, so a rename still sweeps those by hand — in the same commit
@@ -129,19 +129,19 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   runs nowhere at all, since `just e2e` selects by the gate. Deliberately **gate-agnostic**,
   matching the annotation rather than the three variables the E2E workflow sets, so
   `BigQueryDefaultStreamSchemaEvolutionITCase` — outside that suite on purpose, ~2 h against the
-  real service — is covered too. Its own `ci.yaml` job for `check-flink-api-tiers`'s reason (its
-  inputs are the Java *test* sources, exactly `ci.yaml`'s trigger set), and it needs no JDK, no
+  real service — is covered too. Its own `verify.yaml` job for `check-flink-api-tiers`'s reason (its
+  inputs are the Java *test* sources, which every pull-request run covers), and it needs no JDK, no
   Python and no network. **The one checker with no `curate-*` skill**, and the exemption is
   argued rather than an oversight: those skills exist for allowlist judgment — which entry, with
   what reason — and this check has no allowlist and exactly two mechanical fixes, both named in
   the failure message
 - `just ci-maven-args` — CI's module-selection decision (#243): which Maven modules does a
-  change build? `ci.yaml`'s `changes` job calls it with `--diff HEAD^1` (the pull_request
+  change build? `verify.yaml`'s `changes` job calls it with `--diff HEAD^1` (the pull_request
   checkout is the base-into-head merge commit, fetched at depth 2, so that diff is the pull
   request's net change) or `--full`; `just ci-maven-args --diff origin/main` reproduces by hand
   what a pull request with the current branch's committed diff would build. The mapping is
   derived from the poms, never configured — the script's docstring is the specification, and
-  the ci.yaml bullet under Version policy carries the design
+  the CI-architecture bullet under Version policy carries the design
 - `just test-scripts` — pytest over `scripts/`: the CI deriver and the CI gate (#243), and the
   three checkers (#249). Through
   the uv project at the repository root (decided with the user on PR #247): `pyproject.toml`
@@ -413,7 +413,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   supported Flink swapped onto the classpath and nothing recompiled. If it ever goes red, the
   fallback is per-minor artifacts as `apache/flink-connector-kafka` publishes them
   (`5.0.0-2.1` / `5.0.0-2.2` from one branch), which is also what Paimon and Iceberg do
-- The version matrix lives in `weekly.yaml`, not `ci.yaml`: per-PR CI stays single-version for
+- The version matrix lives in `weekly.yaml`, not `verify.yaml`: per-PR CI stays single-version for
   latency, matching Flink's own `push_pr.yml` / `weekly.yml` split. Every matrix job checks out
   `github.sha` rather than a branch — a merge landing mid-run once made one version look like it
   had silently skipped 60 tests. Matrix rows carry a **role** (`floor` / `ceiling` / `next` /
@@ -423,9 +423,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   patch bump is an edit to `FLINK_LTS` there — dependabot does not see workflow env, the same
   accepted staleness `FLINK_CEILING` has. The `floor` row passes no
   `-Dflink.version` at all, so the pom stays the single source of truth for it, and it runs on
-  JDK 21 because floor-on-17 is already covered by `ci.yaml` and by `binary_compat`. The `next`
+  JDK 21 because floor-on-17 is already covered by `verify.yaml` and by `binary_compat`. The `next`
   row is upstream early-warning and is deliberately **not** `continue-on-error`
-- **Moving the supported range** (when Flink releases a new minor): `ci.yaml` needs no edit — it
+- **Moving the supported range** (when Flink releases a new minor): `verify.yaml` needs no edit — it
   names no Flink version and no ceiling, so bumping the pom moves it. The order is
   (1) `pom.xml` `flink.version` → the old ceiling, (2) `weekly.yaml` `FLINK_CEILING` and
   `FLINK_NEXT_SNAPSHOT`, (3) `docs/content/_index.md` table, (4) `README.md` under Build,
@@ -455,16 +455,19 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   in the GitHub UI
 - **`lint.yaml` is where linters Maven does not run live** (spotless and checkstyle cover the
   Java sources inside `verify`). Today that is shellcheck, actionlint and `tofu fmt -check`
-  (#5 landed; `tofu validate` is subsumed by the tofu-plan workflow's plan). Separate from
-  `ci.yaml` so results arrive in seconds rather than behind the integration tests — that is the
-  whole reason, the mise-versus-`setup-java` one having turned out to be a disarmable default
-  rather than a conflict (see below). Its `paths` filter must list **every input
-  to a lint, not just the linted files** — `mise.toml` is in it because that is where the
-  shellcheck version is pinned, and skipping the lint on a version bump would skip it in the one
-  change that most needs it. `docs.yaml` carries `mise.toml` for the same reason since #111, and
-  the main sources and poms since #88 made the API reference part of the site — which does mean
-  `docs.yaml` runs on nearly every pull request, accepted over splitting the site's definition
-  across two workflows
+  (#5 landed; `tofu validate` is subsumed by the tofu-plan workflow's plan). A workflow of its
+  own rather than jobs in `verify.yaml` so results arrive in seconds rather than behind the
+  integration tests — that is the whole reason, the mise-versus-`setup-java` one having turned
+  out to be a disarmable default rather than a conflict (see below). On pull requests it runs
+  unfiltered, as a reusable workflow under `ci.yaml`'s gate; its `paths` filter exists on the
+  push trigger only, where it is cost-saving, and it still must list **every input to a lint,
+  not just the linted files** — `mise.toml` is in it because that is where the shellcheck
+  version is pinned, and skipping the lint on a version bump would skip it in the one change
+  that most needs it. `docs.yaml`'s push filter carries `mise.toml` for the same reason since
+  #111, and the main sources and poms since #88 made the API reference part of the site — and
+  on pull requests `docs.yaml` runs unfiltered too, accepted over splitting the site's
+  definition across two workflows back when its filter decided PR runs, and cheaper to accept
+  now that it already matched nearly every one
 - **Where a tool's version lives decides how CI installs it.** Pin in `mise.toml` and install
   with `jdx/mise-action` + `install_args` when a version skew can fail a pull request that
   changed nothing — shellcheck (0.9.0 on ubuntu-24.04, 0.11.0 on 26.04, so an `ubuntu-latest`
@@ -493,10 +496,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `taiki-e/install-action` in every workflow: that rests on its own reason, one binary on `PATH` and
   no shims at all. `docs.yaml` takes java from `mise.toml` for the same reason since #88, rather
   than adding a second JDK installer for the shim rule above to have to disarm
-- **`ci.yaml` selects what a pull request builds instead of filtering whether it runs** (#243):
-  its `pull_request` trigger carries no paths filter — required checks made that impossible,
-  because **a required check that never reports blocks a pull request forever** — and a
-  `changes` job derives the Maven `-pl` subset instead. The changed-file list comes from git
+- **`verify.yaml` selects what a pull request builds instead of filtering whether it runs**
+  (#243): pull requests reach it through `ci.yaml` with no paths filter anywhere — required
+  checks made filtering impossible, because **a required check that never reports blocks a pull
+  request forever** — and a `changes` job derives the Maven `-pl` subset instead. The changed-file list comes from git
   alone — the pull_request checkout is the base-into-head merge commit, fetched at depth 2 so
   `HEAD^1` is the current base tip; a third-party changed-files action was tried and removed on
   PR #247 as avoidable supply-chain surface. The decision is `scripts/ci-maven-args.py`, whose
@@ -529,19 +532,25 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   nothing about them depends on what the deriver picks. The `justfile` stays full-reactor too:
   it carries the Maven invocations themselves.
   Pushes to main and `workflow_dispatch` always build the full reactor.
-  **Branch protection requires exactly one check, `CI passed`** (#250, live since the plan
-  upgrade — a private free-plan repository cannot set required checks at all): the gate job that
-  turns "nothing to build" into an explicit green — `build` itself must never be required, it
-  skips — and that vouches for every unconditional checker job through its `needs` list and
-  `CHECKER_RESULTS` (decided with the user after #302 briefly made each checker its own required
-  context: a settings-side list has to be edited every time a checker is added or retired, falls
-  silently out of step with a renamed job, and cannot follow path-conditional jobs — while a
-  stale `needs` entry is a workflow-parse error no run survives unnoticed). So a new checker
-  enrolls in ci.yaml alone: join the gate's `needs` and `CHECKER_RESULTS`, and touch no
-  repository setting. A required context is matched **by job name**, so `CI passed` is the one
-  name whose rename must update branch protection in the same change. The never-reports caveat
-  still applies verbatim to `docs.yaml` and `lint.yaml`, which keep their `paths` filters and
-  must stay optional as long as they do
+  **`ci.yaml` is the pull-request orchestrator, and branch protection requires exactly its one
+  gate, `CI passed`** (#250, live since the plan upgrade — a private free-plan repository cannot
+  set required checks at all; the shape is suzuki-shunsuke's required-status-check pattern,
+  decided with the user on PR #305 after it briefly enumerated checkers as their own required
+  contexts): `verify.yaml`, `lint.yaml`, `docs.yaml` and `tofu-plan.yaml` run as reusable
+  workflows called from `ci.yaml`, whose gate `needs` them all — the only way a verdict can span
+  workflows — and derives its verdict from the whole `needs` context (`scripts/ci-gate.py`, the
+  hand-runnable truth table). A settings-side list has to be edited every time a job is added or
+  retired, falls silently out of step with a renamed job, and cannot follow path-conditional
+  jobs; a stale `needs` entry or `uses` path is a workflow-parse error no run survives
+  unnoticed, and the wiring tests in `scripts/tests/test_ci_gate.py` hold every gate's `needs`
+  to its file's full job list. The children with a legitimately skippable job (`verify`'s Maven
+  build, `tofu-plan`'s plan) carry an internal verdict job with the same script, telling it
+  which skip is legitimate via `SKIPPED_OK` — a workflow result alone cannot expose an
+  illegitimate skip. So a job or workflow enrolls in ci.yaml/its child alone and touches no
+  repository setting; a required context is matched **by job name**, so `CI passed` is the one
+  name whose rename must update branch protection in the same change. `docs.yaml` and
+  `lint.yaml` are required through the gate like everything else; their `paths` filters survive
+  on the push trigger only, as cost control
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual

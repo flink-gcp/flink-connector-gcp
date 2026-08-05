@@ -76,7 +76,7 @@ verify-flink version *extra:
 verify-module module:
     {{ mvn }} -pl {{ module }} verify
 
-# CI's module-selection decision (issue #243): ci.yaml's changes job calls this
+# CI's module-selection decision (issue #243): verify.yaml's changes job calls this
 # with --diff HEAD^1 (the pull_request checkout is the base-into-head merge
 # commit, so that diff is the pull request's net change) or --full (push and
 # workflow_dispatch build the whole reactor). The mapping is derived from the
@@ -194,9 +194,9 @@ worktree-env:
 # whole working tree, and in the E2E workflow the tree contains the WIF
 # credentials file google-github-actions/auth writes into the workspace root
 # (gha-creds-*.json, no licence header — measured 2026-08-01: the first
-# dispatch after #27 added this step failed exactly there, on a tree ci.yaml
-# had just passed). The header check is not lost: ci.yaml's verify runs rat on
-# every pull request, and this install only primes ~/.m2.
+# dispatch after #27 added this step failed exactly there, on a tree the Maven
+# workflow had just passed). The header check is not lost: verify.yaml runs rat
+# on every pull request, and this install only primes ~/.m2.
 #
 # This costs real money beyond runner minutes, which the BigQuery and Pub/Sub
 # halves do not: the Bigtable suite has no persistent instance to run against
@@ -223,7 +223,7 @@ e2e:
 # @Tag("gated") that keeps the class out of every ordinary build. Forgetting
 # the tag fails in the expensive direction — the suite runs during
 # `just verify` in any shell holding the variable — so the pairing is checked
-# rather than merely documented (issue #245). A ci.yaml job rather than part of
+# rather than merely documented (issue #245). A verify.yaml job rather than part of
 # `just lint`, whose paths filter would have had to grow to every Java test
 # source; the check needs neither a JDK nor the network.
 #
@@ -252,7 +252,7 @@ sweep-e2e *args:
 # just's compatibility guarantee covers stable ones only — so a newer just could
 # reformat and fail a pull request that changed nothing, which is exactly the
 # failure mode that makes shellcheck worth pinning. Since `just` is installed
-# unpinned (see ci.yaml), depending on it would reintroduce the problem the pin
+# unpinned (see verify.yaml), depending on it would reintroduce the problem the pin
 # exists to solve, to check the formatting of a single file.
 #
 # actionlint shells out to shellcheck for inline `run:` blocks, and picks it off
@@ -350,7 +350,7 @@ check-flink-api-tiers:
 # The pages are hand-written rather than generated (issue #89): their tables
 # group knobs and carry defaults the sources do not hold, since an unset knob's
 # default belongs to the client library. This is the drift protection that
-# choice would otherwise have cost. Offline and stdlib-only, but a ci.yaml job
+# choice would otherwise have cost. Offline and stdlib-only, but a verify.yaml job
 # rather than part of `just lint`, because its inputs include every Java main
 # source, which lint.yaml's paths filter would have had to grow to cover.
 #
@@ -366,7 +366,7 @@ check-option-docs:
 # or marked `(Flink standard)`. Mappings and the two base.metrics subgroup
 # sources live in scripts/metric-docs.toml. Also holds the mechanical half of
 # the #280 naming rule: no name registered here takes Flink's `num` prefix.
-# Offline and stdlib-only, but a ci.yaml job rather than part of `just lint`,
+# Offline and stdlib-only, but a verify.yaml job rather than part of `just lint`,
 # for check-option-docs's reason: its inputs include every Java main source,
 # which lint.yaml's paths filter would have had to grow to cover.
 #

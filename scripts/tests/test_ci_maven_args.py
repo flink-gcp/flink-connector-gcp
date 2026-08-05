@@ -16,7 +16,7 @@
 Two layers on purpose. The synthetic-repo tests pin the derivation rules —
 classification, the two-phase closure, NOTICE detection — against a pom tree
 built in tmp_path, so they cannot rot when this repository gains a module.
-The real-repo CLI tests run the script exactly as ci.yaml does and assert
+The real-repo CLI tests run the script exactly as verify.yaml does and assert
 against the modules that exist today; adding a module is expected to touch
 them, which is the point — they are what notices the wiring, not the rules.
 """
@@ -236,7 +236,7 @@ def test_unknown_flink_gcp_dependency_fails(fake_repo, ci_maven_args):
     assert e.value.code == 1
 
 
-# --- CLI against the real repository, exactly as ci.yaml runs it ---
+# --- CLI against the real repository, exactly as verify.yaml runs it ---
 
 
 def run_cli(*args):

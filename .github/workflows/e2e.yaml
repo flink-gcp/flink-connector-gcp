@@ -31,7 +31,7 @@ name: E2E
 #
 # Weekly rather than nightly, and no push trigger, both on cost: the repository
 # is private, so runner minutes are billed, and the per-PR emulator coverage in
-# ci.yaml already carries the fast-feedback load. The WIF binding also permits
+# verify.yaml already carries the fast-feedback load. The WIF binding also permits
 # `push` on main (opentofu/flink-gcp/e2e-sa.tf), so adding that trigger later
 # is a one-line change here.
 #
@@ -103,7 +103,7 @@ jobs:
           cache: maven
 
       # Unpinned, and install-action rather than mise: see the note on the same
-      # step in ci.yaml.
+      # step in verify.yaml.
       - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: just

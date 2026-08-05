@@ -1,7 +1,7 @@
 name: Weekly
 
 # Verifies the supported Flink range, which the per-PR CI deliberately does not:
-# ci.yaml builds one version for fast feedback (the same split Flink's own
+# verify.yaml builds one version for fast feedback (the same split Flink's own
 # externalized connectors use between push_pr.yml and weekly.yml).
 #
 # Five things are checked here:
@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 # The two versions this workflow names. Everything else is derived: the floor is
-# whatever the pom pins, and ci.yaml names no version at all.
+# whatever the pom pins, and verify.yaml names no version at all.
 #
 # They live here rather than in the matrix because GitHub does not expose the
 # env context to `strategy`, and repeating a version across matrix rows is how
@@ -66,7 +66,7 @@ jobs:
           # The floor is not named anywhere in this workflow: its row passes no
           # -Dflink.version, so what gets tested is whatever the pom pins.
           #
-          # On JDK 21 rather than 17, because floor-on-17 is what ci.yaml runs on
+          # On JDK 21 rather than 17, because floor-on-17 is what verify.yaml runs on
           # every push and what binary_compat rebuilds below — floor-on-21 is the
           # corner of the matrix nothing else reaches.
           - role: floor
@@ -89,7 +89,7 @@ jobs:
           # the flink1 compat root, so this is source-level support — no
           # cross-major binary claim, which is why binary_compat below does not
           # involve it. JDK 17 only: it is the one JDK both supported majors
-          # share with ci.yaml.
+          # share with verify.yaml.
           - role: lts
             jdk: '17'
     steps:
@@ -112,7 +112,7 @@ jobs:
           cache: maven
 
       # Unpinned, and install-action rather than mise: see the note on the same
-      # step in ci.yaml.
+      # step in verify.yaml.
       - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: just
@@ -167,7 +167,7 @@ jobs:
           cache: maven
 
       # Unpinned, and install-action rather than mise: see the note on the same
-      # step in ci.yaml.
+      # step in verify.yaml.
       - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: just
@@ -203,7 +203,7 @@ jobs:
           ref: ${{ github.sha }}
 
       # Unpinned, and install-action rather than mise: see the note on the same
-      # step in ci.yaml.
+      # step in verify.yaml.
       - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: just
