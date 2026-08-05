@@ -230,15 +230,13 @@ class PubSubWriterAutoCreationTest {
                 newOrderingWriter(
                         CreateDisposition.CREATE_IF_NEEDED, FAST_SCHEDULE, sizeOf("k1:first"));
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
-        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
         writer.write("k1:first", CONTEXT);
         writer.write("k1:second", CONTEXT);
 
         writer.flush(false);
 
         assertThat(admin.created).containsExactly(TOPIC);
-        assertThat(publishedPayloads())
-                .containsExactly("k1:first", "k1:second", "k1:first", "k1:second");
+        assertThat(publishedPayloads()).containsExactly("k1:first", "k1:first", "k1:second");
         assertThat(writer.getInFlightBytes()).isZero();
     }
 
@@ -385,10 +383,10 @@ class PubSubWriterAutoCreationTest {
 
     @Test
     void cascadesParkBehindNotFoundAndRepublishInOrderAfterResume() throws Exception {
+        // The NOT_FOUND pauses the key, so the fake itself turns the two later publishes away as
+        // cascades; the repair resumes the key once and republishes all three in publish order.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
-        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
-        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
         writer.write("k1:first", CONTEXT);
         writer.write("k1:second", CONTEXT);
         writer.write("k1:third", CONTEXT);
@@ -399,8 +397,7 @@ class PubSubWriterAutoCreationTest {
         assertThat(admin.created).containsExactly(TOPIC);
         assertThat(publisher().resumedKeys).containsExactly("k1");
         assertThat(publishedPayloads())
-                .containsExactly(
-                        "k1:first", "k1:second", "k1:third", "k1:first", "k1:second", "k1:third");
+                .containsExactly("k1:first", "k1:first", "k1:second", "k1:third");
     }
 
     @Test
@@ -443,11 +440,15 @@ class PubSubWriterAutoCreationTest {
         // repair is triggered: without that drain the root is repaired alone and the cascade
         // re-parks, forcing a second attempt — which is what resumedKeys counts.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
-        factory.enqueueFuture(ApiFutures.immediateFailedFuture(notFound()));
+        SettableApiFuture<String> root = SettableApiFuture.create();
         SettableApiFuture<String> cascade = SettableApiFuture.create();
+        factory.enqueueFuture(root);
         factory.enqueueFuture(cascade);
+        // Both publishes are accepted while the root is still pending — the SDK's queue — so the
+        // second's cancellation can arrive on its own schedule rather than at publish time.
         writer.write("k1:first", CONTEXT);
         writer.write("k1:second", CONTEXT);
+        root.setException(notFound());
         mailbox.drain();
 
         cascade.setException(cascade());

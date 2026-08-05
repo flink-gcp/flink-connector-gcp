@@ -125,9 +125,12 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   makes `flush()`'s `while (repairNeeded)` loop mean *no checkpoint completes with a key paused*.
   The `return` after a throwing handler is **belt and braces, and measured as such**: a mutant
   deleting it survives, because `asyncError` gates every path into a repair anyway, and the test
-  says so rather than claiming a discrimination it does not have. Note what the fake publisher
-  cannot check — it holds no paused-key state, so it accepts publishes the real SDK would reject,
-  and the resume is only ever observable through `resumedKeys`. Two findings from the same SDK
+  says so rather than claiming a discrimination it does not have. The fake publisher models the
+  paused-key state itself since #277 — a failed keyed publish pauses its key, a publish on a paused
+  key comes back cancelled without being published, and only `resumePublish` clears it — so the
+  racing-publish reordering above is pinned by test
+  (`aKeyPausedByADropStaysPausedUntilTheRepairResumesIt`) rather than verified only by reading the
+  SDK source. Two findings from the same SDK
   reading are filed rather than fixed: a request-level `INVALID_ARGUMENT` is reported against every
   co-batched message (#264, the Pub/Sub counterpart of #239), and messages cancelled in
   `Publisher.onFailure` are never returned to `messagesWaiter`, so `shutdown()` can hang before our
