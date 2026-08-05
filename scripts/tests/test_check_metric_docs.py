@@ -40,7 +40,9 @@ def inventory_class(name, *constants):
     return f"package io.github.x;\n\npublic final class {name} {{\n{body}\n}}\n"
 
 
-def metrics_class(inventory, counters=(), gauges=(), extra_lines=()):
+def metrics_class(
+    inventory, counters=(), gauges=(), extra_lines=(), name="WriterMetrics"
+):
     """A writer-metrics class registering the given inventory constants."""
     lines = [
         f"        this.{camel(c)} = metricGroup.counter({inventory}.{c});"
@@ -51,8 +53,8 @@ def metrics_class(inventory, counters=(), gauges=(), extra_lines=()):
     body = "\n".join(lines)
     return (
         f"package io.github.x;\n\n"
-        f"public class WriterMetrics {{\n"
-        f"    WriterMetrics(MetricGroup metricGroup) {{\n{body}\n    }}\n"
+        f"public class {name} {{\n"
+        f"    {name}(MetricGroup metricGroup) {{\n{body}\n    }}\n"
         f"}}\n"
     )
 
@@ -236,6 +238,7 @@ def test_registrations_resolve_constants_across_line_wraps(root, check_metric_do
         "ReaderMetrics.java",
         metrics_class(
             "AMetricNames",
+            name="ReaderMetrics",
             extra_lines=[
                 "this.x =",
                 "        metricGroup.counter(",
@@ -285,6 +288,7 @@ def test_a_comment_marker_inside_a_string_does_not_swallow_its_line(
         "ReaderMetrics.java",
         metrics_class(
             "AMetricNames",
+            name="ReaderMetrics",
             extra_lines=[
                 'String u = "http://e"; this.o = metricGroup.counter(AMetricNames.OTHER);'
             ],
@@ -313,7 +317,11 @@ def test_a_registration_outside_the_inventory_fails(root, check_metric_docs, cap
         root,
         "conn",
         "RogueMetrics.java",
-        metrics_class("AMetricNames", extra_lines=['metricGroup.counter("offBook");']),
+        metrics_class(
+            "AMetricNames",
+            name="RogueMetrics",
+            extra_lines=['metricGroup.counter("offBook");'],
+        ),
     )
     assert exit_code(check_metric_docs) == 1
     assert "outside the module's *MetricNames.java inventory" in capsys.readouterr().err
@@ -373,13 +381,13 @@ def test_a_name_registered_as_both_kinds_fails_once(root, check_metric_docs, cap
         root,
         "conn",
         "OtherMetrics.java",
-        metrics_class("AMetricNames", gauges=("ROWS_SENT",)),
+        metrics_class("AMetricNames", name="OtherMetrics", gauges=("ROWS_SENT",)),
     )
     write_source(
         root,
         "conn",
         "ThirdMetrics.java",
-        metrics_class("AMetricNames", gauges=("ROWS_SENT",)),
+        metrics_class("AMetricNames", name="ThirdMetrics", gauges=("ROWS_SENT",)),
     )
     page = write_page(root, "conn.md", metric_page(("`rowsSent`", "counter")))
     write_config(root, connectors=[("conn", page)])
@@ -416,7 +424,7 @@ def test_a_registration_in_a_compat_source_root_is_scanned(root, check_metric_do
         root,
         "conn",
         "SeamMetrics.java",
-        metrics_class("AMetricNames", counters=("SEAM",)),
+        metrics_class("AMetricNames", name="SeamMetrics", counters=("SEAM",)),
         tree="src/main/java-flink2",
     )
     page = write_page(

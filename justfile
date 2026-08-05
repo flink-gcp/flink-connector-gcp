@@ -351,8 +351,8 @@ check-flink-api-tiers:
 # group knobs and carry defaults the sources do not hold, since an unset knob's
 # default belongs to the client library. This is the drift protection that
 # choice would otherwise have cost. Offline and stdlib-only, but a ci.yaml job
-# rather than part of `just lint`, because its inputs are the main sources and
-# docs/content/ — neither of which lint.yaml's paths filter covers.
+# rather than part of `just lint`, because its inputs include every Java main
+# source, which lint.yaml's paths filter would have had to grow to cover.
 #
 # Is every connector option documented, and every documented option real?
 check-option-docs:

@@ -414,3 +414,44 @@ def test_a_config_options_source_with_no_keys_is_infrastructure(
         config_options=[(source, table_page)],
     )
     assert exit_code(check_option_docs) == 2
+
+
+# --- hardening shared with check-metric-docs.py (PR #302's self-review) ---
+
+
+def test_a_fenced_example_table_is_not_read(root, check_option_docs):
+    # A snippet showing what an option table looks like must earn no coverage
+    # credit: deleting the real table while the example remains has to fail.
+    page = root / "page.md"
+    page.write_text("# t\n\n```\n" + option_page("`example`") + "```\n")
+    assert check_option_docs.option_table_entries(page) == {}
+
+
+def test_a_comment_marker_inside_a_string_is_not_a_comment(root, check_option_docs):
+    # `"http://…"` carries `//`; naive comment blanking would erase the rest of
+    # the line, taking any declaration sharing it along.
+    blanked = check_option_docs.blank_comments(
+        'String u = "http://e"; ConfigOptions.key("real.key") // gone\n'
+    )
+    assert '"http://e"' in blanked
+    assert '"real.key"' in blanked
+    assert "// gone" not in blanked
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Not TOML at all.
+        "[[builders]\n",
+        # No [[builders]] mapping.
+        '[exempt]\n[extra]\n"x" = "y"\n',
+        # An entry missing its page.
+        '[[builders]]\nmodule = "conn"\n',
+        # A [[config_options]] entry missing its source.
+        '[[builders]]\nmodule = "conn"\npage = "docs/conn.md"\n[[config_options]]\npage = "docs/t.md"\n',
+    ],
+)
+def test_a_malformed_config_is_an_infrastructure_error(root, check_option_docs, body):
+    # The docstring promises exit 2 for malformed config, not a traceback.
+    (root / "option-docs.toml").write_text(body)
+    assert exit_code(check_option_docs) == 2
