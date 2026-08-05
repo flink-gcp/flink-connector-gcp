@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.pubsub.sink.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
+import com.google.api.gax.rpc.ApiException;
+import com.google.api.gax.rpc.StatusCode;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
@@ -49,12 +51,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>The unit suite encodes the measured vendor behaviour (#264's record: a mixed {@code Publish}
  * is rejected all-or-nothing with one request-level {@code INVALID_ARGUMENT}, and a solo republish
- * yields a true per-message verdict) by convention in {@code FakePublisherFactory} scripting; an
- * SDK or service change could invalidate that silently, and this class is what would catch it
- * (#303). Deliberately pinned at the outcome, not the wire: the outcome is identical whether the
- * service rejects all-or-nothing (measured) or were ever to accept the valid entries of a mixed
- * request — the fix is robust to both — so wire-level details like the shared {@code Throwable}
- * instance stay unasserted.
+ * yields a true per-message verdict) by convention in {@code FakePublisherFactory} scripting; this
+ * class is what would catch an SDK or service change that breaks the <em>outcome</em>. It cannot
+ * pin more: the outcome is identical whether the service rejects all-or-nothing (measured) or were
+ * ever to accept the valid entries of a mixed request — the fix is robust to both — and it would
+ * survive the SDK ceasing to co-batch at all, since each message would then simply earn its verdict
+ * on its first publish. So one shared request is the setup's premise, not an assertion, and
+ * wire-level details like the shared {@code Throwable} instance stay unasserted. The unit twin of
+ * this pin, against the scripted fake, is {@code
+ * PubSubWriterFailureHandlerTest#aValidMessageCoBatchedWithAnInvalidOneIsPublishedNotDropped} — the
+ * same name on purpose.
  *
  * <p>The sink is driven through the public builder and the production {@code createWriter} — with
  * no emulator endpoint that is the production path: application-default credentials, real service.
@@ -124,19 +130,24 @@ class PubSubSinkRejectionRealGcpITCase extends AbstractPubSubRealGcpITCase {
             writer.close();
         }
 
-        assertThat(pullAndAckUntil(subscription, 2, COLLECT_TIMEOUT))
-                .containsExactlyInAnyOrder("m0", "m2");
-        // One more pull, tolerating redelivery of the acknowledged survivors: whatever else the
-        // service holds, the rejected message must not be among it.
-        assertThat(pullMessagesAndAck(subscription, 10))
-                .extracting(message -> message.getData().toStringUtf8())
-                .doesNotContain("bad");
+        // The handler assertions first: they are local and deterministic, so a regression that
+        // publishes nothing fails here immediately instead of after the pull's full timeout.
         assertThat(handler.handled).hasSize(1);
         FailedMessage failed = handler.handled.get(0);
         assertThat(failed.getPubsubMessage().getData().toStringUtf8()).isEqualTo("bad");
-        assertThat(failed.describeDestination()).isEqualTo(topic.toTopicPath());
-        assertThat(failed.getErrorMessage()).contains("INVALID_ARGUMENT");
         // The cause is the service's own verdict on the solo republish, not the batch report.
-        assertThat(String.valueOf(failed.getCause())).contains("INVALID_ARGUMENT");
+        assertThat(failed.getCause())
+                .isInstanceOfSatisfying(
+                        ApiException.class,
+                        e ->
+                                assertThat(e.getStatusCode().getCode())
+                                        .isEqualTo(StatusCode.Code.INVALID_ARGUMENT));
+        assertThat(pullAndAckUntil(subscription, 2, COLLECT_TIMEOUT))
+                .containsExactlyInAnyOrder("m0", "m2");
+        // One more pull, tolerating redelivery of the acknowledged survivors: whatever it returns
+        // — an empty response is a pass too — the rejected message must not be among it.
+        assertThat(pullMessagesAndAck(subscription, 10))
+                .extracting(message -> message.getData().toStringUtf8())
+                .doesNotContain("bad");
     }
 }
