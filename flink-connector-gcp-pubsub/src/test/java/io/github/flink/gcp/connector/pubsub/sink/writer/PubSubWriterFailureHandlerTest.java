@@ -145,6 +145,26 @@ class PubSubWriterFailureHandlerTest {
     }
 
     /**
+     * A writer publishing every record to one topic without ordering, so several records land in
+     * one publisher — the fixture for the co-batched rejection tests, where the element has to be
+     * the payload rather than the topic name.
+     */
+    private PubSubWriter<String> newFixedTopicWriter() {
+        return new PubSubWriter<>(
+                TestSinkConfigs.forResolver(
+                        (element, context) -> topic("fixed"),
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubPublisherOptions.defaults(),
+                        handler,
+                        CreateDisposition.CREATE_IF_NEEDED),
+                factory,
+                admin,
+                mailbox,
+                metrics,
+                FAST_SCHEDULE);
+    }
+
+    /**
      * A writer publishing every record to one topic with message ordering enabled, taking the
      * ordering key from the record's prefix before {@code ':'} — the fixture {@link
      * PubSubWriterAutoCreationTest} uses, so the two ordering suites read alike.
@@ -218,9 +238,18 @@ class PubSubWriterFailureHandlerTest {
         return TopicDestination.of(PROJECT, topic);
     }
 
+    private List<String> fixedTopicPayloads() {
+        return payloads(factory.publishers.get(topic("fixed")).published);
+    }
+
     private static StatusRuntimeException invalidArgument() {
         return new StatusRuntimeException(
                 Status.INVALID_ARGUMENT.withDescription("message too large"));
+    }
+
+    private static Exception gaxInvalidArgument() {
+        return ApiExceptionFactory.createException(
+                invalidArgument(), GrpcStatusCode.of(Status.Code.INVALID_ARGUMENT), false);
     }
 
     /** The SDK publisher's cancellation of an ordering key's queued publishes (no cause). */
@@ -283,8 +312,10 @@ class PubSubWriterFailureHandlerTest {
     @Test
     void anInvalidArgumentPublishIsRoutedWithItsMessage() throws Exception {
         PubSubWriter<String> writer = newWriter();
-        StatusRuntimeException failure = invalidArgument();
-        factory.enqueueFuture(ApiFutures.immediateFailedFuture(failure));
+        StatusRuntimeException batchReport = invalidArgument();
+        StatusRuntimeException soloRejection = invalidArgument();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(soloRejection));
 
         writer.write("topic-a", CONTEXT);
         writer.flush(false);
@@ -297,7 +328,9 @@ class PubSubWriterFailureHandlerTest {
                 .isEqualTo("topic-a");
         assertThat(failed.getErrorMessage()).contains("INVALID_ARGUMENT");
         assertThat(failed.describeDestination()).endsWith("/topics/topic-a");
-        assertThat(failed.getCause()).isSameAs(failure);
+        // The cause is the solo rejection, not the batch report: the report says only that the
+        // request failed, and the verdict the handler acts on is the one the message earned alone.
+        assertThat(failed.getCause()).isSameAs(soloRejection);
     }
 
     @Test
@@ -305,12 +338,8 @@ class PubSubWriterFailureHandlerTest {
         // The SDK publisher surfaces gax ApiExceptions; the raw gRPC form above is defense in
         // depth. Both have to reach the handler or the policy covers only half its class.
         PubSubWriter<String> writer = newWriter();
-        factory.enqueueFuture(
-                ApiFutures.immediateFailedFuture(
-                        ApiExceptionFactory.createException(
-                                invalidArgument(),
-                                GrpcStatusCode.of(Status.Code.INVALID_ARGUMENT),
-                                false)));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(gaxInvalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(gaxInvalidArgument()));
 
         writer.write("topic-a", CONTEXT);
         writer.flush(false);
@@ -322,6 +351,7 @@ class PubSubWriterFailureHandlerTest {
     void aRoutedFailureReleasesItsInFlightCountersAndDoesNotFailTheJob() throws Exception {
         PubSubWriter<String> writer = newWriter();
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
 
         writer.write("topic-a", CONTEXT);
         writer.flush(false);
@@ -332,10 +362,61 @@ class PubSubWriterFailureHandlerTest {
     }
 
     @Test
+    void aValidMessageCoBatchedWithAnInvalidOneIsPublishedNotDropped() throws Exception {
+        // The #264 pin. Publish is a batch RPC that rejects all-or-nothing, and the SDK sets the
+        // ONE request-level INVALID_ARGUMENT on every co-batched future — scripted here as three
+        // failures sharing a single exception instance, which is exactly what
+        // Publisher.OutstandingBatch.onFailure produces. Only the message the service rejects
+        // when republished alone may reach a dropping handler; its neighbours must be published.
+        PubSubWriter<String> writer = newFixedTopicWriter();
+        StatusRuntimeException batchReport = invalidArgument();
+        for (int i = 0; i < 3; i++) {
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+        }
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        writer.write("m2", CONTEXT);
+        // Solo verdicts, in publish order: m0 accepted, m1 rejected, m2 accepted (default).
+        StatusRuntimeException soloRejection = invalidArgument();
+        factory.enqueueFuture(ApiFutures.immediateFuture("id-m0"));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(soloRejection));
+
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(1);
+        assertThat(handler.handled.get(0).getPubsubMessage().getData().toStringUtf8())
+                .isEqualTo("m1");
+        assertThat(handler.handled.get(0).getCause()).isSameAs(soloRejection);
+        // Each neighbour was published twice — the rejected batch, then its own accepted request.
+        assertThat(fixedTopicPayloads()).containsExactly("m0", "m1", "m2", "m0", "m1", "m2");
+    }
+
+    @Test
+    void aBatchLevelRejectionWhoseMessagesAllPassSoloRoutesNothing() throws Exception {
+        // Routing requires a solo verdict: a request-level report alone identifies no message, so
+        // when every message of the failed batch is accepted on its own request — the service
+        // rejected the batch for a reason the republish shape cured, request size being the
+        // measured example — nothing reaches the handler at all.
+        PubSubWriter<String> writer = newFixedTopicWriter();
+        StatusRuntimeException batchReport = invalidArgument();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.handled).isEmpty();
+        assertThat(fixedTopicPayloads()).containsExactly("m0", "m1", "m0", "m1");
+    }
+
+    @Test
     void theHandlerFlushesAfterTheDrainThatDiscoversTheFailure() throws Exception {
-        // The pin is the order, not the count: the failure is discovered by flush()'s own drain, so
-        // a handler flushed before the drain would checkpoint past a dead letter it has not seen.
+        // The pin is the order, not the count: the failure is discovered inside flush() — by the
+        // repair's isolation pass — so a handler flushed before it would checkpoint past a dead
+        // letter it has not seen.
         PubSubWriter<String> writer = newWriter();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         writer.write("topic-a", CONTEXT);
 
@@ -360,6 +441,7 @@ class PubSubWriterFailureHandlerTest {
         PubSubWriter<String> writer = newWriter();
         handler.failure = new IOException("dead-letter queue is down");
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         writer.write("topic-a", CONTEXT);
         mailbox.drain();
 
@@ -373,6 +455,7 @@ class PubSubWriterFailureHandlerTest {
         PubSubWriter<String> writer = newWriter();
         RuntimeException failure = new IllegalStateException("handler exploded");
         handler.failure = failure;
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         writer.write("topic-a", CONTEXT);
 
@@ -449,6 +532,10 @@ class PubSubWriterFailureHandlerTest {
     // key whose root failed produces one — and a resume that is missing, or that runs at the
     // wrong time, is observable through the publishes it lets through or turns away, not only
     // through resumedKeys.
+    //
+    // A key appears in resumedKeys twice per dropped message: once from the attempt-start batch
+    // resume, and once from the isolation pass handing the key back right after the solo
+    // rejection re-paused it. The second is what lets the rest of the pass publish at all.
 
     @Test
     void aDroppedKeyedMessageResumesItsOrderingKey() throws Exception {
@@ -457,15 +544,16 @@ class PubSubWriterFailureHandlerTest {
         // obligations: without this the key is dead for the rest of the writer's life.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
 
         writer.write("k1:a", CONTEXT);
         writer.flush(false);
 
         assertThat(handler.handled).hasSize(1);
-        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
-        // Nothing to republish — the only message for the key was the dropped one — and no topic
-        // was missing, so the repair creates none.
-        assertThat(orderedPayloads()).containsExactly("k1:a");
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k1");
+        // The batch report and then the solo rejection; no topic was missing, so the repair
+        // creates none.
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:a");
         assertThat(admin.created).isEmpty();
     }
 
@@ -473,23 +561,26 @@ class PubSubWriterFailureHandlerTest {
     void theCascadesOfADroppedMessageAreRepublishedInPublishOrder() throws Exception {
         // The messages behind the dropped one are cancelled by the publisher's paused key — the
         // fake turns them away itself — not rejected by the service. They are perfectly
-        // publishable, and republishing them in publish sequence is what keeps the survivors of
-        // the key in their relative order.
+        // publishable, and the isolation pass republishing the whole batch in publish sequence —
+        // the rejected head dropped on its solo verdict, the survivors accepted on theirs — is
+        // what keeps the survivors of the key in their relative order.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
 
         writer.write("k1:a", CONTEXT);
         writer.write("k1:b", CONTEXT);
         writer.write("k1:c", CONTEXT);
+        // The solo verdict that confirms a as the invalid one; b and c pass by default.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         writer.flush(false);
 
         assertThat(handler.handled).hasSize(1);
         assertThat(handler.handled.get(0).getPubsubMessage().getOrderingKey()).isEqualTo("k1");
-        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
-        // b and c came back cancelled from the paused key, and reached the topic only through the
-        // repair's republish, in that order; a is the gap the drop leaves behind.
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k1");
+        // b and c came back cancelled from the paused key and reached the topic only through the
+        // isolation pass, in publish order; a is the gap the drop leaves behind.
         assertThat(rejectedPayloads()).containsExactly("k1:b", "k1:c");
-        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b", "k1:c");
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:a", "k1:b", "k1:c");
     }
 
     @Test
@@ -527,14 +618,17 @@ class PubSubWriterFailureHandlerTest {
         queued.setException(cascade());
 
         writer.write("k1:c", CONTEXT);
+        // The solo verdict confirming a; b and c pass their own requests by default.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         writer.flush(false);
 
         assertThat(handler.handled).hasSize(1);
         // The racing publish was turned away by the still-paused key…
         assertThat(rejectedPayloads()).containsExactly("k1:c");
-        // …so one repair resumed the key once and republished b and c in publish order.
-        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
-        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b", "k1:b", "k1:c");
+        // …so one repair resumed the key and republished a, b and c in publish order — a dropped
+        // on its solo verdict, b and c accepted on theirs.
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k1");
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b", "k1:a", "k1:b", "k1:c");
     }
 
     @Test
@@ -556,11 +650,14 @@ class PubSubWriterFailureHandlerTest {
         root.setException(invalidArgument());
         mailbox.drain();
 
+        // The solo verdict confirming the root; the cascade passes its own request by default.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         writer.flush(false);
 
         assertThat(handler.handled).hasSize(1);
-        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
-        assertThat(orderedPayloads()).containsExactly("k1:first", "k1:second", "k1:second");
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k1");
+        assertThat(orderedPayloads())
+                .containsExactly("k1:first", "k1:second", "k1:first", "k1:second");
     }
 
     @Test
@@ -574,12 +671,14 @@ class PubSubWriterFailureHandlerTest {
 
         writer.write("k1:a", CONTEXT);
         writer.write("k1:b", CONTEXT);
+        // The solo verdict confirming a; b passes its own request by default.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         writer.flush(false);
 
         assertThat(handler.handled).hasSize(1);
-        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k1");
         assertThat(rejectedPayloads()).containsExactly("k1:b");
-        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b");
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:a", "k1:b");
         assertThat(admin.created).isEmpty();
     }
 
@@ -590,6 +689,7 @@ class PubSubWriterFailureHandlerTest {
         // dropped on the destination and make each later repair re-resume all of them.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         writer.write("k1:a", CONTEXT);
         writer.flush(false);
 
@@ -598,20 +698,19 @@ class PubSubWriterFailureHandlerTest {
         writer.write("k2:b", CONTEXT);
         writer.flush(false);
 
-        // k1 once, by the repair that drained it — not again alongside k2.
-        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k2");
+        // k1 twice, both by the repair that drained it — not again alongside k2.
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k1", "k2");
         assertThat(admin.created).containsExactly(ORDERED_TOPIC);
     }
 
     @Test
-    void aRepairThatCreatedNoTopicSaysSoWhenItRunsOutOfAttempts() throws Exception {
-        // The budget bounds any repair, not only a topic-creation one, so the exhaustion message
-        // must not claim a creation that never happened. Here the root is a dropped message and the
-        // cascade's republishes keep being cancelled.
-        //
-        // This also pins the bound itself: a key whose messages are rejected one batch per attempt
-        // fails the job once the budget runs out, rather than being drained. Whether that is the
-        // right bound is #269, and this test is what changes when it is answered.
+    void aPoisonedOrderingKeyDrainsInOneRepairAttempt() throws Exception {
+        // The #269 pin. A run of consecutively invalid keyed messages can be longer than the
+        // recovery budget; the isolation pass gives every parked message its own verdict within a
+        // single attempt and hands the key back after each drop, so the run's length does not
+        // count against the budget — four drops under a budget of two, and the flush completes.
+        // Without the mid-pass resume, every solo publish after the first drop would come back
+        // cancelled from the paused key, and the budget would be spent re-parking them.
         PubSubWriter<String> writer =
                 newOrderingWriter(
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
@@ -619,24 +718,97 @@ class PubSubWriterFailureHandlerTest {
                         CreateDisposition.CREATE_IF_NEEDED,
                         new RetrySchedule(1, 1, 2, 0));
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
-        // One scripted cascade per republish attempt; b's initial publish needs none, since the
-        // fake itself turns it away on the paused key.
-        for (int i = 0; i < 2; i++) {
-            factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
-        }
         writer.write("k1:a", CONTEXT);
         writer.write("k1:b", CONTEXT);
-        mailbox.drain();
+        writer.write("k1:c", CONTEXT);
+        writer.write("k1:d", CONTEXT);
+        // Every solo republish is rejected: the whole run really is invalid.
+        for (int i = 0; i < 4; i++) {
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        }
 
-        assertThatThrownBy(() -> writer.flush(false))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("2 attempt(s)")
-                .hasMessageNotContaining("after creating the topic");
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(4);
+        // One attempt-start resume for the batch, then one after each of the four drops.
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k1", "k1", "k1", "k1");
+        assertThat(rejectedPayloads()).containsExactly("k1:b", "k1:c", "k1:d");
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:a", "k1:b", "k1:c", "k1:d");
         assertThat(admin.created).isEmpty();
     }
 
     @Test
-    void aThrowingHandlerOnAKeyedMessageResumesNothing() throws Exception {
+    void aRepairThatCannotDrainSaysHowManyMessagesWereDropped() throws Exception {
+        // The #269 exhaustion message: when the budget runs out on a repair that was dropping
+        // messages, the failure must say so — a reader sent looking for a topic problem by the
+        // topic-shaped text would find nothing wrong with the topic. Here the head is dropped on
+        // its solo verdict but the second message's republishes keep coming back cancelled, so
+        // the repair cannot drain within a budget of two.
+        //
+        // The created-topic exhaustion texts stay pinned by PubSubWriterAutoCreationTest's
+        // budget-exhaustion tests, where no message is ever routed.
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> element.split(":")[0]),
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        new RetrySchedule(1, 1, 2, 0));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        mailbox.drain();
+        // Attempt 1, isolating: a is rejected solo and dropped; b's republish comes back
+        // cancelled and is re-parked. Attempt 2 republishes b as a batch and it is cancelled
+        // again — budget spent.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("could not drain its parked messages within the recovery")
+                .hasMessageContaining("2 attempt(s)")
+                .hasMessageContaining("1 message(s) were handed to the failure handler")
+                .hasMessageNotContaining("after creating the topic");
+        assertThat(handler.handled).hasSize(1);
+        assertThat(admin.created).isEmpty();
+    }
+
+    @Test
+    void aRepairThatCreatedTheTopicAndKeptDroppingSaysBoth() throws Exception {
+        // The two exhaustion facts are not exclusive: a repair can create the topic and then run
+        // out of budget while dropping messages. The drain-shaped text must keep the creation
+        // clause, or the reader loses the topic half of the story.
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> element.split(":")[0]),
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        new RetrySchedule(1, 1, 2, 0));
+        factory.enqueueFuture(
+                ApiFutures.immediateFailedFuture(new StatusRuntimeException(Status.NOT_FOUND)));
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        mailbox.drain();
+        // Attempt 1 creates the topic and republishes as a batch; a's republish is rejected with
+        // a request-level INVALID_ARGUMENT, which re-pauses the key and turns b away again.
+        // Attempt 2 isolates: a is dropped on its solo verdict, b's solo republish is cancelled —
+        // budget spent with the topic created and one message dropped.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("could not drain its parked messages within the recovery")
+                .hasMessageContaining("after creating the topic")
+                .hasMessageContaining("1 message(s) were handed to the failure handler");
+        assertThat(handler.handled).hasSize(1);
+        assertThat(admin.created).containsExactly(ORDERED_TOPIC);
+    }
+
+    @Test
+    void aThrowingHandlerOnAKeyedMessageDoesNotResumeAfterTheRefusedDrop() throws Exception {
         // Returning from handle() is the SPI's only way of saying "dropped". A handler that threw
         // refused, so the job is failing and its key is never published to again.
         //
@@ -647,10 +819,13 @@ class PubSubWriterFailureHandlerTest {
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
         handler.failure = new IOException("refused");
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         writer.write("k1:a", CONTEXT);
 
         assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
-        assertThat(orderedPublisher().resumedKeys).isEmpty();
+        // Only the attempt-start resume, which any parked message provokes: the refused drop must
+        // not add the post-drop resume a completed drop earns.
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
     }
 
     @Test
@@ -661,6 +836,7 @@ class PubSubWriterFailureHandlerTest {
                 newOrderingWriter(
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
                         CreateDisposition.CREATE_IF_NEEDED);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
 
         writer.write("unkeyed", CONTEXT);

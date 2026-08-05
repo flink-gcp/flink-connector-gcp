@@ -37,10 +37,14 @@ import java.util.concurrent.CancellationException;
  *       failure for the same ordering key. Never a root cause: it always trails another failure of
  *       the same key (see #78), so it is parked alongside that failure rather than classified on
  *       its own merits.
- *   <li>{@link Kind#MESSAGE_LEVEL} — the service rejected this message as invalid ({@code
- *       INVALID_ARGUMENT}: over the size limit, malformed attributes, an unusable ordering key).
- *       Republishing the same bytes cannot succeed and its neighbours are unaffected, so it is
- *       routed to the configured failure handler.
+ *   <li>{@link Kind#MESSAGE_LEVEL} — the service rejected the publish as invalid ({@code
+ *       INVALID_ARGUMENT}: over the size limit, malformed attributes, an unusable ordering key). A
+ *       <em>candidate</em> per-message verdict, not a confirmed one: {@code Publish} is a batch RPC
+ *       that rejects all-or-nothing, and the SDK sets the one request-level status on every
+ *       co-batched future with nothing naming the offender (measured on real Pub/Sub, 2026-08-06,
+ *       one run, #264). How the verdict is confirmed — and that only a message rejected on its own
+ *       single-message request reaches the failure handler — is {@link PubSubWriter}'s isolation
+ *       republish.
  *   <li>{@link Kind#FATAL} — everything else, including failures the SDK's own retries gave up on
  *       ({@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED}, …), {@code PERMISSION_DENIED} and failures
  *       carrying no status at all. These fail the ongoing write or checkpoint.

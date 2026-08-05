@@ -180,13 +180,13 @@ class PubSubWriterMetricsTest {
     }
 
     @Test
-    void theParkedGaugeCountsAnOrderingKeyPausedByADroppedMessage() throws Exception {
+    void theParkedGaugeCountsABatchAwaitingItsVerdictAndItsCascade() throws Exception {
         // parkedMessages is not a topic-creation gauge: since #215 a dropped message's ordering key
-        // is repaired the same way, and its cascade waits in the same parked batch. Under
-        // CREATE_NEVER deliberately — that is the disposition under which nothing was parked at
-        // all before #215, so this is the assertion the widened behaviour actually needs, and
-        // nothing else pins it. It is how the gauge's documented wording stayed "held for a
-        // topic-creation republish" after the behaviour widened.
+        // is repaired the same way, and since #264 the rejected root itself is parked too,
+        // awaiting the solo verdict that decides whether it is dropped. Under CREATE_NEVER
+        // deliberately — that is the disposition under which nothing was parked at all before
+        // #215, so this is the assertion the widened behaviour actually needs, and nothing else
+        // pins it.
         PubSubWriter<String> writer =
                 new PubSubWriter<>(
                         TestSinkConfigs.forResolver(
@@ -204,19 +204,18 @@ class PubSubWriterMetricsTest {
                         metrics,
                         FAST_SCHEDULE);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
-        factory.enqueueFuture(
-                ApiFutures.immediateFailedFuture(
-                        new CancellationException(
-                                "Execution cancelled because executing previous runnable"
-                                        + " failed.")));
 
         writer.write("k1:first", CONTEXT);
         writer.write("k1:second", CONTEXT);
         mailbox.drain();
 
-        // The root was dropped by the handler; its cascade is held for the resume-and-republish.
-        assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isEqualTo(1);
+        // Both are held: the rejected root awaits its solo verdict — a request-level
+        // INVALID_ARGUMENT does not say which co-batched message is invalid (#264) — and the
+        // cascade the fake's paused key produced waits beside it for the resume-and-republish.
+        assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isEqualTo(2);
 
+        // The solo verdict that confirms the root as invalid; the cascade passes by default.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
         writer.flush(false);
 
         assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isZero();
@@ -316,16 +315,16 @@ class PubSubWriterMetricsTest {
                         metrics,
                         FAST_SCHEDULE);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
-        factory.enqueueFuture(
-                ApiFutures.immediateFailedFuture(
-                        new CancellationException(
-                                "Execution cancelled because executing previous runnable"
-                                        + " failed.")));
 
         writer.write("k1:first", CONTEXT);
         writer.write("k1:second", CONTEXT);
+        // The solo verdict confirming the root; the cascade — the fake's paused key turned the
+        // second write away itself — passes its own request by default.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
         writer.flush(false);
 
+        // One incident, one count — the batch-level report on the root is not counted when it is
+        // parked (it names no message), only the solo rejection that confirms it is.
         assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
         assertThat(metrics.hasMetric("errorClass", "CANCELLED", "errors")).isFalse();
         assertThat(metrics.hasMetric("errorClass", "UNCLASSIFIED", "errors")).isFalse();
@@ -363,13 +362,51 @@ class PubSubWriterMetricsTest {
                         FailureHandler.logAndDrop(),
                         CreateDisposition.CREATE_IF_NEEDED);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
 
         writer.write("topic-a", CONTEXT);
-        mailbox.drain();
+        writer.flush(false);
 
         assertThat(counter("numRecordsSend")).isEqualTo(1);
         assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
         assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
+    }
+
+    @Test
+    void aCoBatchedMessageRescuedByTheIsolationPassCountsNoError() throws Exception {
+        // The mirror of the cascade exclusion for batches: the SDK reports one request-level
+        // INVALID_ARGUMENT against every co-batched message, so counting each report would
+        // multiply one incident by the batch size — and a message the isolation pass then
+        // publishes successfully was never an error at all. Only the solo rejection counts.
+        PubSubWriter<String> writer =
+                new PubSubWriter<>(
+                        TestSinkConfigs.forResolver(
+                                (element, context) -> topic("fixed"),
+                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubPublisherOptions.defaults(),
+                                FailureHandler.logAndDrop(),
+                                CreateDisposition.CREATE_IF_NEEDED),
+                        factory,
+                        admin,
+                        mailbox,
+                        metrics,
+                        FAST_SCHEDULE);
+        StatusRuntimeException batchReport = status(Status.INVALID_ARGUMENT);
+        for (int i = 0; i < 3; i++) {
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+        }
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        writer.write("m2", CONTEXT);
+        // Solo verdicts: m0 accepted, m1 rejected, m2 accepted (default).
+        factory.enqueueFuture(ApiFutures.immediateFuture("id-m0"));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
+
+        writer.flush(false);
+
+        assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(counter("numRecordsSend")).isEqualTo(3);
     }
 
     @Test
@@ -398,7 +435,9 @@ class PubSubWriterMetricsTest {
         writer.write("topic-a", CONTEXT);
         writer.write("topic-a", CONTEXT);
         writer.write("topic-b", CONTEXT);
-        mailbox.drain();
+        // The first topic-a publish is parked awaiting its solo verdict, which rejects it.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
+        writer.flush(false);
 
         String topicA = topic("topic-a").toTopicPath();
         String topicB = topic("topic-b").toTopicPath();
@@ -454,7 +493,10 @@ class PubSubWriterMetricsTest {
         writer.write("topic-a", CONTEXT);
         mailbox.drain();
 
-        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        // The solo verdict, delivered by the repair the next write runs: the handler throws, and
+        // the counter must have moved anyway.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
         assertThatThrownBy(() -> writer.write("topic-a", CONTEXT)).isInstanceOf(IOException.class);
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
     }
 }

@@ -313,7 +313,7 @@ Failed publishes are classified on the task thread and routed by class:
 
 | Class | Examples | Behavior |
 |---|---|---|
-| Message-level | `INVALID_ARGUMENT` — the message is over the size limit, its attributes break a limit, its ordering key is unusable | Routed to the configured [failed-message handler](#failed-message-policy); republishing the same bytes could not succeed. With ordering off its neighbours are unaffected; with ordering on, the messages queued behind it on its key are cancelled by the SDK and republished by the repair (see [Ordering and a dropping policy](#ordering-and-a-dropping-policy)) |
+| Message-level | `INVALID_ARGUMENT` — the message is over the size limit, its attributes break a limit, its ordering key is unusable | A candidate verdict, confirmed before it is acted on: `Publish` is a batch RPC that rejects all-or-nothing, so the status reaches every co-batched message. The sink republishes the failed batch one message per request and routes only the messages rejected individually to the configured [failed-message handler](#failed-message-policy) — co-batched neighbours are published, not dropped. With ordering on, the messages queued behind a rejected one on its key are cancelled by the SDK and republished by the same repair (see [Ordering and a dropping policy](#ordering-and-a-dropping-policy)) |
 | Topic not found | `NOT_FOUND` | Under `CREATE_IF_NEEDED` the topic is created and the message republished (see [Topic auto-creation](#topic-auto-creation)). Under `CREATE_NEVER` the job fails |
 | Cancellation | The SDK cancelling an ordering key's queued publishes after an earlier failure for that key | Never a root cause. With ordering enabled it is parked alongside the failure that caused it — a `NOT_FOUND`, or a message the handler dropped — and republished; with ordering disabled it fails the job |
 | Terminal | An outage the SDK's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, …), `PERMISSION_DENIED`, failures carrying no status at all | Fail the ongoing write or checkpoint |
@@ -375,11 +375,19 @@ whole stream), and a dropping policy discards the lot silently. Watch
 than the job status when running anything other than `failJob()`: it counts every message the
 handler received, so a systematic rejection shows up as a rate rather than as a failure.
 
-One more exposure the classification cannot see: `Publish` is a **batch** RPC, so an
-`INVALID_ARGUMENT` is a *request*-level status that the SDK reports against every message in the
-batch. One oversized message therefore routes its co-batched neighbours too, and a dropping policy
-discards them all — see [#264]({{< param BookRepo >}}/issues/264), which is where the fix and the
-measurement it needs are tracked.
+One thing the classification alone cannot see, and how the sink closes it: `Publish` is a
+**batch** RPC, so an `INVALID_ARGUMENT` is a *request*-level status that the SDK reports against
+every message in the batch — measured on real Pub/Sub
+([#264]({{< param BookRepo >}}/issues/264)): the rejection is all-or-nothing, every co-batched
+future carries the same throwable, and nothing in the error names the offending message. The sink
+therefore treats such a report as a candidate verdict only. The failed batch is parked and
+republished **one message per request**, each message earns its own verdict, and only the
+individually rejected ones reach the handler — so `numRecordsSendErrors` counts true rejections,
+not batch fan-out. The cost is one request per message of a failed batch, on the failure path only
+— and the confirming republish is strictly serial, one round trip at a time, so a stream whose
+every message is invalid degrades to one round trip per message while it lasts. (An *oversized* message under the default batching settings never needed this: the SDK
+sends an element exceeding `batchRequestByteThreshold` as its own request, so only messages under
+that threshold — attribute violations and the like — ever share a rejection.)
 
 #### Ordering and a dropping policy
 
@@ -404,13 +412,18 @@ dropped.
 If that trade is not acceptable for a given topic, `failJob()` — the default — is the policy that
 never leaves a gap.
 
-**One bound to know about.** Draining a key whose messages are rejected one after another happens
-through the same repair, and the same `recoveryMaxAttempts` budget, as a topic-creation republish:
-each attempt drops the head of the key's queue and re-parks the rest. A run of consecutively
-invalid messages longer than the budget allows therefore fails the job rather than dropping them
-all — the outcome the policy exists to avoid. How long that run has to be depends on batching, so
-it is tracked with [#264]({{< param BookRepo >}}/issues/264) rather than guessed at; the analysis
-and the candidate answers are on [#269]({{< param BookRepo >}}/issues/269).
+**The recovery budget bounds unproductive retrying, not the length of a poisoned key.** Draining
+a key whose messages are rejected one after another happens through the same repair and the same
+`recoveryMaxAttempts` budget as a topic-creation republish — but the one-message-per-request
+republish gives every parked message its own verdict within a single attempt, and the key a drop
+pauses is handed back before its next message, so a run of consecutively invalid messages drains
+in one attempt however long it is ([#269]({{< param BookRepo >}}/issues/269)). What the budget
+still bounds is a repair making no progress: topic metadata that never propagates, or a key whose
+republishes keep failing without a verdict. When it runs out, the failure message says which
+happened — `kept failing` (a republish that never got through, `after creating the topic` when
+the repair created one) or `could not drain its parked messages within the recovery budget`, with
+the number of messages that were handed to the failure handler during the repair and, when both
+facts hold, the creation too.
 
 Dead-letter output is **at-least-once, for failures that recur on replay**: messages are offered
 before the checkpoint covering their originating records completes, so a restart replays those
@@ -480,7 +493,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per topic |
 | `inFlightMessages` | gauge | publishes not yet acknowledged |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
-| `parkedMessages` | gauge | messages held for a destination's next republish — after a missing topic, or after an ordering key was paused by a dropped message |
+| `parkedMessages` | gauge | messages held for a destination's next republish — after a missing topic, after an ordering key was paused by a dropped message, or a batch awaiting the one-message-per-request republish that confirms a rejection |
 | `topicsCreated` | counter | completed topic-creation repairs under `CREATE_IF_NEEDED` (see below) |
 | `errorClass.CODE.errors` | counter | failed publishes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `destination.TOPIC.recordsSend`, `destination.TOPIC.sendErrors` | counter | the same two counts per topic, **only** with `perDestinationMetrics(true)` |
@@ -495,8 +508,8 @@ network. Retry volume is what `errorClass.CODE.errors` measures, and it measures
 
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
 exactly what reached `failedMessageHandler(...)` — a record the serializer rejected, and a publish
-the service answered `INVALID_ARGUMENT` — whether the handler then dropped the message or failed the
-job. A serializer bug that makes *every* message invalid is dropped one at a time under a dropping
+the service answered `INVALID_ARGUMENT` on its own single-message request — whether the handler then
+dropped the message or failed the job. A serializer bug that makes *every* message invalid is dropped one at a time under a dropping
 policy, and this counter is what shows it while the job stays green.
 
 **`topicsCreated` counts repairs, not distinct topics.** A creation that answers `ALREADY_EXISTS`
@@ -509,7 +522,10 @@ creates nothing and increments nothing.
 `errorClass` counts **root** failures only. With message ordering enabled the SDK cancels an ordering
 key's queued publishes after that key's first failure; those cascades are not counted, since they
 carry no status of their own and would multiply one incident by the length of the key's queue. The
-failure that caused them is counted.
+failure that caused them is counted. A request-level `INVALID_ARGUMENT` reported against a
+co-batched message is excluded for the same multiplication — the SDK sets the one status on every
+future of the batch — so what is counted is the solo rejection the isolation republish confirms,
+one per genuinely invalid message.
 
 **`perDestinationMetrics` is off by default, and should stay off for dynamic destinations.** Flink
 cannot unregister a metric, so every topic the job has ever written to keeps its counters for the
