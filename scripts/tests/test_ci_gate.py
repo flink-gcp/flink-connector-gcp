@@ -18,6 +18,7 @@ unconditional checker jobs too, so every row matters: a wrong green here is a
 pull request merging unverified, and a wrong red is one blocked forever.
 """
 
+import re
 import subprocess
 
 import pytest
@@ -97,3 +98,40 @@ def test_missing_required_inputs_fail_loudly():
     # A gate invoked without CHECKER_RESULTS is a gate that silently stopped
     # vouching for the checkers.
     assert run_gate(changes="success", build="success", checkers=None).returncode != 0
+
+
+# --- the wiring the truth table cannot see ---
+#
+# The gate only judges what ci.yaml hands it, so a checker added to `needs`
+# but forgotten in CHECKER_RESULTS would fail without reddening the gate —
+# the silent-unprotection failure mode this design exists to remove, in a new
+# shape. These read the real workflow; lint.yaml's paths carry both
+# .github/workflows/** and scripts/**, so they run on every edit to either
+# side of the contract.
+
+CI_YAML = (SCRIPTS.parent / ".github" / "workflows" / "ci.yaml").read_text()
+
+
+def gate_block():
+    match = re.search(r"^  ci_passed:\n(?:^(?:    .*|)\n)+", CI_YAML, re.MULTILINE)
+    assert match, "ci.yaml no longer has a ci_passed job"
+    return match.group(0)
+
+
+def test_every_gate_dependency_is_vouched_for():
+    block = gate_block()
+    needs = re.search(r"needs:\s*\[([^\]]+)\]", block)
+    assert needs, "ci_passed has no needs list"
+    needed = {job.strip() for job in needs.group(1).split(",")}
+    pairs = dict(re.findall(r"(\w+):\$\{\{ needs\.(\w+)\.result \}\}", block))
+    # changes and build have their own variables and skip logic; every other
+    # dependency must appear in CHECKER_RESULTS, and under its own name.
+    assert set(pairs) == needed - {"changes", "build"}
+    for label, job in pairs.items():
+        assert label == job, f"CHECKER_RESULTS labels {job}'s result as {label}"
+
+
+def test_every_vouched_checker_is_a_real_job():
+    jobs = set(re.findall(r"^  (\w+):\n", CI_YAML, re.MULTILINE))
+    pairs = dict(re.findall(r"(\w+):\$\{\{ needs\.(\w+)\.result \}\}", gate_block()))
+    assert set(pairs) <= jobs
