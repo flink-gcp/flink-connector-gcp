@@ -20,11 +20,13 @@ import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
+import com.google.api.core.ApiFuture;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
+import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcher;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import org.junit.jupiter.api.Test;
 
@@ -42,31 +44,52 @@ class BigtableMutateRowsSinkTest {
             (element, context) -> RowMutationEntry.create(element).setCell("cf", "q", element);
 
     @Test
-    void closesTheFailureHandlerWhenTheWriterCannotBeCreated() throws Exception {
+    void closesTheHandlerAndTheBatcherWhenTheWriterCannotBeCreated() throws Exception {
         LifecycleRecordingHandler handler = new LifecycleRecordingHandler();
         // The writer's own precondition is what fails here, after the handler has been opened and
         // the batcher built. A non-positive in-flight cap is the case that precondition exists
         // for: the options builder rejects it, and Java deserialization does not run the builder.
-        Sink<String> sink =
-                BigtableSink.<String>builder()
-                        .table(TABLE)
-                        .serializer(SERIALIZER)
-                        .failedMutationHandler(handler)
-                        .writerOptions(forgedOptions("maxInFlightMutations", 0))
-                        // A well-formed endpoint the client never has to reach: gRPC connects
-                        // lazily, so the batcher is built offline and the failure stays the
-                        // writer's.
-                        .emulatorEndpoint("localhost:8086")
-                        .build();
+        RecordingMutationBatcher batcher = new RecordingMutationBatcher();
+        BigtableMutateRowsSink<String> sink =
+                (BigtableMutateRowsSink<String>)
+                        BigtableSink.<String>builder()
+                                .table(TABLE)
+                                .serializer(SERIALIZER)
+                                .failedMutationHandler(handler)
+                                .writerOptions(forgedOptions("maxInFlightMutations", 0))
+                                .build();
 
-        assertThatThrownBy(() -> sink.createWriter(new StubWriterInitContext(0)))
+        assertThatThrownBy(() -> sink.createWriter(new StubWriterInitContext(0), () -> batcher))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("maxInFlightMutations must be positive");
 
-        // No writer exists to close it, and a restart would otherwise open one more per attempt.
-        // The batcher built just before the failure is released on the same path.
+        // No writer exists to close either of them, and a restart would otherwise open one more
+        // handler and one more client per attempt. A recording batcher through the factory seam is
+        // what makes the client half observable at all.
         assertThat(handler.opens).isEqualTo(1);
         assertThat(handler.closes).isEqualTo(1);
+        assertThat(batcher.closes).isEqualTo(1);
+    }
+
+    /** A batcher that records its close, so the client half of the guard is observable. */
+    private static final class RecordingMutationBatcher implements MutationBatcher {
+
+        private int closes;
+
+        @Override
+        public ApiFuture<Void> add(RowMutationEntry entry) {
+            throw new UnsupportedOperationException("never called");
+        }
+
+        @Override
+        public void sendOutstanding() {
+            throw new UnsupportedOperationException("never called");
+        }
+
+        @Override
+        public void close() {
+            closes++;
+        }
     }
 
     @Test

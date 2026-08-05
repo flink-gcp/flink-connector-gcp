@@ -61,6 +61,26 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
+        return createWriter(
+                context,
+                new DefaultMutationBatcherFactory(
+                        config.getDestination(),
+                        config.getAppProfileId(),
+                        config.getWriterOptions(),
+                        config.getEmulatorEndpoint()));
+    }
+
+    /**
+     * The production path, against an injectable factory.
+     *
+     * <p>The seam exists for one assertion the sink cannot otherwise make observable: that a failed
+     * creation releases the {@link MutationBatcher} it had already built, and not only the failure
+     * handler. The production overload above is what a job calls, and it is one call, so the two
+     * cannot drift.
+     */
+    @VisibleForTesting
+    SinkWriter<T> createWriter(WriterInitContext context, MutationBatcherFactory factory)
+            throws IOException {
         try {
             config.getSerializer().open(context.asSerializationSchemaInitializationContext());
         } catch (InterruptedException e) {
@@ -71,12 +91,6 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
             throw new IOException("Failed to open the Bigtable serialization schema.", e);
         }
         config.getFailedMutationHandler().open(DefaultFailureHandlerContext.of(context));
-        MutationBatcherFactory factory =
-                new DefaultMutationBatcherFactory(
-                        config.getDestination(),
-                        config.getAppProfileId(),
-                        config.getWriterOptions(),
-                        config.getEmulatorEndpoint());
         MutationBatcher batcher = null;
         try {
             batcher = factory.create();

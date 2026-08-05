@@ -69,9 +69,9 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
      *
      * <p>The seam exists for one assertion the sink cannot otherwise make observable: that a failed
      * creation releases the {@link TaskCreator} it had already built, and not only the failure
-     * handler. This is the only sink here that owns a client at that point, so it is the only one
-     * where that half of the guard is worth a seam — the production overload above is what a job
-     * calls, and it is one line, so the two cannot drift.
+     * handler. The sink owns a client at that point, which is what makes that half of the guard
+     * worth a seam — {@code BigtableMutateRowsSink} carries the same one for the same reason. The
+     * production overload above is what a job calls, and it is one line, so the two cannot drift.
      */
     @VisibleForTesting
     SinkWriter<T> createWriter(WriterInitContext context, TaskCreatorFactory factory)
