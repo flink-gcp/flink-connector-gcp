@@ -74,6 +74,9 @@ jobs:
     timeout-minutes: 5
     needs: [verify, lint, docs, tofu_plan]
     if: ${{ !cancelled() }}
+    # The workflow default is {}, which cannot even check out the gate script.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
