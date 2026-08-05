@@ -140,3 +140,13 @@ def test_every_child_the_orchestrator_calls_declares_workflow_call():
         assert re.search(
             r"^  workflow_call:", (WORKFLOWS / child).read_text(), re.MULTILINE
         ), f"{child} is called by ci.yaml but declares no workflow_call trigger"
+
+
+@pytest.mark.parametrize("filename", ["lint.yaml", "docs.yaml"])
+def test_a_gateless_child_has_no_conditional_job(filename):
+    # These two carry no verdict job because nothing in them may skip — a
+    # skipped job does not fail its workflow, so a job-level `if:` added here
+    # would be invisible to ci.yaml's gate. Growing one means growing a
+    # verdict job too, as verify.yaml and tofu-plan.yaml have.
+    text = (WORKFLOWS / filename).read_text().split("\njobs:\n", 1)[1]
+    assert not re.search(r"^    if:", text, re.MULTILINE)
