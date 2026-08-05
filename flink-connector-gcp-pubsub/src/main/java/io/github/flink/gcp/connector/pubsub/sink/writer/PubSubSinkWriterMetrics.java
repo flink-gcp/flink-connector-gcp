@@ -24,6 +24,7 @@ import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
+import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 
 import javax.annotation.Nullable;
@@ -48,17 +49,11 @@ import javax.annotation.Nullable;
 @Internal
 public final class PubSubSinkWriterMetrics {
 
-    static final String IN_FLIGHT_MESSAGES = "inFlightMessages";
-    static final String IN_FLIGHT_BYTES = "inFlightBytes";
-    static final String PARKED_MESSAGES = "parkedMessages";
-    static final String TOPICS_CREATED = "topicsCreated";
-    static final String NUM_RECORDS_SKIPPED = "numRecordsSkipped";
-
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
-    private final Counter numRecordsSkipped;
+    private final Counter recordsSkipped;
     private final Counter topicsCreated;
     private final ErrorClassCounters errorClasses;
     private final DestinationMetrics destinations;
@@ -76,8 +71,8 @@ public final class PubSubSinkWriterMetrics {
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
-        this.numRecordsSkipped = metricGroup.counter(NUM_RECORDS_SKIPPED);
-        this.topicsCreated = metricGroup.counter(TOPICS_CREATED);
+        this.recordsSkipped = metricGroup.counter(PubSubMetricNames.RECORDS_SKIPPED);
+        this.topicsCreated = metricGroup.counter(PubSubMetricNames.TOPICS_CREATED);
         this.errorClasses = new ErrorClassCounters(metricGroup);
         this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics);
     }
@@ -95,9 +90,9 @@ public final class PubSubSinkWriterMetrics {
             Gauge<Integer> inFlightMessages,
             Gauge<Long> inFlightBytes,
             Gauge<Integer> parkedMessages) {
-        metricGroup.gauge(IN_FLIGHT_MESSAGES, inFlightMessages);
-        metricGroup.gauge(IN_FLIGHT_BYTES, inFlightBytes);
-        metricGroup.gauge(PARKED_MESSAGES, parkedMessages);
+        metricGroup.gauge(PubSubMetricNames.IN_FLIGHT_MESSAGES, inFlightMessages);
+        metricGroup.gauge(PubSubMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
+        metricGroup.gauge(PubSubMetricNames.PARKED_MESSAGES, parkedMessages);
     }
 
     /**
@@ -148,7 +143,7 @@ public final class PubSubSinkWriterMetrics {
      * would have gone to would read as a property of that topic.
      */
     public void recordSkipped() {
-        numRecordsSkipped.inc();
+        recordsSkipped.inc();
     }
 
     /**

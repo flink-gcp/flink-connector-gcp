@@ -629,6 +629,16 @@ carries the `@Internal` `CrossVersionSink` seam in the per-major source roots
 sink in the module, and its two variants share one FQCN on purpose. Test sources mirror the
 main-tree packages.
 
+The **module root** package holds what belongs to the connector as a whole rather than to one
+direction. Today that is the `@Internal` `<Product>MetricNames` every connector carries (#280 — the
+base module's CLAUDE.md records why the names live per connector) and, in Bigtable, the
+`@PublicEvolving` `TableDestination`. `PubSubMetricNames` is why the placement is a rule rather than
+a preference: its names span `sink.writer`, `source.streamingpull.reader` and `.enumerator`, so the
+module root is the only package that can hold one inventory. Note what the two have in common is
+the *scope*, not the visibility — a names class is `public` because Java has no module-internal
+access and its sub-packages must import it, which is what the `@Internal` annotation is there to
+say.
+
 ## Emulators are conveniences, not authorities
 
 An emulator is a convenience for fast feedback, never evidence about the service's behaviour.
@@ -716,7 +726,7 @@ Three rules the implementation turns on, none of them re-derivable from the cont
   pointing at the SPI-level skip; the routing is unchanged, the message is what is new. The Table
   API layer therefore cannot skip at all, which is correct — SQL has no way to express it.
 
-`numRecordsSkipped` is registered by all six writer metrics classes and is the **only** thing that
+`recordsSkipped` is registered by all six writer metrics classes and is the **only** thing that
 reports a skip. That is the honest cost of the contract: a serializer skipping every record leaves
 an empty destination under a green job, which no failure counter sees — the #206 exposure in
 another shape, and the reason the counter is not optional. It is deliberately **not** broken down

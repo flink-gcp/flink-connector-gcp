@@ -55,12 +55,12 @@ class FileLoadsWriterMetricsTest {
         // are unknown until the Avro file is closed.
         assertThat(counter("numRecordsSend")).isEqualTo(2);
         assertThat(counter("numBytesSend")).isZero();
-        assertThat(counter(FileLoadsWriterMetrics.STAGED_FILES)).isZero();
+        assertThat(counter("filesStaged")).isZero();
 
         Collection<FileLoadsCommittable> committables = writer.prepareCommit();
 
         assertThat(committables).hasSize(1);
-        assertThat(counter(FileLoadsWriterMetrics.STAGED_FILES)).isEqualTo(1);
+        assertThat(counter("filesStaged")).isEqualTo(1);
         assertThat(counter("numBytesSend"))
                 .isEqualTo(committables.iterator().next().getByteCount())
                 .isPositive();
@@ -75,7 +75,7 @@ class FileLoadsWriterMetricsTest {
         writer.write(new TestRow("t", "bob", 2L), CONTEXT);
         Collection<FileLoadsCommittable> committables = writer.prepareCommit();
 
-        assertThat(counter(FileLoadsWriterMetrics.STAGED_FILES)).isEqualTo(2);
+        assertThat(counter("filesStaged")).isEqualTo(2);
         assertThat(counter("numRecordsSend")).isEqualTo(2);
         assertThat(counter("numBytesSend"))
                 .isEqualTo(
@@ -91,7 +91,7 @@ class FileLoadsWriterMetricsTest {
         assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
         assertThat(counter("numRecordsSend")).isZero();
         // No file was opened for a destination whose only record never reached one.
-        assertThat(this.<Integer>gauge(FileLoadsWriterMetrics.OPEN_DESTINATIONS)).isZero();
+        assertThat(this.<Integer>gauge("openDestinations")).isZero();
     }
 
     @Test
@@ -113,10 +113,10 @@ class FileLoadsWriterMetricsTest {
         // registers on first use and can never be unregistered — for the table it would have gone
         // to. The staged record is the control that keeps this from passing on a counter that
         // counted every record.
-        assertThat(counter(FileLoadsWriterMetrics.NUM_RECORDS_SKIPPED)).isEqualTo(1);
+        assertThat(counter("recordsSkipped")).isEqualTo(1);
         assertThat(counter("numRecordsSend")).isEqualTo(1);
         assertThat(counter("numRecordsSendErrors")).isZero();
-        assertThat(this.<Integer>gauge(FileLoadsWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(1);
+        assertThat(this.<Integer>gauge("openDestinations")).isEqualTo(1);
         assertThat(metrics.hasMetric("destination", "p.d.skipped-table", "recordsSend")).isFalse();
     }
 
@@ -146,13 +146,13 @@ class FileLoadsWriterMetricsTest {
     void gaugeReportsTheDestinationsHoldingConversionState() throws Exception {
         FileLoadsWriter<TestRow> writer = writer();
 
-        assertThat(this.<Integer>gauge(FileLoadsWriterMetrics.OPEN_DESTINATIONS)).isZero();
+        assertThat(this.<Integer>gauge("openDestinations")).isZero();
 
         writer.write(new TestRow("t1", "alice", 1L), CONTEXT);
         writer.write(new TestRow("t2", "bob", 2L), CONTEXT);
         writer.write(new TestRow("t1", "carol", 3L), CONTEXT);
 
-        assertThat(this.<Integer>gauge(FileLoadsWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(2);
+        assertThat(this.<Integer>gauge("openDestinations")).isEqualTo(2);
     }
 
     @Test
@@ -191,11 +191,11 @@ class FileLoadsWriterMetricsTest {
 
         writer.write(new TestRow("t1", "alice", 1L), CONTEXT);
         writer.write(new TestRow("t2", "bob", 2L), CONTEXT);
-        assertThat(this.<Integer>gauge(FileLoadsWriterMetrics.OPEN_DESTINATIONS)).isEqualTo(2);
+        assertThat(this.<Integer>gauge("openDestinations")).isEqualTo(2);
 
         writer.close();
 
-        assertThat(this.<Integer>gauge(FileLoadsWriterMetrics.OPEN_DESTINATIONS)).isZero();
+        assertThat(this.<Integer>gauge("openDestinations")).isZero();
     }
 
     // ------------------------------------------------------------------

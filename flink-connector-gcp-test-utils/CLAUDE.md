@@ -44,6 +44,19 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
   up to the series' standard: assert-by-registered-name is what its gauges and `errorClass`
   subgroups needed, and a counter-holding stub reaches neither. So this is the one sink
   metric-group harness in the tree, with no second pattern beside it.
+- **An assertion names the metric with a string literal, never with the constant the class under
+  test declares** (#280). The harnesses' whole claim is that a renamed metric fails its test, and a
+  constant reference cannot deliver it: a `static final String` is **inlined into the test class at
+  compile time**, so `counter(XMetrics.TABLES_CREATED)` compares the constant against itself and
+  passes for any value, typos included. Measured — mutating `BigtableWriterMetrics.RECORDS_SKIPPED`'s
+  value left `BigtableWriterMetricsTest` green, while the same mutant killed
+  `PubSubWriterFailureHandlerTest`, which spells the name out. Fifteen production metric names were
+  unpinned that way when the rule was written (thirteen in BigQuery, plus Bigtable's
+  `recordsSkipped` and the source's `messagesReceived`, which no test named at all); all are
+  literals now. The class-side constants stay — they name the registration site — but the test side
+  spells the name, which also makes a test read like the docs table it corresponds to. The same
+  inlining is a build trap worth knowing: a mutant run bakes the mutated string into `target/`, so a
+  `just verify` without `clean` then fails on a string that is no longer anywhere in the tree.
 - **`TestSinkCommitterMetricGroup` is its committer sibling** (#210, which #208 deferred it to for
   want of a consumer): the same `ProxyMetricGroup`-over-`MetricListener` shape for
   `SinkCommitterMetricGroup`, and the one type here admitted with a **single** consumer — the

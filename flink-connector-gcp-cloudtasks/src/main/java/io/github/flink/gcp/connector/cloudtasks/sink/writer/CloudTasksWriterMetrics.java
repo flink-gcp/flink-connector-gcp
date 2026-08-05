@@ -24,6 +24,7 @@ import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
+import io.github.flink.gcp.connector.cloudtasks.CloudTasksMetricNames;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 
 import javax.annotation.Nullable;
@@ -46,16 +47,11 @@ import javax.annotation.Nullable;
 @Internal
 final class CloudTasksWriterMetrics {
 
-    static final String IN_FLIGHT_TASKS = "inFlightTasks";
-    static final String PARKED_TASKS = "parkedTasks";
-    static final String TASKS_DEDUPLICATED = "tasksDeduplicated";
-    static final String NUM_RECORDS_SKIPPED = "numRecordsSkipped";
-
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
-    private final Counter numRecordsSkipped;
+    private final Counter recordsSkipped;
     private final Counter tasksDeduplicated;
     private final ErrorClassCounters errorClasses;
     private final DestinationMetrics destinations;
@@ -72,8 +68,8 @@ final class CloudTasksWriterMetrics {
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
-        this.numRecordsSkipped = metricGroup.counter(NUM_RECORDS_SKIPPED);
-        this.tasksDeduplicated = metricGroup.counter(TASKS_DEDUPLICATED);
+        this.recordsSkipped = metricGroup.counter(CloudTasksMetricNames.RECORDS_SKIPPED);
+        this.tasksDeduplicated = metricGroup.counter(CloudTasksMetricNames.TASKS_DEDUPLICATED);
         this.errorClasses = new ErrorClassCounters(metricGroup);
         this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics);
     }
@@ -86,8 +82,8 @@ final class CloudTasksWriterMetrics {
      * @param parkedTasks creations waiting out a retry backoff
      */
     void bindWriterState(Gauge<Integer> inFlightTasks, Gauge<Integer> parkedTasks) {
-        metricGroup.gauge(IN_FLIGHT_TASKS, inFlightTasks);
-        metricGroup.gauge(PARKED_TASKS, parkedTasks);
+        metricGroup.gauge(CloudTasksMetricNames.IN_FLIGHT_TASKS, inFlightTasks);
+        metricGroup.gauge(CloudTasksMetricNames.PARKED_TASKS, parkedTasks);
     }
 
     /**
@@ -139,7 +135,7 @@ final class CloudTasksWriterMetrics {
      * would have gone to would read as a property of that queue.
      */
     void recordSkipped() {
-        numRecordsSkipped.inc();
+        recordsSkipped.inc();
     }
 
     /**

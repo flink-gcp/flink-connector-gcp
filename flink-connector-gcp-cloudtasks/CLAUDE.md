@@ -60,7 +60,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   task, an extractor returning null or an empty key) fail *every* record alike, so dropping them
   would leave an empty queue under a green job. The extractor is the pair worth not re-litigating —
   a throw is per-record and routed, a missing key is per-stream and fatal. A serializer returning
-  **null** is in neither class: since #230 that is a skip, counted by `numRecordsSkipped` and never
+  **null** is in neither class: since #230 that is a skip, counted by `recordsSkipped` and never
   offered to the handler. `ALREADY_EXISTS` on a
   named task stays success and never reaches the handler. **Classification is a precedence over the
   whole cause chain, not a first-match** — but **only the transient half**: routing takes

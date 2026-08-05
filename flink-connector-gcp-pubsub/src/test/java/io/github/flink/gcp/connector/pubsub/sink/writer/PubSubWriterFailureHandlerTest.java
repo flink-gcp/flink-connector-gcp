@@ -256,7 +256,7 @@ class PubSubWriterFailureHandlerTest {
         assertThat(factory.publishers.keySet()).containsExactly(topic("topic-b"));
         assertThat(metrics.counterValue("numRecordsSend")).isEqualTo(1);
         assertThat(metrics.counterValue("numRecordsSendErrors")).isZero();
-        assertThat(metrics.counterValue("numRecordsSkipped")).isEqualTo(1);
+        assertThat(metrics.counterValue("recordsSkipped")).isEqualTo(1);
     }
 
     @Test

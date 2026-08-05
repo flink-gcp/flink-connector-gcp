@@ -238,8 +238,7 @@ class FileLoadsCommitterTest {
         harness.commit(file("b").withCheckpointId(1));
 
         assertThat(harness.runner.loads).hasSize(2);
-        assertThat(harness.metrics.counterValue(FileLoadsCommitter.LOAD_JOBS_SUBMITTED))
-                .isEqualTo(2);
+        assertThat(harness.metrics.counterValue("loadJobsSubmitted")).isEqualTo(2);
     }
 
     @Test
@@ -248,7 +247,7 @@ class FileLoadsCommitterTest {
 
         harness.commit();
 
-        assertThat(harness.metrics.counterValue(FileLoadsCommitter.LOAD_JOBS_SUBMITTED)).isZero();
+        assertThat(harness.metrics.counterValue("loadJobsSubmitted")).isZero();
     }
 
     @Test

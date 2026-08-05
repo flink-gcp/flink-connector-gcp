@@ -57,7 +57,7 @@ API notes:
   never reaches the failed-row handler — which is how a filter that depends on the row being built
   belongs in the serializer rather than upstream of the sink. Every serializer in this connector
   family reads `null` that way, and all three write methods honour it. A skip is counted by
-  [`numRecordsSkipped`](#metrics), the only thing that reports it: a serializer skipping every
+  [`recordsSkipped`](#metrics), the only thing that reports it: a serializer skipping every
   record would otherwise leave an empty table under a green job. The destination is resolved
   *before* the serializer runs, so a record the serializer would skip still needs a resolvable
   table — resolver failures are configuration errors and propagate.
@@ -1157,7 +1157,7 @@ Append failures are classified on the task thread and routed by class:
 | Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured failure handler; surviving rows of the batch are re-appended. A row-detailed error whose own status code is transient is classified transient, not row-level: outage-shaped failures never reach the handler |
 
 A record the serializer *skips* by returning `null` is in none of those classes: it is not a
-failure, so it never reaches the handler and is counted by [`numRecordsSkipped`](#metrics) rather
+failure, so it never reaches the handler and is counted by [`recordsSkipped`](#metrics) rather
 than `numRecordsSendErrors`.
 
 The failed-row policy is pluggable via `failedRowHandler(...)`, taking the shared
@@ -1264,7 +1264,7 @@ same thing in each.
 | `numRecordsSend` | counter (Flink standard) | rows handed to the client library in an append |
 | `numBytesSend` | counter (Flink standard) | their serialized row bytes |
 | `numRecordsSendErrors` | counter (Flink standard) | rows routed to the failed-row handler |
-| `numRecordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
+| `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
 | `inFlightBatches` | gauge | appends the service has not answered |
 | `openDestinations` | gauge | destinations holding a live stream writer, after eviction |
 | `appendRetries` | counter | appends re-issued while repairing a destination |
@@ -1274,7 +1274,7 @@ same thing in each.
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
 
 **`STORAGE_API_EXACTLY_ONCE`** (buffered stream) reports `numRecordsSend`, `numBytesSend`,
-`numRecordsSendErrors`, `numRecordsSkipped`, `appendRetries` and `errorClass.CODE.errors` with the
+`numRecordsSendErrors`, `recordsSkipped`, `appendRetries` and `errorClass.CODE.errors` with the
 same meanings, plus `inFlightAppends` (appends the service has not acknowledged). It has no
 `openDestinations`, `tablesCreated`, `schemaReconciliations` or per-destination counters: this write
 method takes one fixed destination whose schema is pinned when the stream is created, so each would
@@ -1287,9 +1287,9 @@ be a constant.
 | `numRecordsSend` | counter (Flink standard) | records written to a staging file |
 | `numBytesSend` | counter (Flink standard) | bytes of the staging files finished so far |
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-row handler |
-| `numRecordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
+| `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
 | `openDestinations` | gauge | destinations holding conversion state |
-| `stagedFiles` | counter | staging files finished (rolled at 1.5 GiB, and at every commit) |
+| `filesStaged` | counter | staging files finished (rolled at 1.5 GiB, and at every commit) |
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
 
 There is deliberately **no `errorClass` on the FILE_LOADS writer**: it makes no per-record request,

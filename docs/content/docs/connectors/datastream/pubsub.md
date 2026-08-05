@@ -57,7 +57,7 @@ API notes:
   built belongs in the serializer rather than upstream of the sink. Every serializer in this
   connector family reads `null` that way, and a `null` travels unchanged through
   `withAttributes(...)` and `withOrderingKey(...)`, whose extractors are not called for it.
-  A skip is counted by [`numRecordsSkipped`](#sink-metrics), the only thing that reports it: a
+  A skip is counted by [`recordsSkipped`](#sink-metrics), the only thing that reports it: a
   serializer skipping every record would otherwise leave an empty topic under a green job.
   `dataOnly(...)` cannot skip — Flink's `SerializationSchema` contract has no `null` in it, so a
   `null` payload is reported as a serialization failure instead. The destination is resolved
@@ -323,7 +323,7 @@ Failed publishes are classified on the task thread and routed by class:
 Two data-shaped failures are pluggable: a record the serializer rejects, and a message-level
 publish rejection. A record the serializer *skips* by returning `null` is neither: it is not a
 failure, so it never reaches the handler and is counted by
-[`numRecordsSkipped`](#sink-metrics) rather than `numRecordsSendErrors`. The policy is
+[`recordsSkipped`](#sink-metrics) rather than `numRecordsSendErrors`. The policy is
 `failedMessageHandler(...)`, taking the shared
 `FailureHandler<FailedMessage>` SPI from `flink-connector-gcp-base`
 ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the connectors in this
@@ -477,7 +477,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `numRecordsSend` | counter (Flink standard) | records handed to the client library for publishing |
 | `numBytesSend` | counter (Flink standard) | their serialized size |
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-message handler |
-| `numRecordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per topic |
+| `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per topic |
 | `inFlightMessages` | gauge | publishes not yet acknowledged |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
 | `parkedMessages` | gauge | messages held for a destination's next republish — after a missing topic, or after an ordering key was paused by a dropped message |
@@ -773,7 +773,7 @@ Registered on the reader and enumerator metric groups:
 | `messagesNacked` | counter | messages returned for redelivery |
 | `messagesDropped` | counter | messages discarded by `DROP` |
 | `pendingAcks` | gauge | messages received or emitted but not yet acknowledged |
-| `checkpointsPendingAck` | gauge | checkpoints taken but not yet completed |
+| `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
 | `assignedSplits` / `unassignedReaders` | gauge (enumerator) | splits handed out; readers that got none |
 | `numRecordsInErrors` | counter (Flink standard) | deserialization failures |
 

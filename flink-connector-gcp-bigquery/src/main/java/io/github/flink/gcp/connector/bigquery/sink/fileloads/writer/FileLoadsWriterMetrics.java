@@ -22,6 +22,7 @@ import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
+import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 /**
@@ -46,16 +47,12 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 @Internal
 final class FileLoadsWriterMetrics {
 
-    static final String OPEN_DESTINATIONS = "openDestinations";
-    static final String STAGED_FILES = "stagedFiles";
-    static final String NUM_RECORDS_SKIPPED = "numRecordsSkipped";
-
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
-    private final Counter numRecordsSkipped;
-    private final Counter stagedFiles;
+    private final Counter recordsSkipped;
+    private final Counter filesStaged;
     private final DestinationMetrics destinations;
 
     /**
@@ -69,8 +66,8 @@ final class FileLoadsWriterMetrics {
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
-        this.numRecordsSkipped = metricGroup.counter(NUM_RECORDS_SKIPPED);
-        this.stagedFiles = metricGroup.counter(STAGED_FILES);
+        this.recordsSkipped = metricGroup.counter(BigQueryMetricNames.RECORDS_SKIPPED);
+        this.filesStaged = metricGroup.counter(BigQueryMetricNames.FILES_STAGED);
         this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics);
     }
 
@@ -81,7 +78,7 @@ final class FileLoadsWriterMetrics {
      * @param openDestinations destinations holding conversion state
      */
     void bindWriterState(Gauge<Integer> openDestinations) {
-        metricGroup.gauge(OPEN_DESTINATIONS, openDestinations);
+        metricGroup.gauge(BigQueryMetricNames.OPEN_DESTINATIONS, openDestinations);
     }
 
     /**
@@ -110,7 +107,7 @@ final class FileLoadsWriterMetrics {
      * @param bytes the file's size on Cloud Storage
      */
     void fileFinished(long bytes) {
-        stagedFiles.inc();
+        filesStaged.inc();
         numBytesSend.inc(bytes);
     }
 
@@ -138,6 +135,6 @@ final class FileLoadsWriterMetrics {
      * would have gone to would read as a property of that table.
      */
     void recordSkipped() {
-        numRecordsSkipped.inc();
+        recordsSkipped.inc();
     }
 }

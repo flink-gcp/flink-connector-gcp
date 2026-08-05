@@ -95,17 +95,17 @@ class PubSubSourceReaderTest {
             receiveAndStage("m1", new RecordingAckHandle("m1"));
 
             assertThat(testMetrics.gauge("pendingAcks")).isEqualTo(1);
-            assertThat(testMetrics.gauge("checkpointsPendingAck")).isZero();
+            assertThat(testMetrics.gauge("pendingCheckpoints")).isZero();
 
             reader.snapshotState(1L);
 
             assertThat(testMetrics.gauge("pendingAcks")).isEqualTo(1);
-            assertThat(testMetrics.gauge("checkpointsPendingAck")).isEqualTo(1);
+            assertThat(testMetrics.gauge("pendingCheckpoints")).isEqualTo(1);
 
             reader.notifyCheckpointComplete(1L);
 
             assertThat(testMetrics.gauge("pendingAcks")).isZero();
-            assertThat(testMetrics.gauge("checkpointsPendingAck")).isZero();
+            assertThat(testMetrics.gauge("pendingCheckpoints")).isZero();
         }
     }
 

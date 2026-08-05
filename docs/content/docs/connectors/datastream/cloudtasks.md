@@ -75,7 +75,7 @@ Sink<OrderEvent> sink =
 - Returning `null` **skips** the record — it is written nowhere, is not a failure, and never
   reaches the failed-task handler — which is how a filter that depends on the task being built
   belongs in the serializer rather than upstream of the sink. Every serializer in this connector
-  family reads `null` that way. A skip is counted by [`numRecordsSkipped`](#metrics), the only
+  family reads `null` that way. A skip is counted by [`recordsSkipped`](#metrics), the only
   thing that reports it: a serializer skipping every record would otherwise leave an empty queue
   under a green job. The `httpTarget(...)` convenience cannot skip — Flink's `SerializationSchema`
   contract has no `null` in it, so a `null` body is reported as a serialization failure instead.
@@ -355,7 +355,7 @@ unclassifiable failure is not evidence that retrying would help.
 Three data-shaped failures are pluggable: a record the serializer rejects, a task id extractor that
 throws, and a creation the service rejects with `INVALID_ARGUMENT`. A record the serializer *skips*
 by returning `null` is none of them: it is not a failure, so it never reaches the handler and is
-counted by [`numRecordsSkipped`](#metrics) rather than `numRecordsSendErrors`. The policy is
+counted by [`recordsSkipped`](#metrics) rather than `numRecordsSendErrors`. The policy is
 `failedTaskHandler(...)`, taking the shared `FailureHandler<FailedTask>` SPI from
 `flink-connector-gcp-base` ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the
 connectors in this repository):
@@ -489,7 +489,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `numRecordsSend` | counter (Flink standard) | records handed to the client library for creation |
 | `numBytesSend` | counter (Flink standard) | their serialized size |
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-task handler |
-| `numRecordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per queue |
+| `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per queue |
 | `inFlightTasks` | gauge | creations the service has not answered |
 | `parkedTasks` | gauge | creations waiting out a retry backoff |
 | `tasksDeduplicated` | counter | named tasks Cloud Tasks already held |
