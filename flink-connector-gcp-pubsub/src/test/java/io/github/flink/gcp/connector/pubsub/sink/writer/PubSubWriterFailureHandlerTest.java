@@ -168,11 +168,23 @@ class PubSubWriterFailureHandlerTest {
             PubSubSerializationSchema<String> serializer,
             CreateDisposition disposition,
             RetrySchedule recoverySchedule) {
+        return newOrderingWriter(
+                serializer,
+                PubSubPublisherOptions.builder().enableMessageOrdering(true).build(),
+                disposition,
+                recoverySchedule);
+    }
+
+    private PubSubWriter<String> newOrderingWriter(
+            PubSubSerializationSchema<String> serializer,
+            PubSubPublisherOptions options,
+            CreateDisposition disposition,
+            RetrySchedule recoverySchedule) {
         return new PubSubWriter<>(
                 TestSinkConfigs.forResolver(
                         (element, context) -> ORDERED_TOPIC,
                         serializer,
-                        PubSubPublisherOptions.builder().enableMessageOrdering(true).build(),
+                        options,
                         handler,
                         disposition),
                 factory,
@@ -187,7 +199,16 @@ class PubSubWriterFailureHandlerTest {
     }
 
     private List<String> orderedPayloads() {
-        return orderedPublisher().published.stream()
+        return payloads(orderedPublisher().published);
+    }
+
+    /** Payloads of the keyed publishes the fake turned away because their key was paused. */
+    private List<String> rejectedPayloads() {
+        return payloads(orderedPublisher().rejected);
+    }
+
+    private static List<String> payloads(List<PubsubMessage> messages) {
+        return messages.stream()
                 .map(PubsubMessage::getData)
                 .map(data -> data.toString(StandardCharsets.UTF_8))
                 .collect(Collectors.toList());
@@ -422,14 +443,12 @@ class PubSubWriterFailureHandlerTest {
 
     // --- Message ordering (#215) -------------------------------------------------------------
     //
-    // Note what the fake publisher cannot do: it holds no paused-key state, so it accepts a publish
-    // the real SDK would reject outright with a cancellation. That the writer hands a dropped
-    // message's key back is therefore only observable through resumedKeys, never through a publish
-    // that would otherwise fail.
-    //
-    // And only one test below discriminates it: aDroppedKeyedMessageResumesItsOrderingKey, whose
-    // batch is empty. Wherever a cascade is parked, the batch carries the same key and would resume
-    // it anyway — so those tests pin the republish, not the registration.
+    // The fake publisher models the SDK's paused ordering keys (#277): a failed keyed publish
+    // pauses its key, a publish on a paused key comes back cancelled without being published, and
+    // only resumePublish clears it. So a cascade no longer has to be scripted — publishing to a
+    // key whose root failed produces one — and a resume that is missing, or that runs at the
+    // wrong time, is observable through the publishes it lets through or turns away, not only
+    // through resumedKeys.
 
     @Test
     void aDroppedKeyedMessageResumesItsOrderingKey() throws Exception {
@@ -452,13 +471,12 @@ class PubSubWriterFailureHandlerTest {
 
     @Test
     void theCascadesOfADroppedMessageAreRepublishedInPublishOrder() throws Exception {
-        // The messages queued behind the dropped one were cancelled by the SDK, not rejected by the
-        // service. They are perfectly publishable, and republishing them in publish sequence is
-        // what keeps the survivors of the key in their relative order.
+        // The messages behind the dropped one are cancelled by the publisher's paused key — the
+        // fake turns them away itself — not rejected by the service. They are perfectly
+        // publishable, and republishing them in publish sequence is what keeps the survivors of
+        // the key in their relative order.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_IF_NEEDED);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
-        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
-        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
 
         writer.write("k1:a", CONTEXT);
         writer.write("k1:b", CONTEXT);
@@ -468,8 +486,55 @@ class PubSubWriterFailureHandlerTest {
         assertThat(handler.handled).hasSize(1);
         assertThat(handler.handled.get(0).getPubsubMessage().getOrderingKey()).isEqualTo("k1");
         assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
-        // b and c republished, in that order; a is the gap the drop leaves behind.
-        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b", "k1:c", "k1:b", "k1:c");
+        // b and c came back cancelled from the paused key, and reached the topic only through the
+        // repair's republish, in that order; a is the gap the drop leaves behind.
+        assertThat(rejectedPayloads()).containsExactly("k1:b", "k1:c");
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b", "k1:c");
+    }
+
+    @Test
+    void aKeyPausedByADropStaysPausedUntilTheRepairResumesIt() throws Exception {
+        // The reason the resume lives in resumeOrderingKeys and not in routeFailedMessage: write()
+        // tests repairNeeded before awaitCapacity(), and mails — the drop among them — run inside
+        // it, so a key resumed from the drop's mail could be published to by the rest of that same
+        // write() while the key's cascades were still parked: a newer message ahead of older ones.
+        // Left paused, the racing publish comes back cancelled and is republished in
+        // publish-sequence order with the rest.
+        //
+        // The in-flight cap is what forces the drop's mail to run mid-write: with two publishes
+        // outstanding, the third write yields inside awaitCapacity() after it already tested
+        // repairNeeded. This is the test #277 exists to make possible — with a fake that accepted
+        // every publish, the eager-resume design published k1:c ahead of the parked k1:b and
+        // nothing could see it.
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> element.split(":")[0]),
+                        PubSubPublisherOptions.builder()
+                                .enableMessageOrdering(true)
+                                .maxInFlightMessages(2)
+                                .build(),
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        FAST_SCHEDULE);
+        SettableApiFuture<String> root = SettableApiFuture.create();
+        SettableApiFuture<String> queued = SettableApiFuture.create();
+        factory.enqueueFuture(root);
+        factory.enqueueFuture(queued);
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        // a's failure pauses the key and queues the drop's mail; b's cascade trails it.
+        root.setException(invalidArgument());
+        queued.setException(cascade());
+
+        writer.write("k1:c", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(1);
+        // The racing publish was turned away by the still-paused key…
+        assertThat(rejectedPayloads()).containsExactly("k1:c");
+        // …so one repair resumed the key once and republished b and c in publish order.
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b", "k1:b", "k1:c");
     }
 
     @Test
@@ -506,7 +571,6 @@ class PubSubWriterFailureHandlerTest {
         // that no topic is created, which is asserted here rather than assumed.
         PubSubWriter<String> writer = newOrderingWriter(CreateDisposition.CREATE_NEVER);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
-        factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
 
         writer.write("k1:a", CONTEXT);
         writer.write("k1:b", CONTEXT);
@@ -514,7 +578,8 @@ class PubSubWriterFailureHandlerTest {
 
         assertThat(handler.handled).hasSize(1);
         assertThat(orderedPublisher().resumedKeys).containsExactly("k1");
-        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b", "k1:b");
+        assertThat(rejectedPayloads()).containsExactly("k1:b");
+        assertThat(orderedPayloads()).containsExactly("k1:a", "k1:b");
         assertThat(admin.created).isEmpty();
     }
 
@@ -554,7 +619,9 @@ class PubSubWriterFailureHandlerTest {
                         CreateDisposition.CREATE_IF_NEEDED,
                         new RetrySchedule(1, 1, 2, 0));
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
-        for (int i = 0; i < 3; i++) {
+        // One scripted cascade per republish attempt; b's initial publish needs none, since the
+        // fake itself turns it away on the paused key.
+        for (int i = 0; i < 2; i++) {
             factory.enqueueFuture(ApiFutures.immediateFailedFuture(cascade()));
         }
         writer.write("k1:a", CONTEXT);
