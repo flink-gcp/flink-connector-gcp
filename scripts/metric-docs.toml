@@ -14,9 +14,11 @@
 #
 # Which page must document each connector's metrics (scripts/check-metric-docs.py).
 #
-# Four tables, the same split option-docs.toml has. The first two say *where*
-# each surface is documented; the last two are the exceptions, pointing in
-# OPPOSITE directions — which is the thing to get right when adding one:
+# Four tables, the same split option-docs.toml has. The first says *where* a
+# module's metrics are documented; the second names the sources whose templated
+# leaves a using connector's page owes; the last two are the exceptions,
+# pointing in OPPOSITE directions — which is the thing to get right when
+# adding one:
 #
 #   [[connectors]]  module -> page      what must be documented
 #   [[subgroups]]   a base.metrics source registering templated subgroup leaves
@@ -35,8 +37,8 @@
 # Modules are mapped, not individual classes, on purpose: a module's whole
 # `*MetricNames` inventory is then required to appear on that page from the
 # moment a name joins it. A module that registers metrics and has no entry
-# here fails for the same reason — see the next connector, since Spanner
-# arrives as a new module.
+# here fails too, which is what catches the next connector (Spanner, #36) the
+# moment it registers its first metric.
 
 # Connector metrics: every name the module's *MetricNames inventory declares
 # must be named in a table whose first column header is exactly `Metric` on

@@ -84,8 +84,11 @@ def metric_page(*rows, header="Metric", second="Type", title="# Connector"):
     return "\n".join(lines) + "\n"
 
 
-def write_source(root, module, name, body):
-    path = root / module / "src" / "main" / "java" / "io" / "github" / "x" / name
+def write_source(root, module, name, body, tree="src/main/java"):
+    path = root / module
+    for part in tree.split("/"):
+        path = path / part
+    path = path / "io" / "github" / "x" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
     return str(path.relative_to(root))
@@ -197,6 +200,15 @@ def test_a_non_table_line_ends_the_table(root, check_metric_docs):
     assert [names for names, _, _ in rows] == [["inside"]]
 
 
+def test_a_fenced_example_table_is_not_read(root, check_metric_docs):
+    # A snippet showing what a metrics table looks like must earn no coverage
+    # credit: deleting the real table while the example remains has to fail.
+    page = root / "page.md"
+    page.write_text("# t\n\n```\n" + metric_page(("`example`", "counter")) + "```\n")
+    rows, problems = check_metric_docs.metric_table_rows(page)
+    assert rows == [] and problems == []
+
+
 def test_a_metric_table_without_a_type_column_fails(root, check_metric_docs):
     # The Type cell is what the kind check reads; a Metric table without one
     # has nowhere to be right or wrong, which must not read as clean.
@@ -208,6 +220,10 @@ def test_a_metric_table_without_a_type_column_fails(root, check_metric_docs):
 
 
 # --- the source side: inventory and registrations ---
+
+
+def sources_of(check_metric_docs, module):
+    return check_metric_docs.blanked_sources(module)
 
 
 def test_registrations_resolve_constants_across_line_wraps(root, check_metric_docs):
@@ -227,9 +243,13 @@ def test_registrations_resolve_constants_across_line_wraps(root, check_metric_do
             ],
         ),
     )
-    constants = check_metric_docs.inventory("conn")
-    registered, problems = check_metric_docs.registrations("conn", constants)
+    sources = sources_of(check_metric_docs, "conn")
+    constants = check_metric_docs.inventory("conn", sources)
+    registered, used, problems = check_metric_docs.registrations(
+        "conn", sources, constants
+    )
     assert registered == {"rowsSent": "counter"} and problems == []
+    assert used == {("AMetricNames", "ROWS_SENT")}
 
 
 def test_a_registration_inside_a_comment_is_not_a_registration(root, check_metric_docs):
@@ -245,9 +265,46 @@ def test_a_registration_inside_a_comment_is_not_a_registration(root, check_metri
         "    void f() {}\n"
         "}\n",
     )
-    constants = check_metric_docs.inventory("conn")
-    registered, problems = check_metric_docs.registrations("conn", constants)
+    sources = sources_of(check_metric_docs, "conn")
+    constants = check_metric_docs.inventory("conn", sources)
+    registered, _, problems = check_metric_docs.registrations(
+        "conn", sources, constants
+    )
     assert registered == {"rowsSent": "counter"} and problems == []
+
+
+def test_a_comment_marker_inside_a_string_does_not_swallow_its_line(
+    root, check_metric_docs
+):
+    # `"http://…"` carries `//`; naive comment blanking would erase the rest of
+    # the line, and a registration sharing it would silently vanish.
+    connector(root, counters=("ROWS_SENT", "OTHER"))
+    write_source(
+        root,
+        "conn",
+        "ReaderMetrics.java",
+        metrics_class(
+            "AMetricNames",
+            extra_lines=[
+                'String u = "http://e"; this.o = metricGroup.counter(AMetricNames.OTHER);'
+            ],
+        ),
+    )
+    # connector() already registers OTHER in WriterMetrics; rebuild it so the
+    # tricky line is the only registration of OTHER.
+    write_source(
+        root,
+        "conn",
+        "WriterMetrics.java",
+        metrics_class("AMetricNames", counters=("ROWS_SENT",)),
+    )
+    sources = sources_of(check_metric_docs, "conn")
+    constants = check_metric_docs.inventory("conn", sources)
+    registered, _, problems = check_metric_docs.registrations(
+        "conn", sources, constants
+    )
+    assert registered == {"rowsSent": "counter", "other": "counter"}
+    assert problems == []
 
 
 def test_a_registration_outside_the_inventory_fails(root, check_metric_docs, capsys):
@@ -278,10 +335,39 @@ def test_an_inventory_constant_nothing_registers_fails(root, check_metric_docs, 
     page = write_page(root, "conn.md", metric_page(("`rowsSent`", "counter")))
     write_config(root, connectors=[("conn", page)])
     assert exit_code(check_metric_docs) == 1
-    assert "names `ghost` but nothing registers it" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "AMetricNames.GHOST names `ghost` but nothing registers it" in err
 
 
-def test_a_name_registered_as_both_kinds_fails(root, check_metric_docs, capsys):
+def test_a_dead_constant_does_not_hide_behind_a_duplicate_literal(
+    root, check_metric_docs, capsys
+):
+    # Two constants carrying the same literal: the check is per constant, so
+    # the unregistered one still fails even though its name is registered.
+    write_source(
+        root,
+        "conn",
+        "AMetricNames.java",
+        "package io.github.x;\n\n"
+        "public final class AMetricNames {\n"
+        '    public static final String ROWS_SENT = "rowsSent";\n'
+        '    public static final String LEGACY = "rowsSent";\n'
+        "}\n",
+    )
+    write_source(
+        root,
+        "conn",
+        "WriterMetrics.java",
+        metrics_class("AMetricNames", counters=("ROWS_SENT",)),
+    )
+    page = write_page(root, "conn.md", metric_page(("`rowsSent`", "counter")))
+    write_config(root, connectors=[("conn", page)])
+    assert exit_code(check_metric_docs) == 1
+    err = capsys.readouterr().err
+    assert "AMetricNames.LEGACY names `rowsSent` but nothing registers it" in err
+
+
+def test_a_name_registered_as_both_kinds_fails_once(root, check_metric_docs, capsys):
     connector(root)
     write_source(
         root,
@@ -289,10 +375,18 @@ def test_a_name_registered_as_both_kinds_fails(root, check_metric_docs, capsys):
         "OtherMetrics.java",
         metrics_class("AMetricNames", gauges=("ROWS_SENT",)),
     )
+    write_source(
+        root,
+        "conn",
+        "ThirdMetrics.java",
+        metrics_class("AMetricNames", gauges=("ROWS_SENT",)),
+    )
     page = write_page(root, "conn.md", metric_page(("`rowsSent`", "counter")))
     write_config(root, connectors=[("conn", page)])
     assert exit_code(check_metric_docs) == 1
-    assert "both a counter and a gauge" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    # One problem, not one per conflicting occurrence.
+    assert err.count("both a counter and a gauge") == 1
 
 
 def test_a_num_prefixed_name_fails(root, check_metric_docs, capsys):
@@ -301,6 +395,35 @@ def test_a_num_prefixed_name_fails(root, check_metric_docs, capsys):
     write_config(root, connectors=[("conn", page)])
     assert exit_code(check_metric_docs) == 1
     assert "takes Flink's `num` prefix" in capsys.readouterr().err
+
+
+def test_a_registration_in_a_compat_source_root_is_scanned(root, check_metric_docs):
+    # src/main/java-flink1 and java-flink2 are main sources too; a metric
+    # registered only there must not read as a dead inventory entry.
+    write_source(
+        root,
+        "conn",
+        "AMetricNames.java",
+        inventory_class("AMetricNames", "ROWS_SENT", "SEAM"),
+    )
+    write_source(
+        root,
+        "conn",
+        "WriterMetrics.java",
+        metrics_class("AMetricNames", counters=("ROWS_SENT",)),
+    )
+    write_source(
+        root,
+        "conn",
+        "SeamMetrics.java",
+        metrics_class("AMetricNames", counters=("SEAM",)),
+        tree="src/main/java-flink2",
+    )
+    page = write_page(
+        root, "conn.md", metric_page(("`rowsSent`", "counter"), ("`seam`", "counter"))
+    )
+    write_config(root, connectors=[("conn", page)])
+    assert exit_code(check_metric_docs) == 0
 
 
 # --- both directions, end to end ---
@@ -318,6 +441,20 @@ def test_an_undocumented_metric_fails(root, check_metric_docs, capsys):
     assert exit_code(check_metric_docs) == 1
     err = capsys.readouterr().err
     assert "registers `rowsLost` (counter) but no `Metric`-headed table" in err
+
+
+def test_a_fenced_table_earns_no_coverage_credit(root, check_metric_docs, capsys):
+    # The end-to-end half of the fence rule: the only table naming the metric
+    # sits in a snippet, so coverage must still fail.
+    connector(root)
+    page = write_page(
+        root,
+        "conn.md",
+        "# t\n\n```\n" + metric_page(("`rowsSent`", "counter")) + "```\n",
+    )
+    write_config(root, connectors=[("conn", page)])
+    assert exit_code(check_metric_docs) == 1
+    assert "registers `rowsSent` (counter) but no" in capsys.readouterr().err
 
 
 def test_a_row_nothing_registers_fails(root, check_metric_docs, capsys):
@@ -443,6 +580,21 @@ def test_a_templated_rows_kind_is_checked_too(root, check_metric_docs, capsys):
     assert "documented as a gauge but ErrorCounters registers it as a counter" in err
 
 
+def test_the_standard_marker_on_a_templated_row_fails(root, check_metric_docs, capsys):
+    # The templated half of the marker guard: a subgroup leaf is registered by
+    # this repository too, so the marker cannot exempt its row either.
+    subgroup_tree(
+        root,
+        [
+            ("`rowsSent`", "counter"),
+            ("`errorClass.CODE.errors`", "counter (Flink standard)"),
+        ],
+    )
+    assert exit_code(check_metric_docs) == 1
+    err = capsys.readouterr().err
+    assert "this repository registers it, through ErrorCounters" in err
+
+
 def test_a_lowercase_middle_segment_is_a_name_not_a_placeholder(
     root, check_metric_docs, capsys
 ):
@@ -457,6 +609,28 @@ def test_a_lowercase_middle_segment_is_a_name_not_a_placeholder(
     assert "names `errorClass.code.errors`, which conn does not register" in err
 
 
+def test_a_num_prefixed_subgroup_leaf_fails_naming_the_registrar(
+    root, check_metric_docs, capsys
+):
+    # The #280 prefix rule reaches the base registrars too, attributed to the
+    # registrar rather than to whichever module happens to use it — and it
+    # fires even when no module does.
+    write_source(
+        root,
+        "base",
+        "ErrorCounters.java",
+        subgroup_class("ErrorCounters", "GROUP", "errorClass", ["NUM_ERRORS"]),
+    )
+    clean_tree(root)
+    write_config(
+        root,
+        connectors=[("conn", "docs/conn.md")],
+        subgroups=["base/src/main/java/io/github/x/ErrorCounters.java"],
+    )
+    assert exit_code(check_metric_docs) == 1
+    assert "ErrorCounters registers `numErrors`" in capsys.readouterr().err
+
+
 # --- the allowlists, and entries that never fire ---
 
 
@@ -468,8 +642,7 @@ def test_exempt_forgives_a_registered_name_with_no_row(root, check_metric_docs):
 
 
 def test_exempt_forgives_a_used_subgroup_leaf_with_no_row(root, check_metric_docs):
-    subgroup_tree(root, [("`rowsSent`", "counter")])
-    source = "base/src/main/java/io/github/x/ErrorCounters.java"
+    source = subgroup_tree(root, [("`rowsSent`", "counter")])
     write_config(
         root,
         connectors=[("conn", "docs/conn.md")],
@@ -529,17 +702,42 @@ def test_a_module_registering_without_an_inventory_and_no_mapping_fails(
     assert "unmapped registers metrics" in capsys.readouterr().err
 
 
-def test_a_subgroup_source_is_claimed_rather_than_stray(root, check_metric_docs):
+def test_an_unclaimed_registrar_shaped_source_is_stray(root, check_metric_docs, capsys):
+    # The [[subgroups]] claim is what keeps the base registrars out of the
+    # unmapped-module report; a registrar the config does not claim must
+    # surface as stray rather than be quietly checked by nothing.
     subgroup_tree(
-        root, [("`rowsSent`", "counter"), ("`errorClass.CODE.errors`", "counter")]
+        root,
+        [("`rowsSent`", "counter")],
+        subgroup_in_config=False,
     )
-    assert exit_code(check_metric_docs) == 0
+    assert exit_code(check_metric_docs) == 1
+    assert "base registers metrics" in capsys.readouterr().err
 
 
 # --- infrastructure errors ---
 
 
 def test_a_missing_config_file_is_an_infrastructure_error(root, check_metric_docs):
+    assert exit_code(check_metric_docs) == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Not TOML at all.
+        "[[connectors]\n",
+        # No [[connectors]] mapping.
+        '[exempt]\n[extra]\n"x" = "y"\n',
+        # An entry missing its page.
+        '[[connectors]]\nmodule = "conn"\n',
+        # A [[subgroups]] entry missing its source.
+        '[[connectors]]\nmodule = "conn"\npage = "docs/conn.md"\n[[subgroups]]\n',
+    ],
+)
+def test_a_malformed_config_is_an_infrastructure_error(root, check_metric_docs, body):
+    # The docstring promises exit 2 for malformed config, not a traceback.
+    (root / "metric-docs.toml").write_text(body)
     assert exit_code(check_metric_docs) == 2
 
 
@@ -568,7 +766,7 @@ def test_an_inventory_with_no_constants_is_infrastructure(root, check_metric_doc
 
 
 def test_an_inventory_nothing_registers_through_is_infrastructure(
-    root, check_metric_docs
+    root, check_metric_docs, capsys
 ):
     # An inventory with zero registrations found anywhere means the
     # registration shape changed, which would silently hollow out every
@@ -579,9 +777,14 @@ def test_an_inventory_nothing_registers_through_is_infrastructure(
     page = write_page(root, "conn.md", metric_page(("`x`", "counter")))
     write_config(root, connectors=[("conn", page)])
     assert exit_code(check_metric_docs) == 2
+    # The message distinguishes this branch from the unresolvable-constant one
+    # beside it, so pin it.
+    assert "found no registration through it at all" in capsys.readouterr().err
 
 
-def test_an_unresolvable_constant_reference_is_infrastructure(root, check_metric_docs):
+def test_an_unresolvable_constant_reference_is_infrastructure(
+    root, check_metric_docs, capsys
+):
     write_source(
         root, "conn", "AMetricNames.java", inventory_class("AMetricNames", "X")
     )
@@ -594,11 +797,38 @@ def test_an_unresolvable_constant_reference_is_infrastructure(root, check_metric
     page = write_page(root, "conn.md", metric_page(("`x`", "counter")))
     write_config(root, connectors=[("conn", page)])
     assert exit_code(check_metric_docs) == 2
+    assert "declares as a string constant" in capsys.readouterr().err
 
 
 def test_an_unparseable_subgroup_source_is_infrastructure(root, check_metric_docs):
     source = write_source(
         root, "base", "ErrorCounters.java", "package io.github.x;\nclass E {}\n"
+    )
+    clean_tree(root)
+    write_config(
+        root,
+        connectors=[("conn", "docs/conn.md")],
+        subgroups=[source],
+    )
+    assert exit_code(check_metric_docs) == 2
+
+
+def test_a_subgroup_leaf_with_two_kinds_is_infrastructure(root, check_metric_docs):
+    # A registrar registering one leaf as counter here and gauge there makes
+    # every page's Type check untrustworthy; the source is the thing to fix.
+    source = write_source(
+        root,
+        "base",
+        "ErrorCounters.java",
+        "package io.github.x;\n\n"
+        "public final class ErrorCounters {\n"
+        '    public static final String GROUP = "errorClass";\n'
+        '    public static final String ERRORS = "errors";\n'
+        "    static void register(MetricGroup metricGroup, String key) {\n"
+        "        MetricGroup group = metricGroup.addGroup(GROUP, key);\n"
+        "        group.counter(ERRORS); group.gauge(ERRORS, () -> 0);\n"
+        "    }\n"
+        "}\n",
     )
     clean_tree(root)
     write_config(

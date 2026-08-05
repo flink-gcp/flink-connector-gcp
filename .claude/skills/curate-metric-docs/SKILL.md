@@ -1,6 +1,6 @@
 ---
 name: curate-metric-docs
-description: Decide how to respond when `just check-metric-docs` / `scripts/check-metric-docs.py` fails. Use on "but no `Metric`-headed table names it", "names X, which <module> does not register", "documented as a counter/gauge but ... registers it as a", "marked (Flink standard) but ... registers it", "registers a counter/gauge by a name outside the module's *MetricNames inventory", "takes Flink's `num` prefix", "uses <Class> but no `Metric`-headed table documents", "registers metrics but no [[connectors]] entry maps it", or when adding a connector, a metric, or a metrics table. Covers where a row goes, what its Type and Meaning columns may say, and the opposite directions [exempt] and [extra] point in.
+description: Decide how to respond when `just check-metric-docs` / `scripts/check-metric-docs.py` fails. Use on "but no `Metric`-headed table names it", "names X, which <module> does not register", "documented as a counter/gauge but ... registers it as a", "marked (Flink standard) but ... registers it", "registers a counter/gauge by a name outside the module's *MetricNames.java inventory", "takes Flink's `num` prefix", "uses <Class> but no `Metric`-headed table documents", "registers metrics but no [[connectors]] entry maps it", or when adding a connector, a metric, or a metrics table. Covers where a row goes, what its Type and Meaning columns may say, and the opposite directions [exempt] and [extra] point in.
 ---
 
 # Curate a metrics-table decision
@@ -33,8 +33,9 @@ is not a row*. **An entry that never fires is itself a failure**, so an entry is
 to quieten something.
 
 The third escape, which the option-docs checker does not have: a name Flink itself provides
-(`numRecordsSend`, `numRecordsInErrors`, the committer counters) is not registered in this tree at
-all, and its row says so by carrying **`(Flink standard)` in the Type cell**. That marker is
+(`numRecordsSend`, `numRecordsInErrors`) is not registered in this tree at all, and its row says so
+by carrying **`(Flink standard)` in the Type cell**. (Flink's committer metrics stay in prose on
+the BigQuery page, which the check does not read — they need no marker because they have no row.) That marker is
 load-bearing — it exempts the row from the registration requirement — and it is guarded: a marked
 row whose name the module *does* register fails, so it cannot hide a stale row.
 
@@ -85,7 +86,7 @@ The source is the truth — the registration call is right there. Fix the Type c
 registration itself is the bug, in which case fixing it is a behavior change that belongs to its
 own commit, not to a docs sweep.
 
-## Failure: "registers a counter by a name outside the module's `*MetricNames` inventory"
+## Failure: "registers a counter by a name outside the module's `*MetricNames.java` inventory"
 
 The #280 rule: the inventory class *is* the connector's inventory, so every
 `metricGroup.counter(...)` / `.gauge(...)` names one of its constants. Declare the constant (with

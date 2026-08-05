@@ -267,9 +267,12 @@ jobs:
   # *MetricNames constant.
   #
   # A job here for exactly option_docs's reasons: its inputs are the Java main
-  # sources *and* docs/content/, which this workflow's unfiltered pull_request
-  # trigger covers and lint.yaml's paths filter does not. Not behind the
-  # changes job, like api_tiers and for the same reasons.
+  # sources *and* docs/content/ — lint.yaml's paths carry docs/content only
+  # for markdownlint and would have had to grow to every Java source, while
+  # this workflow's unfiltered pull_request trigger covers both. Not behind
+  # the changes job: it costs seconds, and a check that sometimes skips could
+  # never join the required checks — the never-reports trap the gate job
+  # exists to close.
   metric_docs:
     name: Check the metrics tables
     runs-on: ubuntu-latest
@@ -286,7 +289,7 @@ jobs:
         with:
           tool: just
 
-      - name: Check every metric is documented, and every documented metric real
+      - name: Check every metric is documented, and every documented metric exists
         run: just check-metric-docs
 
   # The gated-suite pairing check (issue #245): a real-GCP ITCase carries both

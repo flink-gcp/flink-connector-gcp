@@ -29,7 +29,8 @@ Two directions, both required, for each mapping in scripts/metric-docs.toml:
 
 A metrics table is one whose first column header is exactly `Metric` — the same
 opt-in `check-option-docs.py` uses for `Option`, and what keeps this check off
-every other table the same pages carry.
+every other table the same pages carry. Fenced code blocks are skipped, so an
+example table in a snippet earns no coverage credit.
 
 Around those two directions, three facts of the #280 naming convention are held
 mechanically:
@@ -62,6 +63,7 @@ Standard library only, like its siblings in this directory.
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 try:
     import tomllib  # stdlib since 3.11
@@ -115,12 +117,23 @@ NUM_PREFIX = re.compile(r"^num[A-Z]")
 
 # Comments are blanked before every scan, so a name in javadoc — the inventory
 # classes' own javadoc spells out `errorClass.CODE.errors` — cannot be read as
-# a declaration or a registration.
-COMMENT = re.compile(
-    r"//[^\n]*"  # line comment
+# a declaration or a registration. String literals are matched first and kept:
+# CONSTANT reads them, and a `//` inside one (`"http://…"`) must not swallow
+# the registration sharing its line.
+COMMENT_OR_STRING = re.compile(
+    r'"(?:\\.|[^"\\\n])*"'  # string literal, kept intact
+    r"|//[^\n]*"  # line comment
     r"|/\*.*?\*/",  # block comment, incl. javadoc
     re.DOTALL,
 )
+
+
+class Subgroup(NamedTuple):
+    """A base.metrics registrar: the group it opens and the leaves it registers."""
+
+    class_name: str
+    group: str
+    leaves: dict[str, str]  # leaf name -> kind
 
 
 def fail(message: str) -> "sys.NoReturn":
@@ -135,7 +148,14 @@ def infra(message: str) -> "sys.NoReturn":
 
 def blank_comments(source: str) -> str:
     """Blank every comment, preserving newlines and columns so anchors still hold."""
-    return COMMENT.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), source)
+    return COMMENT_OR_STRING.sub(
+        lambda m: (
+            m.group(0)
+            if m.group(0).startswith('"')
+            else re.sub(r"[^\n]", " ", m.group(0))
+        ),
+        source,
+    )
 
 
 def read(path: Path) -> str:
@@ -144,11 +164,21 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def main_sources(module: str) -> list[Path]:
-    root = ROOT / module / "src" / "main" / "java"
-    if not root.is_dir():
+def blanked_sources(module: str) -> dict[Path, str]:
+    """Every main-tree source of the module, comment-blanked, read once.
+
+    `src/main/java*` rather than `src/main/java`: the per-major compat roots
+    (`java-flink1`/`java-flink2`) are main sources too, so a registration
+    added there is scanned rather than invisible.
+    """
+    main = ROOT / module / "src" / "main"
+    if not (main / "java").is_dir():
         infra(f"{module}/src/main/java does not exist; {CONFIG.name} names it.")
-    return sorted(root.rglob("*.java"))
+    return {
+        source: blank_comments(source.read_text(encoding="utf-8"))
+        for tree in sorted(main.glob("java*"))
+        for source in sorted(tree.rglob("*.java"))
+    }
 
 
 def metric_table_rows(page: Path) -> tuple[list[tuple[list[str], str, int]], list[str]]:
@@ -161,8 +191,13 @@ def metric_table_rows(page: Path) -> tuple[list[tuple[list[str], str, int]], lis
     rows: list[tuple[list[str], str, int]] = []
     problems: list[str] = []
     in_table = False
+    fenced = False
     for number, line in enumerate(read(page).splitlines(), start=1):
-        if not line.startswith("|"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            in_table = False
+            continue
+        if fenced or not line.startswith("|"):
             in_table = False
             continue
         cells = [cell.strip() for cell in line.split("|")]
@@ -185,13 +220,13 @@ def metric_table_rows(page: Path) -> tuple[list[tuple[list[str], str, int]], lis
     return rows, problems
 
 
-def inventory(module: str) -> dict[str, dict[str, str]]:
+def inventory(module: str, sources: dict[Path, str]) -> dict[str, dict[str, str]]:
     """Constant -> name literal, per `*MetricNames` class of the module."""
     found: dict[str, dict[str, str]] = {}
-    for source in main_sources(module):
+    for source, text in sources.items():
         if not source.match(INVENTORY_GLOB):
             continue
-        constants = dict(CONSTANT.findall(blank_comments(source.read_text("utf-8"))))
+        constants = dict(CONSTANT.findall(text))
         if not constants:
             infra(
                 f"{source.relative_to(ROOT)} matches {INVENTORY_GLOB} but declares "
@@ -209,18 +244,21 @@ def inventory(module: str) -> dict[str, dict[str, str]]:
 
 
 def registrations(
-    module: str, constants: dict[str, dict[str, str]]
-) -> tuple[dict[str, str], list[str]]:
-    """Name literal -> kind, from every registration in the module's sources.
+    module: str, sources: dict[Path, str], constants: dict[str, dict[str, str]]
+) -> tuple[dict[str, str], set[tuple[str, str]], list[str]]:
+    """Registered kinds and constants, from every registration in the module.
 
-    Every `.counter(` / `.gauge(` call must name a `*MetricNames` constant —
-    that is what makes the inventory the inventory — so a call that does not is
-    returned as a problem rather than silently skipped.
+    Returns (name literal -> kind, the (class, constant) pairs actually
+    registered, problems). Every `.counter(` / `.gauge(` call must name a
+    `*MetricNames` constant — that is what makes the inventory the inventory —
+    so a call that does not is returned as a problem rather than silently
+    skipped.
     """
     kinds: dict[str, str] = {}
+    used_constants: set[tuple[str, str]] = set()
+    conflicted: set[str] = set()
     problems: list[str] = []
-    for source in main_sources(module):
-        text = blank_comments(source.read_text("utf-8"))
+    for source, text in sources.items():
         for match in ANY_REGISTRATION.finditer(text):
             resolved = REGISTRATION.match(text, match.start())
             if resolved is None:
@@ -239,43 +277,158 @@ def registrations(
                     f"which no {INVENTORY_GLOB} class in {module} declares as a "
                     f"string constant this script can read."
                 )
+            used_constants.add((klass, constant))
             name = constants[klass][constant]
-            if kinds.setdefault(name, kind) != kind:
+            if kinds.setdefault(name, kind) != kind and name not in conflicted:
+                conflicted.add(name)
                 problems.append(
                     f"{module} registers `{name}` as both a counter and a gauge; "
                     f"one registration is wrong, and no Type cell can be right "
                     f"until it is."
                 )
-    return kinds, problems
+    return kinds, used_constants, problems
 
 
-def subgroup_template(source: Path) -> tuple[str, str, dict[str, str]]:
-    """(class name, group segment, leaf name -> kind) for a [[subgroups]] source."""
+def subgroup_template(source: Path) -> Subgroup:
+    """The group and leaves a [[subgroups]] source registers, read from it."""
     text = blank_comments(read(source))
     constants = dict(CONSTANT.findall(text))
     groups = {constants.get(name) for name in ADD_GROUP.findall(text)}
-    leaves = {constants.get(name): kind for kind, name in SUBGROUP_LEAF.findall(text)}
-    if len(groups) != 1 or None in groups or not leaves or None in leaves:
+    leaves: dict[str, str] = {}
+    consistent = True
+    for kind, name in SUBGROUP_LEAF.findall(text):
+        leaf = constants.get(name)
+        consistent &= leaf is not None and leaves.setdefault(leaf, kind) == kind
+    if len(groups) != 1 or None in groups or not leaves or not consistent:
         infra(
             f"{source.relative_to(ROOT)}: could not read one addGroup segment "
-            f"and its registered leaves as string constants. The registration "
-            f"shape changed; fix the patterns, not the config."
+            f"and its registered leaves, one kind each, as string constants. "
+            f"The registration shape changed; fix the patterns, not the config."
         )
-    return source.stem, groups.pop(), leaves
+    return Subgroup(source.stem, groups.pop(), leaves)
 
 
-def module_uses(module: str, class_name: str) -> bool:
+def module_uses(sources: dict[Path, str], class_name: str) -> bool:
     pattern = re.compile(rf"\b{class_name}\b")
-    return any(
-        pattern.search(blank_comments(source.read_text("utf-8")))
-        for source in main_sources(module)
-    )
+    return any(pattern.search(text) for text in sources.values())
+
+
+def check_rows(
+    page_ref: str,
+    rows: list[tuple[list[str], str, int]],
+    registered: dict[str, str],
+    module: str,
+    active: list[Subgroup],
+    templates: list[Subgroup],
+    extra: dict[str, str],
+) -> tuple[set[str], set[tuple[str, str]], set[str], list[str]]:
+    """The staleness direction, row by row.
+
+    Returns (registered names covered, (class, leaf) pairs covered, [extra]
+    entries that fired, problems).
+    """
+    covered: set[str] = set()
+    covered_leaves: set[tuple[str, str]] = set()
+    used: set[str] = set()
+    problems: list[str] = []
+    for names, type_cell, line in rows:
+        parts = type_cell.split()
+        kind = parts[0] if parts else ""
+        where = f"{page_ref}:{line}"
+        if kind not in ("counter", "gauge"):
+            problems.append(
+                f"{where}: the Type cell must lead with `counter` or "
+                f"`gauge`; it reads {type_cell!r}."
+            )
+            continue
+        standard = FLINK_STANDARD in type_cell
+        for name in names:
+            segments = name.split(".")
+            if name in registered:
+                covered.add(name)
+                if standard:
+                    problems.append(
+                        f"{where}: `{name}` is marked {FLINK_STANDARD} but "
+                        f"{module} registers it itself; the marker is for "
+                        f"names that come from Flink's metric-group "
+                        f"accessors, and nothing else."
+                    )
+                elif kind != registered[name]:
+                    problems.append(
+                        f"{where}: `{name}` is documented as a {kind} but "
+                        f"{module} registers it as a {registered[name]}."
+                    )
+            elif len(segments) == 3 and PLACEHOLDER.match(segments[1]):
+                group, leaf = segments[0], segments[2]
+                template = next(
+                    (t for t in active if t.group == group and leaf in t.leaves),
+                    None,
+                )
+                if template is None:
+                    wired = next(
+                        (t for t in templates if t.group == group and leaf in t.leaves),
+                        None,
+                    )
+                    problems.append(
+                        f"{where}: names `{name}`, "
+                        + (
+                            f"but {module} does not use {wired.class_name}, "
+                            f"which is what registers it. Remove the row, or "
+                            f"it documents a metric that never appears."
+                            if wired
+                            else "which no [[subgroups]] source registers. "
+                            "Remove the row, or correct the group and leaf."
+                        )
+                    )
+                    continue
+                covered_leaves.add((template.class_name, leaf))
+                if standard:
+                    problems.append(
+                        f"{where}: `{name}` is marked {FLINK_STANDARD} but "
+                        f"this repository registers it, through "
+                        f"{template.class_name}."
+                    )
+                elif kind != template.leaves[leaf]:
+                    problems.append(
+                        f"{where}: `{name}` is documented as a {kind} but "
+                        f"{template.class_name} registers it as a "
+                        f"{template.leaves[leaf]}."
+                    )
+            elif standard:
+                continue
+            elif name in extra:
+                used.add(name)
+            else:
+                problems.append(
+                    f"{where}: names `{name}`, which {module} does not "
+                    f"register. Remove the row, correct it to the current "
+                    f"name, or — if Flink itself provides it — mark its "
+                    f"Type cell {FLINK_STANDARD}."
+                )
+    return covered, covered_leaves, used, problems
+
+
+def load_config() -> dict:
+    """The parsed config, its required keys checked so a typo is exit 2."""
+    if not CONFIG.is_file():
+        infra(f"{CONFIG} is missing.")
+    try:
+        config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        infra(f"{CONFIG.name} is not valid TOML: {error}")
+    if not config.get("connectors"):
+        infra(f"{CONFIG.name} names no [[connectors]] mapping.")
+    for entry in config["connectors"]:
+        if "module" not in entry or "page" not in entry:
+            infra(f"a [[connectors]] entry in {CONFIG.name} lacks module or page.")
+    for entry in config.get("subgroups", []):
+        if "source" not in entry:
+            infra(f"a [[subgroups]] entry in {CONFIG.name} lacks source.")
+    return config
 
 
 def main() -> int:
-    if not CONFIG.is_file():
-        infra(f"{CONFIG} is missing.")
-    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    config = load_config()
     exempt = config.get("exempt", {})
     extra = config.get("extra", {})
     problems: list[str] = []
@@ -284,41 +437,57 @@ def main() -> int:
     # fails, exactly as it does in check-option-docs.py and for the same reason.
     used: set[str] = set()
 
+    subgroup_entries = config.get("subgroups", [])
     templates = [
-        subgroup_template(ROOT / entry["source"])
-        for entry in config.get("subgroups", [])
+        subgroup_template(ROOT / entry["source"]) for entry in subgroup_entries
     ]
-    claimed = {entry["source"] for entry in config.get("subgroups", [])}
+    claimed = {entry["source"] for entry in subgroup_entries}
+
+    # The subgroup leaves are names this repository registers, so the #280
+    # prefix rule holds for them too — checked here, once per registrar, not
+    # once per consuming module.
+    for template in templates:
+        for leaf in sorted(template.leaves):
+            if NUM_PREFIX.match(leaf):
+                problems.append(
+                    f"{template.class_name} registers `{leaf}`: no name this "
+                    f"repository registers itself takes Flink's `num` prefix "
+                    f"(issue #280). Rename it — a counter names the event, a "
+                    f"gauge the state."
+                )
 
     # A module that registers metrics and is never mapped would be checked by
     # nothing, silently — the failure mode a per-module mapping otherwise has,
     # and the one a new connector walks straight into.
     mapped = {entry["module"] for entry in config["connectors"]}
-    for tree in sorted(ROOT.glob("*/src/main/java")):
+    stray_by_module: dict[str, list[str]] = {}
+    for tree in sorted(ROOT.glob("*/src/main/java*")):
         module = tree.relative_to(ROOT).parts[0]
         if module in mapped:
             continue
-        stray = sorted(
-            str(source.relative_to(ROOT))
-            for source in tree.rglob("*.java")
-            if str(source.relative_to(ROOT)) not in claimed
-            and (
-                source.match(INVENTORY_GLOB)
-                or ANY_REGISTRATION.search(blank_comments(source.read_text("utf-8")))
-            )
+        for source in sorted(tree.rglob("*.java")):
+            relative = str(source.relative_to(ROOT))
+            if relative in claimed:
+                continue
+            if source.match(INVENTORY_GLOB) or ANY_REGISTRATION.search(
+                blank_comments(source.read_text(encoding="utf-8"))
+            ):
+                stray_by_module.setdefault(module, []).append(relative)
+    for module, stray in sorted(stray_by_module.items()):
+        problems.append(
+            f"{module} registers metrics ({stray[0]}"
+            f"{f', and {len(stray) - 1} more' if len(stray) > 1 else ''}) but no "
+            f"[[connectors]] entry in {CONFIG.name} maps it to a page, so "
+            f"nothing checks them. Add the module and its documentation page."
         )
-        if stray:
-            problems.append(
-                f"{module} registers metrics ({stray[0]}"
-                f"{f', and {len(stray) - 1} more' if len(stray) > 1 else ''}) but no "
-                f"[[connectors]] entry in {CONFIG.name} maps it to a page, so "
-                f"nothing checks them. Add the module and its documentation page."
-            )
 
     for entry in config["connectors"]:
         module, page = entry["module"], ROOT / entry["page"]
-        constants = inventory(module)
-        registered, reg_problems = registrations(module, constants)
+        sources = blanked_sources(module)
+        constants = inventory(module, sources)
+        registered, used_constants, reg_problems = registrations(
+            module, sources, constants
+        )
         problems.extend(reg_problems)
         if not registered:
             infra(
@@ -328,107 +497,39 @@ def main() -> int:
                 f"untrustworthy — or the inventory belongs to sources that "
                 f"moved."
             )
+        # Constant-granular on purpose: two constants carrying the same
+        # literal must each be registered, or the dead one hides behind the
+        # live one's name.
+        for klass, consts in sorted(constants.items()):
+            for constant, name in sorted(consts.items()):
+                if (klass, constant) not in used_constants:
+                    problems.append(
+                        f"{module}: {klass}.{constant} names `{name}` but "
+                        f"nothing registers it. An inventory entry nothing "
+                        f"backs is a claim nobody can check; delete it, or "
+                        f"restore the registration."
+                    )
         declaring = {
             name: klass
             for klass, consts in constants.items()
             for name in consts.values()
         }
-        for name, klass in sorted(declaring.items()):
-            if name not in registered:
-                problems.append(
-                    f"{module}: {klass} names `{name}` but nothing registers it. "
-                    f"An inventory entry nothing backs is a claim nobody can "
-                    f"check; delete it, or restore the registration."
-                )
-        active = [
-            template for template in templates if module_uses(module, template[0])
-        ]
-        for name in sorted(registered) + sorted(
-            leaf for _, _, leaves in active for leaf in leaves
-        ):
+        for name in sorted(registered):
             if NUM_PREFIX.match(name):
                 problems.append(
                     f"{module} registers `{name}`: no name this repository "
                     f"registers itself takes Flink's `num` prefix (issue #280). "
                     f"Rename it — a counter names the event, a gauge the state."
                 )
+        active = [t for t in templates if module_uses(sources, t.class_name)]
 
         rows, row_problems = metric_table_rows(page)
         problems.extend(row_problems)
-        covered: set[str] = set()
-        covered_leaves: set[tuple[str, str]] = set()
-        for names, type_cell, line in rows:
-            kind = type_cell.split()[0] if type_cell.split() else ""
-            where = f"{entry['page']}:{line}"
-            if kind not in ("counter", "gauge"):
-                problems.append(
-                    f"{where}: the Type cell must lead with `counter` or "
-                    f"`gauge`; it reads {type_cell!r}."
-                )
-                continue
-            standard = FLINK_STANDARD in type_cell
-            for name in names:
-                segments = name.split(".")
-                if name in registered:
-                    covered.add(name)
-                    if standard:
-                        problems.append(
-                            f"{where}: `{name}` is marked {FLINK_STANDARD} but "
-                            f"{module} registers it itself; the marker is for "
-                            f"names that come from Flink's metric-group "
-                            f"accessors, and nothing else."
-                        )
-                    elif kind != registered[name]:
-                        problems.append(
-                            f"{where}: `{name}` is documented as a {kind} but "
-                            f"{module} registers it as a {registered[name]}."
-                        )
-                elif len(segments) == 3 and PLACEHOLDER.match(segments[1]):
-                    group, leaf = segments[0], segments[2]
-                    template = next(
-                        (t for t in active if t[1] == group and leaf in t[2]), None
-                    )
-                    if template is None:
-                        wired = next(
-                            (t for t in templates if t[1] == group and leaf in t[2]),
-                            None,
-                        )
-                        problems.append(
-                            f"{where}: names `{name}`, "
-                            + (
-                                f"but {module} does not use {wired[0]}, which is "
-                                f"what registers it. Remove the row, or it "
-                                f"documents a metric that never appears."
-                                if wired
-                                else "which no [[subgroups]] source registers. "
-                                "Remove the row, or correct the group and leaf."
-                            )
-                        )
-                        continue
-                    covered_leaves.add((template[0], leaf))
-                    if standard:
-                        problems.append(
-                            f"{where}: `{name}` is marked {FLINK_STANDARD} but "
-                            f"this repository registers it, through "
-                            f"{template[0]}."
-                        )
-                    elif kind != template[2][leaf]:
-                        problems.append(
-                            f"{where}: `{name}` is documented as a {kind} but "
-                            f"{template[0]} registers it as a "
-                            f"{template[2][leaf]}."
-                        )
-                elif standard:
-                    continue
-                elif name in extra:
-                    used.add(name)
-                else:
-                    problems.append(
-                        f"{where}: names `{name}`, which {module} does not "
-                        f"register. Remove the row, correct it to the current "
-                        f"name, or — if Flink itself provides it — mark its "
-                        f"Type cell {FLINK_STANDARD}."
-                    )
+        covered, covered_leaves, used_extra, page_problems = check_rows(
+            entry["page"], rows, registered, module, active, templates, extra
+        )
+        used |= used_extra
+        problems.extend(page_problems)
 
         for name in sorted(set(registered) - covered):
             key = f"{declaring[name]}.{name}"
@@ -441,28 +542,33 @@ def main() -> int:
                 f'Add a row, or an [exempt] entry "{key}" in {CONFIG.name} '
                 f"saying why not."
             )
-        for class_name, group, leaves in active:
-            documented = {leaf for cls, leaf in covered_leaves if cls == class_name}
-            for leaf in sorted(set(leaves) - documented):
-                key = f"{class_name}.{leaf}"
+        for template in active:
+            documented = {
+                leaf for cls, leaf in covered_leaves if cls == template.class_name
+            }
+            for leaf in sorted(set(template.leaves) - documented):
+                key = f"{template.class_name}.{leaf}"
                 if key in exempt:
                     used.add(key)
                     continue
                 problems.append(
-                    f"{entry['page']}: {module} uses {class_name} but no "
-                    f"`Metric`-headed table documents `{group}.….{leaf}`. Add "
-                    f'the templated row, or an [exempt] entry "{key}" in '
-                    f"{CONFIG.name} saying why not."
+                    f"{entry['page']}: {module} uses {template.class_name} but "
+                    f"no `Metric`-headed table documents "
+                    f"`{template.group}.….{leaf}`. Add the templated row, or "
+                    f'an [exempt] entry "{key}" in {CONFIG.name} saying why '
+                    f"not."
                 )
-        counts.append((entry["page"], len(registered) + sum(len(t[2]) for t in active)))
-
-    for key in sorted(set(exempt) - used | set(extra) - used):
-        table = "exempt" if key in exempt else "extra"
-        problems.append(
-            f'[{table}] entry "{key}" in {CONFIG.name} never fires: the check '
-            f"passes without it. Delete it — an allowlist entry that forgives "
-            f"nothing is a claim nobody can check."
+        counts.append(
+            (entry["page"], len(registered) + sum(len(t.leaves) for t in active))
         )
+
+    for table, entries in (("exempt", exempt), ("extra", extra)):
+        for key in sorted(set(entries) - used):
+            problems.append(
+                f'[{table}] entry "{key}" in {CONFIG.name} never fires: the check '
+                f"passes without it. Delete it — an allowlist entry that forgives "
+                f"nothing is a claim nobody can check."
+            )
 
     if problems:
         for problem in problems:

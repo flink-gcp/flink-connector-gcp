@@ -367,8 +367,8 @@ check-option-docs:
 # sources live in scripts/metric-docs.toml. Also holds the mechanical half of
 # the #280 naming rule: no name registered here takes Flink's `num` prefix.
 # Offline and stdlib-only, but a ci.yaml job rather than part of `just lint`,
-# for check-option-docs's reason: its inputs are the main sources and
-# docs/content/ — neither of which lint.yaml's paths filter covers.
+# for check-option-docs's reason: its inputs include every Java main source,
+# which lint.yaml's paths filter would have had to grow to cover.
 #
 # Is every connector metric documented, and every documented metric real?
 check-metric-docs:

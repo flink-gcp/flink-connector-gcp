@@ -524,7 +524,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   check is a step *inside* the `build` job gated on `check_notice`, which is false when no
   shaded module is built, so routing them there would skip the licence check on exactly the
   change that edits the licence pins. That the other checkers' scripts *are* in the class is the
-  same fact from the other side — `api_tiers` and `option_docs` are unconditional jobs, so
+  same fact from the other side — `api_tiers`, `option_docs` and `metric_docs` are unconditional jobs, so
   nothing about them depends on what the deriver picks. The `justfile` stays full-reactor too:
   it carries the Maven invocations themselves.
   Pushes to main and `workflow_dispatch` always build the full reactor. The
