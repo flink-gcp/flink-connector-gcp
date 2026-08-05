@@ -55,3 +55,8 @@ def check_flink_api_tiers():
 @pytest.fixture(scope="session")
 def check_notice():
     return load_script("check-notice.py")
+
+
+@pytest.fixture(scope="session")
+def check_metric_docs():
+    return load_script("check-metric-docs.py")

@@ -1275,10 +1275,15 @@ same thing in each.
 
 **`STORAGE_API_EXACTLY_ONCE`** (buffered stream) reports `numRecordsSend`, `numBytesSend`,
 `numRecordsSendErrors`, `recordsSkipped`, `appendRetries` and `errorClass.CODE.errors` with the
-same meanings, plus `inFlightAppends` (appends the service has not acknowledged). It has no
-`openDestinations`, `tablesCreated`, `schemaReconciliations` or per-destination counters: this write
-method takes one fixed destination whose schema is pinned when the stream is created, so each would
-be a constant.
+same meanings, plus one of its own:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `inFlightAppends` | gauge | appends the service has not acknowledged |
+
+It has no `openDestinations`, `tablesCreated`, `schemaReconciliations` or per-destination counters:
+this write method takes one fixed destination whose schema is pinned when the stream is created, so
+each would be a constant.
 
 **`FILE_LOADS`**:
 

@@ -358,6 +358,22 @@ check-flink-api-tiers:
 check-option-docs:
     scripts/check-option-docs.py
 
+# Holds the metrics tables on the DataStream pages to what the connectors
+# actually register (issue #296), in both directions: every name in a module's
+# *MetricNames inventory must appear in a table whose first column is `Metric`
+# with the Type column matching the counter/gauge registration, and every name
+# those tables carry must be registered, a subgroup template the module wires,
+# or marked `(Flink standard)`. Mappings and the two base.metrics subgroup
+# sources live in scripts/metric-docs.toml. Also holds the mechanical half of
+# the #280 naming rule: no name registered here takes Flink's `num` prefix.
+# Offline and stdlib-only, but a ci.yaml job rather than part of `just lint`,
+# for check-option-docs's reason: its inputs are the main sources and
+# docs/content/ — neither of which lint.yaml's paths filter covers.
+#
+# Is every connector metric documented, and every documented metric real?
+check-metric-docs:
+    scripts/check-metric-docs.py
+
 # A goal on its own, and the one place in this repository where that is right.
 # The licence-goal rule in CLAUDE.md — a goal-only invocation selects the reactor
 # modules without building them, so a module cannot resolve its siblings — does
