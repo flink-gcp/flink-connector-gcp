@@ -528,17 +528,20 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   same fact from the other side — `api_tiers`, `option_docs` and `metric_docs` are unconditional jobs, so
   nothing about them depends on what the deriver picks. The `justfile` stays full-reactor too:
   it carries the Maven invocations themselves.
-  Pushes to main and `workflow_dispatch` always build the full reactor. The
-  checks branch protection requires (#250, live since the plan upgrade — a private free-plan
-  repository cannot set required checks at all) are `CI passed` (the gate job that turns
-  "nothing to build" into an explicit green — `build` itself must never be required, it skips),
-  `Audit Flink API tiers`, `Check the configuration reference` and `Check the gated-suite
-  tagging` — the fourth added when #245 landed, on the same footing as the other two: it reports
-  unconditionally, whatever the change touches. A required context is matched **by job name**, so
-  renaming any of these four in the workflow silently stops protecting main; rename the context in
-  the same change. The never-reports caveat still
-  applies verbatim to `docs.yaml` and `lint.yaml`, which keep their `paths` filters and must
-  stay optional as long as they do
+  Pushes to main and `workflow_dispatch` always build the full reactor.
+  **Branch protection requires exactly one check, `CI passed`** (#250, live since the plan
+  upgrade — a private free-plan repository cannot set required checks at all): the gate job that
+  turns "nothing to build" into an explicit green — `build` itself must never be required, it
+  skips — and that vouches for every unconditional checker job through its `needs` list and
+  `CHECKER_RESULTS` (decided with the user after #302 briefly made each checker its own required
+  context: a settings-side list has to be edited every time a checker is added or retired, falls
+  silently out of step with a renamed job, and cannot follow path-conditional jobs — while a
+  stale `needs` entry is a workflow-parse error no run survives unnoticed). So a new checker
+  enrolls in ci.yaml alone: join the gate's `needs` and `CHECKER_RESULTS`, and touch no
+  repository setting. A required context is matched **by job name**, so `CI passed` is the one
+  name whose rename must update branch protection in the same change. The never-reports caveat
+  still applies verbatim to `docs.yaml` and `lint.yaml`, which keep their `paths` filters and
+  must stay optional as long as they do
 - JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
   intentionally left open/deferred
 - Google Cloud library versions come only from `libraries-bom`; never pin individual

@@ -13,9 +13,9 @@
 # limitations under the License.
 """The full truth table of scripts/ci-gate.sh (issue #243).
 
-The gate is the check branch protection is to require, so every row matters:
-a wrong green here is a pull request merging unverified, and a wrong red is
-one blocked forever.
+The gate is the one check branch protection requires, and it vouches for the
+unconditional checker jobs too, so every row matters: a wrong green here is a
+pull request merging unverified, and a wrong red is one blocked forever.
 """
 
 import subprocess
@@ -23,8 +23,10 @@ import subprocess
 import pytest
 from conftest import SCRIPTS
 
+CHECKERS_GREEN = "api_tiers:success option_docs:success"
 
-def run_gate(changes=None, build=None, run_build=None):
+
+def run_gate(changes=None, build=None, run_build=None, checkers=CHECKERS_GREEN):
     env = {}
     if changes is not None:
         env["CHANGES_RESULT"] = changes
@@ -32,6 +34,8 @@ def run_gate(changes=None, build=None, run_build=None):
         env["BUILD_RESULT"] = build
     if run_build is not None:
         env["RUN_BUILD"] = run_build
+    if checkers is not None:
+        env["CHECKER_RESULTS"] = checkers
     return subprocess.run(
         [str(SCRIPTS / "ci-gate.sh")], env=env, capture_output=True, check=False
     )
@@ -60,6 +64,36 @@ def test_truth_table(changes, build, run_build, expected):
     assert result.returncode == expected, result.stderr
 
 
+@pytest.mark.parametrize(
+    "checkers",
+    [
+        # A failed checker, first or last in the list.
+        "api_tiers:failure option_docs:success",
+        "api_tiers:success option_docs:failure",
+        # A skipped checker cannot happen through ci.yaml's wiring — the
+        # checkers are unconditional — so it can only mean a rewiring mistake,
+        # which must be a red gate rather than a silent pass.
+        "api_tiers:skipped option_docs:success",
+        # A pair that lost its result half.
+        "api_tiers: option_docs:success",
+    ],
+)
+def test_a_checker_not_succeeding_fails_the_gate(checkers):
+    result = run_gate("success", "success", "true", checkers=checkers)
+    assert result.returncode == 1, result.stderr
+
+
+def test_the_failing_checker_is_named():
+    result = run_gate(
+        "success", "success", "true", checkers="api_tiers:success option_docs:failure"
+    )
+    assert result.returncode == 1
+    assert b"option_docs: failure" in result.stderr
+
+
 def test_missing_required_inputs_fail_loudly():
     assert run_gate(changes=None, build="success").returncode != 0
     assert run_gate(changes="success", build=None).returncode != 0
+    # A gate invoked without CHECKER_RESULTS is a gate that silently stopped
+    # vouching for the checkers.
+    assert run_gate(changes="success", build="success", checkers=None).returncode != 0

@@ -167,29 +167,42 @@ jobs:
         if: needs.changes.outputs.check_notice == 'true'
         run: just check-notice flink-sql-connector-gcp-pubsub
 
-  # The Maven-side check for branch protection to require (issue #243; setting
-  # required checks needs the repository public (#6) or a paid plan, so this
-  # is the shape protection names when it becomes available). It names this
-  # job, not `build`, because `build` is skipped when a change cannot affect
-  # the Maven build — and a required check that never reports blocks a pull
-  # request forever. This job reports whenever the run is not cancelled,
-  # turning that skip into an explicit green. The truth table lives in
-  # scripts/ci-gate.sh so it can be run by hand; the `needs` results reach it
-  # as plain environment variables.
+  # The one check branch protection requires (issues #243, #250): the gate
+  # that speaks for the whole workflow. It names this job, not `build`,
+  # because `build` is skipped when a change cannot affect the Maven build —
+  # and a required check that never reports blocks a pull request forever.
+  # This job reports whenever the run is not cancelled, turning that skip
+  # into an explicit green. The checker jobs below feed it through `needs`,
+  # so what main requires is decided here in the workflow rather than in the
+  # repository settings: a new checker enrolls by joining the `needs` list
+  # and CHECKER_RESULTS, with no branch-protection edit and no required
+  # context left to fall silently out of step with a renamed job (a stale
+  # `needs` entry is a workflow-parse error, which no run — and so no merge —
+  # survives unnoticed). The truth table lives in scripts/ci-gate.sh so it
+  # can be run by hand; the `needs` results reach it as plain environment
+  # variables.
   ci_passed:
     name: CI passed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, build]
+    needs: [changes, build, api_tiers, option_docs, metric_docs, gated_tags]
     if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Evaluate the build result
+      - name: Evaluate the build and checker results
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           RUN_BUILD: ${{ needs.changes.outputs.run_build }}
+          # One name:result pair per unconditional checker job; the gate
+          # demands success of every pair, so a checker failing — or being
+          # skipped by a wiring mistake — is a red gate, never a silent pass.
+          CHECKER_RESULTS: >-
+            api_tiers:${{ needs.api_tiers.result }}
+            option_docs:${{ needs.option_docs.result }}
+            metric_docs:${{ needs.metric_docs.result }}
+            gated_tags:${{ needs.gated_tags.result }}
         run: scripts/ci-gate.sh
 
   # The Flink API tier audit (issue #103): fails when the main sources add a
@@ -204,9 +217,9 @@ jobs:
   # source, losing its scripts-and-workflows character. A job of its own
   # rather than a step in `build` so it reports in seconds beside the
   # integration tests instead of behind them, and needs no JDK. Deliberately
-  # not behind the changes job: it is a required check, costs seconds, and
-  # skipping it would reopen the never-reports trap the gate job exists to
-  # close.
+  # not behind the changes job: the gate requires its success, it costs
+  # seconds, and a job that sometimes skips would reopen the never-reports
+  # trap the gate exists to close.
   api_tiers:
     name: Audit Flink API tiers
     runs-on: ubuntu-latest
@@ -270,8 +283,8 @@ jobs:
   # sources *and* docs/content/ — lint.yaml's paths carry docs/content only
   # for markdownlint and would have had to grow to every Java source, while
   # this workflow's unfiltered pull_request trigger covers both. Not behind
-  # the changes job: it costs seconds, and a check that sometimes skips could
-  # never join the required checks — the never-reports trap the gate job
+  # the changes job: the gate requires its success, it costs seconds, and a
+  # job that sometimes skips would reopen the never-reports trap the gate
   # exists to close.
   metric_docs:
     name: Check the metrics tables
