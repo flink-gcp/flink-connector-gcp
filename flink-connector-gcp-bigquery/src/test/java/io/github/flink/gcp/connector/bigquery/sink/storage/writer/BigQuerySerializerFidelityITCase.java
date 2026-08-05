@@ -22,8 +22,6 @@ import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.LegacySQLTypeName;
-import com.google.cloud.bigquery.StandardTableDefinition;
-import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.Any;
@@ -41,7 +39,6 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.Value;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
-import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions;
@@ -133,11 +130,7 @@ class BigQuerySerializerFidelityITCase {
         BigQueryDefaultStreamSink<T> sink =
                 (BigQueryDefaultStreamSink<T>)
                         BigQuerySink.<T>builder()
-                                .destination(
-                                        TableDestination.of(
-                                                RealBigQuery.project(),
-                                                RealBigQuery.dataset(),
-                                                table))
+                                .destination(RealBigQuery.destination(table))
                                 .serializer(serializer)
                                 .build();
         SinkWriter<T> writer =
@@ -153,16 +146,6 @@ class BigQuerySerializerFidelityITCase {
         } finally {
             writer.close();
         }
-    }
-
-    private static List<Field> tableFields(String table) {
-        com.google.cloud.bigquery.Schema schema =
-                RealBigQuery.client()
-                        .getTable(TableId.of(RealBigQuery.project(), RealBigQuery.dataset(), table))
-                        .<StandardTableDefinition>getDefinition()
-                        .getSchema();
-        assertThat(schema).isNotNull();
-        return schema.getFields();
     }
 
     /**
@@ -303,7 +286,7 @@ class BigQuerySerializerFidelityITCase {
         RealBigQuery.createTable(AVRO_TABLE, serializer.getTableSchema(null));
 
         // The derived column types, from the live table: the half the values below cannot show.
-        assertThat(tableFields(AVRO_TABLE))
+        assertThat(RealBigQuery.tableFields(AVRO_TABLE))
                 .extracting(Field::getName, Field::getType)
                 .containsExactly(
                         tuple("name", LegacySQLTypeName.STRING),

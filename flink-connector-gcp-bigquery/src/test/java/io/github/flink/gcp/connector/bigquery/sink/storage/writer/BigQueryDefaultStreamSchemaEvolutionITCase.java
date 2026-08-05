@@ -21,8 +21,6 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.api.core.ApiFuture;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldValueList;
-import com.google.cloud.bigquery.StandardTableDefinition;
-import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.GetWriteStreamRequest;
@@ -205,8 +203,7 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
                                 + " BQ_IT_SCHEMA_EVOLUTION")
                 .isNotNull();
         RealBigQuery.createTable(TABLE, V1);
-        TableDestination destination =
-                TableDestination.of(RealBigQuery.project(), RealBigQuery.dataset(), TABLE);
+        TableDestination destination = RealBigQuery.destination(TABLE);
         SchemaViewPoller poller = new SchemaViewPoller(destination);
         poller.start();
         EvolvingSerializer serializer = new EvolvingSerializer(V1);
@@ -265,12 +262,7 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
 
     private static List<String> tableFieldNames() {
         List<String> fieldNames = new ArrayList<>();
-        for (Field field :
-                RealBigQuery.client()
-                        .getTable(TableId.of(RealBigQuery.project(), RealBigQuery.dataset(), TABLE))
-                        .<StandardTableDefinition>getDefinition()
-                        .getSchema()
-                        .getFields()) {
+        for (Field field : RealBigQuery.tableFields(TABLE)) {
             fieldNames.add(field.getName());
         }
         return fieldNames;

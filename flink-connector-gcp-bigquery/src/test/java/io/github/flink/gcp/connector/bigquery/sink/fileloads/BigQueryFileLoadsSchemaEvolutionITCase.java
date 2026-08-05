@@ -19,41 +19,26 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
-import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.LegacySQLTypeName;
-import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
-import com.google.cloud.bigquery.StandardTableDefinition;
-import com.google.cloud.bigquery.TableDefinition;
-import com.google.cloud.bigquery.TableId;
-import com.google.cloud.bigquery.TableInfo;
-import com.google.cloud.bigquery.TableResult;
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
-import com.google.cloud.storage.Blob;
-import com.google.cloud.storage.Storage;
-import com.google.cloud.storage.StorageOptions;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
+import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealGcs;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-
-import java.util.ArrayList;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -76,10 +61,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(600)
 class BigQueryFileLoadsSchemaEvolutionITCase {
 
-    private static final String PROJECT = System.getenv("BQ_IT_PROJECT");
-    private static final String DATASET = System.getenv("BQ_IT_DATASET");
-    private static final String BUCKET = System.getenv("BQ_IT_GCS_BUCKET");
-
     private static final String RUN_ID = TestNames.runId();
     private static final String EVOLVING_TABLE = "file_loads_evo_it_" + RUN_ID;
     private static final String STRICT_TABLE = "file_loads_strict_it_" + RUN_ID;
@@ -101,10 +82,8 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
                     .build();
 
     /** Rows travel as {@code "name|extra"} strings. */
-    private static final class RowSerializer extends BigQueryProtoSerializer<String> {
+    private static final class RowSerializer extends FixedSchemaProtoSerializer<String> {
         private static final long serialVersionUID = 1L;
-
-        private transient Descriptors.Descriptor descriptor;
 
         @Override
         public TableSchema getTableSchema(TableDestination destination) {
@@ -112,62 +91,40 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
         }
 
         @Override
-        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-            return descriptor();
-        }
-
-        private Descriptors.Descriptor descriptor() {
-            if (descriptor == null) {
-                try {
-                    descriptor =
-                            BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                                    EXTENDED_SCHEMA);
-                } catch (Descriptors.DescriptorValidationException e) {
-                    throw new IllegalStateException(e);
-                }
-            }
-            return descriptor;
-        }
-
-        @Override
         public ByteString serialize(String element) {
             String[] parts = element.split("\\|", -1);
             DynamicMessage.Builder row = DynamicMessage.newBuilder(descriptor());
-            row.setField(descriptor().findFieldByName("name"), parts[0]);
-            row.setField(descriptor().findFieldByName("extra"), Long.parseLong(parts[1]));
+            row.setField(field("name"), parts[0]);
+            row.setField(field("extra"), Long.parseLong(parts[1]));
             return row.build().toByteString();
         }
     }
 
     @AfterAll
     static void cleanUp() {
-        BigQuery bigQuery = bigQuery();
-        bigQuery.delete(TableId.of(PROJECT, DATASET, EVOLVING_TABLE));
-        bigQuery.delete(TableId.of(PROJECT, DATASET, STRICT_TABLE));
-        Storage storage = StorageOptions.newBuilder().setProjectId(PROJECT).build().getService();
-        for (Blob blob :
-                storage.list(BUCKET, Storage.BlobListOption.prefix(STAGING_PREFIX)).iterateAll()) {
-            blob.delete();
-        }
+        RealBigQuery.deleteTables(EVOLVING_TABLE, STRICT_TABLE);
+        RealGcs.deletePrefix(STAGING_PREFIX);
     }
 
     @Test
     void newRequiredColumnLandsAsNullableOnAPreExistingTable() throws Exception {
-        createNameOnlyTable(EVOLVING_TABLE);
+        RealBigQuery.createTable(EVOLVING_TABLE, Schema.of(nameField()));
 
         runJob(EVOLVING_TABLE, SchemaUpdateOptions.builder().allowNewFields().build());
 
-        assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", EVOLVING_TABLE)).containsExactly(2L);
+        String evolvingPath = RealBigQuery.tablePath(EVOLVING_TABLE);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + evolvingPath))
+                .containsExactly(2L);
         assertThat(
-                        queryLongs(
-                                "SELECT extra FROM `%s` WHERE name = 'alpha' AND extra IS NOT"
-                                        + " NULL",
-                                EVOLVING_TABLE))
+                        RealBigQuery.queryLongs(
+                                "SELECT extra FROM "
+                                        + evolvingPath
+                                        + " WHERE name = 'alpha' AND extra IS NOT NULL"))
                 .containsExactly(1L);
 
         // The live table gained the column, and as NULLABLE — the union demoted the serializer's
         // REQUIRED, which BigQuery cannot add to an existing table.
-        Field extra = liveSchema(EVOLVING_TABLE).getFields().get("extra");
+        Field extra = RealBigQuery.tableFields(EVOLVING_TABLE).get("extra");
         assertThat(extra.getType()).isEqualTo(LegacySQLTypeName.INTEGER);
         assertThat(extra.getMode()).isEqualTo(Field.Mode.NULLABLE);
     }
@@ -178,18 +135,13 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
         // derive — because with updates disabled the load's provided schema is the live one
         // verbatim, so it must remain loadable even when the table has columns this write method
         // could never create. Measured here: BigQuery accepts a provided schema naming INTERVAL.
-        bigQuery()
-                .create(
-                        TableInfo.of(
-                                TableId.of(PROJECT, DATASET, STRICT_TABLE),
-                                StandardTableDefinition.of(
-                                        Schema.of(
-                                                nameField(),
-                                                Field.newBuilder(
-                                                                "span",
-                                                                StandardSQLTypeName.INTERVAL)
-                                                        .setMode(Field.Mode.NULLABLE)
-                                                        .build()))));
+        RealBigQuery.createTable(
+                STRICT_TABLE,
+                Schema.of(
+                        nameField(),
+                        Field.newBuilder("span", StandardSQLTypeName.INTERVAL)
+                                .setMode(Field.Mode.NULLABLE)
+                                .build()));
 
         // With updates disabled the live schema wins and the load job carries it. Measured, not
         // designed: BigQuery then ignores a staged Avro field absent from that schema, so the
@@ -198,8 +150,11 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
         // add fields"); the temp-table path has always behaved as pinned here.
         runJob(STRICT_TABLE, SchemaUpdateOptions.builder().build());
 
-        assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", STRICT_TABLE)).containsExactly(2L);
-        assertThat(liveSchema(STRICT_TABLE).getFields())
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT COUNT(*) FROM " + RealBigQuery.tablePath(STRICT_TABLE)))
+                .containsExactly(2L);
+        assertThat(RealBigQuery.tableFields(STRICT_TABLE))
                 .extracting(Field::getName)
                 .containsExactly("name", "span");
     }
@@ -213,54 +168,22 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
                 .sinkTo(
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
-                                .destination(TableDestination.of(PROJECT, DATASET, table))
+                                .destination(RealBigQuery.destination(table))
                                 .serializer(new RowSerializer())
                                 .schemaUpdateOptions(updateOptions)
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()
                                                 .stagingPath(
-                                                        "gs://"
-                                                                + BUCKET
-                                                                + "/"
-                                                                + STAGING_PREFIX
-                                                                + "/"
-                                                                + table)
+                                                        RealGcs.uri(STAGING_PREFIX + "/" + table))
                                                 .build())
                                 .build());
 
         env.execute("file-loads-schema-evolution-it");
     }
 
-    private static void createNameOnlyTable(String table) {
-        bigQuery()
-                .create(
-                        TableInfo.of(
-                                TableId.of(PROJECT, DATASET, table),
-                                StandardTableDefinition.of(Schema.of(nameField()))));
-    }
-
     private static Field nameField() {
         return Field.newBuilder("name", StandardSQLTypeName.STRING)
                 .setMode(Field.Mode.NULLABLE)
                 .build();
-    }
-
-    private static Schema liveSchema(String table) {
-        TableDefinition definition =
-                bigQuery().getTable(TableId.of(PROJECT, DATASET, table)).getDefinition();
-        return definition.getSchema();
-    }
-
-    private static List<Long> queryLongs(String queryTemplate, String table) throws Exception {
-        String query = String.format(queryTemplate, PROJECT + "." + DATASET + "." + table);
-        TableResult result = bigQuery().query(QueryJobConfiguration.newBuilder(query).build());
-        List<Long> values = new ArrayList<>();
-        result.iterateAll()
-                .forEach(row -> values.add(row.get(0).isNull() ? null : row.get(0).getLongValue()));
-        return values;
-    }
-
-    private static BigQuery bigQuery() {
-        return BigQueryOptions.newBuilder().setProjectId(PROJECT).build().getService();
     }
 }

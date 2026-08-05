@@ -19,33 +19,22 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
-import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.LegacySQLTypeName;
-import com.google.cloud.bigquery.QueryJobConfiguration;
-import com.google.cloud.bigquery.Schema;
-import com.google.cloud.bigquery.StandardTableDefinition;
-import com.google.cloud.bigquery.TableId;
-import com.google.cloud.bigquery.TableResult;
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.BigDecimalByteStringEncoder;
 import com.google.cloud.bigquery.storage.v1.CivilTimeEncoder;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
-import com.google.cloud.storage.Blob;
-import com.google.cloud.storage.Storage;
-import com.google.cloud.storage.StorageOptions;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealGcs;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
@@ -59,7 +48,6 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -102,10 +90,6 @@ import static org.assertj.core.api.Assertions.tuple;
 @Timeout(600)
 class BigQueryFileLoadsITCase {
 
-    private static final String PROJECT = System.getenv("BQ_IT_PROJECT");
-    private static final String DATASET = System.getenv("BQ_IT_DATASET");
-    private static final String BUCKET = System.getenv("BQ_IT_GCS_BUCKET");
-
     private static final String RUN_ID = TestNames.runId();
     private static final String TABLE_A = "file_loads_it_a_" + RUN_ID;
     private static final String TABLE_B = "file_loads_it_b_" + RUN_ID;
@@ -146,10 +130,8 @@ class BigQueryFileLoadsITCase {
      * Rows travel as {@code "table|name|value|boundary"} strings (an empty value or boundary means
      * NULL).
      */
-    private static final class RowSerializer extends BigQueryProtoSerializer<String> {
+    private static final class RowSerializer extends FixedSchemaProtoSerializer<String> {
         private static final long serialVersionUID = 1L;
-
-        private transient Descriptors.Descriptor descriptor;
 
         @Override
         public TableSchema getTableSchema(TableDestination destination) {
@@ -157,33 +139,15 @@ class BigQueryFileLoadsITCase {
         }
 
         @Override
-        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-            return descriptor();
-        }
-
-        private Descriptors.Descriptor descriptor() {
-            if (descriptor == null) {
-                try {
-                    descriptor =
-                            BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                                    SCHEMA);
-                } catch (Descriptors.DescriptorValidationException e) {
-                    throw new IllegalStateException(e);
-                }
-            }
-            return descriptor;
-        }
-
-        @Override
         public ByteString serialize(String element) {
             String[] parts = element.split("\\|", -1);
             DynamicMessage.Builder row = DynamicMessage.newBuilder(descriptor());
-            row.setField(descriptor().findFieldByName("name"), parts[1]);
+            row.setField(field("name"), parts[1]);
             if (!parts[2].isEmpty()) {
-                row.setField(descriptor().findFieldByName("value"), Long.parseLong(parts[2]));
+                row.setField(field("value"), Long.parseLong(parts[2]));
             }
             if (!parts[3].isEmpty()) {
-                row.setField(descriptor().findFieldByName("boundary"), parts[3]);
+                row.setField(field("boundary"), parts[3]);
             }
             return row.build().toByteString();
         }
@@ -264,36 +228,12 @@ class BigQueryFileLoadsITCase {
      * TIMESTAMP}, an epoch day for {@code DATE}, big-endian decimal bytes for the two decimals.
      * {@code "unset"} sets only {@code name}.
      */
-    private static final class TypesSerializer extends BigQueryProtoSerializer<String> {
+    private static final class TypesSerializer extends FixedSchemaProtoSerializer<String> {
         private static final long serialVersionUID = 1L;
-
-        private transient Descriptors.Descriptor descriptor;
 
         @Override
         public TableSchema getTableSchema(TableDestination destination) {
             return TYPES_SCHEMA;
-        }
-
-        @Override
-        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-            return descriptor();
-        }
-
-        private Descriptors.Descriptor descriptor() {
-            if (descriptor == null) {
-                try {
-                    descriptor =
-                            BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                                    TYPES_SCHEMA);
-                } catch (Descriptors.DescriptorValidationException e) {
-                    throw new IllegalStateException(e);
-                }
-            }
-            return descriptor;
-        }
-
-        private Descriptors.FieldDescriptor field(String name) {
-            return descriptor().findFieldByName(name);
         }
 
         @Override
@@ -337,15 +277,8 @@ class BigQueryFileLoadsITCase {
 
     @AfterAll
     static void cleanUp() {
-        BigQuery bigQuery = bigQuery();
-        bigQuery.delete(TableId.of(PROJECT, DATASET, TABLE_A));
-        bigQuery.delete(TableId.of(PROJECT, DATASET, TABLE_B));
-        bigQuery.delete(TableId.of(PROJECT, DATASET, TABLE_TYPES));
-        Storage storage = StorageOptions.newBuilder().setProjectId(PROJECT).build().getService();
-        for (Blob blob :
-                storage.list(BUCKET, Storage.BlobListOption.prefix(STAGING_ROOT)).iterateAll()) {
-            blob.delete();
-        }
+        RealBigQuery.deleteTables(TABLE_A, TABLE_B, TABLE_TYPES);
+        RealGcs.deletePrefix(STAGING_ROOT);
     }
 
     @Test
@@ -368,52 +301,55 @@ class BigQueryFileLoadsITCase {
                                 .writeMethod(WriteMethod.FILE_LOADS)
                                 .destinationResolver(
                                         (element, context) ->
-                                                TableDestination.of(
-                                                        PROJECT,
-                                                        DATASET,
+                                                RealBigQuery.destination(
                                                         element.substring(0, element.indexOf('|'))))
                                 .serializer(new RowSerializer())
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()
-                                                .stagingPath(
-                                                        "gs://" + BUCKET + "/" + STAGING_PREFIX)
+                                                .stagingPath(RealGcs.uri(STAGING_PREFIX))
                                                 .build())
                                 .build());
 
         env.execute("file-loads-it");
 
-        assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", TABLE_A)).containsExactly(4L);
-        assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", TABLE_B)).containsExactly(2L);
+        String tableAPath = RealBigQuery.tablePath(TABLE_A);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + tableAPath))
+                .containsExactly(4L);
         assertThat(
-                        queryLongs(
-                                "SELECT value FROM `%s` WHERE name = 'beta' AND value IS NOT NULL",
-                                TABLE_A))
+                        RealBigQuery.queryLongs(
+                                "SELECT COUNT(*) FROM " + RealBigQuery.tablePath(TABLE_B)))
                 .containsExactly(2L);
         assertThat(
-                        queryLongs(
-                                "SELECT COUNT(*) FROM `%s` WHERE name = 'gamma' AND value IS"
-                                        + " NULL",
-                                TABLE_A))
+                        RealBigQuery.queryLongs(
+                                "SELECT value FROM "
+                                        + tableAPath
+                                        + " WHERE name = 'beta' AND value IS NOT NULL"))
+                .containsExactly(2L);
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT COUNT(*) FROM "
+                                        + tableAPath
+                                        + " WHERE name = 'gamma' AND value IS NULL"))
                 .containsExactly(1L);
 
         // The GEOGRAPHY column: the value BigQuery parsed out of the staged Avro string, read back
         // as WKT. A load that had stored the text verbatim in a STRING column would fail ST_AsText.
         assertThat(
-                        queryStrings(
-                                "SELECT ST_ASTEXT(boundary) FROM `%s` WHERE name = 'alpha'",
-                                TABLE_A))
+                        RealBigQuery.queryRows(
+                                "SELECT ST_ASTEXT(boundary) FROM "
+                                        + tableAPath
+                                        + " WHERE name = 'alpha'"))
+                .extracting(row -> row.get(0).getStringValue())
                 .containsExactly("POINT(1 2)");
         assertThat(
-                        queryLongs(
-                                "SELECT COUNT(*) FROM `%s` WHERE name = 'gamma' AND boundary IS"
-                                        + " NULL",
-                                TABLE_A))
+                        RealBigQuery.queryLongs(
+                                "SELECT COUNT(*) FROM "
+                                        + tableAPath
+                                        + " WHERE name = 'gamma' AND boundary IS NULL"))
                 .containsExactly(1L);
 
         // Staged objects are deleted after a successful load.
-        Storage storage = StorageOptions.newBuilder().setProjectId(PROJECT).build().getService();
-        assertThat(storage.list(BUCKET, Storage.BlobListOption.prefix(STAGING_PREFIX)).iterateAll())
-                .isEmpty();
+        assertThat(RealGcs.list(STAGING_PREFIX)).isEmpty();
     }
 
     /**
@@ -443,22 +379,18 @@ class BigQueryFileLoadsITCase {
                 .sinkTo(
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
-                                .destination(TableDestination.of(PROJECT, DATASET, TABLE_TYPES))
+                                .destination(RealBigQuery.destination(TABLE_TYPES))
                                 .serializer(new TypesSerializer())
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()
-                                                .stagingPath(
-                                                        "gs://"
-                                                                + BUCKET
-                                                                + "/"
-                                                                + TYPES_STAGING_PREFIX)
+                                                .stagingPath(RealGcs.uri(TYPES_STAGING_PREFIX))
                                                 .build())
                                 .build());
 
         env.execute("file-loads-types-it");
 
         // The connector auto-created the table, so the column types are its own derivation.
-        assertThat(tableFields(TABLE_TYPES))
+        assertThat(RealBigQuery.tableFields(TABLE_TYPES))
                 .extracting(Field::getName, Field::getType)
                 .containsExactly(
                         tuple("name", LegacySQLTypeName.STRING),
@@ -519,40 +451,5 @@ class BigQueryFileLoadsITCase {
         }
         // A BigQuery REPEATED column cannot be NULL, so an unset one is the empty array.
         assertThat(unset.get("tags").getRepeatedValue()).isEmpty();
-    }
-
-    private static List<Field> tableFields(String table) {
-        Schema schema =
-                bigQuery()
-                        .getTable(TableId.of(PROJECT, DATASET, table))
-                        .<StandardTableDefinition>getDefinition()
-                        .getSchema();
-        assertThat(schema).isNotNull();
-        return schema.getFields();
-    }
-
-    private static List<Long> queryLongs(String queryTemplate, String table) throws Exception {
-        String query = String.format(queryTemplate, PROJECT + "." + DATASET + "." + table);
-        TableResult result = bigQuery().query(QueryJobConfiguration.newBuilder(query).build());
-        List<Long> values = new ArrayList<>();
-        result.iterateAll()
-                .forEach(row -> values.add(row.get(0).isNull() ? null : row.get(0).getLongValue()));
-        return values;
-    }
-
-    private static List<String> queryStrings(String queryTemplate, String table) throws Exception {
-        String query = String.format(queryTemplate, PROJECT + "." + DATASET + "." + table);
-        TableResult result = bigQuery().query(QueryJobConfiguration.newBuilder(query).build());
-        List<String> values = new ArrayList<>();
-        result.iterateAll()
-                .forEach(
-                        row ->
-                                values.add(
-                                        row.get(0).isNull() ? null : row.get(0).getStringValue()));
-        return values;
-    }
-
-    private static BigQuery bigQuery() {
-        return BigQueryOptions.newBuilder().setProjectId(PROJECT).build().getService();
     }
 }
