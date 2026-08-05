@@ -193,7 +193,7 @@ def metric_table_rows(page: Path) -> tuple[list[tuple[list[str], str, int]], lis
     in_table = False
     fenced = False
     for number, line in enumerate(read(page).splitlines(), start=1):
-        if line.lstrip().startswith("```"):
+        if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
             in_table = False
             continue

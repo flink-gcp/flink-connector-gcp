@@ -202,11 +202,14 @@ def test_a_non_table_line_ends_the_table(root, check_metric_docs):
     assert [names for names, _, _ in rows] == [["inside"]]
 
 
-def test_a_fenced_example_table_is_not_read(root, check_metric_docs):
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_a_fenced_example_table_is_not_read(root, check_metric_docs, fence):
     # A snippet showing what a metrics table looks like must earn no coverage
     # credit: deleting the real table while the example remains has to fail.
     page = root / "page.md"
-    page.write_text("# t\n\n```\n" + metric_page(("`example`", "counter")) + "```\n")
+    page.write_text(
+        f"# t\n\n{fence}\n" + metric_page(("`example`", "counter")) + f"{fence}\n"
+    )
     rows, problems = check_metric_docs.metric_table_rows(page)
     assert rows == [] and problems == []
 

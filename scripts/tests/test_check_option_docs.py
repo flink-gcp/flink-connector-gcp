@@ -419,11 +419,12 @@ def test_a_config_options_source_with_no_keys_is_infrastructure(
 # --- hardening shared with check-metric-docs.py (PR #302's self-review) ---
 
 
-def test_a_fenced_example_table_is_not_read(root, check_option_docs):
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_a_fenced_example_table_is_not_read(root, check_option_docs, fence):
     # A snippet showing what an option table looks like must earn no coverage
     # credit: deleting the real table while the example remains has to fail.
     page = root / "page.md"
-    page.write_text("# t\n\n```\n" + option_page("`example`") + "```\n")
+    page.write_text(f"# t\n\n{fence}\n" + option_page("`example`") + f"{fence}\n")
     assert check_option_docs.option_table_entries(page) == {}
 
 

@@ -143,7 +143,7 @@ def option_table_entries(page: Path) -> dict[str, int]:
     in_table = False
     fenced = False
     for number, line in enumerate(read(page).splitlines(), start=1):
-        if line.lstrip().startswith("```"):
+        if line.lstrip().startswith(("```", "~~~")):
             # An example table in a snippet earns no coverage credit.
             fenced = not fenced
             in_table = False
