@@ -130,15 +130,33 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   key comes back cancelled without being published, and only `resumePublish` clears it — so the
   racing-publish reordering above is pinned by test
   (`aKeyPausedByADropStaysPausedUntilTheRepairResumesIt`) rather than verified only by reading the
-  SDK source. Two findings from the same SDK
-  reading are filed rather than fixed: a request-level `INVALID_ARGUMENT` is reported against every
-  co-batched message (#264, the Pub/Sub counterpart of #239), and messages cancelled in
-  `Publisher.onFailure` are never returned to `messagesWaiter`, so `shutdown()` can hang before our
-  `awaitTermination` applies (#265). A third fell out of the self-review: the recovery budget now
-  bounds draining a poisoned ordering key as well as topic-metadata propagation, so a run of
-  consecutively invalid messages longer than the budget fails the job under a dropping policy —
-  #269, deliberately not answered before #264's measurement says whether a batch or a message is
-  dropped per attempt
+  SDK source. One finding from the same SDK
+  reading stays filed: messages cancelled in `Publisher.onFailure` are never returned to
+  `messagesWaiter`, so `shutdown()` can hang before our `awaitTermination` applies (#265)
+- **A `MESSAGE_LEVEL` verdict is confirmed solo before it is routed** (#264, closing #269 with
+  it). Measured on real Pub/Sub 2026-08-06 (record on #264): a `Publish` carrying one invalid
+  message is rejected **all-or-nothing**, the SDK sets the *same* `Throwable` instance on every
+  co-batched future, and nothing in the status names the offender (`details=0`, no `BadRequest`)
+  — so routing on the report would hand a whole batch to a dropping handler for one bad message.
+  The writer therefore parks a non-solo `INVALID_ARGUMENT` (`DestinationState.isolationNeeded`,
+  consumed per attempt like `topicMissing`) and the repair runs an **isolation pass**: each parked
+  message goes out as its own single-message request (`publishTo(..., soloVerdict=true)` +
+  `flushOutstanding` + `drainInFlight` per message), and only a message rejected solo reaches
+  `routeFailedMessage`. Decisions not to re-litigate: **the pass resumes a key right after a drop
+  pauses it** (`resumeRegisteredKeys`, between publishes) — this does not violate "resume never in
+  `routeFailedMessage`", because the resume stays inside the repair, the key's remaining messages
+  are held by the pass in sequence order, and drains only complete publishes — and without it one
+  drop costs one budget attempt, #269 rebuilt inside the fix; **a batched report is not counted**
+  by `publishFailure` (the #208 cascade-exclusion argument: one incident, not batch-size errors),
+  so `errorClass.INVALID_ARGUMENT.errors` and `numRecordsSendErrors` count true rejections;
+  **client-side limit validation was declined** as the fix (it covers only the limits we encode)
+  and **fail-on-batched-rejection was declined** (it defeats the dropping policy). #269 resolved
+  as fallout: a poisoned key drains in one attempt however long the run, budget semantics
+  unchanged — what remains is the two-variant exhaustion message (`kept failing …` vs `could not
+  drain its parked messages within the recovery budget …`, chosen by whether this repair handed
+  messages to the handler), each variant pinned by test. An oversized message under default
+  batching never shared a request (the SDK sends an element exceeding the byte threshold alone,
+  measured), so the fan-out concerns under-threshold violations — attribute limits and the like
 - **`PubSubDeadLetterQueue`** (#211, the #37 series): the repository's one shipped
   `DeadLetterQueue`, in a **top-level `pubsub.deadletter` package** rather than under `sink` —
   it is not sink API, it is driven by *any* connector's `FailureHandler`, so putting it under the

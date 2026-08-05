@@ -90,12 +90,20 @@ import java.util.TreeMap;
  *
  * <p>Failures {@link PubSubErrorClassifier} calls {@code MESSAGE_LEVEL}, plus records the
  * serializer rejects, are handed to the configured {@link FailureHandler} instead of failing the
- * job outright: they concern one message and republishing the same bytes cannot succeed. The
- * handler drops the message by returning and fails the job by throwing; the default {@code
- * failJob()} throws, which is why the classes it does <em>not</em> cover matter — an outage the SDK
- * gave up on stays a job failure, so no drop policy can quietly discard a backlog. A handler
- * failing inside a completion callback is captured into {@link #asyncError} like any other terminal
- * failure, because a mailbox mail cannot throw a checked exception at its caller.
+ * job outright: they concern one message and republishing the same bytes cannot succeed. A {@code
+ * MESSAGE_LEVEL} report from an ordinary publish is only a <em>candidate</em> verdict, though:
+ * {@code Publish} is a batch RPC that rejects all-or-nothing, and the SDK sets the one
+ * request-level {@code INVALID_ARGUMENT} on every future of the batch with nothing naming the
+ * offending message (measured on real Pub/Sub, 2026-08-06, one run, #264 — same {@code Throwable}
+ * instance on every future, zero status details). Routing on it directly would hand a whole batch
+ * to a dropping handler for one bad message, so the writer parks such a report instead and the
+ * repair republishes the parked batch one message per request; only a message rejected
+ * <em>solo</em> — a true per-message verdict — reaches the handler, and its co-batched neighbours
+ * are published. The handler drops the message by returning and fails the job by throwing; the
+ * default {@code failJob()} throws, which is why the classes it does <em>not</em> cover matter — an
+ * outage the SDK gave up on stays a job failure, so no drop policy can quietly discard a backlog. A
+ * handler failing inside a completion callback is captured into {@link #asyncError} like any other
+ * terminal failure, because a mailbox mail cannot throw a checked exception at its caller.
  *
  * <p>Unacknowledged publishes are capped along both dimensions that bound memory: their number
  * ({@code PubSubPublisherOptions.maxInFlightMessages}, default 1000) and their serialized size
@@ -321,7 +329,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
         DestinationState state = stateFor(destination);
         awaitCapacity();
-        publishTo(state, message, true);
+        publishTo(state, message, true, false);
     }
 
     @Override
@@ -395,8 +403,19 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * repair re-enters this method for every parked message, and a record must be counted once
      * however many publishes it took. The in-flight counters are the opposite — they track
      * publishes, so they are adjusted on every call.
+     *
+     * <p>{@code soloVerdict} says the message travels as its own single-message {@code Publish}
+     * request — true only inside {@link #repairDestination}'s isolation pass, which flushes and
+     * drains around each publish — so an {@code INVALID_ARGUMENT} answering it concerns this
+     * message alone and may be routed to the failure handler. From any other publish that status is
+     * a request-level report the SDK fans out across the whole batch, so it must be isolated first,
+     * not routed.
      */
-    private void publishTo(DestinationState state, PubsubMessage message, boolean firstAttempt)
+    private void publishTo(
+            DestinationState state,
+            PubsubMessage message,
+            boolean firstAttempt,
+            boolean soloVerdict)
             throws IOException {
         // Memoized by protobuf, so recomputing it in the callback would be equivalent; taking it
         // once keeps a single source of the number the counter is adjusted by.
@@ -417,7 +436,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
         ApiFutures.addCallback(
                 future,
-                new PublishCallback(state, message, nextPublishSequence++, serializedSize),
+                new PublishCallback(
+                        state, message, nextPublishSequence++, serializedSize, soloVerdict),
                 Runnable::run);
     }
 
@@ -494,15 +514,20 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             PubsubMessage message,
             long sequence,
             int serializedSize,
+            boolean soloVerdict,
             Throwable throwable) {
         releaseInFlight(serializedSize);
         PubSubErrorClassifier.Kind kind = PubSubErrorClassifier.classify(throwable);
-        if (kind != PubSubErrorClassifier.Kind.CANCELLATION) {
-            // Root failures only. A cascade cancellation is not one — it always trails a failure of
-            // an earlier publish for the same ordering key (#78), and that root is counted here
-            // itself, so counting the cascade too would multiply one incident by the length of the
-            // key's queue. It carries no status of its own either, so it would land under
-            // UNCLASSIFIED and hide genuinely unclassifiable failures.
+        boolean batchedRejection = kind == PubSubErrorClassifier.Kind.MESSAGE_LEVEL && !soloVerdict;
+        if (kind != PubSubErrorClassifier.Kind.CANCELLATION && !batchedRejection) {
+            // Root failures with a confirmed identity only. A cascade cancellation is not one — it
+            // always trails a failure of an earlier publish for the same ordering key (#78), and
+            // that root is counted here itself, so counting the cascade too would multiply one
+            // incident by the length of the key's queue. It carries no status of its own either,
+            // so it would land under UNCLASSIFIED and hide genuinely unclassifiable failures. A
+            // batched INVALID_ARGUMENT is excluded for the same multiplication: the SDK reports
+            // the one request-level status against every co-batched message, and the isolation
+            // pass counts the true rejections when it finds them.
             metrics.publishFailure(PubSubErrorClassifier.statusCode(throwable));
         }
         if (kind == PubSubErrorClassifier.Kind.TOPIC_NOT_FOUND && repairsTopics()) {
@@ -537,14 +562,30 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 state.repairCause = throwable;
             }
         } else if (kind == PubSubErrorClassifier.Kind.MESSAGE_LEVEL) {
-            routeFailedMessage(state, message, throwable);
+            if (batchedRejection) {
+                // A request-level report: the service rejected the batch all-or-nothing, so this
+                // message is not known to be the invalid one. Park it for the isolation pass,
+                // which republishes the batch one message per request so each gets its own
+                // verdict — routing here would drop a whole batch for one bad message (#264).
+                park(state, sequence, message);
+                state.isolationNeeded = true;
+                // Only as a fallback, like the cascade branch above: a NOT_FOUND stays the better
+                // budget-exhaustion cause when both are in play.
+                if (state.repairCause == null) {
+                    state.repairCause = throwable;
+                }
+            } else {
+                routeFailedMessage(state, message, throwable);
+            }
         } else if (asyncError == null) {
             asyncError = wrapPublishFailure(state.destination, kind, throwable);
         }
     }
 
     /**
-     * Hands a message-level publish failure to the configured handler. Runs as a mailbox mail, so a
+     * Hands a message-level publish failure to the configured handler. Reached only with a solo
+     * verdict — an {@code INVALID_ARGUMENT} answering a single-message request of the isolation
+     * pass — so the message really is the one the service rejected. Runs as a mailbox mail, so a
      * handler that fails the job cannot throw at a caller: its failure is captured into {@link
      * #asyncError} and rethrown from the next {@link #write} or {@link #flush}, exactly as a
      * terminal publish failure is. First failure wins, as everywhere else here.
@@ -598,6 +639,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         // the message stops being the writer's business — and the point its key has to be handed
         // back. An unkeyed message never entered the SDK's sequential executor, so it pauses
         // nothing.
+        state.routedDuringRepair++;
         if (orderingEnabled && !message.getOrderingKey().isEmpty()) {
             state.keysToResume.add(message.getOrderingKey());
             repairNeeded = true;
@@ -634,15 +676,31 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Republishes the destination's parked messages — creating its topic first when that is what
      * they are parked for — retrying within the recovery schedule while topic metadata propagates.
      * Each attempt drains the writer completely (repair is rare, so waiting on unrelated
-     * destinations' publishes is acceptable for the simplicity of reusing {@link #drainInFlight}).
-     * Failures during a retry re-enter the pending buffer through the normal callback path;
+     * destinations' publishes is acceptable for the simplicity of reusing {@link #drainInFlight});
+     * an isolating attempt drains once per message, so its pass publishes strictly one message at a
+     * time. Failures during a retry re-enter the pending buffer through the normal callback path;
      * non-{@code NOT_FOUND} failures abort the repair from within the drain.
      *
      * <p>Only a parked {@code NOT_FOUND} creates a topic. Every other reason a batch is here — a
-     * cascade of a message the failure handler dropped, or a publish that reached an ordering key
-     * still paused from one — needs the resume and the republish and nothing else, and issuing a
-     * {@code createTopic} for them would both misreport {@code topicsCreated} and create a topic
-     * under {@code CREATE_NEVER}.
+     * cascade of a message the failure handler dropped, a request-level {@code INVALID_ARGUMENT}
+     * awaiting isolation, or a publish that reached an ordering key still paused from one — needs
+     * the resume and the republish and nothing else, and issuing a {@code createTopic} for them
+     * would both misreport {@code topicsCreated} and create a topic under {@code CREATE_NEVER}.
+     *
+     * <p>An attempt whose batch was parked for a request-level {@code INVALID_ARGUMENT} runs as an
+     * <b>isolation pass</b>: each message goes out as its own single-message request, flushed and
+     * drained individually, so the service answers per message. A message rejected solo is routed
+     * to the failure handler by its own drain, and the ordering key that rejection paused is
+     * resumed before the key's next message is republished — so one pass drains an arbitrarily long
+     * run of invalid messages in a single attempt, and the budget keeps bounding
+     * <em>unproductive</em> retrying rather than the length of a poisoned key (#269). Per-key order
+     * holds because the batch is in publish-sequence order and nothing else publishes during a
+     * repair.
+     *
+     * <p>A fatal solo failure surfaces from the pass's drain and aborts the repair with the
+     * not-yet-republished remainder abandoned — in neither the pending buffer nor in flight. That
+     * is safe for the same reason {@link #close}'s parked-message drop is: the checkpoint does not
+     * complete, so the restart replays those records.
      */
     private void repairDestination(DestinationState state)
             throws IOException, InterruptedException {
@@ -652,6 +710,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         // propagating to the publisher, where the topic already exists and creating it again would
         // answer nothing.
         boolean topicCreated = false;
+        state.routedDuringRepair = 0;
         for (int attempt = 1; ; attempt++) {
             if (state.topicMissing) {
                 state.topicMissing = false;
@@ -665,20 +724,43 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                     metrics.topicCreated();
                 }
             }
+            // Isolation is decided per attempt for the same reason creation is: a batch parked
+            // for a NOT_FOUND can meet a request-level INVALID_ARGUMENT on its republish, and
+            // only the attempt after that report can know to isolate.
+            boolean isolating = state.isolationNeeded;
+            state.isolationNeeded = false;
             // Keyed by publish sequence, so the batch is in the order the messages were originally
             // published however their failure mails interleaved.
             List<PubsubMessage> batch = new ArrayList<>(state.pendingRetries.values());
             state.pendingRetries.clear();
-            parkedMessages -= batch.size();
             // Every attempt resumes the batch's ordering keys first: the failure that parked the
             // batch — and every failed republish attempt since — paused them in the publisher.
             resumeOrderingKeys(state, batch);
-            for (PubsubMessage message : batch) {
-                // Not a first attempt: these records were counted by the write that admitted them.
-                publishTo(state, message, false);
+            // Republishes are not a first attempt in either shape: these records were counted by
+            // the write that admitted them.
+            if (isolating) {
+                for (PubsubMessage message : batch) {
+                    // Released one at a time, not up front: the pass holds the rest of the batch
+                    // through a drain per message, and the gauge must keep reporting what the
+                    // writer still holds — a pass over a long batch is exactly when a reader
+                    // watches it.
+                    parkedMessages--;
+                    publishTo(state, message, false, true);
+                    state.publisher.flushOutstanding();
+                    drainInFlight();
+                    // A rejection routed by that drain paused its ordering key and registered it;
+                    // hand the key back before its next message, or the rest of the pass comes
+                    // back cancelled and every drop costs one budget attempt.
+                    resumeRegisteredKeys(state);
+                }
+            } else {
+                parkedMessages -= batch.size();
+                for (PubsubMessage message : batch) {
+                    publishTo(state, message, false, false);
+                }
+                state.publisher.flushOutstanding();
+                drainInFlight();
             }
-            state.publisher.flushOutstanding();
-            drainInFlight();
             if (state.pendingRetries.isEmpty()) {
                 // The incident is over, so its cause must not outlive it: a cascade only fills
                 // repairCause in when it is still null, so a value left behind here would be
@@ -689,6 +771,26 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 return;
             }
             if (attempt >= recoverySchedule.maxAttempts()) {
+                if (state.routedDuringRepair > 0) {
+                    // Distinguished from the topic-shaped exhaustion below: this repair was
+                    // draining a key whose messages the handler is dropping, and the budget ran
+                    // out with messages still parked — the reader needs to know drops happened
+                    // and roughly how many, not only to go looking for a topic problem. The two
+                    // facts are not exclusive, so a creation is still reported here.
+                    throw new IOException(
+                            "Republishing to Pub/Sub topic "
+                                    + state.destination
+                                    + " could not drain its parked messages within the recovery"
+                                    + " budget ("
+                                    + attempt
+                                    + " attempt(s)"
+                                    + (topicCreated ? ", after creating the topic" : "")
+                                    + "); "
+                                    + state.routedDuringRepair
+                                    + " message(s) were handed to the failure handler during the"
+                                    + " repair.",
+                            state.repairCause);
+                }
                 throw new IOException(
                         "Republishing to Pub/Sub topic "
                                 + state.destination
@@ -715,13 +817,17 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Resumes the distinct ordering keys of the batch, plus those of the messages the failure
      * handler dropped, on the destination's publisher.
      *
-     * <p>This is the only place a key is resumed, and deliberately not {@link #routeFailedMessage}.
-     * {@link #write} tests {@code repairNeeded} <em>before</em> {@link #awaitCapacity()}, and
-     * mailbox mails — the drop among them — run inside it, so a key resumed from the failure mail
-     * could be published to by the rest of that same {@code write} while the key's cascades were
-     * still parked: a newer message ahead of older ones, the one thing the repair exists to
-     * prevent. Left paused, that racing publish comes back cancelled, is parked, and is republished
-     * in publish-sequence order with the rest.
+     * <p>Keys are resumed only from within a repair — here at an attempt's start, and through
+     * {@link #resumeRegisteredKeys} between an isolation pass's publishes — and deliberately never
+     * from {@link #routeFailedMessage}. {@link #write} tests {@code repairNeeded} <em>before</em>
+     * {@link #awaitCapacity()}, and mailbox mails — the drop among them — run inside it, so a key
+     * resumed from the failure mail could be published to by the rest of that same {@code write}
+     * while the key's cascades were still parked: a newer message ahead of older ones, the one
+     * thing the repair exists to prevent. Left paused, that racing publish comes back cancelled, is
+     * parked, and is republished in publish-sequence order with the rest. The isolation pass can
+     * resume mid-batch without opening that race, because the key's remaining messages are held by
+     * the pass itself in sequence order and the mails its drains run only complete publishes, never
+     * issue one.
      *
      * <p>Dropped keys are drained here rather than re-resumed on every attempt: a later attempt
      * only re-pauses keys the batch republished, which the batch itself covers, and a dropped key
@@ -734,17 +840,27 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         if (!orderingEnabled) {
             return;
         }
-        Set<String> orderingKeys = new LinkedHashSet<>();
         for (PubsubMessage message : batch) {
             if (!message.getOrderingKey().isEmpty()) {
-                orderingKeys.add(message.getOrderingKey());
+                state.keysToResume.add(message.getOrderingKey());
             }
         }
-        orderingKeys.addAll(state.keysToResume);
-        state.keysToResume.clear();
-        for (String orderingKey : orderingKeys) {
+        resumeRegisteredKeys(state);
+    }
+
+    /**
+     * Resumes and drains the registered keys, without adding a batch's — the mid-pass complement of
+     * {@link #resumeOrderingKeys} (which delegates here), run by the isolation pass after each solo
+     * verdict so a key a drop just paused is handed back before the key's next republish.
+     */
+    private void resumeRegisteredKeys(DestinationState state) {
+        if (!orderingEnabled) {
+            return;
+        }
+        for (String orderingKey : state.keysToResume) {
             state.publisher.resumePublish(orderingKey);
         }
+        state.keysToResume.clear();
     }
 
     /**
@@ -795,18 +911,20 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         private final TopicPublisher publisher;
 
         /**
-         * Messages awaiting republish after topic creation, keyed by publish sequence so the batch
-         * is republished in publish order. Sorting matters because the failure mails that park them
-         * do not arrive in publish order, and republishing a key's messages out of order would
-         * break the very guarantee the repair exists to preserve.
+         * Messages awaiting republish — parked for a missing topic, a cascade cancellation, or a
+         * request-level rejection awaiting isolation — keyed by publish sequence so the batch is
+         * republished in publish order. Sorting matters because the failure mails that park them do
+         * not arrive in publish order, and republishing a key's messages out of order would break
+         * the very guarantee the repair exists to preserve.
          */
         private final SortedMap<Long, PubsubMessage> pendingRetries = new TreeMap<>();
 
         /**
          * Ordering keys of messages the failure handler dropped, which the publisher paused and
-         * will never resume on its own. Drained by the next repair. Separate from {@link
-         * #pendingRetries} because the dropped message itself is gone: the key needs handing back
-         * even when there is nothing left to republish for it.
+         * will never resume on its own. Drained by the next repair attempt, and mid-pass by the
+         * isolation pass after each drop. Separate from {@link #pendingRetries} because the dropped
+         * message itself is gone: the key needs handing back even when there is nothing left to
+         * republish for it.
          */
         private final Set<String> keysToResume = new LinkedHashSet<>();
 
@@ -817,8 +935,26 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         private boolean topicMissing;
 
         /**
+         * Whether a request-level {@code INVALID_ARGUMENT} is among the reasons this destination
+         * owes a repair — the only one that calls for republishing the batch one message per
+         * request. Cleared by the attempt that answers it, like {@link #topicMissing}, and re-set
+         * by any later batched rejection.
+         */
+        private boolean isolationNeeded;
+
+        /**
+         * Messages the current repair handed to the failure handler; zeroed when a repair starts,
+         * read at budget exhaustion to choose between its two messages. Per destination rather than
+         * per writer because that is the delta the exhaustion reports — and routing can only happen
+         * from the isolation pass of the destination being repaired, since a solo verdict exists
+         * nowhere else.
+         */
+        private long routedDuringRepair;
+
+        /**
          * Retained as the cause of a budget-exhaustion failure: the destination's {@code
-         * NOT_FOUND}, or a cascade cancellation when no {@code NOT_FOUND} was ever observed.
+         * NOT_FOUND}, or — when none was ever observed — the batched {@code INVALID_ARGUMENT} or
+         * cascade cancellation that parked the batch, whichever came first.
          */
         private Throwable repairCause;
 
@@ -845,8 +981,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      *
      * <p>One instance per publish: the callback carries its message so a failed publish can be
      * republished after topic auto-creation, its publish sequence so the parked batch can be
-     * ordered independently of the order the failures arrive in, and its serialized size so both
-     * in-flight counters can be released.
+     * ordered independently of the order the failures arrive in, its serialized size so both
+     * in-flight counters can be released, and whether the publish was solo — which is what upgrades
+     * an {@code INVALID_ARGUMENT} answering it to a per-message verdict.
      *
      * <p>It is also its own success mail, which is why the success path still allocates nothing
      * beyond this object. A mail shared per destination — what this replaces — cannot carry a size,
@@ -859,13 +996,19 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         private final PubsubMessage message;
         private final long sequence;
         private final int serializedSize;
+        private final boolean soloVerdict;
 
         private PublishCallback(
-                DestinationState state, PubsubMessage message, long sequence, int serializedSize) {
+                DestinationState state,
+                PubsubMessage message,
+                long sequence,
+                int serializedSize,
+                boolean soloVerdict) {
             this.state = state;
             this.message = message;
             this.sequence = sequence;
             this.serializedSize = serializedSize;
+            this.soloVerdict = soloVerdict;
         }
 
         /** The success mail: runs on the task thread. */
@@ -882,7 +1025,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         @Override
         public void onFailure(Throwable throwable) {
             mailboxExecutor.execute(
-                    () -> onPublishFailed(state, message, sequence, serializedSize, throwable),
+                    () ->
+                            onPublishFailed(
+                                    state,
+                                    message,
+                                    sequence,
+                                    serializedSize,
+                                    soloVerdict,
+                                    throwable),
                     state.failureDescription);
         }
     }

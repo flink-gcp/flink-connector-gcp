@@ -333,6 +333,11 @@ class PubSubWriterAutoCreationTest {
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("auto-topic")
+                // The topic-shaped variant: no message was handed to the failure handler during
+                // this repair, so the drain-shaped text would misdirect the reader toward a
+                // dropping policy that never acted.
+                .hasMessageContaining("kept failing after creating the topic")
+                .hasMessageNotContaining("could not drain")
                 .hasMessageContaining("2 attempt(s)")
                 .hasCause(failure);
         assertThat(admin.created).containsExactly(TOPIC);
@@ -644,6 +649,11 @@ class PubSubWriterAutoCreationTest {
 
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
+                // The plain exhaustion variant: this repair created no topic and dropped no
+                // message, and its text must claim neither.
+                .hasMessageContaining("kept failing (")
+                .hasMessageNotContaining("after creating the topic")
+                .hasMessageNotContaining("could not drain")
                 .hasCause(secondIncident);
     }
 }

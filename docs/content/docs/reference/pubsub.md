@@ -83,7 +83,7 @@ for how the caps are sized.
 | `maxInFlightBytes` | 64 MiB | Caps their total serialized size. `Long.MAX_VALUE` bounds by count only |
 | `recoveryInitialBackoff` | 500 ms | First backoff of a republish — after creating a missing topic, or after resuming an ordering key |
 | `recoveryMaxBackoff` | 10 s | Cap of that backoff, before ±25% jitter |
-| `recoveryMaxAttempts` | 10 | Republish attempts per destination |
+| `recoveryMaxAttempts` | 10 | Republish attempts per destination and incident. Bounds a repair making no progress, not the length of a rejected run (see [Ordering and a dropping policy]({{< relref "docs/connectors/datastream/pubsub" >}}#ordering-and-a-dropping-policy)) |
 
 **Metrics.**
 
