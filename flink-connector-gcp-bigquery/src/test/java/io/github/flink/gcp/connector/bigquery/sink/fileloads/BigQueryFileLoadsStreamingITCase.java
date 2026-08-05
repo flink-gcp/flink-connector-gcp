@@ -26,24 +26,15 @@ import org.apache.flink.connector.datagen.source.DataGeneratorSource;
 import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
-import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryOptions;
-import com.google.cloud.bigquery.QueryJobConfiguration;
-import com.google.cloud.bigquery.TableId;
-import com.google.cloud.bigquery.TableResult;
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
-import com.google.cloud.storage.Blob;
-import com.google.cloud.storage.Storage;
-import com.google.cloud.storage.StorageOptions;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
+import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.RealGcs;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
@@ -52,8 +43,6 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -74,10 +63,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfEnvironmentVariable(named = "BQ_IT_GCS_BUCKET", matches = ".+")
 @Timeout(600)
 class BigQueryFileLoadsStreamingITCase {
-
-    private static final String PROJECT = System.getenv("BQ_IT_PROJECT");
-    private static final String DATASET = System.getenv("BQ_IT_DATASET");
-    private static final String BUCKET = System.getenv("BQ_IT_GCS_BUCKET");
 
     private static final String RUN_ID = TestNames.runId();
     private static final String TABLE_A = "file_loads_stream_it_a_" + RUN_ID;
@@ -102,10 +87,8 @@ class BigQueryFileLoadsStreamingITCase {
                     .build();
 
     /** Rows travel as {@code "table|name|value"} strings. */
-    private static final class RowSerializer extends BigQueryProtoSerializer<String> {
+    private static final class RowSerializer extends FixedSchemaProtoSerializer<String> {
         private static final long serialVersionUID = 1L;
-
-        private transient Descriptors.Descriptor descriptor;
 
         @Override
         public TableSchema getTableSchema(TableDestination destination) {
@@ -113,43 +96,19 @@ class BigQueryFileLoadsStreamingITCase {
         }
 
         @Override
-        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-            return descriptor();
-        }
-
-        private Descriptors.Descriptor descriptor() {
-            if (descriptor == null) {
-                try {
-                    descriptor =
-                            BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                                    SCHEMA);
-                } catch (Descriptors.DescriptorValidationException e) {
-                    throw new IllegalStateException(e);
-                }
-            }
-            return descriptor;
-        }
-
-        @Override
         public ByteString serialize(String element) {
             String[] parts = element.split("\\|", -1);
             DynamicMessage.Builder row = DynamicMessage.newBuilder(descriptor());
-            row.setField(descriptor().findFieldByName("name"), parts[1]);
-            row.setField(descriptor().findFieldByName("value"), Long.parseLong(parts[2]));
+            row.setField(field("name"), parts[1]);
+            row.setField(field("value"), Long.parseLong(parts[2]));
             return row.build().toByteString();
         }
     }
 
     @AfterAll
     static void cleanUp() {
-        BigQuery bigQuery = bigQuery();
-        bigQuery.delete(TableId.of(PROJECT, DATASET, TABLE_A));
-        bigQuery.delete(TableId.of(PROJECT, DATASET, TABLE_B));
-        Storage storage = StorageOptions.newBuilder().setProjectId(PROJECT).build().getService();
-        for (Blob blob :
-                storage.list(BUCKET, Storage.BlobListOption.prefix(STAGING_PREFIX)).iterateAll()) {
-            blob.delete();
-        }
+        RealBigQuery.deleteTables(TABLE_A, TABLE_B);
+        RealGcs.deletePrefix(STAGING_PREFIX);
     }
 
     @Test
@@ -183,15 +142,12 @@ class BigQueryFileLoadsStreamingITCase {
                                 .writeMethod(WriteMethod.FILE_LOADS)
                                 .destinationResolver(
                                         (element, context) ->
-                                                TableDestination.of(
-                                                        PROJECT,
-                                                        DATASET,
+                                                RealBigQuery.destination(
                                                         element.substring(0, element.indexOf('|'))))
                                 .serializer(new RowSerializer())
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()
-                                                .stagingPath(
-                                                        "gs://" + BUCKET + "/" + STAGING_PREFIX)
+                                                .stagingPath(RealGcs.uri(STAGING_PREFIX))
                                                 // Explicit opt-in to fast checkpoints for this
                                                 // short-lived test job.
                                                 .minCheckpointInterval(Duration.ofSeconds(1))
@@ -200,20 +156,20 @@ class BigQueryFileLoadsStreamingITCase {
 
         env.execute("file-loads-streaming-it");
 
-        assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", TABLE_A))
+        String tableAPath = RealBigQuery.tablePath(TABLE_A);
+        String tableBPath = RealBigQuery.tablePath(TABLE_B);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + tableAPath))
                 .containsExactly(RECORD_COUNT / 2);
-        assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", TABLE_B))
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + tableBPath))
                 .containsExactly(RECORD_COUNT / 2);
         // Every record landed exactly once: the per-table sums match the generator's indexes.
-        assertThat(queryLongs("SELECT SUM(value) FROM `%s`", TABLE_A))
+        assertThat(RealBigQuery.queryLongs("SELECT SUM(value) FROM " + tableAPath))
                 .containsExactly(sumOfIndexes(0));
-        assertThat(queryLongs("SELECT SUM(value) FROM `%s`", TABLE_B))
+        assertThat(RealBigQuery.queryLongs("SELECT SUM(value) FROM " + tableBPath))
                 .containsExactly(sumOfIndexes(1));
 
         // Staged objects of every checkpoint were deleted after their loads succeeded.
-        Storage storage = StorageOptions.newBuilder().setProjectId(PROJECT).build().getService();
-        assertThat(storage.list(BUCKET, Storage.BlobListOption.prefix(STAGING_PREFIX)).iterateAll())
-                .isEmpty();
+        assertThat(RealGcs.list(STAGING_PREFIX)).isEmpty();
     }
 
     private static long sumOfIndexes(int parity) {
@@ -222,18 +178,5 @@ class BigQueryFileLoadsStreamingITCase {
             sum += i;
         }
         return sum;
-    }
-
-    private static List<Long> queryLongs(String queryTemplate, String table) throws Exception {
-        String query = String.format(queryTemplate, PROJECT + "." + DATASET + "." + table);
-        TableResult result = bigQuery().query(QueryJobConfiguration.newBuilder(query).build());
-        List<Long> values = new ArrayList<>();
-        result.iterateAll()
-                .forEach(row -> values.add(row.get(0).isNull() ? null : row.get(0).getLongValue()));
-        return values;
-    }
-
-    private static BigQuery bigQuery() {
-        return BigQueryOptions.newBuilder().setProjectId(PROJECT).build().getService();
     }
 }

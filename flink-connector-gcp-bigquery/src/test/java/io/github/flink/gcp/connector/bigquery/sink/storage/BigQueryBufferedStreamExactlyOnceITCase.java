@@ -26,17 +26,9 @@ import org.apache.flink.connector.datagen.source.DataGeneratorSource;
 import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
-import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryOptions;
-import com.google.cloud.bigquery.QueryJobConfiguration;
-import com.google.cloud.bigquery.StandardTableDefinition;
-import com.google.cloud.bigquery.TableId;
-import com.google.cloud.bigquery.TableInfo;
-import com.google.cloud.bigquery.TableResult;
+import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
-import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
@@ -44,8 +36,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,9 +62,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(600)
 class BigQueryBufferedStreamExactlyOnceITCase {
 
-    private static final String PROJECT = System.getenv("BQ_IT_PROJECT");
-    private static final String DATASET = System.getenv("BQ_IT_DATASET");
-
     private static final String RUN_ID = TestNames.runId();
     private static final String TABLE_RESTART = "buffered_stream_it_restart_" + RUN_ID;
     private static final String TABLE_CLEAN = "buffered_stream_it_clean_" + RUN_ID;
@@ -89,10 +76,7 @@ class BigQueryBufferedStreamExactlyOnceITCase {
 
     @AfterAll
     static void cleanUp() {
-        BigQuery bigQuery = bigQuery();
-        bigQuery.delete(TableId.of(PROJECT, DATASET, TABLE_RESTART));
-        bigQuery.delete(TableId.of(PROJECT, DATASET, TABLE_CLEAN));
-        bigQuery.delete(TableId.of(PROJECT, DATASET, TABLE_BATCH));
+        RealBigQuery.deleteTables(TABLE_RESTART, TABLE_CLEAN, TABLE_BATCH);
     }
 
     @Test
@@ -125,12 +109,13 @@ class BigQueryBufferedStreamExactlyOnceITCase {
         env.execute("buffered-stream-exactly-once-restart-it");
 
         assertThat(FAILED_ONCE).isTrue();
-        assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", TABLE_RESTART))
+        String restartPath = RealBigQuery.tablePath(TABLE_RESTART);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + restartPath))
                 .containsExactly(RECORD_COUNT);
         // No duplicates and no gaps: every generated index landed exactly once.
-        assertThat(queryLongs("SELECT COUNT(DISTINCT value) FROM `%s`", TABLE_RESTART))
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(DISTINCT value) FROM " + restartPath))
                 .containsExactly(RECORD_COUNT);
-        assertThat(queryLongs("SELECT SUM(value) FROM `%s`", TABLE_RESTART))
+        assertThat(RealBigQuery.queryLongs("SELECT SUM(value) FROM " + restartPath))
                 .containsExactly(RECORD_COUNT * (RECORD_COUNT - 1) / 2);
     }
 
@@ -151,9 +136,10 @@ class BigQueryBufferedStreamExactlyOnceITCase {
 
         env.execute("buffered-stream-clean-streaming-it");
 
-        assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", TABLE_CLEAN))
+        String cleanPath = RealBigQuery.tablePath(TABLE_CLEAN);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + cleanPath))
                 .containsExactly(RECORD_COUNT);
-        assertThat(queryLongs("SELECT COUNT(DISTINCT value) FROM `%s`", TABLE_CLEAN))
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(DISTINCT value) FROM " + cleanPath))
                 .containsExactly(RECORD_COUNT);
     }
 
@@ -176,9 +162,10 @@ class BigQueryBufferedStreamExactlyOnceITCase {
 
         env.execute("buffered-stream-batch-it");
 
-        assertThat(queryLongs("SELECT COUNT(*) FROM `%s`", TABLE_BATCH))
+        String batchPath = RealBigQuery.tablePath(TABLE_BATCH);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + batchPath))
                 .containsExactly(RECORD_COUNT);
-        assertThat(queryLongs("SELECT COUNT(DISTINCT value) FROM `%s`", TABLE_BATCH))
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(DISTINCT value) FROM " + batchPath))
                 .containsExactly(RECORD_COUNT);
     }
 
@@ -193,35 +180,13 @@ class BigQueryBufferedStreamExactlyOnceITCase {
     private static org.apache.flink.api.connector.sink2.Sink<String> sink(String table) {
         return BigQuerySink.<String>builder()
                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                .destination(TableDestination.of(PROJECT, DATASET, table))
+                .destination(RealBigQuery.destination(table))
                 .serializer(new NameValueRowSerializer())
                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                 .build();
     }
 
     private static void createTable(String table) {
-        bigQuery()
-                .create(
-                        TableInfo.newBuilder(
-                                        TableId.of(PROJECT, DATASET, table),
-                                        StandardTableDefinition.newBuilder()
-                                                .setSchema(
-                                                        StorageSchemaConverter.toBigQuerySchema(
-                                                                NameValueRowSerializer.SCHEMA))
-                                                .build())
-                                .build());
-    }
-
-    private static List<Long> queryLongs(String queryTemplate, String table) throws Exception {
-        String query = String.format(queryTemplate, PROJECT + "." + DATASET + "." + table);
-        TableResult result = bigQuery().query(QueryJobConfiguration.newBuilder(query).build());
-        List<Long> values = new ArrayList<>();
-        result.iterateAll()
-                .forEach(row -> values.add(row.get(0).isNull() ? null : row.get(0).getLongValue()));
-        return values;
-    }
-
-    private static BigQuery bigQuery() {
-        return BigQueryOptions.newBuilder().setProjectId(PROJECT).build().getService();
+        RealBigQuery.createTable(table, NameValueRowSerializer.SCHEMA);
     }
 }

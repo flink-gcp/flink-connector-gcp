@@ -18,20 +18,28 @@ package io.github.flink.gcp.connector.bigquery;
 
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardTableDefinition;
+import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
 
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /**
  * REST plumbing shared by the ITCases gated on real-GCP credentials: the {@code BQ_IT_*} variables,
  * a REST client over application-default credentials, table creation/deletion and query read-back.
+ * The gated classes reach BigQuery through this and nothing else (#292); {@link RealGcs} is the
+ * sibling for the FILE_LOADS staging bucket, which only that write method needs.
  *
  * <p>Deliberately a static utility and <b>not</b> a base class carrying the gating annotation:
  * {@code scripts/e2e-gated-its.sh} greps test sources for the literal environment-variable gate and
@@ -53,22 +61,34 @@ public final class RealBigQuery {
         return System.getenv("BQ_IT_DATASET");
     }
 
-    /** A REST client over application-default credentials. */
-    public static BigQuery client() {
+    /**
+     * A REST client over application-default credentials. Private because every gated ITCase now
+     * reads through the methods below (#292); a case they do not cover earns a method here rather
+     * than a second client at the call site.
+     */
+    private static BigQuery client() {
         return BigQueryOptions.newBuilder().setProjectId(project()).build().getService();
+    }
+
+    /** The gated dataset's destination for {@code table}, as the sink builders take it. */
+    public static TableDestination destination(String table) {
+        return TableDestination.of(project(), dataset(), table);
     }
 
     /** Creates {@code table} in the gated dataset with the given Storage Write API schema. */
     public static void createTable(String table, TableSchema schema) {
+        createTable(table, StorageSchemaConverter.toBigQuerySchema(schema));
+    }
+
+    /**
+     * Creates {@code table} in the gated dataset with the given REST schema — the overload for
+     * columns the Storage Write API schema cannot express, such as {@code INTERVAL}.
+     */
+    public static void createTable(String table, Schema schema) {
         client().create(
-                        TableInfo.newBuilder(
-                                        TableId.of(project(), dataset(), table),
-                                        StandardTableDefinition.newBuilder()
-                                                .setSchema(
-                                                        StorageSchemaConverter.toBigQuerySchema(
-                                                                schema))
-                                                .build())
-                                .build());
+                        TableInfo.of(
+                                TableId.of(project(), dataset(), table),
+                                StandardTableDefinition.of(schema)));
     }
 
     /**
@@ -82,6 +102,17 @@ public final class RealBigQuery {
         }
     }
 
+    /** Returns the live columns of {@code table}, in order. */
+    public static FieldList tableFields(String table) {
+        Table live = client().getTable(TableId.of(project(), dataset(), table));
+        // Named rather than left to a bare NPE below: a table the sink was expected to auto-create
+        // is exactly what a caller of this asserts about, and the run that finds out is a paid one.
+        assertThat(live).as("table %s exists", table).isNotNull();
+        Schema schema = live.<StandardTableDefinition>getDefinition().getSchema();
+        assertThat(schema).isNotNull();
+        return schema.getFields();
+    }
+
     /** Runs the query and returns its rows. */
     public static List<FieldValueList> queryRows(String sql) throws InterruptedException {
         List<FieldValueList> rows = new ArrayList<>();
@@ -89,6 +120,22 @@ public final class RealBigQuery {
                 .iterateAll()
                 .forEach(rows::add);
         return rows;
+    }
+
+    /**
+     * Runs the query and returns its first column, one entry per row, {@code null} for a NULL cell.
+     *
+     * <p>The null mapping is not decoration: {@link
+     * com.google.cloud.bigquery.FieldValue#getLongValue()} is {@code
+     * Long.parseLong(getStringValue())} and {@code getStringValue()} null-checks, so a NULL cell
+     * throws — and defaulting it to {@code 0} would be a wrong answer rather than a failure.
+     */
+    public static List<Long> queryLongs(String sql) throws InterruptedException {
+        List<Long> values = new ArrayList<>();
+        for (FieldValueList row : queryRows(sql)) {
+            values.add(row.get(0).isNull() ? null : row.get(0).getLongValue());
+        }
+        return values;
     }
 
     /** Returns the fully qualified, backtick-quoted table path for use in a query. */
