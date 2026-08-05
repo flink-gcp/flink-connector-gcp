@@ -490,6 +490,23 @@ class CloudTasksWriterFailureHandlerTest {
     }
 
     @Test
+    void closesTheHandlerEvenWhenTheCreatorShutdownThrowsAnError() {
+        // #276: the comment above this close() said the handler is closed even when the creator's
+        // shutdown throws, and Flink's IOUtils.closeAll made that false for an Error — it rethrows
+        // from inside its loop, so the handler stayed open. Since #211 the handler can own an SDK
+        // publisher and a gRPC channel, and a gax shutdown is a plausible place for a
+        // NoClassDefFoundError. That the Error reaches the caller as an Error is the other half:
+        // Flink halts the JVM on a fatal one, and only if it arrives unwrapped.
+        CloudTasksWriter<String> writer = writer(TestSinkConfigs.builder());
+        creator.closeFailure = new NoClassDefFoundError("client shutdown blew up");
+
+        assertThatThrownBy(writer::close)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("client shutdown blew up");
+        assertThat(handler.closeCalls).isEqualTo(1);
+    }
+
+    @Test
     void neverOpensTheHandlerItself() throws Exception {
         CloudTasksWriter<String> writer = writer(TestSinkConfigs.builder());
 

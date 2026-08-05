@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 
+import org.apache.flink.util.ExceptionUtils;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -35,6 +37,15 @@ public final class InMemoryStagingStorage implements StagingStorage {
     private final Map<String, byte[]> objects = new LinkedHashMap<>();
     private final List<String> deleted = new ArrayList<>();
 
+    /**
+     * When set, every object's stream throws it on close — reaching the writer as a failure to
+     * finalize or abort a staged file. Typed {@code Throwable} so a test can script an {@code
+     * Error}, which is thrown as itself; a checked exception arrives wrapped in a {@code
+     * RuntimeException}, which {@code StagedFileWriter.abort()} swallows exactly as it would the
+     * original.
+     */
+    Throwable closeFailure;
+
     @Override
     public OutputStream createObject(String gcsUri) {
         return new ByteArrayOutputStream() {
@@ -42,6 +53,9 @@ public final class InMemoryStagingStorage implements StagingStorage {
             public void close() throws IOException {
                 super.close();
                 objects.put(gcsUri, toByteArray());
+                if (closeFailure != null) {
+                    ExceptionUtils.rethrow(closeFailure);
+                }
             }
         };
     }

@@ -21,13 +21,13 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
-import org.apache.flink.util.IOUtils;
 
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
@@ -251,8 +251,8 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
 
     @Override
     public void close() throws Exception {
-        // closeAll, not sequential closes: the handler must be closed on the failure path too,
-        // even when aborting a staged file throws.
+        // Closers.closeAll, not sequential closes: the handler must be closed on the failure path
+        // too, even when aborting a staged file throws.
         List<AutoCloseable> closeables = new ArrayList<>();
         for (DestinationState state : destinations.values()) {
             if (state.file != null) {
@@ -266,7 +266,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
         // aborted. Cleared after the loop above has taken every open file.
         destinations.clear();
         closeables.add(config.getFailedRowHandler()::close);
-        IOUtils.closeAll(closeables);
+        Closers.closeAll(closeables);
     }
 
     /** Finalizes the destination's open file, collecting its committable and counting its bytes. */

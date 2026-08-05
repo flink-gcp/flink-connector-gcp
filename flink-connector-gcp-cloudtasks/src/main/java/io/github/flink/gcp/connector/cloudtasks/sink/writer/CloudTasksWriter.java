@@ -23,7 +23,6 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.util.ExceptionUtils;
-import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.function.ThrowingRunnable;
 
 import com.google.api.core.ApiFuture;
@@ -34,6 +33,7 @@ import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
 import com.google.cloud.tasks.v2.TaskName;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
@@ -308,9 +308,9 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         // it — they are not covered by a completed checkpoint, so the restart replays their
         // records.
         try {
-            // Through closeAll, so the handler is closed even when the creator's shutdown throws:
-            // the lifecycle contract promises close on the failure path too.
-            IOUtils.closeAll(creator, failedTaskHandler::close);
+            // Through Closers.closeAll, so the handler is closed even when the creator's shutdown
+            // throws: the lifecycle contract promises close on the failure path too.
+            Closers.closeAll(creator, failedTaskHandler::close);
         } finally {
             parked.clear();
         }

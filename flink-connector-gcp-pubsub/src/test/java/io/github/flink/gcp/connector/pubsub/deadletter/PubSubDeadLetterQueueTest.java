@@ -28,6 +28,8 @@ import javax.annotation.Nullable;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 import static io.github.flink.gcp.connector.pubsub.deadletter.PubSubDeadLetterQueue.MAX_ATTRIBUTE_VALUE_BYTES;
 import static io.github.flink.gcp.connector.pubsub.deadletter.PubSubDeadLetterQueue.TRUNCATION_MARKER;
@@ -259,6 +261,34 @@ class PubSubDeadLetterQueueTest {
     void closingBeforeOpeningIsANoOp() {
         assertThatCode(() -> PubSubDeadLetterQueue.builder().topic(TOPIC).build().close())
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void closeShutsDownTheChannelEvenWhenThePublisherShutdownThrowsAnError() {
+        // #276: Flink's IOUtils.closeAll rethrows an Error from inside its loop, so an emulator
+        // channel was left running with its gRPC transport open. That the Error reaches the caller
+        // as an Error is the other half: Flink halts the JVM on a fatal one, and only if it
+        // arrives unwrapped.
+        //
+        // The two steps are substituted rather than driven through a real publisher: Publisher is
+        // final, so this is the only seam, and opening one here would leave a gax executor behind
+        // in the test JVM.
+        List<String> ran = new ArrayList<>();
+        PubSubDeadLetterQueue queue = PubSubDeadLetterQueue.builder().topic(TOPIC).build();
+        queue.publisherShutdown =
+                () -> {
+                    throw new NoClassDefFoundError("publisher shutdown blew up");
+                };
+        queue.channelShutdown = () -> ran.add("channel");
+
+        assertThatThrownBy(queue::close)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("publisher shutdown blew up");
+        assertThat(ran).containsExactly("channel");
+        // The steps are cleared whatever happened, so a second close is the no-op an unopened
+        // queue's is: it neither reruns a step nor throws the same Error again.
+        assertThatCode(queue::close).doesNotThrowAnyException();
+        assertThat(ran).containsExactly("channel");
     }
 
     private static String repeat(char c, int count) {

@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.pubsub.deadletter;
 
 import org.apache.flink.annotation.Experimental;
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
@@ -32,6 +31,7 @@ import io.github.flink.gcp.connector.base.failure.DeadLetterQueue;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
@@ -147,6 +147,17 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     /** The emulator channel this instance owns and shuts down; null on the ADC transport. */
     @Nullable private transient ManagedChannel ownedChannel;
 
+    /**
+     * The two steps {@link #close()} runs, held as fields rather than called directly so a test can
+     * drive its failure path: {@link Publisher} is final, so there is no other seam. Set together
+     * with {@link #publisher} by {@link #open(FailureHandlerContext)} and cleared with it, which is
+     * why the first of them stands in for it as the not-open guard.
+     */
+    @Nullable @VisibleForTesting transient AutoCloseable publisherShutdown;
+
+    /** The second of the two; see {@link #publisherShutdown}. */
+    @Nullable @VisibleForTesting transient AutoCloseable channelShutdown;
+
     /** Publishes not yet awaited; task-thread only, like every other field here. */
     private transient List<ApiFuture<String>> outstanding;
 
@@ -187,6 +198,8 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                         .setCredentialsProvider(NoCredentialsProvider.create());
             }
             publisher = builder.build();
+            publisherShutdown = this::shutdownPublisher;
+            channelShutdown = this::shutdownChannel;
         } catch (IOException | RuntimeException e) {
             // The channel is owned here until the publisher takes it over on success.
             if (ownedChannel != null) {
@@ -232,15 +245,19 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
 
     @Override
     public void close() throws Exception {
-        if (publisher == null) {
+        if (publisherShutdown == null) {
             return;
         }
         try {
-            IOUtils.closeAll(this::shutdownPublisher, this::shutdownChannel);
+            // Through Closers.closeAll, so the channel is shut down even when the publisher's
+            // shutdown throws: an emulator channel left running holds a gRPC transport open.
+            Closers.closeAll(publisherShutdown, channelShutdown);
         } finally {
             publisher = null;
             ownedChannel = null;
             outstanding = null;
+            publisherShutdown = null;
+            channelShutdown = null;
         }
     }
 

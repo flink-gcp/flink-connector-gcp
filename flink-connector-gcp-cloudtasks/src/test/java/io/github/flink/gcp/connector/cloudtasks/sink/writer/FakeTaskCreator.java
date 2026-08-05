@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
+import org.apache.flink.util.ExceptionUtils;
+
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
@@ -41,7 +43,9 @@ final class FakeTaskCreator implements TaskCreator {
 
     int closeCalls;
     RuntimeException createFailure;
-    RuntimeException closeFailure;
+
+    /** Typed {@code Throwable} so a test can script an {@code Error}, which is thrown as itself. */
+    Throwable closeFailure;
 
     /** Scripts the next call to fail with the given status code. */
     void enqueueFailure(StatusCode.Code code) {
@@ -81,7 +85,7 @@ final class FakeTaskCreator implements TaskCreator {
     public void close() {
         closeCalls++;
         if (closeFailure != null) {
-            throw closeFailure;
+            ExceptionUtils.rethrow(closeFailure);
         }
     }
 

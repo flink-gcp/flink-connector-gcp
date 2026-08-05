@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
+import org.apache.flink.util.ExceptionUtils;
+
 import com.google.pubsub.v1.PubsubMessage;
 
 import javax.annotation.Nullable;
@@ -36,7 +38,8 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
     @Nullable private IOException failure;
     private boolean closed;
     private boolean shutdownRequested;
-    private boolean closeThrows;
+    @Nullable private Throwable closeFailure;
+    @Nullable private RuntimeException shutdownFailure;
 
     /** Set by {@link #recordCallsInto}; shared across the subscribers of one test. */
     @Nullable private List<String> calls;
@@ -66,7 +69,20 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     void failOnClose() {
-        this.closeThrows = true;
+        failOnClose(new IOException("close failed"));
+    }
+
+    /** Makes {@link #close()} throw the given failure — an {@code Error} is thrown as itself. */
+    void failOnClose(Throwable closeFailure) {
+        this.closeFailure = closeFailure;
+    }
+
+    /**
+     * Makes {@link #shutdown()} throw. Unchecked only, because the SPI method declares nothing —
+     * which is the whole reason #297 was a defect rather than a compile error.
+     */
+    void failOnShutdown(RuntimeException shutdownFailure) {
+        this.shutdownFailure = shutdownFailure;
     }
 
     boolean isClosed() {
@@ -103,6 +119,12 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
         }
         shutdownRequested = true;
         record("shutdown");
+        if (shutdownFailure != null) {
+            // After the record, mirroring the production subscriber: it flips its own closed flag
+            // and nacks before anything that could fail, so a failure here is a shutdown that
+            // happened and then threw, not one that never started.
+            throw shutdownFailure;
+        }
     }
 
     @Override
@@ -110,8 +132,10 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
         shutdown();
         closed = true;
         record("close");
-        if (closeThrows) {
-            throw new IOException("close failed");
+        if (closeFailure != null) {
+            // rethrowException, not rethrow: close() may throw a checked exception, and the
+            // default failure is an IOException the existing test asserts on by type.
+            ExceptionUtils.rethrowException(closeFailure);
         }
     }
 

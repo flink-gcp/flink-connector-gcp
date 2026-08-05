@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.pubsub.sink.writer;
 
+import org.apache.flink.util.ExceptionUtils;
+
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
 import com.google.pubsub.v1.PubsubMessage;
@@ -61,7 +63,11 @@ final class FakePublisherFactory implements PublisherFactory {
         int flushCalls;
         int closeCalls;
         RuntimeException publishFailure;
-        RuntimeException closeFailure;
+
+        /**
+         * Typed {@code Throwable} so a test can script an {@code Error}, which is thrown as itself.
+         */
+        Throwable closeFailure;
 
         private FakeTopicPublisher(FakePublisherFactory factory) {
             this.factory = factory;
@@ -93,7 +99,7 @@ final class FakePublisherFactory implements PublisherFactory {
         public void close() {
             closeCalls++;
             if (closeFailure != null) {
-                throw closeFailure;
+                ExceptionUtils.rethrow(closeFailure);
             }
         }
     }

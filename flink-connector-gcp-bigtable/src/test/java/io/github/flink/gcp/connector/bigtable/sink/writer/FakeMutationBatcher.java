@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.writer;
 
+import org.apache.flink.util.ExceptionUtils;
+
 import com.google.api.core.ApiFuture;
 import com.google.api.core.SettableApiFuture;
 import com.google.api.gax.grpc.GrpcStatusCode;
@@ -42,6 +44,9 @@ final class FakeMutationBatcher implements MutationBatcher {
     int sendOutstandingCalls;
     int closeCalls;
     RuntimeException addFailure;
+
+    /** Typed {@code Throwable} so a test can script an {@code Error}, which is thrown as itself. */
+    Throwable closeFailure;
 
     /** Whether {@link #sendOutstanding()} completes every outstanding mutation successfully. */
     boolean completeOnSend;
@@ -72,6 +77,9 @@ final class FakeMutationBatcher implements MutationBatcher {
     @Override
     public void close() {
         closeCalls++;
+        if (closeFailure != null) {
+            ExceptionUtils.rethrow(closeFailure);
+        }
     }
 
     /** Completes the outstanding mutation at the given index successfully. */

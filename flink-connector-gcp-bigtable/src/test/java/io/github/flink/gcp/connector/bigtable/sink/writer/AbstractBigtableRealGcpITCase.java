@@ -16,8 +16,6 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.writer;
 
-import org.apache.flink.util.IOUtils;
-
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.models.CreateInstanceRequest;
@@ -28,6 +26,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
@@ -141,9 +140,9 @@ abstract class AbstractBigtableRealGcpITCase {
             LOG.warn(
                     "Failed to delete instance {}; a later run's sweep reclaims it", instanceId, e);
         } finally {
-            // closeAll rather than a sequence, for the same reason: one client failing to close
-            // would otherwise leave the others open.
-            IOUtils.closeAll(dataClient, tableAdmin, instanceAdmin);
+            // Closers.closeAll rather than a sequence, for the same reason: one client failing to
+            // close would otherwise leave the others open.
+            Closers.closeAll(dataClient, tableAdmin, instanceAdmin);
         }
     }
 
