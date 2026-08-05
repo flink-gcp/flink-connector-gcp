@@ -168,11 +168,23 @@ class PubSubWriterFailureHandlerTest {
             PubSubSerializationSchema<String> serializer,
             CreateDisposition disposition,
             RetrySchedule recoverySchedule) {
+        return newOrderingWriter(
+                serializer,
+                PubSubPublisherOptions.builder().enableMessageOrdering(true).build(),
+                disposition,
+                recoverySchedule);
+    }
+
+    private PubSubWriter<String> newOrderingWriter(
+            PubSubSerializationSchema<String> serializer,
+            PubSubPublisherOptions options,
+            CreateDisposition disposition,
+            RetrySchedule recoverySchedule) {
         return new PubSubWriter<>(
                 TestSinkConfigs.forResolver(
                         (element, context) -> ORDERED_TOPIC,
                         serializer,
-                        PubSubPublisherOptions.builder().enableMessageOrdering(true).build(),
+                        options,
                         handler,
                         disposition),
                 factory,
@@ -495,21 +507,14 @@ class PubSubWriterFailureHandlerTest {
         // every publish, the eager-resume design published k1:c ahead of the parked k1:b and
         // nothing could see it.
         PubSubWriter<String> writer =
-                new PubSubWriter<>(
-                        TestSinkConfigs.forResolver(
-                                (element, context) -> ORDERED_TOPIC,
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
-                                        .withOrderingKey(element -> element.split(":")[0]),
-                                PubSubPublisherOptions.builder()
-                                        .enableMessageOrdering(true)
-                                        .maxInFlightMessages(2)
-                                        .build(),
-                                handler,
-                                CreateDisposition.CREATE_IF_NEEDED),
-                        factory,
-                        admin,
-                        mailbox,
-                        metrics,
+                newOrderingWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> element.split(":")[0]),
+                        PubSubPublisherOptions.builder()
+                                .enableMessageOrdering(true)
+                                .maxInFlightMessages(2)
+                                .build(),
+                        CreateDisposition.CREATE_IF_NEEDED,
                         FAST_SCHEDULE);
         SettableApiFuture<String> root = SettableApiFuture.create();
         SettableApiFuture<String> queued = SettableApiFuture.create();
