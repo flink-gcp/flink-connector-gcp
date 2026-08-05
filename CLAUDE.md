@@ -96,12 +96,31 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `retry*` setters) and carry defaults the sources do not hold, since an unset knob's default
   belongs to the client library; this check buys back the one property generation would have given
   free. Its own `ci.yaml` job for the same reason as `check-flink-api-tiers`, plus one of its own:
-  its inputs are the main sources *and* `docs/content/`, and `lint.yaml`'s paths filter covers
-  neither. **How to respond to each failure — where a row goes, what its Default column may say,
+  its inputs are the main sources *and* `docs/content/` — `lint.yaml`'s paths carry docs/content
+  only for markdownlint, and would have had to grow to every Java source.
+  **How to respond to each failure — where a row goes, what its Default column may say,
   and which of `[exempt]` (a setter with no row) and `[extra]` (a row with no setter) a case
-  belongs in — is `.claude/skills/curate-option-docs/`**, the third of the checker skills. Note
+  belongs in — is `.claude/skills/curate-option-docs/`**, one of the checker skills. Note
   what the check does *not* do: it compares the set of options, not their values, so a changed
   default has to be edited in the same commit
+- `just check-metric-docs` — the same shape of check for the **metrics tables on the DataStream
+  pages** (#296), which #293 measured the need for: 16 documentation lines swept by hand across
+  five pages, verified only by grep. Both directions, per module in `scripts/metric-docs.toml`:
+  every name in a connector's `*MetricNames` inventory must appear in a table whose **first column
+  header is exactly `Metric`** — the `check-option-docs` opt-in trick — with the Type column
+  leading `counter` or `gauge` as the source registers it, and every name those tables carry must
+  be registered, a `base.metrics` subgroup template the module wires (`errorClass.CODE.errors`,
+  all-caps placeholder middle segment; group and leaf names are read from the sources named under
+  `[[subgroups]]`, never from config), or **marked `(Flink standard)` in the Type cell** — the
+  marker is load-bearing, and guarded: a marked row whose name the module does register fails.
+  Three inventory-integrity rules ride along, plus the mechanical half of the #280 naming rule
+  (no `num`-prefixed name; the event/state morphology half stays with review): every registration
+  goes through a `*MetricNames` constant, every constant is registered, no name has two kinds.
+  Both allowlists (`[exempt]` keyed `Class.name`, `[extra]` keyed as the table writes it) are
+  empty today, and an entry that never fires fails. Its own `ci.yaml` job for exactly
+  `check-option-docs`'s reason. **How to respond to each failure is
+  `.claude/skills/curate-metric-docs/`**. What it does *not* check: Meaning cells and the prose
+  around the tables, so a rename still sweeps those by hand — in the same commit
 - `just check-gated-tags` — the two markers a gated real-GCP ITCase carries have to stay together
   (#245): the `@EnabledIfEnvironmentVariable` the E2E suite is *discovered* by, and the
   `@Tag("gated")` that keeps the class out of every ordinary build. `scripts/e2e-gated-its.sh
@@ -506,7 +525,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   check is a step *inside* the `build` job gated on `check_notice`, which is false when no
   shaded module is built, so routing them there would skip the licence check on exactly the
   change that edits the licence pins. That the other checkers' scripts *are* in the class is the
-  same fact from the other side — `api_tiers` and `option_docs` are unconditional jobs, so
+  same fact from the other side — `api_tiers`, `option_docs` and `metric_docs` are unconditional jobs, so
   nothing about them depends on what the deriver picks. The `justfile` stays full-reactor too:
   it carries the Maven invocations themselves.
   Pushes to main and `workflow_dispatch` always build the full reactor. The

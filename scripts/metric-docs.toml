@@ -1,0 +1,90 @@
+# Copyright 2026 laughingman7743
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Which page must document each connector's metrics (scripts/check-metric-docs.py).
+#
+# Four tables, the same split option-docs.toml has. The first says *where* a
+# module's metrics are documented; the second names the sources whose templated
+# leaves a using connector's page owes; the last two are the exceptions,
+# pointing in OPPOSITE directions — which is the thing to get right when
+# adding one:
+#
+#   [[connectors]]  module -> page      what must be documented
+#   [[subgroups]]   a base.metrics source registering templated subgroup leaves
+#   [exempt]        source side         a registered name with no row
+#   [extra]         page side           a row that exists with no registration
+#
+# So: the check failed naming a `Class.name`? That is coverage, and [exempt] is
+# the escape. It failed naming a page and a line? That is staleness, and
+# [extra] is — but a corrected row, or the `(Flink standard)` Type marker for a
+# name Flink itself provides, is usually the real answer. Both are
+# `key = "reason"`, and the reason says why this is *not* a row.
+#
+# `.claude/skills/curate-metric-docs/` is the procedure for every failure this
+# file can produce, including which of the two an entry belongs in.
+#
+# Modules are mapped, not individual classes, on purpose: a module's whole
+# `*MetricNames` inventory is then required to appear on that page from the
+# moment a name joins it. A module that registers metrics and has no entry
+# here fails too, which is what catches the next connector (Spanner, #36) the
+# moment it registers its first metric.
+
+# Connector metrics: every name the module's *MetricNames inventory declares
+# must be named in a table whose first column header is exactly `Metric` on
+# the mapped page, with the Type column leading `counter` or `gauge` as the
+# source registers it. The metrics tables live on the DataStream design-record
+# pages, not in docs/reference/ — a metric's meaning is design, not
+# configuration.
+[[connectors]]
+module = "flink-connector-gcp-bigquery"
+page = "docs/content/docs/connectors/datastream/bigquery.md"
+
+[[connectors]]
+module = "flink-connector-gcp-pubsub"
+page = "docs/content/docs/connectors/datastream/pubsub.md"
+
+[[connectors]]
+module = "flink-connector-gcp-cloudtasks"
+page = "docs/content/docs/connectors/datastream/cloudtasks.md"
+
+[[connectors]]
+module = "flink-connector-gcp-bigtable"
+page = "docs/content/docs/connectors/datastream/bigtable.md"
+
+# The base module's subgroup registrars: each opens one addGroup segment and
+# registers fixed leaves under it on a connector's behalf, so the pages write
+# those rows with a placeholder middle segment (`errorClass.CODE.errors`,
+# `destination.TABLE.recordsSend`). The group and leaf names are read from
+# these sources, never repeated here — a second copy would go stale silently.
+# A connector page owes the templated rows exactly when the module's sources
+# use the class.
+[[subgroups]]
+source = "flink-connector-gcp-base/src/main/java/io/github/flink/gcp/connector/base/metrics/ErrorClassCounters.java"
+
+[[subgroups]]
+source = "flink-connector-gcp-base/src/main/java/io/github/flink/gcp/connector/base/metrics/DestinationMetrics.java"
+
+# SOURCE SIDE. Registered names that deliberately have no row, keyed
+# `Class.name` — the inventory class (or [[subgroups]] class) and the name
+# literal as it registers. The bar is that a reader looking the name up would
+# find nothing new. Empty today: every name the connectors register is in a
+# table, which is what issue #296 was filed to keep true.
+[exempt]
+
+# PAGE SIDE. Table entries that exist and nothing registers, keyed by the name
+# exactly as the table writes it. The last resort: a row nothing registers is
+# usually a rename that needs correcting or a leftover that needs deleting,
+# and a name Flink itself provides is marked `(Flink standard)` in its Type
+# cell instead of listed here.
+[extra]

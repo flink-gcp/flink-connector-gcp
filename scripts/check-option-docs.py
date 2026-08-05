@@ -89,11 +89,12 @@ CONFIG_OPTION_KEY = re.compile(r'ConfigOptions\.key\(\s*"([^"]+)"\s*\)')
 #
 # String literals are deliberately left intact, unlike in check-flink-api-tiers.py:
 # a ConfigOption's key *is* a string literal, so blanking them would leave the
-# Table API surface looking empty. Nothing is lost — the two patterns below
-# anchor on a declaration and on a method call respectively, neither of which
-# occurs inside a Java string in these sources.
-COMMENT = re.compile(
-    r"//[^\n]*"  # line comment
+# Table API surface looking empty. They are matched first and kept, so a `//`
+# inside one (`"http://…"`) cannot be read as a comment opener and blank the
+# rest of its line — the same mechanism check-metric-docs.py uses.
+COMMENT_OR_STRING = re.compile(
+    r'"(?:\\.|[^"\\\n])*"'  # string literal, kept intact
+    r"|//[^\n]*"  # line comment
     r"|/\*.*?\*/",  # block comment, incl. javadoc
     re.DOTALL,
 )
@@ -116,7 +117,14 @@ def infra(message: str) -> "sys.NoReturn":
 
 def blank_comments(source: str) -> str:
     """Blank every comment, preserving newlines and columns so anchors still hold."""
-    return COMMENT.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), source)
+    return COMMENT_OR_STRING.sub(
+        lambda m: (
+            m.group(0)
+            if m.group(0).startswith('"')
+            else re.sub(r"[^\n]", " ", m.group(0))
+        ),
+        source,
+    )
 
 
 def read(path: Path) -> str:
@@ -133,8 +141,14 @@ def option_table_entries(page: Path) -> dict[str, int]:
     """
     entries: dict[str, int] = {}
     in_table = False
+    fenced = False
     for number, line in enumerate(read(page).splitlines(), start=1):
-        if not line.startswith("|"):
+        if line.lstrip().startswith(("```", "~~~")):
+            # An example table in a snippet earns no coverage credit.
+            fenced = not fenced
+            in_table = False
+            continue
+        if fenced or not line.startswith("|"):
             in_table = False
             continue
         cells = line.split("|")
@@ -179,10 +193,27 @@ def builder_setters(module: str, claimed: set[str]) -> dict[str, set[str]]:
     return found
 
 
-def main() -> int:
+def load_config() -> dict:
+    """The parsed config, its required keys checked so a typo is exit 2."""
     if not CONFIG.is_file():
         infra(f"{CONFIG} is missing.")
-    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    try:
+        config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        infra(f"{CONFIG.name} is not valid TOML: {error}")
+    if not config.get("builders"):
+        infra(f"{CONFIG.name} names no [[builders]] mapping.")
+    for entry in config["builders"]:
+        if "module" not in entry or "page" not in entry:
+            infra(f"a [[builders]] entry in {CONFIG.name} lacks module or page.")
+    for entry in config.get("config_options", []):
+        if "source" not in entry or "page" not in entry:
+            infra(f"a [[config_options]] entry in {CONFIG.name} lacks source or page.")
+    return config
+
+
+def main() -> int:
+    config = load_config()
     exempt = config.get("exempt", {})
     extra = config.get("extra", {})
     problems: list[str] = []
