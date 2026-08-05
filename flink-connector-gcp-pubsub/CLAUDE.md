@@ -156,7 +156,12 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   drain its parked messages within the recovery budget …`, chosen by whether this repair handed
   messages to the handler), each variant pinned by test. An oversized message under default
   batching never shared a request (the SDK sends an element exceeding the byte threshold alone,
-  measured), so the fan-out concerns under-threshold violations — attribute limits and the like
+  measured), so the fan-out concerns under-threshold violations — attribute limits and the like.
+  The measured behaviour is pinned end-to-end by `PubSubSinkRejectionRealGcpITCase` (#303) — the
+  first sink-side gated class, extending the source-side `AbstractPubSubRealGcpITCase`
+  cross-package, which is the settled answer to where a sink gated class lives — deliberately at
+  the outcome level (survivors published, exactly the invalid message routed, flush green), since
+  the outcome is what the fix guarantees whatever the service's rejection granularity
 - **`PubSubDeadLetterQueue`** (#211, the #37 series): the repository's one shipped
   `DeadLetterQueue`, in a **top-level `pubsub.deadletter` package** rather than under `sink` —
   it is not sink API, it is driven by *any* connector's `FailureHandler`, so putting it under the

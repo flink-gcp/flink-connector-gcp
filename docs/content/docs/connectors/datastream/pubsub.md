@@ -1038,9 +1038,13 @@ guarantee anywhere — see below), dead-letter forwarding under the `NACK` polic
 performed by the Pub/Sub service agent, whose project-level grants the repository's opentofu
 provisions), seek-to-timestamp on an ordering-enabled subscription, the create-option knobs
 (retention, expiration, filter) persisting on the service, prompt redelivery after a nack-on-close
-(an observed-behaviour bound, deliberately not a contract), and the subscription admin's
+(an observed-behaviour bound, deliberately not a contract), the subscription admin's
 permission-denied messages, exercised by impersonating a deliberately unauthorized service account
-(`e2e-no-pubsub`, provisioned with no Pub/Sub role). Topics and subscriptions are created under
+(`e2e-no-pubsub`, provisioned with no Pub/Sub role), and — on the sink side — the batch-rejection
+outcome the confirmed-solo routing above rests on
+([#303]({{< param BookRepo >}}/issues/303)): a valid message co-batched with an invalid one is
+published rather than dropped, exactly the invalid one reaches a dropping handler, and the flush
+completes. Topics and subscriptions are created under
 per-run UUID-suffixed names and deleted afterwards. For local runs, put `PUBSUB_IT_PROJECT` in the
 uncommitted `.env` at the repository root (in a git worktree, run `just worktree-env` once to make it
 reachable there) — and note the IAM tests impersonate `e2e-no-pubsub`,
