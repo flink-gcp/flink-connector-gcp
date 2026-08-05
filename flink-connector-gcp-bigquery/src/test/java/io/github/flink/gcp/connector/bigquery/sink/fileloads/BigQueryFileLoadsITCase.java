@@ -339,10 +339,9 @@ class BigQueryFileLoadsITCase {
                                 "SELECT ST_ASTEXT(boundary) FROM "
                                         + tableAPath
                                         + " WHERE name = 'alpha'"))
-                // OrDefault(null) rather than getStringValue(): a NULL cell means the load stored
-                // no
-                // geometry, and that has to fail this assertion rather than throw inside it — which
-                // is what the retired queryStrings did.
+                // OrDefault(null), not getStringValue(): a NULL cell means no geometry
+                // was stored, and that must fail this assertion rather than throw
+                // inside it, as the retired queryStrings did.
                 .extracting(row -> row.get(0).getStringValueOrDefault(null))
                 .containsExactly("POINT(1 2)");
         assertThat(
