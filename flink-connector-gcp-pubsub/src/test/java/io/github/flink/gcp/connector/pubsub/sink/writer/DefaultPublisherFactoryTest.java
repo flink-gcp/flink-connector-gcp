@@ -24,6 +24,7 @@ import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
@@ -240,6 +241,35 @@ class DefaultPublisherFactoryTest {
                 .close();
 
         assertThat(channel.isShutdown()).isTrue();
+    }
+
+    /**
+     * The teardown the factory builds is handed <b>the connector's own</b> counter — the one {@code
+     * publisherShutdownsAbandoned} reports — and not some other adder. Nothing else pins that: a
+     * mutant passing a throwaway counter here passed every other test in the module.
+     *
+     * <p>Asserted by identity rather than by driving a give-up and watching the number move. The
+     * behavioural version needed a one-nanosecond budget so the close would skip its join, and then
+     * relied on the just-started thread still being alive when {@code close()} looked — a footrace
+     * the calling thread wins by a wide margin but not by construction, since a real publisher's
+     * shutdown takes ~100 µs against a ~100 ns window. That is a test that fails once in a very
+     * long while for reasons having nothing to do with the code, which is worse than no test.
+     */
+    @Test
+    void theTeardownIsHandedTheConnectorsResidueCounter() throws Exception {
+        DefaultPublisherFactory factory =
+                new DefaultPublisherFactory(
+                        PubSubPublisherOptions.defaults(), EmulatorEndpoint.parse("localhost:1"));
+
+        TopicPublisher publisher = factory.create(TOPIC);
+        try {
+            assertThat(
+                            ((DefaultPublisherFactory.PublisherAdapter) publisher)
+                                    .teardown.abandonedCounter())
+                    .isSameAs(PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
+        } finally {
+            publisher.close();
+        }
     }
 
     /** Connects lazily, so no test here needs anything listening. */

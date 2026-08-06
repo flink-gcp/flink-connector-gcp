@@ -22,7 +22,9 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
@@ -39,7 +41,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -151,6 +156,40 @@ class PubSubWriterMetricsTest {
         assertThat(counter("numBytesSend")).isEqualTo(sizeOf("topic-a"));
         assertThat(counter("topicsCreated")).isEqualTo(1);
         assertThat(errors("NOT_FOUND")).isEqualTo(1);
+    }
+
+    /**
+     * The one metric here that does not read this writer's state: it reports the process-wide count
+     * of publisher closes that overran their budget, so it is registered in the constructor and
+     * reads whatever earlier attempts left behind (#311). Asserted as a delta, since the count is
+     * process-wide by design, so the test resets it first and then asserts absolutely.
+     */
+    @Test
+    void theAbandonedShutdownCounterReportsTheProcessWideResidue() throws Exception {
+        PubSubShutdownResidue.resetForTests();
+        newWriter();
+
+        assertThat(counter("publisherShutdownsAbandoned")).isZero();
+
+        CountDownLatch blocked = new CountDownLatch(1);
+        BoundedShutdown abandons =
+                new BoundedShutdown(
+                        () -> awaitUninterruptibly(blocked),
+                        (t, unit) -> true,
+                        "topic projects/p/topics/t",
+                        null,
+                        Duration.ofMillis(50),
+                        PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
+        try {
+            abandons.close();
+
+            // Read back through the registered metric a reporter would call, not through the count
+            // directly: what is pinned is that it is wired to the live figure rather than to one
+            // snapshotted when the writer was built.
+            assertThat(counter("publisherShutdownsAbandoned")).isEqualTo(1);
+        } finally {
+            blocked.countDown();
+        }
     }
 
     @Test
@@ -498,5 +537,13 @@ class PubSubWriterMetricsTest {
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(status(Status.INVALID_ARGUMENT)));
         assertThatThrownBy(() -> writer.write("topic-a", CONTEXT)).isInstanceOf(IOException.class);
         assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+    }
+
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+        try {
+            latch.await(1, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

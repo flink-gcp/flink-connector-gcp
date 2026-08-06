@@ -218,7 +218,40 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   carries on, so without the restore the rest of the writer's teardown stops honouring the
   cancellation. And a failure captured *after* `close()` gave up is logged rather than dropped —
   nothing would otherwise read the field, and a thread outliving its job meets a closed user
-  classloader. What this deliberately does **not** do is bound the accumulation (#311).
+  classloader. **#311 then made that residue visible** — `publisherShutdownsAbandoned`, a **counter**
+  reading `PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED`. Four things about it not to
+  re-derive. The **storage**
+  is `PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED`, a `LongAdder` at the **module root** that
+  this connector owns and passes into every `BoundedShutdown` it builds — the base class holds no
+  count, so a future adopter (the Pub/Sub *source*'s subscriber teardown is the nearest) gets its own
+  field here rather than a second meaning for this one. It has to outlive the task: measured, with a
+  MiniCluster probe whose reporter ran at 10 ms (default 10 s) and never once saw a close-time
+  counter above zero over four runs, while a counter incremented during the run read its full value;
+  the writer's metric group is unregistered as its task is cleaned up, in the same instant its
+  `close()` runs. **On a session cluster or in application mode the scope is the class loader**: a
+  job's own jar isolates it per job, the SQL uber-jar in `lib/` shares one count across every job on
+  the TaskManager. Nothing is corrupted either way — it becomes a TaskManager property rather than a
+  job's, which is the honest scope for threads that are in the JVM whoever left them, and the docs
+  say so, including that a `PubSub → BigQuery` job dead-lettering to Pub/Sub contributes to a count
+  it does not itself display. The
+  **instrument does not follow from that**, which the first draft got wrong by registering a gauge: a
+  cumulative count of events is a counter by the base module's naming rule, and a caller-supplied
+  `Counter` reading the connector's adder registers the same number, so the name is
+  `publisherShutdownsAbandoned`
+  and not `abandonedPublisherShutdowns`. It is registered in the `PubSubSinkWriterMetrics`
+  **constructor**, not in `bindWriterState`, since it reads no writer state. And **what it counts is
+  closes that overran their budget, not stranded threads**: after give-up the background thread exits
+  as soon as the client's shutdown returns, so an overrun of one second leaves nothing behind and
+  still increments — the docs say so, having first claimed the opposite. Every subtask in a JVM reads
+  the same number; the docs carry the de-duplicate-then-sum rule and the deployment-dependent scope
+  (`lib/` puts it in the system classloader, where it is TaskManager-wide across jobs).
+  What #311 also asked for and did **not** get, with reasons: **setting the stranded thread's
+  context classloader** does not work — the thread's stack holds the `BoundedShutdown` instance,
+  hence its class, hence the user classloader, so the retention survives whatever the TCCL is; the
+  narrower benefit (avoiding `IllegalStateException: Trying to access closed classloader` from a
+  reflective lookup on that thread) cuts both ways, since a `ServiceLoader` lookup for a provider in
+  the job jar would then find nothing. And **a cap** on stranded threads was declined: it converts
+  an outage into a job failure, which the gauge makes unnecessary.
   `shutdownTimeout` became a `PubSubPublisherOptions` knob (30 s, matching what was hardcoded) for
   symmetry with `PubSubSubscriberOptions.shutdownTimeout`.
   **#312 then made `PubSubDeadLetterQueue` use the same teardown**, which #265 had deliberately left

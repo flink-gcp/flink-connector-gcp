@@ -29,6 +29,7 @@ import com.google.cloud.pubsub.v1.Publisher;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
@@ -214,7 +215,8 @@ public final class DefaultPublisherFactory implements PublisherFactory {
                             publisher::awaitTermination,
                             "topic " + destination,
                             ownedChannel == null ? null : ownedChannel::shutdownNow,
-                            shutdownTimeout);
+                            shutdownTimeout,
+                            PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
         }
 
         @Override

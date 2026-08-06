@@ -25,6 +25,7 @@ import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
 import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 
 import javax.annotation.Nullable;
@@ -41,6 +42,11 @@ import javax.annotation.Nullable;
  * after its topic was auto-created is counted once, at the {@code write} that admitted it — see
  * {@code PubSubWriter}, where the increment sits before the publish call the repair re-enters.
  * {@code numBytesSend} follows it, and is therefore payload volume rather than wire volume.
+ *
+ * <p><b>{@code publisherShutdownsAbandoned} is the exception to all of that</b>: its value is a
+ * process-wide count, not this writer's own, so every subtask in a JVM reports the same number. It
+ * has to be, because the quantity is what accumulates <em>across</em> restart attempts — see {@code
+ * PubSubShutdownResidue}.
  *
  * <p>{@code currentSendTime} is deliberately left unset: the SDK batches publishes and completes
  * their futures asynchronously, so any number this writer could produce would measure its own
@@ -75,6 +81,20 @@ public final class PubSubSinkWriterMetrics {
         this.topicsCreated = metricGroup.counter(PubSubMetricNames.TOPICS_CREATED);
         this.errorClasses = new ErrorClassCounters(metricGroup);
         this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics);
+        // Here rather than in bindWriterState, because it reads no writer state — and it is the
+        // one metric here that does not describe *this* writer. A teardown this writer's close
+        // abandons is never reported by this writer: the metric group is closed as the task is
+        // cleaned up, within the same instant. Measured, not assumed — a probe with a reporter at
+        // 10 ms (Flink's default is 10 s) scraped ~90 times per run and never once saw a counter
+        // the writer only incremented in close() above zero, across four runs, while a counter
+        // incremented during the run was seen at its full value. So whichever attempt runs next is
+        // what reports what the previous ones left behind, which is what #311 is about.
+        //
+        // A Counter rather than a Gauge, because the quantity is a cumulative count of events and
+        // that is what the naming convention calls a counter. Registering a caller-supplied
+        // Counter is what lets the instrument be right while the storage stays process-wide.
+        metricGroup.counter(
+                PubSubMetricNames.PUBLISHER_SHUTDOWNS_ABANDONED, new AbandonedShutdownsCounter());
     }
 
     /**
@@ -93,6 +113,44 @@ public final class PubSubSinkWriterMetrics {
         metricGroup.gauge(PubSubMetricNames.IN_FLIGHT_MESSAGES, inFlightMessages);
         metricGroup.gauge(PubSubMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
         metricGroup.gauge(PubSubMetricNames.PARKED_MESSAGES, parkedMessages);
+    }
+
+    /**
+     * A read-only {@link Counter} view of {@link PubSubShutdownResidue}, so the residue registers
+     * as the counter it is rather than as a gauge over a monotonic total.
+     *
+     * <p>The mutators throw. Nothing calls them: a metric group only registers the instance and
+     * reporters only read {@link #getCount()} — incrementing is done by the teardowns, through the
+     * adder {@link PubSubShutdownResidue} hands them. A silent no-op would hide a caller that
+     * believed it was counting something.
+     */
+    private static final class AbandonedShutdownsCounter implements Counter {
+
+        @Override
+        public void inc() {
+            throw new UnsupportedOperationException(
+                    "publisherShutdownsAbandoned is maintained by the teardowns, not here.");
+        }
+
+        @Override
+        public void inc(long n) {
+            inc();
+        }
+
+        @Override
+        public void dec() {
+            inc();
+        }
+
+        @Override
+        public void dec(long n) {
+            inc();
+        }
+
+        @Override
+        public long getCount() {
+            return PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED.sum();
+        }
     }
 
     /**

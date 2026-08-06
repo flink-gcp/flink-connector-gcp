@@ -1,0 +1,71 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.pubsub;
+
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
+
+import java.util.concurrent.atomic.LongAdder;
+
+/**
+ * What this connector's bounded teardowns leave behind, counted for the lifetime of the class
+ * loader rather than of a task.
+ *
+ * <p><b>Why it outlives the task.</b> A publisher whose shutdown overruns its budget is left to a
+ * background thread, and the interesting quantity is how often that happens <em>across</em> restart
+ * attempts. A per-attempt counter cannot report it: measured with a MiniCluster probe whose
+ * reporter ran at 10 ms — Flink's default is 10 s — a metric the sink writer incremented only in
+ * {@code close()} was never once seen above zero across four runs, because the writer's metric
+ * group is unregistered as its task is cleaned up, in the same instant. Only the next attempt's
+ * writer can report what the previous ones left, so the count has to survive between them.
+ *
+ * <p><b>Why it lives here and not in {@code BoundedShutdown}.</b> That class is shared main code
+ * and client-agnostic; a count held there would be one number for every client it ever serves, and
+ * a metric named for one of them would silently include the rest. The nearest such client is not
+ * another connector but this connector's own <em>source</em>, whose subscriber teardown has the
+ * same shape. Each owner holding its own keeps the names true by construction — a subscriber
+ * counter would be a second field here, not a second meaning for this one.
+ *
+ * <p><b>Read the value with the deployment in mind.</b> It is scoped to whichever class loader
+ * loaded this class: a job's own jar gets Flink's per-job loader, so the count is that job's; the
+ * SQL uber-jar is documented to go in {@code lib/}, where the system loader owns it and the count
+ * is TaskManager-wide across every job and never resets. A resubmitted job gets a fresh loader and
+ * a zero while any stranded threads remain, so zero does not mean clean.
+ */
+@Internal
+public final class PubSubShutdownResidue {
+
+    /**
+     * Publisher closes that overran their shutdown budget, reported as {@code
+     * PubSubMetricNames#PUBLISHER_SHUTDOWNS_ABANDONED}. Counts closes, not threads still running:
+     * once a close gives up, the background thread exits as soon as the client's own shutdown
+     * returns.
+     */
+    public static final LongAdder PUBLISHER_SHUTDOWNS_ABANDONED = new LongAdder();
+
+    private PubSubShutdownResidue() {}
+
+    /**
+     * Clears every count, so a test can assert an absolute value instead of a delta. Safe because a
+     * fork runs its test classes sequentially and every increment is on the thread calling {@code
+     * close()} — never on the teardown's own thread.
+     */
+    @VisibleForTesting
+    public static void resetForTests() {
+        PUBLISHER_SHUTDOWNS_ABANDONED.reset();
+    }
+}
