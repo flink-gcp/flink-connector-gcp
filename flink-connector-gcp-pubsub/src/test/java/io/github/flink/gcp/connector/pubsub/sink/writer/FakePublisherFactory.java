@@ -65,6 +65,14 @@ final class FakePublisherFactory implements PublisherFactory {
     private final ArrayDeque<ApiFuture<String>> scriptedFutures = new ArrayDeque<>();
     int createCalls;
 
+    /**
+     * Teardown steps in the order they were called, across every publisher this factory handed out,
+     * as {@code shutdown:<topic>} / {@code close:<topic>}. The writer's close has to ask every
+     * publisher to shut down before it waits on any, and that ordering is only observable across
+     * publishers — a per-publisher counter cannot see it.
+     */
+    final List<String> teardownCalls = new ArrayList<>();
+
     /** Scripts the future returned by the next publish on any publisher of this factory. */
     void enqueueFuture(ApiFuture<String> future) {
         scriptedFutures.add(future);
@@ -73,7 +81,7 @@ final class FakePublisherFactory implements PublisherFactory {
     @Override
     public TopicPublisher create(TopicDestination destination) {
         createCalls++;
-        FakeTopicPublisher publisher = new FakeTopicPublisher(this);
+        FakeTopicPublisher publisher = new FakeTopicPublisher(this, destination);
         publishers.put(destination, publisher);
         return publisher;
     }
@@ -82,6 +90,7 @@ final class FakePublisherFactory implements PublisherFactory {
     static final class FakeTopicPublisher implements TopicPublisher {
 
         private final FakePublisherFactory factory;
+        private final TopicDestination destination;
         final List<PubsubMessage> published = new ArrayList<>();
 
         /** Keyed publishes rejected because their key was paused; never in {@link #published}. */
@@ -90,6 +99,7 @@ final class FakePublisherFactory implements PublisherFactory {
         final List<String> resumedKeys = new ArrayList<>();
         private final Set<String> pausedKeys = new LinkedHashSet<>();
         int flushCalls;
+        int shutdownCalls;
         int closeCalls;
         RuntimeException publishFailure;
 
@@ -98,8 +108,12 @@ final class FakePublisherFactory implements PublisherFactory {
          */
         Throwable closeFailure;
 
-        private FakeTopicPublisher(FakePublisherFactory factory) {
+        /** The same, for the shutdown half of the teardown. */
+        Throwable shutdownFailure;
+
+        private FakeTopicPublisher(FakePublisherFactory factory, TopicDestination destination) {
             this.factory = factory;
+            this.destination = destination;
         }
 
         @Override
@@ -150,8 +164,18 @@ final class FakePublisherFactory implements PublisherFactory {
         }
 
         @Override
+        public void shutdown() {
+            shutdownCalls++;
+            factory.teardownCalls.add("shutdown:" + destination);
+            if (shutdownFailure != null) {
+                ExceptionUtils.rethrow(shutdownFailure);
+            }
+        }
+
+        @Override
         public void close() {
             closeCalls++;
+            factory.teardownCalls.add("close:" + destination);
             if (closeFailure != null) {
                 ExceptionUtils.rethrow(closeFailure);
             }

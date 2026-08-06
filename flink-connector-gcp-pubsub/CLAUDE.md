@@ -130,9 +130,72 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   key comes back cancelled without being published, and only `resumePublish` clears it — so the
   racing-publish reordering above is pinned by test
   (`aKeyPausedByADropStaysPausedUntilTheRepairResumesIt`) rather than verified only by reading the
-  SDK source. One finding from the same SDK
-  reading stays filed: messages cancelled in `Publisher.onFailure` are never returned to
-  `messagesWaiter`, so `shutdown()` can hang before our `awaitTermination` applies (#265)
+  SDK source. The one finding from that reading that was not a writer decision — a `shutdown()`
+  that never returns — is answered by the teardown bullet below (#265)
+- **The publisher teardown is two-phase, and its bound is real** (#265). The SDK defect, read from
+  `google-cloud-pubsub` 1.152.0 rather than assumed: `Publisher.publish` increments
+  `messagesWaiter` per accepted message, and the failure callback cancels the messages still
+  accumulating in a failed ordering key's **un-flushed** `MessagesBatch` and removes the batch,
+  while decrementing only by the *in-flight* batch's size — so those increments are never
+  returned, `pendingCount` stays above zero forever, and `Waiter.waitComplete()` (uninterruptible,
+  wakes only on an exact zero) parks `Publisher.shutdown()` for good. Our 30 s bound sat on the
+  *next* line, `awaitTermination`, which was never reached; both `TopicPublisher.close()`'s javadoc
+  and the docs page already promised a bound, so this was a contract violated rather than a feature
+  missing. The window is not exotic — a keyed publish failing with more of that key still batched
+  is what #78 and #215 exist for, and `close()` on the failure path runs without a preceding flush.
+  **The defect is not the only thing that needs the bound, and the second reason is the bigger
+  one**: with `enableMessageOrdering` the SDK replaces the publisher's retry settings with
+  `maxAttempts = Integer.MAX_VALUE` and an effectively infinite total timeout (`Publisher.java`
+  1.152.0, and its own `TODO` says this is per publisher, so unkeyed messages get it too), so during
+  an outage the in-flight publishes retry forever and `waitComplete()` never drains — no defect
+  required. An ordered sink therefore needs this bound whatever the SDK version, which is why
+  nothing here is written as a workaround and why #309's rewording is a rewording rather than a
+  removal. That same override silently defeats `retryTotalTimeout`/`retryMaxAttempts` under
+  ordering, which is #310.
+  Six decisions not to re-litigate. **A separate thread is the only lever**: the wait ignores
+  interruption, `Publisher` has no forcible variant, and `Waiter` is package-private — so
+  `DefaultPublisherFactory.BoundedShutdown` runs the SDK shutdown on a **daemon** thread (one that
+  never returns must not keep a JVM alive) and gives up at the deadline. This is the repository's
+  first main-code thread; an `ExecutorService` was the alternative and buys nothing, since
+  `shutdownNow()` cannot interrupt that wait either — its thread would leak identically, and the
+  executor would then need a bounded teardown of its own. **The deadline is recorded by
+  `start()`, not by `close()`**, which is what makes the writer's overlapped teardown cost one
+  timeout however many topics it owns rather than one per topic; `start()` is idempotent and
+  deliberately does not restart the clock. Pinned by
+  `theBudgetRunsFromTheShutdownCallRatherThanFromTheClose`, which is the only test that fails if
+  the deadline moves into `close()`. **`awaitTermination` runs on that thread too, not on the task
+  thread after a successful join** — measured on gax 2.82.0, whose
+  `BackgroundResourceAggregation.awaitTermination` passes the *full* duration to each resource in
+  turn (its own source carries the `TODO subtract time already used up from previous resources`),
+  and a publisher nests several: its executor, then the stub's transport channel and watchdog. The
+  first shape of this fix awaited on the task thread and so cost a *multiple* of the timeout while
+  claiming to cost one; the self-review caught it. **Anything either step throws is captured and
+  rethrown by `close()` with its own type** — on a bare thread it would reach only Flink's JVM-wide
+  handler, losing a teardown failure the pre-#265 inline call reported and, under
+  `cluster.uncaught-exception-handling: FAIL`, exiting the whole TaskManager instead of failing one
+  task. **The two steps are functional values, not a `Publisher`**, because `Publisher` is final:
+  that is the only seam a test can drive, the same argument `PubSubDeadLetterQueue`'s
+  `publisherShutdown` / `channelShutdown` fields make. What remains, and is logged rather than
+  hidden: a publisher whose shutdown never returns leaves that thread and the client's executors
+  until the JVM exits — and the give-up warning deliberately does **not** attribute itself to #265,
+  since the budget is shared and a healthy teardown an earlier publisher left no time for reaches
+  the same branch. **Both warnings report the time actually waited, not the configured budget**, for
+  that same reason: a publisher after one that hung gets none of the budget, and "did not finish
+  within 30 s" having waited nothing reads as "raise the timeout" when the answer is elsewhere.
+  **The thread is named after the task thread as well as the topic** (Flink's `SplitFetcherManager`
+  convention), because a writer is per subtask and without it every subtask writing one topic leaves
+  identically-named threads for an operator to tell apart. **`close()` restores the interrupt flag**
+  before propagating an `InterruptedException`: `join` clears it, `Closers.closeAll` collects and
+  carries on, so without the restore the rest of the writer's teardown stops honouring the
+  cancellation. And a failure captured *after* `close()` gave up is logged rather than dropped —
+  nothing would otherwise read the field, and a thread outliving its job meets a closed user
+  classloader. What this deliberately does **not** do is bound the accumulation (#311) or the
+  dead-letter queue's own inline unbounded shutdown one entry later in the same list (#312).
+  `PubSubDeadLetterQueue` uses the SDK `Publisher` directly too and is deliberately **not**
+  changed — its `envelope(...)` sets no ordering key, so the cancel branch that leaks is
+  unreachable there. `shutdownTimeout` became a `PubSubPublisherOptions` knob (30 s, matching
+  what was hardcoded) for symmetry with `PubSubSubscriberOptions.shutdownTimeout`; the DLQ's own
+  constant stays, having no options object and no exposure
 - **A `MESSAGE_LEVEL` verdict is confirmed solo before it is routed** (#264, closing #269 with
   it). Measured on real Pub/Sub 2026-08-06 (record on #264): a `Publish` carrying one invalid
   message is rejected **all-or-nothing**, the SDK sets the *same* `Throwable` instance on every

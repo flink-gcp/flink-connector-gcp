@@ -363,13 +363,24 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         // duplicates after the restart. Parked messages are dropped with the writer: they are
         // not covered by a completed checkpoint, so the restart replays them.
         try {
-            List<AutoCloseable> closeables = new ArrayList<>(states.size() + 2);
+            // Every publisher is asked to shut down before any is waited on, so the waits overlap
+            // and a close costs one shutdown timeout rather than one per topic — which matters
+            // here because a writer with dynamic destinations owns a publisher per topic, and
+            // seven sequential 30 s waits exceed Flink's task.cancellation.timeout, making a
+            // cancelling task a fatal TaskManager error.
+            //
+            // One list rather than a loop and then a call (#297): closeAll runs every entry before
+            // reporting anything, so a shutdown that throws no longer skips the later shutdowns,
+            // nor the closes, nor the handler — which the lifecycle contract promises on the
+            // failure path too.
+            List<AutoCloseable> closeables = new ArrayList<>(states.size() * 2 + 2);
+            for (DestinationState state : states.values()) {
+                closeables.add(state.publisher::shutdown);
+            }
             for (DestinationState state : states.values()) {
                 closeables.add(state.publisher);
             }
             closeables.add(topicAdmin);
-            // Through Closers.closeAll, so the handler is closed even when a publisher's shutdown
-            // throws: the lifecycle contract promises close on the failure path too.
             closeables.add(failedMessageHandler::close);
             Closers.closeAll(closeables);
         } finally {
