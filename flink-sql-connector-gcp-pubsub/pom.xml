@@ -270,8 +270,11 @@
                                        mean rewriting a standard JSR package, which is a surprise
                                        nobody asked for.
 
-                                     PubSubSqlConnectorPackagingITCase carries the matching
-                                     allow-list, so this list and that one fail together. -->
+                                     AbstractSqlConnectorPackagingITCase carries the matching
+                                     allow-list - the five common ones there, this module's own
+                                     package root in its subclass - so this list and that one fail
+                                     together, in both directions: an exemption with no classes
+                                     under it fails too. -->
                             </relocations>
 
                             <!-- MUST append: the parent's plugin-level filters carry the
@@ -289,7 +292,45 @@
                                         <exclude>META-INF/LICENSE.txt</exclude>
                                         <exclude>META-INF/DEPENDENCIES</exclude>
                                         <exclude>module-info.class</exclude>
-                                        <exclude>META-INF/versions/*/module-info.class</exclude>
+                                        <!-- The whole multi-release tree, not just the
+                                             module-info under it. maven-shade relocates a
+                                             versioned class's *contents* but leaves it at its
+                                             original path, so such a class ships unrelocated
+                                             while its base copy has moved - measured on the
+                                             BigQuery bundle (#290), whose jackson-core brings
+                                             Java 11/17/21/22 variants. This tree has none of
+                                             those today; the exclusion is here so the two SQL
+                                             modules cannot answer the same question two ways,
+                                             and it costs one inert OSGi metadata file. Nothing
+                                             under META-INF/versions runs in either jar in any
+                                             case: an uber-jar's manifest carries no
+                                             `Multi-Release: true`, so the JVM never looks
+                                             there. -->
+                                        <exclude>META-INF/versions/**</exclude>
+                                        <!-- META-INF/LICENSE is deliberately NOT excluded here,
+                                             unlike its .txt sibling above. Shade takes the project
+                                             jar first, so the copy that survives is this project's
+                                             own - measured: byte-identical to the repository root
+                                             LICENSE in both uber-jars, and in every other artifact
+                                             this build produces. Excluding it was tried in #290
+                                             and reverted: it dropped that copy, leaving the two
+                                             jars a user downloads directly as the only ones
+                                             carrying no licence at all, with two NOTICE lines
+                                             pointing at an "accompanying LICENSE file" that was no
+                                             longer there. Apache-2.0 section 4(a) asks for a copy
+                                             of the licence; `theProjectsOwnLicenceIsInTheJar` is
+                                             what holds it. -->
+                                        <!-- Build-tool configuration naming unrelocated classes.
+                                             GraalVM reads META-INF/native-image (35 entries here,
+                                             asserting names this jar does not contain, and one of
+                                             them injects image-global build arguments); R8 and
+                                             ProGuard read META-INF/proguard. Neither runs in a
+                                             Flink deployment, so nothing is lost - what is removed
+                                             is configuration that would be wrong if it ever were
+                                             read. Reinstating them is what native-image support
+                                             would cost, and it would have to relocate them too. -->
+                                        <exclude>META-INF/native-image/**</exclude>
+                                        <exclude>META-INF/proguard/**</exclude>
                                     </excludes>
                                 </filter>
                             </filters>

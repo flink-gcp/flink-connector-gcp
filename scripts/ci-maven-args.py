@@ -101,6 +101,7 @@ Output, one `$GITHUB_OUTPUT`-style line each:
                           reactor order (`.` always included: the subset
                           needs the parent pom, and its rat execution is what
                           covers root-level and docs files).
+  notice_modules=<space-separated>   the shaded modules in the built set, in reactor order
   check_notice=true|false whether the built set contains a shaded module —
                           one whose directory carries a NOTICE.template —
                           which is what decides whether verify.yaml runs
@@ -345,7 +346,12 @@ def main() -> None:
     edges = module_dependencies(modules)
 
     if args.full:
-        emit(run_build=True, maven_args="", check_notice=True, reason="--full")
+        emit(
+            run_build=True,
+            maven_args="",
+            notice_modules=shaded_modules(modules),
+            reason="--full",
+        )
         return
 
     files = changed_files(args)
@@ -361,43 +367,64 @@ def main() -> None:
         emit(
             run_build=True,
             maven_args="",
-            check_notice=True,
+            notice_modules=shaded_modules(modules),
             reason=f"full reactor, forced by e.g. {everything[0]}",
         )
         return
 
     selected = close_over(selected, edges)
     if selected >= set(modules):
-        emit(run_build=True, maven_args="", check_notice=True, reason="all modules")
+        emit(
+            run_build=True,
+            maven_args="",
+            notice_modules=shaded_modules(modules),
+            reason="all modules",
+        )
         return
     if not selected and not root_only:
         emit(
             run_build=False,
             maven_args="",
-            check_notice=False,
+            notice_modules=[],
             reason="nothing here can affect the Maven build",
         )
         return
 
     ordered = [m for m in modules if m in selected]
     maven_args = "-pl " + ",".join(["."] + ordered)
-    check_notice = any((ROOT / m / "NOTICE.template").is_file() for m in ordered)
     reason = (
         "modules " + ", ".join(ordered) if ordered else "root module only (rat check)"
     )
     emit(
         run_build=True,
         maven_args=maven_args,
-        check_notice=check_notice,
+        notice_modules=shaded_modules(ordered),
         reason=reason,
     )
 
 
-def emit(*, run_build: bool, maven_args: str, check_notice: bool, reason: str) -> None:
+def shaded_modules(modules: list[str]) -> list[str]:
+    """The shaded modules among `modules`, in reactor order.
+
+    A module carrying a NOTICE.template is a shaded module: that file is the human half of a
+    generated META-INF/NOTICE and nothing else has one. Derived rather than listed, so a third
+    flink-sql-connector-gcp-* is checked from the commit that adds it — and derived *here* rather
+    than in the workflow, so the set checked is the set built. A workflow-side rule cannot see the
+    selection, and would re-check a module the change never touched.
+    """
+    return [m for m in modules if (ROOT / m / "NOTICE.template").is_file()]
+
+
+def emit(
+    *, run_build: bool, maven_args: str, notice_modules: list[str], reason: str
+) -> None:
     print(f"building: {reason}", file=sys.stderr)
     print(f"run_build={'true' if run_build else 'false'}")
     print(f"maven_args={maven_args}")
-    print(f"check_notice={'true' if check_notice else 'false'}")
+    # Kept beside the list because the workflow gates a setup-python step on it, and a shell
+    # emptiness test on a module list is the kind of thing that goes wrong quietly.
+    print(f"check_notice={'true' if notice_modules else 'false'}")
+    print(f"notice_modules={' '.join(notice_modules)}")
 
 
 if __name__ == "__main__":

@@ -28,6 +28,10 @@ CREATE TABLE orders (
 );
 ```
 
+This jar is for SQL. A DataStream job should depend on `flink-connector-gcp-pubsub` instead: the
+uber-jar relocates the Pub/Sub client, so `PubSubSerializationSchema` inside it returns a relocated
+`PubsubMessage` that an ordinary job cannot consume.
+
 ## Bundled dependencies
 
 The jar redistributes third-party binaries. `META-INF/NOTICE` inside it enumerates every bundled

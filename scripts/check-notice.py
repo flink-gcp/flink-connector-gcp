@@ -36,7 +36,7 @@ Modes:
                                         META-INF/licenses/ (fetches url sources)
 
 Both read target/generated-sources/license/THIRD-PARTY.txt, which the
-`just check-notice` / `just update-notice` recipes regenerate first.
+`just check-notice` / `just update-notice <module>` recipes regenerate first.
 
 A fetched text must hash to the pinned sha256 — an upstream edit is a failure a
 human reviews, never something silently shipped. HTML responses are rejected
@@ -121,7 +121,7 @@ def read_resolved(module: Path) -> dict[str, str]:
     if not report.is_file():
         fail(
             f"{report} is missing. Run `just check-notice {module.name}` (or "
-            f"`just update-notice`), which regenerates it first."
+            f"`just update-notice <module>`), which regenerates it first."
         )
     resolved: dict[str, str] = {}
     declared = None
@@ -327,6 +327,10 @@ def main() -> int:
     expected_notice = render_notice(template, resolved, files)
 
     if args.update:
+        # Both parents are created rather than assumed: on a module that has never
+        # been generated they do not exist yet, and --update crashing with a bare
+        # FileNotFoundError is the first thing the second shaded module met.
+        notice.parent.mkdir(parents=True, exist_ok=True)
         notice.write_text(expected_notice, encoding="utf-8")
         licence_dir.mkdir(parents=True, exist_ok=True)
         for name, entry in relevant.items():
@@ -351,19 +355,19 @@ def main() -> int:
     if actual != expected_notice:
         problems.append(
             "META-INF/NOTICE differs from what NOTICE.template + the resolved "
-            "bundle generate. Run `just update-notice` and commit the result."
+            "bundle generate. Run `just update-notice <module>` and commit the result."
         )
     for name, entry in relevant.items():
         path = licence_dir / name
         if not path.is_file():
             problems.append(
-                f"META-INF/licenses/{name} is missing; run `just update-notice`."
+                f"META-INF/licenses/{name} is missing; run `just update-notice <module>`."
             )
         elif hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
             problems.append(
                 f"META-INF/licenses/{name} does not hash to the pin in "
                 f"{SOURCES.name} — edited by hand, or the pin moved without "
-                f"regenerating. Run `just update-notice`."
+                f"regenerating. Run `just update-notice <module>`."
             )
     if licence_dir.is_dir():
         for stray in licence_dir.iterdir():
@@ -374,7 +378,7 @@ def main() -> int:
             ):
                 problems.append(
                     f"META-INF/licenses/{stray.name} is referenced by nothing in "
-                    f"{SOURCES.name}; run `just update-notice` to remove it."
+                    f"{SOURCES.name}; run `just update-notice <module>` to remove it."
                 )
 
     if problems:

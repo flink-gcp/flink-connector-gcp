@@ -30,6 +30,7 @@ Exit codes: 0 clean, 1 everything else — this script has no infra/policy split
 
 import hashlib
 import io
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -610,3 +611,14 @@ def test_update_removes_a_licence_text_nothing_references(bundle, run, check_not
     (licences / "LICENSE.gone").write_bytes(b"stale")
     assert run(bundle, "--update") == 0
     assert not (licences / "LICENSE.gone").exists()
+
+
+def test_update_creates_the_resources_tree_a_new_module_does_not_have(
+    bundle, run, check_notice
+):
+    # The state a shaded module is in the first time it is generated: no
+    # META-INF directory at all. Before #290 this exited with a bare
+    # FileNotFoundError from write_text, which is what the second one met.
+    shutil.rmtree(bundle / "src" / "main" / "resources")
+    assert run(bundle, "--update") == 0
+    assert run(bundle) == 0

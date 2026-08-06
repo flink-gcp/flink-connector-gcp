@@ -119,5 +119,44 @@ limitations under the License.
             <artifactId>gcloud</artifactId>
             <scope>provided</scope>
         </dependency>
+
+        <!-- The BigQuery half (testutils.bigquery). -->
+        <dependency>
+            <!-- GenericContainer for the goccy emulator, which testcontainers has no
+                 module for - unlike Pub/Sub's, whose container type comes from `gcloud`
+                 above. -->
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- The stock REST client the emulator harnesses drive the service with. -->
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-bigquery</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- NoCredentials for the emulator's unauthenticated REST client. -->
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-core</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- The SQL uber-jar half (testutils.sql). These two are declared at `test` scope
+             for every module by the root pom, which does not reach src/main/java - the
+             abstract packaging and NOTICE test bases live there, so this module needs them
+             at compile time. Provided rather than compile for the reason above: a consumer
+             already has both at test scope, and adding a transitive path to them would be
+             exactly the shade-scope hazard this file's opening comment guards against. -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 </project>

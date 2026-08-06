@@ -137,12 +137,12 @@ format:
 #
 # The install step exists because the rerun, being goal-only, cannot resolve
 # inter-module dependencies from the reactor — the same mechanism the licence
-# goal's phase rule guards against (see CLAUDE.md under Build). The SQL
-# uber-jar bundles the Pub/Sub connector (#138, the repository's first
-# inter-module dependency), so without the install the rerun dies resolving it
-# (#181) — and excluding that module instead would drop the most
-# binary-compat-shaped case there is: the jar shaded on the floor, tested on
-# the ceiling. The test-utils module installs for the same reason: every
+# goal's phase rule guards against (see CLAUDE.md under Build). Each SQL
+# uber-jar bundles its connector (#138, the repository's first inter-module
+# dependency; #290 added the BigQuery pair), so without the install the rerun
+# dies resolving it (#181) — and excluding those modules instead would drop the
+# most binary-compat-shaped case there is: the jar shaded on the floor, tested
+# on the ceiling. The test-utils module installs for the same reason: every
 # module's tests depend on it (#27) — as does the base module, which every
 # connector compiles against (#61). The root pom installs with them because
 # the installed poms name it as parent. Cost, when run by hand:
@@ -154,7 +154,7 @@ binary-compat ceiling:
     @echo '==> Build against the floor (the Flink version pinned in pom.xml)'
     {{ mvn }} verify
     @echo '==> Install what the goal-only rerun cannot resolve from the reactor'
-    {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-pubsub,flink-connector-gcp-test-utils -DskipTests install
+    {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-test-utils -DskipTests install
     @echo '==> Record which tests the floor build ran'
     @mkdir -p target
     scripts/surefire-fingerprint.sh > target/floor-tests.txt
@@ -318,7 +318,8 @@ tofu *args:
 
 # Regenerates the resolved-licence report first, because the check is only as
 # current as that file — a stale one would report a bundle that no longer exists.
-# Reusable as-is by the other flink-sql-connector-gcp-* modules to come.
+# Reusable as-is by every flink-sql-connector-gcp-* module; both take the module
+# as their only argument.
 #
 # A lifecycle phase with `-am`, not a bare `license:add-third-party` goal. The
 # goal form was tried and fails in CI: a goal invocation does not build reactor

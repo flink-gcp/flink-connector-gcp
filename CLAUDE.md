@@ -31,8 +31,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   goal-only or repeated-`-pl` invocation cannot span one reactor at all
 - `just binary-compat 2.3.0` — the floor-build/install/fingerprint/ceiling-rerun/diff
   sequence, whose order is load-bearing. Reproducing a red weekly `binary_compat` is what it is
-  for. The install step (root pom + the Pub/Sub connector + the base module every connector
-  compiles against + the test-utils module every module's
+  for. The install step (root pom + each connector a SQL uber-jar bundles + the base module every
+  connector compiles against + the test-utils module every module's
   tests depend on) exists because the goal-only rerun
   cannot resolve inter-module dependencies from the reactor — same mechanism as the licence-goal
   rule below, bitten via the SQL uber-jar in #181 — and it primes `~/.m2` with
@@ -71,8 +71,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
   `scripts/licence-sources.toml`. `update-notice` regenerates after a dependency change;
-  `check-notice` verifies offline in CI. Both take the module as an argument, so the SQL uber-jars
-  to come reuse them. **Invoke the licence goal
+  `check-notice` verifies offline in CI. Both take the module as an argument, which is what lets
+  the two SQL uber-jars share them and what a third would reuse unchanged; verify.yaml runs
+  `check-notice` over the shaded modules *in the built set* — derived from `NOTICE.template`
+  presence by `scripts/ci-maven-args.py`, which is also what selects them — so a new shaded module
+  is checked from the commit that adds it, and one nothing touched is not rebuilt to re-check it. **Invoke the licence goal
   through a phase, never as a bare `license:add-third-party`**: a CLI goal invocation selects
   reactor modules without building them, so the module cannot resolve the connector it bundles —
   `-am` does not change that, and it only appears to work against a local repository some earlier
@@ -759,12 +762,15 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   STORAGE_API_EXACTLY_ONCE (#30), per-write-method
   option scoping, JSON columns (#49/#50), geography columns (#126), Avro and JSON serializers (#66),
   column modes (#124/#145), protobuf well-known types (#147), default-stream tuning knobs
-  and the connection-pool guard (#54), deferred `location()` (#10)
+  and the connection-pool guard (#54), Table API/SQL (#57, split into #287–#290) and its shaded
+  uber-jar (#290), deferred `location()` (#10)
 - `flink-connector-gcp-pubsub/CLAUDE.md` — vendoring provenance (#17/#31), sink (#18), topic
   auto-creation (#19), tuning (#20) and in-flight bounds (#85), ordering×repair (#78), emulator
   (#21), source (#79/#80), Table API/SQL (#47, split into #135–#138) and the shaded uber-jar
-  (#138) — which is where the repository's only shading decisions live, so read it before adding
-  a second `flink-sql-connector-gcp-*`
+  (#138) — which is where the **general** shading decisions live, inherited rather than re-argued
+  by every later `flink-sql-connector-gcp-*`, so read it before adding a third; what is specific
+  to a tree (an artifact kept out of the bundle, a relocation only it needs) belongs beside that
+  connector, as #290's does
 - `flink-connector-gcp-cloudtasks/CLAUDE.md` — sink design (#23) and implementation (#24)
 - `flink-connector-gcp-bigtable/CLAUDE.md` — sink design and implementation (#33): implement rather
   than adopt or vendor, the four SDK facts the writer rests on (including the client's own blocking

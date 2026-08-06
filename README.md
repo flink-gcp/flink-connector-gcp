@@ -10,6 +10,7 @@ BigQuery, Cloud Pub/Sub, Cloud Tasks and Bigtable, with Spanner planned.
 | Module | Description |
 |---|---|
 | `flink-connector-gcp-bigquery` | BigQuery sink with a unified write API: Storage Write API (at-least-once / exactly-once) and GCS-staged load jobs, with dynamic per-record table destinations and native protobuf serialization |
+| `flink-sql-connector-gcp-bigquery` | The BigQuery connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 | `flink-connector-gcp-pubsub` | Cloud Pub/Sub sink (dynamic topic destinations) and source |
 | `flink-sql-connector-gcp-pubsub` | The Pub/Sub connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 | `flink-connector-gcp-cloudtasks` | Cloud Tasks sink |
