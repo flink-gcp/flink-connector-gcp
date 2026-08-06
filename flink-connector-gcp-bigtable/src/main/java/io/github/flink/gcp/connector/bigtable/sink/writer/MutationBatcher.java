@@ -58,6 +58,12 @@ public interface MutationBatcher extends AutoCloseable {
     /**
      * Sends what has accumulated, waits for every outstanding mutation, and shuts the underlying
      * client down.
+     *
+     * <p>An implementation must not report a failure it has already delivered through the future
+     * {@link #add} returned for that mutation. The writer consumes every one of those futures and
+     * applies the sink's policy there, so a second report at shutdown would fail a job that policy
+     * had deliberately kept running — which is why the production implementation absorbs the one
+     * its client batcher raises (#238).
      */
     @Override
     void close() throws Exception;

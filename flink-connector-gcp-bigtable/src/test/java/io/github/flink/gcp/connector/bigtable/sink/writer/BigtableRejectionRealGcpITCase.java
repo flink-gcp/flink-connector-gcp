@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.bigtable.sink.writer;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import com.google.api.gax.batching.BatchingException;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
@@ -62,6 +61,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the serializer, never rejected by Bigtable, and the sink routes them as serialization failures
  * with no entry and no row key. Measured 2026-08-02 with {@code google-cloud-bigtable} 2.80.0; a
  * run at 110,000 mutations never reached the wire.
+ *
+ * <p>Each {@code finally} closes the writer plainly, which is an assertion rather than cleanup:
+ * every case here provokes a failure, so a close re-reporting the batcher's accumulated entry
+ * failures fails the test. That is what #238 was, and these closes are what pin its fix against the
+ * service.
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BIGTABLE_IT_PROJECT", matches = ".+")
@@ -92,7 +96,7 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
             assertThat(failed.getCause()).hasMessageContaining("Timestamp granularity mismatch");
             assertThat(readRows(table)).isEmpty();
         } finally {
-            closeIgnoringTheBatcherReport(writer);
+            writer.close();
         }
     }
 
@@ -118,7 +122,7 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
                     .isEqualTo(StatusCode.Code.INVALID_ARGUMENT);
             assertThat(failed.getCause()).hasMessageContaining("Row keys must be non-empty");
         } finally {
-            closeIgnoringTheBatcherReport(writer);
+            writer.close();
         }
     }
 
@@ -144,7 +148,7 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
                     .containsExactlyInAnyOrder(GOOD, "bad");
             assertThat(readRows(table)).isEmpty();
         } finally {
-            closeIgnoringTheBatcherReport(writer);
+            writer.close();
         }
     }
 
@@ -176,7 +180,7 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
             assertThat(handler.handled).isEmpty();
             assertThat(readRows(table)).isEmpty();
         } finally {
-            closeIgnoringTheBatcherReport(writer);
+            writer.close();
         }
     }
 
@@ -189,21 +193,6 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
                                 "payload",
                                 GOOD.equals(element) ? 1_000L : UNALIGNED_TIMESTAMP,
                                 "v");
-    }
-
-    /**
-     * Closes the writer, tolerating the one exception every case here provokes: gax's batcher
-     * re-reports at close every entry failure of its lifetime, whatever the sink's policy already
-     * did with them, so a routed-and-dropped mutation still throws from {@code close()}. That is a
-     * connector defect rather than a property to assert — #238 — and swallowing it here keeps these
-     * tests about the service. Anything else propagates.
-     */
-    private static void closeIgnoringTheBatcherReport(SinkWriter<String> writer) throws Exception {
-        try {
-            writer.close();
-        } catch (BatchingException e) {
-            // Expected until #238 is fixed; the failures it names have already been asserted.
-        }
     }
 
     /** Builds a writer over a batcher the production factory created against the real service. */

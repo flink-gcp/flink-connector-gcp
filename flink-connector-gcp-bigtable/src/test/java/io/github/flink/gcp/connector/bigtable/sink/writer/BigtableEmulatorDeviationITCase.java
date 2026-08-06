@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.bigtable.sink.writer;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import com.google.api.gax.batching.BatchingException;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
@@ -56,6 +55,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>Measured 2026-08-02 against the pinned {@code google-cloud-cli:441.0.0-emulators} image with
  * {@code google-cloud-bigtable} 2.80.0.
+ *
+ * <p>Each {@code finally} closes the writer plainly, which is an assertion rather than cleanup: the
+ * two cases whose mutation the emulator rejects leave a failure in the batcher's accumulated stats,
+ * so a close re-reporting those fails them. That is what #238 was, and this class is where it is
+ * pinned without credentials — the report is raised for a rejection whatever status it carried, so
+ * the emulator's deviating {@code INTERNAL} pins it as well as the service's own statuses would.
+ * (The empty-row-key case is the one the emulator accepts; nothing accumulates, and its close is
+ * cleanup like any other.)
  */
 class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
 
@@ -92,7 +99,7 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
                     .extracting(row -> row.getKey().toStringUtf8())
                     .containsExactly(GOOD);
         } finally {
-            closeIgnoringTheBatcherReport(writer);
+            writer.close();
         }
     }
 
@@ -118,7 +125,7 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
             assertThat(handler.handled).isEmpty();
             assertThatThrownBy(() -> readRows(table)).hasMessageContaining("rowKey missing");
         } finally {
-            closeIgnoringTheBatcherReport(writer);
+            writer.close();
         }
     }
 
@@ -151,20 +158,7 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
                     .extracting(row -> row.getKey().toStringUtf8())
                     .containsExactly(GOOD);
         } finally {
-            closeIgnoringTheBatcherReport(writer);
-        }
-    }
-
-    /**
-     * Closes the writer, tolerating gax's re-report at close of every entry failure of the
-     * batcher's lifetime — a connector defect (#238) rather than a property to assert, and one this
-     * class shows is reproducible without real credentials. Anything else propagates.
-     */
-    private static void closeIgnoringTheBatcherReport(SinkWriter<String> writer) throws Exception {
-        try {
             writer.close();
-        } catch (BatchingException e) {
-            // Expected until #238 is fixed; the failures it names have already been asserted.
         }
     }
 

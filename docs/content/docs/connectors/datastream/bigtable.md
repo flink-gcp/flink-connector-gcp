@@ -240,6 +240,16 @@ A failure captured in a completion callback is rethrown on the task thread from 
 or `flush()`, and `flush()` waits for every outstanding mutation, so a failure can never slip past a
 checkpoint barrier.
 
+**A failure the sink has already acted on is not reported a second time when the task closes.** The
+client's batcher accumulates every entry failure of its lifetime and re-states all of them as it
+shuts down, which consuming a mutation's own future does not clear — so the sink absorbs that report
+and logs it rather than letting it fail a job the configured policy had deliberately kept running.
+Logging is also all that can be done with a failure that *first* appears during close, carried by a
+batch the shutdown itself sent: Flink stops accepting mailbox work before it closes operators, so
+the completion that would classify and route such a failure can no longer run, and that log line is
+its only record. The mutation itself is covered by at-least-once, since a close with unsent work
+only happens on a path that is already ending the job.
+
 ### Failed-mutation policy
 
 Two data-shaped failures are pluggable: a record the serializer rejects, and a row-level rejection.
