@@ -52,8 +52,30 @@ import java.util.List;
  * table schema {@link RowTypeToTableSchemaConverter} derived from the same {@code RowType}.
  *
  * <p>The conversion is a plan built once from the (row type, table schema, descriptor) triple and
- * then applied per record, which is {@code AvroRowConverter}'s shape. Two of its properties are
- * load-bearing here too:
+ * then applied per record, which is {@code AvroRowConverter}'s shape.
+ *
+ * <p><b>What a {@code *Plan} is.</b> The word is this module's, shared with {@code
+ * AvroRowConverter} and {@code ProtoRowConverter}: a plan is not a converter for a type but one
+ * step of a tree mirroring the schema, resolved at construction so that per-record work is a flat
+ * walk over it. Four of them divide the job:
+ *
+ * <ul>
+ *   <li>{@link RecordPlan} — one <em>message</em>: a descriptor and one field plan per column, in
+ *       order
+ *   <li>{@link FieldPlan} — one <em>column</em>: the {@code FieldGetter} that reads it off the row,
+ *       and whether it is written as a singular value, a repeated one or a map
+ *   <li>{@link ValuePlan} — one <em>type</em>: the encoding {@link Kind}, a decimal's scale, and
+ *       either a nested record plan or a JSON renderer. This is the piece that reads as "the
+ *       converter for this column type", and the only one reached from more than one place
+ *   <li>{@link MapPlan} — a map's <em>entries</em>: a value plan and an element getter for the key
+ *       and for the value
+ * </ul>
+ *
+ * <p>The value plan is separate here where the sibling converters fold it into their field plan,
+ * because an array element and a map's key and value have no field to be read from — Avro reaches
+ * the same place with a sentinel field position instead.
+ *
+ * <p>Two properties of the plan are load-bearing:
  *
  * <ul>
  *   <li><b>Descriptor fields are paired by position, never by name.</b> {@code
@@ -262,7 +284,7 @@ final class RowDataToProtoConverter {
         }
     }
 
-    /** The plan of one protobuf message: its descriptor and one plan per field, in order. */
+    /** One message: its descriptor and one field plan per column, in order. */
     private static final class RecordPlan {
 
         private final Descriptors.Descriptor descriptor;
@@ -282,7 +304,7 @@ final class RowDataToProtoConverter {
         }
     }
 
-    /** How one column's value is read off a row and written into the message. */
+    /** One column: how its value is read off a row and written into the message. */
     private static final class FieldPlan {
 
         private final Descriptors.FieldDescriptor protoField;
@@ -371,7 +393,7 @@ final class RowDataToProtoConverter {
         }
     }
 
-    /** How a map's entries become the repeated {@code STRUCT<key, value>} messages. */
+    /** A map's entries: how they become the repeated {@code STRUCT<key, value>} messages. */
     private static final class MapPlan {
 
         private final Descriptors.Descriptor entryDescriptor;
@@ -427,7 +449,7 @@ final class RowDataToProtoConverter {
         }
     }
 
-    /** How one value of a known column type becomes its protobuf form. */
+    /** One type: how a value of it becomes its protobuf form. */
     private static final class ValuePlan {
 
         private final Kind kind;
