@@ -20,13 +20,17 @@ import org.apache.flink.util.InstantiationUtil;
 
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
+import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -209,6 +213,14 @@ class PubSubDeadLetterQueueTest {
         assertThatThrownBy(() -> builder.maxOutstandingMessages(-2))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("write through");
+        assertThatThrownBy(() -> builder.shutdownTimeout(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shutdownTimeout");
+        assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shutdownTimeout");
     }
 
     @Test
@@ -289,6 +301,78 @@ class PubSubDeadLetterQueueTest {
         // queue's is: it neither reruns a step nor throws the same Error again.
         assertThatCode(queue::close).doesNotThrowAnyException();
         assertThat(ran).containsExactly("channel");
+    }
+
+    /**
+     * The close goes through a {@link BoundedShutdown} carrying the configured budget, instead of
+     * calling the SDK's own unbounded {@code shutdown()} inline on the task thread (#312). Opened
+     * against a lazily-connecting channel, so this needs nothing listening — and closing it here is
+     * safe precisely because the teardown is now bounded.
+     */
+    @Test
+    void theCloseIsBoundedByTheConfiguredShutdownTimeout() throws Exception {
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .emulatorEndpoint("localhost:1")
+                        .shutdownTimeout(Duration.ofSeconds(7))
+                        .build();
+        queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+        try {
+            assertThat(queue.publisherShutdown)
+                    .isInstanceOf(BoundedShutdown.class)
+                    .extracting(step -> ((BoundedShutdown) step).timeout())
+                    .isEqualTo(Duration.ofSeconds(7));
+        } finally {
+            queue.close();
+        }
+    }
+
+    /**
+     * The budget reaches the tasks, which {@code survivesJobGraphSerialization} cannot say: it
+     * compares {@code toString()}, and this knob is deliberately not in it. A {@code transient}
+     * slip would leave the restored instance with a null budget and fail at {@code open()} on a
+     * TaskManager rather than here.
+     */
+    @Test
+    void theShutdownTimeoutSurvivesJobGraphSerialization() throws Exception {
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .emulatorEndpoint("localhost:1")
+                        .shutdownTimeout(Duration.ofSeconds(12))
+                        .build();
+
+        PubSubDeadLetterQueue restored =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(queue), getClass().getClassLoader());
+
+        restored.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+        try {
+            assertThat(((BoundedShutdown) restored.publisherShutdown).timeout())
+                    .isEqualTo(Duration.ofSeconds(12));
+        } finally {
+            restored.close();
+        }
+    }
+
+    @Test
+    void theShutdownBudgetDefaultsToThirtySeconds() throws Exception {
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .emulatorEndpoint("localhost:1")
+                        .build();
+        queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+        try {
+            // The value the hardcoded constant had before it became a knob, so a sink that never
+            // configures one keeps exactly the budget it used to claim.
+            assertThat(((BoundedShutdown) queue.publisherShutdown).timeout())
+                    .isEqualTo(PubSubDeadLetterQueue.DEFAULT_SHUTDOWN_TIMEOUT)
+                    .isEqualTo(Duration.ofSeconds(30));
+        } finally {
+            queue.close();
+        }
     }
 
     private static String repeat(char c, int count) {

@@ -97,7 +97,7 @@ page, where it also explains why the shutdown budget exists.
 
 | Option | Default | What it does |
 |---|---|---|
-| `shutdownTimeout` | 30 s | How long the sink's close waits for one publisher to shut down. Measured from the moment the publisher is asked to stop, and every publisher is asked before any is waited on, so a close costs this once however many topics were written to. Keep it under Flink's `task.cancellation.timeout` (180 s by default), past which a cancelling task is a fatal TaskManager error. It bounds the publishers only — a `sendToDeadLetterQueue(...)` handler adds its own wait on top. See [Publisher lifecycle]({{< relref "docs/connectors/datastream/pubsub" >}}#publisher-lifecycle) |
+| `shutdownTimeout` | 30 s | How long the sink's close waits for one publisher to shut down. Measured from the moment the publisher is asked to stop, and every publisher is asked before any is waited on, so a close costs this once however many topics were written to. Keep it under Flink's `task.cancellation.timeout` (180 s by default), past which a cancelling task is a fatal TaskManager error. It bounds the sink's own publishers — a `sendToDeadLetterQueue(...)` handler spends a second budget of the same shape on top (`PubSubDeadLetterQueue.builder().shutdownTimeout(...)`, 30 s by default), so keep the sum under that limit. See [Publisher lifecycle]({{< relref "docs/connectors/datastream/pubsub" >}}#publisher-lifecycle) |
 
 **Metrics.**
 
