@@ -70,7 +70,10 @@ import java.util.concurrent.atomic.LongAdder;
  * cluster.uncaught-exception-handling: FAIL}, turning it into a TaskManager exit.
  *
  * <p>The two steps are held as functional values rather than as a client, because the client this
- * was written for is {@code final}: this is the only seam a test can drive.
+ * was written for cannot be subclassed: this is the only seam a test can drive. ({@code Publisher}
+ * is not in fact {@code final}, as this said until #324 checked it against the 1.152.0 sources — it
+ * is a non-final class whose only constructor is private, which forbids a subclass just as
+ * effectively. The conclusion is unchanged; the stated reason was wrong.)
  *
  * <p><b>{@link #start()} and {@link #close()} must be called from one thread</b> — the task thread,
  * for both users today. That precondition is what makes {@link #thread} safe as a plain field, and

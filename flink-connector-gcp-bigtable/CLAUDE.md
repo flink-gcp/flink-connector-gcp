@@ -187,10 +187,65 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   exception built reflectively because gax keeps its constructor package-private, and both failure
   ITCases closing their writers plainly. Only a `finally` whose case actually provoked a rejection
   asserts anything, which is every gated case but two of the three emulator ones: the emulator
-  *accepts* an empty row key, so that batcher accumulates nothing. **What no test covers is the log
-  line itself** — nothing here captures slf4j output, and building that for one call site would be
-  new test infrastructure no other `LOG.warn` in this repository has; #323 carries it, and #324 the
-  adapter teardown no fake can reach. Whether the SPI contract above needs more than prose is #325.
+  *accepts* an empty row key, so that batcher accumulates nothing. **The log line itself is covered
+  since #323**, which built `LogCapture` in test-utils and used this very call site as one of its
+  two motivating cases: `absorbsTheBatchersReportOfItsAccumulatedEntryFailures` now asserts the
+  event carries the destination and the report as its throwable. (This bullet said the opposite
+  until #324 rebased over it — #323 pinned the line and left the claim standing.) Whether the SPI
+  contract above needs more than prose is #325.
+- **`BigtableBatcherAdapter` holds its batcher as three functional values and its client as an
+  `AutoCloseable`** (#324), which is the only seam a test can drive — and it is **two** vendor
+  constraints rather than one, which is why both halves are injected. The batcher's is the
+  annotation: `Batcher` is `@InternalExtensionOnly`, the same fact that gives this module its own
+  `MutationBatcher` SPI one layer up, so a fake would be legal Java and an unsupported extension.
+  The client's is plain unextendability — `BigtableDataClient` reports no closed state and its only
+  constructor is package-private (`create(...)` is `public static`, which is what the offline tests
+  use). **Note the base module's `BoundedShutdown` is the same shape, not a different one**: its
+  javadoc and the Pub/Sub `CLAUDE.md` both say `Publisher` is `final` and it is not — it is a
+  non-final class with a private constructor, unextendable by exactly the mechanism above. A
+  **production constructor takes the batcher and delegates**, so the three method references binding
+  one adapter to one batcher sit inside a class a test can construct rather than at the `create()`
+  call site, where nothing would reach them — #321's "a seam whose wiring no test covered", avoided
+  rather than repeated. `create(BigtableDataClient)` exists for the other half of that wiring: an
+  adapter handed any other closeable passes every test that injects its own client while leaking a
+  channel pool per writer, and the only observable is a *consequence* of the client's close
+  (`BigtableClientContext.close()` shuts down the background executor gax schedules a batcher's
+  delay-threshold push on, so a later `newBulkMutationBatcher` is rejected — measured, SDK internals,
+  reread it on a client upgrade). The *smaller* shape #324 offered, a static seam beside
+  `shutDownAbsorbingTheLifetimeFailureReport`, was measured and rejected: a test calling the seam
+  cannot reach `close()` or `sendOutstanding()`, so it kills one of the three live mutants.
+  **What hid the `sendOutstanding` gap is worth keeping**: gax pushes a batch on its own
+  delay-threshold timer, 1 s for bulk mutations (set in `ClientOperationSettings`, documented on
+  `EnhancedBigtableStubSettings.bulkMutateRowsSettings()`), so a `sendOutstanding()` reaching nothing
+  still lets every row land one `drainInFlight()` later and every emulator IT passes — a row-count
+  assertion is not evidence that a flush flushed. `add` is the one operation those ITs do pin, by
+  reading the rows back, so its unit test is a restatement rather than new coverage. One thing the
+  tests still do not reach, stated so it is not mistaken for pinned: **"the shutdown waits"** —
+  `BatcherImpl.add`'s precondition reads `closeFuture`, which `closeAsync()` sets too, so binding
+  the shutdown to `closeAsync()` or `close(Duration.ZERO)` would survive
+  `shutsDownTheBatcherTheFactoryItselfBuilt`, and the adapter's documented "no timeout" decision is
+  argued but unpinned. The `LOG.warn` was the second such gap and is closed by #323; `destination`
+  is read by nothing else on the adapter, which is what makes that assertion the only thing keeping
+  the field honest.
+- **That teardown closes through `Closers.closeAll`, not a `try`/`finally`** (#324). Both release the
+  client whichever way the shutdown ends and both propagate an `Error` unchanged; the difference is
+  confined to the case where **both** steps throw, where a `finally` completing abruptly discards
+  the `try`'s reason outright (JLS 14.20.2 — only try-with-resources suppresses). So the failure
+  explaining the teardown was lost in favour of the one that followed from it, and the pair is
+  reachable: `EnhancedBigtableStub` reports a failing context close as an `IllegalStateException`.
+  Found while making the teardown testable and folded in with the user rather than filed.
+  **Not the same defect as #276**, which was later resources being *abandoned* and which replaced
+  thirteen `IOUtils.closeAll` lines and no `try`/`finally` at all — but the same primitive, and
+  #276's reason for that primitive is why a new call site of it owes the `Error` test beside the
+  exception ones (`IOUtils.closeAll(…, Exception.class)` rethrows from inside its loop, abandoning
+  the client; the `Throwable.class` form collects an `Error` as `new Exception(e)`).
+  **The cost is real and is on the escalation axis**: `closeAll` reports the *first* failure, so the
+  throwable Flink inspects is now the shutdown's rather than the client's — a JVM-fatal *client*
+  close arrives suppressed and unescalated, where before it replaced the shutdown's failure and did
+  halt, while a JVM-fatal *shutdown*, previously discarded outright, now escalates correctly.
+  Accepted deliberately (the shutdown is where gax's own code runs, the client's close being a thin
+  wrapper), and it is the bound `Closers.closeAll`'s own javadoc already names rather than a new one
+  to chase here.
 - **`BigtableEmulatorDeviationITCase` asserts what the *emulator* does**, which is not a breach of
   the emulator-is-not-an-authority rule but its enforcement: it records the traps so an image bump
   has to declare them. The one that matters is the **status** — the emulator answers `INTERNAL`

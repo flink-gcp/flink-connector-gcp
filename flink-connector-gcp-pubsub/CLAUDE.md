@@ -202,8 +202,12 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   rethrown by `close()` with its own type** — on a bare thread it would reach only Flink's JVM-wide
   handler, losing a teardown failure the pre-#265 inline call reported and, under
   `cluster.uncaught-exception-handling: FAIL`, exiting the whole TaskManager instead of failing one
-  task. **The two steps are functional values, not a `Publisher`**, because `Publisher` is final:
-  that is the only seam a test can drive, the same argument `PubSubDeadLetterQueue`'s
+  task. **The two steps are functional values, not a `Publisher`**, because `Publisher` cannot be
+  subclassed — **not** because it is `final`, which this said until #324 checked it against the
+  1.152.0 sources: it is a non-final class whose only constructor is private, which forbids a
+  subclass just as effectively, and is the same mechanism that makes Bigtable's
+  `BigtableDataClient` unfakeable. That is the only seam a test can drive, the same argument
+  `PubSubDeadLetterQueue`'s
   `publisherShutdown` / `channelShutdown` fields make. What remains, and is logged rather than
   hidden: a publisher whose shutdown never returns leaves that thread and the client's executors
   until the JVM exits — and the give-up warning deliberately does **not** attribute itself to #265,
@@ -327,8 +331,9 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   into a dead letter and the SDK publisher has no flow control by default — the issue text said
   buffer-until-flush, and that shape can OOM where the pre-#37 behaviour merely failed the job.
   `envelope(...)` is a **pure static** taking the subtask index and the instant, which is what
-  lets the attribute set be pinned exactly without a live publisher — `Publisher` is final, so
-  every seam here has to be arranged deliberately. The second one is `close()`'s: its two steps
+  lets the attribute set be pinned exactly without a live publisher — `Publisher` cannot be
+  subclassed (private constructor, not `final`; see the teardown bullet above), so every seam here
+  has to be arranged deliberately. The second one is `close()`'s: its two steps
   are held as `@VisibleForTesting` `AutoCloseable` fields (`publisherShutdown`, `channelShutdown`)
   that `open()` assigns, rather than being called as private methods, so #276's test can make the
   publisher's shutdown throw an `Error` and assert the channel is shut down anyway. **The

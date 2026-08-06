@@ -360,6 +360,14 @@ requires, and a handler failure raised inside a completion callback surviving to
 fake completes nothing on its own, which is what lets a test hold the writer at a cap; the writer
 tests carry a timeout, because a broken admission predicate hangs rather than fails.
 
+The adapter that wraps the client's batcher is unit-tested too
+([#324]({{< param BookRepo >}}/issues/324)): its teardown shuts the batcher down and then releases
+the client, and releases it whatever that shutdown throws — the sink absorbs only the batcher's
+report of its accumulated entry failures, so anything else propagates, and the client must not be
+left holding a channel when it does. The batcher's operations reach the adapter as functional
+values, because the client library's `Batcher` may not be implemented by a fake — the same reason
+this connector defines its own batcher interface.
+
 Integration tests run against the
 [Bigtable emulator](https://cloud.google.com/bigtable/docs/emulator) in a container, through the
 production client-construction path in its emulator mode, plus two MiniCluster jobs — streaming with

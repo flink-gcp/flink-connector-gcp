@@ -21,7 +21,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - `just verify-flink 2.3.0` / `just verify-module flink-connector-gcp-bigquery` — one Flink
   version, one module. A 1.x version also selects the `flink1` compat source root (see the
   version policy), which is why the recipe exists rather than passing `-Dflink.version` by hand. `just verify <maven args>` is the passthrough the weekly matrix uses, and
-  passing nothing means the version pinned in the pom
+  passing nothing means the version pinned in the pom. **`verify-module` carries `-am`**, and it is
+  load-bearing rather than tidiness: `-pl` alone resolves the `io.github.flink-gcp` siblings from
+  `~/.m2`, so the recipe reports on whichever jar is installed there rather than on the working
+  tree — which fails in *both* directions, a stale jar failing a green tree (`NoClassDefFoundError`
+  on a test-utils class added by #323, met on #324) and a newer one passing a broken reactor
+  change. Nothing in CI is affected either way, since CI builds the reactor. That is a different
+  problem from the one `binary-compat` and `e2e` solve by installing first: theirs is that a
+  goal-only or repeated-`-pl` invocation cannot span one reactor at all
 - `just binary-compat 2.3.0` — the floor-build/install/fingerprint/ceiling-rerun/diff
   sequence, whose order is load-bearing. Reproducing a red weekly `binary_compat` is what it is
   for. The install step (root pom + the Pub/Sub connector + the base module every connector
