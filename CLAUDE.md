@@ -768,9 +768,9 @@ a property of X.
 ## A test forges an options object on `builder().build()`, never on `defaults()` (#316)
 
 Every options class whose `defaults()` returns a `private static final DEFAULTS = builder().build()`
-hands out a **JVM-wide singleton** — `BigtableWriterOptions`, `CloudTasksWriterOptions`,
-`PubSubPublisherOptions`, `PubSubSubscriberOptions` and four of BigQuery's. The writer-creation-guard
-tests each carry a private `forged(T options, String name, int value)` that reflectively writes a
+hands out a **JVM-wide singleton** — ten of them as of 2026-08-06, in all four connector modules. The
+writer-creation-guard tests each carry a private `forged(T options, String name, int value)` that
+reflectively writes a
 value the builder would reject, and `setAccessible(true)` **does** permit writing a non-static final
 field of a normal class — so forging on `defaults()` writes into that singleton for the rest of the
 surefire JVM, and nothing restores it.
@@ -789,6 +789,8 @@ placed in the class that would do the writing, so a regression fails determinist
 of intermittently in whichever class the fork ran next. BigQuery carries no such assertion because
 its three forged types (`DefaultStreamOptions`, `BufferedStreamOptions`, `FileLoadsOptions`) have no
 `defaults()` at all, so there is no singleton to poison — the absence is checked, not an oversight.
+Read that as a property of those three types and **not** of the module: six of the ten singletons are
+BigQuery's, so a new forging test there owes the pin like any other.
 
 A `0` is **not** reachable in production, which is why the fix was in the test and the writers'
 preconditions stay exactly where they are: the builders reject a non-positive value on every setter,
