@@ -15,32 +15,27 @@ name: OpenTofu plan
 # - No keys anywhere. The plan job mints a short-lived token via WIF for a
 #   service account that is read-only on the project plus read-write on the
 #   state bucket (state locking writes a lock object).
-# - Fork pull requests never get this far: GitHub does not grant
-#   `id-token: write` to runs triggered from forks, and the WIF provider
-#   condition pins this repository's immutable ID.
+# - Fork pull requests cannot plan: GitHub does not grant `id-token: write`
+#   to runs triggered from forks, and the WIF provider condition pins this
+#   repository's immutable ID. Their token is read-only, so on a fork pull
+#   request that touches tofu paths the comment and auth steps fail loudly
+#   rather than plan — irrelevant while the repository is private, and a
+#   named checklist item for going public (issue #6).
 on:
-  pull_request:
-    # Keep in sync with tofu-apply.yaml's paths: a path only here produces
-    # reviewed-but-never-applied changes, a path only there produces applies
-    # with no reviewed plan.
-    paths:
-      - 'opentofu/**'
-      - 'tfaction-root.yaml'
-      # Changing any of these workflows must re-verify the pipeline they
-      # define.
-      - '.github/workflows/tofu-plan.yaml'
-      - '.github/workflows/tofu-apply.yaml'
-      - '.github/workflows/tofu-list.yaml'
-      # mise.toml pins the tofu these jobs run.
-      - 'mise.toml'
+  # No pull_request trigger and no paths filter: pull requests reach this
+  # workflow through ci.yaml, whose required `CI passed` gate needs it, and
+  # tfaction's list-targets is the change detection — at job level, so a
+  # pull request touching nothing under tfaction's markers runs only
+  # hide-comment and list (seconds, no GCP auth) and the plan job skips on
+  # the empty matrix. tofu-apply.yaml keeps its own paths; a path there that
+  # tfaction's markers do not cover would still produce applies with no
+  # reviewed plan, which is what "keep them in step with tfaction-root.yaml"
+  # now means.
+  workflow_call:
 
-# NOTE: like docs.yaml and lint.yaml, the paths filter means most pull
-# requests never report this workflow — fine while it is optional, but making
-# it required means dropping the filter or adding an always-reporting job.
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No concurrency group here: inside a workflow_call, github.workflow is the
+# caller's name, so a group defined here would collide with every sibling
+# ci.yaml calls. ci.yaml owns concurrency for pull requests.
 
 permissions: {}
 
@@ -126,3 +121,30 @@ jobs:
         with:
           action: plan
           github_token: ${{ github.token }}
+
+  # This workflow's own verdict, which is what makes its result trustworthy
+  # to ci.yaml's gate: a failed job already fails the workflow, but a plan
+  # skipped although list-targets found targets would not — a workflow result
+  # cannot see an illegitimate skip — so this job reddens it. The verdict is
+  # derived from the whole `needs` context (scripts/ci-gate.py); the one
+  # legitimate skip, plan on an empty target list, is computed here because
+  # this is where the list output lives.
+  tofu_plan_passed:
+    name: Tofu plan passed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [hide-comment, list, plan]
+    if: ${{ !cancelled() }}
+    # The workflow default is {}, which cannot even check out the gate script.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Evaluate every job result
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          SKIPPED_OK: ${{ join(fromJSON(needs.list.outputs.targets), '') == '' && 'plan' || '' }}
+        run: scripts/ci-gate.py

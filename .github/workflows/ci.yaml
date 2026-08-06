@@ -1,323 +1,86 @@
 name: CI
 
+# The pull-request orchestrator and the one check branch protection requires
+# (issues #243, #250; the shape is suzuki-shunsuke's required-status-check
+# pattern, decided with the user on PR #305): every PR-facing workflow runs
+# as a reusable workflow called from here, and the `CI passed` gate `needs`
+# them all — which is the only way a verdict can span workflows, since
+# `needs` cannot cross workflow files. What main requires is therefore
+# decided in this file alone: a workflow enrolls by joining the gate's
+# `needs`, with no branch-protection edit, no required context left to fall
+# silently out of step with a renamed job (a stale `needs` entry or `uses`
+# path is a workflow-parse error no run survives unnoticed), and no
+# paths-filter trap — a required check that never reports blocks a pull
+# request forever, so this workflow carries no filter at all and each child
+# does its own change detection at job level (verify's `changes` job,
+# tfaction's `list-targets`). That is also what an auto-merge story needs.
+#
+# The children keep their own push/workflow_dispatch triggers and their
+# push-side paths filters; those are cost-saving only, protection lives here.
 on:
-  push:
-    branches:
-      - main
-    # Changes that cannot affect the Maven build skip it: a tofu or docs-note
-    # merge otherwise pays runner minutes for nothing (raised by the owner on
-    # #176/#178, right after a billing cut — private-repo minutes are metered).
-    # paths-ignore rather than paths: everything else must keep running this.
-    # READMEs and CLAUDE.md files are here because apache-rat excludes exactly
-    # those patterns (see the root pom), so skipping them cannot hide a missing
-    # licence header; docs/ markdown is deliberately NOT here, because rat does
-    # scan it and this workflow is its only pre-merge check.
-    #
-    # This filter exists on push only. Filtering the pull_request trigger the
-    # same way would block pull requests forever once a check here is required
-    # (a required check that never reports never turns green), so pull requests
-    # trigger unconditionally and the changes job below decides what to build —
-    # scripts/ci-maven-args.py applies this same ignore list as its first rule.
-    # Keep the two lists in sync.
-    paths-ignore:
-      - 'opentofu/**'
-      - 'tfaction-root.yaml'
-      - '.github/workflows/tofu-plan.yaml'
-      - '.github/workflows/tofu-apply.yaml'
-      - '.github/workflows/tofu-list.yaml'
-      - '**/README.md'
-      - '**/CLAUDE.md'
-      - '.github/PULL_REQUEST_TEMPLATE.md'
   pull_request:
-  workflow_dispatch:
 
+# The one concurrency group, deliberately not in the children: inside a
+# workflow_call, github.workflow is this workflow's name, so a group defined
+# in a child would collide with its siblings and they would cancel each
+# other.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
+# A called workflow's job-level permissions must fit inside what its caller
+# grants, so each job here grants exactly what its child asks for.
 jobs:
-  # Decides what the build job runs (issue #243): a pull request builds the
-  # modules its changes affect instead of the whole reactor — a full-reactor
-  # run costs ~8 minutes of wall clock (measured on PR #241, 2026-08-01, one
-  # run; the module breakdown is on the issue), most of it in modules a
-  # typical change never touches — and billed minutes go down with it. Pushes
-  # to main and manual dispatches always build everything, so a mis-derived
-  # subset can never let a module rot on main.
-  #
-  # The decision lives in one place, scripts/ci-maven-args.py, which derives
-  # the module mapping from the poms; `just ci-maven-args --diff origin/main`
-  # reproduces it by hand. The changed-file list comes from git alone: a
-  # third-party changed-files action (dorny/paths-filter) was tried first and
-  # removed on this pull request — weighed with the owner against
-  # tj-actions/changed-files' CVE-2025-30066 supply-chain compromise, a
-  # changed-file provider is third-party code and an extra pull-requests:read
-  # permission this job simply does not need, since the checkout already
-  # carries the answer. What the action's API pagination bought only matters
-  # past GitHub's 3000-file response cap, far beyond anything this repository
-  # sees.
-  changes:
-    name: Detect what changed
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      run_build: ${{ steps.derive.outputs.run_build }}
-      maven_args: ${{ steps.derive.outputs.maven_args }}
-      check_notice: ${{ steps.derive.outputs.check_notice }}
-    steps:
-      # A pull_request checkout is the base-into-head merge commit
-      # (refs/pull/N/merge); fetching its two parents as well (depth 2) makes
-      # HEAD^1 the current base tip, so `--diff HEAD^1` below is exactly the
-      # net change merging this pull request would apply.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
+  verify:
+    uses: ./.github/workflows/verify.yaml
+    permissions:
+      contents: read
 
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
-        with:
-          tool: just
+  lint:
+    uses: ./.github/workflows/lint.yaml
+    permissions:
+      contents: read
 
-      # No setup-python for the deriver: unlike the tomllib scripts below, it
-      # needs nothing newer than any runner image's python3, and this job sits
-      # on every pull request's critical path.
-      - name: Derive the Maven arguments
-        id: derive
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = 'pull_request' ]; then
-            just ci-maven-args --diff 'HEAD^1' >> "$GITHUB_OUTPUT"
-          else
-            just ci-maven-args --full >> "$GITHUB_OUTPUT"
-          fi
+  docs:
+    uses: ./.github/workflows/docs.yaml
+    permissions:
+      contents: read
 
-  # Java sources only: spotless and checkstyle run inside `verify`. scripts/ and
-  # anything else Maven does not see are linted by lint.yaml.
-  build:
-    name: Build and test
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    needs: changes
-    if: needs.changes.outputs.run_build == 'true'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  # tfcmt posts the plan comment (pull-requests: write) and WIF mints the
+  # GCP token (id-token: write). On a fork pull request the token is
+  # read-only regardless, so the comment steps would fail — irrelevant while
+  # the repository is private, and a named checklist item for going public
+  # (issue #6).
+  tofu_plan:
+    uses: ./.github/workflows/tofu-plan.yaml
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
 
-      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
-
-      # install-action rather than mise: this drops one binary on PATH and
-      # creates no shims at all, which is the simplest thing that can work in a
-      # job that also runs setup-java. mise would work too — mise.toml pins java
-      # and maven, so its shims lead the JDK by default, but add_shims_to_path:
-      # false turns that off. install-action is preferred here for having
-      # nothing to turn off, not because the two cannot be combined.
-      #
-      # `tool: just` carries no version on purpose. install-action reads no
-      # version file, so pinning it would mean an inline version in six places
-      # to keep in sync with mise.toml — and the reason shellcheck *is* pinned
-      # (a newer release adds checks that fail a pull request which changed
-      # nothing) has no analogue here: just guarantees no 1.x release breaks an
-      # existing justfile or a working command line, and that there will never
-      # be a 2.0. mise.toml says `just = "1"`, so both sides mean the same
-      # thing. The guarantee covers stable features only, which is why nothing
-      # CI runs uses a `--unstable` one — see the lint recipe.
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
-        with:
-          tool: just
-
-      # Runs the full lifecycle: spotless/checkstyle (validate), compile,
-      # unit tests (test), packaging, integration tests (integration-test)
-      # and the apache-rat license-header check (verify) — over the modules
-      # the changes job selected (empty args = the whole reactor; the
-      # interpolation is weekly.yaml's passthrough shape). Integration tests
-      # use testcontainers-based emulators and require no cloud credentials,
-      # so this job is safe to run on any pull request.
-      - name: Build and verify
-        run: just verify ${{ needs.changes.outputs.maven_args }}
-
-      # Holds each shaded module's generated META-INF/NOTICE and pinned licence
-      # texts to what Maven resolves for its bundle. A step of its own rather than part of
-      # `just verify` because the comparison is a Python script, not a Maven
-      # plugin; the resolving half *is* bound into the build, and costs almost
-      # nothing (it reads POMs Maven already resolved). The recipe re-runs that
-      # Maven half, which `just verify` above has already done — kept because a
-      # self-contained recipe is the right default locally, and the duplicated
-      # work here is a few seconds of an incremental build. Skipped when the
-      # built subset contains no shaded module — check_notice tracks whether
-      # the selection carries a NOTICE.template. python3 comes from
-      # the runner image: the script is standard-library only, so there is no
-      # version to pin (see mise.toml).
-      # The NOTICE checker reads scripts/licence-sources.toml with tomllib,
-      # stdlib since Python 3.11 — installed deliberately rather than trusted
-      # from the runner image, for the same reason shellcheck is pinned: an
-      # image migration must not change what CI runs. Keep the version in
-      # step with mise.toml’s python; both mean ">= 3.11 for tomllib". No
-      # cache option on purpose: the script has zero pip dependencies, so
-      # there is nothing to cache, and `cache: pip` without a requirements
-      # file fails the step.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        if: needs.changes.outputs.check_notice == 'true'
-        with:
-          python-version: '3.12'
-
-      - name: Check the SQL connector NOTICE
-        if: needs.changes.outputs.check_notice == 'true'
-        run: just check-notice flink-sql-connector-gcp-pubsub
-
-  # The Maven-side check for branch protection to require (issue #243; setting
-  # required checks needs the repository public (#6) or a paid plan, so this
-  # is the shape protection names when it becomes available). It names this
-  # job, not `build`, because `build` is skipped when a change cannot affect
-  # the Maven build — and a required check that never reports blocks a pull
-  # request forever. This job reports whenever the run is not cancelled,
-  # turning that skip into an explicit green. The truth table lives in
-  # scripts/ci-gate.sh so it can be run by hand; the `needs` results reach it
-  # as plain environment variables.
+  # The gate. It reports on every uncancelled run — an explicit green or an
+  # explicit red, never a skip GitHub would count as satisfied — and its
+  # verdict is derived from the whole `needs` context, so there is no second
+  # list to maintain. None of the children may skip (their internal skips
+  # are judged inside them, by their own verdict jobs); the truth table
+  # lives in scripts/ci-gate.py so it can be run by hand, and the wiring
+  # tests in scripts/tests/test_ci_gate.py hold the `needs` list to the job
+  # list above.
   ci_passed:
     name: CI passed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, build]
+    needs: [verify, lint, docs, tofu_plan]
     if: ${{ !cancelled() }}
+    # The workflow default is {}, which cannot even check out the gate script.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Evaluate the build result
+      - name: Evaluate every workflow result
         env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          RUN_BUILD: ${{ needs.changes.outputs.run_build }}
-        run: scripts/ci-gate.sh
-
-  # The Flink API tier audit (issue #103): fails when the main sources add a
-  # dependency on an @Internal, @Experimental or unannotated Flink type
-  # without a reasoned allowlist entry in scripts/flink-api-tiers.toml (see
-  # .claude/skills/curate-flink-api-tier/ for how to respond).
-  #
-  # A job here rather than a step in lint.yaml (decided with the user on the
-  # pull request that added it): the audit's inputs — the Java main sources
-  # and pom.xml's flink.version — are exactly this workflow's trigger set,
-  # while lint.yaml's paths filter would have had to grow to every Java
-  # source, losing its scripts-and-workflows character. A job of its own
-  # rather than a step in `build` so it reports in seconds beside the
-  # integration tests instead of behind them, and needs no JDK. Deliberately
-  # not behind the changes job: it is a required check, costs seconds, and
-  # skipping it would reopen the never-reports trap the gate job exists to
-  # close.
-  api_tiers:
-    name: Audit Flink API tiers
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Same reason as the NOTICE check above: the script is stdlib-only but
-      # needs >= 3.11 for tomllib, installed deliberately rather than trusted
-      # from the runner image. Keep in step with mise.toml's python.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
-        with:
-          tool: just
-
-      - name: Audit the Flink API tiers the main sources depend on
-        run: just check-flink-api-tiers
-
-  # The configuration reference check (issue #89): fails when a builder option
-  # or a Table API ConfigOption is added, renamed or removed without the page
-  # documenting it following along, in either direction (see
-  # .claude/skills/curate-option-docs/ for how to respond to each failure).
-  #
-  # A job here for the same reason as api_tiers above, plus one of its own: its
-  # inputs are the Java main sources *and* docs/content/, and this workflow's
-  # pull_request trigger fires on both (it carries no filter at all), while
-  # lint.yaml's paths carry docs/content only for markdownlint and would have
-  # had to grow to every Java source. Not behind the changes job,
-  # like api_tiers and for the same reasons.
-  option_docs:
-    name: Check the configuration reference
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # tomllib again; keep in step with mise.toml's python.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
-        with:
-          tool: just
-
-      - name: Check every option is documented, and every documented option exists
-        run: just check-option-docs
-
-  # The metrics-table check (issue #296): fails when a metric is registered,
-  # renamed or removed without the DataStream page's `Metric`-headed tables
-  # following along, in either direction, or documented as the wrong kind (see
-  # .claude/skills/curate-metric-docs/ for how to respond to each failure). It
-  # also holds the mechanical half of the #280 naming rule — no `num`-prefixed
-  # name — and the inventory property that every registration goes through a
-  # *MetricNames constant.
-  #
-  # A job here for exactly option_docs's reasons: its inputs are the Java main
-  # sources *and* docs/content/ — lint.yaml's paths carry docs/content only
-  # for markdownlint and would have had to grow to every Java source, while
-  # this workflow's unfiltered pull_request trigger covers both. Not behind
-  # the changes job: it costs seconds, and a check that sometimes skips could
-  # never join the required checks — the never-reports trap the gate job
-  # exists to close.
-  metric_docs:
-    name: Check the metrics tables
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # tomllib again; keep in step with mise.toml's python.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
-        with:
-          tool: just
-
-      - name: Check every metric is documented, and every documented metric exists
-        run: just check-metric-docs
-
-  # The gated-suite pairing check (issue #245): a real-GCP ITCase carries both
-  # the @EnabledIfEnvironmentVariable the E2E suite is discovered by and the
-  # @Tag("gated") that keeps it out of every ordinary build, and this fails
-  # when a class has one without the other.
-  #
-  # Checked rather than merely documented because forgetting the tag fails in
-  # the expensive direction — the suite then runs during `just verify` in any
-  # shell holding the variable, creating billed Bigtable instances — and
-  # because nothing else would notice: CI never sets those variables, so the
-  # damage lands on a laptop.
-  #
-  # A job here rather than in lint.yaml for the reason api_tiers gives: its
-  # inputs are the Java test sources, exactly this workflow's trigger set,
-  # while lint.yaml's paths filter would have had to grow to every one of them.
-  # Not behind the changes job, like api_tiers and for the same reasons. Needs
-  # no JDK, no Python and no network — it is a grep over the test tree.
-  gated_tags:
-    name: Check the gated-suite tagging
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
-        with:
-          tool: just
-
-      - name: Check every gated ITCase carries both markers
-        run: just check-gated-tags
+          NEEDS: ${{ toJSON(needs) }}
+        run: scripts/ci-gate.py
