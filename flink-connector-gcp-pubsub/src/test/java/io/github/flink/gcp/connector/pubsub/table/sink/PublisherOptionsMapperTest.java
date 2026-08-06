@@ -34,6 +34,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link PublisherOptionsMapper}. */
 class PublisherOptionsMapperTest {
@@ -107,20 +108,22 @@ class PublisherOptionsMapperTest {
                 .isEqualTo(PubSubPublisherOptions.defaults());
     }
 
+    /**
+     * Every option except the two {@code sink.message-ordering.enabled} rejects (#310), which the
+     * sibling below maps on their own — together they still cover every key.
+     */
     @Test
     void mapsEveryOptionOntoItsKnob() {
         Map<String, String> options = new HashMap<>();
         options.put("sink.batching.element-count-threshold", "17");
         options.put("sink.batching.request-byte-threshold", "3 kb");
         options.put("sink.batching.delay-threshold", "40 ms");
-        options.put("sink.retry.total-timeout", "5 min");
         options.put("sink.retry.initial-delay", "7 s");
         options.put("sink.retry.delay-multiplier", "1.5");
         options.put("sink.retry.max-delay", "9 s");
         options.put("sink.retry.initial-rpc-timeout", "11 s");
         options.put("sink.retry.rpc-timeout-multiplier", "2.5");
         options.put("sink.retry.max-rpc-timeout", "13 s");
-        options.put("sink.retry.max-attempts", "4");
         options.put("sink.message-ordering.enabled", "true");
         options.put("sink.in-flight.max-messages", "23");
         options.put("sink.in-flight.max-bytes", "5 mb");
@@ -135,14 +138,12 @@ class PublisherOptionsMapperTest {
         assertThat(mapped.getBatchElementCountThreshold()).isEqualTo(17L);
         assertThat(mapped.getBatchRequestByteThreshold()).isEqualTo(3L * 1024);
         assertThat(mapped.getBatchDelayThreshold()).isEqualTo(Duration.ofMillis(40));
-        assertThat(mapped.getRetryTotalTimeout()).isEqualTo(Duration.ofMinutes(5));
         assertThat(mapped.getRetryInitialDelay()).isEqualTo(Duration.ofSeconds(7));
         assertThat(mapped.getRetryDelayMultiplier()).isEqualTo(1.5);
         assertThat(mapped.getRetryMaxDelay()).isEqualTo(Duration.ofSeconds(9));
         assertThat(mapped.getRetryInitialRpcTimeout()).isEqualTo(Duration.ofSeconds(11));
         assertThat(mapped.getRetryRpcTimeoutMultiplier()).isEqualTo(2.5);
         assertThat(mapped.getRetryMaxRpcTimeout()).isEqualTo(Duration.ofSeconds(13));
-        assertThat(mapped.getRetryMaxAttempts()).isEqualTo(4);
         assertThat(mapped.isEnableMessageOrdering()).isTrue();
         assertThat(mapped.getMaxInFlightMessages()).isEqualTo(23);
         assertThat(mapped.getMaxInFlightBytes()).isEqualTo(5L * 1024 * 1024);
@@ -151,6 +152,38 @@ class PublisherOptionsMapperTest {
         assertThat(mapped.getRecoveryMaxAttempts()).isEqualTo(6);
         assertThat(mapped.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(45));
         assertThat(mapped.isPerDestinationMetrics()).isTrue();
+    }
+
+    /** The other two keys, without the ordering flag that rejects them. */
+    @Test
+    void mapsTheTwoRetryKeysMessageOrderingWouldReject() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.retry.max-attempts", "4");
+
+        PubSubPublisherOptions mapped = PublisherOptionsMapper.map(Configuration.fromMap(options));
+
+        assertThat(mapped.getRetryTotalTimeout()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(mapped.getRetryMaxAttempts()).isEqualTo(4);
+        assertThat(mapped.isEnableMessageOrdering()).isFalse();
+    }
+
+    /**
+     * The builder's cross-check reaches SQL unchanged rather than being restated as a Table-layer
+     * {@code ValidationException}, which is this module's rule for a check the DataStream builder
+     * already owns.
+     */
+    @Test
+    void aDdlCombiningThemWithMessageOrderingIsRejected() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.message-ordering.enabled", "true");
+        Configuration config = Configuration.fromMap(options);
+
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(config))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("retryTotalTimeout")
+                .hasMessageContaining("enableMessageOrdering");
     }
 
     @Test

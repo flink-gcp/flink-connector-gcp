@@ -423,6 +423,11 @@ public final class PubSubPublisherOptions implements Serializable {
          * Sets the total time budget of a publish including its retries. Optional; defaults to the
          * SDK's timeout.
          *
+         * <p><b>Cannot be combined with {@link #enableMessageOrdering(boolean)
+         * enableMessageOrdering(true)}</b>, which {@link #build()} rejects: an ordering-enabled SDK
+         * publisher replaces this and {@link #retryMaxAttempts(int)} with an effectively infinite
+         * budget, so setting either would promise a bound the publisher does not have.
+         *
          * @param retryTotalTimeout the total timeout, positive
          * @return this builder
          */
@@ -510,6 +515,9 @@ public final class PubSubPublisherOptions implements Serializable {
          * Caps the publish attempts. Optional; defaults to the SDK's behavior of bounding retries
          * only by the total timeout ({@code 0} means the same).
          *
+         * <p><b>Cannot be combined with {@link #enableMessageOrdering(boolean)
+         * enableMessageOrdering(true)}</b>; see {@link #retryTotalTimeout(Duration)}.
+         *
          * @param retryMaxAttempts the maximum attempts, non-negative
          * @return this builder
          */
@@ -523,6 +531,10 @@ public final class PubSubPublisherOptions implements Serializable {
         /**
          * Sets whether publishers honor message ordering keys. Defaults to {@code false}; the
          * writer rejects messages carrying an ordering key while this is disabled.
+         *
+         * <p>Enabling it costs the publish retry budget: {@link #build()} rejects an explicit
+         * {@link #retryTotalTimeout(Duration)} or {@link #retryMaxAttempts(int)} beside it, because
+         * the SDK publisher would replace both.
          *
          * @param enableMessageOrdering whether to enable message ordering
          * @return this builder
@@ -656,6 +668,18 @@ public final class PubSubPublisherOptions implements Serializable {
             Preconditions.checkState(
                     recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
                     "recoveryMaxBackoff must be at least recoveryInitialBackoff.");
+            // Rejected rather than ignored: the SDK publisher's constructor replaces both of these
+            // with "retry forever" whenever ordering is on, so a budget set here would silently
+            // not be one. Only an explicitly set knob is a conflict — the SDK's own defaults are
+            // what an ordering-enabled publisher is expected to override.
+            Preconditions.checkState(
+                    !enableMessageOrdering
+                            || (retryTotalTimeout == null && retryMaxAttempts == null),
+                    "retryTotalTimeout(...) and retryMaxAttempts(...) have no effect beside"
+                            + " enableMessageOrdering(true): the SDK publisher replaces both with"
+                            + " an unlimited attempt count and an effectively infinite total"
+                            + " timeout, for messages without an ordering key too. Remove them, or"
+                            + " disable message ordering. The other retry knobs are unaffected.");
             return new PubSubPublisherOptions(this);
         }
 

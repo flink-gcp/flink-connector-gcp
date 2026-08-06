@@ -74,9 +74,10 @@ for how the caps are sized.
 | `retryMaxRpcTimeout` | *unset ⇒ SDK default* | Cap on a publish RPC attempt's timeout |
 | `retryMaxAttempts` | *unset ⇒ SDK default* | Cap on publish attempts |
 
-`retryTotalTimeout` and `retryMaxAttempts` **do not reach an ordering-enabled publisher**: with
-`enableMessageOrdering` the SDK replaces both with "retry forever", for unkeyed messages too. See
-[#310]({{< param BookRepo >}}/issues/310); the other retry knobs are unaffected.
+`retryTotalTimeout` and `retryMaxAttempts` **are rejected beside `enableMessageOrdering(true)`**,
+rather than silently ignored: the SDK replaces both with "retry forever" as soon as ordering is on,
+for unkeyed messages too, so a budget set here would not be one. Set neither, or leave ordering off.
+The other six retry knobs are unaffected and combine with ordering freely.
 
 **Ordering, in-flight caps and the republish recovery**, all the connector's own.
 

@@ -150,8 +150,18 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   an outage the in-flight publishes retry forever and `waitComplete()` never drains — no defect
   required. An ordered sink therefore needs this bound whatever the SDK version, which is why
   nothing here is written as a workaround and why #309's rewording is a rewording rather than a
-  removal. That same override silently defeats `retryTotalTimeout`/`retryMaxAttempts` under
-  ordering, which is #310.
+  removal. That same override is what #310 settled from the other side: `retryTotalTimeout` and
+  `retryMaxAttempts` are **rejected** by `PubSubPublisherOptions.build()` beside
+  `enableMessageOrdering(true)`, rather than documented as ignored. Only an explicitly set knob is a
+  conflict (both are `@Nullable`, so "unset" is a distinguishable state and the SDK's own defaults
+  are exactly what ordering is expected to override), and the other six retry knobs still apply.
+  Rejecting was chosen over documenting because documenting alone is **unpinnable**: `Publisher`
+  exposes `getBatchingSettings()` and nothing for retry settings, and keeps no `retrySettings` field
+  — the values are folded into the stub's callables — so the reflective assertion the issue asked
+  for has no analogue of `configureAppliesSettingsToABuiltPublisher` to follow. The check lives in
+  the options class rather than in `PubSubSinkBuilder` because both knobs are its own, and it
+  reaches SQL unchanged as an `IllegalStateException`, which is this module's established
+  precedent for a builder cross-check.
   Six decisions not to re-litigate. **A separate thread is the only lever**: the wait ignores
   interruption, `Publisher` has no forcible variant, and `Waiter` is package-private — so
   `DefaultPublisherFactory.BoundedShutdown` runs the SDK shutdown on a **daemon** thread (one that

@@ -241,6 +241,12 @@ setting any of them alongside an explicit `create-never` is rejected.
 | `sink.metrics.per-destination` | Boolean | `perDestinationMetrics` |
 | `sink.parallelism` | Integer | the sink operator's parallelism |
 
+`sink.retry.total-timeout` and `sink.retry.max-attempts` are **rejected** together with
+`sink.message-ordering.enabled` = `true`, because an ordering-enabled SDK publisher replaces both
+with "retry forever" — the DDL is refused rather than the settings silently dropped. The six other
+`sink.retry.*` keys are unaffected. See
+[SDK publish retries]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions).
+
 ### Source
 
 Every option maps onto one setter of `PubSubSourceBuilder` or `PubSubSubscriberOptions.Builder`,

@@ -198,8 +198,9 @@ getting there:
   `maxAttempts = Integer.MAX_VALUE` and an effectively infinite total timeout** — for unkeyed
   messages too, as its own `TODO` notes. During a Pub/Sub outage the in-flight publishes retry
   forever, so the counter never drains and the close would never return. Nothing is defective here;
-  it is what ordered publishing costs, and it also means `retryTotalTimeout` and `retryMaxAttempts`
-  do not reach an ordering-enabled publisher.
+  it is what ordered publishing costs. The same override is why `retryTotalTimeout` and
+  `retryMaxAttempts` are rejected beside `enableMessageOrdering(true)` — they would reach nothing —
+  while the six other retry knobs still apply.
 - A failing ordering key can leave the counter permanently above zero: the failure callback cancels
   the messages still accumulating in that key's un-flushed batch and drops the batch, but returns
   only the in-flight batch's count. That one is a defect, tracked as
