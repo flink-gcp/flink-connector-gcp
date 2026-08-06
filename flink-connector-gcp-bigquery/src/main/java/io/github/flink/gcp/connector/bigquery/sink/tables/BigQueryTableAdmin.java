@@ -329,25 +329,35 @@ public class BigQueryTableAdmin implements TableAdmin {
             client =
                     emulatorEndpoint == null
                             ? BigQueryOptions.getDefaultInstance().getService()
-                            // The emulator serves plain HTTP, and setHost takes a URL where the
-                            // gRPC side takes a bare host:port — hence the scheme here and not in
-                            // the option's value.
-                            //
-                            // The project id is required rather than informative: BigQueryOptions
-                            // refuses to build without one, and against an emulator there is no
-                            // environment to infer it from, so an unset one fails wherever no
-                            // gcloud configuration exists — a CI runner, say, while passing on a
-                            // developer's machine. Which project it is does not matter, since
-                            // every request here names its table in full (see toTableId), and that
-                            // is why caching one client across destinations in several projects
-                            // stays correct.
-                            : BigQueryOptions.newBuilder()
-                                    .setHost("http://" + emulatorEndpoint.getTarget())
-                                    .setProjectId(destination.getProject())
-                                    .setCredentials(NoCredentials.getInstance())
-                                    .build()
+                            : emulatorOptions(emulatorEndpoint, destination.getProject())
                                     .getService();
         }
         return client;
+    }
+
+    /**
+     * Builds the options of a client talking to a BigQuery emulator with no credentials.
+     *
+     * <p>The emulator serves plain HTTP, and {@code setHost} takes a URL where the gRPC side takes
+     * a bare {@code host:port} — hence the scheme here rather than in the configured value.
+     *
+     * <p>The project id is <em>required</em> rather than informative: {@link BigQueryOptions}
+     * refuses to build without one it can determine, and an emulator offers no environment to
+     * determine it from — so leaving it unset fails wherever no gcloud configuration exists, a CI
+     * runner say, while passing on a developer's machine. Which project it is does not matter,
+     * since every request made here names its table in full (see {@link #toTableId}); that is also
+     * why one cached client stays correct across destinations in several projects.
+     *
+     * @param endpoint the emulator's REST endpoint
+     * @param project the project id to satisfy the builder with
+     * @return the options
+     */
+    @VisibleForTesting
+    static BigQueryOptions emulatorOptions(EmulatorEndpoint endpoint, String project) {
+        return BigQueryOptions.newBuilder()
+                .setHost("http://" + endpoint.getTarget())
+                .setProjectId(project)
+                .setCredentials(NoCredentials.getInstance())
+                .build();
     }
 }
