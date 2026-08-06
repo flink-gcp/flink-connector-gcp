@@ -20,6 +20,7 @@ import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.util.InstantiationUtil;
 
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -114,6 +115,27 @@ class FailureHandlerTest {
     void logAndDropReturnsNormally() {
         assertThatCode(() -> FailureHandler.logAndDrop().handle(ELEMENT))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void logAndDropNamesTheConnectorDestinationAndCause() throws Exception {
+        // This handler's entire behaviour is the line: nothing is thrown, nothing is counted and
+        // nothing is routed, so returning normally is all the test above can check. Emptying the
+        // statement would leave a policy that discards every failed record without a trace.
+        try (LogCapture capture = LogCapture.of(FailureHandlers.LogAndDrop.class)) {
+            FailureHandler.logAndDrop().handle(ELEMENT);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.getMessage())
+                                        .contains("testconnector")
+                                        .contains("projects/p/things/t")
+                                        .contains("bad element");
+                                assertThat(event.getThrowable()).hasMessage("cause");
+                            });
+        }
     }
 
     @Test

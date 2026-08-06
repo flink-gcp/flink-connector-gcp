@@ -39,12 +39,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittabl
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.Logger;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -515,26 +510,18 @@ class LoadJobOrchestratorTest {
         harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
         long sixTiB = 6L << 40;
 
-        Logger logger = (Logger) LogManager.getLogger(LoadJobOrchestrator.class);
-        CapturingAppender appender = new CapturingAppender();
-        appender.start();
-        logger.addAppender(appender);
-        try {
+        try (LogCapture capture = LogCapture.of(LoadJobOrchestrator.class)) {
             harness.orchestrator.run(
                     List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", sixTiB)));
-        } finally {
-            logger.removeAppender(appender);
-        }
 
-        // Three direct loads, one warning (the reconciliation is memoized), naming the field.
-        assertThat(appender.warnings)
-                .singleElement()
-                .satisfies(
-                        message ->
-                                assertThat(message)
-                                        .contains("live schema")
-                                        .contains("f2")
-                                        .contains(T1.toString()));
+            // Three direct loads, one warning (the reconciliation is memoized), naming the field.
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .asString()
+                    .contains("live schema")
+                    .contains("f2")
+                    .contains(T1.toString());
+        }
     }
 
     @Test
@@ -762,23 +749,6 @@ class LoadJobOrchestratorTest {
                                 assertThat(spec.getSchema().getFields())
                                         .extracting(Field::getName)
                                         .containsExactly("f1", "f2"));
-    }
-
-    /** Collects WARN messages logged through log4j2 while attached. */
-    private static final class CapturingAppender extends AbstractAppender {
-
-        private final List<String> warnings = new ArrayList<>();
-
-        CapturingAppender() {
-            super("capture", null, null, true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel() == Level.WARN) {
-                warnings.add(event.getMessage().getFormattedMessage());
-            }
-        }
     }
 
     @Test

@@ -70,6 +70,62 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
   `numCommittables*`, and a docs page written from that would have named metrics no reporter emits.
   The pending-committables gauge is captured rather than registered, as the writer harness captures
   `currentSendTime`.
+- **`LogCapture` is the shared log-assertion harness** (#323), and it is **deliberately narrow: 7
+  of the repository's 24 `LOG.warn`/`LOG.error` sites**, in three modules. The bar is that the log
+  is the report — remove the assertion and the branch has nothing identifying the event left.
+  Today: `FailureHandlers.LogAndDrop`, whose whole behaviour is the log; the Bigtable batcher's
+  absorbed shutdown report (#238); `BoundedShutdown`'s two warnings, one with no observable at all
+  and one whose `abandonedCount` says a teardown was abandoned but not which client (#265/#312);
+  the two FILE_LOADS quota warnings, which the job builds straight through; and
+  `LoadJobOrchestrator`'s live-schema warning, which was already log-asserted before #323 and was
+  merely migrated onto the helper.
+  - **The bar exists because the cost is real.** An assertion here couples a test to the *wording*
+    of a message, so rewording a log line — a harmless, desirable thing — breaks it. Measured
+    2026-08-06 over all 24 sites: 13 were already driven by an existing test, and for 9 of those
+    the same test already asserts a counter, a returned value or an absorbed exception that
+    identifies the event. Asserting the log there was tried and **reverted**: it doubled the
+    coverage of nothing and left ten tests pinned to prose. Do not re-add them. What the sites
+    above have in common is that no such assertion exists to fall back on.
+  - Three modules still beats a per-case capture, which would put the four log4j2 traps below into
+    three copies — the issue's own test for "the helper is the wrong shape" was two or three
+    *sites*, and this is past it.
+  - **The other 17 sites are unasserted on purpose, and nothing tracks them as a gap.** Five would
+    need an injection point opened in production code to be reachable at all; #336 proposed exactly
+    that and was **closed**, because changing a shipped class's structure to reach a log line is a
+    larger version of the cost the nine reverted assertions were already judged not to be worth.
+    #337 is open over one of the remaining sites' classes, but for an unrelated reason —
+    `BigQueryLoadJobRunner` has no unit test of its own — so a log assertion there would be
+    incidental and still has to clear the bar above.
+  - **The backend is log4j2, and both mechanisms #323 proposed are unavailable.** `log4j-slf4j-impl`
+    2.24.3 reaches every module transitively through `flink-test-utils`; logback is absent, so its
+    `ListAppender` cannot apply, and an slf4j-level capture would mean swapping the binding. log4j's
+    own `ListAppender` ships only in a `log4j-core` test-jar this build does not resolve, so the
+    appender is hand-rolled. No log4j2 type appears in `LogCapture`'s signature, so a backend change
+    is one file.
+  - **`log4j-core` is deliberately not declared in the pom**, though `LogCapture` compiles against
+    it. Nothing manages a log4j version here or in `flink-connector-parent`, so declaring it means
+    pinning one by hand — and a pin that drifts from what Flink puts on the runtime classpath fails
+    at runtime, where losing the transitive fails at compile time on the next build. The pom comment
+    on `flink-test-utils` records the chain.
+  - Four log4j2 mechanics the implementation works around, each of which would otherwise make a
+    capture collect nothing while looking like a log that was never emitted. The javadoc carries
+    them; the short form: the logger name is derived as **slf4j** derives it (`Class#getName`) and
+    not as `LogManager.getLogger(Class)` does (`getCanonicalName`) — they differ for a nested class
+    such as `LogAndDrop` and are not even in an ancestor relationship; the level is forced on the
+    **`LoggerConfig`**, not the `Logger`, since any later `updateLoggers()` discards the latter; the
+    level is only ever **widened**; and the appender name is unique per instance, because
+    `LoggerConfig.removeAppender(name)` removes *every* control with that name.
+  - **A test asserting a log was not emitted must sit beside one asserting a log was**, on the same
+    logger. An empty capture is the expected result of both a working capture and a broken one, and
+    only the positive case tells them apart.
+  - **`LogCaptureTest` is discriminating by construction, and the module having no `log4j2` config
+    is not what makes it so.** Every module now ships `log4j2-test.properties` (`rootLogger.level =
+    WARN`, `logger.gcp.level = INFO`) — this one included, added by #323 because `base`, `bigtable`
+    and `cloudtasks` had none and log4j2 fell back to `ERROR`, the #244 failure shape. So a WARN
+    passes everywhere with no forcing at all, and the level tests capture at **DEBUG**, which the
+    ambient config filters. `theAmbientConfigurationIsWhatTheseTestsAssume` asserts that
+    precondition rather than assuming it, so changing either properties file fails there instead of
+    quietly disarming the suite.
 - **Real-GCP gating annotations never move here.** `scripts/e2e-gated-its.sh` discovers the gated
   suite by grepping the `@EnabledIfEnvironmentVariable` literal on concrete classes under the
   connector modules and expects a surefire report per match — a meta-annotation or a base class in
@@ -86,7 +142,10 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
   only when the consumer *cannot* reach the behaviour. `AwaitsTest` is the first — `Awaits`'s
   diagnosis runs only after an await has already timed out, so no green build executes it and a
   broken diagnosis would first be discovered by the CI failure it exists to explain. Anything
-  covered incidentally by a consumer's ITs stays uncovered here. Consequences of the module now
+  covered incidentally by a consumer's ITs stays uncovered here. `LogCaptureTest` is the second
+  and clears the same bar: every failure mode it pins is "the capture silently saw nothing", which
+  in a consumer is indistinguishable from the log not being emitted — the assertion fails either
+  way and names the wrong culprit. Consequences of the module now
   producing surefire reports: `scripts/surefire-fingerprint.sh` picks them up (its `find` had
   simply matched nothing before), so `binary-compat`'s same-tests diff covers them automatically.
   `e2e-gated-its.sh --assert-ran` still ignores the module, and for an unrelated reason — it has

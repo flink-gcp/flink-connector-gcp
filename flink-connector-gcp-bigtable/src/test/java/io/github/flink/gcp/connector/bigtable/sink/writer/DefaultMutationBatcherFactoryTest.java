@@ -22,6 +22,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Constructor;
@@ -97,15 +98,29 @@ class DefaultMutationBatcherFactoryTest {
         // report out failed a job that a logAndDrop policy had kept running.
         BatchingException report = lifetimeFailureReport();
 
-        assertThatCode(
-                        () ->
-                                DefaultMutationBatcherFactory
-                                        .shutDownAbsorbingTheLifetimeFailureReport(
-                                                TABLE,
-                                                () -> {
-                                                    throw report;
-                                                }))
-                .doesNotThrowAnyException();
+        try (LogCapture capture = LogCapture.of(DefaultMutationBatcherFactory.class)) {
+            assertThatCode(
+                            () ->
+                                    DefaultMutationBatcherFactory
+                                            .shutDownAbsorbingTheLifetimeFailureReport(
+                                                    TABLE,
+                                                    () -> {
+                                                        throw report;
+                                                    }))
+                    .doesNotThrowAnyException();
+
+            // Absorbing the report is only defensible because it survives somewhere, and this
+            // line is the whole of that: a mutation first sent from inside the shutdown reaches
+            // neither the failure handler nor the writer's captured error, because completions
+            // can no longer run once the task mailbox is quiesced (#238, #323).
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.getMessage()).contains(TABLE.toString());
+                                assertThat(event.getThrowable()).isSameAs(report);
+                            });
+        }
     }
 
     @Test

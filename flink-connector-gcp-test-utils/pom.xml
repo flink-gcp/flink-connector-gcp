@@ -57,7 +57,15 @@ limitations under the License.
             <!-- MetricListener behind TestSinkWriterMetricGroup, plus the flink-runtime
                  ProxyMetricGroup it extends, which arrives transitively with it. Provided
                  like everything else here, so a module using that helper declares
-                 flink-test-utils at test scope itself. -->
+                 flink-test-utils at test scope itself.
+
+                 log4j-core, which LogCapture is written against, rides along the same way:
+                 flink-test-utils -> flink-test-utils-junit (compile) -> log4j-core (compile).
+                 Deliberately not declared here. Nothing manages a log4j version - not this
+                 build, not flink-connector-parent - so declaring it would pin one by hand,
+                 and a pin that drifts from what Flink puts on the runtime classpath fails at
+                 runtime rather than at build time. Losing the transitive, by contrast, is a
+                 compile error in LogCapture on the next build. -->
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-test-utils</artifactId>
             <scope>provided</scope>
