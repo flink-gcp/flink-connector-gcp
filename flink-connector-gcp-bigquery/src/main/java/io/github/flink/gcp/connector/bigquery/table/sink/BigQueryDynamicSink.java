@@ -32,6 +32,9 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 
 import javax.annotation.Nullable;
@@ -50,8 +53,14 @@ import java.util.Objects;
  * BigQuery time partitioning is not, and ingestion-time partitioning has no column to name — so a
  * partition spec fails at plan time rather than being silently ignored, and everything goes through
  * {@code sink.table-create.*}. {@code SupportsOverwrite}: {@code INSERT OVERWRITE} has no meaning
- * for the Storage Write API, while {@code WRITE_TRUNCATE} stays reachable as a FILE_LOADS option.
- * {@code SupportsWritingMetadata}: a BigQuery row has no envelope around it to expose.
+ * for the Storage Write API, while {@code WRITE_TRUNCATE} stays reachable as {@code
+ * sink.file-loads.write-disposition}. {@code SupportsWritingMetadata}: a BigQuery row has no
+ * envelope around it to expose.
+ *
+ * <p>Built through {@link #builder()} rather than a constructor: fourteen values reach it, eleven
+ * of them nullable, and a positional list of those would be repeated three times over — the
+ * constructor, {@link #copy()} and {@link #equals(Object)} — with no compiler check that the
+ * repetitions agree.
  */
 @Internal
 public final class BigQueryDynamicSink implements DynamicTableSink {
@@ -59,57 +68,42 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
     private final DataType physicalDataType;
     private final TableDestination destination;
     private final RowDataSchemaOptions schemaOptions;
+    @Nullable private final WriteMethod writeMethod;
     @Nullable private final CreateDisposition createDisposition;
     @Nullable private final TableCreateOptions tableCreateOptions;
     @Nullable private final String location;
     @Nullable private final SchemaUpdateOptions schemaUpdateOptions;
     @Nullable private final DefaultStreamOptions defaultStreamOptions;
+    @Nullable private final BufferedStreamOptions bufferedStreamOptions;
+    @Nullable private final FileLoadsOptions fileLoadsOptions;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String emulatorRestEndpoint;
     @Nullable private final Integer parallelism;
 
+    private BigQueryDynamicSink(Builder builder) {
+        this.physicalDataType = builder.physicalDataType;
+        this.destination = builder.destination;
+        this.schemaOptions = builder.schemaOptions;
+        this.writeMethod = builder.writeMethod;
+        this.createDisposition = builder.createDisposition;
+        this.tableCreateOptions = builder.tableCreateOptions;
+        this.location = builder.location;
+        this.schemaUpdateOptions = builder.schemaUpdateOptions;
+        this.defaultStreamOptions = builder.defaultStreamOptions;
+        this.bufferedStreamOptions = builder.bufferedStreamOptions;
+        this.fileLoadsOptions = builder.fileLoadsOptions;
+        this.emulatorEndpoint = builder.emulatorEndpoint;
+        this.emulatorRestEndpoint = builder.emulatorRestEndpoint;
+        this.parallelism = builder.parallelism;
+    }
+
     /**
-     * Creates the sink from fully resolved values.
+     * Returns a builder for a sink made of fully resolved values.
      *
-     * @param physicalDataType the physical columns of the table
-     * @param destination the destination table
-     * @param schemaOptions how the columns derive a BigQuery schema
-     * @param createDisposition the create disposition, or {@code null} to leave it at the
-     *     connector's default
-     * @param tableCreateOptions the settings a created table takes, or {@code null} to leave it
-     *     unpartitioned and unclustered
-     * @param location the BigQuery location, or {@code null}
-     * @param schemaUpdateOptions the schema update options, or {@code null}
-     * @param defaultStreamOptions the default-stream tuning, or {@code null}
-     * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null}
-     * @param emulatorRestEndpoint the emulator's REST endpoint, or {@code null}
-     * @param parallelism the sink parallelism, or {@code null} for the planner's own
+     * @return the builder
      */
-    public BigQueryDynamicSink(
-            DataType physicalDataType,
-            TableDestination destination,
-            RowDataSchemaOptions schemaOptions,
-            @Nullable CreateDisposition createDisposition,
-            @Nullable TableCreateOptions tableCreateOptions,
-            @Nullable String location,
-            @Nullable SchemaUpdateOptions schemaUpdateOptions,
-            @Nullable DefaultStreamOptions defaultStreamOptions,
-            @Nullable String emulatorEndpoint,
-            @Nullable String emulatorRestEndpoint,
-            @Nullable Integer parallelism) {
-        this.physicalDataType =
-                Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
-        this.destination = Preconditions.checkNotNull(destination, "destination must not be null");
-        this.schemaOptions =
-                Preconditions.checkNotNull(schemaOptions, "schemaOptions must not be null");
-        this.createDisposition = createDisposition;
-        this.tableCreateOptions = tableCreateOptions;
-        this.location = location;
-        this.schemaUpdateOptions = schemaUpdateOptions;
-        this.defaultStreamOptions = defaultStreamOptions;
-        this.emulatorEndpoint = emulatorEndpoint;
-        this.emulatorRestEndpoint = emulatorRestEndpoint;
-        this.parallelism = parallelism;
+    public static Builder builder() {
+        return new Builder();
     }
 
     @Override
@@ -127,6 +121,9 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 BigQuerySink.<RowData>builder()
                         .destination(destination)
                         .serializer(new RowDataSerializer(rowType, schemaOptions));
+        if (writeMethod != null) {
+            builder.writeMethod(writeMethod);
+        }
         if (createDisposition != null) {
             builder.createDisposition(createDisposition);
         }
@@ -144,6 +141,12 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         if (defaultStreamOptions != null) {
             builder.defaultStreamOptions(defaultStreamOptions);
         }
+        if (bufferedStreamOptions != null) {
+            builder.bufferedStreamOptions(bufferedStreamOptions);
+        }
+        if (fileLoadsOptions != null) {
+            builder.fileLoadsOptions(fileLoadsOptions);
+        }
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
@@ -156,18 +159,22 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
 
     @Override
     public DynamicTableSink copy() {
-        return new BigQueryDynamicSink(
-                physicalDataType,
-                destination,
-                schemaOptions,
-                createDisposition,
-                tableCreateOptions,
-                location,
-                schemaUpdateOptions,
-                defaultStreamOptions,
-                emulatorEndpoint,
-                emulatorRestEndpoint,
-                parallelism);
+        return builder()
+                .physicalDataType(physicalDataType)
+                .destination(destination)
+                .schemaOptions(schemaOptions)
+                .writeMethod(writeMethod)
+                .createDisposition(createDisposition)
+                .tableCreateOptions(tableCreateOptions)
+                .location(location)
+                .schemaUpdateOptions(schemaUpdateOptions)
+                .defaultStreamOptions(defaultStreamOptions)
+                .bufferedStreamOptions(bufferedStreamOptions)
+                .fileLoadsOptions(fileLoadsOptions)
+                .emulatorEndpoint(emulatorEndpoint)
+                .emulatorRestEndpoint(emulatorRestEndpoint)
+                .parallelism(parallelism)
+                .build();
     }
 
     @Override
@@ -187,11 +194,14 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         return physicalDataType.equals(that.physicalDataType)
                 && destination.equals(that.destination)
                 && schemaOptions.equals(that.schemaOptions)
+                && writeMethod == that.writeMethod
                 && createDisposition == that.createDisposition
                 && Objects.equals(tableCreateOptions, that.tableCreateOptions)
                 && Objects.equals(location, that.location)
                 && Objects.equals(schemaUpdateOptions, that.schemaUpdateOptions)
                 && Objects.equals(defaultStreamOptions, that.defaultStreamOptions)
+                && Objects.equals(bufferedStreamOptions, that.bufferedStreamOptions)
+                && Objects.equals(fileLoadsOptions, that.fileLoadsOptions)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(emulatorRestEndpoint, that.emulatorRestEndpoint)
                 && Objects.equals(parallelism, that.parallelism);
@@ -203,13 +213,215 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 physicalDataType,
                 destination,
                 schemaOptions,
+                writeMethod,
                 createDisposition,
                 tableCreateOptions,
                 location,
                 schemaUpdateOptions,
                 defaultStreamOptions,
+                bufferedStreamOptions,
+                fileLoadsOptions,
                 emulatorEndpoint,
                 emulatorRestEndpoint,
                 parallelism);
+    }
+
+    /**
+     * Collects the sink's fully resolved values.
+     *
+     * <p>Every setter takes {@code null} to mean "leave the connector's own default alone", which
+     * is exactly what {@code config.getOptional(...).orElse(null)} hands the factory, so an absent
+     * DDL option needs no branch on the way here. The three values that have no default are checked
+     * in {@link #build()}.
+     */
+    @Internal
+    public static final class Builder {
+
+        private DataType physicalDataType;
+        private TableDestination destination;
+        private RowDataSchemaOptions schemaOptions;
+        @Nullable private WriteMethod writeMethod;
+        @Nullable private CreateDisposition createDisposition;
+        @Nullable private TableCreateOptions tableCreateOptions;
+        @Nullable private String location;
+        @Nullable private SchemaUpdateOptions schemaUpdateOptions;
+        @Nullable private DefaultStreamOptions defaultStreamOptions;
+        @Nullable private BufferedStreamOptions bufferedStreamOptions;
+        @Nullable private FileLoadsOptions fileLoadsOptions;
+        @Nullable private String emulatorEndpoint;
+        @Nullable private String emulatorRestEndpoint;
+        @Nullable private Integer parallelism;
+
+        private Builder() {}
+
+        /**
+         * Sets the physical columns of the table. Required.
+         *
+         * @param physicalDataType the physical row type
+         * @return this builder
+         */
+        public Builder physicalDataType(DataType physicalDataType) {
+            this.physicalDataType = physicalDataType;
+            return this;
+        }
+
+        /**
+         * Sets the destination table. Required.
+         *
+         * @param destination the destination table
+         * @return this builder
+         */
+        public Builder destination(TableDestination destination) {
+            this.destination = destination;
+            return this;
+        }
+
+        /**
+         * Sets how the columns derive a BigQuery schema. Required.
+         *
+         * @param schemaOptions the schema derivation options
+         * @return this builder
+         */
+        public Builder schemaOptions(RowDataSchemaOptions schemaOptions) {
+            this.schemaOptions = schemaOptions;
+            return this;
+        }
+
+        /**
+         * Sets the write method, or {@code null} to leave it at the connector's default.
+         *
+         * @param writeMethod the write method, or {@code null}
+         * @return this builder
+         */
+        public Builder writeMethod(@Nullable WriteMethod writeMethod) {
+            this.writeMethod = writeMethod;
+            return this;
+        }
+
+        /**
+         * Sets the create disposition, or {@code null} to leave it at the connector's default.
+         *
+         * @param createDisposition the create disposition, or {@code null}
+         * @return this builder
+         */
+        public Builder createDisposition(@Nullable CreateDisposition createDisposition) {
+            this.createDisposition = createDisposition;
+            return this;
+        }
+
+        /**
+         * Sets the settings a created table takes, or {@code null} to leave it unpartitioned and
+         * unclustered.
+         *
+         * @param tableCreateOptions the creation settings, or {@code null}
+         * @return this builder
+         */
+        public Builder tableCreateOptions(@Nullable TableCreateOptions tableCreateOptions) {
+            this.tableCreateOptions = tableCreateOptions;
+            return this;
+        }
+
+        /**
+         * Sets the BigQuery location, or {@code null} to let the service resolve it.
+         *
+         * @param location the location, or {@code null}
+         * @return this builder
+         */
+        public Builder location(@Nullable String location) {
+            this.location = location;
+            return this;
+        }
+
+        /**
+         * Sets the schema update options, or {@code null} to leave them at the connector's default.
+         *
+         * @param schemaUpdateOptions the schema update options, or {@code null}
+         * @return this builder
+         */
+        public Builder schemaUpdateOptions(@Nullable SchemaUpdateOptions schemaUpdateOptions) {
+            this.schemaUpdateOptions = schemaUpdateOptions;
+            return this;
+        }
+
+        /**
+         * Sets the default-stream tuning, or {@code null} to leave every knob at its default.
+         *
+         * @param defaultStreamOptions the tuning, or {@code null}
+         * @return this builder
+         */
+        public Builder defaultStreamOptions(@Nullable DefaultStreamOptions defaultStreamOptions) {
+            this.defaultStreamOptions = defaultStreamOptions;
+            return this;
+        }
+
+        /**
+         * Sets the buffered-stream tuning, which the connector requires under {@code
+         * STORAGE_API_EXACTLY_ONCE} and rejects under the other write methods.
+         *
+         * @param bufferedStreamOptions the tuning, or {@code null}
+         * @return this builder
+         */
+        public Builder bufferedStreamOptions(
+                @Nullable BufferedStreamOptions bufferedStreamOptions) {
+            this.bufferedStreamOptions = bufferedStreamOptions;
+            return this;
+        }
+
+        /**
+         * Sets the FILE_LOADS options, which the connector requires under {@code FILE_LOADS} and
+         * rejects under the other write methods.
+         *
+         * @param fileLoadsOptions the options, or {@code null}
+         * @return this builder
+         */
+        public Builder fileLoadsOptions(@Nullable FileLoadsOptions fileLoadsOptions) {
+            this.fileLoadsOptions = fileLoadsOptions;
+            return this;
+        }
+
+        /**
+         * Sets the emulator's gRPC endpoint, or {@code null} for the real service.
+         *
+         * @param emulatorEndpoint the endpoint, or {@code null}
+         * @return this builder
+         */
+        public Builder emulatorEndpoint(@Nullable String emulatorEndpoint) {
+            this.emulatorEndpoint = emulatorEndpoint;
+            return this;
+        }
+
+        /**
+         * Sets the emulator's REST endpoint, or {@code null} for the real service.
+         *
+         * @param emulatorRestEndpoint the endpoint, or {@code null}
+         * @return this builder
+         */
+        public Builder emulatorRestEndpoint(@Nullable String emulatorRestEndpoint) {
+            this.emulatorRestEndpoint = emulatorRestEndpoint;
+            return this;
+        }
+
+        /**
+         * Sets the sink parallelism, or {@code null} for the planner's own.
+         *
+         * @param parallelism the parallelism, or {@code null}
+         * @return this builder
+         */
+        public Builder parallelism(@Nullable Integer parallelism) {
+            this.parallelism = parallelism;
+            return this;
+        }
+
+        /**
+         * Builds the sink.
+         *
+         * @return the sink
+         */
+        public BigQueryDynamicSink build() {
+            Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
+            Preconditions.checkNotNull(destination, "destination must not be null");
+            Preconditions.checkNotNull(schemaOptions, "schemaOptions must not be null");
+            return new BigQueryDynamicSink(this);
+        }
     }
 }

@@ -30,9 +30,6 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Duration;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -70,17 +67,8 @@ class BigQueryTableCreationFidelityITCase {
     }
 
     private static String withOptions(String table, String... keysAndValues) {
-        Map<String, String> options = new LinkedHashMap<>();
-        options.put("connector", BigQueryDynamicTableFactory.IDENTIFIER);
-        options.put("project", RealBigQuery.project());
-        options.put("dataset", RealBigQuery.dataset());
-        options.put("table", table);
-        for (int i = 0; i < keysAndValues.length; i += 2) {
-            options.put(keysAndValues[i], keysAndValues[i + 1]);
-        }
-        return options.entrySet().stream()
-                .map(e -> String.format("'%s' = '%s'", e.getKey(), e.getValue()))
-                .collect(Collectors.joining(",\n  ", "WITH (\n  ", "\n)"));
+        return TableDdl.withOptions(
+                RealBigQuery.project(), RealBigQuery.dataset(), table, keysAndValues);
     }
 
     @Test

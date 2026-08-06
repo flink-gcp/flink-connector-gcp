@@ -63,18 +63,18 @@ or the SDK already uses — the default is never restated here. The full list of
 | `project` | String | The project part of `destination(...)`; a bare project id |
 | `dataset` | String | The dataset part of `destination(...)` |
 | `table` | String | The table part of `destination(...)`. One SQL table writes to one BigQuery table: per-record routing has no SQL surface and stays on the DataStream API |
-| `emulator-endpoint` | String | `emulatorEndpoint(...)`, the Storage Write API's gRPC endpoint as `host:port` — parsed when the planner builds the sink, so a malformed value fails there |
-| `emulator-rest-endpoint` | String | `emulatorRestEndpoint(...)`, the table-metadata REST endpoint. Separate because BigQuery serves the two transports on different ports |
+| `emulator-endpoint` | String | `emulatorEndpoint(...)`, the Storage Write API's gRPC endpoint as `host:port` — parsed when the planner builds the sink, so a malformed value fails there. Rejected under `file-loads` |
+| `emulator-rest-endpoint` | String | `emulatorRestEndpoint(...)`, the table-metadata REST endpoint. Separate because BigQuery serves the two transports on different ports. Rejected under `file-loads`, as above |
 
 ### Sink
 
 | Option | Type | Maps to |
 |---|---|---|
-| `sink.write-method` | Enum | `writeMethod(...)`. Only `storage-api-at-least-once` is accepted; the other two arrive with their option families ([#288]({{< param BookRepo >}}/issues/288)) |
+| `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below, and a key of a family this option does not select is rejected rather than ignored |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.location` | String | `location(...)` |
-| `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()` |
-| `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()` |
+| `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()`. Setting it to `true` is rejected under `storage-api-exactly-once`: a buffered stream's schema is pinned when the stream is created. `false` is accepted there, so one DDL can be templated across write methods |
+| `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()`. `true` is rejected under `storage-api-exactly-once`, as above. Under `file-loads` both keys are ignored unless the disposition is `write-append`, which is BigQuery's own rule for load jobs |
 | `sink.derive-required-columns` | Boolean | Derives a `REQUIRED` column from a `NOT NULL` one; off, every derived column is `NULLABLE` |
 | `sink.json-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `JSON` |
 | `sink.geography-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `GEOGRAPHY` |
@@ -129,6 +129,56 @@ defaults.
 | `sink.default-stream.flush-interval` | Duration | `flushInterval(...)` |
 | `sink.default-stream.per-destination-metrics` | Boolean | `perDestinationMetrics(...)` |
 
+### Sink tuning — `storage-api-exactly-once`
+
+The connector's own `BufferedStreamOptions`, which this write method **requires**. Unlike the
+family above, a DDL that selects the write method and sets none of these still gets one, with every
+knob at its default — so there is no key to remember beside `sink.write-method`.
+
+One thing to decide before the first run of a job that auto-creates its table: each writer subtask
+creates the stream itself, and on a missing table each one attempts the creation. Against BigQuery's
+per-table metadata quota that is a race — measured at parallelism 10, the service answers *"Exceeded
+rate limits: too many table update operations for this table"* and the recovery schedule
+(`sink.buffered-stream.recovery.*`) absorbs it, but the budget is finite and a large cluster's
+default parallelism is larger than 10. Either create the table first and use
+`'sink.create-disposition' = 'create-never'`, or cap `sink.parallelism` for the run that creates
+it.
+
+There is no connection-pool group here: unlike the default-stream path, these appenders never enter
+the SDK's connection pool, so there is nothing for its sizing knobs to size.
+
+| Option | Type | Maps to |
+|---|---|---|
+| `sink.buffered-stream.max-append-request-bytes` | MemorySize | `maxAppendRequestBytes(...)` |
+| `sink.buffered-stream.recovery.initial-backoff` | Duration | `recoveryInitialBackoff(...)` |
+| `sink.buffered-stream.recovery.max-backoff` | Duration | `recoveryMaxBackoff(...)` |
+| `sink.buffered-stream.recovery.max-attempts` | Integer | `recoveryMaxAttempts(...)` |
+| `sink.buffered-stream.retry.initial-delay` | Duration | `retryInitialDelay(...)` |
+| `sink.buffered-stream.retry.delay-multiplier` | Double | `retryDelayMultiplier(...)` |
+| `sink.buffered-stream.retry.max-delay` | Duration | `retryMaxDelay(...)` |
+| `sink.buffered-stream.retry.max-attempts` | Integer | `retryMaxAttempts(...)` |
+| `sink.buffered-stream.retry.max-duration` | Duration | `maxRetryDuration(...)` |
+
+### Sink tuning — `file-loads`
+
+The connector's own `FileLoadsOptions`, which this write method **requires**. So is
+`sink.file-loads.staging-path`: it is the one *conditionally* required key on this page — no
+default, and required by the write method rather than by the connector — and leaving it out under
+`file-loads` is rejected when the plan is built, naming the key.
+
+| Option | Type | Maps to |
+|---|---|---|
+| `sink.file-loads.staging-path` | String | `stagingPath(...)` — `gs://bucket` or `gs://bucket/prefix`. **Required** under this write method |
+| `sink.file-loads.temp-dataset` | String | `tempDataset(...)`, holding the temporary tables a load too large for one job goes through. Absent, each destination table's own dataset. **Batch execution only** — a streaming overflow splits into direct append jobs and creates no temporary table, so the option is inert there |
+| `sink.file-loads.write-disposition` | Enum | `writeDisposition(...)` — `write-append`, `write-truncate` or `write-empty`. Streaming execution accepts `write-append` only, since every checkpoint issues its own load job |
+| `sink.file-loads.min-checkpoint-interval` | Duration | `minCheckpointInterval(...)`, the smallest checkpoint interval streaming execution accepts. Lowering it is an explicit opt-in — BigQuery allows 1,500 load jobs per table per day and each checkpoint issues at least one |
+| `sink.file-loads.load-job-poll.initial-backoff` | Duration | `loadJobPollInitialBackoff(...)` |
+| `sink.file-loads.load-job-poll.max-backoff` | Duration | `loadJobPollMaxBackoff(...)` |
+| `sink.file-loads.schema-reconcile.initial-backoff` | Duration | `schemaReconcileInitialBackoff(...)` |
+| `sink.file-loads.schema-reconcile.max-backoff` | Duration | `schemaReconcileMaxBackoff(...)` |
+| `sink.file-loads.schema-reconcile.max-attempts` | Integer | `schemaReconcileMaxAttempts(...)` |
+| `sink.file-loads.per-destination-metrics` | Boolean | `perDestinationMetrics(...)` |
+
 ## Type mapping
 
 A column's BigQuery type is derived from its SQL type, and the derived schema is what the connector
@@ -181,10 +231,37 @@ BigQuery.
 
 ## Delivery guarantees
 
-At-least-once, and only with checkpointing enabled: rows are durable once a checkpoint completes,
-and a restart may re-append rows the previous attempt had already written. See
+`sink.write-method` decides them. **In streaming execution all three need checkpointing enabled**
+(`execution.checkpointing.interval`), since a checkpoint is what makes rows durable, visible or
+loaded; batch execution needs none, because the sink flushes or loads at end of input. See
 [Delivery guarantees]({{< relref "docs/connectors/datastream/bigquery" >}}#delivery-guarantees-and-state)
-on the DataStream page for what each write method promises.
+on the DataStream page for the full statement; what a SQL user needs is:
+
+- **`storage-api-at-least-once`** (the default) — rows are durable once a checkpoint completes, and
+  a restart may re-append rows the previous attempt had already written.
+- **`storage-api-exactly-once`** — rows become visible only when a completed checkpoint commits
+  them, so a restart **from a checkpoint or savepoint** neither loses nor duplicates. A *stateless*
+  redeploy is the exception, and it loses: rows appended but not yet flushed stay invisible forever.
+  The checkpoint interval is therefore the visibility latency as well. It cannot evolve the table's
+  schema mid-run — the stream's schema is pinned when the stream is created, which is why setting
+  either `sink.schema-update.*` key to `true` is rejected with it — and it needs Flink's
+  `EXACTLY_ONCE` checkpointing mode with checkpoints-after-tasks-finish enabled. Both are already
+  Flink's defaults; a cluster that overrides either has the job refused when the graph is built.
+- **`file-loads`** — always exactly-once, by staging rows as files on Cloud Storage and importing
+  them with load jobs. In streaming execution each checkpoint issues at least one load job per
+  table, against BigQuery's quota of **1,500 per table per day**, so the checkpoint interval has a
+  floor — two minutes — that `sink.file-loads.min-checkpoint-interval` lowers only as an explicit
+  opt-in; and each checkpoint appends, so `write-truncate` and `write-empty` are refused there. The
+  quota is per *table* while the floor is checked per *job*, so two jobs writing one table, or two
+  `INSERT INTO` statements in one `StatementSet`, each pass the check and together double the
+  cadence.
+  Batch execution, `SET 'execution.runtime-mode' = 'batch'`, loads everything at end of input and
+  takes any disposition.
+
+The [worked examples]({{< relref "docs/examples/bigquery" >}}) carry what neither of those bullets
+can: how to redeploy an exactly-once job without losing the rows a discarded checkpoint was holding,
+and why a FILE_LOADS staging bucket wants to be a dedicated one with a lifecycle rule sized above
+the longest outage the job must recover from.
 
 ### Inserts only
 
@@ -221,6 +298,21 @@ non-repeated, scalar" for clustering. A clustering column of a scalar type BigQu
 accept today — `DOUBLE`, `TIME` — still reaches the service, deliberately: encoding that list here
 would buy an earlier failure at the risk of refusing a table a later BigQuery would create.
 
+**A tuning key of a write method you did not select is rejected, not ignored.** Each write method
+owns one options object on the DataStream API, and the builder already refuses a mismatched pair —
+but its message names `bufferedStreamOptions(...)`, a method a SQL user never called and cannot
+call. The connector therefore restates the rule in option keys, naming the offending ones. The two
+rules that are not about a family read the same way: a `sink.schema-update.*` key set to `true`
+under `storage-api-exactly-once`, and `emulator-endpoint` / `emulator-rest-endpoint` under
+`file-loads`,
+which stages to Cloud Storage that no emulator provides.
+
+**The two required families are built from the write method, not from key presence.** Selecting
+`storage-api-exactly-once` or `file-loads` and tuning nothing is a complete configuration: every
+knob of `BufferedStreamOptions` has a default, and `FileLoadsOptions` needs only its staging path.
+`sink.default-stream.*` is the one family whose absence means absence, because its write method is
+chosen by not choosing.
+
 **No metadata columns.** A BigQuery row has no envelope around it, so there is nothing to expose.
 
 **One table per SQL table.** Per-record routing and per-destination creation options stay on the
@@ -244,3 +336,11 @@ stores a create request's partitioning and clustering verbatim and **validates n
 `BigQueryTableCreateOptionsITCase` can show the settings survive the mapper but not that BigQuery
 would accept them. The gated `BigQueryTableCreationFidelityITCase` is what measures that, against
 the real service.
+
+**Neither write method beyond the default has a table-level round trip the emulator can carry**, so
+both are gated: `BigQueryTableExactlyOnceITCase` and `BigQueryTableFileLoadsITCase`, against real
+BigQuery and real Cloud Storage. `file-loads` stages to Cloud Storage, which nothing here
+stands in for. `storage-api-exactly-once` was tried and dropped — the emulator assigns its own
+append offsets instead of honoring the requested one, and keeps no flush cursor, so the writer's
+offset check fails on the first append. What the emulator suite still covers is the plan-time
+refusals, in the planner where a SQL user meets them.

@@ -25,6 +25,9 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import org.junit.jupiter.api.Test;
 
@@ -51,50 +54,27 @@ class BigQueryDynamicSinkTest {
             TableDestination.of("my-project", "my_dataset", "my_table");
 
     /**
-     * The constructor's arguments, so a test can vary one by name.
+     * The sink's three required values, so a test can vary one of the other eleven by name.
      *
-     * <p>The sink takes eleven positional arguments, eight of them {@code null} in the default
-     * case, and the identity test below has to build one variation per argument — written out, the
-     * argument lists were longer than the assertions and a new field meant editing every one of
-     * them.
+     * <p>The production builder is the holder: the identity test below builds one variation per
+     * field, and a private copy of the same fourteen fields would have to be kept in step with it
+     * for no gain.
      */
-    private static final class Args {
-        private DataType physicalDataType = ROW;
-        private TableDestination destination = DESTINATION;
-        private RowDataSchemaOptions schemaOptions = RowDataSchemaOptions.defaults();
-        private CreateDisposition createDisposition;
-        private TableCreateOptions tableCreateOptions;
-        private String location;
-        private SchemaUpdateOptions schemaUpdateOptions;
-        private DefaultStreamOptions defaultStreamOptions;
-        private String emulatorEndpoint;
-        private String emulatorRestEndpoint;
-        private Integer parallelism;
-
-        private BigQueryDynamicSink build() {
-            return new BigQueryDynamicSink(
-                    physicalDataType,
-                    destination,
-                    schemaOptions,
-                    createDisposition,
-                    tableCreateOptions,
-                    location,
-                    schemaUpdateOptions,
-                    defaultStreamOptions,
-                    emulatorEndpoint,
-                    emulatorRestEndpoint,
-                    parallelism);
-        }
+    private static BigQueryDynamicSink.Builder base() {
+        return BigQueryDynamicSink.builder()
+                .physicalDataType(ROW)
+                .destination(DESTINATION)
+                .schemaOptions(RowDataSchemaOptions.defaults());
     }
 
     private static BigQueryDynamicSink sink() {
-        return new Args().build();
+        return base().build();
     }
 
-    private static BigQueryDynamicSink sinkWith(Consumer<Args> vary) {
-        Args args = new Args();
-        vary.accept(args);
-        return args.build();
+    private static BigQueryDynamicSink sinkWith(Consumer<BigQueryDynamicSink.Builder> vary) {
+        BigQueryDynamicSink.Builder builder = base();
+        vary.accept(builder);
+        return builder.build();
     }
 
     @Test
@@ -110,69 +90,75 @@ class BigQueryDynamicSinkTest {
         assertThat(sink().asSummaryString()).isEqualTo("BigQuery table sink");
     }
 
-    @Test
-    void aCopyEqualsTheOriginal() {
-        DynamicTableSink copy = sink().copy();
-        assertThat(copy).isEqualTo(sink()).hasSameHashCodeAs(sink());
-        assertThat(copy).isNotSameAs(sink());
-    }
-
-    /** One variation per field of the sink, keyed by the field it varies. */
-    private static Map<String, BigQueryDynamicSink> variations() {
-        Map<String, BigQueryDynamicSink> varied = new LinkedHashMap<>();
+    /** One value per field of the sink, keyed by the field it sets. */
+    private static Map<String, Consumer<BigQueryDynamicSink.Builder>> variations() {
+        Map<String, Consumer<BigQueryDynamicSink.Builder>> varied = new LinkedHashMap<>();
         varied.put(
                 "physicalDataType",
-                sinkWith(
-                        a ->
-                                a.physicalDataType =
-                                        DataTypes.ROW(DataTypes.FIELD("id", DataTypes.STRING()))));
+                a -> a.physicalDataType(DataTypes.ROW(DataTypes.FIELD("id", DataTypes.STRING()))));
         varied.put(
                 "destination",
-                sinkWith(
-                        a ->
-                                a.destination =
-                                        TableDestination.of(
-                                                "my-project", "my_dataset", "other_table")));
+                a -> a.destination(TableDestination.of("my-project", "my_dataset", "other_table")));
         varied.put(
                 "schemaOptions",
-                sinkWith(
-                        a ->
-                                a.schemaOptions =
-                                        RowDataSchemaOptions.builder()
-                                                .jsonFieldPaths(Collections.singletonList("id"))
-                                                .build()));
-        varied.put(
-                "createDisposition",
-                sinkWith(a -> a.createDisposition = CreateDisposition.CREATE_NEVER));
+                a ->
+                        a.schemaOptions(
+                                RowDataSchemaOptions.builder()
+                                        .jsonFieldPaths(Collections.singletonList("id"))
+                                        .build()));
+        varied.put("writeMethod", a -> a.writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE));
+        varied.put("createDisposition", a -> a.createDisposition(CreateDisposition.CREATE_NEVER));
         varied.put(
                 "tableCreateOptions",
-                sinkWith(
-                        a ->
-                                a.tableCreateOptions =
-                                        TableCreateOptions.builder()
-                                                .timePartitioning(
-                                                        TableCreateOptions.TimePartitioningType.DAY)
-                                                .build()));
-        varied.put("location", sinkWith(a -> a.location = "US"));
+                a ->
+                        a.tableCreateOptions(
+                                TableCreateOptions.builder()
+                                        .timePartitioning(
+                                                TableCreateOptions.TimePartitioningType.DAY)
+                                        .build()));
+        varied.put("location", a -> a.location("US"));
         varied.put(
                 "schemaUpdateOptions",
-                sinkWith(
-                        a ->
-                                a.schemaUpdateOptions =
-                                        SchemaUpdateOptions.builder().allowNewFields().build()));
+                a -> a.schemaUpdateOptions(SchemaUpdateOptions.builder().allowNewFields().build()));
         varied.put(
                 "defaultStreamOptions",
-                sinkWith(
-                        a ->
-                                a.defaultStreamOptions =
-                                        DefaultStreamOptions.builder()
-                                                .maxInflightRequests(5)
-                                                .build()));
-        varied.put("emulatorEndpoint", sinkWith(a -> a.emulatorEndpoint = "localhost:9060"));
+                a ->
+                        a.defaultStreamOptions(
+                                DefaultStreamOptions.builder().maxInflightRequests(5).build()));
         varied.put(
-                "emulatorRestEndpoint", sinkWith(a -> a.emulatorRestEndpoint = "localhost:9050"));
-        varied.put("parallelism", sinkWith(a -> a.parallelism = 3));
+                "bufferedStreamOptions",
+                a ->
+                        a.bufferedStreamOptions(
+                                BufferedStreamOptions.builder().retryMaxAttempts(7).build()));
+        varied.put(
+                "fileLoadsOptions",
+                a ->
+                        a.fileLoadsOptions(
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket/prefix")
+                                        .build()));
+        varied.put("emulatorEndpoint", a -> a.emulatorEndpoint("localhost:9060"));
+        varied.put("emulatorRestEndpoint", a -> a.emulatorRestEndpoint("localhost:9050"));
+        varied.put("parallelism", a -> a.parallelism(3));
         return varied;
+    }
+
+    /** A sink with every field set, built by applying all of {@link #variations()} at once. */
+    private static BigQueryDynamicSink fullySpecified() {
+        BigQueryDynamicSink.Builder builder = base();
+        variations().values().forEach(vary -> vary.accept(builder));
+        return builder.build();
+    }
+
+    @Test
+    void aCopyOfAFullySpecifiedSinkEqualsIt() {
+        // Fully specified, not the default one: copy() is a chain of fourteen builder calls, and a
+        // dropped call reproduces whatever the default already was — copying a sink whose optional
+        // fields are all null cannot tell the two apart. Measured: a copy() that lost writeMethod
+        // survived that version of this test.
+        DynamicTableSink copy = fullySpecified().copy();
+        assertThat(copy).isEqualTo(fullySpecified()).hasSameHashCodeAs(fullySpecified());
+        assertThat(copy).isNotSameAs(fullySpecified());
     }
 
     @Test
@@ -180,15 +166,55 @@ class BigQueryDynamicSinkTest {
         BigQueryDynamicSink base = sink();
         variations()
                 .forEach(
-                        (field, varied) ->
-                                assertThat(varied).as("varying %s", field).isNotEqualTo(base));
+                        (field, vary) ->
+                                assertThat(sinkWith(vary))
+                                        .as("varying %s", field)
+                                        .isNotEqualTo(base));
+    }
+
+    @Test
+    void everyVariationVariesTheFieldItIsKeyedBy() {
+        // The map's keys are labels, and nothing else ties one to the field it names. That matters
+        // more since fullySpecified() applied them all at once: two entries touching one field
+        // would leave a third at its default, and a copy() that dropped *that* call would survive
+        // the test above. So each entry is checked to change its own field and no other.
+        BigQueryDynamicSink base = sink();
+        variations()
+                .forEach(
+                        (field, vary) -> {
+                            BigQueryDynamicSink varied = sinkWith(vary);
+                            for (Field declared : BigQueryDynamicSink.class.getDeclaredFields()) {
+                                if (Modifier.isStatic(declared.getModifiers())) {
+                                    continue;
+                                }
+                                declared.setAccessible(true);
+                                try {
+                                    assertThat(declared.get(varied))
+                                            .as("%s varied %s", field, declared.getName())
+                                            .satisfies(
+                                                    value -> {
+                                                        if (declared.getName().equals(field)) {
+                                                            assertThat(value)
+                                                                    .isNotEqualTo(
+                                                                            declared.get(base));
+                                                        } else {
+                                                            assertThat(value)
+                                                                    .isEqualTo(declared.get(base));
+                                                        }
+                                                    });
+                                } catch (IllegalAccessException e) {
+                                    throw new AssertionError(e);
+                                }
+                            }
+                        });
     }
 
     @Test
     void everyFieldOfTheSinkIsActuallyVaried() {
         // The half the assertions above cannot make: a field added to the sink and forgotten here
-        // reads exactly like a field that is covered, and a value dropped from equals() would then
-        // go unnoticed. Reflection is what makes the list exhaustive rather than remembered.
+        // reads exactly like a field that is covered, and a value dropped from equals() or from
+        // copy() would then go unnoticed. Reflection is what makes the list exhaustive rather than
+        // remembered.
         List<String> declared = new ArrayList<>();
         for (Field field : BigQueryDynamicSink.class.getDeclaredFields()) {
             if (!Modifier.isStatic(field.getModifiers())) {

@@ -150,6 +150,10 @@ class FileLoadsOptionsTest {
         assertThat(base().schemaReconcileMaxAttempts(3).build()).isNotEqualTo(defaults);
 
         assertThat(defaults.toString())
+                // The enum renders its DDL spelling here, which is the whole visible cost of
+                // WriteDisposition.toString(); nothing parses this string, but nothing pinned the
+                // rendering either.
+                .contains("writeDisposition=write-append")
                 .contains("loadJobPollInitialBackoff=PT1S")
                 .contains("loadJobPollMaxBackoff=PT30S")
                 .contains("schemaReconcileInitialBackoff=PT0.5S")

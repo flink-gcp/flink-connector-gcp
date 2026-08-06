@@ -245,7 +245,10 @@ public class BigQueryFileLoadsSink<T>
                             + " only (each checkpoint appends its rows; WRITE_TRUNCATE and"
                             + " WRITE_EMPTY would make every checkpoint replace or reject the"
                             + " table), but the write disposition is "
-                            + options.getWriteDisposition()
+                            // name(), not toString(): the sentence above names the Java constants
+                            // WRITE_APPEND, WRITE_TRUNCATE and WRITE_EMPTY, and the DDL spelling
+                            // must not mix with them inside one message.
+                            + options.getWriteDisposition().name()
                             + ".");
         }
         long intervalMs = checkpointConfig.getCheckpointInterval();

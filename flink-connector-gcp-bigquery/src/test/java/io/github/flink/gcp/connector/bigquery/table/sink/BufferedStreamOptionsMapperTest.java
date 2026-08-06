@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 
-import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
 import org.junit.jupiter.api.Test;
 
@@ -35,84 +35,67 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Tests for {@link DefaultStreamOptionsMapper}. */
-class DefaultStreamOptionsMapperTest {
+/** Tests for {@link BufferedStreamOptionsMapper}. */
+class BufferedStreamOptionsMapperTest {
+
+    /** The key prefix the whole family shares, for the reflective coverage test below. */
+    private static final String PREFIX = "sink.buffered-stream.";
 
     /**
-     * Every {@code DefaultStreamOptions.Builder} setter and the option that feeds it.
+     * Every {@code BufferedStreamOptions.Builder} setter and the option that feeds it.
      *
      * <p>Written out rather than derived, because the option keys are grouped ({@code
-     * sink.default-stream.recovery.*}, {@code .retry.*}) and no naming rule turns one into the
+     * sink.buffered-stream.recovery.*}, {@code .retry.*}) and no naming rule turns one into the
      * other — {@code maxRetryDuration} is {@code retry.max-duration}, not {@code
-     * max-retry-duration}. The reflection test below is what makes the table exhaustive.
+     * max-retry-duration}. The two reflection tests below are what make the table exhaustive.
      */
     private static final Map<String, ConfigOption<?>> SETTER_TO_OPTION = new LinkedHashMap<>();
 
     static {
         SETTER_TO_OPTION.put(
                 "maxAppendRequestBytes",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_APPEND_REQUEST_BYTES);
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_MAX_APPEND_REQUEST_BYTES);
         SETTER_TO_OPTION.put(
                 "recoveryInitialBackoff",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RECOVERY_INITIAL_BACKOFF);
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF);
         SETTER_TO_OPTION.put(
                 "recoveryMaxBackoff",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RECOVERY_MAX_BACKOFF);
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_MAX_BACKOFF);
         SETTER_TO_OPTION.put(
                 "recoveryMaxAttempts",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS);
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_MAX_ATTEMPTS);
         SETTER_TO_OPTION.put(
                 "retryInitialDelay",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_INITIAL_DELAY);
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_INITIAL_DELAY);
         SETTER_TO_OPTION.put(
                 "retryDelayMultiplier",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_DELAY_MULTIPLIER);
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_DELAY_MULTIPLIER);
         SETTER_TO_OPTION.put(
-                "retryMaxDelay", BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_MAX_DELAY);
+                "retryMaxDelay", BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_DELAY);
         SETTER_TO_OPTION.put(
                 "retryMaxAttempts",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_MAX_ATTEMPTS);
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_ATTEMPTS);
         SETTER_TO_OPTION.put(
                 "maxRetryDuration",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_MAX_DURATION);
-        SETTER_TO_OPTION.put(
-                "maxInflightRequests",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_INFLIGHT_REQUESTS);
-        SETTER_TO_OPTION.put(
-                "maxInflightBytes",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_INFLIGHT_BYTES);
-        SETTER_TO_OPTION.put(
-                "minConnectionsPerRegion",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MIN_CONNECTIONS_PER_REGION);
-        SETTER_TO_OPTION.put(
-                "maxConnectionsPerRegion",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_CONNECTIONS_PER_REGION);
-        SETTER_TO_OPTION.put(
-                "destinationIdleTimeout",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_DESTINATION_IDLE_TIMEOUT);
-        SETTER_TO_OPTION.put(
-                "flushInterval", BigQueryConnectorOptions.SINK_DEFAULT_STREAM_FLUSH_INTERVAL);
-        SETTER_TO_OPTION.put(
-                "perDestinationMetrics",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_PER_DESTINATION_METRICS);
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_DURATION);
     }
 
     private static String key(String setter) {
         return SETTER_TO_OPTION.get(setter).key();
     }
 
-    private static DefaultStreamOptions map(Map<String, String> options) {
-        return DefaultStreamOptionsMapper.map(Configuration.fromMap(options));
+    private static BufferedStreamOptions map(Map<String, String> options) {
+        return BufferedStreamOptionsMapper.map(Configuration.fromMap(options));
     }
 
     @Test
-    void everyDefaultStreamKnobHasAnOption() {
+    void everyBufferedStreamKnobHasAnOption() {
         // Not filtered on arity or name: a knob of any shape must appear, which is the whole point
         // of this guard.
         Set<String> setters =
-                Arrays.stream(DefaultStreamOptions.Builder.class.getDeclaredMethods())
+                Arrays.stream(BufferedStreamOptions.Builder.class.getDeclaredMethods())
                         .filter(m -> Modifier.isPublic(m.getModifiers()))
-                        .filter(m -> m.getReturnType() == DefaultStreamOptions.Builder.class)
+                        .filter(m -> m.getReturnType() == BufferedStreamOptions.Builder.class)
                         .map(Method::getName)
                         .collect(Collectors.toSet());
 
@@ -123,8 +106,10 @@ class DefaultStreamOptionsMapperTest {
     @Test
     void everyOptionOfTheFamilyFeedsAKnob() {
         // The other half of the guard above, and the one a new key would otherwise slip past: an
-        // option declared under the sink.default-stream.* prefix that no setter consumes.
-        Set<String> declared = OptionFamilies.declaredKeysUnder("sink.default-stream.");
+        // option declared under the prefix that no setter consumes. The expected side is read out
+        // of BigQueryConnectorOptions rather than written here — a literal list would only restate
+        // SETTER_TO_OPTION and could never disagree with it.
+        Set<String> declared = OptionFamilies.declaredKeysUnder(PREFIX);
         // Guards the reflection itself: an empty set would make the assertion vacuous.
         assertThat(declared).isNotEmpty();
 
@@ -137,28 +122,30 @@ class DefaultStreamOptionsMapperTest {
     }
 
     @Test
-    void noKeyOfTheFamilyMeansNoOptionsObject() {
-        assertThat(map(new HashMap<>())).isNull();
+    void noKeyOfTheFamilyStillProducesTheDefaults() {
+        // Unlike DefaultStreamOptionsMapper, which returns null here: the builder requires this
+        // object for STORAGE_API_EXACTLY_ONCE, so a DDL that selects that method and tunes nothing
+        // must still get one — and every knob of it defaulted is exactly what it asked for.
+        assertThat(map(new HashMap<>())).isEqualTo(BufferedStreamOptions.builder().build());
 
-        // An unrelated sink option does not conjure one either.
+        // An unrelated sink option changes nothing either.
         Map<String, String> unrelated = new HashMap<>();
         unrelated.put(BigQueryConnectorOptions.SINK_LOCATION.key(), "US");
-        assertThat(map(unrelated)).isNull();
+        assertThat(map(unrelated)).isEqualTo(BufferedStreamOptions.builder().build());
     }
 
     @Test
     void oneKeyOfTheFamilyLeavesEveryOtherKnobAtItsDefault() {
         Map<String, String> options = new HashMap<>();
-        options.put(key("maxInflightRequests"), "7");
+        options.put(key("retryMaxAttempts"), "7");
 
-        DefaultStreamOptions mapped = map(options);
-        DefaultStreamOptions defaults = DefaultStreamOptions.builder().build();
+        BufferedStreamOptions mapped = map(options);
+        BufferedStreamOptions defaults = BufferedStreamOptions.builder().build();
 
-        assertThat(mapped.getMaxInflightRequests()).isEqualTo(7);
+        assertThat(mapped.getRetryMaxAttempts()).isEqualTo(7);
         assertThat(mapped.getMaxAppendRequestBytes())
                 .isEqualTo(defaults.getMaxAppendRequestBytes());
         assertThat(mapped.getRecoveryMaxAttempts()).isEqualTo(defaults.getRecoveryMaxAttempts());
-        assertThat(mapped.getFlushInterval()).isNull();
     }
 
     @Test
@@ -173,15 +160,8 @@ class DefaultStreamOptionsMapperTest {
         options.put(key("retryMaxDelay"), "40 s");
         options.put(key("retryMaxAttempts"), "6");
         options.put(key("maxRetryDuration"), "9 min");
-        options.put(key("maxInflightRequests"), "42");
-        options.put(key("maxInflightBytes"), "8 mb");
-        options.put(key("minConnectionsPerRegion"), "3");
-        options.put(key("maxConnectionsPerRegion"), "30");
-        options.put(key("destinationIdleTimeout"), "2 h");
-        options.put(key("flushInterval"), "5 s");
-        options.put(key("perDestinationMetrics"), "true");
 
-        DefaultStreamOptions mapped = map(options);
+        BufferedStreamOptions mapped = map(options);
 
         assertThat(mapped.getMaxAppendRequestBytes()).isEqualTo(1024L * 1024L);
         assertThat(mapped.getRecoveryInitialBackoff()).isEqualTo(Duration.ofSeconds(1));
@@ -192,22 +172,15 @@ class DefaultStreamOptionsMapperTest {
         assertThat(mapped.getRetryMaxDelay()).isEqualTo(Duration.ofSeconds(40));
         assertThat(mapped.getRetryMaxAttempts()).isEqualTo(6);
         assertThat(mapped.getMaxRetryDuration()).isEqualTo(Duration.ofMinutes(9));
-        assertThat(mapped.getMaxInflightRequests()).isEqualTo(42);
-        assertThat(mapped.getMaxInflightBytes()).isEqualTo(8L * 1024L * 1024L);
-        assertThat(mapped.getMinConnectionsPerRegion()).isEqualTo(3);
-        assertThat(mapped.getMaxConnectionsPerRegion()).isEqualTo(30);
-        assertThat(mapped.getDestinationIdleTimeout()).isEqualTo(Duration.ofHours(2));
-        assertThat(mapped.getFlushInterval()).isEqualTo(Duration.ofSeconds(5));
-        assertThat(mapped.isPerDestinationMetrics()).isTrue();
     }
 
     @Test
     void reportsWhichKeysOfTheFamilyAreSet() {
         Map<String, String> options = new HashMap<>();
-        options.put(key("flushInterval"), "5 s");
-        options.put(key("maxInflightRequests"), "42");
+        options.put(key("retryMaxAttempts"), "6");
+        options.put(key("recoveryMaxAttempts"), "11");
 
-        assertThat(DefaultStreamOptionsMapper.presentKeys(Configuration.fromMap(options)))
-                .containsExactly(key("maxInflightRequests"), key("flushInterval"));
+        assertThat(BufferedStreamOptionsMapper.presentKeys(Configuration.fromMap(options)))
+                .containsExactly(key("recoveryMaxAttempts"), key("retryMaxAttempts"));
     }
 }

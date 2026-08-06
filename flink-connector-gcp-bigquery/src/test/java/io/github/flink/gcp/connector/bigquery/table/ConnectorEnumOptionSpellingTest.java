@@ -23,6 +23,7 @@ import org.apache.flink.configuration.Configuration;
 import com.google.cloud.bigquery.TimePartitioning;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import org.junit.jupiter.api.Test;
 
@@ -48,6 +49,9 @@ class ConnectorEnumOptionSpellingTest {
         assertThat(WriteMethod.FILE_LOADS).hasToString("file-loads");
         assertThat(CreateDisposition.CREATE_IF_NEEDED).hasToString("create-if-needed");
         assertThat(CreateDisposition.CREATE_NEVER).hasToString("create-never");
+        assertThat(WriteDisposition.WRITE_APPEND).hasToString("write-append");
+        assertThat(WriteDisposition.WRITE_TRUNCATE).hasToString("write-truncate");
+        assertThat(WriteDisposition.WRITE_EMPTY).hasToString("write-empty");
         assertThat(TableCreateOptions.TimePartitioningType.HOUR).hasToString("hour");
         assertThat(TableCreateOptions.TimePartitioningType.DAY).hasToString("day");
         assertThat(TableCreateOptions.TimePartitioningType.MONTH).hasToString("month");
@@ -58,6 +62,7 @@ class ConnectorEnumOptionSpellingTest {
     void noConstantOfAnyEnumKeepsTheUnderscoreSpelling() {
         assertHyphenated(WriteMethod.class);
         assertHyphenated(CreateDisposition.class);
+        assertHyphenated(WriteDisposition.class);
         assertHyphenated(TableCreateOptions.TimePartitioningType.class);
     }
 
@@ -65,6 +70,7 @@ class ConnectorEnumOptionSpellingTest {
     void everyConstantOfEveryEnumParsesBackFromItsOwnSpelling() {
         assertRoundTrips(WriteMethod.class);
         assertRoundTrips(CreateDisposition.class);
+        assertRoundTrips(WriteDisposition.class);
         assertRoundTrips(TableCreateOptions.TimePartitioningType.class);
     }
 
@@ -85,6 +91,10 @@ class ConnectorEnumOptionSpellingTest {
         // The builder's write-method messages name WriteMethod.FILE_LOADS, so the value they format
         // beside it must be the constant too, not the DDL spelling.
         assertThat(WriteMethod.FILE_LOADS.name()).isEqualTo("FILE_LOADS");
+        // Same for the streaming write-disposition message in BigQueryFileLoadsSink, which names
+        // WRITE_APPEND, WRITE_TRUNCATE and WRITE_EMPTY in its prose. The message itself is pinned
+        // by BigQueryFileLoadsSinkTopologyTest; this is the spelling that makes it possible.
+        assertThat(WriteDisposition.WRITE_TRUNCATE.name()).isEqualTo("WRITE_TRUNCATE");
     }
 
     private static <E extends Enum<E>> void assertHyphenated(Class<E> enumClass) {

@@ -159,7 +159,11 @@ class BigQueryFileLoadsSinkTopologyTest {
 
         assertThatThrownBy(env::getStreamGraph)
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("WRITE_APPEND");
+                .hasMessageContaining("WRITE_APPEND")
+                // The offending value is spelled as the Java constant, not as the DDL
+                // 'write-truncate' its toString() returns: the sentence around it names
+                // WRITE_APPEND and WRITE_EMPTY, and one message may not carry both spellings.
+                .hasMessageContaining("the write disposition is WRITE_TRUNCATE");
     }
 
     @Test

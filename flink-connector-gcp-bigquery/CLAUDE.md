@@ -729,6 +729,60 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   granularity and the column. `BigQueryDynamicSinkTest`'s eleven positional arguments were replaced
   by a named-argument holder plus a reflective check that every field of the sink is actually varied
   — the identity test could previously go quiet when a field was added and forgotten
+- **BigQuery Table API: the other two write methods** (#57, sub-issue #288): `sink.buffered-stream.*`
+  (9 keys) and `sink.file-loads.*` (10) onto `BufferedStreamOptions` / `FileLoadsOptions`, under the
+  mapping rules the #287 entry states. `WriteDisposition` gained the `toString()` its sibling enums
+  carry, which made `BigQueryFileLoadsSink`'s streaming message mix spellings — that message names
+  `WriteDisposition.WRITE_APPEND`, `WRITE_TRUNCATE` and `WRITE_EMPTY` in prose, so the value beside
+  them takes `.name()`, the #287 rule applied a second time. `LoadJobOrchestrator` is unaffected: it
+  bridges through a `switch`, not through `valueOf(name())`.
+  **The two new mappers build unconditionally, and the factory decides whether to call them from the
+  write method** — the one place these diverge from `DefaultStreamOptionsMapper`, whose presence scan
+  decides. It is not a missing symmetry: `defaultStreamOptions(...)` is *optional* on the builder
+  while the other two are *required* for their write methods, so a DDL selecting exactly-once and
+  tuning nothing would otherwise be told `bufferedStreamOptions(...) is required` — a method it never
+  called and cannot call. Every buffered knob is defaulted, so `builder().build()` is exactly what
+  that DDL means; FILE_LOADS needs its staging path, which is why that one rejection lives in
+  `FileLoadsOptionsMapper`. `presentKeys` survives on all three for the wrong-family check alone.
+  **Two of the four factory rejections are not about families**, and both became reachable from SQL
+  for the first time here — before this only at-least-once was: `sink.schema-update.*` under
+  exactly-once, and `emulator-*` under FILE_LOADS. The schema-update one fires on the *enabled*
+  options object, the same condition the builder uses, so `allow-new-fields = false` passes here
+  exactly as it passes there — pinned by a success-side test, the #289 lesson.
+  **The FILE_LOADS keys are spelled after the setters** (`sink.file-loads.schema-reconcile.*`), not
+  after the `getSchemaUpdate*` getters, which the reflective tests key off too — and which also keeps
+  them clear of the unrelated `sink.schema-update.*` family. Both new mappers carry **both**
+  reflective halves; the `everyOptionOfTheFamilyFeedsAKnob` prefix scan turned out to be the half
+  `DefaultStreamOptionsMapperTest` had never had, so with a fourth caller the scan itself moved to
+  `OptionFamilies.declaredKeysUnder` and that test gained the guard — each mapper test keeps its own
+  vacuity check and its own assertion, so what a test claims stays where the test is.
+  `BigQueryDynamicSink` took a `Builder` here rather than a fourteenth positional argument (decided
+  with the user); `BigQueryDynamicSinkTest`'s private `Args` holder collapsed into it. The
+  identity test gained two guards **because the builder weakened `copy()`**: a dropped positional
+  argument does not compile, a dropped builder call does, and the old
+  `aCopyEqualsTheOriginal` copied the *default* sink whose eleven optional fields are all null — so
+  a `copy()` that lost one reproduced the default and compared equal (measured: that mutant
+  survived). It now copies a **fully specified** sink built from the same `variations()` map, and a
+  reflective check proves each entry varies the field it is keyed by, since two entries touching one
+  field would leave another at its default and re-open exactly that hole.
+  **Neither new write method can be exercised against the emulator**, measured rather than assumed
+  (2026-08-06, goccy 0.8.1). FILE_LOADS stages to Cloud Storage that nothing stands in for — the
+  factory's own refusal is what the emulator suite asserts instead. Exactly-once was attempted and
+  dropped: `CreateWriteStream` answers `UNKNOWN` for a missing table, so `create-if-needed` cannot
+  auto-create (#326 — the default-stream path carries that rewrite, the buffered one does not), and
+  with the table pre-created the emulator assigns its own append offsets, so
+  `BigQueryBufferedStreamWriter`'s consistency check fails on the first append. Both round trips are
+  therefore gated: `BigQueryTableExactlyOnceITCase` (a datagen sequence spanning several
+  checkpoints, so the second commit is exercised — a bounded `VALUES` insert commits once and proves
+  nothing about it) and `BigQueryTableFileLoadsITCase` (streaming plus batch, the latter being the
+  only place `write-disposition` has an effect). One measurement worth keeping from the first
+  (2026-08-06, one run): at the planner's default parallelism every subtask races to create the same
+  table and BigQuery answers *"Exceeded rate limits: too many table update operations for this
+  table"* — the recovery schedule absorbs it and the job succeeds, so it is a cost rather than a
+  defect, and the test pins `sink.parallelism` to 2 rather than paying it.
+  `FileLoadsOptions.toString()` now renders `writeDisposition=write-append`, the visible cost of the
+  enum's DDL spelling — log-only, nothing parses it, and the counterpart of the #287 entry's note
+  about `StartPosition.toString()`
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
 - **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
   **`String`** records and a **supplied** schema, since JSON has none of its own — either the
