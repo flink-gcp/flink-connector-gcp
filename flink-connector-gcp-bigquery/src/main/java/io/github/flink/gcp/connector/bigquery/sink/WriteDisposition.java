@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.PublicEvolving;
 
+import java.util.Locale;
+
 /**
  * How data lands in a destination table that already contains data. Mirrors the BigQuery load-job
  * write dispositions; only {@link io.github.flink.gcp.connector.bigquery.sink.WriteMethod
@@ -33,5 +35,19 @@ public enum WriteDisposition {
     WRITE_TRUNCATE,
 
     /** Fails the load when the destination table is not empty. */
-    WRITE_EMPTY
+    WRITE_EMPTY;
+
+    /**
+     * Returns the hyphenated lower-case spelling this constant takes in a {@code
+     * sink.file-loads.write-disposition} DDL option, for example {@code write-truncate}.
+     *
+     * <p>Flink resolves an enum-valued {@code ConfigOption} by matching this string
+     * case-insensitively and normalizing nothing else, so the DDL vocabulary is defined here rather
+     * than by a table-local copy of the enum. Use {@link #name()} where a message means the Java
+     * constant.
+     */
+    @Override
+    public String toString() {
+        return name().toLowerCase(Locale.ROOT).replace('_', '-');
+    }
 }

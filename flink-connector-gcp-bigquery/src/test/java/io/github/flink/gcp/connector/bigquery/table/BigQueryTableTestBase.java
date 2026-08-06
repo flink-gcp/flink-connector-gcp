@@ -21,10 +21,6 @@ import org.apache.flink.table.api.TableEnvironment;
 
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.AbstractBigQueryEmulatorITCase;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.stream.Collectors;
-
 /**
  * Harness for the SQL integration tests: the emulator container from the writer suite, a streaming
  * {@link TableEnvironment}, and a {@code WITH} clause carrying the emulator's two endpoints.
@@ -40,22 +36,15 @@ abstract class BigQueryTableTestBase extends AbstractBigQueryEmulatorITCase {
     }
 
     /**
-     * Renders a {@code WITH} clause over the connector, the destination and the two emulator
-     * endpoints, plus the given alternating keys and values.
+     * Renders a {@code WITH} clause over the destination and the two emulator endpoints, plus the
+     * given alternating keys and values.
      */
     static String withOptions(String table, String... keysAndValues) {
-        Map<String, String> options = new LinkedHashMap<>();
-        options.put("connector", BigQueryDynamicTableFactory.IDENTIFIER);
-        options.put("project", PROJECT);
-        options.put("dataset", DATASET);
-        options.put("table", table);
-        options.put("emulator-endpoint", grpcEndpoint());
-        options.put("emulator-rest-endpoint", restEndpoint());
-        for (int i = 0; i < keysAndValues.length; i += 2) {
-            options.put(keysAndValues[i], keysAndValues[i + 1]);
-        }
-        return options.entrySet().stream()
-                .map(e -> String.format("'%s' = '%s'", e.getKey(), e.getValue()))
-                .collect(Collectors.joining(",\n  ", "WITH (\n  ", "\n)"));
+        String[] endpoints = {
+            "emulator-endpoint", grpcEndpoint(),
+            "emulator-rest-endpoint", restEndpoint()
+        };
+        return TableDdl.withOptions(
+                PROJECT, DATASET, table, TableDdl.concat(endpoints, keysAndValues));
     }
 }

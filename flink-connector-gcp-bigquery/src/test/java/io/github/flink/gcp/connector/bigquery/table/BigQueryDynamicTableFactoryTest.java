@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.table;
 
+import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Column;
@@ -27,15 +28,24 @@ import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.table.sink.BigQueryDynamicSink;
+import org.assertj.core.util.Throwables;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /** Tests for {@link BigQueryDynamicTableFactory}. */
 class BigQueryDynamicTableFactoryTest {
@@ -69,6 +79,33 @@ class BigQueryDynamicTableFactoryTest {
         return FactoryMocks.createTableSink(SCHEMA, options);
     }
 
+    /**
+     * The connector's own sink, as the planner would obtain it.
+     *
+     * <p>Every option assertion reads off this rather than off the {@link DynamicTableSink}: a
+     * value dropped on the way to {@code BigQuerySink.builder()} is invisible everywhere else.
+     */
+    private static Sink<?> built(Map<String, String> options) {
+        return built(SCHEMA, options);
+    }
+
+    private static Sink<?> built(ResolvedSchema schema, Map<String, String> options) {
+        return ((SinkV2Provider)
+                        FactoryMocks.createTableSink(schema, options)
+                                .getSinkRuntimeProvider(new SinkRuntimeProviderContext(false)))
+                .createSink();
+    }
+
+    /** {@link #minimalOptions()} plus the write method and whatever that method requires. */
+    private static Map<String, String> optionsFor(WriteMethod writeMethod) {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.write-method", writeMethod.toString());
+        if (writeMethod == WriteMethod.FILE_LOADS) {
+            options.put("sink.file-loads.staging-path", "gs://bucket/prefix");
+        }
+        return options;
+    }
+
     @Test
     void buildsASinkFromTheMinimalOptions() {
         assertThat(sink(minimalOptions()))
@@ -83,6 +120,7 @@ class BigQueryDynamicTableFactoryTest {
                 (SinkV2Provider)
                         sink(minimalOptions())
                                 .getSinkRuntimeProvider(new SinkRuntimeProviderContext(false));
+        // Without sink.write-method, the connector's own default write method.
         assertThat(provider.createSink()).isInstanceOf(BigQueryDefaultStreamSink.class);
         assertThat(provider.getParallelism()).isEmpty();
     }
@@ -120,23 +158,171 @@ class BigQueryDynamicTableFactoryTest {
     }
 
     @Test
-    void acceptsTheOnlyWriteMethodThisLayerCarries() {
-        Map<String, String> options = minimalOptions();
-        options.put("sink.write-method", "storage-api-at-least-once");
-        assertThat(sink(options)).isInstanceOf(BigQueryDynamicSink.class);
+    void everyWriteMethodBuildsItsOwnSink() {
+        // Also pins the DDL spelling against the sink it selects: a WriteMethod whose toString()
+        // drifted would build the wrong one of these rather than fail.
+        assertThat(built(optionsFor(WriteMethod.STORAGE_API_AT_LEAST_ONCE)))
+                .isInstanceOf(BigQueryDefaultStreamSink.class);
+        assertThat(built(optionsFor(WriteMethod.STORAGE_API_EXACTLY_ONCE)))
+                .isInstanceOf(BigQueryBufferedStreamSink.class);
+        assertThat(built(optionsFor(WriteMethod.FILE_LOADS)))
+                .isInstanceOf(BigQueryFileLoadsSink.class);
     }
 
     @Test
-    void rejectsAWriteMethodThisLayerDoesNotCarryYet() {
-        for (String method : new String[] {"storage-api-exactly-once", "file-loads"}) {
-            Map<String, String> options = minimalOptions();
-            options.put("sink.write-method", method);
+    void aWriteMethodThatTunesNothingStillGetsItsRequiredOptions() {
+        // The reason the two required families are built from the write method rather than from
+        // key presence: the builder demands the object, the DDL is correct, and there is no key to
+        // trigger a presence scan. Every knob is then the connector's own default.
+        assertThat(
+                        ((BigQueryBufferedStreamSink<?>)
+                                        built(optionsFor(WriteMethod.STORAGE_API_EXACTLY_ONCE)))
+                                .getOptions())
+                .isEqualTo(BufferedStreamOptions.builder().build());
+        assertThat(
+                        ((BigQueryFileLoadsSink<?>) built(optionsFor(WriteMethod.FILE_LOADS)))
+                                .getOptions())
+                .isEqualTo(FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build());
+    }
+
+    @Test
+    void bufferedStreamKeysReachTheBuiltSink() {
+        Map<String, String> options = optionsFor(WriteMethod.STORAGE_API_EXACTLY_ONCE);
+        options.put("sink.buffered-stream.retry.max-attempts", "7");
+        options.put("sink.buffered-stream.max-append-request-bytes", "1 mb");
+        BufferedStreamOptions built = ((BigQueryBufferedStreamSink<?>) built(options)).getOptions();
+        assertThat(built.getRetryMaxAttempts()).isEqualTo(7);
+        assertThat(built.getMaxAppendRequestBytes()).isEqualTo(1024L * 1024L);
+    }
+
+    @Test
+    void fileLoadsKeysReachTheBuiltSink() {
+        Map<String, String> options = optionsFor(WriteMethod.FILE_LOADS);
+        options.put("sink.file-loads.temp-dataset", "staging_dataset");
+        options.put("sink.file-loads.write-disposition", "write-truncate");
+        options.put("sink.file-loads.schema-reconcile.max-attempts", "3");
+        FileLoadsOptions built = ((BigQueryFileLoadsSink<?>) built(options)).getOptions();
+        assertThat(built.getStagingPath()).isEqualTo("gs://bucket/prefix");
+        assertThat(built.getTempDataset()).isEqualTo("staging_dataset");
+        assertThat(built.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE);
+        // The keys follow the setters (schema-reconcile.*), the getters say schemaUpdate.
+        assertThat(built.getSchemaUpdateMaxAttempts()).isEqualTo(3);
+    }
+
+    @Test
+    void aTuningKeyOfAnotherWriteMethodIsRejectedByKeyName() {
+        // Each family under each write method that does not own it — six cases, the whole matrix,
+        // because a check written for one family is a check that could have missed the others. The
+        // builder rejects the pair too, naming bufferedStreamOptions(...): a method a SQL user
+        // cannot call.
+        Map<WriteMethod, String> familyKeys = new LinkedHashMap<>();
+        familyKeys.put(
+                WriteMethod.STORAGE_API_AT_LEAST_ONCE, "sink.default-stream.max-inflight-requests");
+        familyKeys.put(
+                WriteMethod.STORAGE_API_EXACTLY_ONCE, "sink.buffered-stream.retry.max-attempts");
+        familyKeys.put(WriteMethod.FILE_LOADS, "sink.file-loads.schema-reconcile.max-attempts");
+
+        familyKeys.forEach(
+                (owner, key) -> {
+                    for (WriteMethod selected : WriteMethod.values()) {
+                        if (selected == owner) {
+                            continue;
+                        }
+                        Map<String, String> options = optionsFor(selected);
+                        options.put(key, "7");
+                        assertThatThrownBy(() -> sink(options))
+                                .as("'%s' under '%s'", key, selected)
+                                .isInstanceOf(ValidationException.class)
+                                // A phrase only this connector's message carries. FactoryUtil
+                                // attaches a dump of the whole WITH clause to anything the factory
+                                // throws, so asserting the key alone would pass with the check
+                                // deleted — measured.
+                                .hasStackTraceContaining("but this table's write method is")
+                                .hasStackTraceContaining(key);
+                    }
+                });
+    }
+
+    @Test
+    void aTuningKeyIsRejectedWhenNoWriteMethodIsNamedEither() {
+        // The case the matrix above cannot reach, because it always writes sink.write-method: a
+        // table that names no write method is on the connector's default, and a key of another
+        // family is as wrong there as anywhere. Without this a check that simply returned when the
+        // option was absent would pass the whole suite — and the keys would then be dropped in
+        // silence, since the sink only builds a family whose write method matches.
+        Map<String, String> options = minimalOptions();
+        options.put("sink.buffered-stream.retry.max-attempts", "7");
+        assertThatThrownBy(() -> sink(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("but this table's write method is")
+                .hasStackTraceContaining("sink.buffered-stream.retry.max-attempts");
+    }
+
+    @Test
+    void aMissingStagingPathUnderFileLoadsIsRejectedByKeyName() {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.write-method", "file-loads");
+        assertThatThrownBy(() -> sink(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("no default location to stage them in")
+                .hasStackTraceContaining("sink.file-loads.staging-path");
+    }
+
+    @Test
+    void theWriteMethodBeingUnusableIsReportedAheadOfWhatIsConfiguredUnderIt() {
+        // Ordering, and it is load-bearing: TableCreateOptionsMapper throws too, and while the
+        // staging-path check sat inside the builder chain it was evaluated first — so a FILE_LOADS
+        // table with nowhere to stage was told about its create disposition instead.
+        Map<String, String> options = minimalOptions();
+        options.put("sink.write-method", "file-loads");
+        options.put("sink.create-disposition", "create-never");
+        options.put("sink.table-create.clustered-fields", "id");
+
+        Throwable thrown = catchThrowable(() -> sink(options));
+
+        assertThat(thrown).isInstanceOf(ValidationException.class);
+        assertThat(Throwables.getStackTrace(thrown))
+                .contains("no default location to stage them in")
+                .doesNotContain("configure a table this sink never creates");
+    }
+
+    @Test
+    void schemaEvolutionUnderExactlyOnceIsRejectedByKeyName() {
+        // A buffered stream's schema is pinned at stream creation. The builder says so naming
+        // schemaUpdateOptions(...); this says it in keys.
+        Map<String, String> options = optionsFor(WriteMethod.STORAGE_API_EXACTLY_ONCE);
+        options.put("sink.schema-update.allow-field-relaxation", "true");
+        assertThatThrownBy(() -> sink(options))
+                .isInstanceOf(ValidationException.class)
+                // The opening clause, not "pinned when the stream is created": the builder's own
+                // message carries that phrase verbatim, so it would not tell the two apart in a
+                // test that reaches the builder — as the planner-level sibling does.
+                .hasStackTraceContaining("ask the sink to evolve the table schema")
+                .hasStackTraceContaining("sink.schema-update.allow-field-relaxation");
+    }
+
+    @Test
+    void aSchemaUpdateKeySetToFalseIsAcceptedUnderExactlyOnce() {
+        // The check fires on the same condition the builder uses — an *enabled* options object —
+        // so a key present and false is no more a schema update here than it is there. Without
+        // this the check could tighten to mere presence and nothing would notice.
+        Map<String, String> options = optionsFor(WriteMethod.STORAGE_API_EXACTLY_ONCE);
+        options.put("sink.schema-update.allow-new-fields", "false");
+        assertThat(built(options)).isInstanceOf(BigQueryBufferedStreamSink.class);
+    }
+
+    @Test
+    void anEmulatorEndpointUnderFileLoadsIsRejectedByKeyName() {
+        for (String key : new String[] {"emulator-endpoint", "emulator-rest-endpoint"}) {
+            Map<String, String> options = optionsFor(WriteMethod.FILE_LOADS);
+            options.put(key, "localhost:9060");
             assertThatThrownBy(() -> sink(options))
-                    .as("with '%s'", method)
+                    .as("with '%s'", key)
                     .isInstanceOf(ValidationException.class)
-                    // The message names the option key, which is what a SQL user can act on.
-                    .hasStackTraceContaining("sink.write-method")
-                    .hasStackTraceContaining(method);
+                    // Again the opening clause: the builder says "which the BigQuery emulator
+                    // does not provide", one word away from the tail of this one.
+                    .hasStackTraceContaining("point at a BigQuery emulator")
+                    .hasStackTraceContaining(key);
         }
     }
 
@@ -153,15 +339,7 @@ class BigQueryDynamicTableFactoryTest {
     void aDefaultStreamKeyReachesTheBuiltSink() {
         Map<String, String> options = minimalOptions();
         options.put("sink.default-stream.max-inflight-requests", "7");
-        BigQueryDefaultStreamSink<?> built =
-                (BigQueryDefaultStreamSink<?>)
-                        ((SinkV2Provider)
-                                        sink(options)
-                                                .getSinkRuntimeProvider(
-                                                        new SinkRuntimeProviderContext(false)))
-                                .createSink();
-        // Read off the built sink rather than the DynamicTableSink: a value dropped on the way to
-        // the builder is invisible everywhere else.
+        BigQueryDefaultStreamSink<?> built = (BigQueryDefaultStreamSink<?>) built(options);
         assertThat(built.getOptions().getMaxInflightRequests()).isEqualTo(7);
     }
 
@@ -172,13 +350,7 @@ class BigQueryDynamicTableFactoryTest {
         options.put("sink.create-disposition", "create-never");
         options.put("emulator-endpoint", "localhost:9060");
         options.put("emulator-rest-endpoint", "localhost:9050");
-        BigQueryDefaultStreamSink<?> built =
-                (BigQueryDefaultStreamSink<?>)
-                        ((SinkV2Provider)
-                                        sink(options)
-                                                .getSinkRuntimeProvider(
-                                                        new SinkRuntimeProviderContext(false)))
-                                .createSink();
+        BigQueryDefaultStreamSink<?> built = (BigQueryDefaultStreamSink<?>) built(options);
         assertThat(built.getConfig().getLocation()).isEqualTo("asia-northeast1");
         assertThat(built.getConfig().getCreateDisposition().name()).isEqualTo("CREATE_NEVER");
         assertThat(built.getConfig().getEmulatorEndpoint().getTarget()).isEqualTo("localhost:9060");
@@ -189,23 +361,12 @@ class BigQueryDynamicTableFactoryTest {
     @Test
     void schemaUpdateKeysReachTheBuiltSinkAndTheirAbsenceLeavesTheDefault() {
         BigQueryDefaultStreamSink<?> defaults =
-                (BigQueryDefaultStreamSink<?>)
-                        ((SinkV2Provider)
-                                        sink(minimalOptions())
-                                                .getSinkRuntimeProvider(
-                                                        new SinkRuntimeProviderContext(false)))
-                                .createSink();
+                (BigQueryDefaultStreamSink<?>) built(minimalOptions());
         assertThat(defaults.getConfig().getSchemaUpdateOptions().isEnabled()).isFalse();
 
         Map<String, String> options = minimalOptions();
         options.put("sink.schema-update.allow-new-fields", "true");
-        BigQueryDefaultStreamSink<?> built =
-                (BigQueryDefaultStreamSink<?>)
-                        ((SinkV2Provider)
-                                        sink(options)
-                                                .getSinkRuntimeProvider(
-                                                        new SinkRuntimeProviderContext(false)))
-                                .createSink();
+        BigQueryDefaultStreamSink<?> built = (BigQueryDefaultStreamSink<?>) built(options);
         assertThat(built.getConfig().getSchemaUpdateOptions().isAllowNewFields()).isTrue();
         assertThat(built.getConfig().getSchemaUpdateOptions().isAllowFieldRelaxation()).isFalse();
     }
@@ -213,12 +374,7 @@ class BigQueryDynamicTableFactoryTest {
     @Test
     void tableCreateKeysReachTheBuiltSinkAndTheirAbsenceLeavesAPlainTable() {
         BigQueryDefaultStreamSink<?> defaults =
-                (BigQueryDefaultStreamSink<?>)
-                        ((SinkV2Provider)
-                                        sink(minimalOptions())
-                                                .getSinkRuntimeProvider(
-                                                        new SinkRuntimeProviderContext(false)))
-                                .createSink();
+                (BigQueryDefaultStreamSink<?>) built(minimalOptions());
         assertThat(defaults.getConfig().getTableCreateOptionsProvider().optionsFor(DESTINATION))
                 .isEqualTo(TableCreateOptions.defaults());
 
@@ -227,12 +383,7 @@ class BigQueryDynamicTableFactoryTest {
         options.put("sink.table-create.time-partitioning.field", "event_ts");
         options.put("sink.table-create.clustered-fields", "id");
         BigQueryDefaultStreamSink<?> built =
-                (BigQueryDefaultStreamSink<?>)
-                        ((SinkV2Provider)
-                                        FactoryMocks.createTableSink(PARTITIONABLE, options)
-                                                .getSinkRuntimeProvider(
-                                                        new SinkRuntimeProviderContext(false)))
-                                .createSink();
+                (BigQueryDefaultStreamSink<?>) built(PARTITIONABLE, options);
         TableCreateOptions created =
                 built.getConfig().getTableCreateOptionsProvider().optionsFor(DESTINATION);
         assertThat(created.getTimePartitioningType())

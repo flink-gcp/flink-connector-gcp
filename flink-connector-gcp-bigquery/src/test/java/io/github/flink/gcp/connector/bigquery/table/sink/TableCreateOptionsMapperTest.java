@@ -26,14 +26,12 @@ import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -127,21 +125,7 @@ class TableCreateOptionsMapperTest {
         // option declared under the sink.table-create.* prefix that no setter consumes. The
         // expected side is read out of BigQueryConnectorOptions rather than written here — a
         // literal list would only restate SETTER_TO_OPTIONS and could never disagree with it.
-        Set<String> declared = new HashSet<>();
-        for (Field field : BigQueryConnectorOptions.class.getDeclaredFields()) {
-            if (Modifier.isPublic(field.getModifiers())
-                    && Modifier.isStatic(field.getModifiers())
-                    && ConfigOption.class.isAssignableFrom(field.getType())) {
-                try {
-                    String key = ((ConfigOption<?>) field.get(null)).key();
-                    if (key.startsWith("sink.table-create.")) {
-                        declared.add(key);
-                    }
-                } catch (IllegalAccessException e) {
-                    throw new AssertionError(e);
-                }
-            }
-        }
+        Set<String> declared = OptionFamilies.declaredKeysUnder("sink.table-create.");
         // Guards the reflection itself: an empty set would make the assertion vacuous.
         assertThat(declared).isNotEmpty();
 

@@ -23,6 +23,7 @@ import org.apache.flink.configuration.MemorySize;
 
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 
 import java.time.Duration;
@@ -112,9 +113,10 @@ public final class BigQueryConnectorOptions {
                     .enumType(WriteMethod.class)
                     .noDefaultValue()
                     .withDescription(
-                            "Which write path the sink uses. Only"
-                                    + " 'storage-api-at-least-once' is accepted; the other two"
-                                    + " arrive with their option families (issue 288).");
+                            "Which write path the sink uses. Each carries its own tuning family —"
+                                    + " 'sink.default-stream.*', 'sink.buffered-stream.*' and"
+                                    + " 'sink.file-loads.*' — and a key of a family this option"
+                                    + " does not select is rejected rather than ignored.");
 
     public static final ConfigOption<CreateDisposition> SINK_CREATE_DISPOSITION =
             ConfigOptions.key("sink.create-disposition")
@@ -342,6 +344,164 @@ public final class BigQueryConnectorOptions {
 
     public static final ConfigOption<Boolean> SINK_DEFAULT_STREAM_PER_DESTINATION_METRICS =
             ConfigOptions.key("sink.default-stream.per-destination-metrics")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the sink reports its write metrics per destination table as"
+                                    + " well as in total. One SQL table writes to one destination,"
+                                    + " so this mainly adds the table name to the metric group.");
+
+    // ------------------------------------------------------------------------
+    //  Sink — STORAGE_API_EXACTLY_ONCE tuning
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<MemorySize> SINK_BUFFERED_STREAM_MAX_APPEND_REQUEST_BYTES =
+            ConfigOptions.key("sink.buffered-stream.max-append-request-bytes")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The size at which the sink splits a batch into several append"
+                                    + " requests, below the Storage Write API's own request limit.");
+
+    public static final ConfigOption<Duration> SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF =
+            ConfigOptions.key("sink.buffered-stream.recovery.initial-backoff")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The first backoff of the connector's own recovery schedule, which"
+                                    + " creates the stream after a table auto-creation, reopens it"
+                                    + " after a transient failure and drives the restore probe.");
+
+    public static final ConfigOption<Duration> SINK_BUFFERED_STREAM_RECOVERY_MAX_BACKOFF =
+            ConfigOptions.key("sink.buffered-stream.recovery.max-backoff")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("The ceiling that recovery schedule's backoff grows to.");
+
+    public static final ConfigOption<Integer> SINK_BUFFERED_STREAM_RECOVERY_MAX_ATTEMPTS =
+            ConfigOptions.key("sink.buffered-stream.recovery.max-attempts")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How many attempts that recovery schedule makes before the job fails.");
+
+    public static final ConfigOption<Duration> SINK_BUFFERED_STREAM_RETRY_INITIAL_DELAY =
+            ConfigOptions.key("sink.buffered-stream.retry.initial-delay")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The first delay of the client library's own in-stream append retries,"
+                                    + " a layer below the recovery schedule above.");
+
+    public static final ConfigOption<Double> SINK_BUFFERED_STREAM_RETRY_DELAY_MULTIPLIER =
+            ConfigOptions.key("sink.buffered-stream.retry.delay-multiplier")
+                    .doubleType()
+                    .noDefaultValue()
+                    .withDescription("The factor those in-stream retry delays grow by.");
+
+    public static final ConfigOption<Duration> SINK_BUFFERED_STREAM_RETRY_MAX_DELAY =
+            ConfigOptions.key("sink.buffered-stream.retry.max-delay")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("The ceiling those in-stream retry delays grow to.");
+
+    public static final ConfigOption<Integer> SINK_BUFFERED_STREAM_RETRY_MAX_ATTEMPTS =
+            ConfigOptions.key("sink.buffered-stream.retry.max-attempts")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription("How many times the client library retries one append.");
+
+    public static final ConfigOption<Duration> SINK_BUFFERED_STREAM_RETRY_MAX_DURATION =
+            ConfigOptions.key("sink.buffered-stream.retry.max-duration")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The wall-clock budget the client library spends retrying one append,"
+                                    + " whichever attempt it is on.");
+
+    // ------------------------------------------------------------------------
+    //  Sink — FILE_LOADS tuning
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<String> SINK_FILE_LOADS_STAGING_PATH =
+            ConfigOptions.key("sink.file-loads.staging-path")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Cloud Storage path staged files are written under, of the form"
+                                    + " gs://bucket or gs://bucket/prefix. Required under the"
+                                    + " 'file-loads' write method and rejected under the others.");
+
+    public static final ConfigOption<String> SINK_FILE_LOADS_TEMP_DATASET =
+            ConfigOptions.key("sink.file-loads.temp-dataset")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The dataset holding the temporary tables a load too large for one job"
+                                    + " goes through. Absent, each destination table's own dataset"
+                                    + " is used; a dedicated dataset with a default table"
+                                    + " expiration collects the ones a hard failure orphans.");
+
+    public static final ConfigOption<WriteDisposition> SINK_FILE_LOADS_WRITE_DISPOSITION =
+            ConfigOptions.key("sink.file-loads.write-disposition")
+                    .enumType(WriteDisposition.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "How loaded rows land in a table that already holds data. Streaming"
+                                    + " execution accepts 'write-append' only, since every"
+                                    + " checkpoint issues its own load job.");
+
+    public static final ConfigOption<Duration> SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL =
+            ConfigOptions.key("sink.file-loads.min-checkpoint-interval")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The smallest checkpoint interval streaming execution accepts, checked"
+                                    + " when the job graph is built. BigQuery allows 1,500 load"
+                                    + " jobs per table per day and each checkpoint issues at least"
+                                    + " one, so lowering this is an explicit opt-in for a job whose"
+                                    + " daily count stays safe.");
+
+    public static final ConfigOption<Duration> SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF =
+            ConfigOptions.key("sink.file-loads.load-job-poll.initial-backoff")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The first backoff between polls of a submitted load or copy job."
+                                    + " Lowering it notices a finished load sooner, at the cost of"
+                                    + " more jobs.get calls.");
+
+    public static final ConfigOption<Duration> SINK_FILE_LOADS_LOAD_JOB_POLL_MAX_BACKOFF =
+            ConfigOptions.key("sink.file-loads.load-job-poll.max-backoff")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("The ceiling those poll backoffs grow to.");
+
+    public static final ConfigOption<Duration> SINK_FILE_LOADS_SCHEMA_RECONCILE_INITIAL_BACKOFF =
+            ConfigOptions.key("sink.file-loads.schema-reconcile.initial-backoff")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The first backoff after losing an etag race while reconciling a"
+                                    + " destination table's schema.");
+
+    public static final ConfigOption<Duration> SINK_FILE_LOADS_SCHEMA_RECONCILE_MAX_BACKOFF =
+            ConfigOptions.key("sink.file-loads.schema-reconcile.max-backoff")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("The ceiling that reconcile backoff grows to.");
+
+    public static final ConfigOption<Integer> SINK_FILE_LOADS_SCHEMA_RECONCILE_MAX_ATTEMPTS =
+            ConfigOptions.key("sink.file-loads.schema-reconcile.max-attempts")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How many attempts a schema reconciliation makes. Only a lost race"
+                                    + " consumes one, so raise it when something outside this job"
+                                    + " updates the same table concurrently.");
+
+    public static final ConfigOption<Boolean> SINK_FILE_LOADS_PER_DESTINATION_METRICS =
+            ConfigOptions.key("sink.file-loads.per-destination-metrics")
                     .booleanType()
                     .noDefaultValue()
                     .withDescription(
