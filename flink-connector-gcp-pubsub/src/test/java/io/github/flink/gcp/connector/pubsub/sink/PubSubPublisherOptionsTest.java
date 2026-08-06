@@ -22,6 +22,7 @@ import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -110,12 +111,10 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getRetryRpcTimeoutMultiplier()).isEqualTo(1.5);
         assertThat(options.getRetryMaxRpcTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(options.isEnableMessageOrdering()).isTrue();
-        // The two knobs ordering costs, kept apart rather than dropped from coverage.
+        // The two knobs ordering costs; their values are covered by the sibling instance, in
+        // boundedRetriesAreKeptWithoutMessageOrdering.
         assertThat(options.getRetryTotalTimeout()).isNull();
         assertThat(options.getRetryMaxAttempts()).isNull();
-        assertThat(fullyPopulatedWithBoundedRetries().getRetryTotalTimeout())
-                .isEqualTo(Duration.ofSeconds(120));
-        assertThat(fullyPopulatedWithBoundedRetries().getRetryMaxAttempts()).isEqualTo(7);
         assertThat(options.getMaxInFlightMessages()).isEqualTo(42);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(1_048_576);
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
@@ -278,9 +277,7 @@ class PubSubPublisherOptionsTest {
     @Test
     void roundTripsJavaSerialization() throws Exception {
         for (PubSubPublisherOptions options :
-                new PubSubPublisherOptions[] {
-                    fullyPopulated(), fullyPopulatedWithBoundedRetries()
-                }) {
+                List.of(fullyPopulated(), fullyPopulatedWithBoundedRetries())) {
             byte[] bytes = InstantiationUtil.serializeObject(options);
             PubSubPublisherOptions copy =
                     InstantiationUtil.deserializeObject(bytes, getClass().getClassLoader());
@@ -314,9 +311,10 @@ class PubSubPublisherOptionsTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("retryMaxAttempts")
                 .hasMessageContaining("enableMessageOrdering");
-        // Zero is an explicitly set value, not an absent one — the SDK reads it as "unlimited",
-        // which is precisely what ordering would impose anyway, so accepting it would be the one
-        // case where the message is wrong rather than merely unnecessary.
+        // Zero is rejected like any other value, though it is the one case where the setting is
+        // harmless: the SDK already reads 0 as "unlimited", which is what ordering imposes anyway.
+        // Exempting it would make the rule "explicitly set" depend on the value, and a knob
+        // accepted at 0 and refused at 1 is a worse surprise than a uniform refusal.
         assertThatThrownBy(
                         () ->
                                 PubSubPublisherOptions.builder()

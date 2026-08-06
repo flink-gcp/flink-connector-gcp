@@ -109,8 +109,8 @@ class PublisherOptionsMapperTest {
     }
 
     /**
-     * Every option except the two {@code sink.message-ordering.enabled} rejects (#310), which the
-     * sibling below maps on their own — together they still cover every key.
+     * Every option except the two that {@code sink.message-ordering.enabled} rejects (#310); the
+     * sibling below maps those two on their own, so together they still cover every key.
      */
     @Test
     void mapsEveryOptionOntoItsKnob() {

@@ -83,7 +83,7 @@ The other six retry knobs are unaffected and combine with ordering freely.
 
 | Option | Default | What it does |
 |---|---|---|
-| `enableMessageOrdering` | `false` | Honours ordering keys. Without it, a message carrying one is rejected with an error naming this option. With it, a dropping `failedMessageHandler` leaves a gap in the dropped message's key |
+| `enableMessageOrdering` | `false` | Honours ordering keys. Without it, a message carrying one is rejected with an error naming this option. With it, a dropping `failedMessageHandler` leaves a gap in the dropped message's key, and `retryTotalTimeout`/`retryMaxAttempts` may not be set (see above) |
 | `maxInFlightMessages` | 1000 | Caps the writer's unacknowledged publishes; a write at the cap yields to the mailbox |
 | `maxInFlightBytes` | 64 MiB | Caps their total serialized size. `Long.MAX_VALUE` bounds by count only |
 | `recoveryInitialBackoff` | 500 ms | First backoff of a republish — after creating a missing topic, or after resuming an ordering key |
