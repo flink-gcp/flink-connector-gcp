@@ -22,6 +22,7 @@ import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.MemorySize;
 
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 
 import java.time.Duration;
@@ -147,6 +148,48 @@ public final class BigQueryConnectorOptions {
                     .withDescription(
                             "Whether the sink may relax a REQUIRED column of the destination table"
                                     + " to NULLABLE. BigQuery cannot walk the reverse change back.");
+
+    // ------------------------------------------------------------------------
+    //  Sink — table creation
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<TableCreateOptions.TimePartitioningType>
+            SINK_TABLE_CREATE_TIME_PARTITIONING_TYPE =
+                    ConfigOptions.key("sink.table-create.time-partitioning.type")
+                            .enumType(TableCreateOptions.TimePartitioningType.class)
+                            .noDefaultValue()
+                            .withDescription(
+                                    "The granularity a created table is time-partitioned at. Absent,"
+                                            + " the table is not partitioned.");
+
+    public static final ConfigOption<String> SINK_TABLE_CREATE_TIME_PARTITIONING_FIELD =
+            ConfigOptions.key("sink.table-create.time-partitioning.field")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The TIMESTAMP, DATE or DATETIME column a created table is partitioned"
+                                    + " on. Absent, the table is partitioned on ingestion time,"
+                                    + " which no column can name. Requires"
+                                    + " 'sink.table-create.time-partitioning.type'.");
+
+    public static final ConfigOption<Duration> SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION =
+            ConfigOptions.key("sink.table-create.time-partitioning.expiration")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long BigQuery keeps a partition of a created table. Absent,"
+                                    + " partitions never expire. Requires"
+                                    + " 'sink.table-create.time-partitioning.type'.");
+
+    public static final ConfigOption<List<String>> SINK_TABLE_CREATE_CLUSTERED_FIELDS =
+            ConfigOptions.key("sink.table-create.clustered-fields")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The columns a created table is clustered on, in precedence order."
+                                    + " BigQuery takes at most four, and they must be top-level"
+                                    + " columns of the table.");
 
     // ------------------------------------------------------------------------
     //  Sink — schema derivation from the DDL row type

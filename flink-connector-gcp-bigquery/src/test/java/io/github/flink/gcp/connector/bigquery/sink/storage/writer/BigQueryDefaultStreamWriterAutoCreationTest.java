@@ -66,6 +66,21 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         return ApiFutures.immediateFailedFuture(new StatusRuntimeException(Status.NOT_FOUND));
     }
 
+    /**
+     * What the <em>real</em> service answers when a stream is opened against a table that is not
+     * there: it masks existence behind {@code PERMISSION_DENIED} rather than saying {@code
+     * NOT_FOUND}, which only the emulator does. Measured 2026-08-06; see {@code
+     * AppendErrorClassifier#isMissingTable}.
+     */
+    private static ApiFuture<AppendRowsResponse> maskedAsPermissionDenied() {
+        return ApiFutures.immediateFailedFuture(
+                new StatusRuntimeException(
+                        Status.PERMISSION_DENIED.withDescription(
+                                "Permission 'TABLES_GET' denied on resource"
+                                        + " 'projects/p/datasets/d/tables/t' (or it may not"
+                                        + " exist).")));
+    }
+
     /** Serializer writing the record string bytes with a fixed single-column schema. */
     private static class StringSerializer extends BigQueryProtoSerializer<String> {
         private static final long serialVersionUID = 1L;
@@ -220,6 +235,74 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         assertThat(factory.created.get(0).closed).isTrue();
         assertThat(factory.created.get(1).appends).hasSize(1);
         assertThat(factory.allAppendedRows()).containsExactly("aa", "aa");
+    }
+
+    @Test
+    void theMaskedPermissionDeniedTheServiceActuallyAnswersAlsoCreatesTheTable() throws Exception {
+        // Without this the feature is emulator-only: real BigQuery never answers NOT_FOUND when a
+        // write stream is opened against a missing table, so auto-creation would never fire.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(maskedAsPermissionDenied());
+        RecordingTableAdmin creator = new RecordingTableAdmin();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(CreateDisposition.CREATE_IF_NEEDED, null),
+                        factory,
+                        creator,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        assertThat(creator.destinations).containsExactly(DESTINATION);
+        assertThat(factory.allAppendedRows()).containsExactly("aa", "aa");
+    }
+
+    @Test
+    void theSameMaskingRightAfterCreationIsWaitedOutRatherThanFailing() throws Exception {
+        // Measured against the service: the propagation window after this writer creates the table
+        // masks the same way, naming TABLES_UPDATE_DATA rather than TABLES_GET. Narrowing the
+        // post-creation retry clause to NOT_FOUND therefore creates the table and then fails on the
+        // very next append — which is what a real run did before this case existed.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(maskedAsPermissionDenied()); // the table is not there
+        factory.scriptedResults.add(maskedAsPermissionDenied()); // ... and has not propagated yet
+        RecordingTableAdmin creator = new RecordingTableAdmin();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(CreateDisposition.CREATE_IF_NEEDED, null),
+                        factory,
+                        creator,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        // Created once — the guard holds across the retry — and the row landed on the third append.
+        assertThat(creator.destinations).containsExactly(DESTINATION);
+        assertThat(factory.allAppendedRows()).containsExactly("aa", "aa", "aa");
+    }
+
+    @Test
+    void aMaskedPermissionDeniedUnderCreateNeverStillFails() throws Exception {
+        // The disposition is what authorises creation; the wider verdict must not slip past it.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(maskedAsPermissionDenied());
+        RecordingTableAdmin creator = new RecordingTableAdmin();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(CreateDisposition.CREATE_NEVER, null),
+                        factory,
+                        creator,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("aa", CONTEXT);
+
+        assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
+        assertThat(creator.destinations).isEmpty();
     }
 
     @Test

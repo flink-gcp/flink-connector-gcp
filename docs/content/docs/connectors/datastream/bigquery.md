@@ -689,7 +689,8 @@ avoids both.
 
 ## Table auto-creation
 
-Under the default `CreateDisposition.CREATE_IF_NEEDED`, an append failing with `NOT_FOUND` is
+Under the default `CreateDisposition.CREATE_IF_NEEDED`, an append failing with a
+[missing-table verdict](#a-missing-table-does-not-say-not_found) is
 recovered on the task thread: the destination table is created through the BigQuery REST API
 (schema from the serializer's `getTableSchema`; partitioning/clustering from
 `tableCreateOptions(...)` or a per-destination `tableCreateOptionsProvider(...)`), the
@@ -704,6 +705,37 @@ existing table. So the serializer's [column modes](#column-modes) are decided he
 relaxing a column afterwards is a schema update rather than an edit.
 
 With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
+
+### A missing table does not say `NOT_FOUND`
+
+Opening a Storage Write API stream against a table that is not there answers **`PERMISSION_DENIED`**,
+not `NOT_FOUND`:
+
+```text
+PERMISSION_DENIED: Permission 'TABLES_GET' denied on resource
+'projects/p/datasets/d/tables/t' (or it may not exist).
+```
+
+BigQuery masks the table's existence, as an API that must not let an unauthorised caller probe for
+table names has to. The same masking appears again in the window right after the connector creates
+the table, while metadata propagates — there naming `TABLES_UPDATE_DATA`. Both codes therefore count
+as "the table may not be there", under `CREATE_IF_NEEDED` and while a just-created table settles.
+
+The cost of reading `PERMISSION_DENIED` that way falls on a job whose credentials genuinely lack
+the permission. It now attempts one table creation before failing — and fails naming
+`bigquery.tables.create`, which says more than the masked `TABLES_GET` did. Where that attempt
+*succeeds*, including the HTTP 409 the connector treats as success for an existing table, the batch
+is then re-appended for the rest of the **recovery** retry budget before the job fails, so the
+failure arrives later than it used to. It is never waited out on the fifteen-minute schema budget,
+even when the repair was already running there. And a job holding `bigquery.tables.create` but not
+the data-write permission leaves behind the empty table it was authorised to create. A failure that
+names individual rows is excluded: rows plus a code is a verdict about the data, not about the
+table.
+
+Measured against the service on 2026-08-06, with credentials the REST API answers `Not found` for on
+the same table. The goccy emulator answers `NOT_FOUND` (and `UNKNOWN` on the default stream), so
+emulator tests alone cannot see this — which is why they did not, and why auto-creation had never
+once fired against the real service.
 
 ## Schema evolution
 
@@ -1153,7 +1185,8 @@ Append failures are classified on the task thread and routed by class:
 | Transient | `UNAVAILABLE`, `ABORTED`, `INTERNAL`, `CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `UNKNOWN` | Retried by the SDK's in-stream retries first (by default 500 ms initial delay, ×2 up to 30 s, 5 attempts); failures that still surface are re-appended by the writer on a rebuilt stream writer with backoff (by default 500 ms initial, doubled up to 10 s, 10 attempts, ±25% jitter). They do not fail the job unless the retry budget is exhausted |
 | Stale stream writer | `STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`, writer closed, the SDK's callback-wait watchdog timeout (a sent append got no response within the SDK's hardcoded 5 minutes; the raw exception carries no status code) | Repaired like transient failures: the destination's stream writer is rebuilt and the batch re-appended within the retry budget |
 | Schema mismatch | `SCHEMA_MISMATCH_EXTRA_FIELDS` (rows carry fields the table does not have) | With `schemaUpdateOptions(...)` enabled: the table schema is reconciled and the batch re-appended while the update propagates (see [Schema evolution](#schema-evolution)). Otherwise terminal |
-| Terminal | `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `NOT_FOUND` under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
+| Missing table | `NOT_FOUND`, and the `PERMISSION_DENIED` the service [masks a missing table behind](#a-missing-table-does-not-say-not_found) | Under `CREATE_IF_NEEDED`: the table is created and the batch re-appended while metadata propagates, within the **recovery** retry budget — never the schema one, whatever the repair was already running on (see [Table auto-creation](#table-auto-creation)). Under `CREATE_NEVER`: terminal |
+| Terminal | `INVALID_ARGUMENT`, the two codes above under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
 | Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured failure handler; surviving rows of the batch are re-appended. A row-detailed error whose own status code is transient is classified transient, not row-level: outage-shaped failures never reach the handler |
 
 A record the serializer *skips* by returning `null` is in none of those classes: it is not a
@@ -1268,7 +1301,7 @@ same thing in each.
 | `inFlightBatches` | gauge | appends the service has not answered |
 | `openDestinations` | gauge | destinations holding a live stream writer, after eviction |
 | `appendRetries` | counter | appends re-issued while repairing a destination |
-| `tablesCreated` | counter | tables created under `CREATE_IF_NEEDED` |
+| `tablesCreated` | counter | table creations this subtask asked for under `CREATE_IF_NEEDED`; a creation another subtask won, or one for a table that turned out to exist, counts here too |
 | `schemaReconciliations` | counter | table schema updates applied under `schemaUpdateOptions(...)` |
 | `errorClass.CODE.errors` | counter | failed appends by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
@@ -1495,7 +1528,10 @@ in a testcontainer and exercise the Storage Write API gRPC endpoint plus the RES
 table-metadata path end to end: plain at-least-once appends across checkpoint-style flushes
 through the `BigQuerySink` facade (`BigQueryDefaultStreamWriterITCase`), dynamic multi-table
 destinations (`BigQueryDynamicDestinationsITCase`), table auto-creation with create dispositions
-(`BigQueryTableAutoCreationITCase`), schema evolution
+(`BigQueryTableAutoCreationITCase` — note the emulator answers `NOT_FOUND` for a missing table where
+the real service answers a masked `PERMISSION_DENIED`, so this class cannot see whether auto-creation
+would fire at all; the gated `BigQueryTableCreationFidelityITCase` below is what measures that),
+schema evolution
 (`BigQuerySchemaEvolutionITCase`), Avro records written through the facade into a table created
 from the serializer's own derived schema (`BigQueryAvroSerializerITCase` — run under
 `deriveRequiredColumns()` and asserting the created table's modes, so the option is verified rather
@@ -1553,6 +1589,15 @@ credential-less CI:
   polled over time, a non-pooled canary writer); the hang's record and open hypotheses are in
   [#174]({{< param BookRepo >}}/issues/174), closed as wait-and-see — a captured reproduction
   gets a new issue referencing it
+- **table creation itself** (`BigQueryTableCreationFidelityITCase`): does BigQuery *accept* the
+  create request the connector builds? The emulator stores partitioning and clustering verbatim and
+  validates nothing, so it answers a different question — and until this class existed, nothing
+  did: every other partitioning assertion in the tree is against a locally built `TableInfo` or a
+  recording fake. Both of its cases `INSERT INTO` a table that does not exist yet, so
+  auto-creation has to fire for them to pass at all, which is what makes them the check on the
+  masked-`PERMISSION_DENIED` recovery above. Driven through SQL because that is where the options
+  are configured; the `TableAdmin` path underneath is the one the DataStream API takes, so the
+  answer covers `tableCreateOptions(...)` too
 - serializer column-type fidelity (`BigQuerySerializerFidelityITCase`): the encodings an
   emulator divergence would silently corrupt — `NUMERIC`/`BIGNUMERIC` (decimal byte encoding)
   and `TIME`/`DATETIME` (packed civil-time encoding), which the emulator reads back as unrelated

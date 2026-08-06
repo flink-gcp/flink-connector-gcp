@@ -46,6 +46,7 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -189,11 +190,31 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
         private final List<FakeAppender> created = new ArrayList<>();
         private final Deque<ApiFuture<AppendRowsResponse>> scriptedResults = new ArrayDeque<>();
 
+        /**
+         * How many {@code create} calls fail once {@link #creationsBeforeFailing} have succeeded —
+         * the writer's other repair entry point, where the SDK's location lookup can answer a
+         * missing-table verdict. The delay matters: the first creation happens on the first write,
+         * before any repair, so failing it would test a different path.
+         */
+        private int failingCreations;
+
+        private int creationsBeforeFailing;
+
         @Override
         public RowAppender create(
                 TableDestination destination,
                 Descriptors.Descriptor rowDescriptor,
                 String location) {
+            if (creationsBeforeFailing > 0) {
+                creationsBeforeFailing--;
+            } else if (failingCreations > 0) {
+                failingCreations--;
+                throw new StatusRuntimeException(
+                        Status.PERMISSION_DENIED.withDescription(
+                                "Permission 'TABLES_GET' denied on resource"
+                                        + " 'projects/p/datasets/d/tables/t' (or it may not"
+                                        + " exist)."));
+            }
             FakeAppender appender = new FakeAppender(rowDescriptor);
             created.add(appender);
             return appender;
@@ -256,14 +277,120 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
             BigQuerySinkConfig<String> config,
             ScriptedAppenderFactory factory,
             RecordingTableAdmin admin) {
+        return writer(config, factory, admin, 3, 3);
+    }
+
+    private static BigQueryDefaultStreamWriter<String> writer(
+            BigQuerySinkConfig<String> config,
+            ScriptedAppenderFactory factory,
+            RecordingTableAdmin admin,
+            int recoveryMaxAttempts,
+            int schemaWaitMaxAttempts) {
         return new BigQueryDefaultStreamWriter<>(
                 config,
                 factory,
                 admin,
                 TestSinkWriterMetricGroup.create(),
                 BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
-                BigQueryDefaultStreamWriterTest.fastSchedule(3),
-                BigQueryDefaultStreamWriterTest.fastSchedule(3));
+                BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts),
+                BigQueryDefaultStreamWriterTest.fastSchedule(schemaWaitMaxAttempts));
+    }
+
+    @Test
+    void aMissingTableVerdictDuringASchemaRepairDoesNotInheritTheSchemaBudget() throws Exception {
+        // A schema repair runs on the fifteen-minute schema-wait schedule. A missing-table verdict
+        // is not about schemas, and under CREATE_IF_NEEDED it is also what a *genuine* permission
+        // denial on an existing table looks like — the service masks existence, so the creation
+        // attempt returns HTTP 409 and is swallowed as success, leaving the repair to wait out a
+        // budget nothing will resolve. Left there it turns an immediate, well-named failure into a
+        // checkpoint timeout, so the missing-table allowance is capped at the recovery schedule.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(schemaMismatch()); // escalates to the schema-wait schedule
+        for (int i = 0; i < 20; i++) {
+            factory.scriptedResults.add(maskedAsPermissionDenied());
+        }
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(
+                                new EvolvingSerializer(V2),
+                                SchemaUpdateOptions.builder().allowNewFields().build()),
+                        factory,
+                        new RecordingTableAdmin(V1),
+                        2,
+                        20);
+
+        writer.write("aa", CONTEXT);
+
+        // Two attempts, the recovery bound — not the twenty the schema schedule would have allowed.
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("2 attempt(s)");
+    }
+
+    @Test
+    void aSchemaMismatchAfterAMissingTableVerdictGetsTheSchemaBudgetBack() throws Exception {
+        // The bound is not one-way. The escalation onto the schema schedule fires only on the
+        // reconciliation itself, which runs once per repair — so once a missing-table verdict has
+        // pulled the repair down to the recovery budget, a mismatch arriving afterwards would wait
+        // out schema propagation on the short one and fail a repair that was progressing.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(schemaMismatch()); // escalates
+        factory.scriptedResults.add(maskedAsPermissionDenied()); // bounds back down
+        for (int i = 0; i < 6; i++) {
+            factory.scriptedResults.add(schemaMismatch()); // must not fail within the short budget
+        }
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(
+                                new EvolvingSerializer(V2),
+                                SchemaUpdateOptions.builder().allowNewFields().build()),
+                        factory,
+                        new RecordingTableAdmin(V1),
+                        2,
+                        20);
+
+        writer.write("aa", CONTEXT);
+
+        // Six mismatches past a recovery budget of two: only the restored schema budget can carry
+        // them, and the run ends on the appends succeeding rather than on an exhausted budget.
+        assertThatCode(() -> writer.flush(false)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void theBoundAlsoAppliesWhenOpeningTheAppenderIsWhatFails() throws Exception {
+        // The other retryBatches entry: rebuildState throwing, rather than an append failing. The
+        // SDK looks up the table's location when none is configured, so appender creation is a
+        // second place a missing-table verdict surfaces — and it inherits the same schedule.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(schemaMismatch()); // escalates to the schema-wait schedule
+        // The first creation is the one the first write makes, before any repair.
+        factory.creationsBeforeFailing = 1;
+        factory.failingCreations = 20;
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(
+                                new EvolvingSerializer(V2),
+                                SchemaUpdateOptions.builder().allowNewFields().build()),
+                        factory,
+                        new RecordingTableAdmin(V1),
+                        2,
+                        20);
+
+        writer.write("aa", CONTEXT);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("2 attempt(s)");
+    }
+
+    /** The masked {@code PERMISSION_DENIED} the real service answers for a table it cannot see. */
+    private static ApiFuture<AppendRowsResponse> maskedAsPermissionDenied() {
+        return ApiFutures.immediateFailedFuture(
+                new StatusRuntimeException(
+                        Status.PERMISSION_DENIED.withDescription(
+                                "Permission 'TABLES_UPDATE_DATA' denied on resource"
+                                        + " 'projects/p/datasets/d/tables/t' (or it may not"
+                                        + " exist).")));
     }
 
     // --- schema-mismatch append failures ---

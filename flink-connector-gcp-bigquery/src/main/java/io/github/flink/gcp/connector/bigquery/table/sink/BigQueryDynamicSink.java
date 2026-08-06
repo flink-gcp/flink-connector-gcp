@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 
@@ -59,6 +60,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
     private final TableDestination destination;
     private final RowDataSchemaOptions schemaOptions;
     @Nullable private final CreateDisposition createDisposition;
+    @Nullable private final TableCreateOptions tableCreateOptions;
     @Nullable private final String location;
     @Nullable private final SchemaUpdateOptions schemaUpdateOptions;
     @Nullable private final DefaultStreamOptions defaultStreamOptions;
@@ -74,6 +76,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
      * @param schemaOptions how the columns derive a BigQuery schema
      * @param createDisposition the create disposition, or {@code null} to leave it at the
      *     connector's default
+     * @param tableCreateOptions the settings a created table takes, or {@code null} to leave it
+     *     unpartitioned and unclustered
      * @param location the BigQuery location, or {@code null}
      * @param schemaUpdateOptions the schema update options, or {@code null}
      * @param defaultStreamOptions the default-stream tuning, or {@code null}
@@ -86,6 +90,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
             TableDestination destination,
             RowDataSchemaOptions schemaOptions,
             @Nullable CreateDisposition createDisposition,
+            @Nullable TableCreateOptions tableCreateOptions,
             @Nullable String location,
             @Nullable SchemaUpdateOptions schemaUpdateOptions,
             @Nullable DefaultStreamOptions defaultStreamOptions,
@@ -98,6 +103,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         this.schemaOptions =
                 Preconditions.checkNotNull(schemaOptions, "schemaOptions must not be null");
         this.createDisposition = createDisposition;
+        this.tableCreateOptions = tableCreateOptions;
         this.location = location;
         this.schemaUpdateOptions = schemaUpdateOptions;
         this.defaultStreamOptions = defaultStreamOptions;
@@ -123,6 +129,11 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                         .serializer(new RowDataSerializer(rowType, schemaOptions));
         if (createDisposition != null) {
             builder.createDisposition(createDisposition);
+        }
+        if (tableCreateOptions != null) {
+            // The single-options form, never the provider: a SQL INSERT INTO names one table, so
+            // there is no second destination for a provider to answer differently for.
+            builder.tableCreateOptions(tableCreateOptions);
         }
         if (location != null) {
             builder.location(location);
@@ -150,6 +161,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 destination,
                 schemaOptions,
                 createDisposition,
+                tableCreateOptions,
                 location,
                 schemaUpdateOptions,
                 defaultStreamOptions,
@@ -176,6 +188,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 && destination.equals(that.destination)
                 && schemaOptions.equals(that.schemaOptions)
                 && createDisposition == that.createDisposition
+                && Objects.equals(tableCreateOptions, that.tableCreateOptions)
                 && Objects.equals(location, that.location)
                 && Objects.equals(schemaUpdateOptions, that.schemaUpdateOptions)
                 && Objects.equals(defaultStreamOptions, that.defaultStreamOptions)
@@ -191,6 +204,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 destination,
                 schemaOptions,
                 createDisposition,
+                tableCreateOptions,
                 location,
                 schemaUpdateOptions,
                 defaultStreamOptions,

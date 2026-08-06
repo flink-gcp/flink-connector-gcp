@@ -23,6 +23,8 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.FactoryUtil;
+import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.RowType;
 
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -30,6 +32,7 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.table.sink.BigQueryDynamicSink;
 import io.github.flink.gcp.connector.bigquery.table.sink.DefaultStreamOptionsMapper;
 import io.github.flink.gcp.connector.bigquery.table.sink.RowDataSchemaOptions;
+import io.github.flink.gcp.connector.bigquery.table.sink.TableCreateOptionsMapper;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -79,6 +82,10 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                         BigQueryConnectorOptions.SINK_LOCATION,
                         BigQueryConnectorOptions.SINK_SCHEMA_UPDATE_ALLOW_NEW_FIELDS,
                         BigQueryConnectorOptions.SINK_SCHEMA_UPDATE_ALLOW_FIELD_RELAXATION,
+                        BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_TYPE,
+                        BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_FIELD,
+                        BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION,
+                        BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS,
                         BigQueryConnectorOptions.SINK_DERIVE_REQUIRED_COLUMNS,
                         BigQueryConnectorOptions.SINK_JSON_FIELD_PATHS,
                         BigQueryConnectorOptions.SINK_GEOGRAPHY_FIELD_PATHS,
@@ -109,14 +116,16 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
         ReadableConfig config = helper.getOptions();
         checkWriteMethod(config);
 
+        DataType physicalDataType = context.getPhysicalRowDataType();
         return new BigQueryDynamicSink(
-                context.getPhysicalRowDataType(),
+                physicalDataType,
                 TableDestination.of(
                         config.get(BigQueryConnectorOptions.PROJECT),
                         config.get(BigQueryConnectorOptions.DATASET),
                         config.get(BigQueryConnectorOptions.TABLE)),
                 schemaOptions(config),
                 config.getOptional(BigQueryConnectorOptions.SINK_CREATE_DISPOSITION).orElse(null),
+                TableCreateOptionsMapper.map(config, (RowType) physicalDataType.getLogicalType()),
                 config.getOptional(BigQueryConnectorOptions.SINK_LOCATION).orElse(null),
                 schemaUpdateOptions(config),
                 DefaultStreamOptionsMapper.map(config),

@@ -80,6 +80,31 @@ or the SDK already uses — the default is never restated here. The full list of
 | `sink.geography-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `GEOGRAPHY` |
 | `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
 
+### Table creation
+
+Setting any one of these builds a `TableCreateOptions`; the rest stay at the connector's defaults.
+They apply **only when the sink creates the table** — an existing table is never repartitioned or
+reclustered by them, whatever the DDL says.
+
+They do not *authorize* creation: `sink.create-disposition` does, and it defaults to
+`create-if-needed`, so the settings alone configure the table an unconfigured DDL already creates.
+Setting any of them beside an explicit `create-never` is rejected.
+
+A column BigQuery could not use is rejected at plan time rather than at the first record: one the
+table does not declare, a partitioning column that is not `TIMESTAMP`, `TIMESTAMP_LTZ` or `DATE`,
+an `hour` granularity over a `DATE` column (a `DATE` column has day, month and year granularity
+only), and a repeated or nested clustering column — BigQuery clusters on top-level, non-repeated
+columns of a scalar type, which an array, map, multiset or row column is not. Which *scalar* types
+are clusterable is left to the service: that list has grown before, and a stale copy here would
+refuse a table BigQuery would have created.
+
+| Option | Type | Maps to |
+|---|---|---|
+| `sink.table-create.time-partitioning.type` | Enum | `TableCreateOptions.timePartitioning(...)` — `hour`, `day`, `month` or `year` |
+| `sink.table-create.time-partitioning.field` | String | The `TIMESTAMP`, `TIMESTAMP_LTZ` or `DATE` column to partition on; a `DATE` column takes no `hour` granularity. Left out, the table is partitioned on **ingestion time** — the case `PARTITIONED BY` could not express. Requires the granularity above |
+| `sink.table-create.time-partitioning.expiration` | Duration | `TableCreateOptions.timePartitioningExpiration(...)`. Requires the granularity above |
+| `sink.table-create.clustered-fields` | List&lt;String&gt; | `TableCreateOptions.clusteredFields(...)`, in precedence order; BigQuery takes at most four top-level columns |
+
 ### Sink tuning — `storage-api-at-least-once`
 
 Setting any one of these builds a `DefaultStreamOptions`; the rest stay at the connector's
@@ -178,7 +203,23 @@ make against a concrete need rather than in advance.
 partitioning, which BigQuery time partitioning is not, and ingestion-time partitioning has no column
 to name at all — so the clause could never cover the whole feature. The sink does not implement
 `SupportsPartitioning`, which makes a partition spec fail at plan time instead of being silently
-ignored. `INSERT OVERWRITE` is refused for the same reason.
+ignored. `INSERT OVERWRITE` is refused for the same reason. Partitioning and clustering are
+configured by [`sink.table-create.*`](#table-creation) instead.
+
+**A partitioning or clustering column BigQuery could not use fails at plan time.** The service
+refuses such a table at creation, but the sink only gets there at the first record, from inside a
+task — and the emulator accepts every one of these without complaint, so a test suite alone would
+not notice. In SQL the DDL *is* the created table's schema, so the mistake is visible while the job
+graph is being built, and that is where it is reported. The DataStream API makes no such check: its
+schema comes from the serializer, per destination, and is not in hand when the options are
+configured. Names are matched case-insensitively, and the value reaches BigQuery exactly as
+written.
+
+What is checked is the column's *shape*, never a list of types that could grow: existence, the
+three types time-unit partitioning is defined over, the `DATE`-has-no-hour rule, and "top-level,
+non-repeated, scalar" for clustering. A clustering column of a scalar type BigQuery happens not to
+accept today — `DOUBLE`, `TIME` — still reaches the service, deliberately: encoding that list here
+would buy an earlier failure at the risk of refusing a table a later BigQuery would create.
 
 **No metadata columns.** A BigQuery row has no envelope around it, so there is nothing to expose.
 
@@ -197,3 +238,9 @@ integration tests run `CREATE TABLE` and `INSERT INTO` through the planner again
 goccy/bigquery-emulator container, with the two emulator endpoints interpolated into the `WITH`
 clause — so they exercise the production factory rather than a test seam. Column types the emulator
 does not implement are covered by the unit tests and by the gated real-GCP suite.
+
+`sink.table-create.*` needs both levels, and for a reason the emulator states by omission: it
+stores a create request's partitioning and clustering verbatim and **validates nothing**, so
+`BigQueryTableCreateOptionsITCase` can show the settings survive the mapper but not that BigQuery
+would accept them. The gated `BigQueryTableCreationFidelityITCase` is what measures that, against
+the real service.

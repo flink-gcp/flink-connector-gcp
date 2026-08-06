@@ -104,13 +104,21 @@ public final class RealBigQuery {
 
     /** Returns the live columns of {@code table}, in order. */
     public static FieldList tableFields(String table) {
+        Schema schema = tableDefinition(table).getSchema();
+        assertThat(schema).isNotNull();
+        return schema.getFields();
+    }
+
+    /**
+     * Returns the live definition of {@code table} — the schema, and the partitioning and
+     * clustering the service actually stored.
+     */
+    public static StandardTableDefinition tableDefinition(String table) {
         Table live = client().getTable(TableId.of(project(), dataset(), table));
         // Named rather than left to a bare NPE below: a table the sink was expected to auto-create
         // is exactly what a caller of this asserts about, and the run that finds out is a paid one.
         assertThat(live).as("table %s exists", table).isNotNull();
-        Schema schema = live.<StandardTableDefinition>getDefinition().getSchema();
-        assertThat(schema).isNotNull();
-        return schema.getFields();
+        return live.getDefinition();
     }
 
     /** Runs the query and returns its rows. */

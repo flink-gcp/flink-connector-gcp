@@ -20,7 +20,9 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 
+import com.google.cloud.bigquery.TimePartitioning;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import org.junit.jupiter.api.Test;
 
@@ -46,18 +48,36 @@ class ConnectorEnumOptionSpellingTest {
         assertThat(WriteMethod.FILE_LOADS).hasToString("file-loads");
         assertThat(CreateDisposition.CREATE_IF_NEEDED).hasToString("create-if-needed");
         assertThat(CreateDisposition.CREATE_NEVER).hasToString("create-never");
+        assertThat(TableCreateOptions.TimePartitioningType.HOUR).hasToString("hour");
+        assertThat(TableCreateOptions.TimePartitioningType.DAY).hasToString("day");
+        assertThat(TableCreateOptions.TimePartitioningType.MONTH).hasToString("month");
+        assertThat(TableCreateOptions.TimePartitioningType.YEAR).hasToString("year");
     }
 
     @Test
     void noConstantOfAnyEnumKeepsTheUnderscoreSpelling() {
         assertHyphenated(WriteMethod.class);
         assertHyphenated(CreateDisposition.class);
+        assertHyphenated(TableCreateOptions.TimePartitioningType.class);
     }
 
     @Test
     void everyConstantOfEveryEnumParsesBackFromItsOwnSpelling() {
         assertRoundTrips(WriteMethod.class);
         assertRoundTrips(CreateDisposition.class);
+        assertRoundTrips(TableCreateOptions.TimePartitioningType.class);
+    }
+
+    @Test
+    void thePartitioningTypeStillNamesTheClientLibrarysOwnConstant() {
+        // BigQueryTableAdmin bridges with TimePartitioning.Type.valueOf(type.name()), so the
+        // constant names are the contract with the client library and the DDL spelling is not.
+        for (TableCreateOptions.TimePartitioningType type :
+                TableCreateOptions.TimePartitioningType.values()) {
+            assertThat(TimePartitioning.Type.valueOf(type.name()))
+                    .as("%s", type.name())
+                    .isNotNull();
+        }
     }
 
     @Test
