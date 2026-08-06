@@ -24,6 +24,7 @@ import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.NotFoundException;
+import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.ConnectionWorkerPool;
@@ -71,9 +72,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *       exact name — so the stream is primed and that name form is used, where the production path
  *       uses the {@code .../_default} short form the service also accepts
  *   <li>a missing table surfaces from {@code GetWriteStream} as {@code UNKNOWN} instead of {@code
- *       NOT_FOUND}; it is translated so {@link
+ *       NOT_FOUND}; that one status is translated so {@link
  *       io.github.flink.gcp.connector.bigquery.sink.CreateDisposition#CREATE_IF_NEEDED} handling
- *       reacts to it
+ *       reacts to it, and every other status is left alone
  *   <li>appends on a connection opened after an earlier one closed are silently dropped past the
  *       first, so no connection pool is enabled and no JVM-global pool bounds are applied
  * </ul>
@@ -157,13 +158,15 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
      * .../streams/_default} name, and no pool. The location is not forwarded — the emulator has no
      * regions, and the routing hint only picks a production endpoint.
      *
-     * <p>The client is closed on every failure path here, since no appender is returned to own it.
+     * <p>The client is closed on every failure path here, since no appender is returned to own it —
+     * in a {@code finally} rather than per catch clause, so an {@link Error} does not leak it
+     * either.
      */
     private RowAppender createAgainstEmulator(
             TableDestination destination, Descriptors.Descriptor rowDescriptor) throws IOException {
         String streamName = destination.toTablePath() + "/streams/_default";
         BigQueryWriteClient client = BigQueryWriteClients.forEmulator(emulatorEndpoint);
-        StreamWriter streamWriter;
+        StreamWriter streamWriter = null;
         try {
             client.getWriteStream(GetWriteStreamRequest.newBuilder().setName(streamName).build());
             streamWriter =
@@ -174,11 +177,17 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
                             .setTraceId(TRACE_ID)
                             .build();
         } catch (ApiException e) {
-            client.close();
+            // Only the emulator's own mistranslation is rewritten. Anything else — an emulator that
+            // is not listening, a request it rejects — must keep its status, or a create-if-needed
+            // writer would answer it by creating a table that already exists and retrying forever.
+            if (e.getStatusCode().getCode() != StatusCode.Code.UNKNOWN) {
+                throw e;
+            }
             throw new NotFoundException(e, GrpcStatusCode.of(Status.Code.NOT_FOUND), false);
-        } catch (IOException | RuntimeException e) {
-            client.close();
-            throw e;
+        } finally {
+            if (streamWriter == null) {
+                client.close();
+            }
         }
         return new StreamWriterRowAppender(streamWriter, client);
     }

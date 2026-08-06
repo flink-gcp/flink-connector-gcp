@@ -120,7 +120,7 @@ public class BigQueryTableAdmin implements TableAdmin {
             throws IOException {
         TableInfo tableInfo = buildTableInfo(destination, schema, options);
         try {
-            client().create(tableInfo);
+            client(destination).create(tableInfo);
             LOG.info("Created BigQuery table {} with options {}", destination, options);
         } catch (BigQueryException e) {
             if (e.getCode() == HTTP_CONFLICT) {
@@ -135,7 +135,7 @@ public class BigQueryTableAdmin implements TableAdmin {
     public TableSchemaSnapshot getSchema(TableDestination destination) throws IOException {
         Table table;
         try {
-            table = client().getTable(toTableId(destination));
+            table = client(destination).getTable(toTableId(destination));
         } catch (BigQueryException e) {
             throw new IOException("Failed to read the schema of BigQuery table " + destination, e);
         }
@@ -187,7 +187,7 @@ public class BigQueryTableAdmin implements TableAdmin {
         try {
             // The table carries the snapshot's etag, so BigQuery rejects the update when the
             // table changed since the snapshot was taken.
-            client().update(baseTable.toBuilder().setDefinition(updated).build());
+            client(destination).update(baseTable.toBuilder().setDefinition(updated).build());
             LOG.info("Updated the schema of BigQuery table {}", destination);
             return true;
         } catch (BigQueryException e) {
@@ -324,7 +324,7 @@ public class BigQueryTableAdmin implements TableAdmin {
         return TableInfo.newBuilder(toTableId(destination), definition.build()).build();
     }
 
-    private BigQuery client() {
+    private BigQuery client(TableDestination destination) {
         if (client == null) {
             client =
                     emulatorEndpoint == null
@@ -332,8 +332,18 @@ public class BigQueryTableAdmin implements TableAdmin {
                             // The emulator serves plain HTTP, and setHost takes a URL where the
                             // gRPC side takes a bare host:port — hence the scheme here and not in
                             // the option's value.
+                            //
+                            // The project id is required rather than informative: BigQueryOptions
+                            // refuses to build without one, and against an emulator there is no
+                            // environment to infer it from, so an unset one fails wherever no
+                            // gcloud configuration exists — a CI runner, say, while passing on a
+                            // developer's machine. Which project it is does not matter, since
+                            // every request here names its table in full (see toTableId), and that
+                            // is why caching one client across destinations in several projects
+                            // stays correct.
                             : BigQueryOptions.newBuilder()
                                     .setHost("http://" + emulatorEndpoint.getTarget())
+                                    .setProjectId(destination.getProject())
                                     .setCredentials(NoCredentials.getInstance())
                                     .build()
                                     .getService();
