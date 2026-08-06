@@ -71,7 +71,7 @@ import java.util.List;
  * StringData} may be backed by a buffer the runtime reuses when object reuse is on.
  */
 @Internal
-public final class RowDataToProtoConverter {
+final class RowDataToProtoConverter {
 
     /** One encoding per BigQuery column type, not one per Java type. */
     private enum Kind {

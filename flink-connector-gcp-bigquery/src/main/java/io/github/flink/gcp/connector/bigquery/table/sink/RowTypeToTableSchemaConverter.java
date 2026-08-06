@@ -64,7 +64,7 @@ import java.util.Set;
  * </ul>
  */
 @Internal
-public final class RowTypeToTableSchemaConverter {
+final class RowTypeToTableSchemaConverter {
 
     /** BigQuery {@code NUMERIC} holds at most this many digits after the point. */
     private static final int NUMERIC_MAX_SCALE = 9;

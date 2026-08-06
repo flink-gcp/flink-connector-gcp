@@ -112,8 +112,8 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "Which write path the sink uses. Only"
-                                    + " 'storage-api-at-least-once' is available from SQL so far;"
-                                    + " the other two arrive with their option families.");
+                                    + " 'storage-api-at-least-once' is accepted; the other two"
+                                    + " arrive with their option families (issue 288).");
 
     public static final ConfigOption<CreateDisposition> SINK_CREATE_DISPOSITION =
             ConfigOptions.key("sink.create-disposition")

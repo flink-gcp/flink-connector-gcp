@@ -50,7 +50,7 @@ import java.io.IOException;
  * at this layer anyway.
  */
 @Internal
-public final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
+final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
 
     private static final long serialVersionUID = 1L;
 

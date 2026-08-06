@@ -141,7 +141,7 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                     String.format(
                             "Option '%s' = '%s' is not supported by the '%s' connector yet; only"
                                     + " '%s' is. The other write methods arrive with their own"
-                                    + " option families.",
+                                    + " option families (issue 288).",
                             BigQueryConnectorOptions.SINK_WRITE_METHOD.key(),
                             writeMethod,
                             IDENTIFIER,

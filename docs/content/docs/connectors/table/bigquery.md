@@ -70,7 +70,7 @@ or the SDK already uses — the default is never restated here. The full list of
 
 | Option | Type | Maps to |
 |---|---|---|
-| `sink.write-method` | Enum | `writeMethod(...)`. Only `storage-api-at-least-once` is available from SQL so far |
+| `sink.write-method` | Enum | `writeMethod(...)`. Only `storage-api-at-least-once` is accepted; the other two arrive with their option families ([#288]({{< param BookRepo >}}/issues/288)) |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.location` | String | `location(...)` |
 | `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()` |
@@ -166,7 +166,7 @@ on the DataStream page for what each write method promises.
 The changelog mode is insert-only. An updating query — an aggregation without a window, a
 non-windowed join — is rejected when the plan is built, because BigQuery's append-only write paths
 cannot express a retraction and appending the `-U` and `-D` rows as ordinary ones would corrupt the
-table silently. Upserts are tracked separately.
+table silently. Upserts are [#65]({{< param BookRepo >}}/issues/65).
 
 ## Design decisions
 
