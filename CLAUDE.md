@@ -777,8 +777,11 @@ singleton for the rest of the surefire JVM, and nothing restores it.
 That is what #316 was. `BigtableMutateRowsSinkTest` forged on `BigtableWriterOptions.defaults()`, so
 every later `defaults()` in the same fork carried `maxInFlightMutations = 0`, and
 `BigtableWriterMetricsTest`'s 13 tests all died in the writer's precondition — on about one run in
-three, because `default-test` runs `forkCount=4, reuseForks=true` with no configured `runOrder`, so
-class-to-fork assignment decides whether the two classes share a JVM. Measured rather than inferred:
+three, because `default-test` runs `forkCount=4` with no configured `runOrder` and `reuseForks` left
+at surefire's default of `true` — do not go looking for it in a pom, only the `integration-tests`
+execution states it — so class-to-fork assignment decides whether the two classes share a JVM. The
+pin below holds whatever those settings become, which is why nothing here proposes changing them.
+Measured rather than inferred:
 under `-Dflink.forkCountUnitTest=1 -Dsurefire.runOrder=alphabetical` it fails every time and under
 `reversealphabetical` it passes every time, which is also how a fix here is measured against a
 failing case rather than against a green run that would have been green anyway.
