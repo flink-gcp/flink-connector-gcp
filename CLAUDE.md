@@ -864,3 +864,83 @@ preconditions stay exactly where they are: the builders reject a non-positive va
 and Java serialization of the job graph restores the written field values. It becomes reachable under
 serial-form evolution — a field added while `serialVersionUID` stays `1L`, read from an older stream
 — which is precisely what those preconditions and their comments exist for.
+
+## A vendor client's teardown may re-report a failure the connector already consumed (#325)
+
+Two of this repository's client-wrapping SPIs wrap a client that, at teardown, reports again a
+failure the connector has already taken delivery of and acted on. Both absorb it; a third
+implementation of either SPI would have to as well, and that is what their `close()` javadoc says.
+What the rule is **not** is a property of wrapping a client — #325 measured it against the vendor
+sources (2026-08-06, at the versions `libraries-bom` 26.85.1 pins), and found two unrelated
+mechanisms, so the next one is measured rather than assumed either way.
+
+**What was measured, stated so the set is reproducible**: every `@Internal` interface in this
+repository that declares a `close()` and whose implementations exist to wrap a GCP client — nine of
+them, listed below — plus `@Experimental` `DeadLetterQueue`, admitted on its implementation rather
+than its declaration, since `PubSubDeadLetterQueue` owns a `Publisher`. Two qualifiers the wording
+alone will not give you, both worth stating because a re-run otherwise disagrees with this list.
+`TopicAdmin` and `SubscriptionAdmin` are **in** although neither owns a long-lived client — they
+declare the `close()` and are the shape a future implementation might, which is what the contract is
+for — and `SubscriptionAdmin`'s closer is the split **enumerator**, not a writer or reader.
+`StagingStorage` is **out**, and this is the one exclusion that is a property of the type rather
+than a judgement: it declares no `close()` at all, its teardown being the staged object's own
+`OutputStream`, so there is no moment at which it could report anything a second time.
+
+- **gax 2.82.0 `BatcherImpl.close()`** — `MutationBatcher`, Bigtable. `BatcherStats
+  .recordBatchElementsCompletion` calls `get()` on **every entry's result future** and accumulates
+  the failure; the maps are never cleared for the batcher's lifetime; `closeAsync()` ends in
+  `asException()` and `close()` rethrows it as `new BatchingException(cause.getMessage())`. #238.
+- **google-cloud-pubsub 1.152.0 `Subscriber.awaitTerminated(long, TimeUnit)`** — the source's
+  `NotifyingPullSubscriber`. `Subscriber extends AbstractApiService`, whose `InnerService extends`
+  Guava's `AbstractService`; `checkCurrentState(TERMINATED)` on a `FAILED` service throws
+  `IllegalStateException(..., failureCause())`, and that cause is the same `Throwable` the failure
+  listener already recorded as `permanentError` and `pullMessages` already reported, wrapped in an
+  `IOException`. Note what `Subscriber` is *not*: gax redeclares the service contract precisely so
+  Guava can be shaded, so `Subscriber` is an `ApiService`, and the `AbstractService` is a private
+  inner field of `AbstractApiService`. Nothing can catch or `instanceof` the Guava type here. #325.
+
+**The consequences are asymmetric, and only one of them is severe.** Bigtable's duplicate arrives
+after the sink's `FailureHandler` may have deliberately dropped those very entry failures, so it
+converts a job that policy kept running into a failed one. Pub/Sub's first report already fails the
+job, so the duplicate only adds a competing exception to a teardown the first one is causing. Both
+absorb, but do not read the second as evidence that the first is merely tidiness.
+
+**Measured not to have it**, so this is not re-derived:
+
+- `TopicPublisher` and `DeadLetterQueue` — `Publisher.shutdown()` is an already-shut-down
+  `checkState`, then `publishAllOutstanding()`, then `Waiter.waitComplete()`, which counts pending
+  work and inspects no result, and `awaitTermination` returns a `boolean`. Nothing reads a message
+  future, so a per-message failure is reported only through the future `publish` returned.
+- `TaskCreator` and BigQuery's `BufferedStreamService` — `CloudTasksClient` and
+  `BigQueryWriteClient` hold a gax `BackgroundResourceAggregation`, which is pure delegation
+  returning `void`/`boolean`.
+- `RowAppender` and `OffsetRowAppender` — bigquerystorage 3.30.0 `StreamWriter.close()`, whose
+  `ConnectionWorker.cleanupInflightRequests()` completes only futures **still in the inflight
+  queue**: a first report, not a repeat, and the nearest miss in the set.
+- `TopicAdmin` and `SubscriptionAdmin` — no long-lived client, `close()` empty.
+- `MutationBatcher`'s *client* half, which is a second teardown inside one SPI —
+  `BigtableDataClient.close()` → `EnhancedBigtableStub.close()`, which is **not** a
+  `BackgroundResourceAggregation` but `BigtableClientContext.close()`'s own loop over the context's
+  background resources, wrapped in an `IllegalStateException`. It reports no per-mutation outcome.
+
+Two rules the implementations turn on:
+
+- **The absorb is per-connector, because the mechanisms are.** Nothing shared would catch both:
+  `shutDownAbsorbingTheLifetimeFailureReport` catches `BatchingException` by type, and the
+  subscriber's `awaitTerminated()` catches `TimeoutException | RuntimeException` because Guava
+  reports a state, not a named exception. A shared helper would have to be parameterised by the
+  thing that differs, which is the whole of it.
+- **A client that cannot be subclassed needs its operations held as functional values**, or the
+  absorb has no test. Every one of these clients is unextendable, but **not all by the same
+  mechanism**, and the distinction is worth keeping because only one of them is a rule someone can
+  break: gax's `Batcher` is `@InternalExtensionOnly`, so a fake would be legal Java and an
+  unsupported extension; `Subscriber` and `Publisher` are non-final classes whose only constructor
+  is `private`; `BigtableDataClient`'s is **package-private** (`@InternalApi("Visible for
+  testing")`), and `StreamWriter`'s and `BigQueryWriteClient`'s are likewise inaccessible — each
+  forbidding a subclass just as effectively. **None of them is `final`**, which five places in this
+  repository asserted: #324 corrected two (`BoundedShutdown`'s javadoc, the Pub/Sub `CLAUDE.md`) and
+  #325 the other three (`PubSubDeadLetterQueue` twice, `RowAppender` once, that last one about the
+  BigQuery pair rather than `Publisher`). Worth the tally, because the claim was copied rather than
+  checked each time. There is no mocking
+  library here, so injection is the only seam — #324 for the batcher adapter, #325 for the
+  subscriber, and `PubSubDeadLetterQueue`'s `publisherShutdown`/`channelShutdown` before both.

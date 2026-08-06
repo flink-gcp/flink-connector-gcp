@@ -64,6 +64,13 @@ public interface MutationBatcher extends AutoCloseable {
      * applies the sink's policy there, so a second report at shutdown would fail a job that policy
      * had deliberately kept running — which is why the production implementation absorbs the one
      * its client batcher raises (#238).
+     *
+     * <p>That report is a property of gax's {@code Batcher}, not of wrapping a client: its {@code
+     * BatcherStats} reads every entry's result future and accumulates the failures for the
+     * batcher's lifetime, never clearing them, so {@code close()} rebuilds them into one exception
+     * — every failure by count, though only the first 50 messages of each kind, which it keeps in
+     * an {@code EvictingQueue}. #325 measured the other connectors' clients for the same shape; the
+     * rule, and what has it, are in the root {@code CLAUDE.md}.
      */
     @Override
     void close() throws Exception;

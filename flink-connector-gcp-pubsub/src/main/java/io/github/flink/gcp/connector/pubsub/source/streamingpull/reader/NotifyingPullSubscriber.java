@@ -63,7 +63,14 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
      * Shuts the subscriber down if it is not already shutting down, then waits for the client to
      * finish, up to the configured shutdown timeout.
      *
-     * @throws Exception if the client does not shut down cleanly
+     * <p>An implementation must not report a failure it has already delivered through {@link
+     * #pullMessages}. The reader consumes that one and fails the job on it, so a second report here
+     * only adds a competing exception to a teardown the first one is already causing — which is why
+     * the default implementation absorbs the one its client raises (#325). The repository-wide rule
+     * this is an instance of, and what was measured about the other connectors' clients, are in the
+     * root {@code CLAUDE.md}.
+     *
+     * @throws Exception if the shutdown itself goes wrong, for some reason other than that failure
      */
     @Override
     void close() throws Exception;

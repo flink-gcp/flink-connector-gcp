@@ -241,7 +241,14 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   value. So the count is process-wide wherever it lives, and the only question is *whose*. Holding it
   here would make one number out of every client this class ever serves, and a metric named for one
   of them would silently include the rest — the nearest such client is not another connector but the
-  Pub/Sub **source**, whose subscriber teardown has the same shape. Each owner passing its own keeps
+  Pub/Sub **source**, whose subscriber teardown has the same shape. (Read that as the argument it
+  is, not as a plan: #325 measured that subscriber and it is **not** a candidate adopter —
+  `Subscriber.stopAsync()` returns at once and `awaitTerminated` already takes the budget, so the
+  *task thread's* wait is bounded without this class. Not that nothing is unbounded there: the SDK
+  runs its own shutdown on a non-daemon thread with no timeout by default, which this class could
+  not have taken either, since it is the SDK's thread and not a wait of ours. The reasoning is
+  unaffected, being about what a shared counter would mean whenever a second client does arrive.)
+  Each owner passing its own keeps
   the names true by construction, and lets tests inject one and assert absolutely instead of around a
   baseline. A first draft held an `AtomicLong` here and documented the resulting bound instead of
   removing it; do not reintroduce it.
