@@ -472,7 +472,9 @@ Publishes are batched and awaited in `flush()`, so a rare failure costs no round
 fails — the default is 1000, `0` publishes each element synchronously (the narrowest loss window,
 one round trip per element) and `-1` buffers until the flush. The topic must already exist: this
 queue never creates one, because a dead-letter destination created on the fly is one nothing is
-consuming. Full description on the
+consuming. `shutdownTimeout` (30 s by default) bounds the queue's own close, and it is spent
+*after* the sink's own teardown — so a sink that dead-letters should budget for the sum against
+Flink's `task.cancellation.timeout`. Full description on the
 [Pub/Sub page]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-lettering-to-a-pubsub-topic).
 
 One limit is worth stating because the documentation contradicts itself: the maximum task size is

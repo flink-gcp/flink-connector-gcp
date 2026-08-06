@@ -201,7 +201,39 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   unchanged and `getTarget()` reconstructs the input. One message covers every malformed value
   (`emulatorEndpoint must be host:port, was '<value>'`), which is why the old "must not be blank"
   is gone: a blank endpoint is not a separate kind of mistake.
-- **`base.lifecycle` is two methods, one loop** (#229 then #276), and every `close()`-shaped call
+- **`BoundedShutdown` is `base.lifecycle`'s one class** (#265 built it inside
+  `DefaultPublisherFactory`; #312 moved it here): one client's shutdown and its termination wait,
+  both on a daemon thread, under one deadline that the caller's single `join` is the whole of. It
+  arrived when its second consumer did — the Pub/Sub sink's per-topic publishers and
+  `PubSubDeadLetterQueue` — which is this module's multiple-consumers bar met exactly, and it joined
+  an existing package rather than taking one of its own, for the reason `EmulatorEndpoint` joined
+  `base.rpc`. Why it exists at all, and the six decisions inside it, are the Pub/Sub module's
+  CLAUDE.md; what belongs here is the shape the move imposed. It is **client-agnostic by
+  construction**: two functional values rather than a client (the one it was written for is
+  `final`), a `String description` rather than a destination type, and no gax or gRPC import — so
+  the module gained no dependency. Its release hook is a **nullable `Runnable`, not an
+  `AutoCloseable`**, and that is a contract rather than a convenience: it runs in `close()`'s
+  `finally`, where anything it threw would replace the failure being propagated, so it is for a
+  release that cannot fail (`ManagedChannel.shutdownNow()`), and a resource whose release *can* fail
+  belongs in the caller's own `closeAll` list beside it. Its `close()` is **idempotent** — a second
+  call would otherwise rerun the release and rethrow the captured failure, which `AutoCloseable`
+  discourages and a defensively-closing consumer would meet as a spurious second teardown error.
+  What is *not* enforced: `start()` and `close()` must come from one thread, and two threads racing
+  `start()` would each see a null `thread` and run the shutdown twice. A guard was weighed and left
+  out — both callers are writer teardowns, which Flink runs on the task thread by construction —
+  so the precondition is prose, stated in the class javadoc beside a field-by-field account of what
+  each piece of mutable state actually relies on (`deadlineNanos` is publication-before-start, not
+  confinement; `abandoned` genuinely needs `volatile`; `failure` does not and has it anyway).
+  **Two consequences of the move that are not in the class**: its warnings now log under
+  `base.lifecycle.BoundedShutdown` rather than the connector's package, which a log configuration
+  scoped to `…connector.pubsub` stops matching; and its give-up message carries **no issue link**,
+  deliberately — a shared class must not send one client's operator after another client's defect,
+  and #265 is unreachable for the dead-letter queue's publisher. `timeout()` is the module's first
+  `@VisibleForTesting public` method, and it is public only because a *sibling module's* tests read
+  it; that is the price of promoting a test seam, and the next one here should cite this rather than
+  widen by default. A connector adopting it inherits one open question with it: nothing here reports
+  how many teardowns were abandoned, which is #311.
+- **`base.lifecycle` is also two methods, one loop** (#229 then #276), and every `close()`-shaped call
   site in this repository goes through one of them — nothing calls `IOUtils.closeAll` any more, so
   its `scripts/flink-api-tiers.toml` entry is gone and `ExceptionUtils`' covers both users.
   `closeAll(closeables)` is for when **closing is the operation**: it closes everything, then

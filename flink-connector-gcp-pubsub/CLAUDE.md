@@ -183,7 +183,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   Six decisions not to re-litigate about the teardown itself (the run below has grown past six —
   count them before quoting the number). **A separate thread is the only lever**: the wait ignores
   interruption, `Publisher` has no forcible variant, and `Waiter` is package-private — so
-  `DefaultPublisherFactory.BoundedShutdown` runs the SDK shutdown on a **daemon** thread (one that
+  `base.lifecycle.BoundedShutdown` runs the SDK shutdown on a **daemon** thread (one that
   never returns must not keep a JVM alive) and gives up at the deadline. This is the repository's
   first main-code thread; an `ExecutorService` was the alternative and buys nothing, since
   `shutdownNow()` cannot interrupt that wait either — its thread would leak identically, and the
@@ -218,13 +218,31 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   carries on, so without the restore the rest of the writer's teardown stops honouring the
   cancellation. And a failure captured *after* `close()` gave up is logged rather than dropped —
   nothing would otherwise read the field, and a thread outliving its job meets a closed user
-  classloader. What this deliberately does **not** do is bound the accumulation (#311) or the
-  dead-letter queue's own inline unbounded shutdown one entry later in the same list (#312).
-  `PubSubDeadLetterQueue` uses the SDK `Publisher` directly too and is deliberately **not**
-  changed — its `envelope(...)` sets no ordering key, so the cancel branch that leaks is
-  unreachable there. `shutdownTimeout` became a `PubSubPublisherOptions` knob (30 s, matching
-  what was hardcoded) for symmetry with `PubSubSubscriberOptions.shutdownTimeout`; the DLQ's own
-  constant stays, having no options object and no exposure
+  classloader. What this deliberately does **not** do is bound the accumulation (#311).
+  `shutdownTimeout` became a `PubSubPublisherOptions` knob (30 s, matching what was hardcoded) for
+  symmetry with `PubSubSubscriberOptions.shutdownTimeout`.
+  **#312 then made `PubSubDeadLetterQueue` use the same teardown**, which #265 had deliberately left
+  alone on the grounds that its `envelope(...)` sets no ordering key so the cancel branch that leaks
+  is unreachable there. That reasoning was sound and insufficient: `waitComplete()` still blocks
+  until every in-flight dead letter resolves under the ordinary 600 s retry budget, and the wait sat
+  on the task thread one entry after the bounded sink leg in the same `Closers.closeAll` list — so a
+  sink with a DLQ presented `shutdownTimeout` as its close's budget while spending an unbounded leg
+  on top of it. Three decisions from that move. **The class went to `base.lifecycle`** rather than
+  being copied: two consumers is exactly the base module's stated bar, the package already exists so
+  no one-class package is created, and ~30 lines of subtle concurrency duplicated is worse than the
+  ~10 duplicated lines of emulator setup this module already accepts. **The channel parameter became
+  a nullable `Runnable release`, not an `AutoCloseable`** — it runs in a `finally`, where anything it
+  threw would replace the failure being propagated; the sink passes `channel::shutdownNow` and the
+  DLQ passes `null`, its channel being the next entry in its own `closeAll` list (graceful
+  `shutdown()`, not `shutdownNow()`, and already ordered after). And **the DLQ's hardcoded 30 s
+  became `PubSubDeadLetterQueue.Builder.shutdownTimeout(Duration)`**, reversing "the DLQ's own
+  constant stays, having no options object and no exposure": once the docs promise a budget that
+  covers the whole close, the half a user cannot reach is the half they cannot fix. It is a second
+  budget spent after the sink's, not a share of it, and both user-facing documents now say to keep
+  the sum under `task.cancellation.timeout`. `check-option-docs` does not see this builder
+  (`SOURCE_GLOBS` is `*Options.java` / `*SinkBuilder.java` / `*SourceBuilder.java`), so the knob is
+  documented in the datastream page's dead-lettering prose beside `maxOutstandingMessages`, which is
+  where this class's other knobs already live
 - **A `MESSAGE_LEVEL` verdict is confirmed solo before it is routed** (#264, closing #269 with
   it). Measured on real Pub/Sub 2026-08-06 (record on #264): a `Publish` carrying one invalid
   message is rejected **all-or-nothing**, the SDK sets the *same* `Throwable` instance on every

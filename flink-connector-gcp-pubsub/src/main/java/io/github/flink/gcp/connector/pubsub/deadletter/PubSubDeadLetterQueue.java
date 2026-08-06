@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.base.failure.DeadLetterQueue;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
+import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -47,12 +48,12 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
 /**
  * A {@link DeadLetterQueue} publishing every terminally failed element to a Pub/Sub topic, used
@@ -136,11 +137,13 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     /** {@link Builder#maxOutstandingMessages(int)} value buffering until {@link #flush()}. */
     public static final int UNBOUNDED = -1;
 
-    private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
+    /** The default {@link Builder#shutdownTimeout(Duration)}, matching the sink's own. */
+    public static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
 
     private final TopicDestination topic;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final int maxOutstandingMessages;
+    private final Duration shutdownTimeout;
 
     private transient Publisher publisher;
 
@@ -152,6 +155,9 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      * drive its failure path: {@link Publisher} is final, so there is no other seam. Set together
      * with {@link #publisher} by {@link #open(FailureHandlerContext)} and cleared with it, which is
      * why the first of them stands in for it as the not-open guard.
+     *
+     * <p>The first is a {@link BoundedShutdown}: the SDK's own {@code shutdown()} is not guaranteed
+     * to return, and running it inline on the task thread is what #312 removed.
      */
     @Nullable @VisibleForTesting transient AutoCloseable publisherShutdown;
 
@@ -166,10 +172,12 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     private PubSubDeadLetterQueue(
             TopicDestination topic,
             @Nullable EmulatorEndpoint emulatorEndpoint,
-            int maxOutstandingMessages) {
+            int maxOutstandingMessages,
+            Duration shutdownTimeout) {
         this.topic = Preconditions.checkNotNull(topic, "topic must not be null");
         this.emulatorEndpoint = emulatorEndpoint;
         this.maxOutstandingMessages = maxOutstandingMessages;
+        this.shutdownTimeout = shutdownTimeout;
     }
 
     /**
@@ -198,7 +206,16 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                         .setCredentialsProvider(NoCredentialsProvider.create());
             }
             publisher = builder.build();
-            publisherShutdown = this::shutdownPublisher;
+            // The channel is released by channelShutdown, the next entry in close()'s list, rather
+            // than by the teardown itself: it is graceful shutdown() here, not the sink's
+            // shutdownNow(), and Closers.closeAll already runs it whatever the first entry did.
+            publisherShutdown =
+                    new BoundedShutdown(
+                            publisher::shutdown,
+                            publisher::awaitTermination,
+                            "dead-letter topic " + topic,
+                            null,
+                            shutdownTimeout);
             channelShutdown = this::shutdownChannel;
         } catch (IOException | RuntimeException e) {
             // The channel is owned here until the publisher takes it over on success.
@@ -313,11 +330,6 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         return outstanding == null ? 0 : outstanding.size();
     }
 
-    private void shutdownPublisher() throws Exception {
-        publisher.shutdown();
-        publisher.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    }
-
     private void shutdownChannel() {
         if (ownedChannel != null) {
             ownedChannel.shutdown();
@@ -362,6 +374,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         private TopicDestination topic;
         @Nullable private EmulatorEndpoint emulatorEndpoint;
         private int maxOutstandingMessages = DEFAULT_MAX_OUTSTANDING_MESSAGES;
+        private Duration shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
 
         private Builder() {}
 
@@ -419,13 +432,35 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         }
 
         /**
+         * Sets how long {@link #close()} waits for the dead-letter publisher to shut down. Defaults
+         * to 30 seconds.
+         *
+         * <p>This is a budget of its own, spent after and on top of the sink's own {@code
+         * shutdownTimeout}: a sink that dead-letters closes its publishers first and this queue
+         * last. Keep the sum under Flink's {@code task.cancellation.timeout} (180 s by default),
+         * past which a cancelling task is a fatal TaskManager error.
+         *
+         * @param shutdownTimeout the shutdown budget, positive
+         * @return this builder
+         */
+        public Builder shutdownTimeout(Duration shutdownTimeout) {
+            Preconditions.checkNotNull(shutdownTimeout, "shutdownTimeout must not be null");
+            Preconditions.checkArgument(
+                    !shutdownTimeout.isZero() && !shutdownTimeout.isNegative(),
+                    "shutdownTimeout must be positive");
+            this.shutdownTimeout = shutdownTimeout;
+            return this;
+        }
+
+        /**
          * Builds the queue.
          *
          * @return the queue
          */
         public PubSubDeadLetterQueue build() {
             Preconditions.checkState(topic != null, "A dead-letter topic is required.");
-            return new PubSubDeadLetterQueue(topic, emulatorEndpoint, maxOutstandingMessages);
+            return new PubSubDeadLetterQueue(
+                    topic, emulatorEndpoint, maxOutstandingMessages, shutdownTimeout);
         }
     }
 }

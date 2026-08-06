@@ -229,9 +229,15 @@ says which subtask left it. On a job that restarts repeatedly against a Pub/Sub 
 accumulates once per attempt, which is the cost of not hanging the task instead — see
 [#311]({{< param BookRepo >}}/issues/311).
 
-The budget covers the publishers only. A `sendToDeadLetterQueue(...)` handler shuts its own
-publisher down inline on the task thread with a separate, non-configurable 30 s wait, so a sink
-using one should budget for that too ([#312]({{< param BookRepo >}}/issues/312)).
+Those warnings are logged by `io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown`, not by
+a `…connector.pubsub` class — a log configuration scoped to the connector's own package will not
+match them.
+
+The same teardown is what a `sendToDeadLetterQueue(...)` handler uses. It owns a publisher of its
+own and is closed after the sink's, so it spends a second budget of the same shape —
+`PubSubDeadLetterQueue.builder().shutdownTimeout(...)`, 30 s by default. `shutdownTimeout` therefore
+bounds the sink's publishers and that one bounds the queue's; keep the **sum** under
+`task.cancellation.timeout`.
 
 ## Topic auto-creation
 
@@ -531,6 +537,10 @@ fails — the default is 1000, `0` publishes each element synchronously (the nar
 one round trip per element) and `-1` buffers until the flush. The topic must already exist: this
 queue never creates one, because a dead-letter destination created on the fly is one nothing is
 consuming.
+
+`shutdownTimeout` (30 s by default) bounds the queue's own close, through the same two-phase
+teardown the sink's publishers get — see [Publisher lifecycle](#publisher-lifecycle) for why an SDK
+publisher's shutdown needs bounding at all. It is spent *after* the sink's, so budget for the sum.
 
 ## Sink metrics
 
