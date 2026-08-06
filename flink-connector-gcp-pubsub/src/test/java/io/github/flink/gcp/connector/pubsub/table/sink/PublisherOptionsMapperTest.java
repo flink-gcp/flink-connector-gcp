@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.table.sink;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
@@ -34,6 +35,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link PublisherOptionsMapper}. */
 class PublisherOptionsMapperTest {
@@ -107,20 +109,22 @@ class PublisherOptionsMapperTest {
                 .isEqualTo(PubSubPublisherOptions.defaults());
     }
 
+    /**
+     * Every option except the two that {@code sink.message-ordering.enabled} rejects (#310); the
+     * sibling below maps those two on their own, so together they still cover every key.
+     */
     @Test
     void mapsEveryOptionOntoItsKnob() {
         Map<String, String> options = new HashMap<>();
         options.put("sink.batching.element-count-threshold", "17");
         options.put("sink.batching.request-byte-threshold", "3 kb");
         options.put("sink.batching.delay-threshold", "40 ms");
-        options.put("sink.retry.total-timeout", "5 min");
         options.put("sink.retry.initial-delay", "7 s");
         options.put("sink.retry.delay-multiplier", "1.5");
         options.put("sink.retry.max-delay", "9 s");
         options.put("sink.retry.initial-rpc-timeout", "11 s");
         options.put("sink.retry.rpc-timeout-multiplier", "2.5");
         options.put("sink.retry.max-rpc-timeout", "13 s");
-        options.put("sink.retry.max-attempts", "4");
         options.put("sink.message-ordering.enabled", "true");
         options.put("sink.in-flight.max-messages", "23");
         options.put("sink.in-flight.max-bytes", "5 mb");
@@ -135,14 +139,12 @@ class PublisherOptionsMapperTest {
         assertThat(mapped.getBatchElementCountThreshold()).isEqualTo(17L);
         assertThat(mapped.getBatchRequestByteThreshold()).isEqualTo(3L * 1024);
         assertThat(mapped.getBatchDelayThreshold()).isEqualTo(Duration.ofMillis(40));
-        assertThat(mapped.getRetryTotalTimeout()).isEqualTo(Duration.ofMinutes(5));
         assertThat(mapped.getRetryInitialDelay()).isEqualTo(Duration.ofSeconds(7));
         assertThat(mapped.getRetryDelayMultiplier()).isEqualTo(1.5);
         assertThat(mapped.getRetryMaxDelay()).isEqualTo(Duration.ofSeconds(9));
         assertThat(mapped.getRetryInitialRpcTimeout()).isEqualTo(Duration.ofSeconds(11));
         assertThat(mapped.getRetryRpcTimeoutMultiplier()).isEqualTo(2.5);
         assertThat(mapped.getRetryMaxRpcTimeout()).isEqualTo(Duration.ofSeconds(13));
-        assertThat(mapped.getRetryMaxAttempts()).isEqualTo(4);
         assertThat(mapped.isEnableMessageOrdering()).isTrue();
         assertThat(mapped.getMaxInFlightMessages()).isEqualTo(23);
         assertThat(mapped.getMaxInFlightBytes()).isEqualTo(5L * 1024 * 1024);
@@ -151,6 +153,68 @@ class PublisherOptionsMapperTest {
         assertThat(mapped.getRecoveryMaxAttempts()).isEqualTo(6);
         assertThat(mapped.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(45));
         assertThat(mapped.isPerDestinationMetrics()).isTrue();
+    }
+
+    /** The other two keys, without the ordering flag that rejects them. */
+    @Test
+    void mapsTheTwoRetryKeysMessageOrderingWouldReject() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.retry.max-attempts", "4");
+
+        PubSubPublisherOptions mapped = PublisherOptionsMapper.map(Configuration.fromMap(options));
+
+        assertThat(mapped.getRetryTotalTimeout()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(mapped.getRetryMaxAttempts()).isEqualTo(4);
+        assertThat(mapped.isEnableMessageOrdering()).isFalse();
+    }
+
+    /**
+     * The mapper restates the builder's check in the keys a {@code WITH} clause spells, so the
+     * message names {@code sink.retry.*} and not {@code retryTotalTimeout(...)} — see the class
+     * javadoc for why the builder's own message cannot serve a SQL user. The wrapping a user
+     * actually sees is asserted at the factory level, in {@code PubSubDynamicTableFactoryTest}.
+     */
+    @Test
+    void combiningThemWithMessageOrderingIsRejectedInDdlVocabulary() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.message-ordering.enabled", "true");
+        Configuration config = Configuration.fromMap(options);
+
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'sink.retry.total-timeout'")
+                .hasMessageContaining("'sink.message-ordering.enabled'")
+                // Only the key that was set: being told to remove one you never configured is how
+                // a correct message still costs a reader time.
+                .hasMessageNotContaining("sink.retry.max-attempts");
+    }
+
+    @Test
+    void theRejectionNamesBothKeysWhenBothAreSet() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.retry.max-attempts", "4");
+        options.put("sink.message-ordering.enabled", "true");
+        Configuration config = Configuration.fromMap(options);
+
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'sink.retry.total-timeout' and 'sink.retry.max-attempts'");
+    }
+
+    @Test
+    void messageOrderingDisabledExplicitlyIsNotAConflict() {
+        // `false` is present-but-not-ordering: the guard reads the value, not the key's presence.
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.message-ordering.enabled", "false");
+
+        PubSubPublisherOptions mapped = PublisherOptionsMapper.map(Configuration.fromMap(options));
+
+        assertThat(mapped.getRetryTotalTimeout()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(mapped.isEnableMessageOrdering()).isFalse();
     }
 
     @Test

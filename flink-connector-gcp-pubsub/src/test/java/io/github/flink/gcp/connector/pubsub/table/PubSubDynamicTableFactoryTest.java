@@ -131,6 +131,31 @@ class PubSubDynamicTableFactoryTest {
                 .hasStackTraceContaining("must not contain '/'");
     }
 
+    /**
+     * What a SQL user actually meets, and the reason the mapper restates the builder's check in DDL
+     * keys. {@code FactoryUtil.createDynamicTableSink} wraps anything the factory throws in a
+     * {@code ValidationException} whose own message says only "Unable to create a sink for writing
+     * table ...", so the actionable sentence arrives in the cause — hence {@code
+     * hasStackTraceContaining}, as the two tests above already do.
+     */
+    @Test
+    void rejectsABoundedRetryBudgetBesideMessageOrdering() {
+        Map<String, String> options = minimalSinkOptions();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.message-ordering.enabled", "true");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("cannot be combined with")
+                // This is the discriminating one, and the key names are deliberately not: it says
+                // 'sink.retry.*' where the builder's message says "retry knobs", so it holds only
+                // if the mapper's DDL-worded check is what fired. Asserting the key names instead
+                // proves nothing — FactoryUtil's own message dumps every WITH option, so
+                // "'sink.retry.total-timeout' appears somewhere" is satisfied by the dump even
+                // with the mapper's guard deleted. Measured, by deleting it.
+                .hasStackTraceContaining("The other six 'sink.retry.*' options are unaffected");
+    }
+
     @Test
     void rejectsAnEmptyTopic() {
         Map<String, String> options = minimalSinkOptions();

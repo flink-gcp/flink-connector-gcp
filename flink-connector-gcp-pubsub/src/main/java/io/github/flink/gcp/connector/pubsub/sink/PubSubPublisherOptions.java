@@ -26,6 +26,8 @@ import javax.annotation.Nullable;
 
 import java.io.Serializable;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -423,6 +425,11 @@ public final class PubSubPublisherOptions implements Serializable {
          * Sets the total time budget of a publish including its retries. Optional; defaults to the
          * SDK's timeout.
          *
+         * <p><b>Cannot be combined with {@link #enableMessageOrdering(boolean)
+         * enableMessageOrdering(true)}</b>, which {@link #build()} rejects: an ordering-enabled SDK
+         * publisher replaces this and {@link #retryMaxAttempts(int)} with an effectively infinite
+         * budget, so setting either would promise a bound the publisher does not have.
+         *
          * @param retryTotalTimeout the total timeout, positive
          * @return this builder
          */
@@ -510,6 +517,9 @@ public final class PubSubPublisherOptions implements Serializable {
          * Caps the publish attempts. Optional; defaults to the SDK's behavior of bounding retries
          * only by the total timeout ({@code 0} means the same).
          *
+         * <p><b>Cannot be combined with {@link #enableMessageOrdering(boolean)
+         * enableMessageOrdering(true)}</b>; see {@link #retryTotalTimeout(Duration)}.
+         *
          * @param retryMaxAttempts the maximum attempts, non-negative
          * @return this builder
          */
@@ -523,6 +533,10 @@ public final class PubSubPublisherOptions implements Serializable {
         /**
          * Sets whether publishers honor message ordering keys. Defaults to {@code false}; the
          * writer rejects messages carrying an ordering key while this is disabled.
+         *
+         * <p>Enabling it costs the publish retry budget: {@link #build()} rejects an explicit
+         * {@link #retryTotalTimeout(Duration)} or {@link #retryMaxAttempts(int)} beside it, because
+         * the SDK publisher would replace both.
          *
          * @param enableMessageOrdering whether to enable message ordering
          * @return this builder
@@ -656,6 +670,32 @@ public final class PubSubPublisherOptions implements Serializable {
             Preconditions.checkState(
                     recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
                     "recoveryMaxBackoff must be at least recoveryInitialBackoff.");
+            // Rejected rather than ignored: the SDK publisher's constructor replaces both of these
+            // with "retry forever" whenever ordering is on, so a budget set here would silently
+            // not be one. Only an explicitly set knob is a conflict — the SDK's own defaults are
+            // what an ordering-enabled publisher is expected to override.
+            if (enableMessageOrdering) {
+                List<String> bounded = new ArrayList<>(2);
+                if (retryTotalTimeout != null) {
+                    bounded.add("retryTotalTimeout(...)");
+                }
+                if (retryMaxAttempts != null) {
+                    bounded.add("retryMaxAttempts(...)");
+                }
+                // Names the knob that was actually set rather than both, as PubSubSourceBuilder's
+                // cross-checks do: being told to remove something you never configured is the way
+                // a correct message still costs a reader time.
+                String names = String.join(" and ", bounded);
+                Preconditions.checkState(
+                        bounded.isEmpty(),
+                        "%s cannot be combined with enableMessageOrdering(true): an ordering-enabled"
+                                + " SDK publisher retries without limit, so neither an attempt cap"
+                                + " nor a total timeout can bound a publish there — for messages"
+                                + " without an ordering key too. Remove %s, or disable message"
+                                + " ordering. The other six retry knobs are unaffected.",
+                        names,
+                        names);
+            }
             return new PubSubPublisherOptions(this);
         }
 

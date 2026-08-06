@@ -264,7 +264,9 @@ public final class DefaultPublisherFactory implements PublisherFactory {
      * maxAttempts = Integer.MAX_VALUE} and an effectively infinite total timeout — for unkeyed
      * messages too, as its own {@code TODO} notes — so during an outage the in-flight publishes
      * retry forever and the counter never drains. An ordered sink therefore needs this bound
-     * whatever the SDK version, which is why it is not written as a workaround.
+     * whatever the SDK version, which is why it is not written as a workaround. That same override
+     * is why {@code PubSubPublisherOptions} rejects an explicit {@code retryTotalTimeout} or {@code
+     * retryMaxAttempts} beside ordering: neither would reach the publisher.
      *
      * <p>A separate thread is therefore the only lever available: the wait cannot be interrupted,
      * and {@code Publisher} offers no forcible variant. It is a daemon thread so one that never

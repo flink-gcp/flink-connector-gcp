@@ -103,6 +103,14 @@ Two properties made the SDK's version unusable as the sink's byte bound:
   `Block` eventually exhaust — the budget, hanging the task thread with no exception. That left
   ordered sinks, where a paused key holds its whole cascade, with no byte bound at all.
 
+**`retryTotalTimeout` and `retryMaxAttempts` cannot be combined with message ordering either**, and
+`PubSubPublisherOptions.build()` rejects the pair rather than accepting settings the SDK will
+overwrite. An ordering-enabled publisher retries without limit — see
+[Publisher lifecycle](#publisher-lifecycle) for the mechanism and for what it costs the close — so
+neither an attempt cap nor a total timeout can bound a publish there, for unkeyed messages too. The
+six other retry knobs are unaffected. A program that toggles ordering has to set these two on the
+unordered branch only, rather than once for both.
+
 One interaction to size around: a `batchRequestByteThreshold` above `maxInFlightBytes` means a
 batch can never fill under the writer cap, so batches leave only on the delay threshold (or
 `flush()`). That is latency, not deadlock — the delay alarm always fires — but keep the batch
@@ -198,8 +206,9 @@ getting there:
   `maxAttempts = Integer.MAX_VALUE` and an effectively infinite total timeout** — for unkeyed
   messages too, as its own `TODO` notes. During a Pub/Sub outage the in-flight publishes retry
   forever, so the counter never drains and the close would never return. Nothing is defective here;
-  it is what ordered publishing costs, and it also means `retryTotalTimeout` and `retryMaxAttempts`
-  do not reach an ordering-enabled publisher.
+  it is what ordered publishing costs. The same override is why `retryTotalTimeout` and
+  `retryMaxAttempts` are rejected beside `enableMessageOrdering(true)` — they would reach nothing —
+  while the six other retry knobs still apply.
 - A failing ordering key can leave the counter permanently above zero: the failure callback cancels
   the messages still accumulating in that key's un-flushed batch and drops the batch, but returns
   only the in-flight batch's count. That one is a defect, tracked as

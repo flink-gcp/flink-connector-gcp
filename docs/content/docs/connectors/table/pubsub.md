@@ -241,6 +241,13 @@ setting any of them alongside an explicit `create-never` is rejected.
 | `sink.metrics.per-destination` | Boolean | `perDestinationMetrics` |
 | `sink.parallelism` | Integer | the sink operator's parallelism |
 
+`sink.retry.total-timeout` and `sink.retry.max-attempts` are **rejected** together with
+`sink.message-ordering.enabled` = `true`, because an ordering-enabled publisher retries without
+limit: neither an attempt cap nor a total timeout can bound a publish there. The `CREATE TABLE`
+itself succeeds — the check runs when the table is used as a sink, so the failure lands at plan
+time, before any record is published. The six other `sink.retry.*` keys are unaffected. See
+[`PubSubPublisherOptions`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions).
+
 ### Source
 
 Every option maps onto one setter of `PubSubSourceBuilder` or `PubSubSubscriberOptions.Builder`,

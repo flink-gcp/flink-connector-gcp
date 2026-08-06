@@ -22,6 +22,7 @@ import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -30,10 +31,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PubSubPublisherOptionsTest {
 
     /**
-     * An options instance with every knob set, shared by the override and round-trip tests (also
-     * reused by the builder round trip in {@code PubSubSinkBuilderTest}). Ordering is enabled here:
-     * with the flow-control limits gone, no knob is mutually exclusive with it any more, so "every
-     * knob" can be literal.
+     * An options instance with every knob set that can be set at once, shared by the override and
+     * round-trip tests (also reused by the builder round trip in {@code PubSubSinkBuilderTest}).
+     * Ordering is enabled here, which costs exactly two knobs: {@code retryTotalTimeout} and {@code
+     * retryMaxAttempts} are rejected beside it (#310), so "every knob" is no longer literal. Those
+     * two are carried by {@link #fullyPopulatedWithBoundedRetries()} instead, and the two instances
+     * together cover every field.
      */
     static PubSubPublisherOptions fullyPopulated() {
         return PubSubPublisherOptions.builder()
@@ -42,19 +45,28 @@ class PubSubPublisherOptionsTest {
                 .batchDelayThreshold(Duration.ofMillis(20))
                 .enableMessageOrdering(true)
                 .maxInFlightBytes(1_048_576)
-                .retryTotalTimeout(Duration.ofSeconds(120))
                 .retryInitialDelay(Duration.ofMillis(50))
                 .retryDelayMultiplier(2.0)
                 .retryMaxDelay(Duration.ofSeconds(5))
                 .retryInitialRpcTimeout(Duration.ofSeconds(3))
                 .retryRpcTimeoutMultiplier(1.5)
                 .retryMaxRpcTimeout(Duration.ofSeconds(30))
-                .retryMaxAttempts(7)
                 .maxInFlightMessages(42)
                 .recoveryInitialBackoff(Duration.ofMillis(100))
                 .recoveryMaxBackoff(Duration.ofSeconds(1))
                 .recoveryMaxAttempts(3)
                 .shutdownTimeout(Duration.ofSeconds(45))
+                .build();
+    }
+
+    /**
+     * The other half of {@link #fullyPopulated()}: the two retry knobs an ordering-enabled
+     * publisher would ignore, on a sink that does not enable ordering.
+     */
+    static PubSubPublisherOptions fullyPopulatedWithBoundedRetries() {
+        return PubSubPublisherOptions.builder()
+                .retryTotalTimeout(Duration.ofSeconds(120))
+                .retryMaxAttempts(7)
                 .build();
     }
 
@@ -92,15 +104,17 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getBatchElementCountThreshold()).isEqualTo(5);
         assertThat(options.getBatchRequestByteThreshold()).isEqualTo(1_000);
         assertThat(options.getBatchDelayThreshold()).isEqualTo(Duration.ofMillis(20));
-        assertThat(options.getRetryTotalTimeout()).isEqualTo(Duration.ofSeconds(120));
         assertThat(options.getRetryInitialDelay()).isEqualTo(Duration.ofMillis(50));
         assertThat(options.getRetryDelayMultiplier()).isEqualTo(2.0);
         assertThat(options.getRetryMaxDelay()).isEqualTo(Duration.ofSeconds(5));
         assertThat(options.getRetryInitialRpcTimeout()).isEqualTo(Duration.ofSeconds(3));
         assertThat(options.getRetryRpcTimeoutMultiplier()).isEqualTo(1.5);
         assertThat(options.getRetryMaxRpcTimeout()).isEqualTo(Duration.ofSeconds(30));
-        assertThat(options.getRetryMaxAttempts()).isEqualTo(7);
         assertThat(options.isEnableMessageOrdering()).isTrue();
+        // The two knobs ordering costs; their values are covered by the sibling instance, in
+        // boundedRetriesAreKeptWithoutMessageOrdering.
+        assertThat(options.getRetryTotalTimeout()).isNull();
+        assertThat(options.getRetryMaxAttempts()).isNull();
         assertThat(options.getMaxInFlightMessages()).isEqualTo(42);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(1_048_576);
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
@@ -262,12 +276,88 @@ class PubSubPublisherOptionsTest {
 
     @Test
     void roundTripsJavaSerialization() throws Exception {
+        for (PubSubPublisherOptions options :
+                List.of(fullyPopulated(), fullyPopulatedWithBoundedRetries())) {
+            byte[] bytes = InstantiationUtil.serializeObject(options);
+            PubSubPublisherOptions copy =
+                    InstantiationUtil.deserializeObject(bytes, getClass().getClassLoader());
+
+            assertThat(copy).isEqualTo(options);
+        }
+    }
+
+    /**
+     * The knobs an ordering-enabled SDK publisher would overwrite are refused rather than accepted
+     * and ignored (#310). Both orders of application, since a builder is a call sequence and the
+     * check runs at {@code build()}.
+     */
+    @Test
+    void rejectsBoundedRetriesBesideMessageOrdering() {
+        assertThatThrownBy(
+                        () ->
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .retryTotalTimeout(Duration.ofSeconds(30))
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("retryTotalTimeout")
+                .hasMessageContaining("enableMessageOrdering")
+                // Only the knob that was set: being told to remove one you never configured is how
+                // a correct message still costs a reader time.
+                .hasMessageNotContaining("retryMaxAttempts");
+        assertThatThrownBy(
+                        () ->
+                                PubSubPublisherOptions.builder()
+                                        .retryMaxAttempts(3)
+                                        .enableMessageOrdering(true)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("retryMaxAttempts")
+                .hasMessageContaining("enableMessageOrdering")
+                .hasMessageNotContaining("retryTotalTimeout");
+        // Zero is rejected like any other value, though it is the one case where the setting is
+        // harmless: the SDK already reads 0 as "unlimited", which is what ordering imposes anyway.
+        // Exempting it would make the rule "explicitly set" depend on the value, and a knob
+        // accepted at 0 and refused at 1 is a worse surprise than a uniform refusal.
+        assertThatThrownBy(
+                        () ->
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .retryMaxAttempts(0)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void theRejectionNamesBothKnobsWhenBothAreSet() {
+        assertThatThrownBy(
+                        () ->
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .retryTotalTimeout(Duration.ofSeconds(30))
+                                        .retryMaxAttempts(3)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("retryTotalTimeout(...) and retryMaxAttempts(...)");
+    }
+
+    @Test
+    void theOtherRetryKnobsCombineWithMessageOrdering() {
+        // Only two of the eight are overwritten by the SDK, so the check must not have widened to
+        // "no retry override with ordering": fullyPopulated() sets the other six beside ordering.
         PubSubPublisherOptions options = fullyPopulated();
 
-        byte[] bytes = InstantiationUtil.serializeObject(options);
-        PubSubPublisherOptions copy =
-                InstantiationUtil.deserializeObject(bytes, getClass().getClassLoader());
+        assertThat(options.isEnableMessageOrdering()).isTrue();
+        assertThat(options.hasRetryOverrides()).isTrue();
+        assertThat(options.getRetryMaxDelay()).isEqualTo(Duration.ofSeconds(5));
+    }
 
-        assertThat(copy).isEqualTo(options);
+    @Test
+    void boundedRetriesAreKeptWithoutMessageOrdering() {
+        PubSubPublisherOptions options = fullyPopulatedWithBoundedRetries();
+
+        assertThat(options.isEnableMessageOrdering()).isFalse();
+        assertThat(options.getRetryTotalTimeout()).isEqualTo(Duration.ofSeconds(120));
+        assertThat(options.getRetryMaxAttempts()).isEqualTo(7);
     }
 }

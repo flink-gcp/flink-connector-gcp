@@ -150,9 +150,38 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   an outage the in-flight publishes retry forever and `waitComplete()` never drains — no defect
   required. An ordered sink therefore needs this bound whatever the SDK version, which is why
   nothing here is written as a workaround and why #309's rewording is a rewording rather than a
-  removal. That same override silently defeats `retryTotalTimeout`/`retryMaxAttempts` under
-  ordering, which is #310.
-  Six decisions not to re-litigate. **A separate thread is the only lever**: the wait ignores
+  removal. That same override is what #310 settled from the other side: `retryTotalTimeout` and
+  `retryMaxAttempts` are **rejected** by `PubSubPublisherOptions.build()` beside
+  `enableMessageOrdering(true)`, rather than documented as ignored. Only an explicitly set knob is a
+  conflict (both are `@Nullable`, so "unset" is a distinguishable state and the SDK's own defaults
+  are exactly what ordering is expected to override), and the other six retry knobs still apply.
+  Rejecting was chosen over documenting because documenting alone is **unpinnable**: `Publisher`
+  exposes `getBatchingSettings()` and nothing for retry settings, and keeps no `retrySettings` field
+  — the values are folded into the stub's callables — so the reflective assertion the issue asked
+  for has no analogue of `configureAppliesSettingsToABuiltPublisher` to follow. The check lives in
+  the options class rather than in `PubSubSinkBuilder` because both knobs are its own, and it names
+  **only the knob that was actually set**, as `PubSubSourceBuilder`'s cross-checks do.
+  **`PublisherOptionsMapper` restates it in DDL keys**, and the first draft's claim that the
+  builder's message "reaches SQL unchanged" was simply wrong — measured on
+  `flink-table-common` 2.2.1: `FactoryUtil.createDynamicTableSink` wraps *anything* the factory
+  throws in a `ValidationException` whose own message is only "Unable to create a sink for writing
+  table …", so the actionable sentence lands in the cause, and it would name
+  `retryTotalTimeout(...)`, which appears nowhere in a `WITH` clause. `TopicCreateOptionsMapper`
+  restates its builder's create-disposition check for exactly that reason, and this is the same
+  shape. The counter-example that misled the first draft is `PubSubSourceBuilder`'s
+  `parallelPullCount` × `PER_KEY` check, which *does* reach SQL unwrapped — because it throws from
+  `getScanRuntimeProvider`, outside the factory's `try`. So the rule is not "builder checks reach
+  SQL unchanged" but: **a check that fires inside `createDynamicTable{Source,Sink}` is wrapped, and
+  a check whose message names Java setters needs restating in option keys; one whose message needs
+  no translation does not.**
+  Deliberately **no runtime re-check** in `DefaultPublisherFactory`: `PubSubWriter` carries the
+  Bigtable-style "deserialization does not run the builder" guard for `maxInFlightMessages` because
+  that invariant is *relied on* (a non-positive cap parks the task forever), and this one is not —
+  a deserialized violating instance behaves exactly as it did before this check existed, since the
+  SDK overwrites the settings either way. The check is advisory, and that is the whole of it.
+
+  Six decisions not to re-litigate about the teardown itself (the run below has grown past six —
+  count them before quoting the number). **A separate thread is the only lever**: the wait ignores
   interruption, `Publisher` has no forcible variant, and `Waiter` is package-private — so
   `DefaultPublisherFactory.BoundedShutdown` runs the SDK shutdown on a **daemon** thread (one that
   never returns must not keep a JVM alive) and gives up at the deadline. This is the repository's

@@ -74,15 +74,19 @@ for how the caps are sized.
 | `retryMaxRpcTimeout` | *unset ⇒ SDK default* | Cap on a publish RPC attempt's timeout |
 | `retryMaxAttempts` | *unset ⇒ SDK default* | Cap on publish attempts |
 
-`retryTotalTimeout` and `retryMaxAttempts` **do not reach an ordering-enabled publisher**: with
-`enableMessageOrdering` the SDK replaces both with "retry forever", for unkeyed messages too. See
-[#310]({{< param BookRepo >}}/issues/310); the other retry knobs are unaffected.
+`retryTotalTimeout` and `retryMaxAttempts` **are rejected beside `enableMessageOrdering(true)`**,
+rather than silently ignored: an ordering-enabled publisher retries without limit, so neither an
+attempt cap nor a total timeout can bound a publish there — for unkeyed messages too. The other six
+retry knobs are unaffected and combine with ordering freely. A program that toggles ordering must
+therefore set these two only on the branch that leaves it off, rather than once for both. The
+mechanism is on the [Publisher lifecycle]({{< relref "docs/connectors/datastream/pubsub" >}}#publisher-lifecycle)
+page, where it also explains why the shutdown budget exists.
 
 **Ordering, in-flight caps and the republish recovery**, all the connector's own.
 
 | Option | Default | What it does |
 |---|---|---|
-| `enableMessageOrdering` | `false` | Honours ordering keys. Without it, a message carrying one is rejected with an error naming this option. With it, a dropping `failedMessageHandler` leaves a gap in the dropped message's key |
+| `enableMessageOrdering` | `false` | Honours ordering keys. Without it, a message carrying one is rejected with an error naming this option. With it, a dropping `failedMessageHandler` leaves a gap in the dropped message's key, and `retryTotalTimeout`/`retryMaxAttempts` may not be set (see above) |
 | `maxInFlightMessages` | 1000 | Caps the writer's unacknowledged publishes; a write at the cap yields to the mailbox |
 | `maxInFlightBytes` | 64 MiB | Caps their total serialized size. `Long.MAX_VALUE` bounds by count only |
 | `recoveryInitialBackoff` | 500 ms | First backoff of a republish — after creating a missing topic, or after resuming an ordering key |
