@@ -349,8 +349,27 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   #317 it changed the design), so it is for changes whose description makes claims about framework
   behaviour, deployment, or "this is the only way" — not for a typo fix.
 - **A finding outside the issue being worked is routed by the user, not by the note written about
-  it.** Ask which of the two it takes — folded into the current issue, or a new issue — and ask in
-  the session that found it. A deferral left in a PR comment or a `CLAUDE.md` "known gap" line is
+  it — and `gh issue create` is never how that routing happens.** Three outcomes, not two: folded
+  into the current change, filed as an issue, or **dropped**. Dropping is a real answer and has to
+  stay on the list, because a rule offering only "fold or file" makes filing the safe default, and
+  a tracker keeps what is filed forever. Ask in the session that found it, and **file only what the
+  user has said is not being folded in** — an issue for work about to happen in the open pull
+  request is noise. Four constraints, each of them a mistake PR #339 made in one sitting:
+  - **Verify the finding before routing it.** A review subagent's example is not evidence. #339
+    filed a hole in the licensing gate on a synthesised `THIRD-PARTY.txt` line that
+    license-maven-plugin does not in fact produce for this tree's one dual-licensed artifact — so
+    the issue described a defect that does not exist. An unverified finding wastes the user's
+    decision, not just the tracker.
+  - **Route every finding, not the ones that look like they need a decision.** #339 asked about
+    three, got three answers, and filed four more unasked. Having asked is not a licence for the
+    rest.
+  - **A decision the user has already given is not reopenable by the note.** Told to fold the pom
+    consolidation into #339, it filed an issue instead. That is the same error pointed the other
+    way, and it is worse: it overrides an answer rather than skipping a question.
+  - **Never batch-file at the end of a review.** Findings arrive together; the decisions are one
+    per finding, and a batch is how the ones that should have been dropped ride along with the ones
+    that should not.
+  A deferral left in a PR comment or a `CLAUDE.md` "known gap" line is
   the silent deferral wearing a disguise: the reason is recorded, the work is not tracked, and the
   next reader meets a claim with no anchor. A new issue states the **grounded** reason the work is
   not being done now — a measured cost, a blocker in the code, scope the user has not approved —
