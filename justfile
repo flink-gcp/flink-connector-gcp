@@ -74,9 +74,21 @@ verify *args:
 verify-flink version *extra:
     @just verify -Dflink.version={{ version }} {{ if version =~ '^1\.' { '-Dflink.compat=flink1' } else { '' } }} {{ extra }}
 
-# One module, e.g. `just verify-module flink-connector-gcp-bigquery`.
+# -am is load-bearing: without it the io.github.flink-gcp siblings resolve from
+# ~/.m2 rather than from the reactor, so the recipe reports on whichever jar
+# happens to be installed there instead of on the working tree. That fails both
+# ways — a stale jar fails a tree that is green (a test-utils jar predating #323
+# gave `NoClassDefFoundError: LogCapture$Event` at test discovery, met on #324),
+# and a newer one passes a reactor change that is broken. CI sees neither,
+# because it builds the reactor. The cost is running the upstream modules' own
+# tests too: seconds, and the honest scope anyway, since a module's build depends
+# on them. `binary-compat` and `e2e` install their siblings instead, for a reason
+# that does not apply here — those run goal-only or repeated -pl invocations that
+# no single reactor can span.
+#
+# One module and what it is built on, e.g. `just verify-module flink-connector-gcp-bigquery`.
 verify-module module:
-    {{ mvn }} -pl {{ module }} verify
+    {{ mvn }} -pl {{ module }} -am verify
 
 # CI's module-selection decision (issue #243): verify.yaml's changes job calls this
 # with --diff HEAD^1 (the pull_request checkout is the base-into-head merge
