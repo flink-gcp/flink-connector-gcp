@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.pubsub.deadletter;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.api.core.ApiFuture;
+import com.google.api.core.SettableApiFuture;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
@@ -31,11 +33,15 @@ import org.junit.jupiter.api.Timeout;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static io.github.flink.gcp.connector.pubsub.deadletter.PubSubDeadLetterQueue.MAX_ATTRIBUTE_VALUE_BYTES;
 import static io.github.flink.gcp.connector.pubsub.deadletter.PubSubDeadLetterQueue.TRUNCATION_MARKER;
@@ -47,14 +53,17 @@ import static org.assertj.core.api.Assertions.entry;
 
 /**
  * Tests for the parts of {@link PubSubDeadLetterQueue} that need no <em>reachable</em> publisher:
- * the envelope, the attribute-value truncation, the builder, and the shutdown budget. The round
- * trip through a topic is {@link PubSubDeadLetterQueueITCase}.
+ * the envelope, the attribute-value truncation, the builder, the shutdown budget and the flush
+ * budget. The round trip through a topic is {@link PubSubDeadLetterQueueITCase}.
  *
- * <p>{@code @Timeout} for the reason {@code DefaultPublisherFactoryTest} gives: several tests here
- * build and close real SDK publishers, so a teardown that stopped bounding itself would hang the
- * build rather than fail it.
+ * <p>{@code @Timeout} for the reason {@code DefaultPublisherFactoryTest} gives, and one of its own:
+ * several tests here build and close real SDK publishers, and several await publishes that never
+ * resolve, so a teardown or a wait that stopped bounding itself would hang the build rather than
+ * fail it. Sixty rather than the thirty its siblings use, because this class also holds a test
+ * whose <em>subject</em> is a 30 s shutdown budget — at thirty, a shutdown spending the budget it
+ * is asserted to have would be reported as a hang.
  */
-@Timeout(30)
+@Timeout(60)
 class PubSubDeadLetterQueueTest {
 
     private static final TopicDestination TOPIC = TopicDestination.of("my-project", "dead-letters");
@@ -228,6 +237,27 @@ class PubSubDeadLetterQueueTest {
         assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("shutdownTimeout");
+        // The queue's two budgets validate alike; there is no unbounded value for either.
+        assertThatThrownBy(() -> builder.flushTimeout(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> builder.flushTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("flushTimeout");
+        assertThatThrownBy(() -> builder.flushTimeout(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("flushTimeout");
+        // The knob's own documentation offers a long budget as the way to say "effectively
+        // unbounded", so one too long to express in nanoseconds is rejected here rather than
+        // throwing an ArithmeticException out of the first flush on a TaskManager.
+        assertThatThrownBy(() -> builder.flushTimeout(Duration.ofDays(400_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at most");
+        assertThatCode(() -> builder.flushTimeout(Duration.ofDays(1000)))
+                .doesNotThrowAnyException();
+        // The queue's other budget reaches BoundedShutdown.start(), which converts it the same way.
+        assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ofDays(400_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at most");
     }
 
     @Test
@@ -400,6 +430,346 @@ class PubSubDeadLetterQueueTest {
                     .isSameAs(PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
         } finally {
             queue.close();
+        }
+    }
+
+    // ---------------------------------------------------------------- the flush budget
+
+    /**
+     * The property #321 exists for: a wait that outlives its budget fails instead of blocking the
+     * checkpoint for however long the SDK keeps retrying (600 s by default, which is also Flink's
+     * default {@code execution.checkpointing.timeout}).
+     */
+    @Test
+    void anExpiredFlushBudgetFailsRatherThanWaitingForTheSdk() {
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        outstanding.add(SettableApiFuture.create());
+        long startedAt = System.nanoTime();
+
+        assertThatThrownBy(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, outstanding, TOPIC, Duration.ofMillis(200)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(TOPIC.toString())
+                .hasMessageContaining("flushTimeout")
+                .hasMessageContaining("1 of 1 publishes unresolved")
+                .hasCauseInstanceOf(TimeoutException.class);
+
+        // Generous on both sides: the point is that it returned at all rather than waiting out an
+        // SDK retry budget, and the exact wait is the scheduler's business.
+        assertThat(Duration.ofNanos(System.nanoTime() - startedAt))
+                .isGreaterThanOrEqualTo(Duration.ofMillis(150))
+                .isLessThan(Duration.ofSeconds(10));
+    }
+
+    /**
+     * One deadline covers the whole list. A budget spent per future would be a thousandfold
+     * multiple of the number it claims to be at the default {@code maxOutstandingMessages} — and
+     * under that mutant all three of these fit their grant and nothing is thrown at all.
+     */
+    @Test
+    void theBudgetCoversTheWholeListRatherThanEachPublish() {
+        List<Duration> grants = new ArrayList<>();
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            outstanding.add(new RecordingFuture(Duration.ofMillis(400), grants));
+        }
+
+        // 400 ms of work each against a 1000 ms budget: two fit and the third does not, and the
+        // first two fit by 600 ms and 200 ms of slack, so a stalled runner fails this test only
+        // for the reason it is about.
+        assertThatThrownBy(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, outstanding, TOPIC, Duration.ofSeconds(1)))
+                .isInstanceOf(IOException.class)
+                // At least one of the three fitted, so the count is what is left rather than the
+                // whole list — how many fitted depends on the machine, that some did does not.
+                .hasMessageContaining(" of 3 publishes unresolved")
+                .hasMessageNotContaining("3 of 3");
+
+        // The throw is what discriminates: a per-future budget grants every one of them the whole
+        // second, all three fit, and nothing is thrown at all. The grants are the legibility half —
+        // each future gets what the one budget had left, so they shrink.
+        assertThat(grants).hasSize(3);
+        for (int i = 1; i < grants.size(); i++) {
+            assertThat(grants.get(i)).isLessThan(grants.get(i - 1));
+        }
+        // The last one, not the first: the first is a whole second under both the correct code and
+        // the mutant, so asserting on it could not fail.
+        assertThat(grants.get(2)).isLessThan(Duration.ofMillis(500));
+    }
+
+    @Test
+    void theOutstandingListIsEmptiedEvenWhenTheBudgetExpired() {
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        outstanding.add(SettableApiFuture.create());
+
+        assertThatThrownBy(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, outstanding, TOPIC, Duration.ofMillis(50)))
+                .isInstanceOf(IOException.class);
+
+        // Re-awaiting a future that outlived one budget would only report the same thing again.
+        assertThat(outstanding).isEmpty();
+    }
+
+    /**
+     * A publish that is already done is never failed by the clock: the budget bounds the wait, not
+     * the call. That rests on {@code Future.get(0, …)} returning a completed value rather than
+     * throwing, which is measured here rather than argued.
+     */
+    @Test
+    void resolvedPublishesReturnEvenWhenTheBudgetIsAlreadySpent() {
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            SettableApiFuture<String> future = SettableApiFuture.create();
+            future.set("message-" + i);
+            outstanding.add(future);
+        }
+
+        assertThatCode(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, outstanding, TOPIC, Duration.ofNanos(1)))
+                .doesNotThrowAnyException();
+        assertThat(outstanding).isEmpty();
+    }
+
+    /**
+     * A spent budget is handed over as zero, never as the negative remainder it literally is:
+     * {@code Future.get(long, TimeUnit)} does not define a negative timeout, and the futures here
+     * come from an SDK whose implementation this connector does not choose.
+     */
+    @Test
+    void theWaitIsNeverHandedANegativeBudget() {
+        List<Duration> grants = new ArrayList<>();
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        outstanding.add(new RecordingFuture(Duration.ZERO, grants));
+
+        assertThatCode(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, outstanding, TOPIC, Duration.ofNanos(1)))
+                .doesNotThrowAnyException();
+
+        assertThat(grants).hasSize(1);
+        assertThat(grants.get(0)).isGreaterThanOrEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void aFailedPublishStillReportsItsOwnCause() {
+        SettableApiFuture<String> failed = SettableApiFuture.create();
+        failed.setException(new IllegalStateException("the service rejected it"));
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        outstanding.add(failed);
+
+        // A real publish failure must not be reclassified as a budget expiry, which is what the
+        // added catch could have swallowed.
+        assertThatThrownBy(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, outstanding, TOPIC, Duration.ofSeconds(30)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Publishing a dead letter")
+                .hasCauseInstanceOf(IllegalStateException.class)
+                .hasRootCauseMessage("the service rejected it");
+    }
+
+    @Test
+    void anInterruptedAwaitLeavesTheFlagSetForTheRestOfTheTeardown() {
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        outstanding.add(SettableApiFuture.create());
+        Thread.currentThread().interrupt();
+        try {
+            // A short budget so a broken interrupt path fails here rather than parking this fork.
+            assertThatThrownBy(
+                            () ->
+                                    PubSubDeadLetterQueue.flushOutstanding(
+                                            () -> {}, outstanding, TOPIC, Duration.ofSeconds(2)))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("Interrupted while publishing");
+            // Future.get clears the flag; without the restore the rest of the teardown would stop
+            // honouring the cancellation.
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            // Whatever happened, this fork is reused by other classes.
+            Thread.interrupted();
+        }
+    }
+
+    /**
+     * The publisher hand-off is inside the guard too. {@code offer} already wrapped {@code
+     * publisher.publish(...)}, while the drain two lines later and the one in {@code flush()} were
+     * outside everything, so an unchecked SDK failure reached Flink raw with no topic named.
+     */
+    @Test
+    void aPublishAllFailureNamesTheTopicAndEmptiesTheBuffer() {
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        outstanding.add(SettableApiFuture.create());
+
+        assertThatThrownBy(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {
+                                            throw new IllegalStateException("publisher blew up");
+                                        },
+                                        outstanding,
+                                        TOPIC,
+                                        Duration.ofSeconds(30)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(TOPIC.toString())
+                .hasCauseInstanceOf(IllegalStateException.class);
+        assertThat(outstanding).isEmpty();
+    }
+
+    /**
+     * Needs no {@code open()}, unlike {@code theShutdownTimeoutSurvivesJobGraphSerialization}: this
+     * budget is readable off the instance, while the shutdown one exists only inside the teardown
+     * {@code open()} builds.
+     */
+    @Test
+    void theFlushBudgetSurvivesJobGraphSerialization() throws Exception {
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .flushTimeout(Duration.ofSeconds(12))
+                        .build();
+
+        PubSubDeadLetterQueue restored =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(queue), getClass().getClassLoader());
+
+        assertThat(restored.flushTimeout()).isEqualTo(Duration.ofSeconds(12));
+    }
+
+    /**
+     * The configured budget reaches the wait itself, which {@code
+     * theFlushBudgetSurvivesJobGraphSerialization} cannot say: it reads the field. A call site
+     * handing the wait the wrong budget — the shutdown one, or the default — is otherwise
+     * invisible, since every other test here drives the static directly and the emulator ITs
+     * configure none.
+     *
+     * <p>Opened against a lazily-connecting channel with nothing listening, so this needs no
+     * server: a publish only enqueues, and the RPC then retries against a refused connection for
+     * the SDK's whole 600 s budget, which is exactly the pending future the wait has to give up on.
+     * The shutdown budget is pinned low because those publishes deliberately outlive the flush,
+     * leaving the SDK's own shutdown an undrained waiter to sit on.
+     */
+    @Test
+    void theConfiguredBudgetReachesTheFlushWait() throws Exception {
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .emulatorEndpoint("localhost:1")
+                        .flushTimeout(Duration.ofMillis(300))
+                        .shutdownTimeout(Duration.ofSeconds(2))
+                        .build();
+        queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+        try {
+            queue.offer(new StubElement(ByteString.copyFromUtf8("row bytes"), "Rejected."));
+
+            assertThatThrownBy(queue::flush)
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("flushTimeout budget of PT0.3S")
+                    .hasCauseInstanceOf(TimeoutException.class);
+        } finally {
+            queue.close();
+        }
+    }
+
+    /** The same for the other call site, which {@code maxOutstandingMessages} drives. */
+    @Test
+    void theConfiguredBudgetReachesTheOutstandingDrain() throws Exception {
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .emulatorEndpoint("localhost:1")
+                        .maxOutstandingMessages(1)
+                        .flushTimeout(Duration.ofMillis(300))
+                        .shutdownTimeout(Duration.ofSeconds(2))
+                        .build();
+        queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+        try {
+            assertThatThrownBy(
+                            () ->
+                                    queue.offer(
+                                            new StubElement(
+                                                    ByteString.copyFromUtf8("row bytes"),
+                                                    "Rejected.")))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("flushTimeout budget of PT0.3S")
+                    .hasCauseInstanceOf(TimeoutException.class);
+        } finally {
+            queue.close();
+        }
+    }
+
+    @Test
+    void theFlushBudgetDefaultsToSixtySeconds() {
+        assertThat(PubSubDeadLetterQueue.builder().topic(TOPIC).build().flushTimeout())
+                .isEqualTo(PubSubDeadLetterQueue.DEFAULT_FLUSH_TIMEOUT)
+                .isEqualTo(Duration.ofSeconds(60));
+    }
+
+    /**
+     * An {@link ApiFuture} that records the budget it was granted and needs a scripted slice of it
+     * to resolve. Recording the grant is what tells a whole-call deadline from a per-future one:
+     * the first shrinks with every future awaited, the second does not.
+     */
+    private static final class RecordingFuture implements ApiFuture<String> {
+
+        private final Duration work;
+        private final List<Duration> grants;
+
+        private RecordingFuture(Duration work, List<Duration> grants) {
+            this.work = work;
+            this.grants = grants;
+        }
+
+        @Override
+        public String get(long timeout, TimeUnit unit)
+                throws InterruptedException, TimeoutException {
+            Duration granted = Duration.ofNanos(unit.toNanos(timeout));
+            grants.add(granted);
+            if (granted.isNegative()) {
+                // Rejected rather than absorbed, so the assertion below is the discriminating one
+                // rather than a restatement of what this fake decided to tolerate.
+                throw new IllegalArgumentException("negative grant: " + granted);
+            }
+            if (work.compareTo(granted) > 0) {
+                Thread.sleep(granted.toMillis());
+                throw new TimeoutException("the publish outlived its grant of " + granted);
+            }
+            Thread.sleep(work.toMillis());
+            return "message-id";
+        }
+
+        @Override
+        public String get() {
+            throw new UnsupportedOperationException("the queue always waits with a budget");
+        }
+
+        @Override
+        public void addListener(Runnable listener, Executor executor) {
+            throw new UnsupportedOperationException("not used by the await");
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            return false;
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return false;
+        }
+
+        @Override
+        public boolean isDone() {
+            return false;
         }
     }
 
