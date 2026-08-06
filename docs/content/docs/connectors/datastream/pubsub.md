@@ -222,12 +222,16 @@ Awaiting the client's resources runs on that thread too, and deliberately: gax h
 timeout to each background resource in turn rather than sharing one deadline across them, so
 awaiting on the task thread would cost a multiple of `shutdownTimeout` instead of `shutdownTimeout`.
 
-The residue is honest and logged: a publisher whose shutdown never returns leaves that thread and
-the client's executors behind until the JVM exits, and the job continues. The thread is named after
-both the topic and the task thread that created it (`… for Sink: Writer (2/4)#1`), so a thread dump
-says which subtask left it. On a job that restarts repeatedly against a Pub/Sub outage this residue
-accumulates once per attempt, which is the cost of not hanging the task instead — see
-[#311]({{< param BookRepo >}}/issues/311).
+The residue is honest, logged and counted: a publisher whose shutdown never returns leaves that
+thread and the client's executors behind until the JVM exits, and the job continues. The thread is
+named after both the topic and the task thread that created it (`… for Sink: Writer (2/4)#1`), so a
+thread dump says which subtask left it. On a job that restarts repeatedly against a Pub/Sub outage
+this residue accumulates once per attempt, which is the cost of not hanging the task instead — and
+the [`publisherShutdownsAbandoned`](#sink-metrics) counter is what makes the overruns visible
+without reading logs. What a teardown still in flight holds is worth knowing when reading that
+number:
+the publisher's own scheduled executor (`5 × availableProcessors` threads, no core timeout), its
+gRPC stub and channel pool, and the shutdown thread itself.
 
 Those warnings are logged by `io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown`, not by
 a `…connector.pubsub` class — a log configuration scoped to the connector's own package will not
@@ -555,6 +559,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `inFlightMessages` | gauge | publishes not yet acknowledged |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
 | `parkedMessages` | gauge | messages held for a destination's next republish — after a missing topic, after an ordering key was paused by a dropped message, or a batch awaiting the one-message-per-request republish that confirms a rejection |
+| `publisherShutdownsAbandoned` | counter | publisher closes that overran their shutdown budget. **Not this subtask's, and not this attempt's** — see below |
 | `topicsCreated` | counter | completed topic-creation repairs under `CREATE_IF_NEEDED` (see below) |
 | `errorClass.CODE.errors` | counter | failed publishes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `destination.TOPIC.recordsSend`, `destination.TOPIC.sendErrors` | counter | the same two counts per topic, **only** with `perDestinationMetrics(true)` |
@@ -566,6 +571,61 @@ in this repository counts the same way, whether its retries live in the sink or 
 the number is comparable across them. The consequence to know: `numBytesSend` is payload volume
 rather than wire volume — a record republished three times moved three times its size across the
 network. Retry volume is what `errorClass.CODE.errors` measures, and it measures it per status code.
+
+**`publisherShutdownsAbandoned` reports a whole JVM, not the subtask reading it.** Its value is a
+process-wide total, so every subtask sharing a TaskManager returns the same number. That is
+deliberate: the quantity is what accumulates *across* restart attempts, and a per-attempt figure
+could never be observed — a writer's metric group is unregistered as its task is cleaned up, in the
+same instant the close that abandoned the teardown ran. (Measured, not assumed: a probe with a
+reporter at 10 ms, a thousand times Flink's 10 s default, scraped ~90 times per run and never saw a
+close-time counter above zero.) So a teardown this attempt gives up on is reported by the *next*
+attempt's writers, and the value grows while the job keeps restarting against an outage.
+
+**Aggregating it.** Never sum the raw series — that multiplies one JVM's count by the subtasks on
+it. De-duplicate within a TaskManager first, then sum across them; in PromQL,
+`sum(max by (tm_id) (flink_taskmanager_job_task_operator_publisherShutdownsAbandoned))`. A plain
+maximum is wrong in the other direction: it reports the worst single TaskManager as though it were
+the cluster.
+
+**What it does and does not tell you.** It counts closes that *overran their budget*. It does not
+count teardowns still in flight: once the close gives up, the background thread exits as soon as the
+client's own shutdown returns, so a close that overran by a second leaves nothing behind and still
+increments this. Read a rising value as "closes are timing out", then use
+[Publisher lifecycle](#publisher-lifecycle) and a thread dump to see whether anything is still
+stranded.
+
+**Its scope depends on how the connector was deployed**, which is the part most easily got wrong.
+The count lives in whichever class loader loaded the connector:
+
+- **The job's own jar** (a DataStream job, or `ADD JAR` in the SQL client) — Flink's per-job class
+  loader, so the count is that job's, and two jobs on one TaskManager cannot see each other's.
+- **The SQL uber-jar in Flink's `lib/`**, the placement the
+  [SQL connector page]({{< relref "docs/connectors/table/pubsub" >}}#getting-the-connector-onto-the-classpath)
+  recommends — the *system* class loader, so **one count is shared by every job on that
+  TaskManager**, and it never resets while the TaskManager lives.
+
+The second case is the one to think about on a session cluster or in application mode running
+several pipelines side by side. Nothing is corrupted — the increments are ordinary and the number is
+exact — but it becomes a property of the **TaskManager**, not of the job whose dashboard displays
+it. That is arguably the honest scope, because the threads and channels being counted are in the
+JVM regardless of which pipeline left them there; a job's metric group is simply the only vehicle
+Flink gives us to report a JVM-level quantity. Read it that way and it is useful; read it as
+"my pipeline's residue" and it is not.
+
+Two consequences of that worth stating outright, because they surprise:
+
+- A pipeline that **publishes** but has no Pub/Sub *sink* still contributes. `PubSub → BigQuery`
+  with `sendToDeadLetterQueue(PubSubDeadLetterQueue…)` owns a Pub/Sub publisher, so its abandoned
+  teardowns land in the shared count — while that job registers no such metric itself, because it
+  has no Pub/Sub sink writer. Its residue shows up on a *different* pipeline's dashboard.
+- Conversely a job cancelled and resubmitted from its own jar gets a fresh class loader and a count
+  of zero while any stranded threads remain: **zero does not mean clean**.
+
+It counts every bounded teardown the class loader has served, so a Pub/Sub sink that also
+dead-letters to Pub/Sub sees both its publishers' and its queue's. The gap that leaves: a job with
+**no** Pub/Sub sink — a BigQuery or Cloud Tasks job dead-lettering to a topic — registers nothing,
+because nothing there owns a Pub/Sub sink writer's metric group. Its abandoned dead-letter teardowns
+are still in the logs, at `WARN` on `BoundedShutdown`.
 
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
 exactly what reached `failedMessageHandler(...)` — a record the serializer rejected, and a publish

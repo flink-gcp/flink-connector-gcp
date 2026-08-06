@@ -23,9 +23,11 @@ import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import javax.annotation.Nullable;
 
@@ -44,10 +46,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
 
 /**
- * Tests for the parts of {@link PubSubDeadLetterQueue} that need no publisher: the envelope, the
- * attribute-value truncation and the builder. The round trip through a topic is {@link
- * PubSubDeadLetterQueueITCase}.
+ * Tests for the parts of {@link PubSubDeadLetterQueue} that need no <em>reachable</em> publisher:
+ * the envelope, the attribute-value truncation, the builder, and the shutdown budget. The round
+ * trip through a topic is {@link PubSubDeadLetterQueueITCase}.
+ *
+ * <p>{@code @Timeout} for the reason {@code DefaultPublisherFactoryTest} gives: several tests here
+ * build and close real SDK publishers, so a teardown that stopped bounding itself would hang the
+ * build rather than fail it.
  */
+@Timeout(30)
 class PubSubDeadLetterQueueTest {
 
     private static final TopicDestination TOPIC = TopicDestination.of("my-project", "dead-letters");
@@ -370,6 +377,27 @@ class PubSubDeadLetterQueueTest {
             assertThat(((BoundedShutdown) queue.publisherShutdown).timeout())
                     .isEqualTo(PubSubDeadLetterQueue.DEFAULT_SHUTDOWN_TIMEOUT)
                     .isEqualTo(Duration.ofSeconds(30));
+        } finally {
+            queue.close();
+        }
+    }
+
+    /**
+     * The queue's teardown is handed the same counter the sink's publishers feed, so its
+     * abandonments reach {@code publisherShutdownsAbandoned} too. Identity rather than a driven
+     * give-up, for the reason its sibling in {@code DefaultPublisherFactoryTest} records.
+     */
+    @Test
+    void theTeardownIsHandedTheConnectorsResidueCounter() throws Exception {
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .emulatorEndpoint("localhost:1")
+                        .build();
+        queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+        try {
+            assertThat(((BoundedShutdown) queue.publisherShutdown).abandonedCounter())
+                    .isSameAs(PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
         } finally {
             queue.close();
         }

@@ -46,6 +46,16 @@ public final class PubSubMetricNames {
 
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
+    /**
+     * Counts an <em>event</em> — a publisher teardown the close gave up on — so it takes the
+     * counter shape the naming convention prescribes, even though its value comes from a
+     * process-wide total rather than this writer's own tally. The storage has to be process-wide (a
+     * per-attempt tally is unregistered before any reporter reads it, measured); the
+     * <em>instrument</em> does not follow from that, and a cumulative count of events is a counter.
+     * The count itself is {@link PubSubShutdownResidue}.
+     */
+    public static final String PUBLISHER_SHUTDOWNS_ABANDONED = "publisherShutdownsAbandoned";
+
     // Registered by the source reader (PubSubSourceReaderMetrics).
     public static final String MESSAGES_RECEIVED = "messagesReceived";
     public static final String MESSAGES_ACKED = "messagesAcked";

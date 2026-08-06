@@ -216,8 +216,9 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   `finally`, where anything it threw would replace the failure being propagated, so it is for a
   release that cannot fail (`ManagedChannel.shutdownNow()`), and a resource whose release *can* fail
   belongs in the caller's own `closeAll` list beside it. Its `close()` is **idempotent** — a second
-  call would otherwise rerun the release and rethrow the captured failure, which `AutoCloseable`
-  discourages and a defensively-closing consumer would meet as a spurious second teardown error.
+  call would otherwise rerun the release, rethrow the captured failure and re-count an abandonment,
+  which `AutoCloseable` discourages and a defensively-closing consumer would meet as a spurious
+  second teardown error.
   What is *not* enforced: `start()` and `close()` must come from one thread, and two threads racing
   `start()` would each see a null `thread` and run the shutdown twice. A guard was weighed and left
   out — both callers are writer teardowns, which Flink runs on the task thread by construction —
@@ -231,8 +232,19 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   and #265 is unreachable for the dead-letter queue's publisher. `timeout()` is the module's first
   `@VisibleForTesting public` method, and it is public only because a *sibling module's* tests read
   it; that is the price of promoting a test seam, and the next one here should cite this rather than
-  widen by default. A connector adopting it inherits one open question with it: nothing here reports
-  how many teardowns were abandoned, which is #311.
+  widen by default.
+  **It counts its own give-ups into a `LongAdder` the caller supplies** (#311) and holds no state of
+  its own beyond one task's teardown. That parameter is the design, not a convenience: the count has
+  to outlive the task to be observable at all — **measured**, with a MiniCluster probe whose reporter
+  ran at 10 ms (Flink's default is 10 s) and never once saw a metric a sink writer incremented only
+  in `close()` above zero, over four runs, while a counter incremented during the run read its full
+  value. So the count is process-wide wherever it lives, and the only question is *whose*. Holding it
+  here would make one number out of every client this class ever serves, and a metric named for one
+  of them would silently include the rest — the nearest such client is not another connector but the
+  Pub/Sub **source**, whose subscriber teardown has the same shape. Each owner passing its own keeps
+  the names true by construction, and lets tests inject one and assert absolutely instead of around a
+  baseline. A first draft held an `AtomicLong` here and documented the resulting bound instead of
+  removing it; do not reintroduce it.
 - **`base.lifecycle` is also two methods, one loop** (#229 then #276), and every `close()`-shaped call
   site in this repository goes through one of them — nothing calls `IOUtils.closeAll` any more, so
   its `scripts/flink-api-tiers.toml` entry is gone and `ExceptionUtils`' covers both users.

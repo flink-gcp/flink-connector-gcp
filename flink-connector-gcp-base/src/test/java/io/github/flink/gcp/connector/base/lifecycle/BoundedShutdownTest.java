@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -41,6 +42,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BoundedShutdownTest {
 
     private static final String DESCRIPTION = "topic projects/test-project/topics/t";
+
+    /**
+     * Each test owns its counter, so assertions are absolute rather than deltas around whatever
+     * sibling tests left behind. That is the point of {@code BoundedShutdown} taking the counter
+     * instead of holding one: nothing here is process-wide.
+     */
+    private final LongAdder abandoned = new LongAdder();
 
     @Test
     void closeGivesUpOnAShutdownThatNeverReturnsAndStillReleasesTheResource() throws Exception {
@@ -60,7 +68,8 @@ class BoundedShutdownTest {
                         },
                         DESCRIPTION,
                         () -> released.set(true),
-                        Duration.ofMillis(50));
+                        Duration.ofMillis(50),
+                        abandoned);
 
         try {
             teardown.close();
@@ -102,7 +111,8 @@ class BoundedShutdownTest {
                         },
                         DESCRIPTION,
                         null,
-                        timeout);
+                        timeout,
+                        abandoned);
 
         teardown.close();
 
@@ -136,7 +146,8 @@ class BoundedShutdownTest {
                         (t, unit) -> true,
                         DESCRIPTION,
                         () -> released.set(true),
-                        Duration.ofSeconds(30));
+                        Duration.ofSeconds(30),
+                        abandoned);
 
         assertThatThrownBy(teardown::close).isSameAs(failure);
         assertThat(released).isTrue();
@@ -153,7 +164,8 @@ class BoundedShutdownTest {
                         },
                         DESCRIPTION,
                         () -> released.set(true),
-                        Duration.ofSeconds(30));
+                        Duration.ofSeconds(30),
+                        abandoned);
 
         assertThatThrownBy(teardown::close)
                 .isInstanceOf(IllegalStateException.class)
@@ -174,7 +186,8 @@ class BoundedShutdownTest {
                         (t, unit) -> true,
                         DESCRIPTION,
                         null,
-                        timeout);
+                        timeout,
+                        abandoned);
 
         try {
             teardown.start();
@@ -204,7 +217,8 @@ class BoundedShutdownTest {
                         (t, unit) -> true,
                         DESCRIPTION,
                         () -> released.set(true),
-                        Duration.ofMinutes(1));
+                        Duration.ofMinutes(1),
+                        abandoned);
 
         try {
             teardown.start();
@@ -230,7 +244,8 @@ class BoundedShutdownTest {
                         (timeout, unit) -> true,
                         DESCRIPTION,
                         null,
-                        Duration.ofSeconds(30));
+                        Duration.ofSeconds(30),
+                        abandoned);
 
         teardown.start();
         teardown.start();
@@ -258,16 +273,20 @@ class BoundedShutdownTest {
                         (t, unit) -> true,
                         DESCRIPTION,
                         releases::incrementAndGet,
-                        Duration.ofSeconds(30));
+                        Duration.ofSeconds(30),
+                        abandoned);
 
         assertThatThrownBy(teardown::close).isSameAs(failure);
         assertThatCode(teardown::close).doesNotThrowAnyException();
         assertThat(releases).hasValue(1);
     }
 
-    /** The give-up path is idempotent too, and must not count a second abandonment. */
+    /**
+     * The give-up path is idempotent too — and now that an abandonment is counted, a second close
+     * must not count it twice either.
+     */
     @Test
-    void closingTwiceAfterGivingUpDoesNotRepeatTheGiveUp() throws Exception {
+    void closingTwiceAfterGivingUpRepeatsNeitherTheReleaseNorTheCount() throws Exception {
         CountDownLatch blocked = new CountDownLatch(1);
         AtomicInteger releases = new AtomicInteger();
         BoundedShutdown teardown =
@@ -276,16 +295,77 @@ class BoundedShutdownTest {
                         (t, unit) -> true,
                         DESCRIPTION,
                         releases::incrementAndGet,
-                        Duration.ofMillis(50));
+                        Duration.ofMillis(50),
+                        abandoned);
 
         try {
             teardown.close();
             teardown.close();
 
             assertThat(releases).hasValue(1);
+            assertThat(abandoned.sum()).isEqualTo(1);
         } finally {
             blocked.countDown();
         }
+    }
+
+    /**
+     * The counter is this test's own, so these are absolute — no baseline, and no dependence on
+     * which sibling ran first.
+     */
+    @Test
+    void anAbandonedTeardownIsCountedAndACompletedOneIsNot() throws Exception {
+        CountDownLatch blocked = new CountDownLatch(1);
+        BoundedShutdown abandons =
+                new BoundedShutdown(
+                        () -> awaitUninterruptibly(blocked),
+                        (t, unit) -> true,
+                        DESCRIPTION,
+                        null,
+                        Duration.ofMillis(50),
+                        abandoned);
+
+        try {
+            abandons.close();
+
+            assertThat(abandoned.sum()).isEqualTo(1);
+        } finally {
+            blocked.countDown();
+        }
+
+        new BoundedShutdown(
+                        () -> {},
+                        (t, unit) -> true,
+                        DESCRIPTION,
+                        null,
+                        Duration.ofSeconds(30),
+                        abandoned)
+                .close();
+
+        // A teardown that finished is not residue, so it must not inflate the count — the half that
+        // makes a non-zero reading mean something.
+        assertThat(abandoned.sum()).isEqualTo(1);
+    }
+
+    /**
+     * The counter is required, and rejected at construction rather than where it is used: the one
+     * increment sits on the give-up path, ahead of the warning that explains it, so a null would
+     * turn a bounded and logged give-up into an NPE with the diagnostic swallowed — during exactly
+     * the outage this class exists to survive, and only then.
+     */
+    @Test
+    void aMissingCounterIsRejectedAtConstructionRatherThanOnTheGiveUpPath() {
+        assertThatThrownBy(
+                        () ->
+                                new BoundedShutdown(
+                                        () -> {},
+                                        (t, unit) -> true,
+                                        DESCRIPTION,
+                                        null,
+                                        Duration.ofSeconds(30),
+                                        null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("abandonedCount");
     }
 
     @Test
@@ -300,7 +380,8 @@ class BoundedShutdownTest {
                         (t, unit) -> true,
                         DESCRIPTION,
                         null,
-                        Duration.ofSeconds(30));
+                        Duration.ofSeconds(30),
+                        abandoned);
 
         assertThatThrownBy(failing::close)
                 .isInstanceOf(IllegalStateException.class)
@@ -311,7 +392,12 @@ class BoundedShutdownTest {
     void theBudgetIsReadableForTheCallerThatHandedItOver() {
         BoundedShutdown teardown =
                 new BoundedShutdown(
-                        () -> {}, (t, unit) -> true, DESCRIPTION, null, Duration.ofSeconds(7));
+                        () -> {},
+                        (t, unit) -> true,
+                        DESCRIPTION,
+                        null,
+                        Duration.ofSeconds(7),
+                        abandoned);
 
         assertThat(teardown.timeout()).isEqualTo(Duration.ofSeconds(7));
     }

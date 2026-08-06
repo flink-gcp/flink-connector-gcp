@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.base.lifecycle;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +28,7 @@ import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * The teardown of one client whose own shutdown cannot be trusted to return: both of its steps on a
@@ -109,6 +111,7 @@ public final class BoundedShutdown implements AutoCloseable {
     private final String description;
     @Nullable private final Runnable release;
     private final Duration timeout;
+    private final LongAdder abandonedCount;
 
     @Nullable private Thread thread;
     private long deadlineNanos;
@@ -142,24 +145,52 @@ public final class BoundedShutdown implements AutoCloseable {
      *     ManagedChannel.shutdownNow()} is the one it was written for. A resource whose release can
      *     fail belongs in the caller's own {@link Closers#closeAll} list beside this one instead.
      * @param timeout the whole budget, measured from {@link #start()}
+     * @param abandonedCount incremented once whenever {@link #close()} gives up, so the owner can
+     *     report the residue. <b>Supplied by the caller rather than held here, and that is the
+     *     design</b>: the count has to outlive the task to be observable at all (measured — a
+     *     reporter at 10 ms never sees a metric a writer only touches in {@code close()}), so it is
+     *     process-wide wherever it lives. Keeping it here would make one number out of every client
+     *     this class ever serves, and a metric named for one of them — {@code
+     *     publisherShutdownsAbandoned} — would silently include the rest. The nearest such client
+     *     is not another connector but the Pub/Sub <em>source</em>, whose subscriber teardown has
+     *     the same shape. Each owner passing its own keeps the names true by construction
      */
     public BoundedShutdown(
             Runnable shutdown,
             TerminationWait awaitTermination,
             String description,
             @Nullable Runnable release,
-            Duration timeout) {
+            Duration timeout,
+            LongAdder abandonedCount) {
         this.shutdown = shutdown;
         this.awaitTermination = awaitTermination;
         this.description = description;
         this.release = release;
         this.timeout = timeout;
+        // Checked here, not where it is used: the one increment sits on the give-up path, ahead of
+        // the warning that explains it, so a null would turn a bounded and logged give-up into an
+        // NPE out of close() with the diagnostic swallowed — during exactly the outage this class
+        // exists to survive, and only then. A consumer that does not want to count passes a
+        // throwaway LongAdder; there is no null shorthand.
+        this.abandonedCount =
+                Preconditions.checkNotNull(abandonedCount, "abandonedCount must not be null");
     }
 
     /** The budget, for a test that checks which one its caller handed over. */
     @VisibleForTesting
     public Duration timeout() {
         return timeout;
+    }
+
+    /**
+     * The counter this teardown was handed, so a caller's wiring can be asserted by identity rather
+     * than by driving a give-up and observing an increment — which is a footrace against the
+     * freshly started thread, not a deterministic test. Widened for that reason specifically, per
+     * the rule beside {@link #timeout()}'s justification in the module's CLAUDE.md.
+     */
+    @VisibleForTesting
+    public LongAdder abandonedCounter() {
+        return abandonedCount;
     }
 
     /** Returns the budget the timeout has not yet used, in nanoseconds; never negative. */
@@ -238,6 +269,7 @@ public final class BoundedShutdown implements AutoCloseable {
             }
             if (thread.isAlive()) {
                 abandoned = true;
+                abandonedCount.increment();
                 // The waited time, not the configured budget: it is shared across every
                 // client the caller owns, so one after another that hung gets none of it and
                 // would otherwise report "did not finish within 30s" having waited nothing —

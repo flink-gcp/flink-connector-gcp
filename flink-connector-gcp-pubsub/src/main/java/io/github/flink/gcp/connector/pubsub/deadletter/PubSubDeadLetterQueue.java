@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -215,7 +216,9 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                             publisher::awaitTermination,
                             "dead-letter topic " + topic,
                             null,
-                            shutdownTimeout);
+                            shutdownTimeout,
+                            // A publisher too, so it counts into the same total the sink's do.
+                            PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
             channelShutdown = this::shutdownChannel;
         } catch (IOException | RuntimeException e) {
             // The channel is owned here until the publisher takes it over on success.
