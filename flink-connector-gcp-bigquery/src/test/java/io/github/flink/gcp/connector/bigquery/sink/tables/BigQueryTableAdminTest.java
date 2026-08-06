@@ -16,13 +16,16 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.tables;
 
+import com.google.cloud.NoCredentials;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
+import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;
@@ -217,5 +220,21 @@ class BigQueryTableAdminTest {
                                         "denied",
                                         new BigQueryError("accessDenied", null, "denied"))))
                 .isFalse();
+    }
+
+    @Test
+    void emulatorOptionsCarryTheHostTheProjectAndNoCredentials() {
+        BigQueryOptions options =
+                BigQueryTableAdmin.emulatorOptions(
+                        EmulatorEndpoint.parse("localhost:9050"), DESTINATION.getProject());
+
+        assertThat(options.getHost()).isEqualTo("http://localhost:9050");
+        // The project id is load-bearing rather than cosmetic: BigQueryOptions refuses to build
+        // without one it can determine, and an emulator offers no environment to determine one
+        // from — so leaving it unset fails on a machine with no gcloud configuration and passes on
+        // one with it. Asserting it here is what makes that guard independent of the machine the
+        // test runs on; the integration tests only catch it on a runner.
+        assertThat(options.getProjectId()).isEqualTo("p");
+        assertThat(options.getCredentials()).isInstanceOf(NoCredentials.class);
     }
 }

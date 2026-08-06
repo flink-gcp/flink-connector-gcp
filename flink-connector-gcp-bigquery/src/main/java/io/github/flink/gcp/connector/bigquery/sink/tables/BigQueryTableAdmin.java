@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.tables;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.cloud.NoCredentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
@@ -35,10 +36,13 @@ import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -83,8 +87,23 @@ public class BigQueryTableAdmin implements TableAdmin {
 
     private BigQuery client;
 
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
+
     /** Creates an admin using application-default credentials. */
-    public BigQueryTableAdmin() {}
+    public BigQueryTableAdmin() {
+        this((EmulatorEndpoint) null);
+    }
+
+    /**
+     * Creates an admin talking to a BigQuery emulator's REST endpoint with no credentials, or —
+     * when the endpoint is {@code null} — to the production service with application-default
+     * credentials.
+     *
+     * @param emulatorEndpoint the emulator's REST endpoint as {@code host:port}, or {@code null}
+     */
+    public BigQueryTableAdmin(@Nullable EmulatorEndpoint emulatorEndpoint) {
+        this.emulatorEndpoint = emulatorEndpoint;
+    }
 
     /**
      * Creates an admin using the given client.
@@ -93,6 +112,7 @@ public class BigQueryTableAdmin implements TableAdmin {
      */
     public BigQueryTableAdmin(BigQuery client) {
         this.client = client;
+        this.emulatorEndpoint = null;
     }
 
     @Override
@@ -100,7 +120,7 @@ public class BigQueryTableAdmin implements TableAdmin {
             throws IOException {
         TableInfo tableInfo = buildTableInfo(destination, schema, options);
         try {
-            client().create(tableInfo);
+            client(destination).create(tableInfo);
             LOG.info("Created BigQuery table {} with options {}", destination, options);
         } catch (BigQueryException e) {
             if (e.getCode() == HTTP_CONFLICT) {
@@ -115,7 +135,7 @@ public class BigQueryTableAdmin implements TableAdmin {
     public TableSchemaSnapshot getSchema(TableDestination destination) throws IOException {
         Table table;
         try {
-            table = client().getTable(toTableId(destination));
+            table = client(destination).getTable(toTableId(destination));
         } catch (BigQueryException e) {
             throw new IOException("Failed to read the schema of BigQuery table " + destination, e);
         }
@@ -167,7 +187,7 @@ public class BigQueryTableAdmin implements TableAdmin {
         try {
             // The table carries the snapshot's etag, so BigQuery rejects the update when the
             // table changed since the snapshot was taken.
-            client().update(baseTable.toBuilder().setDefinition(updated).build());
+            client(destination).update(baseTable.toBuilder().setDefinition(updated).build());
             LOG.info("Updated the schema of BigQuery table {}", destination);
             return true;
         } catch (BigQueryException e) {
@@ -304,10 +324,40 @@ public class BigQueryTableAdmin implements TableAdmin {
         return TableInfo.newBuilder(toTableId(destination), definition.build()).build();
     }
 
-    private BigQuery client() {
+    private BigQuery client(TableDestination destination) {
         if (client == null) {
-            client = BigQueryOptions.getDefaultInstance().getService();
+            client =
+                    emulatorEndpoint == null
+                            ? BigQueryOptions.getDefaultInstance().getService()
+                            : emulatorOptions(emulatorEndpoint, destination.getProject())
+                                    .getService();
         }
         return client;
+    }
+
+    /**
+     * Builds the options of a client talking to a BigQuery emulator with no credentials.
+     *
+     * <p>The emulator serves plain HTTP, and {@code setHost} takes a URL where the gRPC side takes
+     * a bare {@code host:port} — hence the scheme here rather than in the configured value.
+     *
+     * <p>The project id is <em>required</em> rather than informative: {@link BigQueryOptions}
+     * refuses to build without one it can determine, and an emulator offers no environment to
+     * determine it from — so leaving it unset fails wherever no gcloud configuration exists, a CI
+     * runner say, while passing on a developer's machine. Which project it is does not matter,
+     * since every request made here names its table in full (see {@link #toTableId}); that is also
+     * why one cached client stays correct across destinations in several projects.
+     *
+     * @param endpoint the emulator's REST endpoint
+     * @param project the project id to satisfy the builder with
+     * @return the options
+     */
+    @VisibleForTesting
+    static BigQueryOptions emulatorOptions(EmulatorEndpoint endpoint, String project) {
+        return BigQueryOptions.newBuilder()
+                .setHost("http://" + endpoint.getTarget())
+                .setProjectId(project)
+                .setCredentials(NoCredentials.getInstance())
+                .build();
     }
 }

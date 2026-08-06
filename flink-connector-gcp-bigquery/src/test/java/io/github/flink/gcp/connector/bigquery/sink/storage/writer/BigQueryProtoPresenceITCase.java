@@ -79,7 +79,7 @@ class BigQueryProtoPresenceITCase extends AbstractBigQueryEmulatorITCase {
                                 .build();
         SinkWriter<Presence> writer =
                 sink.createWriter(
-                        new EmulatorAppenderFactory(grpcEndpoint()),
+                        emulatorAppenderFactory(),
                         new BigQueryTableAdmin(restClient),
                         TestSinkWriterMetricGroup.create());
         try {

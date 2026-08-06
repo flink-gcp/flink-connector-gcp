@@ -100,7 +100,10 @@ public class BigQueryBufferedStreamSink<T>
      * @param options the buffered-stream options
      */
     public BigQueryBufferedStreamSink(BigQuerySinkConfig<T> config, BufferedStreamOptions options) {
-        this(config, options, new WriteClientBufferedStreamServiceFactory());
+        this(
+                config,
+                options,
+                new WriteClientBufferedStreamServiceFactory(config.getEmulatorEndpoint()));
     }
 
     @VisibleForTesting
@@ -122,7 +125,8 @@ public class BigQueryBufferedStreamSink<T>
     public StatefulSinkWriter<T, BufferedStreamWriterState> restoreWriter(
             WriterInitContext context, Collection<BufferedStreamWriterState> recoveredState)
             throws IOException {
-        return restoreWriter(context, recoveredState, new BigQueryTableAdmin());
+        return restoreWriter(
+                context, recoveredState, new BigQueryTableAdmin(config.getEmulatorRestEndpoint()));
     }
 
     @VisibleForTesting
@@ -253,5 +257,15 @@ public class BigQueryBufferedStreamSink<T>
     /** Returns the buffered-stream options. */
     public BufferedStreamOptions getOptions() {
         return options;
+    }
+
+    /**
+     * Returns the factory the writer opens its streams through. Exposed so a test can see what the
+     * production constructor built — the emulator endpoint reaches the write path through it, and
+     * is otherwise invisible from outside a running writer.
+     */
+    @VisibleForTesting
+    public BufferedStreamServiceFactory getServiceFactory() {
+        return serviceFactory;
     }
 }

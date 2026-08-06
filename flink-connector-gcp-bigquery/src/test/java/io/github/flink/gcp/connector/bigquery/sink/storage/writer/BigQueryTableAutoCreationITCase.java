@@ -50,7 +50,7 @@ class BigQueryTableAutoCreationITCase extends AbstractBigQueryEmulatorITCase {
                         .getConfig();
         return new BigQueryDefaultStreamWriter<>(
                 config,
-                new EmulatorAppenderFactory(grpcEndpoint()),
+                emulatorAppenderFactory(),
                 new BigQueryTableAdmin(restClient),
                 TestSinkWriterMetricGroup.create(),
                 BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,

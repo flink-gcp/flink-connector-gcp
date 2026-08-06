@@ -580,6 +580,30 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   schema-wait schedule on exactly that, so forcing its sibling's accumulated-flag shape would
   complicate a call site for symmetry's sake; the differing `@return` tags now carry the
   distinction), `warnIfCommitsAreTooFrequent`
+- **Two emulator endpoints on the builder** (#57, groundwork for #287): `emulatorEndpoint` (gRPC,
+  the Storage Write API) and `emulatorRestEndpoint` (REST, `BigQueryTableAdmin`). **Two, not one**,
+  and that is the deviation from every sibling connector: BigQuery serves its transports on separate
+  ports (9050/9060 on the goccy emulator), so a single value could only point half the sink at the
+  emulator — silently, since a job whose tables all exist never touches the REST client at all.
+  This **reverses the #15/#54 call** that the `@VisibleForTesting createWriter(appenderFactory,
+  tableAdmin, metricGroup)` seam was sufficient: the SQL planner builds the sink through the
+  production factory and cannot reach a seam, which is a new trigger rather than a re-argued one.
+  `FILE_LOADS` **rejects both** in `build()` — it stages to GCS, which no emulator here stands in
+  for, so an endpoint would be honored by the metadata half and silently ignored by the half that
+  moves the rows. The emulator branch lives in `StreamWriterRowAppenderFactory` and carries the
+  three goccy deviations the test-only `EmulatorAppenderFactory` used to (the `.../streams/_default`
+  name form plus a `GetWriteStream` priming call, `UNKNOWN` instead of `NOT_FOUND`, and no
+  connection pool); that class was **deleted** rather than left beside the production branch, so the
+  emulator ITs now measure production code and exactly one copy of the workaround exists. It is
+  still a workaround, not a fact about BigQuery: goccy/bigquery-emulator#342 is fixed upstream but
+  unreleased (v0.8.1 shipped 2026-06-13, the issue closed the day after), so the branch goes when a
+  release carries the fix. The production, no-endpoint path is untouched — it opens no client at
+  all, drawing connections from the SDK's JVM-static pool, which is exactly why an endpoint cannot
+  be applied to it and the emulator branch has to build its own client per destination.
+  `BigQueryEmulatorEndpointITCase` is the one test that goes through the production
+  `createWriter(WriterInitContext)`: every other emulator test injects through the seam, so all of
+  them would pass with the endpoints reaching no client at all. `gax-grpc` moved from test to
+  compile scope with this
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
 - **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
   **`String`** records and a **supplied** schema, since JSON has none of its own — either the
