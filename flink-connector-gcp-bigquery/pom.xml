@@ -97,7 +97,14 @@ limitations under the License.
             <artifactId>gax</artifactId>
         </dependency>
         <dependency>
-            <!-- StatusRuntimeException for NOT_FOUND classification in the writer.
+            <!-- GrpcStatusCode and the plaintext channel provider, for the emulator branch of the
+                 Storage Write API paths (emulatorEndpoint). Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax-grpc</artifactId>
+        </dependency>
+        <dependency>
+            <!-- StatusRuntimeException for NOT_FOUND classification in the writer, and
+                 ManagedChannelBuilder for the emulator's plaintext channel.
                  Version managed by the libraries BOM. -->
             <groupId>io.grpc</groupId>
             <artifactId>grpc-api</artifactId>
@@ -140,13 +147,6 @@ limitations under the License.
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <!-- Plaintext gRPC channel setup against the emulator in integration tests.
-                 Version managed by the libraries BOM. -->
-            <groupId>com.google.api</groupId>
-            <artifactId>gax-grpc</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

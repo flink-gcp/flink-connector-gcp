@@ -58,7 +58,7 @@ class BigQueryDefaultStreamWriterITCase extends AbstractBigQueryEmulatorITCase {
                                 .build();
         SinkWriter<String> writer =
                 sink.createWriter(
-                        new EmulatorAppenderFactory(grpcEndpoint()),
+                        emulatorAppenderFactory(),
                         new BigQueryTableAdmin(restClient),
                         TestSinkWriterMetricGroup.create());
         try {

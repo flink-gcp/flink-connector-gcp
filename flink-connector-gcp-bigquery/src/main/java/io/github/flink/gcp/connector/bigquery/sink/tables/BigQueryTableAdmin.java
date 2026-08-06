@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.tables;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.cloud.NoCredentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
@@ -35,10 +36,13 @@ import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -83,8 +87,23 @@ public class BigQueryTableAdmin implements TableAdmin {
 
     private BigQuery client;
 
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
+
     /** Creates an admin using application-default credentials. */
-    public BigQueryTableAdmin() {}
+    public BigQueryTableAdmin() {
+        this((EmulatorEndpoint) null);
+    }
+
+    /**
+     * Creates an admin talking to a BigQuery emulator's REST endpoint with no credentials, or —
+     * when the endpoint is {@code null} — to the production service with application-default
+     * credentials.
+     *
+     * @param emulatorEndpoint the emulator's REST endpoint as {@code host:port}, or {@code null}
+     */
+    public BigQueryTableAdmin(@Nullable EmulatorEndpoint emulatorEndpoint) {
+        this.emulatorEndpoint = emulatorEndpoint;
+    }
 
     /**
      * Creates an admin using the given client.
@@ -93,6 +112,7 @@ public class BigQueryTableAdmin implements TableAdmin {
      */
     public BigQueryTableAdmin(BigQuery client) {
         this.client = client;
+        this.emulatorEndpoint = null;
     }
 
     @Override
@@ -306,7 +326,17 @@ public class BigQueryTableAdmin implements TableAdmin {
 
     private BigQuery client() {
         if (client == null) {
-            client = BigQueryOptions.getDefaultInstance().getService();
+            client =
+                    emulatorEndpoint == null
+                            ? BigQueryOptions.getDefaultInstance().getService()
+                            // The emulator serves plain HTTP, and setHost takes a URL where the
+                            // gRPC side takes a bare host:port — hence the scheme here and not in
+                            // the option's value.
+                            : BigQueryOptions.newBuilder()
+                                    .setHost("http://" + emulatorEndpoint.getTarget())
+                                    .setCredentials(NoCredentials.getInstance())
+                                    .build()
+                                    .getService();
         }
         return client;
     }

@@ -21,6 +21,7 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -55,6 +56,8 @@ public class BigQuerySinkBuilder<T> {
     private FileLoadsOptions fileLoadsOptions;
     private BufferedStreamOptions bufferedStreamOptions;
     private DefaultStreamOptions defaultStreamOptions;
+    private EmulatorEndpoint emulatorEndpoint;
+    private EmulatorEndpoint emulatorRestEndpoint;
 
     BigQuerySinkBuilder() {}
 
@@ -249,6 +252,56 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
+     * Points the sink's Storage Write API traffic at a BigQuery emulator instead of the production
+     * service. The write stream opened for each destination connects to the given {@code host:port}
+     * over a plaintext channel with no credentials, so this must only ever be used against an
+     * emulator (for example a testcontainers {@code goccy/bigquery-emulator}). Optional; when unset
+     * the sink connects to BigQuery with application-default credentials.
+     *
+     * <p>BigQuery serves its two transports on <em>separate</em> ports — gRPC for the Storage Write
+     * API, REST for table metadata — so this endpoint covers the gRPC half only, and a job that
+     * also creates tables or evolves their schemas needs {@link #emulatorRestEndpoint(String)}
+     * beside it. That is a deviation from the sibling connectors, whose emulators speak one
+     * protocol on one port.
+     *
+     * <p>Rejected under {@link WriteMethod#FILE_LOADS}: that write method stages files to Cloud
+     * Storage, which no emulator here stands in for, so an endpoint could only be half honored.
+     *
+     * <p>The value is parsed here, so a malformed {@code host:port} is rejected on the client
+     * instead of surfacing as a connection failure once the job has been deployed.
+     *
+     * @param emulatorEndpoint the emulator's gRPC endpoint as {@code host:port}
+     * @return this builder
+     * @throws IllegalArgumentException if the endpoint is not {@code host:port} with a port in
+     *     1..65535
+     */
+    public BigQuerySinkBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
+        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
+        return this;
+    }
+
+    /**
+     * Points the sink's table metadata traffic — table creation under {@link
+     * CreateDisposition#CREATE_IF_NEEDED} and connector-driven schema updates — at a BigQuery
+     * emulator instead of the production service. The REST client is built against {@code
+     * http://host:port} with no credentials, so this must only ever be used against an emulator.
+     * Optional; when unset the metadata client uses application-default credentials.
+     *
+     * <p>This is the REST half of {@link #emulatorEndpoint(String)}; see there for why the two are
+     * separate and for the {@link WriteMethod#FILE_LOADS} rejection, which applies to both.
+     *
+     * @param emulatorRestEndpoint the emulator's REST endpoint as {@code host:port}, without a
+     *     scheme
+     * @return this builder
+     * @throws IllegalArgumentException if the endpoint is not {@code host:port} with a port in
+     *     1..65535
+     */
+    public BigQuerySinkBuilder<T> emulatorRestEndpoint(String emulatorRestEndpoint) {
+        this.emulatorRestEndpoint = EmulatorEndpoint.parse(emulatorRestEndpoint);
+        return this;
+    }
+
+    /**
      * Builds the sink for the configured {@link WriteMethod}.
      *
      * @return the sink
@@ -267,7 +320,9 @@ public class BigQuerySinkBuilder<T> {
                         tableCreateOptionsProvider,
                         schemaUpdateOptions,
                         failedRowHandler,
-                        location);
+                        location,
+                        emulatorEndpoint,
+                        emulatorRestEndpoint);
         // The required/forbidden pairing for write-method-scoped options; future write-method
         // option objects follow the same two adjacent checks. defaultStreamOptions keeps only the
         // forbidden half: its write method is the default, chosen by not choosing, so there is
@@ -311,6 +366,15 @@ public class BigQuerySinkBuilder<T> {
                         + " pinned when the stream is created, so the sink cannot evolve the"
                         + " table schema mid-run. Update the table schema out of band and"
                         + " restart the job, or use another write method.");
+        // FILE_LOADS stages to Cloud Storage and submits load jobs; no emulator here stands in for
+        // GCS, so an endpoint would be honored by the metadata half of that write method and
+        // silently ignored by the half that actually moves the rows.
+        Preconditions.checkState(
+                writeMethod != WriteMethod.FILE_LOADS
+                        || (emulatorEndpoint == null && emulatorRestEndpoint == null),
+                "emulatorEndpoint(...) and emulatorRestEndpoint(...) are not supported for"
+                        + " WriteMethod.FILE_LOADS: that write method stages files to Cloud"
+                        + " Storage, which the BigQuery emulator does not provide.");
         switch (writeMethod) {
             case STORAGE_API_AT_LEAST_ONCE:
                 return new BigQueryDefaultStreamSink<>(

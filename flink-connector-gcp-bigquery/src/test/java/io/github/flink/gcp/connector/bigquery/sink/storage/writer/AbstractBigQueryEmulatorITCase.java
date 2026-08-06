@@ -27,6 +27,8 @@ import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.junit.jupiter.api.BeforeAll;
@@ -42,7 +44,7 @@ import java.util.List;
 /**
  * Shared harness for integration tests against the BigQuery emulator (goccy/bigquery-emulator): the
  * container, a REST client pointed at it, the Storage Write API gRPC endpoint, and a no-op {@link
- * SinkWriter.Context}. Use together with {@link EmulatorAppenderFactory}.
+ * SinkWriter.Context}.
  */
 @Testcontainers
 @Timeout(180)
@@ -81,6 +83,20 @@ abstract class AbstractBigQueryEmulatorITCase {
 
     static String grpcEndpoint() {
         return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(GRPC_PORT);
+    }
+
+    static String restEndpoint() {
+        return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(REST_PORT);
+    }
+
+    /**
+     * The production appender factory pointed at the emulator — the same code path a sink built
+     * with {@code emulatorEndpoint(...)} takes, so these tests measure production behaviour rather
+     * than a test-only stand-in.
+     */
+    static RowAppenderFactory emulatorAppenderFactory() {
+        return new StreamWriterRowAppenderFactory(
+                DefaultStreamOptions.builder().build(), EmulatorEndpoint.parse(grpcEndpoint()));
     }
 
     /** Creates a table in the emulator dataset with the given Storage-form schema. */

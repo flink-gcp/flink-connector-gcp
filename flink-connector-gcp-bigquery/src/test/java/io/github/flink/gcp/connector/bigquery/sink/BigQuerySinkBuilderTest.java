@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStrea
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.storage.writer.WriteClientBufferedStreamServiceFactory;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.junit.jupiter.api.Test;
 
@@ -417,6 +418,8 @@ class BigQuerySinkBuilderTest {
                 .isEqualTo(CreateDisposition.CREATE_IF_NEEDED);
         assertThat(defaults.getConfig().getLocation()).isNull();
         assertThat(defaults.getConfig().getFailedRowHandler()).isEqualTo(FailureHandler.failJob());
+        assertThat(defaults.getConfig().getEmulatorEndpoint()).isNull();
+        assertThat(defaults.getConfig().getEmulatorRestEndpoint()).isNull();
 
         BigQueryDefaultStreamSink<String> overridden =
                 (BigQueryDefaultStreamSink<String>)
@@ -432,6 +435,77 @@ class BigQuerySinkBuilderTest {
         assertThat(overridden.getConfig().getLocation()).isEqualTo("asia-northeast1");
         assertThat(overridden.getConfig().getFailedRowHandler())
                 .isEqualTo(FailureHandler.logAndDrop());
+    }
+
+    @Test
+    void carriesBothEmulatorEndpointsIntoTheSinkAndThroughSerialization() throws Exception {
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .emulatorEndpoint("localhost:9060")
+                                .emulatorRestEndpoint("localhost:9050")
+                                .build();
+
+        // Read back off the built sink, and again off a round-tripped copy: the endpoints are
+        // invisible from outside a running writer, so nothing else would notice one being dropped
+        // on the way to the config or failing to travel with the job graph.
+        BigQueryDefaultStreamSink<String> copy = InstantiationUtil.clone(sink);
+        assertThat(copy.getConfig().getEmulatorEndpoint().getTarget()).isEqualTo("localhost:9060");
+        assertThat(copy.getConfig().getEmulatorRestEndpoint().getTarget())
+                .isEqualTo("localhost:9050");
+    }
+
+    @Test
+    void carriesTheEmulatorEndpointIntoTheBufferedStreamServiceFactory() {
+        BigQueryBufferedStreamSink<String> sink =
+                (BigQueryBufferedStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                                .emulatorEndpoint("localhost:9060")
+                                .build();
+
+        assertThat(
+                        ((WriteClientBufferedStreamServiceFactory) sink.getServiceFactory())
+                                .getEmulatorEndpoint()
+                                .getTarget())
+                .isEqualTo("localhost:9060");
+    }
+
+    @Test
+    void rejectsAMalformedEmulatorEndpointWhereItIsWritten() {
+        // Parsed in the setter, not at build(): a typo is a client-side error, not a connection
+        // failure once the job has been deployed (#235).
+        assertThatThrownBy(() -> BigQuerySink.builder().emulatorEndpoint("localhost"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("localhost");
+        assertThatThrownBy(() -> BigQuerySink.builder().emulatorRestEndpoint("localhost:0"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("localhost:0");
+    }
+
+    @Test
+    void fileLoadsRejectsEitherEmulatorEndpoint() {
+        assertThatThrownBy(() -> fileLoadsBuilder().emulatorEndpoint("localhost:9060").build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("emulatorEndpoint(...)")
+                .hasMessageContaining("Cloud Storage");
+        assertThatThrownBy(() -> fileLoadsBuilder().emulatorRestEndpoint("localhost:9050").build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("emulatorRestEndpoint(...)");
+    }
+
+    private static BigQuerySinkBuilder<String> fileLoadsBuilder() {
+        return BigQuerySink.<String>builder()
+                .writeMethod(WriteMethod.FILE_LOADS)
+                .destination(DESTINATION)
+                .serializer(new TestSerializer())
+                .fileLoadsOptions(
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/tmp").build());
     }
 
     @Test

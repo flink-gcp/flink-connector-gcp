@@ -19,8 +19,11 @@ package io.github.flink.gcp.connector.bigquery.sink;
 import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+
+import javax.annotation.Nullable;
 
 import java.io.Serializable;
 
@@ -42,6 +45,8 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final SchemaUpdateOptions schemaUpdateOptions;
     private final FailureHandler<? super FailedRow> failedRowHandler;
     private final String location;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final EmulatorEndpoint emulatorRestEndpoint;
 
     BigQuerySinkConfig(
             DestinationResolver<? super T> destinationResolver,
@@ -50,7 +55,9 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             TableCreateOptionsProvider tableCreateOptionsProvider,
             SchemaUpdateOptions schemaUpdateOptions,
             FailureHandler<? super FailedRow> failedRowHandler,
-            String location) {
+            String location,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable EmulatorEndpoint emulatorRestEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.createDisposition = createDisposition;
@@ -58,6 +65,8 @@ public final class BigQuerySinkConfig<T> implements Serializable {
         this.schemaUpdateOptions = schemaUpdateOptions;
         this.failedRowHandler = failedRowHandler;
         this.location = location;
+        this.emulatorEndpoint = emulatorEndpoint;
+        this.emulatorRestEndpoint = emulatorRestEndpoint;
     }
 
     /** Returns the per-record destination resolver. */
@@ -96,5 +105,24 @@ public final class BigQuerySinkConfig<T> implements Serializable {
      */
     public String getLocation() {
         return location;
+    }
+
+    /**
+     * Returns the emulator endpoint the Storage Write API connections use, or {@code null} when the
+     * sink talks to the production service.
+     */
+    @Nullable
+    public EmulatorEndpoint getEmulatorEndpoint() {
+        return emulatorEndpoint;
+    }
+
+    /**
+     * Returns the emulator endpoint the table metadata (REST) client uses, or {@code null} when it
+     * talks to the production service. Separate from {@link #getEmulatorEndpoint()} because
+     * BigQuery serves gRPC and REST on different ports.
+     */
+    @Nullable
+    public EmulatorEndpoint getEmulatorRestEndpoint() {
+        return emulatorRestEndpoint;
     }
 }

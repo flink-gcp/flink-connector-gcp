@@ -20,18 +20,27 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.core.ApiFuture;
+import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.retrying.RetrySettings;
+import com.google.api.gax.rpc.ApiException;
+import com.google.api.gax.rpc.NotFoundException;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
+import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.ConnectionWorkerPool;
+import com.google.cloud.bigquery.storage.v1.GetWriteStreamRequest;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.ProtoSchemaConverter;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
 import com.google.protobuf.Descriptors;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.grpc.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -49,6 +58,25 @@ import java.util.concurrent.atomic.AtomicReference;
  * SDK-facing tuning — in-stream retry settings, per-connection in-flight limits and the pool's
  * connection bounds — comes from the {@link DefaultStreamOptions} this factory is constructed with;
  * see that class for the JVM-global first-writer-wins caveats.
+ *
+ * <p>An {@link EmulatorEndpoint} switches all of that off and opens a per-destination client
+ * instead, because the pool speaks to the production service with application-default credentials
+ * and cannot be pointed elsewhere. That branch also carries three deviations the goccy emulator
+ * requires (goccy/bigquery-emulator#342 — merged upstream but unreleased: v0.8.1 shipped
+ * 2026-06-13, the issue closed the day after):
+ *
+ * <ul>
+ *   <li>the emulator registers a table's default stream only when {@code GetWriteStream} is called
+ *       with the {@code .../streams/_default} name form, and {@code AppendRows} then matches that
+ *       exact name — so the stream is primed and that name form is used, where the production path
+ *       uses the {@code .../_default} short form the service also accepts
+ *   <li>a missing table surfaces from {@code GetWriteStream} as {@code UNKNOWN} instead of {@code
+ *       NOT_FOUND}; it is translated so {@link
+ *       io.github.flink.gcp.connector.bigquery.sink.CreateDisposition#CREATE_IF_NEEDED} handling
+ *       reacts to it
+ *   <li>appends on a connection opened after an earlier one closed are silently dropped past the
+ *       first, so no connection pool is enabled and no JVM-global pool bounds are applied
+ * </ul>
  */
 @Internal
 public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
@@ -75,21 +103,38 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
     private static final AtomicReference<PoolBounds> APPLIED_POOL_BOUNDS = new AtomicReference<>();
 
     private final DefaultStreamOptions options;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
+
+    /**
+     * Creates the factory against the production service.
+     *
+     * @param options the SDK-facing tuning knobs; the factory is shipped inside the job graph, so
+     *     the options travel with it
+     */
+    public StreamWriterRowAppenderFactory(DefaultStreamOptions options) {
+        this(options, null);
+    }
 
     /**
      * Creates the factory.
      *
      * @param options the SDK-facing tuning knobs; the factory is shipped inside the job graph, so
      *     the options travel with it
+     * @param emulatorEndpoint the emulator to append to, or {@code null} for the production service
      */
-    public StreamWriterRowAppenderFactory(DefaultStreamOptions options) {
+    public StreamWriterRowAppenderFactory(
+            DefaultStreamOptions options, @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.options = Objects.requireNonNull(options, "options must not be null");
+        this.emulatorEndpoint = emulatorEndpoint;
     }
 
     @Override
     public RowAppender create(
             TableDestination destination, Descriptors.Descriptor rowDescriptor, String location)
             throws IOException {
+        if (emulatorEndpoint != null) {
+            return createAgainstEmulator(destination, rowDescriptor);
+        }
         applyPoolBoundsOnce(options);
         StreamWriter.Builder builder =
                 StreamWriter.newBuilder(destination.toTablePath() + "/_default")
@@ -104,7 +149,38 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
             builder.setLocation(location);
         }
         StreamWriter streamWriter = builder.build();
-        return new StreamWriterRowAppender(streamWriter);
+        return new StreamWriterRowAppender(streamWriter, null);
+    }
+
+    /**
+     * Opens an appender against the emulator: a dedicated client, the primed {@code
+     * .../streams/_default} name, and no pool. The location is not forwarded — the emulator has no
+     * regions, and the routing hint only picks a production endpoint.
+     *
+     * <p>The client is closed on every failure path here, since no appender is returned to own it.
+     */
+    private RowAppender createAgainstEmulator(
+            TableDestination destination, Descriptors.Descriptor rowDescriptor) throws IOException {
+        String streamName = destination.toTablePath() + "/streams/_default";
+        BigQueryWriteClient client = BigQueryWriteClients.forEmulator(emulatorEndpoint);
+        StreamWriter streamWriter;
+        try {
+            client.getWriteStream(GetWriteStreamRequest.newBuilder().setName(streamName).build());
+            streamWriter =
+                    StreamWriter.newBuilder(streamName, client)
+                            .setWriterSchema(ProtoSchemaConverter.convert(rowDescriptor))
+                            .setRetrySettings(toRetrySettings(options))
+                            .setMaxRetryDuration(options.getMaxRetryDuration())
+                            .setTraceId(TRACE_ID)
+                            .build();
+        } catch (ApiException e) {
+            client.close();
+            throw new NotFoundException(e, GrpcStatusCode.of(Status.Code.NOT_FOUND), false);
+        } catch (IOException | RuntimeException e) {
+            client.close();
+            throw e;
+        }
+        return new StreamWriterRowAppender(streamWriter, client);
     }
 
     /**
@@ -226,8 +302,16 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
 
         private final StreamWriter streamWriter;
 
-        StreamWriterRowAppender(StreamWriter streamWriter) {
+        /**
+         * The client the writer is bound to, when this appender owns one. Null on the production
+         * path, where the writer draws its connection from the SDK's JVM-static pool and there is
+         * nothing per-appender to release.
+         */
+        @Nullable private final BigQueryWriteClient client;
+
+        StreamWriterRowAppender(StreamWriter streamWriter, @Nullable BigQueryWriteClient client) {
             this.streamWriter = streamWriter;
+            this.client = client;
         }
 
         @Override
@@ -237,7 +321,13 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
 
         @Override
         public void close() {
-            streamWriter.close();
+            try {
+                streamWriter.close();
+            } finally {
+                if (client != null) {
+                    client.close();
+                }
+            }
         }
     }
 }

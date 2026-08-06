@@ -30,6 +30,7 @@ import com.google.cloud.bigquery.storage.v1.StreamWriter;
 import com.google.cloud.bigquery.storage.v1.WriteStream;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Int64Value;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 
@@ -52,7 +53,7 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
     private final BufferedStreamOptions options;
 
     /**
-     * Creates a service with a default client.
+     * Creates a service with a default client against the production service.
      *
      * @param location the BigQuery location routing hint for appends, or {@code null}
      * @param options the buffered-stream options
@@ -60,7 +61,28 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
      */
     public WriteClientBufferedStreamService(
             @Nullable String location, BufferedStreamOptions options) throws IOException {
-        this(BigQueryWriteClient.create(), location, options);
+        this(location, options, null);
+    }
+
+    /**
+     * Creates a service with a default client.
+     *
+     * @param location the BigQuery location routing hint for appends, or {@code null}
+     * @param options the buffered-stream options
+     * @param emulatorEndpoint the emulator to write to, or {@code null} for the production service
+     * @throws IOException if the client cannot be created
+     */
+    public WriteClientBufferedStreamService(
+            @Nullable String location,
+            BufferedStreamOptions options,
+            @Nullable EmulatorEndpoint emulatorEndpoint)
+            throws IOException {
+        this(
+                emulatorEndpoint == null
+                        ? BigQueryWriteClient.create()
+                        : BigQueryWriteClients.forEmulator(emulatorEndpoint),
+                location,
+                options);
     }
 
     /**

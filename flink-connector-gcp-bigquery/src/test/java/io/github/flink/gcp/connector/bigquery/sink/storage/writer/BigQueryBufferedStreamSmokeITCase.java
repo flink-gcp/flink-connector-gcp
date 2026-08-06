@@ -16,14 +16,10 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
-import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
-import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
-import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
-import io.grpc.ManagedChannelBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
@@ -49,21 +45,11 @@ class BigQueryBufferedStreamSmokeITCase extends AbstractBigQueryEmulatorITCase {
         TableDestination destination = TableDestination.of(PROJECT, DATASET, "buffered_smoke");
         createTable("buffered_smoke", serializer.getTableSchema(destination));
 
-        BigQueryWriteClient client =
-                BigQueryWriteClient.create(
-                        BigQueryWriteSettings.newBuilder()
-                                .setEndpoint(grpcEndpoint())
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .setTransportChannelProvider(
-                                        InstantiatingGrpcChannelProvider.newBuilder()
-                                                .setEndpoint(grpcEndpoint())
-                                                .setChannelConfigurator(
-                                                        ManagedChannelBuilder::usePlaintext)
-                                                .build())
-                                .build());
         try (BufferedStreamService service =
                 new WriteClientBufferedStreamService(
-                        client, null, BufferedStreamOptions.builder().build())) {
+                        null,
+                        BufferedStreamOptions.builder().build(),
+                        EmulatorEndpoint.parse(grpcEndpoint()))) {
             String streamName = service.createBufferedStream(destination);
             assertThat(streamName).contains("buffered_smoke");
 

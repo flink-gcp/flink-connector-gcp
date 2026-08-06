@@ -44,6 +44,13 @@ section; the three forms of the Default column are explained
 | `defaultStreamOptions` | [defaults](#defaultstreamoptions) | Tuning for `STORAGE_API_AT_LEAST_ONCE`; rejected for the other two |
 | `bufferedStreamOptions` | **required** for `STORAGE_API_EXACTLY_ONCE` | [Tuning](#bufferedstreamoptions) for that method; rejected for the other two |
 | `fileLoadsOptions` | **required** for `FILE_LOADS` | [Settings](#fileloadsoptions) for that method; rejected for the other two |
+| `emulatorEndpoint` | — | Sends the Storage Write API traffic to a BigQuery emulator at `host:port`, over plaintext and without credentials. Rejected under `FILE_LOADS` |
+| `emulatorRestEndpoint` | — | The same for table creation and schema updates, which go over REST — a transport BigQuery serves on a different port, so the two endpoints are separate |
+
+The two emulator endpoints are for testing against a local emulator and nothing else: both use
+plaintext and no credentials, and both are rejected under `FILE_LOADS`, which stages files to Cloud
+Storage that no emulator here stands in for. A malformed `host:port` fails in the setter, on the
+client, rather than as a connection error after the job is deployed.
 
 Each write method's options object is required by exactly one method and rejected by the others, so
 a misplaced one fails when the job graph is built rather than being ignored. See

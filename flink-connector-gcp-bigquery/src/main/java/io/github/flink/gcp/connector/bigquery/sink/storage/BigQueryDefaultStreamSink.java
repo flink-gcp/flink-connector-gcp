@@ -80,8 +80,8 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
             // task-thread-only state.
             return new BigQueryDefaultStreamWriter<>(
                     config,
-                    new StreamWriterRowAppenderFactory(options),
-                    new BigQueryTableAdmin(),
+                    new StreamWriterRowAppenderFactory(options, config.getEmulatorEndpoint()),
+                    new BigQueryTableAdmin(config.getEmulatorRestEndpoint()),
                     context.metricGroup(),
                     options,
                     context.getProcessingTimeService());
