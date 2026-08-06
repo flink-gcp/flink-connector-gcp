@@ -275,7 +275,9 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   the sum under `task.cancellation.timeout`. `check-option-docs` does not see this builder
   (`SOURCE_GLOBS` is `*Options.java` / `*SinkBuilder.java` / `*SourceBuilder.java`), so the knob is
   documented in the datastream page's dead-lettering prose beside `maxOutstandingMessages`, which is
-  where this class's other knobs already live
+  where this class's other knobs already live. #321 then bounded that queue's **flush**, which is a
+  separate budget and the leg a running job actually spends time in; the `PubSubDeadLetterQueue`
+  bullet records it
 - **A `MESSAGE_LEVEL` verdict is confirmed solo before it is routed** (#264, closing #269 with
   it). Measured on real Pub/Sub 2026-08-06 (record on #264): a `Publish` carrying one invalid
   message is rejected **all-or-nothing**, the SDK sets the *same* `Throwable` instance on every
@@ -333,7 +335,64 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   not-open guard reads `publisherShutdown`, not `publisher`** — they are set and cleared together,
   so it means the same thing, and it is what lets the test drive `close()` without opening a real
   publisher and stranding a gax executor in the test JVM. The topic is never auto-created: a
-  dead-letter destination created on the fly is one nothing is consuming
+  dead-letter destination created on the fly is one nothing is consuming.
+  **The flush is bounded on the wait side, by one deadline per wait rather than one per publish**
+  (#321). `Builder.flushTimeout(Duration)`, 60 s, covering both waits — `flush()`, which runs at every
+  checkpoint barrier, and the `maxOutstandingMessages` drain — and the publisher hand-off with them.
+  Wait-side rather than giving the queue's publisher its own `retryTotalTimeout`, which was the
+  issue's preferred candidate. **The decisive reason is that it bounds the wrong thing**: gax does
+  truncate each attempt's RPC timeout to the remaining total budget
+  (`ExponentialRetryAlgorithm.createNextAttempt`, 2.82.0), so the SDK's futures normally resolve
+  within it — but what has to be bounded is *our wait on the task thread*, the #265/#312 lesson,
+  where the wait that never returned was the SDK's own. The supporting reason is that #321's
+  acceptance criterion is a measurement, and that budget admits none: `Publisher` exposes
+  `getBatchingSettings()` and **nothing** for retry settings, the fact #310 recorded from the other
+  side. Note what that argument does **not** establish, since the first draft of this paragraph
+  leaned on it as though it did — unpinnability alone does not disqualify a knob here, because #310
+  shipped exactly that unpinnable `retryTotalTimeout` on the *sink's* publisher; and
+  `Publisher.Builder.MIN_TOTAL_TIMEOUT` (10 s, message-less `checkArgument`) forbids nothing this
+  knob wanted to express, the shipped default being 60 s. It is a note about test ergonomics, not a
+  reason. The number to hold against is
+  `execution.checkpointing.timeout`, **600 s, exactly the SDK's default publish retry budget**, so
+  before this the queue alone could spend a checkpoint's whole budget; and a `flush()` failure is
+  sync-phase, which Flink fails over on whatever `tolerable-failed-checkpoints` says.
+  **Expiry throws and nothing is dropped**, which is why the `DeadLetterQueue` contract's
+  at-least-once wording needed no change — it already scopes the guarantee to failures that recur on
+  replay and already says a throwing `flush()` fails the checkpoint. The futures are deliberately
+  **not** cancelled, so a message the SDK still delivers is a duplicate the contract already covers
+  rather than a loss. **One deadline for the whole list, never one per future**:
+  `maxOutstandingMessages` defaults to 1000, so a per-future budget would be a thousandfold multiple
+  of the number it claims to be — #265's teardown mistake in a new place. **A budget is per call, and
+  a checkpoint interval may make several**, which the first draft of the docs got wrong in both
+  directions: `flush()` runs at a barrier *and* at any sink-triggered flush (BigQuery's default-stream
+  writer has a periodic one), and the offer-side drain fires once per bound-full — once per *element*
+  under `WRITE_THROUGH`. So a slow-but-working topic spends several budgets in an interval with
+  nothing expiring, and the "one budget per outage" claim holds only because the first expiry throws,
+  not because a call is an interval. The rendered pages say so; sizing the knob against
+  `execution.checkpointing.timeout` alone is the mistake the error message used to invite.
+  **An expiry from the offer path fails the task mid-processing, not a checkpoint** — the consequence
+  is the same restart, but prose saying "fails the ongoing checkpoint" unconditionally is wrong. **No unbounded opt-out**: `UNBOUNDED` is already taken here by
+  `maxOutstandingMessages`, `shutdownTimeout` rejects zero and negative alike, and an effectively
+  infinite budget stays expressible as a large `Duration` without being a mode. The seam is a third
+  static beside `envelope(...)`, taking the publisher hand-off as a `Runnable` plus the futures, the
+  topic and the budget — being handed the futures is the only way in, since opening a real publisher
+  to reach the wait strands a gax executor in the test JVM — and that `Runnable` is what let the
+  folded-in guard on `publishAllOutstanding()` be tested at all (it sat outside every try/catch in
+  both callers, while `offer`'s `publish(...)` two lines earlier was wrapped). `flushTimeout()` is
+  readable off the instance, which is why its serialization test needs no `open()` where
+  `shutdownTimeout`'s does. Documented in the three datastream pages' dead-lettering prose and
+  **not** as a `reference/pubsub.md` row: every table there is `Option`-headed, so a row would fail
+  `check-option-docs`'s staleness direction and need an `[extra]` entry — and `[extra]` is for keys
+  someone else declares. That this builder is invisible to that checker in both directions — all five
+  of its knobs, in both — is a gap of its own, filed as #328 rather than left here as a note; #329 is
+  the other thing #321 left standing, this queue registering no metrics at all. **Both of this
+  class's budgets reject a `Duration` too large to express in nanoseconds**, because the flush knob's
+  own documentation offers a long one as the way to say "effectively unbounded" and
+  `Duration.toNanos()` would otherwise throw on a TaskManager — at the first flush, or inside
+  `BoundedShutdown.start()`. The same trap one level down, in `BoundedShutdown` itself and in the two
+  `*Options.shutdownTimeout(...)` setters that feed it, is #334; the sink's own unbounded
+  `drainInFlight()` — the leg that actually dominates what a checkpoint spends, and unbounded outright
+  under `enableMessageOrdering` — is #333
 - **Pub/Sub sink metrics** (#208, the #37 series): `PubSubSinkWriterMetrics` (`sink.writer`) on the
   `PubSubSourceReaderMetrics` model, but with **plain counters, not `ThreadSafeSimpleCounter`** —
   every increment happens on the task thread here, since completions arrive as mailbox mails,

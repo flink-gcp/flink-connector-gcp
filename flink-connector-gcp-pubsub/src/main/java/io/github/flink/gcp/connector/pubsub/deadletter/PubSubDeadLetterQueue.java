@@ -55,6 +55,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * A {@link DeadLetterQueue} publishing every terminally failed element to a Pub/Sub topic, used
@@ -112,6 +114,13 @@ import java.util.concurrent.ExecutionException;
  * publishes accumulate unawaited, the outstanding count is bounded: at {@link
  * Builder#maxOutstandingMessages(int)} the queue awaits what it holds before accepting more.
  *
+ * <p>Both of those waits — the one in {@link #flush()}, which runs at every checkpoint barrier, and
+ * the one the outstanding bound triggers inside {@link #offer(FailedElement)} — are bounded by
+ * {@link Builder#flushTimeout(Duration)}: one deadline covering all of that wait's publishes, not
+ * one per publish, and not what a whole checkpoint interval spends. Expiry fails the job and drops
+ * nothing. The queue's <em>close</em> waits for the same publishes under a budget of its own,
+ * {@link Builder#shutdownTimeout(Duration)}.
+ *
  * <p>Instances are configured on the job graph and serialized to the tasks; the publisher itself is
  * created in {@link #open(FailureHandlerContext)}. Lifecycle, and the at-least-once guarantee that
  * comes with it, are the {@link DeadLetterQueue} contract's.
@@ -141,10 +150,32 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     /** The default {@link Builder#shutdownTimeout(Duration)}, matching the sink's own. */
     public static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
 
+    /**
+     * The default {@link Builder#flushTimeout(Duration)}: a tenth of Flink's default {@code
+     * execution.checkpointing.timeout}, so a dead-letter outage costs a fraction of a checkpoint's
+     * budget rather than all of it. It is deliberately not derived from the SDK's retry ladder (5
+     * s, 20 s then 60 s per attempt, within 600 s): a batch published on {@code offer} is usually
+     * already on its third attempt by the time the barrier's flush waits for it, so no fixed budget
+     * corresponds to a whole number of attempts.
+     */
+    public static final Duration DEFAULT_FLUSH_TIMEOUT = Duration.ofSeconds(60);
+
+    /**
+     * The largest budget either of this queue's two waits can express, about 292 years. It is
+     * checked because {@link Builder#flushTimeout(Duration)}'s documentation offers a long budget
+     * as the way to say "effectively unbounded", and a {@link Duration} whose nanosecond count
+     * overruns a {@code long} would instead throw an {@link ArithmeticException} on a TaskManager —
+     * out of the first flush, or out of {@code BoundedShutdown.start()} for the shutdown budget.
+     * That is the shape of failure this class already rejects at the setter for {@code
+     * emulatorEndpoint}. The same trap remains one level down, in {@code BoundedShutdown} itself.
+     */
+    private static final Duration MAX_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
+
     private final TopicDestination topic;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final int maxOutstandingMessages;
     private final Duration shutdownTimeout;
+    private final Duration flushTimeout;
 
     private transient Publisher publisher;
 
@@ -174,11 +205,13 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
             TopicDestination topic,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             int maxOutstandingMessages,
-            Duration shutdownTimeout) {
+            Duration shutdownTimeout,
+            Duration flushTimeout) {
         this.topic = Preconditions.checkNotNull(topic, "topic must not be null");
         this.emulatorEndpoint = emulatorEndpoint;
         this.maxOutstandingMessages = maxOutstandingMessages;
         this.shutdownTimeout = shutdownTimeout;
+        this.flushTimeout = flushTimeout;
     }
 
     /**
@@ -251,16 +284,14 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         if (maxOutstandingMessages >= 0 && outstanding.size() >= maxOutstandingMessages) {
             // Bounds what one checkpoint interval can accumulate when *every* record fails. At
             // zero this is a synchronous publish per element, which is the write-through mode.
-            publisher.publishAllOutstanding();
-            awaitOutstanding();
+            flushOutstanding(publisher::publishAllOutstanding, outstanding, topic, flushTimeout);
         }
     }
 
     @Override
     public void flush() throws IOException {
         Preconditions.checkState(publisher != null, "The dead-letter queue is not open.");
-        publisher.publishAllOutstanding();
-        awaitOutstanding();
+        flushOutstanding(publisher::publishAllOutstanding, outstanding, topic, flushTimeout);
     }
 
     @Override
@@ -301,12 +332,52 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                 .build();
     }
 
-    /** Awaits every outstanding publish, failing on the first that did not succeed. */
-    private void awaitOutstanding() throws IOException {
+    /**
+     * Hands the buffered dead letters to the publisher and awaits them, failing on the first that
+     * did not succeed and on the budget running out.
+     *
+     * <p><b>One deadline covers the whole call, never one per future.</b> {@link
+     * Builder#maxOutstandingMessages(int)} defaults to 1000, so a per-future budget would be a
+     * thousandfold multiple of the number it claims to be — the shape of the mistake #265's first
+     * teardown fix made, where gax hands its full timeout to each background resource in turn. The
+     * deadline is taken before {@code publishAll}, so that call's time is charged against the
+     * budget — charged rather than bounded, since nothing here can interrupt it.
+     *
+     * <p>A budget is spent per call, and a checkpoint interval may make several calls (see {@link
+     * Builder#flushTimeout(Duration)}). During an outage that costs one budget rather than several,
+     * because the first expiry throws and ends the interval — not because a call is the interval.
+     *
+     * <p>Static, taking its topic and budget as arguments, for the reason {@link #envelope} is:
+     * {@link Publisher} is final, so handing this the futures is the only way a test can reach it,
+     * and opening a real publisher to do so would strand a gax executor in the test JVM.
+     */
+    @VisibleForTesting
+    static void flushOutstanding(
+            Runnable publishAll,
+            List<ApiFuture<String>> outstanding,
+            TopicDestination topic,
+            Duration budget)
+            throws IOException {
+        long deadlineNanos = System.nanoTime() + budget.toNanos();
+        int resolved = 0;
         try {
+            try {
+                publishAll.run();
+            } catch (RuntimeException e) {
+                throw new IOException(
+                        "Failed to hand the buffered dead letters for Pub/Sub topic "
+                                + topic
+                                + " to the publisher.",
+                        e);
+            }
             for (ApiFuture<String> future : outstanding) {
                 try {
-                    future.get();
+                    // Zero when the budget is already spent, which still returns the value of a
+                    // future that is done: the point is bounding the wait, not failing on the
+                    // clock.
+                    future.get(
+                            Math.max(deadlineNanos - System.nanoTime(), 0), TimeUnit.NANOSECONDS);
+                    resolved++;
                 } catch (ExecutionException e) {
                     throw new IOException(
                             "Publishing a dead letter to Pub/Sub topic " + topic + " failed.",
@@ -318,11 +389,32 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                                     + topic
                                     + ".",
                             e);
+                } catch (TimeoutException e) {
+                    throw new IOException(
+                            "Waiting for dead letters to reach Pub/Sub topic "
+                                    + topic
+                                    + " ran out of its flushTimeout budget of "
+                                    + budget
+                                    + " with "
+                                    + (outstanding.size() - resolved)
+                                    + " of "
+                                    + outstanding.size()
+                                    + " publishes unresolved. Nothing is dropped: the job fails and"
+                                    + " the records behind these dead letters are replayed from the"
+                                    + " last completed checkpoint. None resolved usually means the"
+                                    + " topic is unreachable or the credentials cannot publish to"
+                                    + " it; some resolved means it is slow, and"
+                                    + " PubSubDeadLetterQueue.builder().flushTimeout(...) is the"
+                                    + " budget to raise — against what a checkpoint interval can"
+                                    + " afford, since one interval may spend several of them.",
+                            e);
                 }
             }
         } finally {
             // Cleared whatever happened: a failure fails the job, and re-awaiting futures that
-            // already failed would only report the same one again.
+            // already failed — or that outlived one budget — would only report the same thing
+            // again. The unresolved ones are deliberately not cancelled, so a message the SDK still
+            // delivers is a duplicate the DeadLetterQueue contract already covers, not a loss.
             outstanding.clear();
         }
     }
@@ -331,6 +423,16 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     @VisibleForTesting
     int getOutstandingMessages() {
         return outstanding == null ? 0 : outstanding.size();
+    }
+
+    /**
+     * The wait budget, so a test can read which one reached the tasks. Unlike {@link
+     * #shutdownTimeout}, which is only observable through the teardown {@link
+     * #open(FailureHandlerContext)} builds, this needs no publisher.
+     */
+    @VisibleForTesting
+    Duration flushTimeout() {
+        return flushTimeout;
     }
 
     private void shutdownChannel() {
@@ -378,6 +480,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         @Nullable private EmulatorEndpoint emulatorEndpoint;
         private int maxOutstandingMessages = DEFAULT_MAX_OUTSTANDING_MESSAGES;
         private Duration shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
+        private Duration flushTimeout = DEFAULT_FLUSH_TIMEOUT;
 
         private Builder() {}
 
@@ -451,7 +554,49 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
             Preconditions.checkArgument(
                     !shutdownTimeout.isZero() && !shutdownTimeout.isNegative(),
                     "shutdownTimeout must be positive");
+            Preconditions.checkArgument(
+                    shutdownTimeout.compareTo(MAX_TIMEOUT) <= 0,
+                    "shutdownTimeout must be at most " + MAX_TIMEOUT);
             this.shutdownTimeout = shutdownTimeout;
+            return this;
+        }
+
+        /**
+         * Sets how long the queue waits for its buffered publishes, in {@link #flush()} and in the
+         * {@link #maxOutstandingMessages(int)} drain alike. Defaults to 60 seconds.
+         *
+         * <p>{@code flush()} runs at every checkpoint barrier, so without a budget a wait lasts as
+         * long as the SDK keeps retrying — 600 seconds by default, which is also Flink's default
+         * {@code execution.checkpointing.timeout}. It is one deadline per wait, covering all of
+         * that wait's publishes rather than each of them.
+         *
+         * <p><b>It bounds one wait, not what a checkpoint interval spends.</b> How many waits an
+         * interval makes is {@link #maxOutstandingMessages(int)}: one under {@link #UNBOUNDED}, one
+         * per bound-full at a positive value, and one per element under {@link #WRITE_THROUGH}. A
+         * slow-but-working topic can therefore spend several budgets in an interval without any of
+         * them expiring.
+         *
+         * <p>On expiry the wait throws — failing the ongoing checkpoint from {@code flush()}, and
+         * the task itself from an offer, where no checkpoint is in progress. The queue drops
+         * nothing, and since the publishes are not cancelled the SDK may still deliver them — a
+         * duplicate, which is what the {@link DeadLetterQueue} guarantee already asks a consumer to
+         * expect. A disturbance longer than the budget therefore fails the job where the SDK's
+         * retry would have absorbed it, which is the trade a bound buys. There is deliberately no
+         * unbounded setting; a {@code Duration} longer than any disturbance worth surviving says
+         * the same thing without making waiting forever a mode.
+         *
+         * @param flushTimeout the wait budget, positive
+         * @return this builder
+         */
+        public Builder flushTimeout(Duration flushTimeout) {
+            Preconditions.checkNotNull(flushTimeout, "flushTimeout must not be null");
+            Preconditions.checkArgument(
+                    !flushTimeout.isZero() && !flushTimeout.isNegative(),
+                    "flushTimeout must be positive");
+            Preconditions.checkArgument(
+                    flushTimeout.compareTo(MAX_TIMEOUT) <= 0,
+                    "flushTimeout must be at most " + MAX_TIMEOUT);
+            this.flushTimeout = flushTimeout;
             return this;
         }
 
@@ -463,7 +608,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         public PubSubDeadLetterQueue build() {
             Preconditions.checkState(topic != null, "A dead-letter topic is required.");
             return new PubSubDeadLetterQueue(
-                    topic, emulatorEndpoint, maxOutstandingMessages, shutdownTimeout);
+                    topic, emulatorEndpoint, maxOutstandingMessages, shutdownTimeout, flushTimeout);
         }
     }
 }

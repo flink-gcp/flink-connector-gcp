@@ -243,6 +243,11 @@ own and is closed after the sink's, so it spends a second budget of the same sha
 bounds the sink's publishers and that one bounds the queue's; keep the **sum** under
 `task.cancellation.timeout`.
 
+Both of those budgets are spent at *close*. The waits a running job makes for the same queue — at
+each checkpoint barrier, and whenever the queue's outstanding bound fills — have a budget of their
+own, `flushTimeout`, described under
+[Dead-lettering to a Pub/Sub topic](#dead-lettering-to-a-pubsub-topic).
+
 ## Topic auto-creation
 
 Under `createDisposition(CreateDisposition.CREATE_IF_NEEDED)` — the default — publishes that
@@ -541,6 +546,41 @@ fails — the default is 1000, `0` publishes each element synchronously (the nar
 one round trip per element) and `-1` buffers until the flush. The topic must already exist: this
 queue never creates one, because a dead-letter destination created on the fly is one nothing is
 consuming.
+
+`flushTimeout` (60 s by default) bounds each wait a running job makes for those publishes — the one
+in `flush()`, which runs at each checkpoint barrier and at any sink-triggered flush such as a
+periodic one, and the one `maxOutstandingMessages` triggers inside an offer. It is **one deadline per
+wait, covering all of that wait's publishes** rather than each of them. Without it a wait lasts as
+long as the SDK keeps retrying, 600 s by default — which is also Flink's default
+`execution.checkpointing.timeout`, so a dead-letter outage could spend a checkpoint's whole budget on
+its own. (The queue's *close* waits for the same publishes under `shutdownTimeout` instead, below.)
+
+**It bounds one wait, not what a checkpoint interval spends.** How many waits an interval makes is
+`maxOutstandingMessages`: one at `-1`, one per 1000 dead letters at the default, and one per dead
+letter at `0`. A topic that is slow but working therefore spends several budgets in an interval
+without any of them expiring — 100 dead letters at `0`, each taking 25 s, is 2500 s of task-thread
+time and no timeout. Size the budget against the interval, not against one wait, when the queue is
+configured to drain often.
+
+On expiry the wait throws. From `flush()` that fails the ongoing checkpoint and thereby the job; from
+an offer there is no checkpoint in progress, so it fails the task where the record was being
+processed. Either way the job restarts from the last completed checkpoint and the records behind the
+unpublished dead letters are replayed. **The queue itself drops nothing**, and because the publishes
+are not cancelled the SDK may still deliver them — a duplicate, which is what the at-least-once
+guarantee already asks a dead-letter consumer to expect. What that guarantee does *not* promise is
+unchanged here: a failure that does not recur on replay is preserved only if a completed checkpoint
+already flushed it, so an expiry can still cost the dead-letter *entry* for such a failure even
+though the record is replayed.
+
+The cost of choosing a budget at all, stated plainly: a Pub/Sub disturbance longer than it now
+**fails the job** where the SDK's 600 s retry would have absorbed it, and if the disturbance outlasts
+the restart the job will restart repeatedly — accumulating duplicates in the dead-letter topic and
+the abandoned-shutdown residue described under
+[Publisher lifecycle](#publisher-lifecycle). That is the trade the bound buys: a failure inside the
+checkpoint budget instead of one that consumes it. Raise `flushTimeout` if a job should ride out a
+longer disturbance, and keep it against the interval budget above rather than against
+`execution.checkpointing.timeout` directly. There is no unbounded setting: a `Duration` longer than
+any disturbance you mean to survive says the same thing without making waiting forever a mode.
 
 `shutdownTimeout` (30 s by default) bounds the queue's own close, through the same two-phase
 teardown the sink's publishers get — see [Publisher lifecycle](#publisher-lifecycle) for why an SDK
