@@ -327,6 +327,27 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
     concurrency, public API and simplification, test quality and flakiness). One agent asked for
     "a review" returns much less than three asked for different things — and verify each finding
     against the code before acting on it
+- **Then run a second round with different lenses, and do it before saying the PR is ready.** This
+  is not "review twice"; the two rounds answer different questions. Round one asks whether the code
+  does what the description says, and takes the description as the specification. **Round two asks
+  whether the description is true** — which is why its lenses point outward rather than at the diff:
+  the user meeting the error, the operator reading the dashboard, the blast radius of a move, an
+  adversary trying to defeat the invariant. Measured on 2026-08-06 across PRs #314 and #317, both of
+  which had passed round one and were CI-green: round two found, in each, **claims written in the
+  PR's own javadoc, docs or description that were false** — `"it reaches SQL unchanged as an
+  IllegalStateException"` (`FactoryUtil` wraps everything a factory throws), `"the only shape that
+  works"` (it forced the storage, not the instrument), `"the repository's first main-code static"`
+  (it is the second), `"scoped to the job's class loader"` (true for a job jar, false for the
+  `lib/` deployment the docs recommend). None of those is reachable from a lens aimed at the diff.
+  Three rules the rounds share. **Converging agents are one source** — two lenses reporting the same
+  thing is one finding to verify, not two, and verify it against the *pinned* dependency version
+  rather than whichever one an agent happened to read. **A deferred measurement is a claim**: if a
+  premise was flagged as reasoned-but-unmeasured, measure it in round two, because the flag is not a
+  substitute. And **re-run the mutation batch after acting on a review**, not only before — #317's
+  rework left alive a mutant that had been alive all along, because no test pinned that the call
+  sites feed the counter the metric reports. The cost is real (three agents plus verification, and on
+  #317 it changed the design), so it is for changes whose description makes claims about framework
+  behaviour, deployment, or "this is the only way" — not for a typo fix.
 - **A finding outside the issue being worked is routed by the user, not by the note written about
   it.** Ask which of the two it takes — folded into the current issue, or a new issue — and ask in
   the session that found it. A deferral left in a PR comment or a `CLAUDE.md` "known gap" line is
