@@ -56,7 +56,11 @@ class BigtableMutateRowsSinkTest {
                                 .table(TABLE)
                                 .serializer(SERIALIZER)
                                 .failedMutationHandler(handler)
-                                .writerOptions(forgedOptions("maxInFlightMutations", 0))
+                                .writerOptions(
+                                        forged(
+                                                BigtableWriterOptions.builder().build(),
+                                                "maxInFlightMutations",
+                                                0))
                                 .build();
 
         assertThatThrownBy(() -> sink.createWriter(new StubWriterInitContext(0), () -> batcher))
@@ -69,6 +73,13 @@ class BigtableMutateRowsSinkTest {
         assertThat(handler.opens).isEqualTo(1);
         assertThat(handler.closes).isEqualTo(1);
         assertThat(batcher.closes).isEqualTo(1);
+
+        // defaults() hands out a JVM-wide singleton and setAccessible permits writing its final
+        // fields, so forging on it rather than on a fresh instance poisons every later defaults()
+        // in the same surefire fork (#316). Asserted here, in the class that would do the writing,
+        // so a regression fails deterministically rather than in whichever class the fork ran next.
+        assertThat(BigtableWriterOptions.defaults())
+                .isEqualTo(BigtableWriterOptions.builder().build());
     }
 
     /** A batcher that records its close, so the client half of the guard is observable. */
@@ -111,11 +122,11 @@ class BigtableMutateRowsSinkTest {
     }
 
     /**
-     * Returns options carrying a value their builder rejects, as a deserialized options object can.
+     * Returns options carrying a value their builder rejects, as a deserialized options object can
+     * — the case the writer's own precondition exists for.
      */
-    private static BigtableWriterOptions forgedOptions(String name, int value) throws Exception {
-        BigtableWriterOptions options = BigtableWriterOptions.defaults();
-        Field field = BigtableWriterOptions.class.getDeclaredField(name);
+    private static <T> T forged(T options, String name, int value) throws Exception {
+        Field field = options.getClass().getDeclaredField(name);
         field.setAccessible(true);
         field.setInt(options, value);
         return options;
