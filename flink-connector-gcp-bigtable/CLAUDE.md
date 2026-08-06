@@ -104,11 +104,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
     them afterwards (the completions that would run as mailbox mails no longer run), so a writer
     torn down mid-flight would keep reporting mutations it will never wait for — the same
     lifecycle gap #210 found in the BigQuery writers and #208 had already closed in
-    `PubSubWriter`. The *placement* is this module's own: `close()` throws a `BatchingException`
-    on the failure path (#238), so a clear after `Closers.closeAll` would be skipped in exactly
-    the case it exists for. Found in review round 2, having been missed by a round 1 that looked
-    only at increment sites — **when a series brings the same shape to another connector, diff the
-    `close()` paths too.**
+    `PubSubWriter`. The *placement* is this module's own: either close below can still throw — the
+    client's shutdown, an `InterruptedException` from the batcher's wait, the handler's own close —
+    and a mid-flight teardown is when both this clear and those failures happen, so a clear after
+    `Closers.closeAll` would be skipped in exactly the case it exists for. The throw that first
+    argued this was the batcher's own shutdown report; absorbing that one (#238) left the
+    placement where it was, on the throws that remain. Found in review round 2, having been missed
+    by a round 1 that looked only at increment sites — **when a series brings the same shape to
+    another connector, diff the `close()` paths too.**
   - **Every failure reaching the writer is counted, fatal ones included and fatal ones after the
     first.** Only the first becomes `asyncError`, but each is a mutation the client gave up on.
     The consequence, stated on the docs page rather than left to a reader to infer: since the
@@ -155,15 +158,39 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   from the client's class file beside `MAX_MUTATIONS` = 100,000, not exercised. A
   single-cell size violation is unreachable for a second reason too: the client's bulk flow
   controller caps accumulated size at 100 MB, below Bigtable's 256 MB per row.
-- **Two defects that run turned up, both filed rather than fixed here** (decided with the user):
-  a routed `INVALID_ARGUMENT` fails **every entry of its batch**, because Bigtable rejects the whole
-  `MutateRows` request and gax propagates that to every entry future — so a dropping policy discards
-  the good records batched with the bad one (#239; the docs now say so, and
-  `routesEveryEntryOfTheBatchWhenOneOfThemIsRejected` pins it so a fix has to come through there);
-  and `close()` throws gax's `BatchingException`, re-reporting every entry failure of the batcher's
-  lifetime whatever the policy already did with them, so a `logAndDrop` job fails at task close
-  anyway (#238). Both the gated and the emulator failure tests swallow the latter in a helper naming
-  the issue — that swallow is the marker to remove when #238 lands.
+- **One defect that run turned up is still open**: a routed `INVALID_ARGUMENT` fails **every entry
+  of its batch**, because Bigtable rejects the whole `MutateRows` request and gax propagates that to
+  every entry future — so a dropping policy discards the good records batched with the bad one
+  (#239, filed rather than fixed in #33 with the user; the docs say so, and
+  `routesEveryEntryOfTheBatchWhenOneOfThemIsRejected` pins it so a fix has to come through there).
+  The other one that run turned up is #238, settled in its own bullet.
+- **The batcher's shutdown report is absorbed, not thrown** (#238). gax's `BatcherImpl.close()` ends
+  with `batcherStats.asException()`, an accumulator of every entry failure of the batcher's
+  *lifetime* that consuming an entry's future does not clear — so a `logAndDrop` job that dropped
+  one mutation still failed at task close, and the dropping policies did not survive the end of a
+  job. `DefaultMutationBatcherFactory.shutDownAbsorbingTheLifetimeFailureReport` catches that one
+  type and logs it at WARN; `InterruptedException` and gax's own `IllegalStateException("unexpected
+  error closing the batcher")` still propagate, and `MutationBatcher.close()`'s contract carries the
+  rule the writer relies on. **Both alternatives the issue floated were eliminated by measurement,
+  not judgement** (Flink 2.2.1 and gax 2.82.0 sources, 2026-08-06): narrowing on gax's side is not
+  reachable — `BatcherStats` is package-private with no reset and no accessor, and `close(Duration)`
+  rebuilds the exception as `new BatchingException(cause.getMessage())`, discarding the cause chain
+  — and draining the writer's own in-flight set first would **hang the task**, since
+  `StreamTask.afterInvoke()` calls `prepareClose()` before `closeAllOperators()` and a quiesced
+  mailbox rejects `put` while `take` still blocks, so `drainInFlight()` would park forever on a mail
+  nothing can enqueue. A third option, not in the issue — swallow only when nothing is in flight,
+  which would make the report provably a duplicate — fails because `drainInFlight()` short-circuits
+  on `asyncError`, leaving that count non-zero after exactly the failures this is about. That same
+  quiescing is what makes the log line worth writing rather than a formality: a failure of a batch
+  the shutdown itself sent reaches neither the handler nor `asyncError`, so the absorbed report is
+  its only record. Pinned twice — `DefaultMutationBatcherFactoryTest` over the seam, with the
+  exception built reflectively because gax keeps its constructor package-private, and both failure
+  ITCases closing their writers plainly. Only a `finally` whose case actually provoked a rejection
+  asserts anything, which is every gated case but two of the three emulator ones: the emulator
+  *accepts* an empty row key, so that batcher accumulates nothing. **What no test covers is the log
+  line itself** — nothing here captures slf4j output, and building that for one call site would be
+  new test infrastructure no other `LOG.warn` in this repository has; #323 carries it, and #324 the
+  adapter teardown no fake can reach. Whether the SPI contract above needs more than prose is #325.
 - **`BigtableEmulatorDeviationITCase` asserts what the *emulator* does**, which is not a breach of
   the emulator-is-not-an-authority rule but its enforcement: it records the traps so an image bump
   has to declare them. The one that matters is the **status** — the emulator answers `INTERNAL`

@@ -18,9 +18,11 @@ package io.github.flink.gcp.connector.bigtable.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.function.ThrowingRunnable;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.batching.Batcher;
+import com.google.api.gax.batching.BatchingException;
 import com.google.api.gax.batching.BatchingSettings;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
@@ -30,6 +32,8 @@ import com.google.cloud.bigtable.data.v2.stub.BigtableBatchingCallSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -45,6 +49,8 @@ import java.io.IOException;
  */
 @Internal
 public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DefaultMutationBatcherFactory.class);
 
     private static final long serialVersionUID = 1L;
 
@@ -82,7 +88,9 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
             // The TargetId overload, not the String one: that one is deprecated. TableId is the
             // TargetId a table has; authorized views are the other one and are out of scope here.
             return new BigtableBatcherAdapter(
-                    client, client.newBulkMutationBatcher(TableId.of(destination.getTable())));
+                    destination,
+                    client,
+                    client.newBulkMutationBatcher(TableId.of(destination.getTable())));
         } catch (RuntimeException e) {
             // The client is owned here until the adapter takes it over on success.
             client.close();
@@ -138,14 +146,65 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
         bulkMutateRows.setBatchingSettings(batching.build());
     }
 
+    /**
+     * Shuts the batcher down, absorbing the one exception its shutdown reports by design.
+     *
+     * <p>gax's {@code BatcherImpl.close()} ends by throwing a {@code BatchingException} built from
+     * {@code BatcherStats}, which accumulates <em>every entry failure of the batcher's
+     * lifetime</em> and is never cleared by consuming an entry's future. The writer consumes all of
+     * them — each one was classified and either handed to the failure handler or captured as fatal
+     * when its own future completed — so the report re-states failures this sink has already
+     * applied its policy to, and letting it out fails a job whose {@code logAndDrop} policy had
+     * kept it running (#238). Nothing else is caught: an {@code InterruptedException} from the wait
+     * and gax's own {@code IllegalStateException("unexpected error closing the batcher")} are
+     * failures of the shutdown itself rather than a repeat of what the writer handled.
+     *
+     * <p>Absorbed rather than narrowed to the failures raised after the shutdown began, because
+     * neither of the two ways to narrow it exists. gax's side is shut: {@code BatcherStats} is
+     * package-private with no reset and no accessor, and {@code close(Duration)} rebuilds the
+     * exception as {@code new BatchingException(cause.getMessage())}, so nothing per-entry survives
+     * to recover from. This sink's side would mean draining its own in-flight set before shutting
+     * down, and by then the mailbox those completions run on is quiesced — {@code
+     * StreamTask.afterInvoke()} calls {@code prepareClose()} before {@code closeAllOperators()},
+     * after which a {@code put} is rejected while a {@code take} still blocks, so the drain would
+     * park the task thread forever rather than finish.
+     *
+     * <p>That same quiescing is what leaves this log line worth writing. A batch first sent from
+     * inside the shutdown can still fail, and its completion callback can no longer reach the
+     * mailbox, so the failure reaches neither the handler nor the writer's captured error: the
+     * report absorbed here is its only record. At-least-once covers the mutation itself — a
+     * shutdown carrying unsent work only happens on a path that is already ending the job.
+     */
+    @VisibleForTesting
+    static void shutDownAbsorbingTheLifetimeFailureReport(
+            TableDestination destination, ThrowingRunnable<Exception> shutdown) throws Exception {
+        try {
+            shutdown.run();
+        } catch (BatchingException e) {
+            LOG.warn(
+                    "The Bigtable batcher for table {} reported its accumulated entry failures as"
+                            + " it shut down. Each one was already classified and routed when its"
+                            + " own future completed, so this is a repeat of what the sink acted on"
+                            + " — unless it names a mutation sent by the shutdown itself, for which"
+                            + " this line is the only report, since completions can no longer run"
+                            + " once the task mailbox is quiesced.",
+                    destination,
+                    e);
+        }
+    }
+
     /** Adapts the client's bulk mutation {@link Batcher} to the writer-facing interface. */
     private static final class BigtableBatcherAdapter implements MutationBatcher {
 
+        private final TableDestination destination;
         private final BigtableDataClient client;
         private final Batcher<RowMutationEntry, Void> batcher;
 
         private BigtableBatcherAdapter(
-                BigtableDataClient client, Batcher<RowMutationEntry, Void> batcher) {
+                TableDestination destination,
+                BigtableDataClient client,
+                Batcher<RowMutationEntry, Void> batcher) {
+            this.destination = destination;
             this.client = client;
             this.batcher = batcher;
         }
@@ -166,7 +225,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
                 // Sends what is buffered and waits for it. No timeout: a bounded one would abandon
                 // mutations the service may still apply, and the writer's own flush has already
                 // drained everything on the success path.
-                batcher.close();
+                shutDownAbsorbingTheLifetimeFailureReport(destination, batcher::close);
             } finally {
                 client.close();
             }

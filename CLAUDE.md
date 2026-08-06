@@ -316,7 +316,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   WHAT/WHY and the per-round detail stays in the PR comments
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency
   findings, not only correctness ones — and push the fixes before asking for review. Record the
-  findings *and the deferrals, with their reasons* as a PR comment. Which command to use:
+  findings *and the deferrals, with their reasons* as a PR comment; recording is not routing, which
+  the bullet below governs. Which command to use:
   - `/review <pr>` reviews a pull request and **Claude can start it itself**, so this is the one
     to reach for once the draft PR exists
   - `/code-review` reviews the working diff and is **user-invocable only** — Claude gets
@@ -326,12 +327,29 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
     concurrency, public API and simplification, test quality and flakiness). One agent asked for
     "a review" returns much less than three asked for different things — and verify each finding
     against the code before acting on it
+- **A finding outside the issue being worked is routed by the user, not by the note written about
+  it.** Ask which of the two it takes — folded into the current issue, or a new issue — and ask in
+  the session that found it. A deferral left in a PR comment or a `CLAUDE.md` "known gap" line is
+  the silent deferral wearing a disguise: the reason is recorded, the work is not tracked, and the
+  next reader meets a claim with no anchor. A new issue states the **grounded** reason the work is
+  not being done now — a measured cost, a blocker in the code, scope the user has not approved —
+  never "not planned" or "out of scope", which describe an intention rather than the item, and it
+  carries the better approach when one can be named plus a **measure-first** step when the cost or
+  benefit is asserted rather than measured. Filing with *no* known answer is still right when the
+  first task is finding out whether the problem is real; say so in the issue. #323, #324 and #325
+  came out of PR #322 this way, after the same mistake had been made there first — three findings
+  written up in a self-review comment and a module `CLAUDE.md`, and left there.
 - Pin GitHub Actions to commit SHAs with `just pin-actions` whenever a workflow is added or an
   action version changes
 - Commit messages, PR titles/descriptions, code comments, javadoc and issues are written in
   English
 - Issues use milestones `v0.1.0` / `v0.2.0` / `v0.3.0+` and GitHub sub-issues; PRs close their
-  issue with `Closes #N`
+  issue with `Closes #N`, written **unformatted** — a closing keyword inside a code span is not
+  parsed, so the pull request links nothing and the issue survives the merge. Nothing reports it:
+  the body renders, CI is green, and the omission shows up only when the issue is still open
+  afterwards. Check `closingIssuesReferences` rather than by eye (`gh api graphql -f
+  query='{repository(owner:"laughingman7743",name:"flink-connector-gcp"){pullRequest(number:N)
+  {closingIssuesReferences(first:5){nodes{number}}}}}'`), which is how it was caught on PR #322
 
 ## Infrastructure (OpenTofu, `opentofu/`)
 
@@ -781,10 +799,10 @@ three, because `default-test` runs `forkCount=4` with no configured `runOrder` a
 at surefire's default of `true` — do not go looking for it in a pom, only the `integration-tests`
 execution states it — so class-to-fork assignment decides whether the two classes share a JVM. The
 pin below holds whatever those settings become, which is why nothing here proposes changing them.
-Measured rather than inferred:
-under `-Dflink.forkCountUnitTest=1 -Dsurefire.runOrder=alphabetical` it fails every time and under
-`reversealphabetical` it passes every time, which is also how a fix here is measured against a
-failing case rather than against a green run that would have been green anyway.
+Measured rather than inferred: under `-Dflink.forkCountUnitTest=1 -Dsurefire.runOrder=alphabetical`
+it fails every time and under `reversealphabetical` it passes every time, which is also how a fix
+here is measured against a failing case rather than against a green run that would have been green
+anyway.
 
 So: **forge on `builder().build()`**, and the forging test asserts the singleton survived it —
 placed in the class that would do the writing, so a regression fails deterministically there instead

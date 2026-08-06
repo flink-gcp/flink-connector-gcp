@@ -86,6 +86,13 @@ import java.io.IOException;
  * into {@link #asyncError} like any other terminal failure, because a mailbox mail cannot throw a
  * checked exception at its caller.
  *
+ * <p>A failure that first surfaces during {@link #close()} reaches neither the handler nor {@link
+ * #asyncError}: Flink quiesces the task mailbox before it closes operators, so a completion
+ * callback's re-dispatch is rejected from there on. The batcher reports such a failure only inside
+ * its accumulated shutdown report, which {@code DefaultMutationBatcherFactory} logs rather than
+ * throws — throwing it would re-report every failure this writer had already routed, failing a job
+ * the configured policy had kept running (#238).
+ *
  * <p>Unacknowledged mutations are capped along both dimensions that bound memory: their number
  * ({@code BigtableWriterOptions.maxInFlightMutations}, default 1000) and their serialized size
  * ({@code BigtableWriterOptions.maxInFlightBytes}, default 64 MiB). At either cap {@link #write}
@@ -235,11 +242,12 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // group's own close, and nothing decrements them afterwards: the completions that would do
         // so run as mailbox mails, which no longer run once the task is torn down. So a writer
         // closed mid-flight would keep reporting mutations it will never wait for again. Zeroed
-        // *before* closeAll rather than after it, because the batcher's shutdown throws a
-        // BatchingException re-reporting every entry failure of its lifetime (#238) — which is
-        // precisely the failure path this matters on, so a clear placed after the call would be
-        // skipped exactly when it is needed. Same reason PubSubWriter.close() zeroes its parked
-        // count and the BigQuery writers clear their in-flight maps.
+        // *before* closeAll rather than after it, because either close below can still throw — the
+        // client's own shutdown, an InterruptedException from the batcher's wait, the handler's
+        // close — and a mid-flight teardown is precisely when both this clear and those failures
+        // happen, so a clear placed after the call would be skipped exactly when it is needed.
+        // Same reason PubSubWriter.close() zeroes its parked count and the BigQuery writers clear
+        // their in-flight maps.
         inFlightMutations = 0;
         inFlightBytes = 0;
         // Through Closers.closeAll, so the handler is closed even when the batcher's shutdown
