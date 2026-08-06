@@ -48,14 +48,14 @@ import java.util.List;
  */
 @Testcontainers
 @Timeout(180)
-abstract class AbstractBigQueryEmulatorITCase {
+public abstract class AbstractBigQueryEmulatorITCase {
 
-    static final String PROJECT = "it-project";
-    static final String DATASET = "it_dataset";
+    public static final String PROJECT = "it-project";
+    public static final String DATASET = "it_dataset";
     private static final int REST_PORT = 9050;
     private static final int GRPC_PORT = 9060;
 
-    static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
+    public static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     @Container
     private static final GenericContainer<?> EMULATOR =
@@ -64,7 +64,7 @@ abstract class AbstractBigQueryEmulatorITCase {
                     .withExposedPorts(REST_PORT, GRPC_PORT)
                     .waitingFor(Wait.forListeningPorts(REST_PORT, GRPC_PORT));
 
-    static BigQuery restClient;
+    public static BigQuery restClient;
 
     @BeforeAll
     static void createRestClient() {
@@ -81,11 +81,11 @@ abstract class AbstractBigQueryEmulatorITCase {
                         .getService();
     }
 
-    static String grpcEndpoint() {
+    public static String grpcEndpoint() {
         return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(GRPC_PORT);
     }
 
-    static String restEndpoint() {
+    public static String restEndpoint() {
         return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(REST_PORT);
     }
 
@@ -94,13 +94,13 @@ abstract class AbstractBigQueryEmulatorITCase {
      * with {@code emulatorEndpoint(...)} takes, so these tests measure production behaviour rather
      * than a test-only stand-in.
      */
-    static RowAppenderFactory emulatorAppenderFactory() {
+    public static RowAppenderFactory emulatorAppenderFactory() {
         return new StreamWriterRowAppenderFactory(
                 DefaultStreamOptions.builder().build(), EmulatorEndpoint.parse(grpcEndpoint()));
     }
 
     /** Creates a table in the emulator dataset with the given Storage-form schema. */
-    static void createTable(String table, TableSchema schema) {
+    public static void createTable(String table, TableSchema schema) {
         restClient.create(
                 TableInfo.newBuilder(
                                 TableId.of(PROJECT, DATASET, table),
@@ -111,7 +111,7 @@ abstract class AbstractBigQueryEmulatorITCase {
     }
 
     /** Returns the values of the {@code name} column of the given table, sorted. */
-    static List<String> queryNames(String table) throws InterruptedException {
+    public static List<String> queryNames(String table) throws InterruptedException {
         List<String> names = new ArrayList<>();
         restClient
                 .query(

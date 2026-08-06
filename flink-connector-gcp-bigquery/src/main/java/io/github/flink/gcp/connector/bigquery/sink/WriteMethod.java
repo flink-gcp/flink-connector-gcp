@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.PublicEvolving;
 
+import java.util.Locale;
+
 /** The mechanism used to write records to BigQuery. */
 @PublicEvolving
 public enum WriteMethod {
@@ -53,5 +55,19 @@ public enum WriteMethod {
      * only, and mind BigQuery's 1,500 load jobs per table per day — checkpoint intervals of 2-5
      * minutes or more).
      */
-    FILE_LOADS
+    FILE_LOADS;
+
+    /**
+     * Returns the hyphenated lower-case spelling this constant takes in a {@code sink.write-method}
+     * DDL option, for example {@code storage-api-at-least-once}.
+     *
+     * <p>Flink resolves an enum-valued {@code ConfigOption} by matching this string
+     * case-insensitively and normalizing nothing else, so the DDL vocabulary is defined here rather
+     * than by a table-local copy of the enum. Use {@link #name()} where a message means the Java
+     * constant.
+     */
+    @Override
+    public String toString() {
+        return name().toLowerCase(Locale.ROOT).replace('_', '-');
+    }
 }

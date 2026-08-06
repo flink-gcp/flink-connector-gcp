@@ -331,7 +331,7 @@ public class BigQuerySinkBuilder<T> {
                 writeMethod == WriteMethod.FILE_LOADS || fileLoadsOptions == null,
                 "fileLoadsOptions(...) is only valid for WriteMethod.FILE_LOADS"
                         + " (write method is %s).",
-                writeMethod);
+                writeMethod.name());
         Preconditions.checkState(
                 writeMethod != WriteMethod.FILE_LOADS || fileLoadsOptions != null,
                 "fileLoadsOptions(...) is required for WriteMethod.FILE_LOADS.");
@@ -340,7 +340,7 @@ public class BigQuerySinkBuilder<T> {
                         || bufferedStreamOptions == null,
                 "bufferedStreamOptions(...) is only valid for"
                         + " WriteMethod.STORAGE_API_EXACTLY_ONCE (write method is %s).",
-                writeMethod);
+                writeMethod.name());
         Preconditions.checkState(
                 writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
                         || bufferedStreamOptions != null,
@@ -351,7 +351,7 @@ public class BigQuerySinkBuilder<T> {
                         || defaultStreamOptions == null,
                 "defaultStreamOptions(...) is only valid for"
                         + " WriteMethod.STORAGE_API_AT_LEAST_ONCE (write method is %s).",
-                writeMethod);
+                writeMethod.name());
         Preconditions.checkState(
                 writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
                         || destinationResolver instanceof FixedDestinationResolver,

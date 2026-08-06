@@ -604,6 +604,44 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `createWriter(WriterInitContext)`: every other emulator test injects through the seam, so all of
   them would pass with the endpoints reaching no client at all. `gax-grpc` moved from test to
   compile scope with this
+- **BigQuery Table API / SQL** (#57, sub-issue #287): the `table` layer is a *mapping* onto
+  `BigQuerySink.builder()`, never a second implementation — the Pub/Sub rules apply unchanged (one
+  typed `ConfigOption` per setter, `getOptional(...).ifPresent(...)`, no default restated, a
+  reflective test holding the two sets equal, enums carrying their DDL spelling in `toString()`).
+  What is this module's own:
+  **There is no `format` option**, the one deliberate divergence from the Pub/Sub layer's shape: a
+  Pub/Sub message has an opaque payload so a `SerializationFormatFactory` decides its bytes, while a
+  BigQuery row is structured and the DDL schema *is* the schema. Adding `toString()` to
+  `WriteMethod` and `CreateDisposition` changed the builder's three `"(write method is %s)"`
+  messages, which now pass `name()` — they name `WriteMethod.FILE_LOADS` in the same sentence, so
+  the two spellings must not mix. `LoadJobSpec.toString()` uses Google's
+  `JobInfo.CreateDisposition`, not ours, and the deterministic FILE_LOADS job id hashes destination
+  and URIs only, so neither is affected.
+  **`RowDataSerializer` is `@Internal` in `table.sink`, not a public `sink.serializer.rowdata`
+  family member**: promotion is cheap later (nothing is published), and starting internal keeps the
+  new Flink-type mapping out of the API-tier audit surface until it has settled. Its schema options
+  are the `@Internal` `RowDataSchemaOptions` rather than a reused `AvroSchemaOptions`.
+  **Two mapping rows are measured rather than inherited.** `TIMESTAMP` → `DATETIME` and
+  `TIMESTAMP_LTZ` → `TIMESTAMP`, the opposite of the Dataproc connector, which stores a wall-clock
+  value as an instant and vice versa. And `TIME(p)` is rejected above **p = 3, not the 6 the #57
+  design table states**: `RowData` carries a time of day as an `int` of *milliseconds* (its own
+  javadoc table, read off flink-table-common 2.2.1), so a `TIME(6)` column could only ever be filled
+  to millisecond precision, and a schema claiming more than the values can carry is worse than a
+  rejection. Related, also measured: Flink caps `DECIMAL` precision at 38, so **no SQL decimal can
+  reach the BIGNUMERIC rejection** — the bound stays in the converter as the invariant it shares
+  with the Avro path, and a test pins that nothing reaches it.
+  **A marked `ROW` is rendered as JSON text** (`RowDataJsonRenderer`), which the Avro path has no
+  counterpart for — its JSON marker is string-only, and only the protobuf path prints a message.
+  Decided with the user against matching Avro, the issue text having said STRING/ROW while the
+  named template said string-only. The renderer is a plan built from the column's `LogicalType`, so
+  an unrenderable nested type (a `MULTISET`, a map with non-string keys) fails at graph construction
+  rather than per record; `flink-json`'s `RowDataToJsonConverters` was declined as a dependency — a
+  format module on the connector core, plus `@Internal` Flink types needing api-tier entries. A
+  marked `STRING` still goes through verbatim and unvalidated, as everywhere else.
+  `PARTITIONED BY` is **rejected, not consumed** — no `SupportsPartitioning`, so the clause fails at
+  plan time rather than being silently ignored; ingestion-time partitioning has no column to name,
+  so the clause could never have covered the whole feature. `perDestinationMetrics` now *does* have
+  a `ConfigOption`, which supersedes the parenthetical in the #210 entry above
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
 - **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
   **`String`** records and a **supplied** schema, since JSON has none of its own — either the

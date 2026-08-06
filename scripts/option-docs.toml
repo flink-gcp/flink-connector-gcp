@@ -65,6 +65,10 @@ page = "docs/content/docs/reference/bigtable.md"
 source = "flink-connector-gcp-pubsub/src/main/java/io/github/flink/gcp/connector/pubsub/table/PubSubConnectorOptions.java"
 page = "docs/content/docs/connectors/table/pubsub.md"
 
+[[config_options]]
+source = "flink-connector-gcp-bigquery/src/main/java/io/github/flink/gcp/connector/bigquery/table/BigQueryConnectorOptions.java"
+page = "docs/content/docs/connectors/table/bigquery.md"
+
 # SOURCE SIDE. Setters that exist and deliberately have no row, keyed
 # `Class.setter`. The bar is that a reader looking the setter up would find
 # nothing new.

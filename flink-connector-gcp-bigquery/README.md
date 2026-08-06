@@ -25,6 +25,15 @@ for records that already are protobuf messages, `AvroRecordSerializer.of(schema)
 `GenericRecord` and `SpecificRecord` streams, and `JsonDocumentSerializer.of(schema)` for JSON documents
 as text.
 
+## Table API / SQL
+
+| Table API / SQL feature | Status |
+|---|---|
+| `bigquery` table connector; `DynamicTableSink` over `STORAGE_API_AT_LEAST_ONCE`, with the `sink.default-stream.*` tuning family and the `RowData` serializer | Implemented ([#287](https://github.com/laughingman7743/flink-connector-gcp/issues/287)) |
+| The remaining write methods from SQL (`sink.buffered-stream.*`, `sink.file-loads.*`) | Planned ([#288](https://github.com/laughingman7743/flink-connector-gcp/issues/288)) |
+| Table-creation options (`sink.table-create.*`) | Planned ([#289](https://github.com/laughingman7743/flink-connector-gcp/issues/289)) |
+| `flink-sql-connector-gcp-bigquery` shaded uber-jar | Planned ([#290](https://github.com/laughingman7743/flink-connector-gcp/issues/290)) |
+
 ## Documentation
 
 Design, delivery guarantees, schema evolution, error handling, tuning and the testing strategy
@@ -37,6 +46,9 @@ A complete runnable job is in
 write methods and table auto-creation are worked through in
 [Examples](../docs/content/docs/examples/bigquery.md). Every option the sink takes, with its
 default, is in the [configuration reference](../docs/content/docs/reference/bigquery.md).
+
+The Table API / SQL option surface is documented in
+[docs/content/docs/connectors/table/bigquery.md](../docs/content/docs/connectors/table/bigquery.md).
 
 ## Provenance and attribution
 
