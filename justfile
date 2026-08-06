@@ -34,8 +34,9 @@
 # redaction does not apply.
 #
 # `just --list` prints the *last* line of the comment block above a recipe, so
-# that line is a one-line description and the reasoning goes above it. Get this
-# wrong and the listing reads as a column of sentence fragments.
+# that line is a one-line description, and the reasoning goes above it behind a
+# `#` separator. Get this wrong and the listing reads as a column of sentence
+# fragments.
 #
 # No top-level variable is assigned from a shell command: just evaluates those
 # on every invocation, whichever recipe was asked for. A default parameter value
@@ -65,10 +66,11 @@ alias help := default
 verify *args:
     {{ mvn }} {{ args }} verify
 
-# The same against one specific Flink version, e.g. `just verify-flink 2.3.0`.
 # A 1.x version also selects the flink1 compat source root (see the
 # flink.compat property in pom.xml) — forgetting that flag by hand is exactly
 # the mistake this recipe exists to absorb.
+#
+# The full build against one Flink version, e.g. `just verify-flink 2.3.0`.
 verify-flink version *extra:
     @just verify -Dflink.version={{ version }} {{ if version =~ '^1\.' { '-Dflink.compat=flink1' } else { '' } }} {{ extra }}
 
@@ -161,28 +163,30 @@ binary-compat ceiling:
 check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.yaml | cut -d"'" -f2`:
     scripts/check-flink-release.sh {{ ceiling }}
 
-# The ITCases gated on BQ_IT_* variables, which `just verify` silently skips:
-# what they check is exactly what the emulator cannot (see the testing section
-# of the BigQuery connector documentation). The E2E workflow
-# (.github/workflows/e2e.yaml) runs this same recipe weekly via WIF; locally the
-# variables come from the uncommitted .env, which mise loads — so a worktree
-# cannot run this until #156 settles how .env reaches one.
+# The guard logic lives in scripts/worktree-env.sh, where shellcheck reads it
+# (issue #156).
 #
-# The shape is scripts/e2e-gated-its.sh three times around two Maven calls. The
-# pre-flight makes a missing variable an error before any build minutes are
+# Make the main checkout's .env reachable from this worktree.
+worktree-env:
+    scripts/worktree-env.sh
+
+# The ITCases gated on the BQ_IT_*, PUBSUB_IT_PROJECT and BIGTABLE_IT_PROJECT
+# variables: what they check is exactly what the emulators cannot (see the
+# testing sections of the connector documentation). The E2E workflow
+# (.github/workflows/e2e.yaml) runs this same recipe weekly via WIF; locally
+# the variables come from the uncommitted .env, which mise loads — and which a
+# fresh worktree does not have until `just worktree-env` links it (issue #156).
+#
+# The shape is scripts/e2e-gated-its.sh three times around three Maven calls.
+# The pre-flight makes a missing variable an error before any build minutes are
 # spent, and the assertion afterwards proves the gated classes ran — without
 # it, @EnabledIfEnvironmentVariable turns lost credentials into a green run.
 #
-# The execution id on the second Maven call is load-bearing, same as in
+# The execution id on the surefire:test call is load-bearing, same as in
 # binary-compat: -Dtest overrides includes on *every* surefire execution, so
 # without @integration-tests the default-test execution would run the same
 # classes a second time.
 #
-# Make the main checkout's .env reachable from this worktree (issue #156;
-# the guard logic lives in the script, where shellcheck reads it).
-worktree-env:
-    scripts/worktree-env.sh
-
 # The install step mirrors binary-compat's: the two -pl builds below are
 # reactor subsets, so the test-utils module the gated tests depend on (#27)
 # and the base module the connectors compile against (#61) must come from
@@ -274,9 +278,10 @@ sweep-e2e *args:
 # from the tofu-plan workflow, which subsumes validate on exactly the changes
 # that need it. Locally, `just tofu validate` runs it directly.
 #
-# Lint the shell and Python scripts, the workflows, the rendered markdown, and
-# the OpenTofu formatting. markdownlint's file set and rule deviations live in
-# .markdownlint-cli2.jsonc (discovered from the working directory).
+# markdownlint's file set and its rule deviations live in
+# .markdownlint-cli2.jsonc, discovered from the working directory.
+#
+# Lint the shell and Python scripts, the workflows, the markdown and OpenTofu.
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
