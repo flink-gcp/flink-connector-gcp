@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.table.sink;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
@@ -169,21 +170,51 @@ class PublisherOptionsMapperTest {
     }
 
     /**
-     * The builder's cross-check reaches SQL unchanged rather than being restated as a Table-layer
-     * {@code ValidationException}, which is this module's rule for a check the DataStream builder
-     * already owns.
+     * The mapper restates the builder's check in the keys a {@code WITH} clause spells, so the
+     * message names {@code sink.retry.*} and not {@code retryTotalTimeout(...)} — see the class
+     * javadoc for why the builder's own message cannot serve a SQL user. The wrapping a user
+     * actually sees is asserted at the factory level, in {@code PubSubDynamicTableFactoryTest}.
      */
     @Test
-    void aDdlCombiningThemWithMessageOrderingIsRejected() {
+    void combiningThemWithMessageOrderingIsRejectedInDdlVocabulary() {
         Map<String, String> options = new HashMap<>();
         options.put("sink.retry.total-timeout", "5 min");
         options.put("sink.message-ordering.enabled", "true");
         Configuration config = Configuration.fromMap(options);
 
         assertThatThrownBy(() -> PublisherOptionsMapper.map(config))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("retryTotalTimeout")
-                .hasMessageContaining("enableMessageOrdering");
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'sink.retry.total-timeout'")
+                .hasMessageContaining("'sink.message-ordering.enabled'")
+                // Only the key that was set: being told to remove one you never configured is how
+                // a correct message still costs a reader time.
+                .hasMessageNotContaining("sink.retry.max-attempts");
+    }
+
+    @Test
+    void theRejectionNamesBothKeysWhenBothAreSet() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.retry.max-attempts", "4");
+        options.put("sink.message-ordering.enabled", "true");
+        Configuration config = Configuration.fromMap(options);
+
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'sink.retry.total-timeout' and 'sink.retry.max-attempts'");
+    }
+
+    @Test
+    void messageOrderingDisabledExplicitlyIsNotAConflict() {
+        // `false` is present-but-not-ordering: the guard reads the value, not the key's presence.
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.message-ordering.enabled", "false");
+
+        PubSubPublisherOptions mapped = PublisherOptionsMapper.map(Configuration.fromMap(options));
+
+        assertThat(mapped.getRetryTotalTimeout()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(mapped.isEnableMessageOrdering()).isFalse();
     }
 
     @Test

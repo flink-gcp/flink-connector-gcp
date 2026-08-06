@@ -419,7 +419,10 @@ public final class PubSubConnectorOptions {
             ConfigOptions.key("sink.retry.total-timeout")
                     .durationType()
                     .noDefaultValue()
-                    .withDescription("The total time budget of a publish including its retries.");
+                    .withDescription(
+                            "The total time budget of a publish including its"
+                                    + " retries. Cannot be combined with"
+                                    + " 'sink.message-ordering.enabled' = 'true'.");
 
     public static final ConfigOption<Duration> SINK_RETRY_INITIAL_DELAY =
             ConfigOptions.key("sink.retry.initial-delay")
@@ -465,7 +468,8 @@ public final class PubSubConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The cap on publish attempts. 0 means the retries are bounded by the"
-                                    + " total timeout alone.");
+                                    + " total timeout alone. Cannot be combined with"
+                                    + " 'sink.message-ordering.enabled' = 'true'.");
 
     // ------------------------------------------------------------------------
     //  Sink — ordering, in-flight caps and auto-creation recovery
@@ -477,7 +481,10 @@ public final class PubSubConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "Whether publishers honor message ordering keys. Must be true for a"
-                                    + " table that writes the 'ordering-key' metadata column.");
+                                    + " table that writes the 'ordering-key' metadata column. An"
+                                    + " ordering-enabled publisher retries without limit, so"
+                                    + " 'sink.retry.total-timeout' and 'sink.retry.max-attempts'"
+                                    + " cannot be set alongside it.");
 
     public static final ConfigOption<Integer> SINK_IN_FLIGHT_MAX_MESSAGES =
             ConfigOptions.key("sink.in-flight.max-messages")

@@ -26,6 +26,8 @@ import javax.annotation.Nullable;
 
 import java.io.Serializable;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -672,14 +674,28 @@ public final class PubSubPublisherOptions implements Serializable {
             // with "retry forever" whenever ordering is on, so a budget set here would silently
             // not be one. Only an explicitly set knob is a conflict — the SDK's own defaults are
             // what an ordering-enabled publisher is expected to override.
-            Preconditions.checkState(
-                    !enableMessageOrdering
-                            || (retryTotalTimeout == null && retryMaxAttempts == null),
-                    "retryTotalTimeout(...) and retryMaxAttempts(...) have no effect beside"
-                            + " enableMessageOrdering(true): the SDK publisher replaces both with"
-                            + " an unlimited attempt count and an effectively infinite total"
-                            + " timeout, for messages without an ordering key too. Remove them, or"
-                            + " disable message ordering. The other retry knobs are unaffected.");
+            if (enableMessageOrdering) {
+                List<String> bounded = new ArrayList<>(2);
+                if (retryTotalTimeout != null) {
+                    bounded.add("retryTotalTimeout(...)");
+                }
+                if (retryMaxAttempts != null) {
+                    bounded.add("retryMaxAttempts(...)");
+                }
+                // Names the knob that was actually set rather than both, as PubSubSourceBuilder's
+                // cross-checks do: being told to remove something you never configured is the way
+                // a correct message still costs a reader time.
+                String names = String.join(" and ", bounded);
+                Preconditions.checkState(
+                        bounded.isEmpty(),
+                        "%s cannot be combined with enableMessageOrdering(true): an ordering-enabled"
+                                + " SDK publisher retries without limit, so neither an attempt cap"
+                                + " nor a total timeout can bound a publish there — for messages"
+                                + " without an ordering key too. Remove %s, or disable message"
+                                + " ordering. The other six retry knobs are unaffected.",
+                        names,
+                        names);
+            }
             return new PubSubPublisherOptions(this);
         }
 

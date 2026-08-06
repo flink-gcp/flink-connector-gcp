@@ -301,7 +301,10 @@ class PubSubPublisherOptionsTest {
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("retryTotalTimeout")
-                .hasMessageContaining("enableMessageOrdering");
+                .hasMessageContaining("enableMessageOrdering")
+                // Only the knob that was set: being told to remove one you never configured is how
+                // a correct message still costs a reader time.
+                .hasMessageNotContaining("retryMaxAttempts");
         assertThatThrownBy(
                         () ->
                                 PubSubPublisherOptions.builder()
@@ -310,7 +313,8 @@ class PubSubPublisherOptionsTest {
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("retryMaxAttempts")
-                .hasMessageContaining("enableMessageOrdering");
+                .hasMessageContaining("enableMessageOrdering")
+                .hasMessageNotContaining("retryTotalTimeout");
         // Zero is rejected like any other value, though it is the one case where the setting is
         // harmless: the SDK already reads 0 as "unlimited", which is what ordering imposes anyway.
         // Exempting it would make the rule "explicitly set" depend on the value, and a knob
@@ -322,6 +326,19 @@ class PubSubPublisherOptionsTest {
                                         .retryMaxAttempts(0)
                                         .build())
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void theRejectionNamesBothKnobsWhenBothAreSet() {
+        assertThatThrownBy(
+                        () ->
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .retryTotalTimeout(Duration.ofSeconds(30))
+                                        .retryMaxAttempts(3)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("retryTotalTimeout(...) and retryMaxAttempts(...)");
     }
 
     @Test

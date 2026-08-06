@@ -75,9 +75,12 @@ for how the caps are sized.
 | `retryMaxAttempts` | *unset ⇒ SDK default* | Cap on publish attempts |
 
 `retryTotalTimeout` and `retryMaxAttempts` **are rejected beside `enableMessageOrdering(true)`**,
-rather than silently ignored: the SDK replaces both with "retry forever" as soon as ordering is on,
-for unkeyed messages too, so a budget set here would not be one. Set neither, or leave ordering off.
-The other six retry knobs are unaffected and combine with ordering freely.
+rather than silently ignored: an ordering-enabled publisher retries without limit, so neither an
+attempt cap nor a total timeout can bound a publish there — for unkeyed messages too. The other six
+retry knobs are unaffected and combine with ordering freely. A program that toggles ordering must
+therefore set these two only on the branch that leaves it off, rather than once for both. The
+mechanism is on the [Publisher lifecycle]({{< relref "docs/connectors/datastream/pubsub" >}}#publisher-lifecycle)
+page, where it also explains why the shutdown budget exists.
 
 **Ordering, in-flight caps and the republish recovery**, all the connector's own.
 

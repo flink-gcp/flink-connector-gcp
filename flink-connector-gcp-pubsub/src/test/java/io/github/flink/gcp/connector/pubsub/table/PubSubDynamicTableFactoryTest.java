@@ -131,6 +131,25 @@ class PubSubDynamicTableFactoryTest {
                 .hasStackTraceContaining("must not contain '/'");
     }
 
+    /**
+     * What a SQL user actually meets, and the reason the mapper restates the builder's check in DDL
+     * keys. {@code FactoryUtil.createDynamicTableSink} wraps anything the factory throws in a
+     * {@code ValidationException} whose own message says only "Unable to create a sink for writing
+     * table ...", so the actionable sentence arrives in the cause — hence {@code
+     * hasStackTraceContaining}, as the two tests above already do.
+     */
+    @Test
+    void rejectsABoundedRetryBudgetBesideMessageOrdering() {
+        Map<String, String> options = minimalSinkOptions();
+        options.put("sink.retry.total-timeout", "5 min");
+        options.put("sink.message-ordering.enabled", "true");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("'sink.retry.total-timeout'")
+                .hasStackTraceContaining("'sink.message-ordering.enabled'");
+    }
+
     @Test
     void rejectsAnEmptyTopic() {
         Map<String, String> options = minimalSinkOptions();
