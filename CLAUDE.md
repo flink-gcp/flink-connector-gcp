@@ -764,3 +764,38 @@ another shape, and the reason the counter is not optional. It is deliberately **
 per destination even where `perDestinationMetrics` is on: the serializer is handed the record
 alone, so its decision cannot depend on the destination, and `destination.X.skipped` would read as
 a property of X.
+
+## A test forges an options object on `builder().build()`, never on `defaults()` (#316)
+
+Every options class whose `defaults()` returns a `private static final DEFAULTS = builder().build()`
+hands out a **JVM-wide singleton** — ten of them as of 2026-08-06, in all four connector modules. The
+writer-creation-guard tests each carry a private `forged(T options, String name, int value)` that
+reflectively writes a value the builder would reject, and `setAccessible(true)` **does** permit
+writing a non-static final field of a normal class — so forging on `defaults()` writes into that
+singleton for the rest of the surefire JVM, and nothing restores it.
+
+That is what #316 was. `BigtableMutateRowsSinkTest` forged on `BigtableWriterOptions.defaults()`, so
+every later `defaults()` in the same fork carried `maxInFlightMutations = 0`, and
+`BigtableWriterMetricsTest`'s 13 tests all died in the writer's precondition — on about one run in
+three, because `default-test` runs `forkCount=4` with no configured `runOrder` and `reuseForks` left
+at surefire's default of `true` — do not go looking for it in a pom, only the `integration-tests`
+execution states it — so class-to-fork assignment decides whether the two classes share a JVM. The
+pin below holds whatever those settings become, which is why nothing here proposes changing them.
+Measured rather than inferred:
+under `-Dflink.forkCountUnitTest=1 -Dsurefire.runOrder=alphabetical` it fails every time and under
+`reversealphabetical` it passes every time, which is also how a fix here is measured against a
+failing case rather than against a green run that would have been green anyway.
+
+So: **forge on `builder().build()`**, and the forging test asserts the singleton survived it —
+placed in the class that would do the writing, so a regression fails deterministically there instead
+of intermittently in whichever class the fork ran next. BigQuery carries no such assertion because
+its three forged types (`DefaultStreamOptions`, `BufferedStreamOptions`, `FileLoadsOptions`) have no
+`defaults()` at all, so there is no singleton to poison — the absence is checked, not an oversight.
+Read that as a property of those three types and **not** of the module: six of the ten singletons are
+BigQuery's, so a new forging test there owes the pin like any other.
+
+A `0` is **not** reachable in production, which is why the fix was in the test and the writers'
+preconditions stay exactly where they are: the builders reject a non-positive value on every setter,
+and Java serialization of the job graph restores the written field values. It becomes reachable under
+serial-form evolution — a field added while `serialVersionUID` stays `1L`, read from an older stream
+— which is precisely what those preconditions and their comments exist for.
