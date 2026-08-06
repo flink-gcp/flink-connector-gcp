@@ -154,7 +154,7 @@ creates. **Creation only** — an existing table is never modified by them. See
 | Option | Default | What it does |
 |---|---|---|
 | `timePartitioning(type)` | unpartitioned | Partitions on the ingestion time at the given granularity |
-| `timePartitioning(type, field)` | unpartitioned | Partitions on the given `TIMESTAMP` or `DATE` column instead |
+| `timePartitioning(type, field)` | unpartitioned | Partitions on the given `TIMESTAMP`, `DATE` or `DATETIME` column instead. A `DATE` column takes no `HOUR` granularity — BigQuery refuses that table at creation, and only the SQL layer checks it client-side |
 | `timePartitioningExpiration` | partitions never expire | How long BigQuery keeps a partition |
 | `clusteredFields` | not clustered | Clusters on the given columns in precedence order, at most four |
 

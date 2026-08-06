@@ -31,7 +31,7 @@ as text.
 |---|---|
 | `bigquery` table connector; `DynamicTableSink` over `STORAGE_API_AT_LEAST_ONCE`, with the `sink.default-stream.*` tuning family and the `RowData` serializer | Implemented ([#287](https://github.com/laughingman7743/flink-connector-gcp/issues/287)) |
 | The remaining write methods from SQL (`sink.buffered-stream.*`, `sink.file-loads.*`) | Planned ([#288](https://github.com/laughingman7743/flink-connector-gcp/issues/288)) |
-| Table-creation options (`sink.table-create.*`) | Planned ([#289](https://github.com/laughingman7743/flink-connector-gcp/issues/289)) |
+| Table-creation options (`sink.table-create.*`): time partitioning and clustering | Implemented ([#289](https://github.com/laughingman7743/flink-connector-gcp/issues/289)) |
 | `flink-sql-connector-gcp-bigquery` shaded uber-jar | Planned ([#290](https://github.com/laughingman7743/flink-connector-gcp/issues/290)) |
 
 ## Documentation

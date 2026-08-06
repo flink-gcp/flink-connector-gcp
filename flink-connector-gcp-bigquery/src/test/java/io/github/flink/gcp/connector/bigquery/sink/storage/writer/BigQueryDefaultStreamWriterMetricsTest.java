@@ -227,6 +227,24 @@ class BigQueryDefaultStreamWriterMetricsTest {
     }
 
     @Test
+    void countsTheMaskedPermissionDeniedTheServiceAnswersForAMissingTable() throws Exception {
+        // The route PERMISSION_DENIED now takes: the service masks a missing table behind it, so
+        // the failure repairs rather than being terminal — and is counted where every other
+        // repaired failure is, on the task thread, once per failed append. The two tests that used
+        // to cover this code moved to INVALID_ARGUMENT when it stopped being terminal, which would
+        // have left the new route with no metric coverage at all.
+        factory.scriptedResults.add(failedWith(Status.Code.PERMISSION_DENIED));
+        BigQueryDefaultStreamWriter<String> writer = writer();
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        assertThat(admin.creates).containsExactly(DESTINATION);
+        assertThat(counter("tablesCreated")).isEqualTo(1);
+        assertThat(errors("PERMISSION_DENIED")).isEqualTo(1);
+    }
+
+    @Test
     void countsTheSchemaUpdatesTheSinkApplies() throws Exception {
         factory.scriptedResults.add(schemaMismatch());
         BigQueryDefaultStreamWriter<String> writer =
@@ -277,14 +295,18 @@ class BigQueryDefaultStreamWriterMetricsTest {
         // The completion callback owns a terminal failure — it never reaches handleFailedAppend —
         // so checkAsyncError counts it, and only the first time: it is called on every write and
         // flush while the task is torn down.
-        factory.scriptedResults.add(failedWith(Status.Code.PERMISSION_DENIED));
+        // INVALID_ARGUMENT rather than PERMISSION_DENIED, which used to be the example here: the
+        // service masks a missing table behind PERMISSION_DENIED, so under the default
+        // CREATE_IF_NEEDED that code now routes to table creation instead of being terminal (see
+        // AppendErrorClassifier#isMissingTable). An INVALID_ARGUMENT naming no rows still is.
+        factory.scriptedResults.add(failedWith(Status.Code.INVALID_ARGUMENT));
         BigQueryDefaultStreamWriter<String> writer = writer();
 
         writer.write("aa", CONTEXT);
         assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
         assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
 
-        assertThat(errors("PERMISSION_DENIED")).isEqualTo(1);
+        assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
     }
 
     // ------------------------------------------------------------------

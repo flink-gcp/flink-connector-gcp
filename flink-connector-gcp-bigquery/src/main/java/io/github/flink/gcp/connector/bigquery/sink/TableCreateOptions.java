@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -55,7 +56,23 @@ public final class TableCreateOptions implements Serializable {
         /** One partition per month. */
         MONTH,
         /** One partition per year. */
-        YEAR
+        YEAR;
+
+        /**
+         * Returns the lower-case spelling this constant takes in a {@code
+         * sink.table-create.time-partitioning.type} DDL option, for example {@code day}.
+         *
+         * <p>Flink resolves an enum-valued {@code ConfigOption} by matching this string
+         * case-insensitively and normalizing nothing else. The hyphenation is the rule the
+         * connector's other DDL-facing enums follow rather than a fact about these four constants,
+         * none of which carries an underscore. Use {@link #name()} where a message means the Java
+         * constant — {@code BigQueryTableAdmin} bridges to the client library's own {@code
+         * TimePartitioning.Type} by name, so the constant names are load-bearing.
+         */
+        @Override
+        public String toString() {
+            return name().toLowerCase(Locale.ROOT).replace('_', '-');
+        }
     }
 
     private static final TableCreateOptions DEFAULTS = builder().build();
@@ -174,8 +191,8 @@ public final class TableCreateOptions implements Serializable {
         }
 
         /**
-         * Partitions the table on the given {@code TIMESTAMP} or {@code DATE} column with the given
-         * granularity.
+         * Partitions the table on the given {@code TIMESTAMP}, {@code DATE} or {@code DATETIME}
+         * column with the given granularity — the three column types BigQuery partitions on.
          *
          * @param type the partitioning granularity
          * @param field the column to partition on

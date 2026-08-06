@@ -642,6 +642,93 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   plan time rather than being silently ignored; ingestion-time partitioning has no column to name,
   so the clause could never have covered the whole feature. `perDestinationMetrics` now *does* have
   a `ConfigOption`, which supersedes the parenthetical in the #210 entry above
+- **A missing table does not answer `NOT_FOUND`** (measured on #289, 2026-08-06, and the reason that
+  issue grew a writer change): opening a Storage Write API stream against a table that is not there
+  answers `PERMISSION_DENIED: Permission 'TABLES_GET' denied on resource '<table>' (or it may not
+  exist)`. The service masks existence, as an API that must not let an unauthorised caller probe for
+  table names has to. The goccy emulator answers `NOT_FOUND` (and `UNKNOWN` on the default stream),
+  and `AppendErrorClassifier` recovered on `NOT_FOUND` alone — so **`CREATE_IF_NEEDED` had never once
+  created a table against the real service**, while every emulator test said it did. Nothing caught
+  it because the gated storage-path suites create their tables up front. The verdict is now
+  `AppendErrorClassifier.isMissingTable`, taking both codes, consumed by
+  `BigQueryDefaultStreamWriter` (three sites) and `BigQueryBufferedStreamWriter.createStream`.
+  Three things not to re-derive. **`isRetriable`'s post-creation clause had to widen too**, and that
+  is measured, not symmetry: the propagation window right after this writer creates the table masks
+  the same way, naming `TABLES_UPDATE_DATA` — a run that fixed only the first site created the table
+  and then failed on the very next append. **Status codes, never the message text**: the "(or it may
+  not exist)" wording is the service's prose and nothing pins it, whereas a code cannot quietly stop
+  matching — which is exactly how this defect survived. **A failure naming rows is excluded**, since
+  the SDK copies the response's code onto a row-detailed exception, so rows plus a code is a verdict
+  about the data; that guard does real work for `PERMISSION_DENIED` and none for `NOT_FOUND`, and is
+  written about the shape so the two cannot drift. The cost is stated rather than hidden: a job whose
+  credentials genuinely lack the permission now attempts one creation before failing — naming
+  `bigquery.tables.create`, which tells a reader more than the masked `TABLES_GET` did — and if it
+  holds `tables.create` but not the data-write permission it leaves behind the empty table it was
+  authorised to create. Two existing tests used `PERMISSION_DENIED` as their unambiguous *terminal*
+  example and now use `INVALID_ARGUMENT`; that premise is gone, so do not restore it.
+  **The widening needs `scheduleFor`, and that is not tidiness**: `createTableIfMissing`
+  is reached from *schema* repairs too, which run on the fifteen-minute `schemaWaitSchedule`. An
+  existing table the credentials cannot write to answers the masked code, the creation attempt then
+  returns HTTP 409 and is swallowed as success, and `isRetriable`'s post-creation clause is true
+  from then on — so without the bound a failure that used to be immediate and well named becomes a
+  checkpoint timeout with no cause attached (Flink's default timeout is ten minutes). The bound caps
+  a missing-table verdict at the recovery schedule wherever the repair happens to be, at **both**
+  `retryBatches` call sites — the `rebuildState` catch and the append loop; fixing only the first
+  leaves the defect reachable, which is how it was found. It **also restores** the schema budget
+  for a later mismatch, and that half is not symmetry for its own sake: the escalation fires only
+  on the reconciliation, which runs once per repair, so a mismatch arriving *after* a missing-table
+  verdict would otherwise wait out schema propagation on the one-minute budget and fail a repair
+  that was progressing. Deliberately those two failures only — a transient or stale-writer failure
+  during a schema repair keeps the long budget, because unlike a possibly-permanent denial those
+  really are retriable.
+  Two messages had to stop asserting what the masked code cannot establish: the four "does not
+  exist, creating it" logs became "may not exist", and `retryFailureMessage`'s "after creating the
+  table" became "after a table-creation attempt" — a 409 means the table was already there, so the
+  old wording pointed at a creation that never happened and away from the real cause.
+  `reconcileSchema`'s own "does not exist" log is **not** in that set: it is driven by a REST
+  `getSchema` returning null, which does establish nonexistence.
+  **`BigQueryBufferedStreamWriter`'s half is unmeasured**: the gated exactly-once suite pre-creates
+  its tables, so whether `CreateWriteStream` masks the same way is inferred from the default-stream
+  measurement rather than observed — #318
+- **BigQuery Table API table-creation options** (#57, sub-issue #289): the four
+  `sink.table-create.*` keys onto `TableCreateOptions` through `TableCreateOptionsMapper`, under the
+  mapping rules the #287 entry above states. `TimePartitioningType` gained the `toString()` its
+  siblings have; `BigQueryTableAdmin` bridges to the client library with `Type.valueOf(name())`, so
+  the constant names stay the contract and only the DDL spelling is new.
+  **The mapper owns seven rejections, and one of them has no builder backstop at all**: a
+  `time-partitioning.field` without a `.type` is unrepresentable through the builder's two
+  `timePartitioning` overloads, so there is no exception to inherit and this check is the only thing
+  between a DDL and a silently unpartitioned table. Two more restate a rule the *builder* also has,
+  in option keys a SQL user can act on — creation settings beside an explicit `create-never` (the
+  Pub/Sub `TopicCreateOptionsMapper` precedent) and an expiration without a granularity. The
+  remaining four restate a rule only the *service* has, and the builder could not make any of them
+  because it never sees a schema: a column the DDL does not declare, a partitioning column of a
+  type BigQuery cannot partition on, `hour` over a `DATE` column, and a repeated or nested
+  clustering column.
+  **The column check is a check only this layer can make**, and it is why it exists rather than being
+  left to BigQuery: in SQL the DDL *is* the created table's schema, while the DataStream API takes
+  its schema from the serializer per destination and does not have it when the options are
+  configured. Matching is **case-insensitive** — `RowTypeToTableSchemaConverter` already rejects
+  columns differing only by case, so it is unambiguous, and it cannot refuse a table BigQuery would
+  have created whichever way the service resolves the name; the value reaches the builder unchanged
+  rather than being normalised, since rewriting a user's value would be this layer inventing
+  behaviour the DataStream API does not have.
+  **The line is shape versus type list, and the first draft drew it in the wrong place.** Checked:
+  existence; the three types time-unit partitioning is defined over (`DATE`, `TIMESTAMP`,
+  `DATETIME` — here Flink's `DATE`, `TIMESTAMP_LTZ`, `TIMESTAMP`); that a `DATE` column has day,
+  month and year granularity only; and "top-level, non-repeated" for clustering. None of those can
+  grow — they are the shape of the feature. Not checked: the **clusterable scalar type list**,
+  which has grown before (`RANGE`), so a copy here would eventually refuse a table BigQuery would
+  create — a false rejection being worse than the late true one it prevents. A `DOUBLE` or `TIME`
+  clustering column therefore still reaches the service. The declined-because-it-moves argument was
+  originally written over all of it, which was too broad: it covers only the scalar list, and using
+  it to wave off the structural rules is what left `ARRAY` and `hour`-on-`DATE` unguarded until
+  review.
+  The reflective option-completeness test keys setter **names** to a *list* of options, unlike its
+  two siblings' one-to-one maps: `timePartitioning` is overloaded, so one name carries both the
+  granularity and the column. `BigQueryDynamicSinkTest`'s eleven positional arguments were replaced
+  by a named-argument holder plus a reflective check that every field of the sink is actually varied
+  — the identity test could previously go quiet when a field was added and forgotten
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
 - **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
   **`String`** records and a **supplied** schema, since JSON has none of its own — either the

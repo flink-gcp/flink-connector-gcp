@@ -287,7 +287,11 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
 
         writer.write("aa", CONTEXT);
         writer.write("bb", CONTEXT); // triggers the async append of [aa]
-        pending.setException(new StatusRuntimeException(Status.PERMISSION_DENIED));
+        // INVALID_ARGUMENT rather than PERMISSION_DENIED, which used to be the example here: the
+        // service masks a missing table behind PERMISSION_DENIED, so under the default
+        // CREATE_IF_NEEDED that code now routes to table creation instead of being terminal (see
+        // AppendErrorClassifier#isMissingTable). An INVALID_ARGUMENT naming no rows still is.
+        pending.setException(new StatusRuntimeException(Status.INVALID_ARGUMENT));
 
         assertThatThrownBy(() -> writer.write("cc", CONTEXT))
                 .isInstanceOf(IOException.class)

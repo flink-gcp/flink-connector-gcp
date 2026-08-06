@@ -175,6 +175,50 @@ class AppendErrorClassifierTest {
                 .isTrue();
     }
 
+    @Test
+    void aMissingTableIsBothNotFoundAndTheMaskedPermissionDenied() {
+        // PERMISSION_DENIED is what the real service answers for a table that is not there — it
+        // masks existence. NOT_FOUND is what the emulator answers. Both have to mean "create it".
+        assertThat(
+                        AppendErrorClassifier.isMissingTable(
+                                new StatusRuntimeException(Status.NOT_FOUND)))
+                .isTrue();
+        assertThat(
+                        AppendErrorClassifier.isMissingTable(
+                                new IOException(
+                                        "wrapper",
+                                        new StatusRuntimeException(
+                                                Status.PERMISSION_DENIED.withDescription(
+                                                        "Permission 'TABLES_GET' denied on resource"
+                                                                + " 'projects/p/datasets/d/tables/t'"
+                                                                + " (or it may not exist).")))))
+                .isTrue();
+    }
+
+    @Test
+    void aFailureThatIsNeitherCodeIsNotAMissingTable() {
+        assertThat(
+                        AppendErrorClassifier.isMissingTable(
+                                new StatusRuntimeException(Status.INVALID_ARGUMENT)))
+                .isFalse();
+        assertThat(AppendErrorClassifier.isMissingTable(new IOException("no status"))).isFalse();
+    }
+
+    @Test
+    void aFailureNamingRowsIsADataVerdictRatherThanAnExistenceOne() {
+        // The SDK copies the response's code onto a row-detailed exception, so rows plus a code is
+        // a verdict about the data. Routing it to table creation would create nothing and lose the
+        // rows' own failure path.
+        Exceptions.AppendSerializtionError rowLevel =
+                new Exceptions.AppendSerializtionError(
+                        Status.Code.PERMISSION_DENIED.value(),
+                        "denied",
+                        "stream",
+                        Collections.singletonMap(0, "row 0 rejected"));
+        assertThat(AppendErrorClassifier.isMissingTable(rowLevel)).isFalse();
+        assertThat(AppendErrorClassifier.findRowLevel(rowLevel)).isPresent();
+    }
+
     private static com.google.rpc.Status statusWithStorageError(
             Status.Code grpcCode, StorageError.StorageErrorCode errorCode) {
         return com.google.rpc.Status.newBuilder()

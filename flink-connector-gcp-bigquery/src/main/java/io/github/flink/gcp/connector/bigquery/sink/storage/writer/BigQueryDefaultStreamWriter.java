@@ -101,16 +101,17 @@ import java.util.function.LongSupplier;
  * (rows rejected with per-row error details) are routed row by row to the configured {@link
  * FailureHandler} — which fails the job, drops the row, or forwards it to a dead-letter queue — and
  * the surviving rows of the batch are re-appended. Everything else (for example {@code
- * INVALID_ARGUMENT} or {@code PERMISSION_DENIED}) is terminal and fails the ongoing write or
- * checkpoint. In-flight batches are retained together with their destination until acknowledged so
- * they can be re-appended.
+ * INVALID_ARGUMENT}) is terminal and fails the ongoing write or checkpoint. In-flight batches are
+ * retained together with their destination until acknowledged so they can be re-appended.
  *
- * <p>Under {@link CreateDisposition#CREATE_IF_NEEDED}, appends failing with {@code NOT_FOUND} are
- * recovered on the task thread: the destination table is created via the {@link TableAdmin} (schema
- * from the serializer, partitioning/clustering from the configured options provider), the
- * destination's stream writer is rebuilt, and the failed batch is re-appended with backoff while
- * table metadata propagates to the Storage Write API backend. Under {@link
- * CreateDisposition#CREATE_NEVER}, {@code NOT_FOUND} fails the write or checkpoint immediately.
+ * <p>Under {@link CreateDisposition#CREATE_IF_NEEDED}, appends failing with a missing-table verdict
+ * ({@link AppendErrorClassifier#isMissingTable} — {@code NOT_FOUND}, or the {@code
+ * PERMISSION_DENIED} the service masks a missing table behind) are recovered on the task thread:
+ * the destination table is created via the {@link TableAdmin} (schema from the serializer,
+ * partitioning/clustering from the configured options provider), the destination's stream writer is
+ * rebuilt, and the failed batch is re-appended with backoff while table metadata propagates to the
+ * Storage Write API backend — a window that masks the same way. Under {@link
+ * CreateDisposition#CREATE_NEVER}, both codes fail the write or checkpoint immediately.
  *
  * <h2>Schema evolution</h2>
  *
@@ -227,9 +228,9 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private boolean asyncErrorCounted;
 
     /**
-     * Set by completion callbacks when an append failed in a way the task thread can repair
-     * (recoverable {@code NOT_FOUND}, schema mismatches, transient failures, row-level failures);
-     * the task thread then sweeps {@link #inFlight} for failed batches and repairs them.
+     * Set by completion callbacks when an append failed in a way the task thread can repair (a
+     * recoverable missing-table verdict, schema mismatches, transient failures, row-level
+     * failures); the task thread then sweeps {@link #inFlight} for failed batches and repairs them.
      */
     private final AtomicBoolean repairNeeded = new AtomicBoolean();
 
@@ -283,9 +284,9 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     /**
      * Creates a writer, taking the batching cap and the connector-driven recovery schedule from the
-     * given options. That schedule covers {@code NOT_FOUND} recovery after creating a table
-     * (metadata propagation to the Storage Write API backend is usually seconds but can take
-     * considerably longer), transient append failures that surfaced past the SDK's own retries, and
+     * given options. That schedule covers missing-table recovery after creating a table (metadata
+     * propagation to the Storage Write API backend is usually seconds but can take considerably
+     * longer), transient append failures that surfaced past the SDK's own retries, and
      * stale-stream-writer refreshes; its defaults allow roughly a minute in total. The schema-wait
      * schedule is not configurable — it paces BigQuery metadata propagation, a service property
      * rather than a workload property.
@@ -561,8 +562,9 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     /**
      * Returns the destination's state, creating it if absent. When creating the appender itself
-     * fails with {@code NOT_FOUND} (the SDK looks up the table's location when none is configured)
-     * and the disposition allows it, the table is created and the appender creation retried.
+     * fails with a missing-table verdict (the SDK looks up the table's location when none is
+     * configured) and the disposition allows it, the table is created and the appender creation
+     * retried.
      */
     private DestinationState ensureState(TableDestination destination) throws IOException {
         DestinationState state = states.get(destination);
@@ -572,11 +574,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         try {
             state = createState(destination);
         } catch (IOException | RuntimeException e) {
-            if (!isRecoverableNotFound(e)) {
+            if (!isRecoverableMissingTable(e)) {
                 throw wrapFailure("Failed to open a BigQuery write stream to " + destination, e);
             }
             LOG.info(
-                    "Destination table {} does not exist, creating it (CREATE_IF_NEEDED)",
+                    "Destination table {} may not exist, creating it (CREATE_IF_NEEDED)",
                     destination);
             recoverDestination(destination, Collections.emptyList());
             return states.get(destination);
@@ -725,7 +727,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     /** How a failed append is repaired (or not) on the task thread. */
     private enum RepairAction {
-        /** Recoverable {@code NOT_FOUND}: create the table, then re-append. */
+        /** A recoverable missing-table verdict: create the table, then re-append. */
         CREATE_TABLE,
         /** Schema mismatch with updates enabled: reconcile the table schema, then re-append. */
         UPDATE_SCHEMA,
@@ -742,7 +744,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * the callback-thread park decision and the task-thread repairs can never diverge.
      */
     private RepairAction repairActionFor(Throwable cause) {
-        if (isRecoverableNotFound(cause)) {
+        if (isRecoverableMissingTable(cause)) {
             return RepairAction.CREATE_TABLE;
         }
         if (AppendErrorClassifier.isSchemaMismatch(cause)
@@ -784,8 +786,8 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Handles a completed-with-failure append on the task thread: recoverable {@code NOT_FOUND}
-     * batches are re-appended after creating the table, schema mismatches are re-appended after
+     * Handles a completed-with-failure append on the task thread: batches under a recoverable
+     * missing-table verdict are re-appended after creating the table, schema mismatches after
      * reconciling the table schema (when updates are enabled), transient and stale-writer failures
      * are re-appended within the retry budget, row-level failures are routed to the {@link
      * FailureHandler} (surviving rows are re-appended), and anything else fails the writer. The
@@ -839,7 +841,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         switch (action) {
             case CREATE_TABLE:
                 reason =
-                        "An append to {} failed because the table does not exist, creating it"
+                        "An append to {} failed because the table may not exist, creating it"
                                 + " (CREATE_IF_NEEDED)";
                 break;
             case UPDATE_SCHEMA:
@@ -1031,13 +1033,13 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     /**
      * Re-appends the given batches on a rebuilt appender, retrying with backoff within the given
-     * schedule's budget as long as failures stay repairable: {@code NOT_FOUND} while table metadata
-     * has not propagated yet (creating the table first if it has not been created during this
-     * repair and the disposition allows it), schema mismatches while a schema update propagates
-     * (reconciling first if the mismatch is discovered during this repair and updates are enabled),
-     * stale-writer and transient failures, and row-level failures (which are routed to the {@link
-     * FailureHandler}, shrinking the batch to the surviving rows). Terminal failures and
-     * retry-budget exhaustion fail the writer.
+     * schedule's budget as long as failures stay repairable: a missing-table verdict while table
+     * metadata has not propagated yet (creating the table first if it has not been created during
+     * this repair and the disposition allows it), schema mismatches while a schema update
+     * propagates (reconciling first if the mismatch is discovered during this repair and updates
+     * are enabled), stale-writer and transient failures, and row-level failures (which are routed
+     * to the {@link FailureHandler}, shrinking the batch to the surviving rows). Terminal failures
+     * and retry-budget exhaustion fail the writer.
      *
      * @param destination the destination whose appender is rebuilt
      * @param batches the batches to re-append
@@ -1059,6 +1061,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 state = rebuildState(destination);
             } catch (IOException | RuntimeException e) {
                 tableCreated = createTableIfMissing(destination, e, tableCreated);
+                schedule = scheduleFor(e, tableCreated, schemaUpdated, schedule);
                 boolean retriable = isRetriable(e, tableCreated, schemaUpdated);
                 if (!retriable || attempt >= schedule.maxAttempts()) {
                     throw wrapFailure(
@@ -1121,6 +1124,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                     continue;
                 }
                 tableCreated = createTableIfMissing(destination, failure, tableCreated);
+                schedule = scheduleFor(failure, tableCreated, schemaUpdated, schedule);
                 boolean retriable = isRetriable(failure, tableCreated, schemaUpdated);
                 if (!retriable || attempt >= schedule.maxAttempts()) {
                     throw wrapFailure(
@@ -1151,9 +1155,9 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Creates the destination table when a repair-time failure is a recoverable {@code NOT_FOUND}
-     * and the table has not been created during this repair yet (a transient repair can discover a
-     * missing table).
+     * Creates the destination table when a repair-time failure is a recoverable missing-table
+     * verdict and the table has not been created during this repair yet (a transient repair can
+     * discover a missing table).
      *
      * @return the updated created-flag: {@code true} once the table has been created, whether just
      *     now or on an earlier attempt of this repair
@@ -1161,9 +1165,9 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private boolean createTableIfMissing(
             TableDestination destination, Throwable failure, boolean tableCreated)
             throws IOException {
-        if (!tableCreated && isRecoverableNotFound(failure)) {
+        if (!tableCreated && isRecoverableMissingTable(failure)) {
             LOG.info(
-                    "The table behind {} does not exist, creating it (CREATE_IF_NEEDED)",
+                    "The table behind {} may not exist, creating it (CREATE_IF_NEEDED)",
                     destination);
             createTable(destination);
             return true;
@@ -1196,13 +1200,65 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Whether a repair-time failure warrants another attempt: {@code NOT_FOUND} while created table
-     * metadata propagates, a schema mismatch while a schema update propagates, a stale-writer
+     * Picks the budget the <em>current</em> failure deserves, whichever one the repair happens to
+     * be running on.
+     *
+     * <p>Two moves, and they have to be two because the repair's schedule is a loop variable rather
+     * than a property of the failure in hand:
+     *
+     * <ul>
+     *   <li><b>Down to the recovery schedule for a missing-table verdict.</b> Table-creation
+     *       metadata propagates in seconds, but {@code createTableIfMissing} is reached from schema
+     *       repairs too, which run on the fifteen-minute {@link #schemaWaitSchedule}. Without this,
+     *       a masked {@code PERMISSION_DENIED} that is a <em>genuine</em> denial — an existing
+     *       table the credentials cannot write to, where the creation attempt returns HTTP 409 and
+     *       is swallowed as success — would inherit that budget and turn a failure that used to be
+     *       immediate and well named into a checkpoint timeout with no cause attached. The service
+     *       masks existence, so this writer cannot tell that case from a real propagation window;
+     *       what it can do is not spend a schema budget on a question that is not about schemas.
+     *   <li><b>Back up for a schema mismatch.</b> The escalation at the reconcile branch fires only
+     *       on the reconciliation itself, which happens once per repair — so once a missing-table
+     *       verdict has bounded the schedule, a mismatch arriving afterwards would wait out schema
+     *       propagation on the one-minute budget instead of the fifteen it is sized for, and fail a
+     *       repair that was progressing. Reachable when a table is dropped and re-created
+     *       mid-repair, and newly reachable at all because the masked code brings missing-table
+     *       verdicts into schema repairs.
+     * </ul>
+     *
+     * <p>Deliberately missing-table and schema-mismatch only. A transient or stale-writer failure
+     * during a schema repair keeps the long budget: unlike a possibly-permanent denial those really
+     * are retriable, and shortening their wait would fail repairs that would have succeeded.
+     */
+    private RetrySchedule scheduleFor(
+            Throwable failure,
+            boolean tableCreated,
+            boolean schemaUpdated,
+            RetrySchedule schedule) {
+        if (schemaUpdated && AppendErrorClassifier.isSchemaMismatch(failure)) {
+            return schemaWaitSchedule;
+        }
+        if (tableCreated
+                && schedule == schemaWaitSchedule
+                && AppendErrorClassifier.isMissingTable(failure)) {
+            return recoverySchedule;
+        }
+        return schedule;
+    }
+
+    /**
+     * Whether a repair-time failure warrants another attempt: a missing-table verdict while created
+     * table metadata propagates, a schema mismatch while a schema update propagates, a stale-writer
      * failure, or a transient failure.
+     *
+     * <p>The first clause takes the wide {@link AppendErrorClassifier#isMissingTable} rather than
+     * {@code NOT_FOUND} alone: the service masks a table it cannot see yet as {@code
+     * PERMISSION_DENIED}, so a propagation window right after this writer created the table looks
+     * exactly like the failure that made it create the table. {@link #scheduleFor} is what keeps
+     * that allowance from costing a schema budget.
      */
     private static boolean isRetriable(
             Throwable failure, boolean tableCreated, boolean schemaUpdated) {
-        return (tableCreated && isNotFound(failure))
+        return (tableCreated && AppendErrorClassifier.isMissingTable(failure))
                 || (schemaUpdated && AppendErrorClassifier.isSchemaMismatch(failure))
                 || AppendErrorClassifier.requiresWriterRefresh(failure)
                 || AppendErrorClassifier.classify(failure) == AppendErrorClassifier.Kind.TRANSIENT;
@@ -1217,7 +1273,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             RetrySchedule schedule) {
         StringBuilder message = new StringBuilder(base);
         if (tableCreated) {
-            message.append(" after creating the table");
+            message.append(" after a table-creation attempt");
         }
         if (schemaUpdated) {
             message.append(" after reconciling the table schema");
@@ -1247,11 +1303,17 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         return fresh;
     }
 
-    private boolean isRecoverableNotFound(Throwable t) {
-        return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED && isNotFound(t);
+    private boolean isRecoverableMissingTable(Throwable t) {
+        return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED
+                && AppendErrorClassifier.isMissingTable(t);
     }
 
-    /** Walks the cause chain for a gax or gRPC {@code NOT_FOUND}. */
+    /**
+     * Walks the cause chain for a gax or gRPC {@code NOT_FOUND} — the table is definitely not
+     * there, as opposed to the wider {@link AppendErrorClassifier#isMissingTable}, which also
+     * accepts the {@code PERMISSION_DENIED} the real service masks a missing table behind. Used
+     * only where the message asserts nonexistence to the reader, which the masked code cannot.
+     */
     private static boolean isNotFound(Throwable t) {
         return AppendErrorClassifier.hasCode(t, Status.Code.NOT_FOUND);
     }

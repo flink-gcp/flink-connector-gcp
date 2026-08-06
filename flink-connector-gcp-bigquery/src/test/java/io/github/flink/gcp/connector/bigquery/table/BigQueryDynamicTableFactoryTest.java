@@ -25,6 +25,8 @@ import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.table.sink.BigQueryDynamicSink;
 import org.junit.jupiter.api.Test;
@@ -42,6 +44,17 @@ class BigQueryDynamicTableFactoryTest {
             ResolvedSchema.of(
                     Column.physical("id", DataTypes.STRING()),
                     Column.physical("amount", DataTypes.INT()));
+
+    /** {@link #SCHEMA} plus a column {@code sink.table-create.*} can partition on. */
+    private static final ResolvedSchema PARTITIONABLE =
+            ResolvedSchema.of(
+                    Column.physical("id", DataTypes.STRING()),
+                    Column.physical("amount", DataTypes.INT()),
+                    Column.physical("event_ts", DataTypes.TIMESTAMP_LTZ(6)));
+
+    /** The destination {@link #minimalOptions()} names, for reading creation options back. */
+    private static final TableDestination DESTINATION =
+            TableDestination.of("my-project", "my_dataset", "my_table");
 
     private static Map<String, String> minimalOptions() {
         Map<String, String> options = new HashMap<>();
@@ -195,6 +208,53 @@ class BigQueryDynamicTableFactoryTest {
                                 .createSink();
         assertThat(built.getConfig().getSchemaUpdateOptions().isAllowNewFields()).isTrue();
         assertThat(built.getConfig().getSchemaUpdateOptions().isAllowFieldRelaxation()).isFalse();
+    }
+
+    @Test
+    void tableCreateKeysReachTheBuiltSinkAndTheirAbsenceLeavesAPlainTable() {
+        BigQueryDefaultStreamSink<?> defaults =
+                (BigQueryDefaultStreamSink<?>)
+                        ((SinkV2Provider)
+                                        sink(minimalOptions())
+                                                .getSinkRuntimeProvider(
+                                                        new SinkRuntimeProviderContext(false)))
+                                .createSink();
+        assertThat(defaults.getConfig().getTableCreateOptionsProvider().optionsFor(DESTINATION))
+                .isEqualTo(TableCreateOptions.defaults());
+
+        Map<String, String> options = minimalOptions();
+        options.put("sink.table-create.time-partitioning.type", "day");
+        options.put("sink.table-create.time-partitioning.field", "event_ts");
+        options.put("sink.table-create.clustered-fields", "id");
+        BigQueryDefaultStreamSink<?> built =
+                (BigQueryDefaultStreamSink<?>)
+                        ((SinkV2Provider)
+                                        FactoryMocks.createTableSink(PARTITIONABLE, options)
+                                                .getSinkRuntimeProvider(
+                                                        new SinkRuntimeProviderContext(false)))
+                                .createSink();
+        TableCreateOptions created =
+                built.getConfig().getTableCreateOptionsProvider().optionsFor(DESTINATION);
+        assertThat(created.getTimePartitioningType())
+                .isEqualTo(TableCreateOptions.TimePartitioningType.DAY);
+        assertThat(created.getTimePartitioningField()).isEqualTo("event_ts");
+        assertThat(created.getClusteredFields()).containsExactly("id");
+    }
+
+    @Test
+    void aTableCreateColumnOutsideTheDdlIsRejected() {
+        // The check only this layer can make: the emulator would accept the create request and
+        // real BigQuery would refuse it, so a plan-time failure is what keeps the two apart.
+        Map<String, String> options = minimalOptions();
+        options.put("sink.table-create.clustered-fields", "no_such_column");
+        assertThatThrownBy(() -> sink(options))
+                .isInstanceOf(ValidationException.class)
+                // A phrase only the connector's own message carries. Asserting the option key or
+                // the column name would pass with the check deleted, because FactoryUtil dumps
+                // every WITH option into the ValidationException it wraps this in — measured.
+                .hasStackTraceContaining("which the table does not declare")
+                .hasStackTraceContaining("sink.table-create.clustered-fields")
+                .hasStackTraceContaining("no_such_column");
     }
 
     @Test

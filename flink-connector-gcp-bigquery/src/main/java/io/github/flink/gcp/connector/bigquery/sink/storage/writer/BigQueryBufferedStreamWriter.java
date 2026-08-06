@@ -733,12 +733,15 @@ public class BigQueryBufferedStreamWriter<T>
             } catch (IOException | RuntimeException e) {
                 failure = e;
             }
-            boolean notFound = AppendErrorClassifier.hasCode(failure, Status.Code.NOT_FOUND);
+            // The wide missing-table verdict, not NOT_FOUND alone: the real service masks a table
+            // that is not there as PERMISSION_DENIED (see AppendErrorClassifier#isMissingTable),
+            // so NOT_FOUND alone never fires outside the emulator.
+            boolean notFound = AppendErrorClassifier.isMissingTable(failure);
             if (notFound
                     && !tableCreated
                     && config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED) {
                 LOG.info(
-                        "Destination table {} does not exist, creating it (CREATE_IF_NEEDED)",
+                        "Destination table {} may not exist, creating it (CREATE_IF_NEEDED)",
                         destination);
                 tableAdmin.create(
                         destination,
@@ -755,7 +758,7 @@ public class BigQueryBufferedStreamWriter<T>
                 throw wrapFailure(
                         "Failed to create a BigQuery buffered stream on "
                                 + destination
-                                + (tableCreated ? " after creating the table" : "")
+                                + (tableCreated ? " after a table-creation attempt" : "")
                                 + ", the retry budget is exhausted ("
                                 + attempt
                                 + " attempt(s))",

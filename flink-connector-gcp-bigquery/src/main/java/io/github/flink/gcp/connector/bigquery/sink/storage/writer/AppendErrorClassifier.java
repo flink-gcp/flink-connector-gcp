@@ -52,15 +52,16 @@ import java.util.Set;
  *       budget bounds the delay if the error turns out to be permanent.
  *   <li>{@link Kind#TERMINAL} — everything else ({@code INVALID_ARGUMENT}, {@code
  *       PERMISSION_DENIED}, {@code NOT_FOUND}, failures without any status code, ...): retrying
- *       cannot help, the failure must surface and fail the checkpoint. {@code NOT_FOUND} is
- *       classified terminal here; the writer intercepts it beforehand when table auto-creation
- *       applies.
+ *       cannot help, the failure must surface and fail the checkpoint. {@code NOT_FOUND} and {@code
+ *       PERMISSION_DENIED} are classified terminal here; the writers intercept them beforehand
+ *       through {@link #isMissingTable} when table auto-creation applies.
  * </ul>
  *
- * <p>Orthogonal to the classes above, {@link #isSchemaMismatch} and {@link #requiresWriterRefresh}
- * detect failures the writer intercepts before classification: schema mismatches (repaired by a
- * schema update when enabled) and stale-stream-writer failures (repaired by rebuilding the
- * destination's writer).
+ * <p>Orthogonal to the classes above, {@link #isSchemaMismatch}, {@link #requiresWriterRefresh} and
+ * {@link #isMissingTable} detect failures the writer intercepts before classification: schema
+ * mismatches (repaired by a schema update when enabled), stale-stream-writer failures (repaired by
+ * rebuilding the destination's writer) and a destination table that is not there (repaired by
+ * creating it, when the disposition allows).
  */
 @Internal
 public final class AppendErrorClassifier {
@@ -142,6 +143,45 @@ public final class AppendErrorClassifier {
         return ExceptionUtils.findThrowable(t, Exceptions.AppendSerializtionError.class)
                 .filter(e -> !e.getRowIndexToErrorMessage().isEmpty())
                 .filter(e -> !TRANSIENT_CODES.contains(e.getStatus().getCode()));
+    }
+
+    /**
+     * Returns whether the failure may mean the destination table is not there — the signal both
+     * storage writers repair by creating it under {@link
+     * io.github.flink.gcp.connector.bigquery.sink.CreateDisposition#CREATE_IF_NEEDED}.
+     *
+     * <p>Two status codes, and the second is a measurement rather than a precaution. Opening a
+     * Storage Write API stream against a table that does not exist does <b>not</b> answer {@code
+     * NOT_FOUND} on the real service: it answers {@code PERMISSION_DENIED}, "Permission
+     * 'TABLES_GET' denied on resource '&lt;table&gt;' (or it may not exist)" — existence masked, as
+     * an API that must not let an unauthorised caller probe for table names has to. Measured
+     * 2026-08-06 against bigquery.googleapis.com with credentials the REST API answers "Not found"
+     * for on the same table, so the permission was present and only the table was missing. The
+     * goccy emulator answers {@code NOT_FOUND} (and {@code UNKNOWN} on the default stream), which
+     * is why every emulator test passed while auto-creation had never once fired against the
+     * service.
+     *
+     * <p>Status codes rather than the message text: the "(or it may not exist)" wording is the
+     * service's prose and nothing pins it. What the wider rule costs is one table-creation attempt
+     * when the caller really does lack the permission — and that attempt fails naming {@code
+     * bigquery.tables.create}, which tells a reader more than the masked {@code TABLES_GET} did.
+     * Both call sites apply this only under {@code CREATE_IF_NEEDED} and only once per repair, so
+     * the cost is bounded at one wasted REST call.
+     *
+     * <p>A failure that names rows is excluded: the SDK copies the response's status code onto a
+     * row-detailed exception, so rows plus a code is a verdict about the data, not about the
+     * table's existence. That guard is doing real work for {@code PERMISSION_DENIED} and none for
+     * {@code NOT_FOUND}, which nothing has been seen to attach row details to — it is written about
+     * the shape rather than about the code so the two cannot drift.
+     *
+     * @param t the failure
+     * @return whether the destination table may not exist
+     */
+    static boolean isMissingTable(Throwable t) {
+        if (findRowLevel(t).isPresent()) {
+            return false;
+        }
+        return hasCode(t, Status.Code.NOT_FOUND) || hasCode(t, Status.Code.PERMISSION_DENIED);
     }
 
     /**
