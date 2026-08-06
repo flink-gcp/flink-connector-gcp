@@ -770,10 +770,9 @@ a property of X.
 Every options class whose `defaults()` returns a `private static final DEFAULTS = builder().build()`
 hands out a **JVM-wide singleton** — ten of them as of 2026-08-06, in all four connector modules. The
 writer-creation-guard tests each carry a private `forged(T options, String name, int value)` that
-reflectively writes a
-value the builder would reject, and `setAccessible(true)` **does** permit writing a non-static final
-field of a normal class — so forging on `defaults()` writes into that singleton for the rest of the
-surefire JVM, and nothing restores it.
+reflectively writes a value the builder would reject, and `setAccessible(true)` **does** permit
+writing a non-static final field of a normal class — so forging on `defaults()` writes into that
+singleton for the rest of the surefire JVM, and nothing restores it.
 
 That is what #316 was. `BigtableMutateRowsSinkTest` forged on `BigtableWriterOptions.defaults()`, so
 every later `defaults()` in the same fork carried `maxInFlightMutations = 0`, and
