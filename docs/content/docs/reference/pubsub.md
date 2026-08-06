@@ -74,6 +74,10 @@ for how the caps are sized.
 | `retryMaxRpcTimeout` | *unset ⇒ SDK default* | Cap on a publish RPC attempt's timeout |
 | `retryMaxAttempts` | *unset ⇒ SDK default* | Cap on publish attempts |
 
+`retryTotalTimeout` and `retryMaxAttempts` **do not reach an ordering-enabled publisher**: with
+`enableMessageOrdering` the SDK replaces both with "retry forever", for unkeyed messages too. See
+[#310]({{< param BookRepo >}}/issues/310); the other retry knobs are unaffected.
+
 **Ordering, in-flight caps and the republish recovery**, all the connector's own.
 
 | Option | Default | What it does |
@@ -84,6 +88,12 @@ for how the caps are sized.
 | `recoveryInitialBackoff` | 500 ms | First backoff of a republish — after creating a missing topic, or after resuming an ordering key |
 | `recoveryMaxBackoff` | 10 s | Cap of that backoff, before ±25% jitter |
 | `recoveryMaxAttempts` | 10 | Republish attempts per destination and incident. Bounds a repair making no progress, not the length of a rejected run (see [Ordering and a dropping policy]({{< relref "docs/connectors/datastream/pubsub" >}}#ordering-and-a-dropping-policy)) |
+
+**Shutdown.**
+
+| Option | Default | What it does |
+|---|---|---|
+| `shutdownTimeout` | 30 s | How long the sink's close waits for one publisher to shut down. Measured from the moment the publisher is asked to stop, and every publisher is asked before any is waited on, so a close costs this once however many topics were written to. Keep it under Flink's `task.cancellation.timeout` (180 s by default), past which a cancelling task is a fatal TaskManager error. It bounds the publishers only — a `sendToDeadLetterQueue(...)` handler adds its own wait on top. See [Publisher lifecycle]({{< relref "docs/connectors/datastream/pubsub" >}}#publisher-lifecycle) |
 
 **Metrics.**
 

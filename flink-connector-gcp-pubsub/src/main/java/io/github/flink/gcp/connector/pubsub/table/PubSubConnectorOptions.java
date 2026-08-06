@@ -512,6 +512,17 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "The cap on republish attempts of the topic auto-creation recovery.");
 
+    public static final ConfigOption<Duration> SINK_SHUTDOWN_TIMEOUT =
+            ConfigOptions.key("sink.shutdown-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long the sink's close waits for one publisher to shut down. The"
+                                    + " budget is measured from the moment the publisher is asked"
+                                    + " to stop, and every publisher is asked before any is waited"
+                                    + " on, so a close costs one such timeout however many topics"
+                                    + " were written to.");
+
     public static final ConfigOption<Boolean> SINK_METRICS_PER_DESTINATION =
             ConfigOptions.key("sink.metrics.per-destination")
                     .booleanType()

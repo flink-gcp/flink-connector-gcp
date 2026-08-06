@@ -175,12 +175,54 @@ Two bounded ways the byte cap is exceeded, both deliberate:
 ## Publisher lifecycle
 
 Publishers are created lazily per destination topic, owned by the writer, and shut down in the
-writer's `close()` (with a bounded 30 s termination wait). This deviates from the vendored
+writer's `close()`. This deviates from the vendored
 upstream, which caches one `Publisher` per topic JVM-wide and shuts them down only in a JVM
 shutdown hook: writer ownership gives a deterministic lifecycle and no cross-job leakage in
 shared TaskManagers. The tradeoff: several subtasks on one TaskManager publishing to the same
 topic each hold their own `Publisher` (own batcher, own channel) instead of sharing one —
 acceptable at moderate parallelism; gRPC channels are multiplexed inside the SDK.
+
+The close runs in two phases. Every publisher is asked to shut down, and only then is any of them
+waited on, so the waits overlap: a close costs one `shutdownTimeout` (30 s by default) however many
+topics the writer wrote to, rather than one per topic. That matters with dynamic destinations,
+where seven sequential 30 s waits would exceed Flink's `task.cancellation.timeout` (180 s) and make
+a cancelling task a fatal TaskManager error. On a task failure or a clean shutdown that watchdog
+does not run, and an over-long close merely delays the task.
+
+The timeout is a real bound rather than a formality, because the SDK's own shutdown is not
+guaranteed to return. `Publisher.shutdown()` waits on a counter of accepted publishes,
+uninterruptibly and with no timeout, until it is exactly zero — and two independent things stop it
+getting there:
+
+- **With `enableMessageOrdering`, the SDK replaces the publisher's retry settings with
+  `maxAttempts = Integer.MAX_VALUE` and an effectively infinite total timeout** — for unkeyed
+  messages too, as its own `TODO` notes. During a Pub/Sub outage the in-flight publishes retry
+  forever, so the counter never drains and the close would never return. Nothing is defective here;
+  it is what ordered publishing costs, and it also means `retryTotalTimeout` and `retryMaxAttempts`
+  do not reach an ordering-enabled publisher.
+- A failing ordering key can leave the counter permanently above zero: the failure callback cancels
+  the messages still accumulating in that key's un-flushed batch and drops the batch, but returns
+  only the in-flight batch's count. That one is a defect, tracked as
+  [#265]({{< param BookRepo >}}/issues/265).
+
+So the sink runs the whole SDK teardown on a separate daemon thread and gives up on it at the
+deadline, releasing the channel either way. Anything that teardown throws is rethrown from the
+writer's close with its own type, rather than being left to the JVM's uncaught-exception handler.
+
+Awaiting the client's resources runs on that thread too, and deliberately: gax hands its *full*
+timeout to each background resource in turn rather than sharing one deadline across them, so
+awaiting on the task thread would cost a multiple of `shutdownTimeout` instead of `shutdownTimeout`.
+
+The residue is honest and logged: a publisher whose shutdown never returns leaves that thread and
+the client's executors behind until the JVM exits, and the job continues. The thread is named after
+both the topic and the task thread that created it (`… for Sink: Writer (2/4)#1`), so a thread dump
+says which subtask left it. On a job that restarts repeatedly against a Pub/Sub outage this residue
+accumulates once per attempt, which is the cost of not hanging the task instead — see
+[#311]({{< param BookRepo >}}/issues/311).
+
+The budget covers the publishers only. A `sendToDeadLetterQueue(...)` handler shuts its own
+publisher down inline on the task thread with a separate, non-configurable 30 s wait, so a sink
+using one should budget for that too ([#312]({{< param BookRepo >}}/issues/312)).
 
 ## Topic auto-creation
 

@@ -237,6 +237,7 @@ setting any of them alongside an explicit `create-never` is rejected.
 | `sink.recovery.initial-backoff` | Duration | `recoveryInitialBackoff` |
 | `sink.recovery.max-backoff` | Duration | `recoveryMaxBackoff` |
 | `sink.recovery.max-attempts` | Integer | `recoveryMaxAttempts` |
+| `sink.shutdown-timeout` | Duration | `shutdownTimeout` |
 | `sink.metrics.per-destination` | Boolean | `perDestinationMetrics` |
 | `sink.parallelism` | Integer | the sink operator's parallelism |
 

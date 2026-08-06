@@ -57,9 +57,23 @@ public interface TopicPublisher extends AutoCloseable {
     void flushOutstanding();
 
     /**
-     * Shuts the publisher down, waiting a bounded time for termination. A graceful shutdown may
-     * still send messages buffered inside the publisher (the SDK {@code Publisher} does); callers
-     * needing completion guarantees flush and await the publish futures first.
+     * Asks the publisher to shut down without waiting for it, so a writer owning several publishers
+     * can ask every one before it waits on any: the waits then overlap, and the whole close costs
+     * one shutdown timeout however many topics the writer wrote to. Idempotent, and implied by
+     * {@link #close()} when it was not called — a publisher closed on its own needs no two calls.
+     *
+     * <p>Starting the shutdown is what starts the timeout {@link #close()} then waits out.
+     */
+    void shutdown();
+
+    /**
+     * Completes the shutdown {@link #shutdown()} started, waiting a bounded time for termination
+     * and releasing the transport whatever happened. The bound is measured from the {@code
+     * shutdown()} call, not from here.
+     *
+     * <p>A graceful shutdown may still send messages buffered inside the publisher (the SDK {@code
+     * Publisher} does); callers needing completion guarantees flush and await the publish futures
+     * first.
      */
     @Override
     void close() throws Exception;

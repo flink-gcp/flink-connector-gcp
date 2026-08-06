@@ -80,6 +80,7 @@ class PublisherOptionsMapperTest {
                 "recoveryMaxBackoff", PubSubConnectorOptions.SINK_RECOVERY_MAX_BACKOFF);
         SETTER_TO_OPTION.put(
                 "recoveryMaxAttempts", PubSubConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS);
+        SETTER_TO_OPTION.put("shutdownTimeout", PubSubConnectorOptions.SINK_SHUTDOWN_TIMEOUT);
         SETTER_TO_OPTION.put(
                 "perDestinationMetrics", PubSubConnectorOptions.SINK_METRICS_PER_DESTINATION);
     }
@@ -126,6 +127,7 @@ class PublisherOptionsMapperTest {
         options.put("sink.recovery.initial-backoff", "600 ms");
         options.put("sink.recovery.max-backoff", "20 s");
         options.put("sink.recovery.max-attempts", "6");
+        options.put("sink.shutdown-timeout", "45 s");
         options.put("sink.metrics.per-destination", "true");
 
         PubSubPublisherOptions mapped = PublisherOptionsMapper.map(Configuration.fromMap(options));
@@ -147,6 +149,7 @@ class PublisherOptionsMapperTest {
         assertThat(mapped.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(600));
         assertThat(mapped.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(20));
         assertThat(mapped.getRecoveryMaxAttempts()).isEqualTo(6);
+        assertThat(mapped.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(45));
         assertThat(mapped.isPerDestinationMetrics()).isTrue();
     }
 

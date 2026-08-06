@@ -54,6 +54,7 @@ class PubSubPublisherOptionsTest {
                 .recoveryInitialBackoff(Duration.ofMillis(100))
                 .recoveryMaxBackoff(Duration.ofSeconds(1))
                 .recoveryMaxAttempts(3)
+                .shutdownTimeout(Duration.ofSeconds(45))
                 .build();
     }
 
@@ -78,6 +79,7 @@ class PubSubPublisherOptionsTest {
         assertThat(defaults.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(500));
         assertThat(defaults.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(10));
         assertThat(defaults.getRecoveryMaxAttempts()).isEqualTo(10);
+        assertThat(defaults.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(defaults.hasBatchingOverrides()).isFalse();
         assertThat(defaults.hasRetryOverrides()).isFalse();
         assertThat(defaults).isEqualTo(PubSubPublisherOptions.builder().build());
@@ -104,6 +106,7 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
         assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(1));
         assertThat(options.getRecoveryMaxAttempts()).isEqualTo(3);
+        assertThat(options.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(45));
         assertThat(options.hasBatchingOverrides()).isTrue();
         assertThat(options.hasRetryOverrides()).isTrue();
     }
@@ -168,6 +171,12 @@ class PubSubPublisherOptionsTest {
         assertThatThrownBy(() -> builder.recoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("recoveryMaxAttempts");
+        assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shutdownTimeout");
+        assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shutdownTimeout");
     }
 
     @Test

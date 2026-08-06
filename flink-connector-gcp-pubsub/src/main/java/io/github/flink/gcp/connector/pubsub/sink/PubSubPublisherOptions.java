@@ -30,8 +30,8 @@ import java.util.Objects;
 
 /**
  * Tuning options for the sink's Pub/Sub publishers and its writer: SDK batching and publish-retry
- * settings, message ordering, the writer's in-flight caps, and the backoff budget of the topic
- * auto-creation recovery.
+ * settings, message ordering, the writer's in-flight caps, the backoff budget of the topic
+ * auto-creation recovery, and the writer's shutdown budget.
  *
  * <p>Set via {@link PubSubSinkBuilder#publisherOptions(PubSubPublisherOptions)}; optional — every
  * knob left unset keeps the SDK's (or the sink's) default behavior, so {@link #defaults()} is
@@ -69,6 +69,7 @@ public final class PubSubPublisherOptions implements Serializable {
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
+    private final Duration shutdownTimeout;
     private final boolean perDestinationMetrics;
 
     private PubSubPublisherOptions(Builder builder) {
@@ -89,6 +90,7 @@ public final class PubSubPublisherOptions implements Serializable {
         this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
+        this.shutdownTimeout = builder.shutdownTimeout;
         this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
@@ -103,8 +105,8 @@ public final class PubSubPublisherOptions implements Serializable {
 
     /**
      * Returns the default options: SDK-default batching and retries, ordering disabled, in-flight
-     * caps of 1000 messages and 64 MiB, and a topic auto-creation recovery budget of 500 ms
-     * doubling to 10 s over 10 attempts.
+     * caps of 1000 messages and 64 MiB, a topic auto-creation recovery budget of 500 ms doubling to
+     * 10 s over 10 attempts, and a 30 s publisher shutdown budget.
      *
      * @return the default options
      */
@@ -211,6 +213,11 @@ public final class PubSubPublisherOptions implements Serializable {
         return recoveryMaxAttempts;
     }
 
+    /** Returns how long the writer's close waits for a publisher to shut down. */
+    public Duration getShutdownTimeout() {
+        return shutdownTimeout;
+    }
+
     /** Returns whether the writer registers per-topic send counters. */
     public boolean isPerDestinationMetrics() {
         return perDestinationMetrics;
@@ -275,7 +282,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 && Objects.equals(retryMaxRpcTimeout, that.retryMaxRpcTimeout)
                 && Objects.equals(retryMaxAttempts, that.retryMaxAttempts)
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
-                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff);
+                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
+                && shutdownTimeout.equals(that.shutdownTimeout);
     }
 
     @Override
@@ -298,6 +306,7 @@ public final class PubSubPublisherOptions implements Serializable {
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
+                shutdownTimeout,
                 perDestinationMetrics);
     }
 
@@ -337,6 +346,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 + recoveryMaxBackoff
                 + ", recoveryMaxAttempts="
                 + recoveryMaxAttempts
+                + ", shutdownTimeout="
+                + shutdownTimeout
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
                 + "}";
@@ -363,6 +374,7 @@ public final class PubSubPublisherOptions implements Serializable {
         private Duration recoveryInitialBackoff = Duration.ofMillis(500);
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
         private int recoveryMaxAttempts = 10;
+        private Duration shutdownTimeout = Duration.ofSeconds(30);
         private boolean perDestinationMetrics;
 
         private Builder() {}
@@ -595,6 +607,26 @@ public final class PubSubPublisherOptions implements Serializable {
             Preconditions.checkArgument(
                     recoveryMaxAttempts > 0, "recoveryMaxAttempts must be positive");
             this.recoveryMaxAttempts = recoveryMaxAttempts;
+            return this;
+        }
+
+        /**
+         * Sets how long the writer's close waits for one publisher to shut down. Defaults to 30
+         * seconds.
+         *
+         * <p>The budget is measured from the moment the writer asks the publisher to shut down, and
+         * every publisher it owns is asked before any is waited on, so a close costs this once
+         * however many topics the writer wrote to. Keep it under Flink's {@code
+         * task.cancellation.timeout} (180 s by default), past which a cancelling task is a fatal
+         * TaskManager error — that watchdog covers cancellation only, so on a task failure or a
+         * clean shutdown an over-long close merely delays the task rather than killing the
+         * TaskManager.
+         *
+         * @param shutdownTimeout the shutdown budget, positive
+         * @return this builder
+         */
+        public Builder shutdownTimeout(Duration shutdownTimeout) {
+            this.shutdownTimeout = checkPositive(shutdownTimeout, "shutdownTimeout");
             return this;
         }
 

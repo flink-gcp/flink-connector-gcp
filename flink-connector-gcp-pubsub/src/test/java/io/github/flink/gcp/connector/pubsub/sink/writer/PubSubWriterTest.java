@@ -424,4 +424,48 @@ class PubSubWriterTest {
         }
         assertThat(admin.closeCalls).isEqualTo(1);
     }
+
+    @Test
+    void closeAsksEveryPublisherToShutDownBeforeItWaitsOnAny() throws Exception {
+        PubSubWriter<String> writer = newWriter();
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-b", CONTEXT);
+
+        writer.close();
+
+        // The waits then overlap, so the close costs one shutdown timeout rather than one per
+        // topic. Interleaving them would still pass every per-publisher assertion above.
+        assertBothShutdownsPrecedeBothCloses();
+    }
+
+    @Test
+    void aShutdownThatThrowsSkipsNeitherTheOtherShutdownsNorAnyClose() throws Exception {
+        PubSubWriter<String> writer = newWriter();
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-b", CONTEXT);
+        RuntimeException failure = new RuntimeException("shutdown exploded");
+        factory.publishers.get(topic("topic-a")).shutdownFailure = failure;
+
+        assertThatThrownBy(writer::close).isSameAs(failure);
+
+        // The order has to survive a failure too, not only the happy path: a loop that stopped at
+        // the first throw would leave the other publisher never asked and every close skipped.
+        assertBothShutdownsPrecedeBothCloses();
+        assertThat(admin.closeCalls).isEqualTo(1);
+    }
+
+    /**
+     * The writer's {@code states} is a {@link java.util.HashMap}, so which topic is torn down first
+     * is unspecified — what is specified, and what this asserts, is that no publisher is waited on
+     * until every one has been asked to stop.
+     */
+    private void assertBothShutdownsPrecedeBothCloses() {
+        assertThat(factory.teardownCalls).hasSize(4);
+        assertThat(factory.teardownCalls.subList(0, 2))
+                .containsExactlyInAnyOrder(
+                        "shutdown:test-project/topic-a", "shutdown:test-project/topic-b");
+        assertThat(factory.teardownCalls.subList(2, 4))
+                .containsExactlyInAnyOrder(
+                        "close:test-project/topic-a", "close:test-project/topic-b");
+    }
 }
