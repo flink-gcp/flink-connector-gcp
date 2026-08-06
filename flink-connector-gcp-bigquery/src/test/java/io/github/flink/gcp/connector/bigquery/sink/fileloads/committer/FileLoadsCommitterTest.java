@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeLoadJob
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import io.github.flink.gcp.connector.testutils.TestSinkCommitterMetricGroup;
 import org.junit.jupiter.api.Test;
 
@@ -238,6 +239,33 @@ class FileLoadsCommitterTest {
         harness.commit(file("b").withCheckpointId(1));
 
         assertThat(harness.runner.loads).hasSize(2);
+        assertThat(harness.metrics.counterValue("loadJobsSubmitted")).isEqualTo(2);
+    }
+
+    @Test
+    void streamingCommitsArrivingTooFastAreReported() throws IOException {
+        // The runtime backstop for the graph-construction guard, which cannot see cluster-side
+        // checkpoint configuration. Both commits have to carry a checkpoint id: the check runs
+        // only for a streaming commit and stamps unconditionally, so a first commit without one
+        // leaves the stamp at zero and the second finds nothing to compare against - which is why
+        // countsEveryLoadJobSubmitted above has never reached this branch (#323).
+        Harness harness = new Harness();
+
+        harness.commit(file("a").withCheckpointId(1));
+
+        try (LogCapture capture = LogCapture.of(FileLoadsCommitter.class)) {
+            harness.commit(file("b").withCheckpointId(2));
+
+            // Nothing else reports it: both commits succeed and both load jobs are counted.
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .asString()
+                    .contains("1,500 load jobs")
+                    .contains(
+                            String.valueOf(
+                                    FileLoadsOptions.DEFAULT_MIN_CHECKPOINT_INTERVAL.toMillis()));
+        }
+
         assertThat(harness.metrics.counterValue("loadJobsSubmitted")).isEqualTo(2);
     }
 

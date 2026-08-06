@@ -62,5 +62,13 @@ limitations under the License.
             <artifactId>flink-test-utils</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!-- Shared test utilities (#27), for LogCapture (#323). This module builds after
+                 flink-connector-gcp-test-utils, which depends on nothing here. -->
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-test-utils</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

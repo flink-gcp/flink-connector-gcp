@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.base.lifecycle;
 
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -71,8 +72,16 @@ class BoundedShutdownTest {
                         Duration.ofMillis(50),
                         abandoned);
 
-        try {
+        try (LogCapture capture = LogCapture.of(BoundedShutdown.class)) {
             teardown.close();
+
+            // abandonedCount says one teardown was abandoned; only this line says *which* client,
+            // and an operator holding a thread dump has nothing else to match it against (#323).
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .asString()
+                    .contains(DESCRIPTION)
+                    .contains("did not finish shutting down");
 
             assertThat(released).isTrue();
             // Not reached, because it runs behind the shutdown on the same thread.
@@ -93,6 +102,33 @@ class BoundedShutdownTest {
         } finally {
             blocked.countDown();
         }
+    }
+
+    @Test
+    void aTerminationWaitThatRunsOutIsReported() throws Exception {
+        // The shutdown returns, so close() neither abandons nor counts anything, and the wait
+        // returning false is not an error either - the line is this outcome's only report (#323).
+        // Emitted from the background thread, but close() joins it, so it has landed by now.
+        BoundedShutdown teardown =
+                new BoundedShutdown(
+                        () -> {},
+                        (t, unit) -> false,
+                        DESCRIPTION,
+                        () -> {},
+                        Duration.ofSeconds(2),
+                        abandoned);
+
+        try (LogCapture capture = LogCapture.of(BoundedShutdown.class)) {
+            teardown.close();
+
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .asString()
+                    .contains(DESCRIPTION)
+                    .contains("did not terminate");
+        }
+
+        assertThat(abandoned.sum()).isZero();
     }
 
     @Test

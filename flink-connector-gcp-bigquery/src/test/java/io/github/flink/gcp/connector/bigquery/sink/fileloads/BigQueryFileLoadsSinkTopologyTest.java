@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -232,6 +233,7 @@ class BigQueryFileLoadsSinkTopologyTest {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
         env.enableCheckpointing(30_000);
+
         env.fromData("a", "b")
                 .sinkTo(
                         sink(
@@ -240,6 +242,22 @@ class BigQueryFileLoadsSinkTopologyTest {
                                         .minCheckpointInterval(Duration.ofSeconds(10))
                                         .build()));
 
-        assertTopology(env.getStreamGraph(), true);
+        StreamGraph graph;
+        try (LogCapture capture = LogCapture.of(BigQueryFileLoadsSink.class)) {
+            // The check runs when the pipeline is translated, as the sibling tests asserting on
+            // the hard guard show by calling getStreamGraph inside assertThatThrownBy.
+            graph = env.getStreamGraph();
+
+            // The opt-in silences the hard guard, not the advice: 30 s is still under the five
+            // minutes the quota makes comfortable, and the line is the only thing that says so -
+            // the job builds either way (#323).
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .asString()
+                    .contains("30000 ms")
+                    .contains("1,500 load jobs");
+        }
+
+        assertTopology(graph, true);
     }
 }
