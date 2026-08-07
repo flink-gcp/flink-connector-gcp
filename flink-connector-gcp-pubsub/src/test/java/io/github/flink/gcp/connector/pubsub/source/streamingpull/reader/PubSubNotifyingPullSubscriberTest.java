@@ -98,6 +98,11 @@ class PubSubNotifyingPullSubscriberTest {
         PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
         IllegalStateException boom = new IllegalStateException("the streaming pull gave up");
         client.fail(boom);
+        // Delivering it is what makes the one below a *re*-report, and this class is where that
+        // distinction is decided — so the test has to do what the reader does rather than assume
+        // it. Recorded-and-never-read is a different case, covered by
+        // aFailureTheStopItselfProducesIsNotCalledARepeat.
+        assertThatThrownBy(() -> subscriber.pullMessages(10)).isInstanceOf(IOException.class);
 
         // What Guava's AbstractService.checkCurrentState(TERMINATED) raises on a FAILED service:
         // an IllegalStateException carrying failureCause(), which is the throwable above.
@@ -116,8 +121,109 @@ class PubSubNotifyingPullSubscriberTest {
                     .satisfies(
                             event -> {
                                 assertThat(event.getMessage()).contains(SUBSCRIPTION.toString());
+                                // The wording, not only the fact of a warning: #351 splits this
+                                // catch three ways, and only this branch may say the reader
+                                // already has the failure. Saying that of a first report would
+                                // send an operator looking for a job failure that is not coming.
+                                assertThat(event.getMessage())
+                                        .contains("had already reported to the reader");
                                 assertThat(event.getThrowable()).isSameAs(report);
                             });
+        }
+    }
+
+    @Test
+    void reportsAFailureRaisedDuringTheShutdownAsOneNothingElseReports() throws Exception {
+        // #351: Subscriber.doStop() runs runShutdown() on a thread of its own under
+        // catch (Exception e) { notifyFailed(e); }, so a client that was healthy when shutdown()
+        // ran can fail *during* the teardown. That failure reaches the listener with nothing left
+        // to read it — pullMessages will not be called again — and arrives here as the same
+        // IllegalStateException the re-report above does. Absorbing it is right; reporting it as
+        // a repeat of something already handled was not.
+        ScriptedClient client = new ScriptedClient();
+        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
+        IllegalStateException raisedAtShutdown =
+                new IllegalStateException("the connections would not close");
+        client.failTerminationWith(
+                new IllegalStateException(
+                        "Expected the service to be TERMINATED, but it FAILED", raisedAtShutdown));
+
+        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+            assertThatCode(subscriber::close).doesNotThrowAnyException();
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.getMessage()).contains(SUBSCRIPTION.toString());
+                                assertThat(event.getMessage())
+                                        .contains("failed while shutting down")
+                                        .doesNotContain("had already reported to the reader");
+                                // The log is the whole of the report on this branch, so it has to
+                                // carry the throwable as well as say which case it is.
+                                assertThat(event.getThrowable()).hasCause(raisedAtShutdown);
+                            });
+        }
+    }
+
+    @Test
+    void aFailureTheStopItselfProducesIsNotCalledARepeat() throws Exception {
+        // The shape the production path actually produces, and the one a snapshot of
+        // permanentError taken in close() would get wrong: the reader's own close runs every
+        // subscriber's shutdown() before any close(), so stopAsync() has already run — and the
+        // thread doStop() spawns can record its failure through the listener in that window. The
+        // failure is then in the field but has been read by nobody.
+        ScriptedClient client = new ScriptedClient();
+        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
+        IllegalStateException raisedByTheStop =
+                new IllegalStateException("the connections would not close");
+        client.failWhenStopped(raisedByTheStop);
+        client.failTerminationWith(
+                new IllegalStateException(
+                        "Expected the service to be TERMINATED, but it FAILED", raisedByTheStop));
+
+        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+            subscriber.shutdown();
+            assertThatCode(subscriber::close).doesNotThrowAnyException();
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event ->
+                                    assertThat(event.getMessage())
+                                            .contains("failed while shutting down")
+                                            .doesNotContain("had already reported to the reader"));
+        }
+    }
+
+    @Test
+    void aDifferentFailureAtShutdownIsNotCalledARepeatOfTheReportedOne() throws Exception {
+        // Pins the identity half of the check, which the other tests leave free: here a failure
+        // *has* been reported, so a comparison reduced to "something was reported" would call this
+        // second, unrelated one a repeat. The SDK is not expected to produce this — Guava keeps the
+        // first cause, which the production javadoc argues from — so this defends the code against
+        // that argument turning out to be wrong rather than against a case seen in the wild.
+        ScriptedClient client = new ScriptedClient();
+        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
+        IllegalStateException reported = new IllegalStateException("the streaming pull gave up");
+        client.fail(reported);
+        assertThatThrownBy(() -> subscriber.pullMessages(10)).isInstanceOf(IOException.class);
+
+        IllegalStateException unrelated = new IllegalStateException("and the stub would not close");
+        client.failTerminationWith(
+                new IllegalStateException(
+                        "Expected the service to be TERMINATED, but it FAILED", unrelated));
+
+        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+            assertThatCode(subscriber::close).doesNotThrowAnyException();
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event ->
+                                    assertThat(event.getMessage())
+                                            .contains("failed while shutting down")
+                                            .doesNotContain("had already reported to the reader"));
         }
     }
 
@@ -133,8 +239,38 @@ class PubSubNotifyingPullSubscriberTest {
 
             assertThat(capture.getEvents())
                     .singleElement()
-                    .satisfies(event -> assertThat(event.getThrowable()).isSameAs(expired));
+                    .satisfies(
+                            event -> {
+                                assertThat(event.getThrowable()).isSameAs(expired);
+                                // A timeout is neither of the other two, and the message must not
+                                // read as either: it reports the budget, which is the knob whose
+                                // value an operator meeting this line has to weigh.
+                                assertThat(event.getMessage())
+                                        .contains("did not finish shutting down")
+                                        .contains(SHUTDOWN_TIMEOUT.toString());
+                            });
         }
+    }
+
+    @Test
+    void aThrowingNackStillLeavesTheClientAskedToStopAndWaitedOut() throws Exception {
+        // #350: closed is set before the nack, so a nack that threw used to leave shutdown()
+        // claiming the client had been asked to stop. close() then returned at the idempotence
+        // guard, awaitTerminated spent the whole budget on a client nobody had told to stop, and a
+        // WARN about an unclean shutdown was its only trace. Measured on google-cloud-pubsub
+        // 1.152.0, the production AckHandle cannot in fact throw — nack() ends in
+        // SettableApiFuture.set, which returns a boolean — so this is robustness over an SPI whose
+        // implementations need not all be ours, argued as that rather than as a bug closed.
+        ScriptedClient client = new ScriptedClient();
+        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
+        RuntimeException refused = new RuntimeException("the consumer was already settled");
+        ackTracker.failNackWith(refused);
+
+        assertThatThrownBy(subscriber::close).isSameAs(refused);
+
+        // Both halves, and neither held before: the stop ran although the nack failed, and the
+        // wait ran although the shutdown failed.
+        assertThat(calls).containsExactly("nackSplit", "stopAsync", "awaitTerminated");
     }
 
     @Test
@@ -195,6 +331,37 @@ class PubSubNotifyingPullSubscriberTest {
     }
 
     @Test
+    void aFailedStartsTeardownIsReportedAsTheReleaseOfAClientThatNeverRan() throws Exception {
+        // The release path has its own message because both of awaitTerminated()'s would be false
+        // here. There is no repeat to identify — the start failure is on its way to the caller —
+        // and asking would be a race besides: Guava dispatches the failure listener from the SDK's
+        // own thread after releasing the monitor awaitRunning() blocks on, so permanentError can
+        // still be unset, as it is here. Nor has anything been nacked, shutdown() never having run.
+        ScriptedClient client = new ScriptedClient();
+        IllegalStateException refused =
+                new IllegalStateException("could not reach the subscription");
+        client.failStartWith(refused);
+        client.failTerminationWith(
+                new IllegalStateException(
+                        "Expected the service to be TERMINATED, but it FAILED", refused));
+
+        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+            assertThatThrownBy(() -> subscriberOf(client))
+                    .isInstanceOf(IOException.class)
+                    .hasCause(refused);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event ->
+                                    assertThat(event.getMessage())
+                                            .contains("after failing to start")
+                                            .doesNotContain("were nacked before the wait")
+                                            .doesNotContain("had already reported to the reader"));
+        }
+    }
+
+    @Test
     void stopsTheClientWhenItsFirstClassloadFails() {
         ScriptedClient client = new ScriptedClient();
         NoClassDefFoundError missing = new NoClassDefFoundError("io/grpc/netty/shaded/Absent");
@@ -233,6 +400,7 @@ class PubSubNotifyingPullSubscriberTest {
         @Nullable private Consumer<Throwable> onPermanentFailure;
         @Nullable private Throwable startFailure;
         @Nullable private Throwable terminationFailure;
+        @Nullable private Throwable stopFailure;
 
         /** Takes a {@link Throwable} so a test can script an {@link Error} as well. */
         void failStartWith(Throwable failure) {
@@ -255,8 +423,19 @@ class PubSubNotifyingPullSubscriberTest {
             }
         }
 
+        /**
+         * Makes the stop deliver a permanent failure the way {@code Subscriber.doStop()}'s own
+         * thread does, which is the only way the field can be written after the shutdown began.
+         */
+        void failWhenStopped(Throwable failure) {
+            this.stopFailure = failure;
+        }
+
         void stopAsync() {
             calls.add("stopAsync");
+            if (stopFailure != null) {
+                requireStarted().accept(stopFailure);
+            }
         }
 
         void awaitTerminated(long timeout, TimeUnit unit) throws TimeoutException {
@@ -282,6 +461,16 @@ class PubSubNotifyingPullSubscriberTest {
     /** Records the one call this class makes, and answers the rest with nothing. */
     private final class RecordingAckTracker implements AckTracker {
 
+        @Nullable private RuntimeException nackFailure;
+
+        /**
+         * Makes {@link #nackSplit} throw, which is the step {@code shutdown()} runs before it asks
+         * the client to stop.
+         */
+        void failNackWith(RuntimeException nackFailure) {
+            this.nackFailure = nackFailure;
+        }
+
         @Override
         public void addPendingAck(String splitId, String messageId, AckHandle ackHandle) {}
 
@@ -303,6 +492,11 @@ class PubSubNotifyingPullSubscriberTest {
         @Override
         public void nackSplit(String splitId) {
             calls.add("nackSplit");
+            if (nackFailure != null) {
+                // After the record, as the real tracker's own nacks happen before anything can
+                // fail: this is a nack that ran and then threw, not one that never started.
+                throw nackFailure;
+            }
         }
     }
 }

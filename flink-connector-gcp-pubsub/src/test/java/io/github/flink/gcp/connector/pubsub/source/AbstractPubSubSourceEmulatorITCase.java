@@ -153,6 +153,14 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
         return clients.topicAdmin().getTopic(TopicName.of(PROJECT, name));
     }
 
+    /**
+     * Deletes the subscription, which is how a test kills a running job's subscriber out from under
+     * it.
+     */
+    public static void deleteSubscription(SubscriptionDestination subscription) {
+        clients.subscriptionAdmin().deleteSubscription(subscription.toSubscriptionPath());
+    }
+
     /** Returns whether the subscription exists. */
     public static boolean subscriptionExists(SubscriptionDestination subscription) {
         try {

@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.ExceptionUtils;
 
 import com.google.api.core.ApiService;
 import com.google.cloud.pubsub.v1.Subscriber;
@@ -114,6 +115,13 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
     @Nullable
     private Throwable permanentError;
 
+    /**
+     * Whether {@link #permanentError} has been handed to a caller, which is what {@link
+     * #awaitTerminated} needs to know and is not the same question as whether it has been recorded.
+     */
+    @GuardedBy("this")
+    private boolean permanentErrorReported;
+
     @GuardedBy("this")
     private boolean closed;
 
@@ -204,21 +212,37 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
     /**
      * Starts the client, asking it to stop again if that fails.
      *
-     * <p><b>How much that release actually recovers is less than this used to claim</b>, measured
-     * on {@code google-cloud-pubsub} 1.152.0 and Guava 33.5.0 for #325. Guava's {@code stopAsync()}
-     * is guarded by {@code state().compareTo(RUNNING) <= 0}, and {@code FAILED} sorts last — so
-     * once the service has failed, {@code stopAsync()} enters nothing and {@code doStop()} never
-     * runs. A failed start is precisely what leaves it {@code FAILED}: {@code Subscriber.doStart()}
-     * opens the {@code GrpcSubscriberStub} and then spawns a thread for {@code
-     * startStreamingConnections}, and a failure in that thread calls {@code notifyFailed} with the
-     * stub already open. So the channel and executors that case strands are <b>not</b> recovered
-     * here, and no public API of {@code Subscriber} recovers them — that is a real gap, not
-     * something this call closes.
+     * <p><b>This call is a no-op in the case it was written for, and the resources it was written
+     * to release are released anyway — by the SDK, not by us.</b> Both halves measured on {@code
+     * google-cloud-pubsub} 1.152.0 and Guava 33.5.0 (#325 found the first, #349 the second).
      *
-     * <p>What the call does still cover is every earlier state, where {@code stopAsync()} is not a
-     * no-op: a failure from registering the listener leaves the service {@code NEW}, and one racing
-     * a start in progress leaves it {@code STARTING}. It is kept for those, and because it costs a
-     * no-op otherwise — not because it makes a crash-looping job leak-free.
+     * <p>The no-op half: Guava's {@code stopAsync()} is guarded by {@code
+     * state().compareTo(RUNNING) <= 0} and {@code FAILED} sorts last, so once the service has
+     * failed, {@code stopAsync()} enters nothing and {@code doStop()} never runs. A failed start is
+     * precisely what leaves it {@code FAILED}.
+     *
+     * <p>The half that stops it being a leak: {@code Subscriber.startStreamingConnections()} adds
+     * to every connection a listener whose {@code failed(...)} runs {@code runShutdown()} — {@code
+     * stopAllStreamingConnections}, {@code shutdownBackgroundResources}, {@code
+     * subscriberStub.shutdownNow()} — <em>before</em> it calls {@code notifyFailed}. A connection
+     * that fails to start, or a stream that dies on a missing IAM grant, therefore releases the
+     * stub, the executors and the background resources on the SDK's own path, whichever of the two
+     * {@code notifyFailed} calls wins the race. {@code doStart()}'s other failure, {@code
+     * GrpcSubscriberStub.create} throwing {@code IOException}, strands nothing either: it happens
+     * before the stub exists.
+     *
+     * <p>What is left uncovered is narrow, and is not what the guard covers: a throw in the
+     * <em>synchronous</em> part of {@code startStreamingConnections} — {@code
+     * executorProvider.getExecutor()}, or building a connection — which happens before any
+     * connection listener exists, so nothing runs {@code runShutdown()} and the stub plus any
+     * executor already added stay open. Owning the channel and executor ourselves ({@code
+     * Subscriber.Builder.setChannelProvider} / {@code setExecutorProvider}) would close it, and was
+     * declined: it means taking over channel sizing, which the SDK derives from {@code
+     * parallelPullCount}, to cover the one path out of four that the SDK does not cover itself.
+     *
+     * <p>So the call is kept for the states where {@code stopAsync()} is <em>not</em> a no-op — a
+     * failure registering the listener leaves the service {@code NEW}, one racing a start in
+     * progress leaves it {@code STARTING} — and because it costs a no-op otherwise.
      */
     private void startOrRelease(SubscriberStart subscriberStart) throws IOException {
         try {
@@ -275,11 +299,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
     @Override
     public List<PubsubMessage> pullMessages(int maxMessages) throws IOException {
         synchronized (this) {
-            if (permanentError != null) {
-                throw new IOException(
-                        "The Pub/Sub subscriber for subscription " + subscription + " failed.",
-                        permanentError);
-            }
+            throwIfFailed();
             if (messages.isEmpty()) {
                 return Collections.emptyList();
             }
@@ -288,6 +308,29 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
                 drained.add(messages.pollFirst());
             }
             return drained;
+        }
+    }
+
+    @Override
+    public void checkFailure() throws IOException {
+        synchronized (this) {
+            throwIfFailed();
+        }
+    }
+
+    /**
+     * The single place a permanent failure is turned into the exception the reader sees, so {@link
+     * #pullMessages} and {@link #checkFailure} cannot come to report it differently.
+     */
+    @GuardedBy("this")
+    private void throwIfFailed() throws IOException {
+        if (permanentError != null) {
+            // Recording that it was handed over is what lets awaitTerminated tell the client's
+            // repeat of this failure from one nothing has consumed.
+            permanentErrorReported = true;
+            throw new IOException(
+                    "The Pub/Sub subscriber for subscription " + subscription + " failed.",
+                    permanentError);
         }
     }
 
@@ -301,26 +344,83 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
             // Buffered messages were never emitted; nackSplit below returns them for redelivery.
             messages.clear();
         }
-        ackTracker.nackSplit(splitId);
-        // Asked to stop but not waited for, so a reader owning several splits can start every
-        // shutdown before it waits on any.
-        subscriberStopAsync.run();
+        // One list rather than two calls, for the reason #297 gave the same shape one level up in
+        // PubSubSplitReader.close(): closed is already true by the time these run, so the stop must
+        // not be skipped when the nack throws. It would leave this method's idempotence guard
+        // claiming a client had been asked to stop that had not, close() returning at that guard,
+        // and awaitTerminated spending its whole budget on it — reported by nothing but a WARN
+        // about an unclean shutdown. closeAll finishes the list before reporting, so the order the
+        // SPI's javadoc argues for — the nack is what must not be skipped — survives a failure in
+        // either step.
+        try {
+            Closers.closeAll(() -> ackTracker.nackSplit(splitId), subscriberStopAsync::run);
+        } catch (Exception e) {
+            // Neither step declares a checked exception, so this is the unchecked one closeAll
+            // collected; an Error leaves closeAll as itself and never reaches here.
+            ExceptionUtils.rethrow(e);
+        }
     }
 
     @Override
     public void close() throws Exception {
-        shutdown();
-        awaitTerminated();
+        // A list here for the same reason shutdown() has one, one step further out: shutdown()
+        // guarantees the client was asked to stop whatever else it did, so a shutdown that throws
+        // leaves a stop in progress that still has to be waited out. The reader's own closeAll
+        // covers that on its path, calling shutdown before close so close meets the idempotence
+        // guard; removeSplit calls close() directly and has only this.
+        Closers.closeAll(this::shutdown, this::awaitTerminated);
+    }
+
+    /**
+     * Whether the given cause is the failure this subscriber has already handed to a caller.
+     *
+     * <p>Asks the question directly rather than through a proxy, which a first draft of this got
+     * wrong twice over. Snapshotting {@link #permanentError} before the shutdown looks equivalent
+     * and is not: on the reader's own close path every subscriber's {@link #shutdown()} runs before
+     * any {@link #close()}, so the snapshot would be taken after {@code stopAsync()} — and a
+     * failure the teardown itself produced in that window would be in it, and reported as a repeat
+     * of something nobody had read. The narrower version of the same mistake is that "recorded"
+     * never meant "consumed" anyway: a stream dying after the last {@link #pullMessages} but before
+     * the shutdown is recorded and read by nothing.
+     */
+    private synchronized boolean isAlreadyReported(@Nullable Throwable cause) {
+        return permanentErrorReported && cause == permanentError;
     }
 
     /**
      * Stops the client, tolerating a failure. Shutdown is best-effort: everything this split owned
      * has already been nacked by the time this runs, so a client that lingers costs resources until
      * the JVM exits but loses nothing.
+     *
+     * <p>Deliberately <em>not</em> a {@link Closers#closeAll} list, unlike {@link #shutdown()} and
+     * {@link #close()}: there, a step that throws skips one that is still needed, while here a stop
+     * that threw has started no shutdown for the wait to wait out. Skipping it is the right
+     * outcome, not a defect in the same shape.
+     *
+     * <p>It has its own absorb rather than {@link #awaitTerminated()}'s, because both of that
+     * method's messages are <em>false</em> here. There is no repeat to identify — {@link
+     * #startOrRelease} is propagating the start failure as this runs, so everything the client
+     * raises is part of a failure already going to the caller, and asking {@link
+     * #isAlreadyReported} would be a race besides: Guava dispatches the failure listener from the
+     * SDK's own thread <em>after</em> leaving the monitor {@code awaitRunning()} is blocked on, so
+     * this can run before {@link #permanentError} is written. And nothing has been nacked, because
+     * {@link #shutdown()} never ran; that message's "nothing is lost" holds anyway, for the
+     * different reason that a client which never started received nothing.
      */
     private void stopQuietly() {
         subscriberStopAsync.run();
-        awaitTerminated();
+        try {
+            subscriberAwaitTerminated.await(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException | RuntimeException e) {
+            LOG.warn(
+                    "The Pub/Sub subscriber for subscription {} did not shut down cleanly after"
+                            + " failing to start. Nothing is lost — it received no messages — and"
+                            + " this is only the release of a client that never ran. The start"
+                            + " failure itself follows this line rather than preceding it, and is"
+                            + " the one to read.",
+                    subscription,
+                    e);
+        }
     }
 
     /**
@@ -339,25 +439,72 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
      * rule the root {@code CLAUDE.md} carries (#325). Measured on {@code google-cloud-pubsub}
      * 1.152.0, api-common 2.65.0 and Guava 33.5.0.
      *
-     * <p><b>The catch is wider than that one case, deliberately, and it is worth knowing what else
-     * falls in it.</b> The wait has exactly three exits: the {@code FAILED} rethrow above, a {@code
-     * TimeoutException}, and a {@code checkCurrentState} mismatch that cannot happen (the wait
-     * returns only on {@code TERMINATED} or {@code FAILED}, and both are handled). A timeout is not
-     * a repeat of anything — it is absorbed on the older best-effort ground, that this split's
-     * messages are already nacked. Nor is a failure the SDK raises <em>during</em> this teardown,
-     * from the thread {@code doStop()} spawns: that reaches the listener, sets {@link
-     * #permanentError} with nothing left to read it, and arrives here as the same {@code
-     * IllegalStateException}. It is absorbed too, and it is the one case where something is lost
-     * rather than repeated — the {@code WARN} is its only record.
+     * <p><b>The catch is wider than that one case, and the other two are not repeats of
+     * anything</b> (#351). The wait has exactly three exits: the {@code FAILED} rethrow above, a
+     * {@code TimeoutException}, and a {@code checkCurrentState} mismatch that cannot happen (the
+     * wait returns only on {@code TERMINATED} or {@code FAILED}, and both are handled). A timeout
+     * is absorbed on the older best-effort ground, that this split's messages are already nacked. A
+     * failure the SDK raises <em>during</em> this teardown — from the thread {@code doStop()}
+     * spawns, whose {@code catch (Exception e) { notifyFailed(e); }} moves the service to {@code
+     * FAILED} carrying a brand-new cause — arrives as that same {@code IllegalStateException}, sets
+     * {@link #permanentError} with nothing left to read it, and is absorbed too. All three are
+     * absorbed and each says which it is, because they mean different things to whoever reads the
+     * log: one is expected on a failing teardown, one means no job failure is coming.
+     *
+     * <p><b>Telling the first from the third is an identity comparison, and it is sound because the
+     * SDK keeps the first cause.</b> Guava's {@code notifyFailed} does nothing on an already-{@code
+     * FAILED} service, and {@code stopAsync()} on one enters nothing — its {@code isStoppable}
+     * guard is {@code state().compareTo(RUNNING) <= 0} and {@code FAILED} sorts last — so {@code
+     * doStop()} runs only for a service that was healthy when {@link #shutdown()} did, and the
+     * cause reaching here is the one recorded first either way. A cause that is the {@code
+     * alreadyReported} snapshot is therefore the re-report; anything else was produced after the
+     * reader stopped pulling and has been consumed by nothing. Measured on {@code
+     * google-cloud-pubsub} 1.152.0 and Guava 33.5.0.
+     *
+     * <p>A genuine streaming failure that lands between the snapshot and the wait is classified as
+     * the third case, not the first, and that is correct by the property being tested: {@link
+     * #pullMessages} will not be called again, so nothing consumes it either.
+     *
+     * <p>What the third case costs is <em>promptness</em>, not messages. {@code runShutdown()}
+     * begins with {@code stopAllStreamingConnections}, which is what flushes to the service the
+     * nacks {@link AckTracker#nackSplit} has just enqueued; a failure before that flush leaves
+     * those messages to wait out their acknowledgement deadline rather than being redelivered at
+     * once — the property #118 settled as one this connector asserts.
      */
     private void awaitTerminated() {
         try {
             subscriberAwaitTerminated.await(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (TimeoutException | RuntimeException e) {
+        } catch (TimeoutException e) {
             LOG.warn(
-                    "The Pub/Sub subscriber for subscription {} did not shut down cleanly.",
+                    "The Pub/Sub subscriber for subscription {} did not finish shutting down"
+                            + " within {}. This split's messages were nacked before the wait, so"
+                            + " nothing is lost; the shutdown it was asked for is still running"
+                            + " and may yet finish, so the client may or may not keep its channel"
+                            + " and threads until the JVM exits. Raise"
+                            + " PubSubSubscriberOptions.shutdownTimeout(...) if this recurs,"
+                            + " keeping it under source.reader.close.timeout.",
                     subscription,
+                    shutdownTimeout,
                     e);
+        } catch (RuntimeException e) {
+            if (isAlreadyReported(e.getCause())) {
+                LOG.warn(
+                        "The Pub/Sub subscriber for subscription {} reported at shutdown the"
+                                + " failure it had already reported to the reader. The reader is"
+                                + " failing the job on that one, so this is not raised again.",
+                        subscription,
+                        e);
+            } else {
+                LOG.warn(
+                        "The Pub/Sub subscriber for subscription {} failed while shutting down,"
+                                + " and this is the only report of it: the failure arrived after"
+                                + " the reader stopped pulling. This split's messages were nacked"
+                                + " before the wait and are not lost, but the shutdown is what"
+                                + " returns them to Pub/Sub, so redelivery may wait out their"
+                                + " acknowledgement deadline instead of being immediate.",
+                        subscription,
+                        e);
+            }
         }
     }
 }

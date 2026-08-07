@@ -464,7 +464,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   **The three client operations are injected** (`SubscriberStart`, a `Runnable` stop, a nested
   `TerminationWait`) because `Subscriber` cannot be subclassed, private constructor as ever, and
   every path this class has that only a misbehaving client reaches was untested before: the absorb,
-  the timeout, and the startup-failure leak guard. `SubscriberStart` takes a `Consumer<Throwable>`
+  the timeout, and the failed-start release. `SubscriberStart` takes a `Consumer<Throwable>`
   rather than an SDK `ApiService.Listener`, so no vendor type reaches the seam and a test delivers a
   failure without building a listener; the production constructor cannot delegate through `this(...)`
   because the receiver it hands the factory is `this::receiveMessage`, so the two constructors assign
@@ -482,6 +482,115 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   the SDK's own, so all a bounded wait could do about it is what `awaitTerminated` already does:
   give up and warn. Whether that residue is worth counting the way #311 counts the publisher's is
   not settled here;
+  (a‴) **the absorb tells a re-report from a first report, and only the first of those is a repeat
+  of anything** (#351). The catch was `TimeoutException | RuntimeException` with one message, and
+  #325's own javadoc named the case it was wrong about: `Subscriber.doStop()` runs `runShutdown()`
+  on a thread of its own under `catch (Exception e) { notifyFailed(e); }`, so a client healthy when
+  `shutdown()` ran can fail **during** the teardown, set `permanentError` with nothing left to read
+  it, and arrive at the same `IllegalStateException`. The discrimination is **a flag set where the
+  failure is handed to a caller** (`permanentErrorReported`, written by `throwIfFailed`), tested
+  together with the cause's identity. **Do not replace it with a snapshot of `permanentError` taken
+  before `shutdown()`** — that looks equivalent and is wrong twice over, which this shipped as a
+  draft and the first review round caught. On the reader's own close path the snapshot is taken
+  *after* `stopAsync()`, because `PubSubSplitReader.close()` runs every subscriber's `shutdown()`
+  before any `close()`; a failure the teardown itself produced in that window lands in it and is
+  reported as a repeat of something nobody read. And "recorded" never meant "consumed" anyway: a
+  stream dying after the last `pullMessages` is recorded and read by nothing. The flag needs no
+  ordering argument at all. What the identity half rests on is measured: Guava's `notifyFailed` is
+  a no-op on an already-`FAILED` service, so the cause reaching the catch is the one recorded
+  **first**. **Four outcomes, four messages** — the fourth being the failed-start release path,
+  which has its own absorb rather than sharing this one, because both of its messages are false
+  there (nothing was reported to a reader, and `shutdown()` never ran so nothing was nacked); the
+  rendered page carries them in a table because they mean different things to an operator. Two
+  consequences not to re-derive. A genuine streaming failure landing after the last `pullMessages`
+  is classified as the *unconsumed* case, which is correct by the property being tested:
+  `pullMessages` will not be called again, so nothing consumes it either.
+  And what that case costs is **promptness, not messages** — `runShutdown()` begins with
+  `stopAllStreamingConnections`, the thing that flushes the nacks `nackSplit` just enqueued, so a
+  failure before that flush leaves them to wait out the acknowledgement deadline (#118's property).
+  **No counter**, deliberately and not for want of a precedent: a counter incremented during
+  `close()` is never scraped — the reader's metric group is unregistered in the same instant,
+  measured for #311 — so it would have to be a `PubSubShutdownResidue` `LongAdder` with the same
+  deployment-dependent scope, which is a decision worth its own evidence rather than a rider;
+  (a⁗) **a throwing `nackSplit` must not skip the stop, and a throwing `shutdown()` must not skip
+  the wait** (#350) — `Closers.closeAll` in both `shutdown()` and `close()`, #297's rule one and two
+  levels further in. `closed` is set before the nack, so the old shape left `shutdown()`'s
+  idempotence guard claiming a client had been asked to stop that had not, and `close()` then spent
+  the entire budget waiting on it. **Argue this as robustness, not as a bug closed**: measured on
+  1.152.0, the production `AckHandle` cannot throw at all — both flavours end in
+  `SettableApiFuture.set`, which returns a `boolean` — so what the list buys is over an `@Internal`
+  SPI whose implementations need not all be ours. `stopQuietly()` is deliberately **not** given the
+  same list, and the reason is a property rather than scope-drawing: there, a stop that threw has
+  started no shutdown for the wait to wait out, so skipping it is the right outcome. `close()` gets
+  one too, for the step further out: `shutdown()` guarantees the stop ran, so a `shutdown()` that
+  throws leaves one in progress that still has to be waited out, and the reader's own list covers
+  that only because it calls `shutdown` before `close`. `removeSplit` is the other caller and
+  **has no production path to it at all** — `SplitsRemoval` reaches a reader only through
+  `SourceReaderBase`'s `eofRecordEvaluator` branch, which `PubSubSourceReader` supplies none for,
+  and the enumerator never removes a split — so do not cite it as the reason; the reason is that
+  `close()` should hold the invariant whoever calls it. That method reports a failure before it
+  closes for the same reason: a split removed while paused carries one nothing has read, and
+  removal, unlike teardown, happens while the job carries on;
+  (a⁵) **a paused split is still watched** (#348). `NotifyingPullSubscriber.checkFailure()`,
+  evaluated from `PubSubSplitReader.fetch()` beside `MissingCheckpointDetector.check()` — not
+  inside `drainInto`, which was the tempting one-line site: the two guards belong together because
+  both exist for a state whose whole symptom is the *absence* of records, which no record-driven
+  check can see, and a method called *drain* should not throw for a reason that is not about
+  draining. `pullMessages` was the only reader of `permanentError`, and a paused split is skipped
+  entirely, so a subscriber that died while watermark alignment held its split was reported by
+  nothing and the job ran green with one subscription dead — the empty-*source* shape of the trap
+  #230's `recordsSkipped` and the BigQuery side's eager schema derivation both exist for. The check
+  must read the recorded failure and never the message count, since a paused split is *supposed* to
+  produce none. **`PubSubSourceWatermarkAlignmentITCase` exists to measure the premise, not to
+  cover a feature**: nothing else here configures alignment, so "alignment pauses splits routinely"
+  was an argument from reading Flink's `SourceOperator` until that class measured it (2026-08-07,
+  emulator, one run: 13 of 200 ahead records consumed against 200 of 200 behind). Two things about
+  it are load-bearing rather than incidental. The **throttle** — a MiniCluster drains a few hundred
+  buffered messages in less time than one watermark interval, so without it the ahead split finishes
+  before the machinery under test has run once. And the assertion is a **stability** one, sampled
+  until the count stops moving: `ahead < BATCH` alone is satisfied by a split that is merely
+  *lagging*, and at `maxRecordsPerFetch(1)` the two splits advance in lockstep, so with alignment
+  doing nothing the count at that instant is 199 or 200 — and 199 passes. In the second test that is
+  not thoroughness but the whole pin: a split still being drained fails through `pullMessages` on the
+  ordinary path, so the test would pass while measuring nothing about #348. It discriminates as
+  written — with the `fetch()` call removed the job stayed **running** for the full budget
+  (measured 2026-08-07, one run, then 120 s; the budget is 60 s now) rather than failing.
+  **What the reader controls is the report, not the job's death**: a `SourceOperator` in
+  `WAITING_FOR_ALIGNMENT` returns `NOTHING_AVAILABLE` without calling `pollNext()` and waits on the
+  alignment future rather than the reader's availability, so `SourceReaderBase.checkErrors` is not
+  reached and a subtask held back by alignment surfaces the failure only when its group releases it
+  (read from `flink-runtime`'s `SourceOperator`). A delay rather than a loss — that subtask emits
+  nothing further, so it does not hold the group's minimum back — and a property of every FLIP-27
+  source, not of this one. The ITCase does not meet it because parallelism 1 makes this subtask the
+  group minimum, so it never waits; a multi-subtask reproduction would be measuring Flink. Deleting a subscription
+  under a running job does make the emulator fail that streaming pull permanently — worth recording
+  because it is what makes the pin possible, and it is a rare case of the emulator being usable for
+  a failure path;
+  (a⁶) **the failed-start release is a no-op, and there is nothing left for it to release** (#349,
+  correcting the inference #325 drew and which this file and `startOrRelease`'s javadoc both
+  carried). #325's own half stands — Guava's `stopAsync()` is guarded by
+  `state().compareTo(RUNNING) <= 0` and `FAILED` sorts last, so once the service has failed the call
+  enters nothing. What was wrong was what followed from it: **the channel and executors it cannot
+  reach have already been released, by the SDK itself.** `Subscriber.startStreamingConnections()`
+  adds to every connection a listener whose `failed(...)` runs `runShutdown()` —
+  `stopAllStreamingConnections`, `shutdownBackgroundResources`, `subscriberStub.shutdownNow()` —
+  **before** it calls `notifyFailed`, so a connection that fails to start, or a stream that dies on
+  a missing IAM grant, releases everything on the SDK's own path. `doStart()`'s other failure,
+  `GrpcSubscriberStub.create` throwing `IOException`, strands nothing either: it happens before the
+  stub exists. **Measured both ways**, which is what #349 asked for and what the reading alone would
+  not have earned: from the 1.152.0 sources, and empirically by
+  `PubSubSubscriberFailureReleaseITCase` — executors handed to a subscriber whose streaming pull
+  fails permanently come back shut down, over repeated attempts. That class tests the *vendor* on
+  purpose, because a javadoc here asserts the vendor's behaviour, and the executor is its observable
+  because a `FixedTransportChannelProvider` would take ownership away from the SDK and so measure us
+  instead of it. What remains uncovered is narrow and was never the claim: a throw in the
+  **synchronous** part of `startStreamingConnections` — `executorProvider.getExecutor()`, or
+  building a connection — before any connection listener exists. **Owning the channel and executor
+  (`setChannelProvider` / `setExecutorProvider`) was declined for it**: that means taking over
+  channel sizing, which the SDK derives from `parallelPullCount`, to cover the one path out of four
+  the SDK does not cover itself. The release call is kept for the states where `stopAsync()` is
+  genuinely not a no-op — a failure registering the listener leaves the service `NEW`, one racing a
+  start leaves it `STARTING` — and because it costs a no-op otherwise;
   (b) the "**fail when running without checkpointing**" guard **cannot read the configuration** —
   `SourceReaderContext.getConfiguration()` is the TaskManager configuration
   (`SourceOperatorFactory` passes `getTaskManagerInfo().getConfiguration()`), while

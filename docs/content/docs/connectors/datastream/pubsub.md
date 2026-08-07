@@ -1070,6 +1070,59 @@ the assignment is deterministic, a returned split needs no bookkeeping (the rest
 handed exactly the same splits again) and a restore recomputes the plan from the current
 parallelism — so changing parallelism across a restore is safe.
 
+#### Watermark alignment
+
+`WatermarkStrategy.withWatermarkAlignment(...)` works, and pauses splits the way it does for any
+other source: a **split** whose watermark runs beyond the aligned group's by more than the drift
+limit stops being consumed until the rest catch up. Splits, not subscriptions — under the default
+`OrderingMode.NONE` a subscription has `max(|subscriptions|, parallelism) / |subscriptions|` of them,
+and Pub/Sub balances its stream across whichever are still pulling, so that subscription only stops
+being consumed once all of its splits are paused. Alignment is therefore most predictable when
+subscriptions are at least as many as the parallelism, and exact under `PER_KEY`, where the mapping
+is one split per subscription. Nothing is paused at all if
+`pipeline.watermark-alignment.allow-unaligned-source-splits` is `true`: Flink then aligns whole
+subtasks and never asks a source to pause a split.
+
+A streaming-pull connection cannot itself be paused, so a paused split is simply not drained.
+
+**A long pause is bounded by `maxAckExtensionPeriod`, not by flow control, and past it the buffer is
+unbounded.** The client library's flow control holds the pause at first — it stops pulling once its
+outstanding limit fills — but its lease-extension budget is measured from when a message was
+*received*, not from when the job emits it. Once `maxAckExtensionPeriod` (1 h by default) passes for
+a buffered message, the client library stops extending its lease, Pub/Sub redelivers it, and the
+client **releases that message's flow-control permit** — while the connector is still holding the
+message. Permits therefore free up at the rate messages expire, pulling resumes, and the paused
+split's in-memory buffer grows with nothing capping it. The redelivered copy is buffered too, so on
+resume both copies are emitted; acknowledgement stays correct (the superseded handle is nacked), but
+this is the at-least-once contract being exercised rather than an edge case.
+
+The practical consequence is that **an indefinite pause is a memory hazard, not just a stall**. An
+aligned group holds its slowest member's watermark, so a subscription that goes quiet holds every
+other split paused forever unless the strategy carries `withIdleness(...)`. `pendingAcks` is the
+signature to alert on: it climbs while the split's output stays flat.
+
+**A paused split is still watched.** If its subscriber fails permanently while paused, the job
+fails, exactly as it would for a split that was being consumed
+([#348]({{< param BookRepo >}}/issues/348)) — worth stating because the opposite is the natural
+reading of "not drained".
+
+Only a *permanent* failure does this: the client library reports one just for a status it will not
+retry, so a `PERMISSION_DENIED` or a deleted subscription, never a blip. Note what that means for a
+subscription being decommissioned deliberately — deleting it, or revoking the job's access to it,
+fails the job, and a restart then fails in the startup check rather than recovering. Removing a
+subscription from a running pipeline means removing it from `subscriptions(...)` and redeploying.
+
+**How promptly the job fails is Flink's to decide, not the connector's.** The reader reports the
+failure the next time its fetch loop runs, but a source operator only turns that into a job failure
+when the mailbox next polls it — and an operator whose *subtask* is being held back by alignment
+(`WAITING_FOR_ALIGNMENT`) does not poll at all, waiting on the alignment future instead of the
+reader's. So on a job where this subtask is ahead of its aligned group, the failure is recorded
+immediately and surfaced when the group catches up and the subtask is released. It is a delay rather
+than a loss — the subtask emits nothing further, so it does not hold the group's minimum back — and
+it is not specific to this connector: it is how a fetcher-thread error reaches the job for any
+FLIP-27 source under alignment. The same shape applies under sustained downstream backpressure,
+where the mailbox is not polling either.
+
 ### Message ordering
 
 **The default, `OrderingMode.NONE`, makes no ordering guarantee and is tuned for throughput.** The
@@ -1175,14 +1228,38 @@ without a dead-letter policy, a missing subscription with no creation settings),
 created with its own settings, no seek issued when a rejection is coming, and the start position
 running exactly once and never on a restore. The subscription-create options, the start position and
 the option-to-protobuf translation are unit-tested on their own. The subscriber that wraps the client
-library is unit-tested too ([#325]({{< param BookRepo >}}/issues/325)), on the paths a working client
-never takes: one that fails to start, which is asked to stop again before the failure is reported (an
-`Error` from a first classload taking the same path as an exception); one that does not terminate
-within the shutdown timeout; and one that reports at teardown the very failure the reader has
-already been given, which is absorbed rather than raised a second time. Both of the last two are
-reported by a single `WARN` — `The Pub/Sub subscriber for subscription … did not shut down cleanly.`
-— and by nothing else, so that line is expected on a failing teardown rather than a sign of a
-further problem. Emulator integration tests run the
+library is unit-tested too ([#325]({{< param BookRepo >}}/issues/325),
+[#350]({{< param BookRepo >}}/issues/350), [#351]({{< param BookRepo >}}/issues/351)), on the paths a
+working client never takes: one that fails to start, which is asked to stop again before the failure
+is reported (an `Error` from a first classload taking the same path as an exception); one whose nack
+throws, which must still leave the client asked to stop and waited out; one that does not terminate
+within the shutdown timeout; one that reports at teardown the very failure the reader has already
+been given; and one that fails *during* the teardown, which nothing else reports. All of these are
+absorbed rather than raised, and a `WARN` is the whole of their record — but each says which it is,
+because they mean different things to whoever reads the log:
+
+| What the `WARN` says | What it means |
+|---|---|
+| `… did not finish shutting down within …` | The client outlasted `shutdownTimeout`. This split's messages were nacked before the wait, so nothing is lost; the client may keep its channel and threads until the JVM exits — the shutdown it was asked for is still running, and may yet finish. The one line here with an action behind it: raise `shutdownTimeout(...)`, keeping it under `source.reader.close.timeout` |
+| `… reported at shutdown the failure it had already reported to the reader` | Expected on a failing teardown. The reader has that failure and the job is failing on it; this line is not a second problem |
+| `… failed while shutting down, and this is the only report of it` | A failure that arrived after the reader stopped pulling, so no job failure is coming. Messages are not lost, but the shutdown is what returns them to Pub/Sub, so redelivery may wait out the acknowledgement deadline instead of being immediate |
+| `… did not shut down cleanly after failing to start` | The client never ran, so it received nothing and nothing was nacked. The start failure itself is reported separately — and *after* this line, so read on rather than back |
+
+**Nothing counts these.** They are `WARN` and there is no counter or gauge behind any of them, so a
+log pipeline that drops below `ERROR` will not show a crash-looping job emitting one per subscriber
+per restart. Grep is the detector. (The sink's equivalent *is* counted, as
+`publisherShutdownsAbandoned` — the difference is that a counter written during a reader's `close()`
+is never scraped, its metric group being unregistered in the same instant.)
+
+One more integration test measures the *client library* rather than this connector
+([#349]({{< param BookRepo >}}/issues/349)): a subscriber whose streaming pull fails permanently
+comes back with the executors it was given shut down, over repeated attempts. Those are the
+observable for the client's own release sequence, which the SDK sources show also closes the
+transport stub — so a crash-looping job does not accumulate a channel and its threads per restart
+attempt. The stub half is read rather than seen, and the connector's javadoc says which is
+which.
+
+Emulator integration tests run the
 production subscriber factory against the emulator and cover the acknowledgement round trip,
 nack-on-close (the nacks counted on the reader's own metric, and the messages redelivered rather
 than lost — redelivery *promptness* is a service-timing property the emulator does not specify, so
@@ -1197,6 +1274,14 @@ under ordered consumption, and replaying a backlog under `earliestRetained()`. R
 MiniCluster tests: a failure injected after a completed checkpoint restarts and restores without
 losing messages, and a savepoint taken at one parallelism restores at another in both directions —
 the split plan is recomputed by the enumerator on every start, so the rescale reassigns cleanly.
+Watermark alignment has one too, and it is there to measure rather than to cover: one reader owning
+two subscriptions under `withWatermarkAlignment(...)`, with the ahead subscription's split observed
+to stop advancing — sampled until the count is unchanged three times running — while the other is
+drained whole, and then its subscription deleted under the running job, which must fail the job rather than
+leave it green
+([#348]({{< param BookRepo >}}/issues/348)). Nothing else here configures alignment, so without it
+"a paused split is a state jobs actually reach" would be an argument from reading Flink's source
+rather than a measurement.
 
 A **real-GCP gated suite** covers what the emulator cannot, gated on `PUBSUB_IT_PROJECT`
 (application-default credentials; skipped when unset, keeping `./mvnw verify` credential-free, and

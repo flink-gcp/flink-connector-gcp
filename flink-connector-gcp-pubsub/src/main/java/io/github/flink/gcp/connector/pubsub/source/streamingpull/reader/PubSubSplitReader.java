@@ -155,8 +155,43 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             await(signal);
             drainInto(builder);
         }
+        checkPausedSplitsForFailure();
         checkpointDetector.check();
         return builder.build();
+    }
+
+    /**
+     * Reports a permanent failure of a split the drain above skipped (#348).
+     *
+     * <p>{@link #drainInto} reports one for every split it visits, because {@link
+     * NotifyingPullSubscriber#pullMessages} throws — but a paused split is not visited, and nothing
+     * else ever reads that subscriber's failure. So a subscriber that dies while watermark
+     * alignment holds its split leaves the job running and green with one subscription silently
+     * dead, and the reader closing while it is still paused loses the failure for good, since the
+     * client's re-report at teardown is absorbed (#325).
+     *
+     * <p>Evaluated from {@link #fetch()}, and beside {@link MissingCheckpointDetector#check()}
+     * rather than inside the drain, because the two are the same kind of guard: both exist for a
+     * state whose whole symptom is the <em>absence</em> of records, which no record-driven check
+     * can see. What separates "paused and healthy" from "paused and dead" here is the subscriber's
+     * recorded failure and nothing about its message count, so a pause the job is meant to have
+     * costs nothing.
+     */
+    private void checkPausedSplitsForFailure() throws IOException {
+        // Driven from the subscriber map rather than from pausedSplits. The reason is
+        // reproducibility: pausedSplits is a HashSet while subscribers is a LinkedHashMap in
+        // assignment order, so with two paused splits failing at once the iteration order decides
+        // which failure is reported, and only one of the two orders is stable. It also removes a
+        // deref — pauseOrResumeSplits adds an id unconditionally — though that one is belt and
+        // braces: SplitFetcherManager.pauseOrResumeSplits filters requested ids through the
+        // fetcher's assignedSplits before enqueuing the task (checked against flink-connector-base
+        // 2.1.2 sources and 1.20.0 bytecode), and AddSplitsTask populates that map and calls
+        // handleSplitsChanges in the same task on this thread.
+        for (Map.Entry<String, NotifyingPullSubscriber> entry : subscribers.entrySet()) {
+            if (pausedSplits.contains(entry.getKey())) {
+                entry.getValue().checkFailure();
+            }
+        }
     }
 
     @Override
@@ -202,7 +237,17 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
         }
         LOG.info("Closing the Pub/Sub subscriber for removed split {}.", split.splitId());
         try {
-            subscriber.close();
+            // The failure check comes before the close, and is the last chance to report one: a
+            // split removed while paused carries a failure nothing has read — the check in fetch()
+            // is its only reader and has not run since — and close() absorbs the client's own
+            // report of it (#325). Unlike the close path, removal happens while the job carries on,
+            // so this is where a failure would be lost rather than merely raced by a teardown.
+            //
+            // Unreachable today, and kept anyway: SplitsRemoval reaches a reader only through
+            // SourceReaderBase's eofRecordEvaluator branch, and PubSubSourceReader supplies none,
+            // while the enumerator never removes a split either. One list, so the subscriber is
+            // released whichever step throws.
+            Closers.closeAll(subscriber::checkFailure, subscriber);
         } catch (Exception e) {
             throw new RuntimeException(
                     "Failed to close the Pub/Sub subscriber for split " + split.splitId(), e);
@@ -256,6 +301,8 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
         int total = 0;
         for (Map.Entry<String, NotifyingPullSubscriber> entry : subscribers.entrySet()) {
             if (pausedSplits.contains(entry.getKey())) {
+                // Skipped here and watched by checkPausedSplitsForFailure instead, which is the
+                // only thing that reports a paused subscriber's failure.
                 continue;
             }
             List<PubsubMessage> messages = entry.getValue().pullMessages(maxRecordsPerFetch);

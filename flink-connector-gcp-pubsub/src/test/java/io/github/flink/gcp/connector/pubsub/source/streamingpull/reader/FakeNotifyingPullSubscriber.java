@@ -62,7 +62,11 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
         dataAvailableSignal.run();
     }
 
-    /** Makes the next pull report a permanent client failure. */
+    /**
+     * Makes this subscriber report a permanent client failure. Sticky, as the real one is: {@code
+     * permanentError} is never cleared, so every later {@link #pullMessages} and {@link
+     * #checkFailure} reports the same failure.
+     */
     void failWith(IOException failure) {
         this.failure = failure;
         dataAvailableSignal.run();
@@ -102,14 +106,19 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
 
     @Override
     public List<PubsubMessage> pullMessages(int maxMessages) throws IOException {
-        if (failure != null) {
-            throw failure;
-        }
+        checkFailure();
         List<PubsubMessage> drained = new ArrayList<>();
         while (drained.size() < maxMessages && !messages.isEmpty()) {
             drained.add(messages.pollFirst());
         }
         return drained;
+    }
+
+    @Override
+    public void checkFailure() throws IOException {
+        if (failure != null) {
+            throw failure;
+        }
     }
 
     @Override
