@@ -49,12 +49,24 @@ documentation homes:
 Where a docs page already carries a decision's full operative record, the `CLAUDE.md` entry
 becomes a pointer to that page and **no ADR is written** — an ADR exists for what a user page
 must not carry (declined alternatives, incidents, internal/CI/test decisions), not as a third
-copy. A newly settled decision gets its ADR in the pull request that lands it; the issue keeps
-the `Design (settled YYYY-MM-DD)` comment convention, which may simply say "Settled — see
-ADR-NNNN".
+copy.
 
-Supersession replaces inline correction: a replaced ADR keeps its file with
-`Status: Superseded by ADR-NNNN`, and the superseding ADR's Context states what it replaces.
+The archive is maintained through the ordinary development flow, and most pull requests never
+touch it: design discussion stays on the issue (the `Design (settled YYYY-MM-DD)` comment,
+which may simply say "Settled — see ADR-NNNN" once the file exists); the PR that implements a
+settled decision carries the ADR in its diff; and a later PR that extends the decision edits
+the same ADR in place. **The trigger is the residue, not the pull request: an ADR is owed
+exactly where, before this archive, a decision record would have been owed to a `CLAUDE.md`,
+README or docs page** — something was weighed and declined, measured, or chosen in a way a
+later reader must not re-argue without engaging the reasoning. Granularity is the decision
+*cluster*, not the pull request — a design evolving across several issues stays one file.
+
+**A decision is revisable by design.** "Do not silently revisit" binds a session to engage the
+record — argue against its evidence — not the project to keep the decision: when discussion
+concludes a better architecture exists, the implementing PR adds a new ADR whose Context states
+what it replaces and why, and flips the old one's status to `Superseded by ADR-NNNN`. The old
+file stays, so supersession replaces inline correction and the chain of reasoning survives in
+both directions.
 
 ## Alternatives declined
 

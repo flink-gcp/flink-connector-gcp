@@ -314,11 +314,26 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   current behavior and the rationale a user needs, an ADR holds the decision event, a `CLAUDE.md`
   holds the imperative rules a session must follow with a pointer to the record — so where a docs
   page already carries a decision's full operative record, the `CLAUDE.md` entry points there and
-  no ADR is written. **A newly settled decision gets its ADR in the pull request that lands it**,
-  with the settled date; the issue's `Design (settled YYYY-MM-DD)` comment may then just say
-  "Settled — see ADR-NNNN". ADR files carry the Apache-2.0 header and full issue URLs (they render
+  no ADR is written. **When the archive changes**: design discussion stays on the issue (the
+  `Design (settled YYYY-MM-DD)` comment, which may just say "Settled — see ADR-NNNN"); the PR
+  that implements a settled decision carries the ADR in its diff, with the settled date; a later
+  PR that *refines* the decision edits the same ADR in place (`revised by #N` on its Date line);
+  a *reversal* adds a new ADR and flips the old one's status to `Superseded by ADR-NNNN` — a
+  decision is revisable by design, and "do not silently revisit" means engage the record, not
+  keep it forever. Granularity is the decision cluster, not the PR, and most PRs touch no ADR —
+  the trigger is the residue: **an ADR is owed exactly where a decision record would otherwise
+  be owed to a `CLAUDE.md`, README or docs page** (something weighed and declined, measured, or
+  chosen in a way a later reader must not re-argue without the reasoning), which is the
+  self-review question to ask of every diff. Statuses are
+  `Accepted` and `Superseded by ADR-NNNN` only (an unmerged PR *is* the proposed state; a
+  rejected proposal is a declined alternative inside the winning ADR). ADR files carry the
+  Apache-2.0 header and full issue URLs (they render
   on GitHub, where bare `#N` is dead text — the READMEs' rule, not the `CLAUDE.md` exemption), and
-  `docs/adr/README.md` holds the hand-maintained index that allocates the next number
+  `docs/adr/README.md` holds the hand-maintained index that allocates the next number.
+  **A repository-relevant decision or measured fact is recorded in the repository — an ADR, a
+  docs page, or a rule here — never only in Claude's private session memory**: memory keeps user
+  preferences, session workflow and pointers, and anything a future maintainer or session would
+  need belongs where the repository's readers can reach it
 
 ## Workflow rules
 

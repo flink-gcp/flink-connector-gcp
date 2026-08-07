@@ -15,10 +15,34 @@ How the three documentation homes divide (the boundary is recorded in
 | The decision event: evidence, declined alternatives, supersession history | `docs/adr/` |
 | Behavioral rules a Claude session must follow | `CLAUDE.md` (root and per module), as imperative rules pointing here |
 
+## When an ADR is written or updated
+
+The archive is wired into the ordinary development flow at three points, and **most pull
+requests touch it at none of them**:
+
+1. **Design discussion happens on the issue**, as it always has (the
+   `Design (settled YYYY-MM-DD)` comment convention). No ADR exists yet — an ADR records a
+   decision, it is not the proposal document.
+2. **The pull request that implements a settled decision carries the ADR in its diff**, reviewed
+   together with the code it justifies. The trigger is not the pull request but the residue it
+   leaves: **an ADR is owed exactly where, before this archive existed, a decision record would
+   have been owed to a `CLAUDE.md`, README or docs page** — an alternative was weighed and
+   declined, a constraint was measured, a shape was chosen that a later reader must not re-argue
+   without engaging the reasoning. A bug fix, a feature that follows existing decisions, or a
+   docs change leaves no such residue and writes nothing here — for most PRs the self-review
+   question "would this change otherwise owe a record to a CLAUDE.md or docs page?" answers no.
+3. **A later pull request that extends or reverses the decision updates the archive in its own
+   diff**: a refinement edits the existing ADR in place, a reversal adds a new ADR and flips the
+   old one's status (see Lifecycle below).
+
+**Granularity is the decision cluster, not the pull request.** A design that evolves across
+several issues and PRs stays one file, updated by each refining PR — the publisher teardown
+(ADR-0007) is #265, #310, #311 and #312 in one ADR. As calibration: ~360 issues produced ~50
+ADRs, not 360.
+
 ## Writing an ADR
 
-- A newly settled decision gets its ADR **in the pull request that lands it**; a migrated decision
-  keeps the date it was settled, not the date it was migrated.
+- A migrated or new ADR keeps the date the decision was *settled*, not the date it was written.
 - The file is `NNNN-title-slug.md`, numbered from one global sequence — take the next free number
   in the index below.
 - The title states the decision as a claim (`A serializer returning null skips the record`), so
@@ -27,11 +51,32 @@ How the three documentation homes divide (the boundary is recorded in
   text); each file carries the Apache-2.0 header as an HTML comment (apache-rat checks it).
 - Sections: `Context`, `Decision` and `Consequences` are required; `Evidence` (measured facts,
   each with its date and sample size) and `Alternatives declined` (each with the reason) appear
-  whenever they exist. A superseded ADR keeps its file, gets
-  `Status: Superseded by ADR-NNNN`, and the superseding ADR's Context says what it replaces —
-  corrections never accrete inline.
+  whenever they exist.
 - A decision *cluster* (one design with several dependent sub-decisions) is one ADR with
   subsections, not one file per sub-decision.
+
+## Lifecycle
+
+- **The statuses are `Accepted` and `Superseded by ADR-NNNN` — two, deliberately.** An ADR is
+  written in the pull request that lands the decision, so by the time it merges the decision is
+  accepted; the "proposed" state is the unmerged pull request itself, where the ADR text is
+  reviewed and argued like any other change, so a `Proposed` status would duplicate what git
+  already expresses. A rejected proposal needs no ADR of its own: it is recorded as a declined
+  alternative inside the ADR of the decision that beat it.
+- **A decision is not immutable — it is revisited through a new ADR, never by silently editing
+  or deleting the old one.** When discussion concludes a better architecture exists, the
+  implementing pull request adds a new ADR whose Context states what it replaces and why, and
+  flips the old one's status to `Superseded by ADR-NNNN`; the old file stays, so the chain of
+  reasoning survives in both directions. The module files' "do not silently revisit" wording
+  means the existing record must be *engaged* — argued against, with its evidence — not that the
+  decision is forever.
+- **A refinement that extends a decision without reversing it edits the ADR in place**, in the
+  pull request that lands it: append the issue to `Issues:`, note the revision on the `Date:`
+  line (`revised by [#N] (YYYY-MM-DD)`), and update the body — corrections never accrete as
+  inline "this said X until..." parentheticals. The file's git history is the fine-grained
+  trail; the supersession chain is only for reversals.
+- The index row keeps its line when a status changes (only the Status cell changes), so a
+  supersession chain is visible from the table alone.
 
 Template:
 
