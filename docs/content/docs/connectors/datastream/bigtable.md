@@ -139,8 +139,9 @@ the value must be a multiple of 1000 — `context.timestamp()`, which is in mill
 multiplied rather than passed through. Bigtable answers a violation with `INVALID_ARGUMENT`
 (*"Timestamp granularity mismatch. Expected a multiple of 1000 (millisecond granularity)"*), which
 makes it a [row-level failure](#error-handling) and so droppable — measured against the service, not
-inferred. Read that together with the batch blast radius described there before running a dropping
-policy: a job that multiplies the timestamp wrongly produces the violation on *every* record.
+inferred. Worth reading before running a dropping policy: a job that multiplies the timestamp
+wrongly produces the violation on *every* record, which is the case that puts the sink into the
+[isolation pass](#error-handling) for the whole stream and costs it its batching.
 
 Deletes replay the same way and are naturally idempotent, with one caveat worth stating: a
 `deleteRow` replayed after later writes for the same key would delete those too. That is a property
@@ -195,7 +196,7 @@ mailbox, so the writer's state is touched from one thread only — and routed by
 
 | Class | Examples | Behavior |
 |---|---|---|
-| Row-level | `INVALID_ARGUMENT` — a cell timestamp that is not a multiple of 1000, an empty row key | Routed to the configured [failed-mutation handler](#failed-mutation-policy); applying the same mutation again could not succeed |
+| Row-level | `INVALID_ARGUMENT` — a cell timestamp that is not a multiple of 1000, an empty row key | Routed to the configured [failed-mutation handler](#failed-mutation-policy) once confirmed against the one mutation (below); applying the same mutation again could not succeed |
 | Fatal | `NOT_FOUND` (a missing table or column family), `PERMISSION_DENIED`, `UNAUTHENTICATED`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`; an outage the client's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `ABORTED`, `RESOURCE_EXHAUSTED`); failures carrying no status at all | Fail the ongoing write or checkpoint |
 
 Those two examples are the ones measured against the service, and they are the whole list this page
@@ -212,15 +213,31 @@ bleed the stream one mutation at a time instead of backpressuring it, and a miss
 which fails every record alike — would empty the whole stream into the dead-letter destination under
 a green job.
 
-**A routed rejection is not confined to the mutation that caused it.** Bigtable rejects the whole
-`MutateRows` request, and the client then fails every entry of that batch with the same status, so
-one malformed record takes its whole batch with it: measured against the service, one bad record
-written beside a good one had **both** delivered to the handler and neither written. Under a
-dropping policy that is silent loss of the good records, bounded by the batch size
-(`batchElementCount`) rather than by anything about the bad record. Whether the sink should tell a
-request-level rejection from a per-entry one — the former is safe to retry, since a failed
-`MutateRows` wrote nothing — is [#239]({{< param BookRepo >}}/issues/239). Until it does, a
-dropping policy on this connector is a choice about batches, not about records.
+**A rejection is confirmed against one mutation before it is routed.** Bigtable may reject a whole
+`MutateRows` request rather than the entry that provoked it, and the client then fails every entry of
+that batch with the same status — measured against the service, one bad record written beside a good
+one had **both** futures fail with the same `INVALID_ARGUMENT` and neither row written. Routing on
+that report would hand a dropping handler a whole batch for one bad record.
+
+So a row-level rejection answering a batched request is *parked* rather than routed, and the sink
+runs an **isolation pass**: each parked mutation is re-submitted as the only entry of its own
+request, so the service answers it alone. One that succeeds was collateral damage and is now
+applied; one rejected again is the mutation the service really refused, and only that one reaches
+the handler. The pass runs before every checkpoint completes and again as soon as the next record is
+written, so nothing waits in the park across a checkpoint —
+[`parkedMutations`](#metrics) is what reports its depth.
+
+The cost is a real one and worth planning for: while isolating, the sink spends roughly one request
+per record, so a stream with frequent rejections loses the batching it normally gets. That is the
+price of not discarding the records batched with a bad one
+([#239]({{< param BookRepo >}}/issues/239)).
+
+Under the default `failJob()` policy that cost is bounded by the failure itself — the first
+confirmed rejection fails the job, so the pass isolates one mutation and stops. It is a **dropping**
+policy that pays it, and pays it for as long as the stream stays bad, because nothing else ends the
+pass. Bounding that with a configurable threshold, so a stream whose data is broken rather than
+merely anomalous fails instead of trickling one request at a time, is
+[#361]({{< param BookRepo >}}/issues/361).
 
 **Only a status that is unrecoverable by definition is routed**, which is why the row-level class is
 `INVALID_ARGUMENT` alone. gRPC defines it as *"problematic regardless of the state of the system"*
@@ -284,8 +301,8 @@ Watch [`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/bigtable" 
 than the job status when running anything other than `failJob()`: it counts every mutation the
 handler received, so a serializer bug rejecting every record — which this sink cannot tell from a
 one-off, the classification being a response status code rather than a judgement about the stream —
-shows up as a rate rather than as a failure. Read it beside the batch blast radius above: the count
-is bounded by batches, not by bad records.
+shows up as a rate rather than as a failure. It counts records rather than batches: a rejection is
+[confirmed against one mutation](#error-handling) before the handler sees it.
 
 ## Metrics
 
@@ -299,6 +316,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed |
 | `inFlightMutations` | gauge | mutations the service has not acknowledged, against `maxInFlightMutations` |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
+| `parkedMutations` | gauge | mutations held for [the isolation pass](#error-handling), awaiting a verdict of their own |
 | `errorClass.CODE.errors` | counter | failed mutations by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
@@ -307,13 +325,16 @@ the service answered `INVALID_ARGUMENT` — whether the handler then dropped it 
 serializer bug that makes *every* record invalid is dropped one at a time under a dropping policy,
 and this counter is what shows it while the job stays green.
 
-**It is also what makes the batch blast radius visible.** As
-[the error-handling section](#error-handling) describes, one rejected entry fails every entry of its
-`MutateRows` batch, so a single malformed record shows up here as a count near `batchElementCount`
-rather than as `1` — and the same multiple appears under `errorClass.INVALID_ARGUMENT.errors`. That
-gap between "records I sent" and "records that came back rejected" is the measurement to reach for
-when judging what a dropping policy is actually costing, until
-[#239]({{< param BookRepo >}}/issues/239) narrows the rejection.
+**`parkedMutations` is what to watch beside it.** As
+[the error-handling section](#error-handling) describes, a row-level rejection reported against a
+whole batch is held for the isolation pass rather than routed, and this gauge is the only thing that
+reports those mutations: they have already left `inFlightMutations` and have not yet reached the
+handler. It is a *transient* reading rather than a backlog — the pass empties the park at the next
+record or the next checkpoint, whichever comes first — so what a dashboard shows is how often a
+sample catches the writer mid-isolation. Frequent non-zero samples mean the sink is spending its
+requests one entry at a time, which is the throughput cost of the pass. A batched rejection is
+deliberately *not* counted under `errorClass.INVALID_ARGUMENT.errors`, so that counter reports
+records the service refused rather than the batch sizes they travelled in.
 
 **`errorClass` does not measure retry volume here, unlike the Cloud Tasks sink.** That connector
 owns its retries, so the sum over its transient codes *is* its retry count; this one leaves retrying
@@ -324,8 +345,9 @@ that outlasted ten minutes of backoff, not one slow call. The client's own retry
 invisible to this sink, and no metric in this table reports them.
 
 **`numRecordsSend` counts records, not attempts**, as it does in every connector here, which is what
-makes the number comparable across them. This sink gets that for free rather than by arranging it:
-with retries inside the SDK there is no re-entered call site that could double-count. The
+makes the number comparable across them. Retries inside the SDK cost nothing to exclude, since they
+never surface; the one re-entered call site is the isolation pass, and a mutation it re-submits was
+counted by the write that admitted it. The
 consequence is the same one the other pages state — `numBytesSend` is payload volume rather than
 wire volume, since a mutation the client retried three times moved three times its size.
 
@@ -397,7 +419,9 @@ between you and a new instance. Two things only this suite can show:
 - **Which status Bigtable rejects a mutation with**, and therefore which side of the
   [row-level/fatal boundary](#error-handling) each rejection lands on. This is where the two
   `INVALID_ARGUMENT` examples in that table come from, where the fatal `NOT_FOUND` of a missing
-  column family is pinned, and where the batch blast radius was found.
+  column family is pinned, and where the batch-wide rejection that the isolation pass answers was
+  both found and, since [#239]({{< param BookRepo >}}/issues/239), verified to be answered: a good
+  record written beside a bad one is applied, and only the bad one is routed.
 
 There is no persistent instance to run it against: a one-node instance is a standing cost of roughly
 $470 a month, so each gated class **creates an instance and deletes it afterwards**, and a run that

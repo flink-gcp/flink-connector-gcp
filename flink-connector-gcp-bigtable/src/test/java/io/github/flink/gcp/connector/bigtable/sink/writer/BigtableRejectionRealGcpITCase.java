@@ -127,13 +127,16 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
     }
 
     @Test
-    void routesEveryEntryOfTheBatchWhenOneOfThemIsRejected() throws Exception {
-        // The blast radius of a routed rejection, and the reason the connector documentation no
-        // longer claims the entries around a bad one are unaffected: Bigtable rejects the whole
-        // MutateRows request, so every entry's future fails with the same status and a dropping
-        // handler discards the good records with the bad one. Whether the sink should tell a
-        // request-level rejection from a per-entry one is #239; until it does, this pins what
-        // happens, so a fix has to come through here.
+    void routesOnlyTheRejectedEntryAndAppliesTheRestOfItsBatch() throws Exception {
+        // #239, against the service that produced the defect. Bigtable rejects the whole
+        // MutateRows request rather than the entry that provoked it, and the client fails every
+        // entry's future with that one status — so before the isolation pass a dropping handler
+        // received the good record along with the bad one and neither row was written.
+        //
+        // What is asserted is the outcome the pass guarantees, not the rejection's granularity:
+        // the service is free to answer per entry instead, as it does for the missing column
+        // family below, and the sink must behave the same either way. That is also why the premise
+        // is left unasserted — the same choice PubSubSinkRejectionRealGcpITCase records.
         TableDestination table = createTable("blast-radius");
         RecordingHandler handler = new RecordingHandler();
         SinkWriter<String> writer = writer(table, handler, unalignedTimestamp());
@@ -145,8 +148,10 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
 
             assertThat(handler.handled)
                     .extracting(failed -> failed.getRowKey().toStringUtf8())
-                    .containsExactlyInAnyOrder(GOOD, "bad");
-            assertThat(readRows(table)).isEmpty();
+                    .containsExactly("bad");
+            assertThat(readRows(table))
+                    .extracting(row -> row.getKey().toStringUtf8())
+                    .containsExactly(GOOD);
         } finally {
             writer.close();
         }

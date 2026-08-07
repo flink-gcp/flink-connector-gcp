@@ -39,6 +39,7 @@ public final class BigtableMetricNames {
     // Registered by the sink writer (BigtableWriterMetrics).
     public static final String IN_FLIGHT_MUTATIONS = "inFlightMutations";
     public static final String IN_FLIGHT_BYTES = "inFlightBytes";
+    public static final String PARKED_MUTATIONS = "parkedMutations";
 
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
