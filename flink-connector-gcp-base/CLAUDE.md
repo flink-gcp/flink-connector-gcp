@@ -209,8 +209,9 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   an existing package rather than taking one of its own, for the reason `EmulatorEndpoint` joined
   `base.rpc`. Why it exists at all, and the six decisions inside it, are the Pub/Sub module's
   CLAUDE.md; what belongs here is the shape the move imposed. It is **client-agnostic by
-  construction**: two functional values rather than a client (the one it was written for is
-  `final`), a `String description` rather than a destination type, and no gax or gRPC import — so
+  construction**: two functional values rather than a client (the one it was written for,
+  `Publisher`, cannot be subclassed — non-final, but its only constructor is private, #324), a
+  `String description` rather than a destination type, and no gax or gRPC import — so
   the module gained no dependency. Its release hook is a **nullable `Runnable`, not an
   `AutoCloseable`**, and that is a contract rather than a convenience: it runs in `close()`'s
   `finally`, where anything it threw would replace the failure being propagated, so it is for a

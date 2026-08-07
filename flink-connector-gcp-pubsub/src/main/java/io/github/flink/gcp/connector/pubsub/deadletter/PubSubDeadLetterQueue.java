@@ -184,12 +184,10 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
 
     /**
      * The two steps {@link #close()} runs, held as fields rather than called directly so a test can
-     * drive its failure path: {@link Publisher} cannot be subclassed, so there is no other seam.
-     * (Not because it is {@code final}, as this said until #324 checked it against the 1.152.0
-     * sources — it is a non-final class whose only constructor is private, which forbids a subclass
-     * just as effectively.) Set together with {@link #publisher} by {@link
-     * #open(FailureHandlerContext)} and cleared with it, which is why the first of them stands in
-     * for it as the not-open guard.
+     * drive its failure path: {@link Publisher} cannot be subclassed (non-final, but its only
+     * constructor is private, which forbids a subclass just as effectively — #324), so there is no
+     * other seam. Set together with {@link #publisher} by {@link #open(FailureHandlerContext)} and
+     * cleared with it, which is why the first of them stands in for it as the not-open guard.
      *
      * <p>The first is a {@link BoundedShutdown}: the SDK's own {@code shutdown()} is not guaranteed
      * to return, and running it inline on the task thread is what #312 removed.

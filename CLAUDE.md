@@ -4,7 +4,7 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## Project overview
 
-GCP connectors for Apache Flink: BigQuery, Cloud Pub/Sub and Cloud Tasks (Bigtable and Spanner
+GCP connectors for Apache Flink: BigQuery, Cloud Pub/Sub, Cloud Tasks and Bigtable (Spanner
 planned). Independent OSS project — not affiliated with the Apache Software Foundation or Google.
 Maven multi-module build based on `org.apache.flink:flink-connector-parent`, with Google Cloud
 dependencies managed through `com.google.cloud:libraries-bom`.
@@ -539,8 +539,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   was weighed and accepted: a failure names the `==>` phase inside the recipe rather than a step
   in the GitHub UI
 - **`lint.yaml` is where linters Maven does not run live** (spotless and checkstyle cover the
-  Java sources inside `verify`). Today that is shellcheck, actionlint and `tofu fmt -check`
-  (#5 landed; `tofu validate` is subsumed by the tofu-plan workflow's plan). A workflow of its
+  Java sources inside `verify`). Today that is shellcheck, ruff, actionlint, markdownlint and
+  `tofu fmt -check` — the `just lint` bullet under Build carries the details
+  (`tofu validate` is subsumed by the tofu-plan workflow's plan). A workflow of its
   own rather than jobs in `verify.yaml` so results arrive in seconds rather than behind the
   integration tests — that is the whole reason, the mise-versus-`setup-java` one having turned
   out to be a disarmable default rather than a conflict (see below). On pull requests it runs
@@ -673,7 +674,7 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
 
 - `sink` — public sink API only: the facade + builder, write-method enum, shared options/enums,
   destination types, and the `@Internal` types shared by every write method (the sink config,
-  the fixed-destination resolver, `RetrySchedule` until #61 extracts a shared retry module)
+  the fixed-destination resolver; retry machinery lives in `base.retry` since #61 extracted it)
 - `sink.<writepath>` — one subpackage per write-path family, which may host several write
   methods (BigQuery: `sink.storage` holds the Storage Write API family — the default-stream
   at-least-once method today, and the #30 buffered-stream exactly-once method beside it,
@@ -704,8 +705,8 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
 - `sink.tables` — shared table-metadata layer consumed by every write method: the `TableAdmin`
   SPI and its REST implementation, schema snapshot/unifier, REST↔Storage schema converters
 - `sink.serializer` — the record-conversion SPI (`BigQueryProtoSerializer`) alone, with
-  `sink.serializer.<format>` beneath it for each input format: `.proto`, `.avro`, and `.json` when
-  the #66 JSON half lands. Each format package holds its facade, its `@PublicEvolving` options
+  `sink.serializer.<format>` beneath it for each input format: `.proto`, `.avro` and `.json`
+  (#66). Each format package holds its facade, its `@PublicEvolving` options
   object and the `@Internal` types behind them, mirroring how `sink.<writepath>` keeps
   `FileLoadsOptions` and `BufferedStreamOptions` inside their family packages — so this is a
   public-API layer, not merely an internals split. Decided in #125, after #123 took the package
@@ -729,7 +730,7 @@ Pub/Sub, Cloud Tasks and later modules follow the same skeleton):
   cheap") is discharged; it stays in place because moving `FailedRow` would churn ~a dozen files
   (10 importers plus the class and its test, measured on #213) for no behavioural gain. Later connectors put their failure type at the `sink` root instead (a
   one-class `sink.failure` fails the #119 layer test)
-- `source` / `table` — reserved for sources (#31, #34, #64) and Table API (#47, #57), with the
+- `source` / `table` — sources (#31, #34, #64) and Table API (#47, #57), with the
   same philosophy: public API at the package root, implementation subpackages beneath. The
   family rule above applies here too, and `source.streamingpull` **keeps** its layer under it:
   the sibling Cloud Tasks cannot have is real here, since a unary-`Pull` source is a live
@@ -800,8 +801,9 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its
   reactor-sibling consumers create
-- `flink-connector-gcp-base/CLAUDE.md` — the shared main-code module (#61, with #37's DLQ/metrics
-  planned to join it): retry schedule and status-code extraction only, retry loops and
+- `flink-connector-gcp-base/CLAUDE.md` — the shared main-code module (#61, joined by #37's
+  DLQ/metrics as `base.failure`/`base.metrics` and by `base.lifecycle`/`base.rpc`): the failure
+  SPI and metric-name conventions (#280), retry loops and
   retryability classification stay per-connector (the evaluated-and-declined `Retries.run`
   executor is recorded there), compile-scope consumers, and the shading/install-list consequences
   that scope carries
@@ -975,10 +977,11 @@ Two rules the implementations turn on:
   unsupported extension; `Subscriber` and `Publisher` are non-final classes whose only constructor
   is `private`; `BigtableDataClient`'s is **package-private** (`@InternalApi("Visible for
   testing")`), and `StreamWriter`'s and `BigQueryWriteClient`'s are likewise inaccessible — each
-  forbidding a subclass just as effectively. **None of them is `final`**, which five places in this
-  repository asserted: #324 corrected two (`BoundedShutdown`'s javadoc, the Pub/Sub `CLAUDE.md`) and
-  #325 the other three (`PubSubDeadLetterQueue` twice, `RowAppender` once, that last one about the
-  BigQuery pair rather than `Publisher`). Worth the tally, because the claim was copied rather than
+  forbidding a subclass just as effectively. **None of them is `final`**, which six places in this
+  repository asserted: #324 corrected two (`BoundedShutdown`'s javadoc, the Pub/Sub `CLAUDE.md`),
+  #325 three more (`PubSubDeadLetterQueue` twice, `RowAppender` once, that last one about the
+  BigQuery pair rather than `Publisher`), and the base module's `CLAUDE.md` outlived both sweeps.
+  Worth the tally, because the claim was copied rather than
   checked each time. There is no mocking
   library here, so injection is the only seam — #324 for the batcher adapter, #325 for the
   subscriber, and `PubSubDeadLetterQueue`'s `publisherShutdown`/`channelShutdown` before both.

@@ -371,8 +371,8 @@ class PubSubNotifyingPullSubscriberTest {
         // Flink's escalation reads.
         assertThatThrownBy(() -> subscriberOf(client)).isSameAs(missing);
 
-        // The Error takes the same release as the exception above — #324's reason for the sibling
-        // guard in DefaultMutationBatcherFactory.create. Same caveat as that test's.
+        // The Error takes the same release as the exception above — the same rule as the sibling
+        // guard in DefaultMutationBatcherFactory.create (#324). Same caveat as that test's.
         assertThat(calls).containsExactly("stopAsync", "awaitTerminated");
     }
 

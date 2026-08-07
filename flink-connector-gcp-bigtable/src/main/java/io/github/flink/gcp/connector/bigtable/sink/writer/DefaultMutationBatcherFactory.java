@@ -297,10 +297,9 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
             // Not the same defect as #276 — that one was later resources being abandoned, and it
             // replaced IOUtils.closeAll rather than any try/finally — but the same primitive, which
             // reports the first failure and suppresses the rest. What that costs is stated in
-            // closeAll's own javadoc and is real here: the throwable Flink escalates on is now the
+            // closeAll's own javadoc and is real here: the throwable Flink escalates on is the
             // shutdown's rather than the client's, so a JVM-fatal *client* close arrives suppressed
-            // and unescalated, while a JVM-fatal *shutdown* — previously discarded entirely — no
-            // longer is. Accepted deliberately: the shutdown is where gax's own code runs.
+            // and unescalated. Accepted deliberately: the shutdown is where gax's own code runs.
             try {
                 Closers.closeAll(
                         () ->

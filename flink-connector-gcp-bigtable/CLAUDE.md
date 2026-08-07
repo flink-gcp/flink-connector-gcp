@@ -235,9 +235,8 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   asserts anything, which is every gated case but two of the three emulator ones: the emulator
   *accepts* an empty row key, so that batcher accumulates nothing. **The log line itself is covered
   since #323**, which built `LogCapture` in test-utils and used this very call site as one of its
-  two motivating cases: `absorbsTheBatchersReportOfItsAccumulatedEntryFailures` now asserts the
-  event carries the destination and the report as its throwable. (This bullet said the opposite
-  until #324 rebased over it — #323 pinned the line and left the claim standing.) **#325 then
+  two motivating cases: `absorbsTheBatchersReportOfItsAccumulatedEntryFailures` asserts the
+  event carries the destination and the report as its throwable. **#325 then
   measured whether the SPI contract above is a property of the pattern or of gax**, across all nine
   client-wrapping SPIs in this repository, and the answer is neither purely: a *second* connector
   has the shape — the Pub/Sub source's subscriber, through Guava's `Service.awaitTerminated`

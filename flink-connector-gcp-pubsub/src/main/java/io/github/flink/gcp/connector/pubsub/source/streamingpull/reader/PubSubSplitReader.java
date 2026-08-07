@@ -281,10 +281,10 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             // is one timeout however many splits the reader owns.
             //
             // One list rather than a loop and then a call (#297): closeAll runs every entry before
-            // reporting anything, so a shutdown that throws no longer skips the later nacks — nor
-            // the closes, which a bare loop skipped wholesale, leaving every subscriber open
-            // holding messages Pub/Sub would only redeliver once their acknowledgement deadline
-            // expired. The order within the list is the property the paragraph above argues for.
+            // reporting anything, so the later nacks and every close still run when a shutdown
+            // throws — a bare loop would skip the closes wholesale, leaving every subscriber open
+            // holding messages Pub/Sub only redelivers once their acknowledgement deadline
+            // expires. The order within the list is the property the paragraph above argues for.
             List<AutoCloseable> steps = new ArrayList<>(subscribers.size() * 2);
             for (NotifyingPullSubscriber subscriber : subscribers.values()) {
                 steps.add(subscriber::shutdown);
