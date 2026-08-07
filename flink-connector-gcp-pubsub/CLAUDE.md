@@ -2,895 +2,110 @@
 
 Module-scoped guidance, loaded when Claude works in this module. Repository-wide rules
 (build, workflow, version policy, licensing, package layout) stay in the root `CLAUDE.md`.
+This file holds the rules a session must follow; each decision's record — context, evidence,
+declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
-## Design decisions (do not silently revisit)
+## Provenance
 
-- **Pub/Sub**: base implementation is vendored from `GoogleCloudPlatform/pubsub`
-  `flink-connector/` (decision record: issues #17 and #31); the Apache connector is only a
-  design reference (table-factory plumbing, emulator harness). All packages are normalized to
-  `io.github.flink.gcp.connector.pubsub.*`
-- **Pub/Sub sink** (#18): Publisher-based flush-on-checkpoint stateless writer; FLIP-171
-  `AsyncSinkBase` evaluated and rejected (SDK `Publisher` already batches; AsyncSink persists
-  buffers into writer state). Mailbox-based backpressure with in-flight caps; writer-owned
-  per-topic publishers (no JVM-wide cache); publish failures are capture-and-rethrow (the
-  Apache connector's infinite republish is deliberately not adopted). Topic auto-creation (#19)
-  is reactive — NOT_FOUND publishes are parked and republished after creating the topic via the
-  `TopicAdmin` SPI (`sink.topics`, ALREADY_EXISTS = success), gated by `CreateDisposition`.
-  Tuning (#20) lives in one `PubSubPublisherOptions` object (nested-options pattern; plain
-  serializable values, no gax types on the public API; unset = SDK/sink default): batching,
-  publish retries, `enableMessageOrdering`, the in-flight caps and the recovery backoff.
-  In-flight bounds (#85, revising #20): the writer owns **both** caps — `maxInFlightMessages`
-  (1000) and `maxInFlightBytes` (64 MiB per subtask) — and the two SDK `flowControl*` knobs #20
-  exposed are **removed**, not deprecated. gax flow control could never be the byte bound an
-  ordered sink needs: SDK 1.152.0 leaks a permit per publish cancelled on a paused key (so the
-  builder rejected combining it with ordering — exactly where cascades pile up), and it blocks the
-  task thread instead of yielding to the mailbox. Message count alone bounds no memory, since
-  Pub/Sub allows 10 MiB per message. Three constraints not to re-litigate: the byte bound is an
-  *additional* condition on `write`'s admission only, because the three drains (now
-  `drainInFlight()`, named apart from `awaitCapacity()` for exactly this reason) must keep meaning
-  "empty, and `checkAsyncError`" — #78/#110 made that load-bearing; admission is "below the cap",
-  never "does this message fit", since `yield()` blocks until a mail arrives and no mail can
-  arrive at zero in flight, so a fits-predicate would hang the task on an oversized message
-  instead of backpressuring it; and a repair republishes its parked batch
-  **exempt from both caps**, because yielding between a key's republishes reorders it. Parked
-  messages are counted by neither cap (their failure mail released them). The two writer test
-  classes carry `@Timeout(30)`: the fake mailbox blocks like the real one, so a broken predicate
-  hangs rather than fails.
-  Ordering×repair (revised in #78): cascade cancellations are parked alongside their NOT_FOUND
-  root and every repair attempt calls `resumePublish` before republishing, but **per-key order is
-  restored by sorting the parked batch on a publish sequence, never by observation order** — the
-  "mailbox FIFO preserves per-key order" premise this was first built on is false, because the SDK
-  cancels an ordering key's queued publishes from its own thread, so a cascade can be observed
-  before the failure that caused it. Anything derived from that order is a race, including
-  deciding whether to park a cascade by whether something is parked already: that was the #78
-  flake, and it was *also* the only thing hiding a silent ordering violation, since the parked
-  list was appended in observation order too. Consequences to keep: a cancellation is never a root
-  cause, so one is parked unconditionally and a fatal root is caught by
-  the pre-repair drain (`drainInFlight()` → `checkAsyncError`) rather than by classifying
-  the cascade. **The disposition no longer gates parking** — #215 moved that guarantee onto
-  `topicMissing`, so read the #215 bullet before restoring any `repairsTopics()` check on a
-  parking branch. Emulator
-  support (#21) is a builder option `emulatorEndpoint(host:port)` — plaintext + no credentials
-  for publishers (each owning its channel) and the auto-creation admin, mirroring the Apache
-  connector's `withHostAndPortForEmulator`; the emulator ITs (including a MiniCluster streaming
-  test through the public builder) reuse the production factory/admin, no test-only factory.
-  Decision record in the connector documentation page
-- **Pub/Sub sink per-message failure policy** (#206, the #37 series): `failedMessageHandler(...)`
-  takes the shared `FailureHandler<FailedMessage>` from `base.failure`, defaulting to `failJob()`
-  — behaviourally today's capture-and-rethrow, which is why `PubSubWriterTest` and
-  `PubSubWriterAutoCreationTest` were left untouched and are the regression guard. `FailedMessage`
-  sits at the `sink` root (a one-class `sink.failure` fails the #119 layer test) and carries the
-  **whole serialized `PubsubMessage`** as `getPayloadBytes()`, not just its data, so a dead-letter
-  consumer recovers attributes and ordering key with `parseFrom`; `describeDestination()` is the
-  `projects/p/topics/t` resource name the `FailedElement` javadoc prescribes, not
-  `TopicDestination.toString()`'s `project/topic`. `PubSubErrorClassifier` (`sink.writer`) absorbs
-  the writer's `isNotFound`/`isCancellation` and fixes the precedence
-  `TOPIC_NOT_FOUND` → `CANCELLATION` → `MESSAGE_LEVEL` → `FATAL`, each walking the cause chain;
-  the order is pinned by test, because a chain can carry both a cancellation and a status.
-  **Exactly two failures are routed, and the boundary is the decision**: a record the serializer
-  rejects, and a publish rejected `INVALID_ARGUMENT`. A record the serializer *skips* by returning
-  null is in neither class (#230): it is not a failure, no publisher is even opened for it — the
-  check sits ahead of `stateFor(...)` — and `recordsSkipped` is the only thing that reports it.
-  `MetadataSerializationSchema` propagates a skip unchanged and calls neither extractor for it, so
-  the writer's check stays the single decision point; `dataOnly(...)` and the table layer's
-  `RowDataSerializationSchema` cannot skip at all, because Flink's `SerializationSchema` contract
-  has no null in it and reading one as a skip would silently drop every record a format failed on.
-  The root `CLAUDE.md` carries the whole contract. Not routed, in two directions and for two
-  different reasons — outage-shaped failures (an unavailable service, an exhausted SDK retry
-  budget) must never reach a dropping handler, or an incident bleeds the stream one message at a
-  time rather than backpressuring; and configuration-shaped failures (a `DestinationResolver`
-  returning null, an ordering key without `enableMessageOrdering`) fail *every* record alike, so
-  dropping them would leave an empty topic under a green job — the same trap eager schema
-  derivation closes on the BigQuery side. **That second argument does not reach as far as it
-  sounds, and the docs now say so**: a serializer producing an *invalid message* for every record
-  is rejected per message, so it is routed and droppable exactly like a genuine one-off — the
-  classification reads a response status code and cannot tell a systematic rejection from a
-  per-message one. Nothing in this PR's scope closes that; the answer is the #208 error metrics,
-  and BigQuery carries the identical exposure. A `MESSAGE_LEVEL` handler failure is captured into
-  `asyncError` rather than thrown, because it happens inside a mailbox mail; an unchecked one is
-  wrapped naming the topic. Coverage is unit tests only: the
-  emulator validates nothing, and what real Pub/Sub answers `INVALID_ARGUMENT` to would have to be
-  measured before a gated IT could assert it
-- **Ordering beside a dropping failure policy** (#215, lifting the `build()` precondition #206
-  shipped): allowed, with the gap documented rather than mechanised. The SDK facts the design turns
-  on — read from `google-cloud-pubsub` 1.152.0 sources, not assumed — are that
-  `SequentialExecutorService.cancelQueuedTasks` adds the ordering key to `keysWithErrors`
-  **unconditionally**, taking a bare `Throwable` it never inspects, so an `INVALID_ARGUMENT` poisons
-  a key exactly as a `NOT_FOUND` does; that nothing auto-resumes (`keysWithErrors.remove` has one
-  caller, the public `resumePublish`); and that a later `publish()` on a paused key **returns an
-  already-failed future** carrying the shared static `CancellationException` rather than throwing —
-  which is what makes the "leave it paused" design below work at all. A naive lift would have let
-  one dropped keyed message kill its key for the writer's lifetime. Three changes, each with a
-  reason not to re-litigate:
-  **(a) parking a cascade no longer depends on the create disposition** — a cascade's root may be a
-  dropped message, which `CREATE_NEVER` needs repaired too. The tempting narrower form (park only
-  when a drop is recorded for that key) **is #78's bug rebuilt**: the drop mail and the cascade mail
-  arrive in either order, so a cascade observed first would find nothing recorded and become
-  `asyncError`. Unconditional parking also makes a root's error message win over a cascade's under
-  `CREATE_NEVER`, which used to depend on mail order.
-  **(b) the repair carries a reason** — `DestinationState.topicMissing`, set only where a
-  `TOPIC_NOT_FOUND` is parked, so only that repair creates a topic. This is what preserves
-  "`CREATE_NEVER` creates nothing" once (a) removed the disposition guard from the parking branches,
-  and the invariant is now asserted directly rather than through "nothing is parked". Creation is
-  decided **per attempt but performed at most once per repair**: a batch parked for another reason
-  can turn out to need it (its republish being the first publish to meet the missing topic), while
-  the retry loop itself is for metadata propagating over a topic that by then exists.
-  **(c) a dropped keyed message registers its key** — `keysToResume`, drained by
-  `resumeOrderingKeys` — and **the resume is deliberately not in `routeFailedMessage`**: `write()`
-  tests `repairNeeded` *before* `awaitCapacity()`, and mails run inside it, so a key resumed from
-  the failure mail could be published to by the rest of that same `write()` while its cascades were
-  still parked, putting a newer message ahead of older ones. Left paused, that racing publish comes
-  back cancelled, is parked, and is republished in sequence order with the rest. Without (c) the
-  writer is still correct — the next message for the key fails and is repaired — but (c) is what
-  makes `flush()`'s `while (repairNeeded)` loop mean *no checkpoint completes with a key paused*.
-  The `return` after a throwing handler is **belt and braces, and measured as such**: a mutant
-  deleting it survives, because `asyncError` gates every path into a repair anyway, and the test
-  says so rather than claiming a discrimination it does not have. The fake publisher models the
-  paused-key state itself since #277 — a failed keyed publish pauses its key, a publish on a paused
-  key comes back cancelled without being published, and only `resumePublish` clears it — so the
-  racing-publish reordering above is pinned by test
-  (`aKeyPausedByADropStaysPausedUntilTheRepairResumesIt`) rather than verified only by reading the
-  SDK source. The one finding from that reading that was not a writer decision — a `shutdown()`
-  that never returns — is answered by the teardown bullet below (#265)
-- **The publisher teardown is two-phase, and its bound is real** (#265). The SDK defect, read from
-  `google-cloud-pubsub` 1.152.0 rather than assumed: `Publisher.publish` increments
-  `messagesWaiter` per accepted message, and the failure callback cancels the messages still
-  accumulating in a failed ordering key's **un-flushed** `MessagesBatch` and removes the batch,
-  while decrementing only by the *in-flight* batch's size — so those increments are never
-  returned, `pendingCount` stays above zero forever, and `Waiter.waitComplete()` (uninterruptible,
-  wakes only on an exact zero) parks `Publisher.shutdown()` for good. Our 30 s bound sat on the
-  *next* line, `awaitTermination`, which was never reached; both `TopicPublisher.close()`'s javadoc
-  and the docs page already promised a bound, so this was a contract violated rather than a feature
-  missing. The window is not exotic — a keyed publish failing with more of that key still batched
-  is what #78 and #215 exist for, and `close()` on the failure path runs without a preceding flush.
-  **The defect is not the only thing that needs the bound, and the second reason is the bigger
-  one**: with `enableMessageOrdering` the SDK replaces the publisher's retry settings with
-  `maxAttempts = Integer.MAX_VALUE` and an effectively infinite total timeout (`Publisher.java`
-  1.152.0, and its own `TODO` says this is per publisher, so unkeyed messages get it too), so during
-  an outage the in-flight publishes retry forever and `waitComplete()` never drains — no defect
-  required. An ordered sink therefore needs this bound whatever the SDK version, which is why
-  nothing here is written as a workaround and why #309's rewording is a rewording rather than a
-  removal. That same override is what #310 settled from the other side: `retryTotalTimeout` and
-  `retryMaxAttempts` are **rejected** by `PubSubPublisherOptions.build()` beside
-  `enableMessageOrdering(true)`, rather than documented as ignored. Only an explicitly set knob is a
-  conflict (both are `@Nullable`, so "unset" is a distinguishable state and the SDK's own defaults
-  are exactly what ordering is expected to override), and the other six retry knobs still apply.
-  Rejecting was chosen over documenting because documenting alone is **unpinnable**: `Publisher`
-  exposes `getBatchingSettings()` and nothing for retry settings, and keeps no `retrySettings` field
-  — the values are folded into the stub's callables — so the reflective assertion the issue asked
-  for has no analogue of `configureAppliesSettingsToABuiltPublisher` to follow. The check lives in
-  the options class rather than in `PubSubSinkBuilder` because both knobs are its own, and it names
-  **only the knob that was actually set**, as `PubSubSourceBuilder`'s cross-checks do.
-  **`PublisherOptionsMapper` restates it in DDL keys**, and the first draft's claim that the
-  builder's message "reaches SQL unchanged" was simply wrong — measured on
-  `flink-table-common` 2.2.1: `FactoryUtil.createDynamicTableSink` wraps *anything* the factory
-  throws in a `ValidationException` whose own message is only "Unable to create a sink for writing
-  table …", so the actionable sentence lands in the cause, and it would name
-  `retryTotalTimeout(...)`, which appears nowhere in a `WITH` clause. `TopicCreateOptionsMapper`
-  restates its builder's create-disposition check for exactly that reason, and this is the same
-  shape. The counter-example that misled the first draft is `PubSubSourceBuilder`'s
-  `parallelPullCount` × `PER_KEY` check, which *does* reach SQL unwrapped — because it throws from
-  `getScanRuntimeProvider`, outside the factory's `try`. So the rule is not "builder checks reach
-  SQL unchanged" but: **a check that fires inside `createDynamicTable{Source,Sink}` is wrapped, and
-  a check whose message names Java setters needs restating in option keys; one whose message needs
-  no translation does not.**
-  Deliberately **no runtime re-check** in `DefaultPublisherFactory`: `PubSubWriter` carries the
-  Bigtable-style "deserialization does not run the builder" guard for `maxInFlightMessages` because
-  that invariant is *relied on* (a non-positive cap parks the task forever), and this one is not —
-  a deserialized violating instance behaves exactly as it did before this check existed, since the
-  SDK overwrites the settings either way. The check is advisory, and that is the whole of it.
+- The base implementation is vendored from `GoogleCloudPlatform/pubsub` `flink-connector/`
+  (decision record: issues #17 and #31); the Apache connector is only a design reference
+  (table-factory plumbing, emulator harness). All packages are normalized to
+  `io.github.flink.gcp.connector.pubsub.*`. Keep the README's provenance section and `NOTICE`
+  accurate on any further adaptation.
 
-  Six decisions not to re-litigate about the teardown itself (the run below has grown past six —
-  count them before quoting the number). **A separate thread is the only lever**: the wait ignores
-  interruption, `Publisher` has no forcible variant, and `Waiter` is package-private — so
-  `base.lifecycle.BoundedShutdown` runs the SDK shutdown on a **daemon** thread (one that
-  never returns must not keep a JVM alive) and gives up at the deadline. This is the repository's
-  first main-code thread; an `ExecutorService` was the alternative and buys nothing, since
-  `shutdownNow()` cannot interrupt that wait either — its thread would leak identically, and the
-  executor would then need a bounded teardown of its own. **The deadline is recorded by
-  `start()`, not by `close()`**, which is what makes the writer's overlapped teardown cost one
-  timeout however many topics it owns rather than one per topic; `start()` is idempotent and
-  deliberately does not restart the clock. Pinned by
-  `theBudgetRunsFromTheShutdownCallRatherThanFromTheClose`, which is the only test that fails if
-  the deadline moves into `close()`. **`awaitTermination` runs on that thread too, not on the task
-  thread after a successful join** — measured on gax 2.82.0, whose
-  `BackgroundResourceAggregation.awaitTermination` passes the *full* duration to each resource in
-  turn (its own source carries the `TODO subtract time already used up from previous resources`),
-  and a publisher nests several: its executor, then the stub's transport channel and watchdog. The
-  first shape of this fix awaited on the task thread and so cost a *multiple* of the timeout while
-  claiming to cost one; the self-review caught it. **Anything either step throws is captured and
-  rethrown by `close()` with its own type** — on a bare thread it would reach only Flink's JVM-wide
-  handler, losing a teardown failure the pre-#265 inline call reported and, under
-  `cluster.uncaught-exception-handling: FAIL`, exiting the whole TaskManager instead of failing one
-  task. **The two steps are functional values, not a `Publisher`**, because `Publisher` cannot be
-  subclassed — **not** because it is `final`, which this said until #324 checked it against the
-  1.152.0 sources: it is a non-final class whose only constructor is private, which forbids a
-  subclass just as effectively, and is the same mechanism that makes Bigtable's
-  `BigtableDataClient` unfakeable. That is the only seam a test can drive, the same argument
-  `PubSubDeadLetterQueue`'s
-  `publisherShutdown` / `channelShutdown` fields make. What remains, and is logged rather than
-  hidden: a publisher whose shutdown never returns leaves that thread and the client's executors
-  until the JVM exits — and the give-up warning deliberately does **not** attribute itself to #265,
-  since the budget is shared and a healthy teardown an earlier publisher left no time for reaches
-  the same branch. **Both warnings report the time actually waited, not the configured budget**, for
-  that same reason: a publisher after one that hung gets none of the budget, and "did not finish
-  within 30 s" having waited nothing reads as "raise the timeout" when the answer is elsewhere.
-  **The thread is named after the task thread as well as the topic** (Flink's `SplitFetcherManager`
-  convention), because a writer is per subtask and without it every subtask writing one topic leaves
-  identically-named threads for an operator to tell apart. **`close()` restores the interrupt flag**
-  before propagating an `InterruptedException`: `join` clears it, `Closers.closeAll` collects and
-  carries on, so without the restore the rest of the writer's teardown stops honouring the
-  cancellation. And a failure captured *after* `close()` gave up is logged rather than dropped —
-  nothing would otherwise read the field, and a thread outliving its job meets a closed user
-  classloader. **#311 then made that residue visible** — `publisherShutdownsAbandoned`, a **counter**
-  reading `PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED`. Four things about it not to
-  re-derive. The **storage**
-  is `PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED`, a `LongAdder` at the **module root** that
-  this connector owns and passes into every `BoundedShutdown` it builds — the base class holds no
-  count, so a future adopter (the Pub/Sub *source*'s subscriber teardown is the nearest) gets its own
-  field here rather than a second meaning for this one. It has to outlive the task: measured, with a
-  MiniCluster probe whose reporter ran at 10 ms (default 10 s) and never once saw a close-time
-  counter above zero over four runs, while a counter incremented during the run read its full value;
-  the writer's metric group is unregistered as its task is cleaned up, in the same instant its
-  `close()` runs. **On a session cluster or in application mode the scope is the class loader**: a
-  job's own jar isolates it per job, the SQL uber-jar in `lib/` shares one count across every job on
-  the TaskManager. Nothing is corrupted either way — it becomes a TaskManager property rather than a
-  job's, which is the honest scope for threads that are in the JVM whoever left them, and the docs
-  say so, including that a `PubSub → BigQuery` job dead-lettering to Pub/Sub contributes to a count
-  it does not itself display. The
-  **instrument does not follow from that**, which the first draft got wrong by registering a gauge: a
-  cumulative count of events is a counter by the base module's naming rule, and a caller-supplied
-  `Counter` reading the connector's adder registers the same number, so the name is
-  `publisherShutdownsAbandoned`
-  and not `abandonedPublisherShutdowns`. It is registered in the `PubSubSinkWriterMetrics`
-  **constructor**, not in `bindWriterState`, since it reads no writer state. And **what it counts is
-  closes that overran their budget, not stranded threads**: after give-up the background thread exits
-  as soon as the client's shutdown returns, so an overrun of one second leaves nothing behind and
-  still increments — the docs say so, having first claimed the opposite. Every subtask in a JVM reads
-  the same number; the docs carry the de-duplicate-then-sum rule and the deployment-dependent scope
-  (`lib/` puts it in the system classloader, where it is TaskManager-wide across jobs).
-  What #311 also asked for and did **not** get, with reasons: **setting the stranded thread's
-  context classloader** does not work — the thread's stack holds the `BoundedShutdown` instance,
-  hence its class, hence the user classloader, so the retention survives whatever the TCCL is; the
-  narrower benefit (avoiding `IllegalStateException: Trying to access closed classloader` from a
-  reflective lookup on that thread) cuts both ways, since a `ServiceLoader` lookup for a provider in
-  the job jar would then find nothing. And **a cap** on stranded threads was declined: it converts
-  an outage into a job failure, which the gauge makes unnecessary.
-  `shutdownTimeout` became a `PubSubPublisherOptions` knob (30 s, matching what was hardcoded) for
-  symmetry with `PubSubSubscriberOptions.shutdownTimeout`.
-  **#312 then made `PubSubDeadLetterQueue` use the same teardown**, which #265 had deliberately left
-  alone on the grounds that its `envelope(...)` sets no ordering key so the cancel branch that leaks
-  is unreachable there. That reasoning was sound and insufficient: `waitComplete()` still blocks
-  until every in-flight dead letter resolves under the ordinary 600 s retry budget, and the wait sat
-  on the task thread one entry after the bounded sink leg in the same `Closers.closeAll` list — so a
-  sink with a DLQ presented `shutdownTimeout` as its close's budget while spending an unbounded leg
-  on top of it. Three decisions from that move. **The class went to `base.lifecycle`** rather than
-  being copied: two consumers is exactly the base module's stated bar, the package already exists so
-  no one-class package is created, and ~30 lines of subtle concurrency duplicated is worse than the
-  ~10 duplicated lines of emulator setup this module already accepts. **The channel parameter became
-  a nullable `Runnable release`, not an `AutoCloseable`** — it runs in a `finally`, where anything it
-  threw would replace the failure being propagated; the sink passes `channel::shutdownNow` and the
-  DLQ passes `null`, its channel being the next entry in its own `closeAll` list (graceful
-  `shutdown()`, not `shutdownNow()`, and already ordered after). And **the DLQ's hardcoded 30 s
-  became `PubSubDeadLetterQueue.Builder.shutdownTimeout(Duration)`**, reversing "the DLQ's own
-  constant stays, having no options object and no exposure": once the docs promise a budget that
-  covers the whole close, the half a user cannot reach is the half they cannot fix. It is a second
-  budget spent after the sink's, not a share of it, and both user-facing documents now say to keep
-  the sum under `task.cancellation.timeout`. `check-option-docs` does not see this builder
-  (`SOURCE_GLOBS` is `*Options.java` / `*SinkBuilder.java` / `*SourceBuilder.java`), so the knob is
-  documented in the datastream page's dead-lettering prose beside `maxOutstandingMessages`, which is
-  where this class's other knobs already live. #321 then bounded that queue's **flush**, which is a
-  separate budget and the leg a running job actually spends time in; the `PubSubDeadLetterQueue`
-  bullet records it
-- **A `MESSAGE_LEVEL` verdict is confirmed solo before it is routed** (#264, closing #269 with
-  it). Measured on real Pub/Sub 2026-08-06 (record on #264): a `Publish` carrying one invalid
-  message is rejected **all-or-nothing**, the SDK sets the *same* `Throwable` instance on every
-  co-batched future, and nothing in the status names the offender (`details=0`, no `BadRequest`)
-  — so routing on the report would hand a whole batch to a dropping handler for one bad message.
-  The writer therefore parks a non-solo `INVALID_ARGUMENT` (`DestinationState.isolationNeeded`,
-  consumed per attempt like `topicMissing`) and the repair runs an **isolation pass**: each parked
-  message goes out as its own single-message request (`publishTo(..., soloVerdict=true)` +
-  `flushOutstanding` + `drainInFlight` per message), and only a message rejected solo reaches
-  `routeFailedMessage`. Decisions not to re-litigate: **the pass resumes a key right after a drop
-  pauses it** (`resumeRegisteredKeys`, between publishes) — this does not violate "resume never in
-  `routeFailedMessage`", because the resume stays inside the repair, the key's remaining messages
-  are held by the pass in sequence order, and drains only complete publishes — and without it one
-  drop costs one budget attempt, #269 rebuilt inside the fix; **a batched report is not counted**
-  by `publishFailure` (the #208 cascade-exclusion argument: one incident, not batch-size errors),
-  so `errorClass.INVALID_ARGUMENT.errors` and `numRecordsSendErrors` count true rejections;
-  **client-side limit validation was declined** as the fix (it covers only the limits we encode)
-  and **fail-on-batched-rejection was declined** (it defeats the dropping policy). #269 resolved
-  as fallout: a poisoned key drains in one attempt however long the run, budget semantics
-  unchanged — what remains is the two-variant exhaustion message (`kept failing …` vs `could not
-  drain its parked messages within the recovery budget …`, chosen by whether this repair handed
-  messages to the handler), each variant pinned by test. An oversized message under default
-  batching never shared a request (the SDK sends an element exceeding the byte threshold alone,
-  measured), so the fan-out concerns under-threshold violations — attribute limits and the like.
-  The measured behaviour is pinned end-to-end by `PubSubSinkRejectionRealGcpITCase` (#303) — the
-  first sink-side gated class, extending the source-side `AbstractPubSubRealGcpITCase`
-  cross-package, which is the settled answer to where a sink gated class lives — deliberately at
-  the outcome level (survivors published, exactly the invalid message routed, flush green), since
-  the outcome is what the fix guarantees whatever the service's rejection granularity
-- **`PubSubDeadLetterQueue`** (#211, the #37 series): the repository's one shipped
-  `DeadLetterQueue`, in a **top-level `pubsub.deadletter` package** rather than under `sink` —
-  it is not sink API, it is driven by *any* connector's `FailureHandler`, so putting it under the
-  Pub/Sub sink would misfile it (the #119 layer test is about a family layer inside `sink`, and
-  this is not inside `sink` at all). It uses the SDK `Publisher` **directly**, not
-  `PublisherFactory`/`TopicPublisher`: those are sink internals parameterised by
-  `PubSubPublisherOptions`, and a DLQ has no publisher-tuning surface. The ~10 duplicated lines of
-  emulator-channel setup are the accepted price and are not a defect to fix by coupling the two.
-  `TopicDestination` *is* reused, since inventing a second topic identity in one module would be
-  worse. Three decisions worth keeping: the envelope's `dlq-error` is **truncated on a character
-  boundary** to Pub/Sub's 1024-byte attribute-value limit and marked `...` — cutting UTF-8 bytes
-  blindly leaves a partial character, which the service rejects, turning a dead letter into a job
-  failure, and the truncation is a `CharsetDecoder` with `IGNORE` rather than arithmetic on code
-  point widths; the cause chain is deliberately **not** in the envelope (no bounded string form)
-  and reaches the job log at DEBUG instead; and `maxOutstandingMessages` **bounds what one
-  checkpoint interval accumulates** (default 1000, `0` = write through per element, `-1` =
-  unbounded, one predicate covering all three) because a systematic failure turns every record
-  into a dead letter and the SDK publisher has no flow control by default — the issue text said
-  buffer-until-flush, and that shape can OOM where the pre-#37 behaviour merely failed the job.
-  `envelope(...)` is a **pure static** taking the subtask index and the instant, which is what
-  lets the attribute set be pinned exactly without a live publisher — `Publisher` cannot be
-  subclassed (private constructor, not `final`; see the teardown bullet above), so every seam here
-  has to be arranged deliberately. The second one is `close()`'s: its two steps
-  are held as `@VisibleForTesting` `AutoCloseable` fields (`publisherShutdown`, `channelShutdown`)
-  that `open()` assigns, rather than being called as private methods, so #276's test can make the
-  publisher's shutdown throw an `Error` and assert the channel is shut down anyway. **The
-  not-open guard reads `publisherShutdown`, not `publisher`** — they are set and cleared together,
-  so it means the same thing, and it is what lets the test drive `close()` without opening a real
-  publisher and stranding a gax executor in the test JVM. The topic is never auto-created: a
-  dead-letter destination created on the fly is one nothing is consuming.
-  **The flush is bounded on the wait side, by one deadline per wait rather than one per publish**
-  (#321). `Builder.flushTimeout(Duration)`, 60 s, covering both waits — `flush()`, which runs at every
-  checkpoint barrier, and the `maxOutstandingMessages` drain — and the publisher hand-off with them.
-  Wait-side rather than giving the queue's publisher its own `retryTotalTimeout`, which was the
-  issue's preferred candidate. **The decisive reason is that it bounds the wrong thing**: gax does
-  truncate each attempt's RPC timeout to the remaining total budget
-  (`ExponentialRetryAlgorithm.createNextAttempt`, 2.82.0), so the SDK's futures normally resolve
-  within it — but what has to be bounded is *our wait on the task thread*, the #265/#312 lesson,
-  where the wait that never returned was the SDK's own. The supporting reason is that #321's
-  acceptance criterion is a measurement, and that budget admits none: `Publisher` exposes
-  `getBatchingSettings()` and **nothing** for retry settings, the fact #310 recorded from the other
-  side. Note what that argument does **not** establish, since the first draft of this paragraph
-  leaned on it as though it did — unpinnability alone does not disqualify a knob here, because #310
-  shipped exactly that unpinnable `retryTotalTimeout` on the *sink's* publisher; and
-  `Publisher.Builder.MIN_TOTAL_TIMEOUT` (10 s, message-less `checkArgument`) forbids nothing this
-  knob wanted to express, the shipped default being 60 s. It is a note about test ergonomics, not a
-  reason. The number to hold against is
-  `execution.checkpointing.timeout`, **600 s, exactly the SDK's default publish retry budget**, so
-  before this the queue alone could spend a checkpoint's whole budget; and a `flush()` failure is
-  sync-phase, which Flink fails over on whatever `tolerable-failed-checkpoints` says.
-  **Expiry throws and nothing is dropped**, which is why the `DeadLetterQueue` contract's
-  at-least-once wording needed no change — it already scopes the guarantee to failures that recur on
-  replay and already says a throwing `flush()` fails the checkpoint. The futures are deliberately
-  **not** cancelled, so a message the SDK still delivers is a duplicate the contract already covers
-  rather than a loss. **One deadline for the whole list, never one per future**:
-  `maxOutstandingMessages` defaults to 1000, so a per-future budget would be a thousandfold multiple
-  of the number it claims to be — #265's teardown mistake in a new place. **A budget is per call, and
-  a checkpoint interval may make several**, which the first draft of the docs got wrong in both
-  directions: `flush()` runs at a barrier *and* at any sink-triggered flush (BigQuery's default-stream
-  writer has a periodic one), and the offer-side drain fires once per bound-full — once per *element*
-  under `WRITE_THROUGH`. So a slow-but-working topic spends several budgets in an interval with
-  nothing expiring, and the "one budget per outage" claim holds only because the first expiry throws,
-  not because a call is an interval. The rendered pages say so; sizing the knob against
-  `execution.checkpointing.timeout` alone is the mistake the error message used to invite.
-  **An expiry from the offer path fails the task mid-processing, not a checkpoint** — the consequence
-  is the same restart, but prose saying "fails the ongoing checkpoint" unconditionally is wrong. **No unbounded opt-out**: `UNBOUNDED` is already taken here by
-  `maxOutstandingMessages`, `shutdownTimeout` rejects zero and negative alike, and an effectively
-  infinite budget stays expressible as a large `Duration` without being a mode. The seam is a third
-  static beside `envelope(...)`, taking the publisher hand-off as a `Runnable` plus the futures, the
-  topic and the budget — being handed the futures is the only way in, since opening a real publisher
-  to reach the wait strands a gax executor in the test JVM — and that `Runnable` is what let the
-  folded-in guard on `publishAllOutstanding()` be tested at all (it sat outside every try/catch in
-  both callers, while `offer`'s `publish(...)` two lines earlier was wrapped). `flushTimeout()` is
-  readable off the instance, which is why its serialization test needs no `open()` where
-  `shutdownTimeout`'s does. Documented in the three datastream pages' dead-lettering prose and
-  **not** as a `reference/pubsub.md` row: every table there is `Option`-headed, so a row would fail
-  `check-option-docs`'s staleness direction and need an `[extra]` entry — and `[extra]` is for keys
-  someone else declares. That this builder is invisible to that checker in both directions — all five
-  of its knobs, in both — is a gap of its own, filed as #328 rather than left here as a note; #329 is
-  the other thing #321 left standing, this queue registering no metrics at all. **Both of this
-  class's budgets reject a `Duration` too large to express in nanoseconds**, because the flush knob's
-  own documentation offers a long one as the way to say "effectively unbounded" and
-  `Duration.toNanos()` would otherwise throw on a TaskManager — at the first flush, or inside
-  `BoundedShutdown.start()`. The same trap one level down, in `BoundedShutdown` itself and in the two
-  `*Options.shutdownTimeout(...)` setters that feed it, is #334; the sink's own unbounded
-  `drainInFlight()` — the leg that actually dominates what a checkpoint spends, and unbounded outright
-  under `enableMessageOrdering` — is #333
-- **Pub/Sub sink metrics** (#208, the #37 series): `PubSubSinkWriterMetrics` (`sink.writer`) on the
-  `PubSubSourceReaderMetrics` model, but with **plain counters, not `ThreadSafeSimpleCounter`** —
-  every increment happens on the task thread here, since completions arrive as mailbox mails,
-  which is exactly what the source cannot say. Four decisions worth keeping. **`numRecordsSend` is
-  counted inside `publishTo`, guarded by its `firstAttempt` parameter** — not at the `write()` call
-  site, and not unguarded. Two properties have to hold at once, and only that placement gives both:
-  a repair re-enters `publishTo` for every parked message, so an unguarded
-  increment would count publish *attempts* rather than records; and counting at the call site would
-  count a record whose `publisher.publish(...)` threw synchronously, which registers no callback and
-  reached the client not at all. So the counter sits beside `inFlightMessages++`, after the publish
-  was accepted, under the flag. The repo-wide decision behind counting once (with what it costs
-  `numBytesSend`) is on #208 and in the base module's CLAUDE.md. **`parkedMessages` is a
-  new plain `int` field** maintained by the sole `park(...)` helper rather than a sum over
-  `states`, since the gauge is read from the reporter thread and walking those maps would race the
-  task thread; `close()` zeroes it, because parked messages are dropped with the writer.
-  **Error-class counters skip cascade cancellations**: under #78 a cancellation always trails a
-  root failure that is itself counted, and it carries no status, so counting it would both multiply
-  one incident by the key's queue length and bury real unclassifiable failures under
-  `UNCLASSIFIED`. The traversal that finds the code is `PubSubErrorClassifier.statusCode` — beside
-  `classify`, since this class owns the connector's cause-chain policy. **Per-destination counters
-  are resolved once per `DestinationState`**, not per record, so the topic's resource name (the
-  same `toTopicPath()` `describeDestination()` uses) is composed once. Measured, so it is not
-  re-investigated: `google-cloud-pubsub` 1.152.0 exposes **no** programmatic metric accessor on
-  `Publisher` — only `setEnableOpenTelemetryTracing`/`setOpenTelemetry`, and
-  `OpenTelemetryPubsubTracer` emits spans, not meters — so the flink-connector-kafka-style
-  passthrough of client-native metrics has no source to read here
-- **Pub/Sub source** (#79, #80, #81): FLIP-27 streaming-pull source; split = (subscription, uid),
-  ack on checkpoint completion, nack on close. **The reader checkpoints no splits** — the
-  enumerator is the only owner of split assignment, recomputing the deterministic plan
-  (`splitCount = PER_KEY ? |subs| : max(|subs|, parallelism)`) on every start — because
-  `SourceOperator` unions reader-restored splits with the enumerator's plan, so a reader that
-  snapshotted its splits would leave a rescaled restore with one subscription consumed by two
-  subtasks, exactly what `PER_KEY` exists to prevent (the #79 self-review bug; pinned by
-  `checkpointsNeverCarrySplits`, exercised end-to-end by `PubSubSourceRecoveryITCase`). Tuning
-  lives in one `PubSubSubscriberOptions` object
-  (nested-options pattern, same shape as `PubSubPublisherOptions`). Two decisions deviate from the
-  #80 issue text and must not be silently re-litigated:
-  (a) the **subscriber shutdown mode is not exposed** — `NACK_IMMEDIATELY` is fixed because
-  `WAIT_FOR_PROCESSING` waits for acknowledgements that only arrive at checkpoint completion, which
-  never happens during close; only `shutdownTimeout` is a knob (an SDK enum on the public API would
-  also break the #47 SQL mapping);
-  (a′) **`close()` puts the shutdowns and the closes in one list through `Closers.closeAll`**, never
-  a loop followed by a call (#297). `shutdown()` declares no checked exception, so an unchecked one
-  from the first subscriber used to skip every later nack *and* skip the `closeAll` wholesale —
-  leaving even the already-shut-down subscribers open, holding messages Pub/Sub only redelivers once
-  their acknowledgement deadline expires. Both comments in that method asserted the opposite. The
-  single list keeps the ordering those comments argue for (every shutdown before any close, so the
-  waits overlap) because `closeAll` runs entries in order, and it is what makes the ordering
-  survive a failure — pinned by asserting the recorded call order in the failing case too, not just
-  on the success path;
-  (a″) **`PubSubNotifyingPullSubscriber.awaitTerminated()` absorbs what the client raises because
-  the client re-reports a failure this subscriber has already delivered** (#325), not only because
-  the shutdown is best-effort — which was the whole of the stated reason until #325 measured it, and
-  is the weaker half. `Subscriber` extends gax's `AbstractApiService`, which holds a Guava
-  `AbstractService` as a **private inner field** — redeclared precisely so Guava can be shaded, so
-  no Guava type is catchable here and "`Subscriber` is a Guava `Service`" is the wrong shorthand.
-  `awaitTerminated` ends in that class's `checkCurrentState(TERMINATED)`, which on a `FAILED`
-  service throws `IllegalStateException` carrying `failureCause()` — the same `Throwable` the
-  failure listener recorded as `permanentError` and `pullMessages` already reported, wrapped in an
-  `IOException`. So `NotifyingPullSubscriber.close()`'s javadoc,
-  which promised `@throws Exception if the client does not shut down cleanly`, documented the
-  opposite of what the implementation does and had to be corrected rather than the implementation.
-  The repository-wide rule and the other seven SPIs measured against it are in the root `CLAUDE.md`.
-  **The three client operations are injected** (`SubscriberStart`, a `Runnable` stop, a nested
-  `TerminationWait`) because `Subscriber` cannot be subclassed, private constructor as ever, and
-  every path this class has that only a misbehaving client reaches was untested before: the absorb,
-  the timeout, and the failed-start release. `SubscriberStart` takes a `Consumer<Throwable>`
-  rather than an SDK `ApiService.Listener`, so no vendor type reaches the seam and a test delivers a
-  failure without building a listener; the production constructor cannot delegate through `this(...)`
-  because the receiver it hands the factory is `this::receiveMessage`, so the two constructors assign
-  the same fields and share only `startOrRelease`. **`BoundedShutdown` is deliberately not adopted
-  here**, though the base module's `CLAUDE.md` names this teardown as its nearest future adopter:
-  #265's problem was `Publisher.shutdown()` blocking the **task thread** uninterruptibly and without
-  bound, and here the task thread's wait is already bounded — `stopAsync()` returns at once and
-  `awaitTerminated` takes the budget — so the class would buy a thread and a residue counter for a
-  bound that exists. **State the reason that way and not as "there is no unbounded wait"**, because
-  there is one and `BoundedShutdown` could not take it either: `Subscriber.doStop()` spawns a bare
-  `new Thread(...)` running `runShutdown()` under `SubscriberShutdownSettings.getTimeout()`, whose
-  default is `Duration.ofSeconds(-1)`, no timeout (measured on 1.152.0, #325). A bare `new Thread`
-  **inherits** its creator's daemon flag, so on Flink's task thread it is non-daemon — a property of
-  who calls it, not of the SDK setting one. That thread is
-  the SDK's own, so all a bounded wait could do about it is what `awaitTerminated` already does:
-  give up and warn. Whether that residue is worth counting the way #311 counts the publisher's is
-  not settled here;
-  (a‴) **the absorb tells a re-report from a first report, and only the first of those is a repeat
-  of anything** (#351). The catch was `TimeoutException | RuntimeException` with one message, and
-  #325's own javadoc named the case it was wrong about: `Subscriber.doStop()` runs `runShutdown()`
-  on a thread of its own under `catch (Exception e) { notifyFailed(e); }`, so a client healthy when
-  `shutdown()` ran can fail **during** the teardown, set `permanentError` with nothing left to read
-  it, and arrive at the same `IllegalStateException`. The discrimination is **a flag set where the
-  failure is handed to a caller** (`permanentErrorReported`, written by `throwIfFailed`), tested
-  together with the cause's identity. **Do not replace it with a snapshot of `permanentError` taken
-  before `shutdown()`** — that looks equivalent and is wrong twice over, which this shipped as a
-  draft and the first review round caught. On the reader's own close path the snapshot is taken
-  *after* `stopAsync()`, because `PubSubSplitReader.close()` runs every subscriber's `shutdown()`
-  before any `close()`; a failure the teardown itself produced in that window lands in it and is
-  reported as a repeat of something nobody read. And "recorded" never meant "consumed" anyway: a
-  stream dying after the last `pullMessages` is recorded and read by nothing. The flag needs no
-  ordering argument at all. What the identity half rests on is measured: Guava's `notifyFailed` is
-  a no-op on an already-`FAILED` service, so the cause reaching the catch is the one recorded
-  **first**. **Four outcomes, four messages** — the fourth being the failed-start release path,
-  which has its own absorb rather than sharing this one, because both of its messages are false
-  there (nothing was reported to a reader, and `shutdown()` never ran so nothing was nacked); the
-  rendered page carries them in a table because they mean different things to an operator. Two
-  consequences not to re-derive. A genuine streaming failure landing after the last `pullMessages`
-  is classified as the *unconsumed* case, which is correct by the property being tested:
-  `pullMessages` will not be called again, so nothing consumes it either.
-  And what that case costs is **promptness, not messages** — `runShutdown()` begins with
-  `stopAllStreamingConnections`, the thing that flushes the nacks `nackSplit` just enqueued, so a
-  failure before that flush leaves them to wait out the acknowledgement deadline (#118's property).
-  **No counter**, deliberately and not for want of a precedent: a counter incremented during
-  `close()` is never scraped — the reader's metric group is unregistered in the same instant,
-  measured for #311 — so it would have to be a `PubSubShutdownResidue` `LongAdder` with the same
-  deployment-dependent scope, which is a decision worth its own evidence rather than a rider;
-  (a⁗) **a throwing `nackSplit` must not skip the stop, and a throwing `shutdown()` must not skip
-  the wait** (#350) — `Closers.closeAll` in both `shutdown()` and `close()`, #297's rule one and two
-  levels further in. `closed` is set before the nack, so the old shape left `shutdown()`'s
-  idempotence guard claiming a client had been asked to stop that had not, and `close()` then spent
-  the entire budget waiting on it. **Argue this as robustness, not as a bug closed**: measured on
-  1.152.0, the production `AckHandle` cannot throw at all — both flavours end in
-  `SettableApiFuture.set`, which returns a `boolean` — so what the list buys is over an `@Internal`
-  SPI whose implementations need not all be ours. `stopQuietly()` is deliberately **not** given the
-  same list, and the reason is a property rather than scope-drawing: there, a stop that threw has
-  started no shutdown for the wait to wait out, so skipping it is the right outcome. `close()` gets
-  one too, for the step further out: `shutdown()` guarantees the stop ran, so a `shutdown()` that
-  throws leaves one in progress that still has to be waited out, and the reader's own list covers
-  that only because it calls `shutdown` before `close`. `removeSplit` is the other caller and
-  **has no production path to it at all** — `SplitsRemoval` reaches a reader only through
-  `SourceReaderBase`'s `eofRecordEvaluator` branch, which `PubSubSourceReader` supplies none for,
-  and the enumerator never removes a split — so do not cite it as the reason; the reason is that
-  `close()` should hold the invariant whoever calls it. That method reports a failure before it
-  closes for the same reason: a split removed while paused carries one nothing has read, and
-  removal, unlike teardown, happens while the job carries on;
-  (a⁵) **a paused split is still watched** (#348). `NotifyingPullSubscriber.checkFailure()`,
-  evaluated from `PubSubSplitReader.fetch()` beside `MissingCheckpointDetector.check()` — not
-  inside `drainInto`, which was the tempting one-line site: the two guards belong together because
-  both exist for a state whose whole symptom is the *absence* of records, which no record-driven
-  check can see, and a method called *drain* should not throw for a reason that is not about
-  draining. `pullMessages` was the only reader of `permanentError`, and a paused split is skipped
-  entirely, so a subscriber that died while watermark alignment held its split was reported by
-  nothing and the job ran green with one subscription dead — the empty-*source* shape of the trap
-  #230's `recordsSkipped` and the BigQuery side's eager schema derivation both exist for. The check
-  must read the recorded failure and never the message count, since a paused split is *supposed* to
-  produce none. **`PubSubSourceWatermarkAlignmentITCase` exists to measure the premise, not to
-  cover a feature**: nothing else here configures alignment, so "alignment pauses splits routinely"
-  was an argument from reading Flink's `SourceOperator` until that class measured it (2026-08-07,
-  emulator, one run: 13 of 200 ahead records consumed against 200 of 200 behind). Two things about
-  it are load-bearing rather than incidental. The **throttle** — a MiniCluster drains a few hundred
-  buffered messages in less time than one watermark interval, so without it the ahead split finishes
-  before the machinery under test has run once. And the assertion is a **stability** one, sampled
-  until the count stops moving: `ahead < BATCH` alone is satisfied by a split that is merely
-  *lagging*, and at `maxRecordsPerFetch(1)` the two splits advance in lockstep, so with alignment
-  doing nothing the count at that instant is 199 or 200 — and 199 passes. In the second test that is
-  not thoroughness but the whole pin: a split still being drained fails through `pullMessages` on the
-  ordinary path, so the test would pass while measuring nothing about #348. It discriminates as
-  written — with the `fetch()` call removed the job stayed **running** for the full budget
-  (measured 2026-08-07, one run, then 120 s; the budget is 60 s now) rather than failing.
-  **What the reader controls is the report, not the job's death**: a `SourceOperator` in
-  `WAITING_FOR_ALIGNMENT` returns `NOTHING_AVAILABLE` without calling `pollNext()` and waits on the
-  alignment future rather than the reader's availability, so `SourceReaderBase.checkErrors` is not
-  reached and a subtask held back by alignment surfaces the failure only when its group releases it
-  (read from `flink-runtime`'s `SourceOperator`). A delay rather than a loss — that subtask emits
-  nothing further, so it does not hold the group's minimum back — and a property of every FLIP-27
-  source, not of this one. The ITCase does not meet it because parallelism 1 makes this subtask the
-  group minimum, so it never waits; a multi-subtask reproduction would be measuring Flink. Deleting a subscription
-  under a running job does make the emulator fail that streaming pull permanently — worth recording
-  because it is what makes the pin possible, and it is a rare case of the emulator being usable for
-  a failure path;
-  (a⁶) **the failed-start release is a no-op, and there is nothing left for it to release** (#349,
-  correcting the inference #325 drew and which this file and `startOrRelease`'s javadoc both
-  carried). #325's own half stands — Guava's `stopAsync()` is guarded by
-  `state().compareTo(RUNNING) <= 0` and `FAILED` sorts last, so once the service has failed the call
-  enters nothing. What was wrong was what followed from it: **the channel and executors it cannot
-  reach have already been released, by the SDK itself.** `Subscriber.startStreamingConnections()`
-  adds to every connection a listener whose `failed(...)` runs `runShutdown()` —
-  `stopAllStreamingConnections`, `shutdownBackgroundResources`, `subscriberStub.shutdownNow()` —
-  **before** it calls `notifyFailed`, so a connection that fails to start, or a stream that dies on
-  a missing IAM grant, releases everything on the SDK's own path. `doStart()`'s other failure,
-  `GrpcSubscriberStub.create` throwing `IOException`, strands nothing either: it happens before the
-  stub exists. **Measured both ways**, which is what #349 asked for and what the reading alone would
-  not have earned: from the 1.152.0 sources, and empirically by
-  `PubSubSubscriberFailureReleaseITCase` — executors handed to a subscriber whose streaming pull
-  fails permanently come back shut down, over repeated attempts. That class tests the *vendor* on
-  purpose, because a javadoc here asserts the vendor's behaviour, and the executor is its observable
-  because a `FixedTransportChannelProvider` would take ownership away from the SDK and so measure us
-  instead of it. What remains uncovered is narrow and was never the claim: a throw in the
-  **synchronous** part of `startStreamingConnections` — `executorProvider.getExecutor()`, or
-  building a connection — before any connection listener exists. **Owning the channel and executor
-  (`setChannelProvider` / `setExecutorProvider`) was declined for it**: that means taking over
-  channel sizing, which the SDK derives from `parallelPullCount`, to cover the one path out of four
-  the SDK does not cover itself. The release call is kept for the states where `stopAsync()` is
-  genuinely not a no-op — a failure registering the listener leaves the service `NEW`, one racing a
-  start leaves it `STARTING` — and because it costs a no-op otherwise;
-  (b) the "**fail when running without checkpointing**" guard **cannot read the configuration** —
-  `SourceReaderContext.getConfiguration()` is the TaskManager configuration
-  (`SourceOperatorFactory` passes `getTaskManagerInfo().getConfiguration()`), while
-  `env.enableCheckpointing(...)` writes into the job configuration, so absence proves nothing and
-  failing on it would break jobs that enable checkpointing programmatically while passing every
-  MiniCluster test. Replaced by `MissingCheckpointDetector` (no checkpoint taken + messages
-  outstanding + budget spent → fail), **evaluated from `PubSubSplitReader.fetch()`, not the record
-  path** — once flow control fills, the client stops delivering and `pollNext` is never called
-  again, so a record-driven check would go silent in exactly the state it exists to catch; the
-  detector bounds the fetch park only while armed, so a healthy reader parks indefinitely as
-  before. Its budget (#101) starts at the reader's **first split assignment**, not at
-  `createReader` — a reader is created before the enumerator's startup check finishes, so a
-  constructor-started budget would be partly spent before there is anything to checkpoint; an
-  unstarted detector is **not armed**, so a reader assigned no split parks indefinitely; and it
-  retires at the **first checkpoint barrier** — `SourceOperator.snapshotState` is called
-  unconditionally, so a barrier carrying no data counts, which is what bounds the guard to
-  measuring one interval, once. The detector's fields are deliberately plain, not volatile:
-  `AddSplitsTask` runs on the fetcher thread, the same thread as `fetch()`, and the reasoning
-  lives in the class javadoc so it is not re-litigated. The config-derived ack-extension check is
-  a best-effort warning only.
-  `parallelPullCount > 1` is rejected with `orderingMode(PER_KEY)` rather than silently forced to 1
-  (the factory still force-sets 1 so the guarantee does not rest on the SDK default).
-  The startup check (#81) verifies every subscription (`GetSubscription`) before any split is
-  assigned and rejects: a missing subscription without create options, an unordered subscription
-  under `orderingMode(PER_KEY)`, an exactly-once-delivery subscription, and
-  `deserializationFailurePolicy(NACK)` on a subscription without a dead-letter policy — the NACK
-  requirement is enforced twice, in the builder for auto-created subscriptions and in the
-  enumerator preflight for existing ones. The check's failure messages name the missing
-  permission or setting on purpose; that text is the entire value of those branches.
-  Subscription auto-creation is authorized by the presence of per-subscription
-  `SubscriptionCreateOptions` — no disposition enum, because a subscription without a topic
-  binding is not a subscription (the Table bullet records how the two directions spell creation
-  differently, and the source never creates a topic). `StartPosition` seeks **once, at the first
-  start of a job, never on a restore**: the guard is `PubSubEnumeratorState.startPositionApplied`,
-  and a checkpoint with the flag still false contains no reader holding a split, so re-applying
-  after such a restore is safe; a redeploy without state seeks again.
-  **The real-GCP gated suite (#82)** is the *only* coverage of: ordered dispatch (per-key
-  callback serialization is gated on a streaming-pull response field the emulator never sets),
-  dead-letter forwarding (performed by the Pub/Sub service agent under project-level grants in
-  `opentofu/`, not by the job's credentials), seek on an ordering-enabled subscription, the
-  create-option knobs persisting (the emulator stores but ignores them), nack-redelivery
-  *promptness* (an observed-behaviour bound — the #118 settlement moved the claim here and left
-  the emulator IT asserting non-loss only), and the subscription admin's permission-denied
-  message texts (via impersonation of the zero-role `e2e-no-pubsub` account — the local-run
-  self-grant is documented on the docs page and deliberately not in opentofu, keeping personal
-  identifiers out of source). Gating is `@EnabledIfEnvironmentVariable` on
-  `PUBSUB_IT_PROJECT` **on every concrete class, never the abstract base** —
-  `scripts/e2e-gated-its.sh` greps the annotation literal and then expects a surefire report per
-  matching file. `PubSubSubscriptionAdmin` carries a `@VisibleForTesting` `CredentialsProvider`
-  constructor for exactly the impersonation tests; no production path uses it
-- **The emulator never answers the client library's keepalive ping, so an idle streaming pull is
-  torn down and reopened on a cycle** (measured 2026-08-03 on `google-cloud-pubsub` 1.152.0, four
-  runs, while investigating #244). `StreamingSubscriberConnection` sends an empty
-  `StreamingPullRequest` every 30 s and closes the stream when the last ping is unanswered for
-  ≥15 s; against the emulator that is *every* ping, so an idle stream logs `No response from
-  server for 20 seconds since last ping. Closing stream.` at ~50 s after open and then roughly
-  every 20 s (the first cycle is longer because the stream's own opening response answers the
-  ping sent at open). Three consequences worth keeping. The line is **routine on an idle emulator
-  stream, not a fault** — it says only that the stream received nothing, which any subscription
-  with no messages satisfies; healthy emulator ITs never show it because none of them idles that
-  long, which is also why its appearance in a *failing* run is worth reading. Simultaneous idle
-  streams fire **together, within milliseconds** (measured: two streams, lines 5 ms apart, at
-  50045/50050 ms and 50025/50028 ms across two runs), so the *spacing* of the lines carries
-  information the count does not — two lines tens of seconds apart are not two streams idling in
-  parallel. And a stream reset this way still delivers normally: publishing after an idle window,
-  messages arrived in 105 ms and 104 ms. That last measurement is the one that makes prolonged
-  silence on a subscription with a backlog abnormal rather than expected. Real Pub/Sub answers the
-  ping, so none of this reaches a production job — it is a property of the harness, in the
-  tradition of every other emulator deviation recorded here
-- **Pub/Sub Table API / SQL** (#47, split into #135–#138): the `table` layer is a *mapping* onto the
-  DataStream builders, never a second implementation — one typed `ConfigOption` per builder setter,
-  applied with `getOptional(...).ifPresent(...)` so "absent from the DDL" and "left at the
-  connector's default" are the same state and no default is restated in a `ConfigOption`. A
-  reflective test asserts the setter set and the option set match, which is what keeps that true
-  once the key names are grouped (`sink.batching.*`, `sink.retry.*`) and no naming rule connects
-  the two. **No `properties.*` passthrough**: Kafka's is a map its own client parses, Pub/Sub has
-  none, and #20 already decided no gax type reaches the public API. Byte knobs are `memoryType()`,
-  converted at the mapper boundary so `MemorySize` never reaches the connector API.
-  **The four connector enums carry their DDL spelling in `toString()`** (`create-if-needed`,
-  `per-key`, `nack`, `continue-from-subscription`) because `ConfigurationUtils.convertToEnum`
-  matches on `toString()` case-insensitively and normalizes nothing — Flink's own
-  `DeliveryGuarantee` has the same shape. Table-local `DescribedEnum` duplicates (Kafka's
-  `ScanStartupMode`) were the alternative and were declined: four extra types and a conversion step
-  for no gain. The one visible cost is `StartPosition.toString()`, which now reads
-  `StartPosition{mode=latest}`.
-  One factory class implements both directions (#136 adds `DynamicTableSourceFactory` to it), so
-  `topic`/`subscription` are **not** in `requiredOptions()` — each is checked in the `create...`
-  method that needs it, or a table used in only one direction would be forced to configure the
-  other. Sink specifics: metadata is **not** forwarded to formats (no built-in format ships
-  writable metadata, and Kafka does not forward either), so the physical prefix of a consumed row
-  is exactly the table's physical columns and a reused `ProjectedRowData` hides the metadata suffix
-  from the encoder; the row is written into the `PubsubMessage.Builder` directly rather than
-  through the public `withAttributes`/`withOrderingKey` combinators, whose `Map<String, String>`
-  extractor would allocate a map per record; a null attribute key or value **fails the write**
-  rather than being dropped; `ChangelogMode.insertOnly()` because Pub/Sub cannot express a
-  retraction; and an `ordering-key` column without `sink.message-ordering.enabled` is rejected in
-  `applyWritableMetadata`, since the writer would otherwise fail on the first record. Credentials
-  stay ADC-only (#139) and dynamic per-record topics stay out (#140) — both cut from #47
-  deliberately.
-  **Package layout**: `table` holds the `@PublicEvolving` options class and the factory, `table.sink`
-  (and `table.source` from #136) the `@Internal` implementation — a deliberate departure from Kafka,
-  which keeps its whole table layer flat. The root `CLAUDE.md` rule (public API at the package root,
-  implementation beneath) decides it, and #136 is the in-prospect sibling the #119 test asks for, so
-  this is #125's situation rather than Cloud Tasks'. **The factory is the only place a DDL option
-  becomes a value** — `PubSubDynamicSink` takes resolved constructor arguments and has no
-  configuration vocabulary at all, which is why `PublisherOptionsMapper` is `@Internal public`
-  rather than package-private.
-  **Source specifics** (#136): the SPI was widened to
-  `deserialize(PubsubMessage, SubscriptionDestination, Collector<T>)` rather than dropping the
-  `subscription` metadata column — nothing is published, so a signature change is the cheap option
-  (see the repo-level stance), and `SubscriptionSplit` was already in `emitRecord`, so the call site
-  was one line. That column carries the **resource name**, not the
-  bare id — the argument is on the docs page; what belongs here is that a two-column
-  short-id-plus-resource-name design was built and dropped as redundant, and that the column
-  deliberately does **not** equal the `subscription` option, which is documented rather than fixed.
-  **`DecodingFormat.applyReadableMetadata` throws by default** and no built-in format overrides it,
-  so it must be guarded — and the guard is on the format *declaring* metadata, as Kafka's is, not on
-  the planner having selected some: only that form can shrink the key set back, and the ability
-  permits repeated calls. Calling it unconditionally breaks every table with any metadata column;
-  caught by the acceptance IT, never by a unit test.
-  **Per-key ordering is not reachable from SQL** (#143): the guarantee is per writer subtask, the
-  DataStream answer is a `keyBy` before the sink, and SQL has no equivalent — `DISTRIBUTED BY` needs
-  `SupportsBucketing`, which this sink does not implement. `sink.parallelism = 1` is the only correct
-  configuration today; it is documented rather than enforced, because a distribution the user
-  arranged upstream is legitimate and the sink cannot tell the difference.
-  **Auto-creation and start position** (#137): three setters do not take a `ConfigOption`'s shape,
-  and each resolution lives in a mapper under `table.source` rather than in the factory —
-  `StartPositionMapper` and `SubscriptionCreateOptionsMapper`, joining `SubscriberOptionsMapper`.
-  Start position is `scan.startup.mode` + `scan.startup.timestamp-millis`, **Kafka's spelling rather
-  than the connector's own** ("start position") — weighed, and settled on what a migrating SQL user
-  types without reading anything; the docs table's "Maps to" column carries the connection to
-  `StartPosition`. It has no declared default, like every other option here: `PubSubSourceBuilder`
-  already initialises `continueFromSubscription()`, so absent means default and the issue's "default
-  `continue-from-subscription`" describes behaviour rather than a `ConfigOption` default.
-  `StartPosition.of(Mode, Instant)` raises both pairing errors, so the mapper delegates; the one rule
-  it owns is a **timestamp with no mode**, where `of` is never reached and the option would otherwise
-  be read by nothing. Same reasoning gives "a `scan.auto-create.*` knob without
-  `scan.auto-create.topic` is rejected, not ignored".
-  **`expirationTtl` versus `neverExpire` has no builder backstop** — the issue assumed one, and the
-  builder is in fact last-writer-wins, each setter clearing the other, which is right for a call
-  sequence and meaningless for a `WITH` clause. So the table layer rejects the pair *only* here, and
-  that check is load-bearing rather than a nicer message; the builder was deliberately left as it is.
-  `never-expire = false` calls nothing, since the setter takes no argument and `false` is already the
-  state.
-  **Auto-creation requires exactly one subscription**, because settings are per destination and carry
-  the topic binding: N options objects are inexpressible in a flat DDL namespace, and sharing one
-  would duplicate every message with nothing reporting an error. The precondition is checked in the
-  mapper and again in `PubSubDynamicSource`'s constructor, which is the code that indexes the list.
-  A `scan.auto-create.topics` `mapType()` extension for N>1 is deferred to #152. The builder's
-  own cross-checks (ordering under `PER_KEY`, a dead-letter policy under a policy that needs one)
-  then reach SQL users unchanged, which `carriesTheCreationSettingsAndTheStartPositionIntoTheBuiltSource`
-  and its sibling are what prove — the create options and the start position are otherwise invisible
-  from outside the built `Source`, and a mutant that dropped the start position on the way to the
-  builder survived every unit test until they read it back through
-  `PubSubStreamingPullSource.getConfig()`.
-  **The two directions spell resource creation differently on purpose, and this is where that was
-  settled** (the question #136 left open, having counted `sink.create-disposition`, `sink.recovery.*`
-  and `scan.auto-create.*` as three spellings of one feature). They are not one feature. A topic
-  needs no configuration to exist, so the sink can gate creation with a `CreateDisposition` enum and
-  a "create with defaults" is meaningful; a subscription without a topic binding is not a
-  subscription, so the source has no disposition enum at all and **the presence of settings is the
-  authorization**. `scan.create.*` was weighed and declined: sharing the word would put a uniform
-  vocabulary over a difference the DataStream API makes deliberately, and this layer maps rather
-  than invents. `scan.` itself is not a choice — it is Flink's read-side prefix, carried by every
-  source option here and by `FactoryUtil.SOURCE_PARALLELISM` (`scan.parallelism`) — and with one
-  factory serving both directions it is what tells a reader which half an option belongs to.
-  **The stated expiry of that settlement was reached and resolved in #153**, which gave the sink
-  creation settings (`TopicCreateOptions`: `messageRetention`, `kmsKeyName`, the storage policy).
-  The re-opened naming question settled as: the *settings* vocabulary aligns —
-  `sink.auto-create.*` beside `scan.auto-create.*`, one spelling where both sides carry one knob
-  (`message-retention`) — while the *gates* stay different, because the gate reasoning above is
-  about what a resource needs to exist and #153 changed nothing about that. Three sink-side facts
-  not to re-derive: the settings are additive and never authorize (the disposition still does, and
-  its default `CREATE_IF_NEEDED` means settings alone are meaningful — only an explicit
-  `CREATE_NEVER` beside them is rejected, in the builder naming methods and in the mapper naming
-  option keys); **one options object applies to every topic the sink creates**, dynamic
-  destinations included, because unlike a subscription's topic binding nothing in the settings ties
-  them to one topic — so there is no per-topic map to express; and `schemaSettings`, `labels` and
-  `tags` were considered and declined (schema validates at publish time only, re-checking what this
-  sink serialized, and is invisible to subscriptions beyond the `googclient_schema*` attributes —
-  its payoff accrues to GCP-managed consumers like BigQuery export subscriptions, not to the Flink
-  pipeline, and its evolution model, single-file Avro/proto definitions with a bounded revision
-  range managed through topic updates, means support would not end at creation; labels/tags mirror
-  the subscription side's omission) — all additive later. **Deliberately no follow-up issue for
-  schema support** (decided with the user on #153): the declined record here and on the docs page
-  is the anchor, and a future issue needs a real consumer-side use case, not a speculative
-  placeholder. The emulator stores
-  all four knobs verbatim and returns them on `GetTopic` — measured in #153 after a first
-  measurement wrongly concluded the opposite off a one-line grep of a multi-line proto `toString`
-  — but validates nothing and shows no effect, so the ITs assert the round trip and the
-  *semantics* (real CMEK, residency, retention-driven replay) stay with the real-GCP suite (#82).
-  **The source never creates a topic.** There is no `createTopic` in the `source` package, so
-  `scan.auto-create.topic` names a topic that must already exist, while the sink's
-  `create-if-needed` does create one — the same two words meaning opposite things across one DDL,
-  which is why both user-facing documents now say so outright. A sink-created topic without
-  creation settings still takes every `Topic` field's service default, message retention among
-  them, so a backwards seek over it replays nothing that was already acknowledged unless
-  `messageRetention` was set at creation
-- **`flink-sql-connector-gcp-pubsub`, the uber-jar** (#138) — the repository's first shaded module,
-  so what is decided here sets the shape every later `flink-sql-connector-gcp-*` will copy.
-  **Everything bundled is relocated under `io.github.flink.gcp.connector.pubsub.shaded.`, with no
-  exemption for `grpc-netty-shaded`.** The exemption is the tempting answer and was built first:
-  that artifact carries native libraries whose names netty derives from its own package, and
-  maven-shade does not rename native resources. It was rejected on a measurement rather than a
-  preference — with `io.grpc.netty.shaded` left in place the jar cannot share a classpath with
-  anything else carrying that package, failing with `ServiceConfigurationError: NettyChannelProvider
-  not a subtype`, and the *first* thing to trigger that would be a second GCP SQL connector built
-  the same way. The price is two path relocations renaming
-  `META-INF/native/(lib)?io_grpc_netty_shaded_netty*` to the relocated prefix with dots as
-  underscores; both forms are needed because Windows DLLs carry no `lib`. **That is the established
-  form and it was checked, not assumed**: identical pairs are in googleapis/java-bigtable-hbase
-  (citing netty#6995 and grpc-java#2485), Dataproc's gcs-connector, spark-bigquery, Beam's
-  `GrpcVendoring`, and the uber-jars of both Google Flink connectors — while
-  GoogleCloudDataproc/flink-bigquery-connector relocates without renaming and ships a jar whose
-  tcnative and epoll can never load. `rawString` is **not** needed (maven-shade matches resource
-  paths directly) and no surveyed project uses it. The replacement is constrained by netty's
-  `calculateMangledPackagePrefix()`: the relocated name must remain a pure *prefix* of
-  `io.netty.util.internal.NativeLibraryLoader` — Beam gets away with collapsing `io.grpc.netty
-  .shaded` to its vendor root only because what remains still satisfies that — and an underscore in
-  the prefix would have to be spelled `_1`, which is why the shaded prefix must not grow one.
-  `AbstractSqlConnectorPackagingITCase` derives the expected string from the shaded prefix rather than
-  repeating it, so config and assertion cannot drift. Untested residue, deliberately: whether the
-  renamed libraries load through JNI is only exercised on Linux with epoll or tcnative, and a wrong
-  rename degrades to NIO and JDK SSL *silently*. Still unrelocated are `org.conscrypt` (native
-  libraries too, but a reflectively-loaded optional TLS provider gRPC does without) and four
-  annotation-only packages, where a duplicate class is inert because nothing invokes it.
-  Three build traps worth not rediscovering. **Declaring a Google artifact at `test` scope in the
-  SQL module demotes it out of the bundle** — Maven's nearest-definition rule beats the transitive
-  `compile` scope — which silently cut the jar down to guava plus a few annotation jars.
-  `maven-dependency-plugin:analyze` is absent for the same reason: the scoping it would demand is
-  the scoping that breaks the bundle, so the test harness uses classes that arrive transitively and
-  declares none of them. **`artifactSet` is `*:*`, and the enumerated include list it replaced should not come back.**
-  The list's justifications each died when measured: an unlisted new transitive does *not* fail the
-  build, contrary to what #138 assumed — it is silently dropped from the jar, the worst available
-  outcome — and "readable beside the NOTICE" ended when the NOTICE became generated. With the
-  wildcard a new dependency is bundled automatically; what remains human is relocating a genuinely
-  new package root (a real decision — conscrypt must *not* be, and commons-lang3 under
-  `org.apache.commons` would arrive unrelocated because only `commons.codec` is mapped, measured),
-  and the packaging tests fail with the artifact's name until it is made.
-  `BundledDependenciesNoticeTest` diffs the NOTICE against the recorded runtime tree both ways. **`ApacheNoticeResourceTransformer` needs `organizationName` and `inceptionYear`,
-  not just `projectName`**, or the aggregated NOTICE still reads "Copyright 2006-2026 The Apache
-  Software Foundation". Relatedly, the root pom now sets `<organization>`: without it the ASF
-  parent's remote-resources bundle stamped that same claim into *every* module jar this project
-  builds.
-  **The NOTICE's prose is hand-written; everything mechanical is generated and pinned.** The split
-  is `NOTICE.template` (module root): human paragraphs plus one `{{Licence}}` placeholder per
-  group, which `scripts/check-notice.py --update` fills from what license-maven-plugin resolved —
-  so a wrong group, a duplicate bullet or a stale version is not a checkable mistake but an
-  *inexpressible* one. `just update-notice <module>` regenerates; `just check-notice <module>`
-  (CI) re-renders in memory and fails on any drift, offline. Licence *texts* come only from
-  `scripts/licence-sources.toml`, each entry pinned by **sha256** with its provenance recorded:
-  the artifact's own jar where one ships a text (threetenbp, javax.annotation-api — best
-  provenance, version-exact), otherwise a curated URL whose ref matches the bundled version and
-  whose note says why (protobuf's Java 4.33.x maps to core tag v33.x; gax and google-auth live in
-  *archived* — hence frozen — repositories with no tag for these versions; POM-declared URLs are
-  often HTML pages or bare templates, and the script rejects HTML outright). A fetch that stops
-  hashing to its pin fails: upstream changed, a human reviews. This replaced an earlier state
-  where five texts had been curl'd from repository heads chosen by hand — wrong provenance, and
-  the reason the pin exists. **Curating a new entry follows a fixed fallback ladder** (also printed by the failure
-  message): (1) a licence file inside the artifact's own jar; (2) the publisher's repository at
-  the tag matching the bundled version; (3) the publisher's repository head only when it is
-  frozen (archived) or no version tag exists, with the reason in the note; and there is no rung
-  4 — a generic template is not the project's text, since the copyright line is part of a BSD or
-  MIT licence, so an artifact with no pinnable publisher text is a reason to question the
-  dependency, not to substitute one. The curation itself is judgment; everything after the pin
-  is mechanical. Measured before any of this was built: the plugin's classification matched
-  the hand grouping on **all 52 artifacts**, including the two that inherit `<licenses>` from a
-  parent pom (guava, animal-sniffer), the dual-licensed `javax.annotation-api`, and re2j's
-  non-SPDX "Go License". `licenseMerges` in the root pom's `pluginManagement` is what makes the
-  vocabulary stable — this tree alone spells Apache-2.0 six ways — and it lives there so a
-  sibling SQL module inherits one vocabulary rather than inventing a second.
-  **What a sibling actually costs, and #290 paid it**: the plugin block and one execution in its
-  pom, its own `NOTICE.template`, a CI step, and `licence-sources.toml` entries for its non-Apache
-  artifacts (the file and its pins are shared, so overlapping dependencies cost nothing twice). The
-  estimate held except in one direction, and only because it was measured beforehand: the BigQuery
-  bundle resolves **111** third-party artifacts against the **114** the connector's own runtime
-  tree shows — `commons-io` and `commons-lang3` reach the connector only through `provided`
-  flink-core, and `slf4j-api` the SQL module excludes itself — and it needed **four** new pinned
-  texts (checker-qual, threeten-extra, stax2-api, JSON-java). No new `licenseMerges`, as predicted — that list was extended here, once, to cover
-  the spellings that tree adds (`Apache License V2.0`, `BSD 3-clause`, `MIT License`,
-  `The MIT License`, `The BSD 2-Clause License`), and `failOnMissing` did not fire.
-  **The test trio is extracted, not copied** (#290, discharging the #26 trigger): `ShadedJar` and
-  the two test bases live in `flink-connector-gcp-test-utils` under `testutils.sql`, and this
-  module now contributes four values through a local `UberJar` holder. What the second consumer
-  actually asked for, which is why extracting on one would have guessed wrong: a per-module
-  artifact floor (40 here is vacuous for a 111-artifact tree), the `ManagedChannelProvider` SPI
-  name derived from the shaded prefix rather than written out, and the whole
-  "which packages stay unrelocated" list split into a shared part and a per-module one. What it
-  did *not* need — an "excluded from the bundle" hook for the artifacts a module keeps out — is
-  recorded on the BigQuery side, where the exclusion happens in the dependency tree instead.
-  **`download-licenses` must not be used for the licence texts**: it names files after the *licence*,
-  so protobuf, gax, google-auth and threetenbp collapse into one BSD-3-Clause file and the last
-  download wins. Measured — it left ThreeTen's copyright line standing for Google's code, and the
-  copyright holder is part of a BSD or MIT text.
-  **Invoke the goal through a phase, never as a bare `license:add-third-party`** — a
-  CLI goal invocation selects reactor modules but does not build them, so `-pl` cannot resolve the
-  connector the module bundles, not even with `-am`, unless an earlier `install` happened to leave
-  it in the local repository. That failed in CI and passed locally twice for exactly that reason.
-  It costs nothing to bind: the goal reads POMs Maven has already resolved and fetches nothing —
-  the network-using goal is `download-licenses`, which is the one not used here.
-  `BundledDependenciesNoticeTest` overlaps the script's first check deliberately: the comparison is
-  a Python script rather than a Maven plugin, so it is a CI step of its own, and the test is what
-  makes the same drift fail inside `just verify`
+## Sink (`docs/adr/0004`, `0005`, `0006`, `0007`, `0008`)
+
+- Publisher-based flush-on-checkpoint stateless writer; `AsyncSinkBase` was rejected — do not
+  re-propose it (`docs/adr/0004`).
+- The writer owns **both** in-flight caps (`maxInFlightMessages`, `maxInFlightBytes`); the SDK
+  `flowControl*` knobs are removed, not deprecated, and must not come back (`docs/adr/0004`).
+- The three drains (`drainInFlight()`, named apart from `awaitCapacity()`) must keep meaning
+  "empty, and `checkAsyncError`". Admission is "below the cap", never "does this message fit" —
+  a fits-predicate hangs the task. A repair republishes its parked batch exempt from both caps.
+- **Per-key order is restored by sorting the parked batch on a publish sequence, never by
+  observation order** — anything derived from mail order is a race (#78; `docs/adr/0004`).
+- **Exactly two failures are routed**: a record the serializer rejects, and a publish rejected
+  `INVALID_ARGUMENT`. Outage-shaped and configuration-shaped failures are never routed
+  (`docs/adr/0005`). A serializer `null` is a skip, not a failure (`docs/adr/0001`); the check
+  sits ahead of `stateFor(...)`.
+- Ordering beside a dropping policy is allowed; parking a cascade never depends on the create
+  disposition, the repair's topic creation is gated by `DestinationState.topicMissing` alone,
+  and a dropped key's resume happens in the repair, never in `routeFailedMessage`
+  (`docs/adr/0006`).
+- A non-solo `INVALID_ARGUMENT` is parked and confirmed by the isolation pass; only a message
+  rejected solo reaches the handler, and a batched report is not counted by the error metrics
+  (`docs/adr/0008`).
+- The publisher teardown is two-phase on a daemon thread with a real bound; the deadline runs
+  from `start()`; `awaitTermination` runs on the teardown thread; `retryTotalTimeout`/
+  `retryMaxAttempts` are rejected beside `enableMessageOrdering(true)` (`docs/adr/0007`).
+  `publisherShutdownsAbandoned` counts closes that overran their budget, reading the module-root
+  `PubSubShutdownResidue` adder — the base class holds no count.
+- **A table-layer check that fires inside `createDynamicTable{Source,Sink}` is wrapped by
+  `FactoryUtil`, and a check whose message names Java setters needs restating in option keys**;
+  one whose message needs no translation does not (`docs/adr/0007`). Never assert on an option
+  key through the wrapper's own message in a factory test.
+
+## Dead-letter queue (`docs/adr/0009`)
+
+- `PubSubDeadLetterQueue` lives in the top-level `pubsub.deadletter` package, uses the SDK
+  `Publisher` directly, and never auto-creates its topic. The envelope's `dlq-error` truncates
+  on a character boundary; the cause chain stays out of the envelope.
+- Both its budgets (`shutdownTimeout`, `flushTimeout`) are wait-side, one deadline per wait —
+  never one per future — and both reject a `Duration` too large for `toNanos()`. Expiry throws;
+  futures are not cancelled. Its knobs are documented in the datastream pages' dead-lettering
+  prose, not in `reference/pubsub.md` tables (#328 tracks the checker gap; #329 its missing
+  metrics).
+
+## Metrics (`docs/adr/0010`; conventions in the base module's CLAUDE.md)
+
+- Plain counters — every sink increment is on the task thread. `numRecordsSend` is counted
+  inside `publishTo` under `firstAttempt`; `parkedMessages` is a plain field zeroed in
+  `close()`; cascade cancellations are never counted; per-destination handles resolve once per
+  `DestinationState`.
+
+## Source (`docs/adr/0011`, `0012`)
+
+- **The reader checkpoints no splits** — the enumerator owns assignment and recomputes the plan
+  on every start (`docs/adr/0011`).
+- The subscriber shutdown mode is not exposed (`NACK_IMMEDIATELY` fixed); the
+  running-without-checkpointing guard is `MissingCheckpointDetector`, evaluated from
+  `PubSubSplitReader.fetch()`, never the record path; its budget starts at first split
+  assignment and retires at the first barrier (`docs/adr/0011`).
+- Teardown rules (`docs/adr/0012`): shutdowns and closes go in **one `Closers.closeAll` list**
+  (#297/#350 — never a loop then a call, at every level); `awaitTerminated()` absorbs the
+  client's re-report and discriminates by `permanentErrorReported`, a flag set where the failure
+  is **handed to a caller** — never replace it with a pre-shutdown snapshot; a paused split is
+  still watched via `checkFailure()` from `fetch()` (#348); the failed-start release is kept
+  although mostly a no-op (#349); `BoundedShutdown` is deliberately not adopted here.
+- The real-GCP gated suite (#82) is the **only** coverage of ordered dispatch, dead-letter
+  forwarding, ordered seek, create-option persistence, nack-redelivery promptness and the
+  permission-denied message texts. Gating annotations go on every concrete class, never the
+  abstract base (`docs/adr/0011`).
+- The emulator never answers the keepalive ping — idle streams cycle ~every 20 s and the log
+  line is routine, not a fault (`docs/adr/0013`).
+
+## Table API / SQL (`docs/adr/0014`)
+
+- The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption`
+  per setter, `getOptional(...).ifPresent(...)`, no default restated, enums carry their DDL
+  spelling in `toString()`, and the reflective completeness test holds the two sets equal.
+- No `properties.*` passthrough; metadata is not forwarded to formats;
+  `applyReadableMetadata` is guarded on the format *declaring* metadata; per-key ordering is not
+  reachable from SQL (#143 — document `sink.parallelism = 1`, do not enforce).
+- The two directions spell resource creation differently on purpose (sink: disposition gate +
+  `sink.auto-create.*` settings; source: presence of `scan.auto-create.*` settings is the
+  authorization), and **the source never creates a topic**. The `expirationTtl`/`neverExpire`
+  pair is rejected only in the table layer — the builder is last-writer-wins by design.
+
+## SQL uber-jar (`docs/adr/0015` — the record every later `flink-sql-connector-gcp-*` inherits)
+
+- Everything bundled is relocated, `grpc-netty-shaded` included (two `META-INF/native` path
+  renames; the shaded prefix must not grow an underscore); `artifactSet` stays `*:*`; never
+  declare a Google artifact at `test` scope in a SQL module; invoke the licence goal through a
+  phase, never bare. Read `docs/adr/0015` before changing any SQL module's pom or adding a
+  third module; what is specific to a tree belongs beside that connector (the BigQuery jar's
+  record is in its module).
+- NOTICE prose is hand-written in `NOTICE.template`; everything mechanical is generated
+  (`just update-notice` / `check-notice`) and licence texts are sha256-pinned in
+  `scripts/licence-sources.toml` — curation follows the ladder in
+  `.claude/skills/curate-licence-source/`, and there is no rung 4.
