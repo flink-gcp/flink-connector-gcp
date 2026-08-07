@@ -307,6 +307,18 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   nothing user-facing belongs in it. It carries that module's design decisions and nothing else; behavior and public
   API still go to the docs page, status still goes to the README table. Being unrendered, it keeps
   bare `#N` references under the same exemption the root `CLAUDE.md` already has
+- **`docs/adr/` is the decision archive** (ADR-0000, which records the whole scheme): one file per
+  settled decision — context, dated evidence, alternatives declined with reasons, supersession.
+  Deliberately unrendered: the site's pages describe current behavior for users, the archive keeps
+  the decision *process*, withdrawn conclusions included. The division of homes: a docs page holds
+  current behavior and the rationale a user needs, an ADR holds the decision event, a `CLAUDE.md`
+  holds the imperative rules a session must follow with a pointer to the record — so where a docs
+  page already carries a decision's full operative record, the `CLAUDE.md` entry points there and
+  no ADR is written. **A newly settled decision gets its ADR in the pull request that lands it**,
+  with the settled date; the issue's `Design (settled YYYY-MM-DD)` comment may then just say
+  "Settled — see ADR-NNNN". ADR files carry the Apache-2.0 header and full issue URLs (they render
+  on GitHub, where bare `#N` is dead text — the READMEs' rule, not the `CLAUDE.md` exemption), and
+  `docs/adr/README.md` holds the hand-maintained index that allocates the next number
 
 ## Workflow rules
 
@@ -811,177 +823,25 @@ are the trigger; they are not a summary, and none of them is safe to answer from
 Decisions that span connectors stay here: the package layout convention above, the version policy
 and the licensing rules. A new connector gets its own module file rather than a section here.
 
-## A serializer returning `null` skips the record (#230)
+## Cross-connector contracts (rules here; full records in `docs/adr/`)
 
-Every serialization SPI in this repository — `BigtableSerializationSchema`,
-`CloudTasksSerializationSchema`, `PubSubSerializationSchema`, `BigQueryProtoSerializer` — is
-`@Nullable` on `serialize`, and every one of the six writers checks it: the record is written
-nowhere, is **not** a failure, and never reaches the `FailureHandler`. Decided with the user rather
-than the alternative the issue also offered (reject `null` with a named message): a user may
-legitimately return `null` to filter, and that is what Flink's own `KafkaWriter` does
-(`@Nullable ProducerRecord`, skipped silently) and what `google/flink-connector-gcp`'s
-`BaseRowMutationSerializer` does — Bigtable already shipped it here for that reason. What that
-argument does **not** rest on is Kafka's javadoc, which reads *"or null if the given element cannot
-be serialized"*: that is `null` overloaded to mean *failure*, silently dropped, and #37 replaced it
-here with a real failure channel. So `null` means filter, and only filter.
-
-Three rules the implementation turns on, none of them re-derivable from the contract alone:
-
-- **The check goes immediately after the serializer's `catch`, ahead of any per-destination
-  state.** `PubSubWriter.stateFor(...)` opens a publisher and `FileLoadsWriter.stateFor(...)` opens
-  a staging file, so a record written nowhere must not reach either. The three BigQuery writers
-  already serialized before creating a stream or auto-creating a table, for the sibling reason
-  their comments give.
-- **A combinator over one of our own SPIs propagates the `null` unchanged, so the writer's check is
-  the single decision point.** `MetadataSerializationSchema` is the case that made this a bug
-  rather than a tidiness point: it used to pass the `null` through when no extractor fired and NPE
-  on `message.toBuilder()` when one did, so *one* skipping serializer became a dead letter for some
-  records of a stream and a silent skip for the rest, depending on the record. Its extractors are
-  not called for a skipped record either — they are user code, and running them for a record the
-  sink will not send would surface their failures as failures of that record.
-- **A `null` from a wrapped Flink `SerializationSchema` is a serialization failure, not a skip** —
-  `DataOnlySerializationSchema`, `HttpTargetSerializationSchema.withBody(...)`,
-  `table.sink.RowDataSerializationSchema`. That SPI's contract has no `null` in it (checked against
-  `apache/flink` master: `@return The serialized element`), so reading one as a skip would silently
-  drop every record a format failed on. Each throws an `IOException` naming the wrapped class and
-  pointing at the SPI-level skip; the routing is unchanged, the message is what is new. The Table
-  API layer therefore cannot skip at all, which is correct — SQL has no way to express it.
-
-`recordsSkipped` is registered by all six writer metrics classes and is the **only** thing that
-reports a skip. That is the honest cost of the contract: a serializer skipping every record leaves
-an empty destination under a green job, which no failure counter sees — the #206 exposure in
-another shape, and the reason the counter is not optional. It is deliberately **not** broken down
-per destination even where `perDestinationMetrics` is on: the serializer is handed the record
-alone, so its decision cannot depend on the destination, and `destination.X.skipped` would read as
-a property of X.
-
-## A test forges an options object on `builder().build()`, never on `defaults()` (#316)
-
-Every options class whose `defaults()` returns a `private static final DEFAULTS = builder().build()`
-hands out a **JVM-wide singleton** — ten of them as of 2026-08-06, in all four connector modules. The
-writer-creation-guard tests each carry a private `forged(T options, String name, int value)` that
-reflectively writes a value the builder would reject, and `setAccessible(true)` **does** permit
-writing a non-static final field of a normal class — so forging on `defaults()` writes into that
-singleton for the rest of the surefire JVM, and nothing restores it.
-
-That is what #316 was. `BigtableMutateRowsSinkTest` forged on `BigtableWriterOptions.defaults()`, so
-every later `defaults()` in the same fork carried `maxInFlightMutations = 0`, and
-`BigtableWriterMetricsTest`'s 13 tests all died in the writer's precondition — on about one run in
-three, because `default-test` runs `forkCount=4` with no configured `runOrder` and `reuseForks` left
-at surefire's default of `true` — do not go looking for it in a pom, only the `integration-tests`
-execution states it — so class-to-fork assignment decides whether the two classes share a JVM. The
-pin below holds whatever those settings become, which is why nothing here proposes changing them.
-Measured rather than inferred: under `-Dflink.forkCountUnitTest=1 -Dsurefire.runOrder=alphabetical`
-it fails every time and under `reversealphabetical` it passes every time, which is also how a fix
-here is measured against a failing case rather than against a green run that would have been green
-anyway.
-
-So: **forge on `builder().build()`**, and the forging test asserts the singleton survived it —
-placed in the class that would do the writing, so a regression fails deterministically there instead
-of intermittently in whichever class the fork ran next. BigQuery carries no such assertion because
-its three forged types (`DefaultStreamOptions`, `BufferedStreamOptions`, `FileLoadsOptions`) have no
-`defaults()` at all, so there is no singleton to poison — the absence is checked, not an oversight.
-Read that as a property of those three types and **not** of the module: six of the ten singletons are
-BigQuery's, so a new forging test there owes the pin like any other.
-
-A `0` is **not** reachable in production, which is why the fix was in the test and the writers'
-preconditions stay exactly where they are: the builders reject a non-positive value on every setter,
-and Java serialization of the job graph restores the written field values. It becomes reachable under
-serial-form evolution — a field added while `serialVersionUID` stays `1L`, read from an older stream
-— which is precisely what those preconditions and their comments exist for.
-
-## A vendor client's teardown may re-report a failure the connector already consumed (#325)
-
-Two of this repository's client-wrapping SPIs wrap a client that, at teardown, reports again a
-failure the connector has already taken delivery of and acted on. Both absorb it; a third
-implementation of either SPI would have to as well, and that is what their `close()` javadoc says.
-What the rule is **not** is a property of wrapping a client — #325 measured it against the vendor
-sources (2026-08-06, at the versions `libraries-bom` 26.85.1 pins), and found two unrelated
-mechanisms, so the next one is measured rather than assumed either way.
-
-**What was measured, stated so the set is reproducible**: every `@Internal` interface in this
-repository that declares a `close()` and whose implementations exist to wrap a GCP client — nine of
-them, listed below — plus `@Experimental` `DeadLetterQueue`, admitted on its implementation rather
-than its declaration, since `PubSubDeadLetterQueue` owns a `Publisher`. Two qualifiers the wording
-alone will not give you, both worth stating because a re-run otherwise disagrees with this list.
-`TopicAdmin` and `SubscriptionAdmin` are **in** although neither owns a long-lived client — they
-declare the `close()` and are the shape a future implementation might, which is what the contract is
-for — and `SubscriptionAdmin`'s closer is the split **enumerator**, not a writer or reader.
-`StagingStorage` is **out**, and this is the one exclusion that is a property of the type rather
-than a judgement: it declares no `close()` at all, its teardown being the staged object's own
-`OutputStream`, so there is no moment at which it could report anything a second time.
-
-- **gax 2.82.0 `BatcherImpl.close()`** — `MutationBatcher`, Bigtable. `BatcherStats
-  .recordBatchElementsCompletion` calls `get()` on **every entry's result future** and accumulates
-  the failure; the maps are never cleared for the batcher's lifetime; `closeAsync()` ends in
-  `asException()` and `close()` rethrows it as `new BatchingException(cause.getMessage())`. #238.
-- **google-cloud-pubsub 1.152.0 `Subscriber.awaitTerminated(long, TimeUnit)`** — the source's
-  `NotifyingPullSubscriber`. `Subscriber extends AbstractApiService`, whose `InnerService extends`
-  Guava's `AbstractService`; `checkCurrentState(TERMINATED)` on a `FAILED` service throws
-  `IllegalStateException(..., failureCause())`, and that cause is the same `Throwable` the failure
-  listener already recorded as `permanentError` and `pullMessages` already reported, wrapped in an
-  `IOException`. Note what `Subscriber` is *not*: gax redeclares the service contract precisely so
-  Guava can be shaded, so `Subscriber` is an `ApiService`, and the `AbstractService` is a private
-  inner field of `AbstractApiService`. Nothing can catch or `instanceof` the Guava type here. #325.
-
-**The consequences are asymmetric, and only one of them is severe.** Bigtable's duplicate arrives
-after the sink's `FailureHandler` may have deliberately dropped those very entry failures, so it
-converts a job that policy kept running into a failed one. Pub/Sub's first report already fails the
-job, so the duplicate only adds a competing exception to a teardown the first one is causing. Both
-absorb, but do not read the second as evidence that the first is merely tidiness.
-
-**An absorb wide enough to catch the re-report catches more than the re-report, and what else falls
-in it has to be worked out per client** (#351, on the Pub/Sub subscriber). There, the same
-`IllegalStateException` also carries a failure the SDK raises *during* our teardown — `doStop()`
-runs `runShutdown()` on a thread of its own under `catch (Exception e) { notifyFailed(e); }` — which
-nothing has consumed, because the reader has stopped pulling. It is still absorbed, but it is now
-told apart and reported as its own thing. **What the discrimination must test is whether the failure
-was handed to a caller, not when it was recorded** — a distinction the first attempt at this got
-wrong twice: it snapshotted the recorded failure before the shutdown, which on the reader's own
-close path is taken *after* `stopAsync()` (every subscriber's `shutdown()` runs before any
-`close()`), and which in any case answers "was it readable" rather than "was it read". A boolean set
-where the failure is thrown answers the actual question and needs no ordering argument. A client
-whose teardown cannot raise a new failure needs none of this — which is most of the list below — so
-the question to ask of the next one is not "does it re-report" alone but "what else does this catch
-cover".
-
-**Measured not to have it**, so this is not re-derived:
-
-- `TopicPublisher` and `DeadLetterQueue` — `Publisher.shutdown()` is an already-shut-down
-  `checkState`, then `publishAllOutstanding()`, then `Waiter.waitComplete()`, which counts pending
-  work and inspects no result, and `awaitTermination` returns a `boolean`. Nothing reads a message
-  future, so a per-message failure is reported only through the future `publish` returned.
-- `TaskCreator` and BigQuery's `BufferedStreamService` — `CloudTasksClient` and
-  `BigQueryWriteClient` hold a gax `BackgroundResourceAggregation`, which is pure delegation
-  returning `void`/`boolean`.
-- `RowAppender` and `OffsetRowAppender` — bigquerystorage 3.30.0 `StreamWriter.close()`, whose
-  `ConnectionWorker.cleanupInflightRequests()` completes only futures **still in the inflight
-  queue**: a first report, not a repeat, and the nearest miss in the set.
-- `TopicAdmin` and `SubscriptionAdmin` — no long-lived client, `close()` empty.
-- `MutationBatcher`'s *client* half, which is a second teardown inside one SPI —
-  `BigtableDataClient.close()` → `EnhancedBigtableStub.close()`, which is **not** a
-  `BackgroundResourceAggregation` but `BigtableClientContext.close()`'s own loop over the context's
-  background resources, wrapped in an `IllegalStateException`. It reports no per-mutation outcome.
-
-Two rules the implementations turn on:
-
-- **The absorb is per-connector, because the mechanisms are.** Nothing shared would catch both:
-  `shutDownAbsorbingTheLifetimeFailureReport` catches `BatchingException` by type, and the
-  subscriber's `awaitTerminated()` catches `TimeoutException | RuntimeException` because Guava
-  reports a state, not a named exception. A shared helper would have to be parameterised by the
-  thing that differs, which is the whole of it.
-- **A client that cannot be subclassed needs its operations held as functional values**, or the
-  absorb has no test. Every one of these clients is unextendable, but **not all by the same
-  mechanism**, and the distinction is worth keeping because only one of them is a rule someone can
-  break: gax's `Batcher` is `@InternalExtensionOnly`, so a fake would be legal Java and an
-  unsupported extension; `Subscriber` and `Publisher` are non-final classes whose only constructor
-  is `private`; `BigtableDataClient`'s is **package-private** (`@InternalApi("Visible for
-  testing")`), and `StreamWriter`'s and `BigQueryWriteClient`'s are likewise inaccessible — each
-  forbidding a subclass just as effectively. **None of them is `final`**, which six places in this
-  repository asserted: #324 corrected two (`BoundedShutdown`'s javadoc, the Pub/Sub `CLAUDE.md`),
-  #325 three more (`PubSubDeadLetterQueue` twice, `RowAppender` once, that last one about the
-  BigQuery pair rather than `Publisher`), and the base module's `CLAUDE.md` outlived both sweeps.
-  Worth the tally, because the claim was copied rather than
-  checked each time. There is no mocking
-  library here, so injection is the only seam — #324 for the batcher adapter, #325 for the
-  subscriber, and `PubSubDeadLetterQueue`'s `publisherShutdown`/`channelShutdown` before both.
+- **A serializer returning `null` skips the record** (#230; `docs/adr/0001`): every connector
+  serialization SPI is `@Nullable` on `serialize`, and a `null` means filter, only filter — the
+  record is written nowhere, is not a failure, never reaches the `FailureHandler`, and
+  `recordsSkipped` is the only thing that reports it. The writer's check sits immediately after
+  the serializer's `catch`, ahead of any per-destination state; a combinator over one of our own
+  SPIs propagates the `null` unchanged; a `null` from a wrapped Flink `SerializationSchema` is a
+  serialization *failure*, never a skip. Precedents, the rejected alternative and the combinator
+  bug are in the ADR.
+- **A test forges an options object on `builder().build()`, never on `defaults()`** (#316;
+  `docs/adr/0002`): `defaults()` hands out a JVM-wide singleton, and a reflective forge on it
+  poisons every later test in the surefire fork. The forging test also asserts the singleton
+  survived, placed in the class that would do the writing. The incident, the fork mechanics and
+  the deterministic reproduction recipe are in the ADR.
+- **A vendor client's teardown may re-report a failure the connector already consumed** (#325;
+  `docs/adr/0003`): the Bigtable batcher and the Pub/Sub subscriber do, by unrelated mechanisms.
+  Their wrappers absorb the re-report, each SPI's `close()` javadoc binds a third implementation
+  to the same contract, and the absorb stays per-connector because the mechanisms share no type
+  to catch. A client that cannot be subclassed holds its operations as functional values, or the
+  absorb has no test. The nine-SPI survey, the asymmetric consequences and the #351 refinement
+  (what else a wide absorb catches) are in the ADR.

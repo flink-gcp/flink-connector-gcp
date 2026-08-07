@@ -1,6 +1,7 @@
 // markdownlint-cli2 configuration for `just lint`. Scope is the *rendered* markdown —
-// the docs site sources and the READMEs; CLAUDE.md files are Claude-facing and unrendered,
-// so they stay out for the same reason they are exempt from the explicit-issue-link rule.
+// the docs site sources, the READMEs and the ADRs (rendered by GitHub rather than Hugo);
+// CLAUDE.md files are Claude-facing and unrendered, so they stay out for the same reason
+// they are exempt from the explicit-issue-link rule.
 //
 // Rules run at their strict defaults except:
 // - MD013 (line length): off. The ~100-column wrap is a soft convention kept by review, and
@@ -22,6 +23,7 @@
   },
   "globs": [
     "docs/content/**/*.md",
+    "docs/adr/**/*.md",
     "README.md",
     "flink-*/README.md",
     "opentofu/README.md"
