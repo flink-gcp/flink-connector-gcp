@@ -207,8 +207,8 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   arrived when its second consumer did — the Pub/Sub sink's per-topic publishers and
   `PubSubDeadLetterQueue` — which is this module's multiple-consumers bar met exactly, and it joined
   an existing package rather than taking one of its own, for the reason `EmulatorEndpoint` joined
-  `base.rpc`. Why it exists at all, and the six decisions inside it, are the Pub/Sub module's
-  CLAUDE.md; **the class contract lives in its own javadoc** — the daemon thread, the
+  `base.rpc`. Why it exists at all, and the decisions inside it, are `docs/adr/0007`;
+  **the class contract lives in its own javadoc** — the daemon thread, the
   release hook's nullable-`Runnable` shape, the idempotent `close()`, the one-thread precondition
   with its per-field threading account, and the caller-supplied `LongAdder`'s ownership argument
   (#311, with the 10 ms-reporter measurement) — which the aggregated API reference publishes, so

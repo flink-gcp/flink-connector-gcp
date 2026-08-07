@@ -797,10 +797,10 @@ are the trigger; they are not a summary, and none of them is safe to answer from
 - `flink-connector-gcp-pubsub/CLAUDE.md` — vendoring provenance (#17/#31), sink (#18), topic
   auto-creation (#19), tuning (#20) and in-flight bounds (#85), ordering×repair (#78), emulator
   (#21), source (#79/#80), Table API/SQL (#47, split into #135–#138) and the shaded uber-jar
-  (#138) — which is where the **general** shading decisions live, inherited rather than re-argued
-  by every later `flink-sql-connector-gcp-*`, so read it before adding a third; what is specific
-  to a tree (an artifact kept out of the bundle, a relocation only it needs) belongs beside that
-  connector, as #290's does
+  (#138). Migrated to ADRs (`docs/adr/0004`–`0015`); the **general** shading decisions every
+  later `flink-sql-connector-gcp-*` inherits are `docs/adr/0015` — read it before adding a
+  third; what is specific to a tree (an artifact kept out of the bundle, a relocation only it
+  needs) belongs beside that connector, as #290's does
 - `flink-connector-gcp-cloudtasks/CLAUDE.md` — sink design (#23) and implementation (#24)
 - `flink-connector-gcp-bigtable/CLAUDE.md` — sink design and implementation (#33): implement rather
   than adopt or vendor, the four SDK facts the writer rests on (including the client's own blocking

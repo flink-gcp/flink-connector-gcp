@@ -784,10 +784,10 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   enum's DDL spelling — log-only, nothing parses it, and the counterpart of the #287 entry's note
   about `StartPosition.toString()`
 - **`flink-sql-connector-gcp-bigquery`, the uber-jar** (#57, sub-issue #290): the shading and
-  licensing decisions are `flink-connector-gcp-pubsub/CLAUDE.md`'s, inherited wholesale and not
+  licensing decisions are `docs/adr/0015`'s, inherited wholesale and not
   re-argued here — everything relocated including `grpc-netty-shaded` and its two `META-INF/native`
   renames, `artifactSet` `*:*`, no Google artifact declared at `test` scope, the licence machinery
-  through `just update-notice` / `check-notice`. **Read that entry before changing this module's
+  through `just update-notice` / `check-notice`. **Read that ADR before changing this module's
   pom.** What is this tree's own:
   **`org.slf4j:slf4j-api` is the one artifact deliberately kept out of the bundle**, and the
   Pub/Sub module has no counterpart because its tree carries no slf4j at all; this one gets it
