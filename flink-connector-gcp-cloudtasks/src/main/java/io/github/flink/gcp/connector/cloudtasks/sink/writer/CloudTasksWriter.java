@@ -76,10 +76,9 @@ import java.util.Set;
  * jobs; without it {@code flush()} never runs mid-stream and outstanding creations are lost on
  * failure. Batch execution is covered by the end-of-input flush.
  *
- * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
- * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every record up to the barrier
- * was either durably accepted, skipped by the serializer, or handed to the {@link FailureHandler};
- * the per-task failures below say which ones reach it.
+ * <p>That guarantee assumes the default {@code failJob()} policy; what a successful checkpoint
+ * means under a dropping policy is stated once on {@link FailureHandler}, and the per-task failures
+ * below say which failures reach it.
  *
  * <h2>Retries</h2>
  *
@@ -103,12 +102,10 @@ import java.util.Set;
  * oversized body, a header the service refuses). Each concerns one record, and re-sending the same
  * bytes cannot succeed. Classification is a <em>precedence over the whole cause chain</em>, not a
  * first-match: a failure carrying a transient status anywhere is transient even if it also carries
- * an {@code INVALID_ARGUMENT}, so an unstable service can never produce a dead letter. The handler
- * drops the task by returning and fails the job by throwing; the default {@code failJob()} throws,
- * which is why the failures it does <em>not</em> cover matter — an exhausted retry budget stays a
- * job failure, so no drop policy can quietly discard an outage's backlog. A handler failing inside
- * a completion callback is captured into {@link #asyncError} like any other terminal failure,
- * because a mailbox mail cannot throw a checked exception at its caller.
+ * an {@code INVALID_ARGUMENT}, so an unstable service can never produce a dead letter.
+ * Drop-versus-throw semantics, the never-routed backlog argument and the asynchronous capture of a
+ * handler failing inside a completion callback are stated once on {@link FailureHandler}; here that
+ * capture lands in {@link #asyncError}.
  *
  * <h2>Task naming</h2>
  *

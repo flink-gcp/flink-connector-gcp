@@ -59,10 +59,9 @@ import java.util.Deque;
  * in streaming jobs; without it {@code flush()} never runs mid-stream and outstanding mutations are
  * lost on failure. Batch execution is covered by the end-of-input flush.
  *
- * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
- * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every record up to the barrier
- * was either applied, skipped by the serializer, or handed to the {@link FailureHandler}; the
- * per-mutation failures below say which ones reach it.
+ * <p>That guarantee assumes the default {@code failJob()} policy; what a successful checkpoint
+ * means under a dropping policy is stated once on {@link FailureHandler}, and the per-mutation
+ * failures below say which failures reach it.
  *
  * <p>A record replayed after a restart is applied again. Whether that is idempotent is the
  * serializer's decision, not the writer's: a {@code setCell} with an explicit timestamp overwrites
@@ -81,12 +80,9 @@ import java.util.Deque;
  * they concern one mutation and applying the same one again cannot succeed. Classification is a
  * <em>precedence over the whole cause chain</em>, not a first match: a failure carrying a transient
  * status anywhere is transient even when a data-shaped status sits in front of it, so an unstable
- * service can never produce a dead letter. The handler drops the mutation by returning and fails
- * the job by throwing; the default {@code failJob()} throws, which is why the classes it does
- * <em>not</em> cover matter — an outage the client gave up on stays a job failure, so no drop
- * policy can quietly discard a backlog. A handler failing inside a completion callback is captured
- * into {@link #asyncError} like any other terminal failure, because a mailbox mail cannot throw a
- * checked exception at its caller.
+ * service can never produce a dead letter. Drop-versus-throw semantics, the never-routed backlog
+ * argument and the asynchronous capture of a handler failing inside a completion callback are
+ * stated once on {@link FailureHandler}; here that capture lands in {@link #asyncError}.
  *
  * <p><b>A {@code ROW_LEVEL} verdict is confirmed solo before it is routed</b> (#239). Bigtable may
  * reject a whole {@code MutateRows} request rather than the entry that provoked it, and the client
