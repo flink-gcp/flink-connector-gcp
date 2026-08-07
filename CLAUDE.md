@@ -793,7 +793,7 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   option scoping, JSON columns (#49/#50), geography columns (#126), Avro and JSON serializers (#66),
   column modes (#124/#145), protobuf well-known types (#147), default-stream tuning knobs
   and the connection-pool guard (#54), Table API/SQL (#57, split into #287–#290) and its shaded
-  uber-jar (#290), deferred `location()` (#10)
+  uber-jar (#290), deferred `location()` (#10). Migrated to ADRs (`docs/adr/0016`–`0035`)
 - `flink-connector-gcp-pubsub/CLAUDE.md` — vendoring provenance (#17/#31), sink (#18), topic
   auto-creation (#19), tuning (#20) and in-flight bounds (#85), ordering×repair (#78), emulator
   (#21), source (#79/#80), Table API/SQL (#47, split into #135–#138) and the shaded uber-jar
