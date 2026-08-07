@@ -33,13 +33,14 @@ import javax.annotation.Nullable;
  * <p>The counters are plain, not thread-safe: mutation completions reach the writer as mailbox
  * mails, so every increment happens on the task thread.
  *
- * <p><b>{@code numRecordsSend} counts records, not mutation attempts</b> — and here that costs
- * nothing to arrange, because the retries are the client's. A mutation this writer hands to the
- * batcher is retried inside the SDK and only ever comes back once, so there is no re-entered call
- * site to guard as the Pub/Sub and Cloud Tasks writers have. The same fact bounds what {@link
- * #applyFailure} can report: only failures the client gave up on are visible here, so the sum over
- * the transient codes is <em>not</em> this connector's retry volume, which is the one place a
- * dashboard reading all four connectors alike would be misled.
+ * <p><b>{@code numRecordsSend} counts records, not mutation attempts</b>, which the writer arranges
+ * by counting on the first submission only: the isolation pass re-submits a parked mutation alone
+ * to get it a verdict of its own (#239), and that is a second submission of a record already
+ * counted. Retrying is otherwise the client's — a mutation this writer hands to the batcher is
+ * retried inside the SDK and comes back once — and the same fact bounds what {@link #applyFailure}
+ * can report: only failures the client gave up on are visible here, so the sum over the transient
+ * codes is <em>not</em> this connector's retry volume, which is the one place a dashboard reading
+ * all four connectors alike would be misled.
  *
  * <p>There are no per-destination counters: a sink writes one fixed table, so {@code
  * destination.TABLE.*} would be a constant restatement of the writer's own totals. Registering a
@@ -80,14 +81,26 @@ final class BigtableWriterMetrics {
      *
      * @param inFlightMutations mutations the service has not acknowledged
      * @param inFlightBytes their serialized size, against {@code maxInFlightBytes}
+     * @param parkedMutations mutations held for the isolation pass
      */
-    void bindWriterState(Gauge<Integer> inFlightMutations, Gauge<Long> inFlightBytes) {
+    void bindWriterState(
+            Gauge<Integer> inFlightMutations,
+            Gauge<Long> inFlightBytes,
+            Gauge<Integer> parkedMutations) {
         metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_MUTATIONS, inFlightMutations);
         metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
+        // Nothing else reports the park: a mutation waiting for its solo verdict has been released
+        // from the in-flight counters and has not reached the failure handler, so between the two
+        // it is invisible. Transient rather than a backlog, since the pass empties the park at the
+        // next record or the next checkpoint — so a reporter reads how often it catches the writer
+        // mid-isolation, which is what the throughput cost of the pass looks like (#239).
+        metricGroup.gauge(BigtableMetricNames.PARKED_MUTATIONS, parkedMutations);
     }
 
     /**
-     * Counts one record handed to the client library for application.
+     * Counts one record handed to the client library for application. Called on a record's first
+     * submission only — see the class documentation for why the isolation pass's re-submission is
+     * not a second send.
      *
      * @param serializedSize the mutation's serialized size
      */
@@ -123,9 +136,12 @@ final class BigtableWriterMetrics {
      * #mutationFailed} counts: that one counts elements routed to the handler, this one counts RPC
      * failures whether they were routed or fatal.
      *
-     * <p>Every failure that reaches the writer is counted, fatal ones included: the client has
+     * <p>Every failure with a confirmed identity is counted, fatal ones included: the client has
      * already exhausted its own retries by then, so each is a distinct give-up rather than an
-     * attempt.
+     * attempt. A <em>batched</em> row-level rejection is the exclusion — one request-level status
+     * reported against every co-batched entry, which counted here would multiply one incident by
+     * the batch size. The isolation pass counts the true rejections when it confirms them, so this
+     * counter reports rejected records rather than rejected batches (#239).
      *
      * <p>The code passed in is the chain's <b>outermost</b> classifiable status, which is not
      * always the one the writer routes on: {@link BigtableErrorClassifier#classify} scans the whole

@@ -36,6 +36,8 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.Deque;
 
 /**
  * At-least-once writer applying row mutations to one fixed Bigtable table.
@@ -86,6 +88,19 @@ import java.io.IOException;
  * into {@link #asyncError} like any other terminal failure, because a mailbox mail cannot throw a
  * checked exception at its caller.
  *
+ * <p><b>A {@code ROW_LEVEL} verdict is confirmed solo before it is routed</b> (#239). Bigtable may
+ * reject a whole {@code MutateRows} request rather than the entry that provoked it, and the client
+ * then fails every entry of that batch with the same status — so routing on that report would hand
+ * a batch to a dropping handler for one bad record. A verdict answering a batched submission is
+ * therefore <em>parked</em> rather than routed, and {@link #runIsolationPass()} re-submits each
+ * parked mutation as its own single-entry request: one that succeeds was collateral damage and is
+ * now applied, one rejected again is the mutation the service really refused and reaches the
+ * handler. The pass runs from {@link #flush(boolean)} and from {@link #write} — from both, so a
+ * park cannot grow across a checkpoint interval — and it terminates because every submission inside
+ * it is solo, which it bounds itself rather than assumes. Its cost is real: a stream whose
+ * rejections are frequent spends roughly one request per record while isolating, which is what buys
+ * back the records batched with a bad one.
+ *
  * <p>A failure that first surfaces during {@link #close()} reaches neither the handler nor {@link
  * #asyncError}: Flink quiesces the task mailbox before it closes operators, so a completion
  * callback's re-dispatch is rejected from there on. The batcher reports such a failure only inside
@@ -130,6 +145,16 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     private long inFlightBytes;
 
     /**
+     * Mutations whose rejection answered a batched submission and so names no entry, awaiting the
+     * solo re-submission that gives each its own verdict (#239). Touched only on the task thread.
+     *
+     * <p>A deque so the pass can {@code poll()} one mutation at a time rather than iterate: its
+     * opening drain runs mails that may park more, and those join the tail of the same pass instead
+     * of needing another one.
+     */
+    private final Deque<ParkedMutation> pendingIsolation = new ArrayDeque<>();
+
+    /**
      * First terminal failure; set and read only on the task thread (failure callbacks re-dispatch
      * through the mailbox).
      */
@@ -167,7 +192,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         this.maxInFlightBytes = options.getMaxInFlightBytes();
         this.failedMutationHandler = config.getFailedMutationHandler();
         this.metrics = new BigtableWriterMetrics(metricGroup);
-        this.metrics.bindWriterState(this::getInFlightMutations, this::getInFlightBytes);
+        this.metrics.bindWriterState(
+                this::getInFlightMutations, this::getInFlightBytes, this::getParkedMutations);
         this.completionDescription = "Complete a Bigtable mutation of " + destination;
         this.failureDescription = "Fail a Bigtable mutation of " + destination;
     }
@@ -175,6 +201,15 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     @Override
     public void write(T element, Context context) throws IOException, InterruptedException {
         checkAsyncError();
+        // Before this record is even serialized, and this is what bounds the park at all: parking
+        // happens in completion mails, mails run only inside a yield, and every park releases one
+        // mutation from the in-flight counters — so between two writes at most maxInFlightMutations
+        // can accumulate. Isolating only at the checkpoint barrier would instead let a stream of
+        // rejections pile the whole interval's worth of mutations into the writer's heap, since a
+        // parked mutation is counted by neither in-flight bound.
+        if (!pendingIsolation.isEmpty()) {
+            runIsolationPass();
+        }
         RowMutationEntry entry;
         try {
             entry = config.getSerializer().serialize(element, context);
@@ -200,6 +235,27 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // and carried by the callback: it is both the byte counter's unit and the metric's.
         int serializedSize = entry.toProto().getSerializedSize();
         awaitCapacity();
+        submit(entry, serializedSize, true, false);
+    }
+
+    /**
+     * Hands a mutation to the batcher, counts it in flight and registers its completion callback.
+     *
+     * <p>{@code firstAttempt} is what keeps {@code numRecordsSend} a count of <em>records</em>: the
+     * isolation pass re-submits a parked mutation, and a record must be counted once however many
+     * requests it took. The in-flight counters are the opposite — they track submissions, so they
+     * are adjusted on every call.
+     *
+     * <p>{@code soloVerdict} says the mutation travels as its own single-entry {@code MutateRows}
+     * request — true only inside {@link #runIsolationPass()}, which empties the batcher's
+     * accumulator and drains around each submission — so an {@code INVALID_ARGUMENT} answering it
+     * concerns this mutation alone and may be routed to the failure handler. From any other
+     * submission that status may be a request-level rejection the client fans out over the whole
+     * batch, so it must be isolated first, not routed (#239).
+     */
+    private void submit(
+            RowMutationEntry entry, int serializedSize, boolean firstAttempt, boolean soloVerdict)
+            throws IOException {
         ApiFuture<Void> future;
         try {
             future = batcher.add(entry);
@@ -214,8 +270,59 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // nothing would ever release it.
         inFlightMutations++;
         inFlightBytes += serializedSize;
-        metrics.mutationSent(serializedSize);
-        ApiFutures.addCallback(future, new MutationCallback(entry, serializedSize), Runnable::run);
+        if (firstAttempt) {
+            metrics.mutationSent(serializedSize);
+        }
+        ApiFutures.addCallback(
+                future, new MutationCallback(entry, serializedSize, soloVerdict), Runnable::run);
+    }
+
+    /**
+     * Gives every parked mutation its own verdict, by re-submitting each as the only entry of its
+     * request (#239).
+     *
+     * <p>The opening {@code sendOutstanding()} is what makes the submissions below solo: gax's
+     * batcher accumulates into one open batch and swaps it out on that call, so a mutation added to
+     * an emptied accumulator and flushed at once travels alone. It is also what lets the drain
+     * after it finish at all — an entry still sitting in the accumulator is counted in flight and
+     * its future cannot complete until a request carries it.
+     *
+     * <p>Consumed with {@code poll()} rather than iterated: the opening drain runs completion mails
+     * that may park further mutations, and those are picked up by this same loop. Nothing parks
+     * during the per-mutation drains, since the only submission in flight there is solo and a solo
+     * verdict is routed rather than parked.
+     *
+     * <p>That last sentence is the loop's termination argument, and it lives in {@link
+     * #onMutationFailed} rather than here — so the loop is <b>bounded by the park's size</b> and
+     * raises rather than spins if the invariant is ever broken. The failure it converts is the
+     * worst one this writer could have: a task thread inside a mailbox loop that no completion can
+     * end is invisible to every timeout Flink has, and returning quietly instead would let a
+     * checkpoint complete over mutations that were neither applied nor routed.
+     *
+     * <p>A failure raised here — a fatal status surfaced by a drain, a batcher refusing the
+     * submission — abandons the remainder of the park, and the mutation being isolated with it:
+     * neither applied nor routed. That is safe for the same reason {@link #close()}'s discard is,
+     * and it is why the throw must not be swallowed: the checkpoint does not complete, so the
+     * restart replays those records.
+     */
+    private void runIsolationPass() throws IOException, InterruptedException {
+        batcher.sendOutstanding();
+        drainInFlight();
+        for (int budget = pendingIsolation.size(); budget > 0; budget--) {
+            ParkedMutation parked = pendingIsolation.poll();
+            submit(parked.entry, parked.serializedSize, false, true);
+            batcher.sendOutstanding();
+            drainInFlight();
+        }
+        if (!pendingIsolation.isEmpty()) {
+            throw new IllegalStateException(
+                    "A solo re-submission to Bigtable table "
+                            + destination
+                            + " was parked again instead of being routed, which cannot happen"
+                            + " unless the isolation contract has been broken; "
+                            + pendingIsolation.size()
+                            + " mutation(s) would never get a verdict.");
+        }
     }
 
     @Override
@@ -226,9 +333,13 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // behind a blocked task thread.
         batcher.sendOutstanding();
         drainInFlight();
-        // After the drain, never before it: the failures that reach the handler are discovered by
-        // the drain, so flushing first would checkpoint past dead letters the drain is about to
-        // produce.
+        // The handler's flush comes last, and the two steps before it are what it must not run
+        // ahead of: the drain is what discovers this checkpoint's failures, and the pass is what
+        // turns the batched ones among them into dead letters. Flushing earlier would checkpoint
+        // past a dead letter one of them was about to produce.
+        if (!pendingIsolation.isEmpty()) {
+            runIsolationPass();
+        }
         failedMutationHandler.flush();
     }
 
@@ -247,9 +358,12 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // close — and a mid-flight teardown is precisely when both this clear and those failures
         // happen, so a clear placed after the call would be skipped exactly when it is needed.
         // Same reason PubSubWriter.close() zeroes its parked count and the BigQuery writers clear
-        // their in-flight maps.
+        // their in-flight maps. The park is cleared for the gauge it backs and for the heap it
+        // holds; the mutations in it are neither applied nor routed, which at-least-once covers —
+        // no checkpoint completed with them parked, so the restart replays those records.
         inFlightMutations = 0;
         inFlightBytes = 0;
+        pendingIsolation.clear();
         // Through Closers.closeAll, so the handler is closed even when the batcher's shutdown
         // throws: the lifecycle contract promises close on the failure path too.
         Closers.closeAll(batcher, failedMutationHandler::close);
@@ -304,15 +418,29 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     }
 
     /** Task-thread handler for a failed mutation, run as a mailbox mail. */
-    private void onMutationFailed(RowMutationEntry entry, int serializedSize, Throwable throwable) {
+    private void onMutationFailed(
+            RowMutationEntry entry, int serializedSize, boolean soloVerdict, Throwable throwable) {
         releaseInFlight(serializedSize);
-        // Every failure that gets here is counted, fatal ones included and fatal ones after the
-        // first: the client has already spent its own retries, so each is a distinct give-up rather
-        // than an attempt. Which means the sum over the transient codes is not this connector's
-        // retry volume, unlike the Cloud Tasks sink's — the retries it would measure are inside the
-        // SDK and never surface here.
+        BigtableErrorClassifier.Kind kind = BigtableErrorClassifier.classify(throwable);
+        if (kind == BigtableErrorClassifier.Kind.ROW_LEVEL && !soloVerdict) {
+            // The status may answer the request rather than this entry, so this mutation is not
+            // known to be the invalid one. Park it for the isolation pass, which re-submits it
+            // alone — routing here would drop a whole batch for one bad record (#239).
+            //
+            // Returning before the counter is the other half: the client reports one request-level
+            // status against every co-batched entry, so counting them all would multiply a single
+            // incident by the batch size. The pass counts the true rejections when it confirms
+            // them. Pub/Sub excludes its cascades from publishFailure for the same reason.
+            pendingIsolation.add(new ParkedMutation(entry, serializedSize));
+            return;
+        }
+        // Every failure with a confirmed identity is counted, fatal ones included and fatal ones
+        // after the first: the client has already spent its own retries, so each is a distinct
+        // give-up rather than an attempt. Which means the sum over the transient codes is not this
+        // connector's retry volume, unlike the Cloud Tasks sink's — the retries it would measure
+        // are inside the SDK and never surface here.
         metrics.applyFailure(BigtableErrorClassifier.statusCode(throwable));
-        if (BigtableErrorClassifier.classify(throwable) == BigtableErrorClassifier.Kind.ROW_LEVEL) {
+        if (kind == BigtableErrorClassifier.Kind.ROW_LEVEL) {
             routeFailedMutation(entry, throwable);
         } else if (asyncError == null) {
             asyncError =
@@ -322,10 +450,12 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Hands a row-level failure to the configured handler. Runs as a mailbox mail, so a handler
-     * that fails the job cannot throw at a caller: its failure is captured into {@link #asyncError}
-     * and rethrown from the next {@link #write} or {@link #flush}, exactly as a terminal failure
-     * is. First failure wins, as everywhere else here.
+     * Hands a row-level failure to the configured handler. Reached only with a solo verdict — an
+     * {@code INVALID_ARGUMENT} answering a single-entry request of the isolation pass — so the
+     * mutation really is the one the service rejected. Runs as a mailbox mail, so a handler that
+     * fails the job cannot throw at a caller: its failure is captured into {@link #asyncError} and
+     * rethrown from the next {@link #write} or {@link #flush}, exactly as a terminal failure is.
+     * First failure wins, as everywhere else here.
      *
      * <p>Routing is <em>not</em> skipped once {@link #asyncError} is set. The writer is about to
      * fail either way, but this mutation really did fail terminally, and a dead-letter destination
@@ -371,22 +501,43 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         return inFlightBytes;
     }
 
+    @VisibleForTesting
+    int getParkedMutations() {
+        return pendingIsolation.size();
+    }
+
+    /** A mutation held for the isolation pass, with the size both in-flight counters release by. */
+    private static final class ParkedMutation {
+
+        private final RowMutationEntry entry;
+        private final int serializedSize;
+
+        private ParkedMutation(RowMutationEntry entry, int serializedSize) {
+            this.entry = entry;
+            this.serializedSize = serializedSize;
+        }
+    }
+
     /**
      * Re-dispatches mutation completions onto the mailbox so state stays task-thread-only.
      *
-     * <p>One instance per mutation: the callback carries the entry so a row-level failure can be
-     * handed to the handler, and its serialized size so both in-flight counters can be released. It
-     * is also its own success mail, so the success path allocates nothing beyond this object.
+     * <p>One instance per submission: the callback carries the entry so a row-level failure can be
+     * handed to the handler or parked, its serialized size so both in-flight counters can be
+     * released, and whether the submission was solo so a row-level status can be told from a
+     * request-level one fanned out over a batch. It is also its own success mail, so the success
+     * path allocates nothing beyond this object.
      */
     private final class MutationCallback
             implements ApiFutureCallback<Void>, ThrowingRunnable<Exception> {
 
         private final RowMutationEntry entry;
         private final int serializedSize;
+        private final boolean soloVerdict;
 
-        private MutationCallback(RowMutationEntry entry, int serializedSize) {
+        private MutationCallback(RowMutationEntry entry, int serializedSize, boolean soloVerdict) {
             this.entry = entry;
             this.serializedSize = serializedSize;
+            this.soloVerdict = soloVerdict;
         }
 
         /** The success mail: runs on the task thread. */
@@ -403,7 +554,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         @Override
         public void onFailure(Throwable throwable) {
             mailboxExecutor.execute(
-                    () -> onMutationFailed(entry, serializedSize, throwable), failureDescription);
+                    () -> onMutationFailed(entry, serializedSize, soloVerdict, throwable),
+                    failureDescription);
         }
     }
 }

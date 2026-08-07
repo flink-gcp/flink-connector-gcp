@@ -130,20 +130,101 @@ class BigtableWriterTest {
     }
 
     @Test
-    void handsARejectedMutationToTheHandlerAndKeepsGoing() throws Exception {
+    void routesOnlyTheMutationTheServiceRefusedAndAppliesTheRestOfItsBatch() throws Exception {
+        // #239, and the reason the isolation pass exists: Bigtable rejects the whole MutateRows
+        // request, so the report against a good entry says nothing about that entry. Routing it
+        // would hand a dropping handler the good records batched with the bad one.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
+        batcher.rejectedRowKeys.add("row-2");
+
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+        writer.write("row-3", TestContexts.NO_OP);
+        writer.flush(false);
+
+        // One request carrying all three, then one request per mutation: solo is the whole point,
+        // so it is asserted as the shape of the requests rather than as a count of re-submissions.
+        assertThat(batcher.sentRowKeys())
+                .containsExactly(
+                        List.of("row-1", "row-2", "row-3"),
+                        List.of("row-1"),
+                        List.of("row-2"),
+                        List.of("row-3"));
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactly("row-2");
+        assertThat(handler.handled.get(0).getErrorMessage()).contains("INVALID_ARGUMENT");
+        assertThat(inFlight(writer)).isZero();
+        assertThat(parked(writer)).isZero();
+    }
+
+    @Test
+    void parksABatchedRejectionInsteadOfRoutingIt() throws Exception {
+        // The half of the pass a completed flush hides: between the report and the verdict the
+        // mutation is neither in flight nor routed, and only the park says it still exists.
         RecordingHandler handler = new RecordingHandler();
         SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
         writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
 
+        batcher.fail(0, StatusCode.Code.INVALID_ARGUMENT);
+        batcher.fail(1, StatusCode.Code.INVALID_ARGUMENT);
+        mailbox.drain();
+
+        assertThat(handler.handled).isEmpty();
+        assertThat(inFlight(writer)).isZero();
+        assertThat(parked(writer)).isEqualTo(2);
+    }
+
+    @Test
+    void isolatesBeforeTheNextRecordSoTheParkCannotGrowAcrossACheckpoint() throws Exception {
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
+        writer.write("row-1", TestContexts.NO_OP);
         batcher.fail(0, StatusCode.Code.INVALID_ARGUMENT);
         mailbox.drain();
 
-        assertThat(handler.handled).hasSize(1);
-        assertThat(handler.handled.get(0).getRowKey().toStringUtf8()).isEqualTo("row-1");
-        assertThat(handler.handled.get(0).getErrorMessage()).contains("INVALID_ARGUMENT");
-        assertThat(inFlight(writer)).isZero();
-        // Dropped by the handler, so the writer carries on.
-        writer.flush(false);
+        // No flush: the next write is what drains the park, which is what bounds it to one batch
+        // rather than to a checkpoint interval's worth of rejections.
+        writer.write("row-2", TestContexts.NO_OP);
+
+        assertThat(batcher.sentRowKeys()).containsExactly(List.of("row-1"));
+        assertThat(parked(writer)).isZero();
+        assertThat(handler.handled).isEmpty();
+    }
+
+    @Test
+    void sendsWhatTheBatcherHasAccumulatedBeforeItIsolates() throws Exception {
+        // What makes a re-submission solo is that the accumulator is empty when it is added: a
+        // mutation still waiting in the batcher would otherwise be sent with it, and the verdict
+        // would name a batch again — the defect, one request smaller.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+
+        // row-1's request has been answered; row-2 is still waiting to be sent.
+        batcher.fail(0, StatusCode.Code.INVALID_ARGUMENT);
+        mailbox.drain();
+        writer.write("row-3", TestContexts.NO_OP);
+
+        assertThat(batcher.sentRowKeys()).containsExactly(List.of("row-2"), List.of("row-1"));
+    }
+
+    @Test
+    void discardsTheParkWhenItCloses() throws Exception {
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
+        writer.write("row-1", TestContexts.NO_OP);
+        batcher.fail(0, StatusCode.Code.INVALID_ARGUMENT);
+        mailbox.drain();
+
+        // The park backs a gauge a reporter can still sample, and nothing empties it after close.
+        // The mutation itself is covered by at-least-once: no checkpoint completed with it parked.
+        writer.close();
+
+        assertThat(parked(writer)).isZero();
     }
 
     @Test
@@ -171,12 +252,11 @@ class BigtableWriterTest {
                 };
         SinkWriter<String> writer =
                 writer(BigtableWriterOptions.defaults(), serializer(), throwing);
+        batcher.rejectedRowKeys.add("row-1");
         writer.write("row-1", TestContexts.NO_OP);
 
-        batcher.fail(0, StatusCode.Code.INVALID_ARGUMENT);
-        // A mail cannot throw at its caller, so the failure has to survive until the next write.
-        mailbox.drain();
-
+        // A mail cannot throw at its caller, so the failure raised by the isolation pass's own
+        // drain has to survive to the flush that started the pass.
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
                 .hasMessage("handler said no");
@@ -230,10 +310,10 @@ class BigtableWriterTest {
         RecordingHandler handler = new RecordingHandler();
         SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
         writer.write("row-1", TestContexts.NO_OP);
-        batcher.completeOnSend = true;
 
         writer.flush(false);
 
+        // One send and no more: with nothing parked, the flush must not run an isolation pass.
         assertThat(batcher.sendOutstandingCalls).isEqualTo(1);
         assertThat(inFlight(writer)).isZero();
         assertThat(handler.flushes).isEqualTo(1);
@@ -243,11 +323,12 @@ class BigtableWriterTest {
     void flushRoutesTheFailuresItDiscoversBeforeFlushingTheHandler() throws Exception {
         OrderRecordingHandler handler = new OrderRecordingHandler();
         SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
+        batcher.rejectedRowKeys.add("row-1");
         writer.write("row-1", TestContexts.NO_OP);
 
-        // Discovered by the drain inside flush, which is the case the ordering rule exists for:
-        // flushing the handler first would checkpoint past this dead letter.
-        batcher.fail(0, StatusCode.Code.INVALID_ARGUMENT);
+        // Discovered by the drain inside flush and confirmed by the isolation pass that drain
+        // starts, which is the case the ordering rule exists for: flushing the handler before
+        // either would checkpoint past this dead letter.
         writer.flush(false);
 
         assertThat(handler.events).containsExactly("handle", "flush");
@@ -338,6 +419,11 @@ class BigtableWriterTest {
     @SuppressWarnings("unchecked")
     private static long inFlightBytes(SinkWriter<String> writer) {
         return ((BigtableWriter<String>) writer).getInFlightBytes();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static int parked(SinkWriter<String> writer) {
+        return ((BigtableWriter<String>) writer).getParkedMutations();
     }
 
     /** A handler that drops every mutation, recording what it saw and its lifecycle calls. */

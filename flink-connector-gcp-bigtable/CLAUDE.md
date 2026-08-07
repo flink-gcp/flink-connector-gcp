@@ -117,9 +117,14 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
     The consequence, stated on the docs page rather than left to a reader to infer: since the
     retries are the client's, the sum over the transient codes is *not* this connector's retry
     volume, which is exactly what that sum means on the Cloud Tasks page. The client's own attempts
-    are invisible here. The other reading the page owes: #239's batch blast radius makes both
-    `numRecordsSendErrors` and `errorClass.INVALID_ARGUMENT.errors` count a whole batch per bad
-    record, which is the metric that measures what a dropping policy costs.
+    are invisible here. **The one exclusion is a batched row-level rejection** (#239): the client
+    reports one request-level status against every co-batched entry, so counting them all would
+    multiply a single incident by the batch size, in `numRecordsSendErrors` and
+    `errorClass.INVALID_ARGUMENT.errors` alike. The isolation pass counts what it confirms, which is
+    what makes both counters report rejected *records*. That is the Pub/Sub cascade-exclusion
+    argument arriving here by the same route it did there, and `parkedMutations` is the gauge that
+    took the excluded reports' place: a parked mutation has left the in-flight counters and has not
+    reached the handler, so between the two nothing else reports it at all.
 - **The E2E suite creates an ephemeral instance per gated *class*, not per run** (#218) — the one
   deviation from that issue's settled design. When this landed it was forced: `reuseForks=false`
   meant a fresh JVM per class, where a JVM-scoped holder buys nothing. #243's root-pom override
@@ -158,12 +163,53 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   from the client's class file beside `MAX_MUTATIONS` = 100,000, not exercised. A
   single-cell size violation is unreachable for a second reason too: the client's bulk flow
   controller caps accumulated size at 100 MB, below Bigtable's 256 MB per row.
-- **One defect that run turned up is still open**: a routed `INVALID_ARGUMENT` fails **every entry
-  of its batch**, because Bigtable rejects the whole `MutateRows` request and gax propagates that to
-  every entry future — so a dropping policy discards the good records batched with the bad one
-  (#239, filed rather than fixed in #33 with the user; the docs say so, and
-  `routesEveryEntryOfTheBatchWhenOneOfThemIsRejected` pins it so a fix has to come through there).
-  The other one that run turned up is #238, settled in its own bullet.
+- **A `ROW_LEVEL` verdict is confirmed solo before it is routed** (#239, the other defect the #218
+  run turned up; #238 is the one settled in the next bullet). Bigtable rejects the whole
+  `MutateRows` request rather than the entry that provoked it, gax fans that one status out over
+  every entry future, and the sink routed each — so under `logAndDrop` one malformed record silently
+  discarded its whole batch while the job stayed green. The writer now **parks** a row-level verdict
+  answering a batched submission and `runIsolationPass()` re-submits each parked mutation as the only
+  entry of its own request: a solo success was collateral damage and is now applied, a solo rejection
+  is what reaches the handler. The pass runs from `flush()` *and* from `write()`, which is what bounds
+  the park to one batch rather than to a checkpoint interval, and it terminates because every
+  submission inside it is solo.
+  - **The discriminator is our own submission, not the exception**, and that is the decision not to
+    re-argue. gax's `BatcherImpl.sendOutstanding()` swaps the open batch, so an entry added to an
+    emptied accumulator and flushed at once travels alone — a property of code in this repository.
+    The alternative was measured and declined: `MutateRowsBatchingDescriptor.splitException` unwraps
+    the `MutateRowsException` and sets one `ApiException` per entry future, and the two shapes *do*
+    differ — `MutateRowsAttemptCallable.createEntryError` gives a per-entry rejection an
+    `io.grpc.StatusRuntimeException` cause while `createSyntheticErrorForRpcFailure` gives the
+    request-level one the original `ApiException` as its cause, so `cause instanceof ApiException`
+    discriminates at bigtable 2.80.0 / gax 2.82.0 (read 2026-08-07). Nothing documents it, nothing
+    would flag a change, and a silent change re-opens a P0 in the unsafe direction. So **every**
+    non-solo row-level verdict is isolated, at one extra request per genuinely bad record. What that
+    optimisation would buy is **unmeasured**, and stated as such rather than guessed: of the two
+    `INVALID_ARGUMENT` conditions this suite exercises, only the timestamp mismatch has ever been
+    run with a second entry in the request, so only it is *known* to be request-level — the empty
+    row key was measured on a single-entry request, which cannot tell the two apart. A sample of
+    one, and the round-2 review of #239's own pull request is what caught the claim that it was two.
+  - **Fail-on-batched-rejection was declined** — it defeats the dropping policy the user opted into
+    and turns a poison record into a restart loop — as was **client-side limit validation**, which
+    covers only the limits we encode. Both were settled on Pub/Sub #264, whose solo-verdict isolation
+    republish this adopts wholesale; what Bigtable does *not* need is the half of #264 that exists
+    for ordering keys and topic creation, so there is no `DestinationState`, no recovery budget and
+    no resume between publishes.
+  - **The cost is real and belongs in the documentation, not only here**: while isolating, the sink
+    spends roughly one request per record. `parkedMutations` is what reports it. Measured on PR
+    #360, and narrower than it first reads: under the default `failJob()` the pass issues **one**
+    solo request before the handler's throw becomes `asyncError` and the pass's own drain rethrows
+    it (`[[row-1, row-2, row-3], [row-1]]` for three rejected records), so the unbounded case is
+    *only* a dropping policy — where nothing ends the pass, because nothing is meant to. Bounding it
+    with a configurable threshold, defaulting to a value that fails a stream whose data is broken
+    rather than anomalous, is #361; the same shape probably exists in Pub/Sub's #264 pass, which
+    that issue is scoped to confirm.
+  - Pinned offline by `BigtableWriterTest` through a `FakeMutationBatcher` that decides outcomes
+    **per request** — a request carrying a rejected row key fails every entry of that request — so
+    the pass's behaviour emerges from the fake rather than being scripted, and against the service by
+    `BigtableRejectionRealGcpITCase.routesOnlyTheRejectedEntryAndAppliesTheRestOfItsBatch`, which
+    asserts the *outcome* rather than the rejection's granularity: the service answers per entry for
+    some conditions (the missing column family below), and the sink must behave the same either way.
 - **The batcher's shutdown report is absorbed, not thrown** (#238). gax's `BatcherImpl.close()` ends
   with `batcherStats.asException()`, an accumulator of every entry failure of the batcher's
   *lifetime* that consuming an entry's future does not clear — so a `logAndDrop` job that dropped

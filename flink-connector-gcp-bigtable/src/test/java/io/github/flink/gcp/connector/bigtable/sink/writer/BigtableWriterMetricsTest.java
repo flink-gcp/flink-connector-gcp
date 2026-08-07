@@ -35,8 +35,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the metrics {@link BigtableWriter} registers, asserted through {@link
@@ -96,15 +98,43 @@ class BigtableWriterMetricsTest {
     @Test
     void countsARoutedMutationAsASendErrorAndNamesTheStatusItFailedWith() throws Exception {
         SinkWriter<String> writer = writer(serializer(), dropping());
+        batcher.rejectedRowKeys.add("row-1");
         writer.write("row-1", TestContexts.NO_OP);
 
-        batcher.fail(0, StatusCode.Code.INVALID_ARGUMENT);
-        mailbox.drain();
+        writer.flush(false);
 
         assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
         assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
-        // Counted as sent when the client accepted it; the rejection does not undo that.
+        // Counted as sent when the client accepted it; neither the rejection nor the isolation
+        // pass's second submission of the same record changes that.
         assertThat(counter("numRecordsSend")).isEqualTo(1);
+    }
+
+    @Test
+    void countsRejectedRecordsRatherThanTheBatchesTheyTravelledIn() throws Exception {
+        // #239: the service refuses one entry by rejecting the whole request, and the client fans
+        // that one status out over every entry future. Counting those reports would multiply one
+        // incident by the batch size, in both counters at once — so the batched report is excluded
+        // and the isolation pass counts what it confirms.
+        SinkWriter<String> writer = writer(serializer(), dropping());
+        batcher.rejectedRowKeys.add("row-3");
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+        writer.write("row-3", TestContexts.NO_OP);
+
+        writer.flush(false);
+
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
+        // The control: three records were sent once each, and the two innocent ones were applied
+        // by their solo re-submission rather than merely left uncounted.
+        assertThat(counter("numRecordsSend")).isEqualTo(3);
+        assertThat(batcher.sentRowKeys())
+                .containsExactly(
+                        List.of("row-1", "row-2", "row-3"),
+                        List.of("row-1"),
+                        List.of("row-2"),
+                        List.of("row-3"));
     }
 
     @Test
@@ -114,13 +144,13 @@ class BigtableWriterMetricsTest {
                     throw new IOException("handler said no");
                 };
         SinkWriter<String> writer = writer(serializer(), throwing);
+        batcher.rejectedRowKeys.add("row-1");
         writer.write("row-1", TestContexts.NO_OP);
-
-        batcher.fail(0, StatusCode.Code.INVALID_ARGUMENT);
-        mailbox.drain();
 
         // "Routed", not "dropped": the counter is what a reader watches to tell a policy is firing
         // at all, so a handler that then fails the job must not make the record invisible.
+        assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
+
         assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
     }
 
@@ -244,6 +274,28 @@ class BigtableWriterMetricsTest {
 
         assertThat(metrics.<Integer>gaugeValue("inFlightMutations")).isZero();
         assertThat(metrics.<Long>gaugeValue("inFlightBytes")).isZero();
+        assertThat(metrics.<Integer>gaugeValue("parkedMutations")).isZero();
+    }
+
+    @Test
+    void reportsTheMutationsHeldForTheIsolationPass() throws Exception {
+        SinkWriter<String> writer = writer(serializer(), dropping());
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+
+        // A batched rejection leaves the in-flight counters without reaching the handler, so this
+        // gauge is the only thing that reports the two mutations between the two (#239).
+        batcher.fail(0, StatusCode.Code.INVALID_ARGUMENT);
+        batcher.fail(1, StatusCode.Code.INVALID_ARGUMENT);
+        mailbox.drain();
+
+        assertThat(metrics.<Integer>gaugeValue("parkedMutations")).isEqualTo(2);
+        assertThat(metrics.<Integer>gaugeValue("inFlightMutations")).isZero();
+        assertThat(counter("numRecordsSendErrors")).isZero();
+
+        writer.flush(false);
+
+        assertThat(metrics.<Integer>gaugeValue("parkedMutations")).isZero();
     }
 
     @Test
