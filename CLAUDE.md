@@ -808,7 +808,8 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   boundary — `INVALID_ARGUMENT` alone, settled on gRPC's definition plus AIP-194 rather than left
   unmeasured — one fixed table per sink, and why the send metrics landed here rather than with #37.
   Also the E2E enablement (#218): the ephemeral per-class instance and its sweep, what real Bigtable
-  answers each rejection with, and the emulator deviation table those measurements produced
+  answers each rejection with, and the emulator deviation table those measurements produced.
+  Migrated to ADRs (`docs/adr/0041`–`0047`)
 - `flink-connector-gcp-test-utils/CLAUDE.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its
@@ -818,7 +819,7 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   SPI and metric-name conventions (#280), retry loops and
   retryability classification stay per-connector (the evaluated-and-declined `Retries.run`
   executor is recorded there), compile-scope consumers, and the shading/install-list consequences
-  that scope carries
+  that scope carries. Migrated to ADRs (`docs/adr/0036`–`0040`)
 
 Decisions that span connectors stay here: the package layout convention above, the version policy
 and the licensing rules. A new connector gets its own module file rather than a section here.
