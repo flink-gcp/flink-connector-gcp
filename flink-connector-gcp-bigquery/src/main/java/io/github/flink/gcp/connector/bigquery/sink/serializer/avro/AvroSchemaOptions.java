@@ -59,8 +59,8 @@ import java.util.Set;
  * that same row into the file it stages. So the staging format sits downstream of this mapping and
  * is not a reason for the Avro mapping to lead. An Avro {@code ["null", T]} union is admittedly the
  * schema author's own statement, which makes {@code REQUIRED} the more faithful reading of an Avro
- * schema taken alone — that is why this side used to default to it — but faithfulness to one front
- * end does not outweigh agreeing with the wire form every path shares.
+ * schema taken alone — but faithfulness to one front end does not outweigh agreeing with the wire
+ * form every path shares.
  */
 @PublicEvolving
 public final class AvroSchemaOptions implements Serializable {

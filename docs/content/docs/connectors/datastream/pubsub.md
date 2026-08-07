@@ -211,8 +211,12 @@ getting there:
   while the six other retry knobs still apply.
 - A failing ordering key can leave the counter permanently above zero: the failure callback cancels
   the messages still accumulating in that key's un-flushed batch and drops the batch, but returns
-  only the in-flight batch's count. That one is a defect, tracked as
-  [#265]({{< param BookRepo >}}/issues/265).
+  only the in-flight batch's count. That one is an SDK defect —
+  [#265]({{< param BookRepo >}}/issues/265) records the analysis, closed with this sink's bounded
+  teardown as the mitigation; the fix is upstream in
+  [googleapis/google-cloud-java#14002](https://github.com/googleapis/google-cloud-java/pull/14002)
+  but not yet in a released client, and
+  [#309]({{< param BookRepo >}}/issues/309) tracks its arrival through the BOM.
 
 So the sink runs the whole SDK teardown on a separate daemon thread and gives up on it at the
 deadline, releasing the channel either way. Anything that teardown throws is rethrown from the

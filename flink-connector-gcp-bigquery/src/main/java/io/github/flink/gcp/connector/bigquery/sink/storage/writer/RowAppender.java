@@ -26,10 +26,9 @@ import com.google.cloud.bigquery.storage.v1.ProtoRows;
  * Appends batches of serialized rows to one destination's default write stream.
  *
  * <p>Abstracts the Storage Write API {@code StreamWriter} so writer logic is unit-testable: that
- * class cannot be subclassed to stand in for one. Not because it is {@code final} — it is not, and
- * neither is {@code BigQueryWriteClient}, as this said until #325 checked both against
- * bigquerystorage 3.30.0 — but because its constructors are not accessible, which forbids a
- * subclass just as effectively. The same correction #324 made for {@code Publisher}.
+ * class cannot be subclassed to stand in for one — neither it nor {@code BigQueryWriteClient} is
+ * {@code final}, but their constructors are not accessible, which forbids a subclass just as
+ * effectively (#325).
  */
 @Internal
 public interface RowAppender extends AutoCloseable {

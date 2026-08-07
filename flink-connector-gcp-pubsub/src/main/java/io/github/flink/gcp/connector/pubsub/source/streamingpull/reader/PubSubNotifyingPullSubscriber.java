@@ -252,22 +252,22 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
             throw new IOException(
                     "Failed to start the Pub/Sub subscriber for subscription " + subscription, e);
         } catch (Error e) {
-            // An Error takes the same release, for the reason #324 gave the sibling guard in
-            // DefaultMutationBatcherFactory.create: a client's first classload can fail with a
-            // NoClassDefFoundError, which repeats on every restart attempt and would otherwise walk
-            // past this. Rethrown unchanged rather than wrapped — an Error is not an IOException,
-            // and Flink's escalation reads the type it is handed.
+            // An Error takes the same release, as in the sibling guard in
+            // DefaultMutationBatcherFactory.create (#324): a client's first classload can fail
+            // with a NoClassDefFoundError, which repeats on every restart attempt and would
+            // otherwise walk past this. Rethrown unchanged rather than wrapped — an Error is not
+            // an IOException, and Flink's escalation reads the type it is handed.
             releaseAfterFailedStart(e);
             throw e;
         }
     }
 
     /**
-     * Through {@link Closers#closeAllSuppressing} rather than a bare call, for the reason #324 used
-     * it at the sibling site: a release that throws must be suppressed onto the failure being
-     * propagated, never replace it. The SDK's own {@code stopAsync()} cannot throw — Guava catches
-     * {@code Throwable} inside it — but this method's operations are injected, so what holds for
-     * the production client is not what holds for the seam.
+     * Through {@link Closers#closeAllSuppressing} rather than a bare call, as at the sibling site
+     * (#324): a release that throws must be suppressed onto the failure being propagated, never
+     * replace it. The SDK's own {@code stopAsync()} cannot throw — Guava catches {@code Throwable}
+     * inside it — but this method's operations are injected, so what holds for the production
+     * client is not what holds for the seam.
      */
     private void releaseAfterFailedStart(Throwable failure) {
         Closers.closeAllSuppressing(failure, this::stopQuietly);

@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Tests for the settings {@link DefaultMutationBatcherFactory} builds — the options-to-settings
  * mapping, which is otherwise invisible: a threshold that never reaches the client looks exactly
  * like one that does — for the one exception its batcher shutdown absorbs, and for the adapter it
- * wraps the client in, whose teardown no fake could reach before #324 made it injectable.
+ * wraps the client in, whose teardown is reachable only through the injected seam (#324).
  *
  * <p>{@code @Timeout} because two tests build and close a real SDK client. It is JUnit's default
  * {@code SAME_THREAD} mode, so what it buys is precise: a teardown parked at an interruptible point

@@ -370,8 +370,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             // cancelling task a fatal TaskManager error.
             //
             // One list rather than a loop and then a call (#297): closeAll runs every entry before
-            // reporting anything, so a shutdown that throws no longer skips the later shutdowns,
-            // nor the closes, nor the handler — which the lifecycle contract promises on the
+            // reporting anything, so the later shutdowns, the closes and the handler's close all
+            // still run when a shutdown throws — which the lifecycle contract promises on the
             // failure path too.
             List<AutoCloseable> closeables = new ArrayList<>(states.size() * 2 + 2);
             for (DestinationState state : states.values()) {
