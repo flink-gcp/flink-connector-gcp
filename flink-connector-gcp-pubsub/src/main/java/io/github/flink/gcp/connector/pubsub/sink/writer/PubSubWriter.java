@@ -81,10 +81,9 @@ import java.util.TreeMap;
  * completion callbacks are rethrown on the task thread from the next {@link #write} or {@link
  * #flush}, failing the job (retries within a publish are delegated to the SDK).
  *
- * <p>That guarantee assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
- * {@code sendToDeadLetterQueue(...)} a successful checkpoint means every record up to the barrier
- * was either persisted by Pub/Sub, skipped by the serializer, or handed to the {@link
- * FailureHandler}; the per-message failures below say which ones reach it.
+ * <p>That guarantee assumes the default {@code failJob()} policy; what a successful checkpoint
+ * means under a dropping policy is stated once on {@link FailureHandler}, and the per-message
+ * failures below say which failures reach it.
  *
  * <h2>Per-message failures</h2>
  *
@@ -99,11 +98,9 @@ import java.util.TreeMap;
  * to a dropping handler for one bad message, so the writer parks such a report instead and the
  * repair republishes the parked batch one message per request; only a message rejected
  * <em>solo</em> — a true per-message verdict — reaches the handler, and its co-batched neighbours
- * are published. The handler drops the message by returning and fails the job by throwing; the
- * default {@code failJob()} throws, which is why the classes it does <em>not</em> cover matter — an
- * outage the SDK gave up on stays a job failure, so no drop policy can quietly discard a backlog. A
- * handler failing inside a completion callback is captured into {@link #asyncError} like any other
- * terminal failure, because a mailbox mail cannot throw a checked exception at its caller.
+ * are published. Drop-versus-throw semantics, the never-routed backlog argument and the
+ * asynchronous capture of a handler failing inside a completion callback are stated once on {@link
+ * FailureHandler}; here that capture lands in {@link #asyncError}.
  *
  * <p>Unacknowledged publishes are capped along both dimensions that bound memory: their number
  * ({@code PubSubPublisherOptions.maxInFlightMessages}, default 1000) and their serialized size

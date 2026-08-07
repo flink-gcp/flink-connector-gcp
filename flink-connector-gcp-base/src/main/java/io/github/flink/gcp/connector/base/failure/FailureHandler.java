@@ -52,6 +52,19 @@ import java.io.Serializable;
  * <p>Delivery of handled elements to an external destination is therefore <em>at-least-once, for
  * failures that recur on replay</em> — see {@link DeadLetterQueue} for the full statement.
  *
+ * <p>What a successful checkpoint means under each policy, stated once for every connector: under
+ * the default {@link #failJob()}, every record up to the barrier was written to the service or
+ * skipped by a serializer returning {@code null}; under {@link #logAndDrop()} or {@link
+ * #sendToDeadLetterQueue}, written, skipped, or handed to this handler. Each writer's javadoc says
+ * which failures reach it.
+ *
+ * <p>That {@link #handle} drops by returning and fails the job by throwing is why the failure
+ * classes a connector does <em>not</em> route matter as much as the ones it does: an outage the
+ * client's retries gave up on is never routed, so no drop policy can quietly discard a backlog. And
+ * in the mailbox-based writers a handler failing inside a completion callback cannot throw at its
+ * caller — the writer captures the failure as its asynchronous error and rethrows it on the task
+ * thread from the next write or flush.
+ *
  * @param <F> the connector's concrete failure type
  */
 @PublicEvolving

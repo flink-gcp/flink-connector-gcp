@@ -208,89 +208,44 @@ Design decisions for the shared main-code module (#61). Read before adding anyth
   `PubSubDeadLetterQueue` — which is this module's multiple-consumers bar met exactly, and it joined
   an existing package rather than taking one of its own, for the reason `EmulatorEndpoint` joined
   `base.rpc`. Why it exists at all, and the six decisions inside it, are the Pub/Sub module's
-  CLAUDE.md; what belongs here is the shape the move imposed. It is **client-agnostic by
-  construction**: two functional values rather than a client (the one it was written for,
-  `Publisher`, cannot be subclassed — non-final, but its only constructor is private, #324), a
-  `String description` rather than a destination type, and no gax or gRPC import — so
-  the module gained no dependency. Its release hook is a **nullable `Runnable`, not an
-  `AutoCloseable`**, and that is a contract rather than a convenience: it runs in `close()`'s
-  `finally`, where anything it threw would replace the failure being propagated, so it is for a
-  release that cannot fail (`ManagedChannel.shutdownNow()`), and a resource whose release *can* fail
-  belongs in the caller's own `closeAll` list beside it. Its `close()` is **idempotent** — a second
-  call would otherwise rerun the release, rethrow the captured failure and re-count an abandonment,
-  which `AutoCloseable` discourages and a defensively-closing consumer would meet as a spurious
-  second teardown error.
-  What is *not* enforced: `start()` and `close()` must come from one thread, and two threads racing
-  `start()` would each see a null `thread` and run the shutdown twice. A guard was weighed and left
-  out — both callers are writer teardowns, which Flink runs on the task thread by construction —
-  so the precondition is prose, stated in the class javadoc beside a field-by-field account of what
-  each piece of mutable state actually relies on (`deadlineNanos` is publication-before-start, not
-  confinement; `abandoned` genuinely needs `volatile`; `failure` does not and has it anyway).
-  **Two consequences of the move that are not in the class**: its warnings now log under
-  `base.lifecycle.BoundedShutdown` rather than the connector's package, which a log configuration
-  scoped to `…connector.pubsub` stops matching; and its give-up message carries **no issue link**,
-  deliberately — a shared class must not send one client's operator after another client's defect,
-  and #265 is unreachable for the dead-letter queue's publisher. `timeout()` is the module's first
-  `@VisibleForTesting public` method, and it is public only because a *sibling module's* tests read
-  it; that is the price of promoting a test seam, and the next one here should cite this rather than
-  widen by default.
-  **It counts its own give-ups into a `LongAdder` the caller supplies** (#311) and holds no state of
-  its own beyond one task's teardown. That parameter is the design, not a convenience: the count has
-  to outlive the task to be observable at all — **measured**, with a MiniCluster probe whose reporter
-  ran at 10 ms (Flink's default is 10 s) and never once saw a metric a sink writer incremented only
-  in `close()` above zero, over four runs, while a counter incremented during the run read its full
-  value. So the count is process-wide wherever it lives, and the only question is *whose*. Holding it
-  here would make one number out of every client this class ever serves, and a metric named for one
-  of them would silently include the rest — the nearest such client is not another connector but the
-  Pub/Sub **source**, whose subscriber teardown has the same shape. (Read that as the argument it
-  is, not as a plan: #325 measured that subscriber and it is **not** a candidate adopter —
-  `Subscriber.stopAsync()` returns at once and `awaitTerminated` already takes the budget, so the
-  *task thread's* wait is bounded without this class. Not that nothing is unbounded there: the SDK
-  runs its own shutdown on a non-daemon thread with no timeout by default, which this class could
-  not have taken either, since it is the SDK's thread and not a wait of ours. The reasoning is
-  unaffected, being about what a shared counter would mean whenever a second client does arrive.)
-  Each owner passing its own keeps
-  the names true by construction, and lets tests inject one and assert absolutely instead of around a
-  baseline. A first draft held an `AtomicLong` here and documented the resulting bound instead of
-  removing it; do not reintroduce it.
+  CLAUDE.md; **the class contract lives in its own javadoc** — the daemon thread, the
+  release hook's nullable-`Runnable` shape, the idempotent `close()`, the one-thread precondition
+  with its per-field threading account, and the caller-supplied `LongAdder`'s ownership argument
+  (#311, with the 10 ms-reporter measurement) — which the aggregated API reference publishes, so
+  none of it is restated here. What belongs here is the shape the move imposed and what the class
+  cannot say about itself. It is **client-agnostic by construction**: two functional values rather
+  than a client, a `String description` rather than a destination type, and no gax or gRPC import
+  — so the module gained no dependency. Its warnings log under `base.lifecycle.BoundedShutdown`
+  rather than the connector's package, which a log configuration scoped to `…connector.pubsub`
+  stops matching; and its give-up message carries **no issue link**, deliberately — a shared class
+  must not send one client's operator after another client's defect, and #265 is unreachable for
+  the dead-letter queue's publisher. `timeout()` is the module's first `@VisibleForTesting public`
+  method, and it is public only because a *sibling module's* tests read it; that is the price of
+  promoting a test seam, and the next one here should cite this rather than widen by default.
+  The Pub/Sub **source**'s subscriber teardown — the nearest future adopter — was measured on
+  #325 and is **not** a candidate: `Subscriber.stopAsync()` returns at once and `awaitTerminated`
+  already takes the budget, so the *task thread's* wait is bounded without this class (the SDK's
+  own non-daemon shutdown thread is the SDK's, not a wait of ours, and this class could not take
+  it either). A first draft held an `AtomicLong` here and documented the resulting bound instead
+  of removing it; do not reintroduce it.
 - **`base.lifecycle` is also two methods, one loop** (#229 then #276), and every `close()`-shaped call
   site in this repository goes through one of them — nothing calls `IOUtils.closeAll` any more, so
   its `scripts/flink-api-tiers.toml` entry is gone and `ExceptionUtils`' covers both users.
-  `closeAll(closeables)` is for when **closing is the operation**: it closes everything, then
-  throws the first failure with any later one suppressed onto it.
-  `closeAllSuppressing(failure, closeables...)` is for when **something else already failed** —
-  a writer creation that got part-way — and reports a close failure as *suppressed* on the
-  exception the caller is about to rethrow rather than in place of it, because what went wrong is
-  why the resources are being released. Both skip nulls (a caller passes a local it had not
-  reached yet) and close *every* resource before reporting (a resource must not be left open
-  because an earlier one refused).
+  `closeAll(closeables)` is for when **closing is the operation**;
+  `closeAllSuppressing(failure, closeables...)` for when **something else already failed** — a
+  writer creation that got part-way. **The contract lives in the `Closers` javadoc** — null
+  handling, close-everything-before-reporting, first-failure-wins, the type-preserving rethrow,
+  the JVM-fatal escalation with its stated bound, and the nested shape of multiple close failures
+  — which the aggregated API reference publishes, so none of it is restated here.
   **The loop is written out rather than delegated to `IOUtils.closeAll`, and that is #276's whole
   decision** — reversing #229's "delegate rather than reimplement", which is worth stating because
-  the reversal was argued, not drifted into. `IOUtils.closeAll` rethrows *from inside its loop*
+  the reversal was argued, not drifted into: `IOUtils.closeAll` rethrows *from inside its loop*
   anything its `Class` argument does not cover, so `Exception.class` (what the one-argument
-  varargs form passes) abandons every later resource on an `Error`: that was the live bug at nine
+  varargs form passes) abandoned every later resource on an `Error` — the live bug at nine
   sites, with the failure handler last in six of the lists and, since #211, owning an SDK
-  `Publisher` and a gRPC `ManagedChannel`. `Throwable.class` closes everything but collects a
-  non-`Exception` as `new Exception(e)` — and **a wrapped `Error` is a different thing to Flink**:
-  `Task.preProcessException` tests the throwable itself (it unwraps only `WrappingRuntimeException`)
-  and halts the JVM on `isJvmFatalError(t) || t instanceof OutOfMemoryError`, so a wrapped
-  `OutOfMemoryError` from a teardown fails the task into a restart loop instead. Ten lines over
-  `ExceptionUtils.firstOrSuppressed` and `ExceptionUtils.rethrowException` keep the type, which is
-  what both `closeAll` tests and every site's `Error` test assert. Consequence for the second
-  method: it catches **`Throwable`**, not `Exception`, since an `Error` is no longer wrapped into
-  one — and its suppressed entry is now the `Error` itself rather than an `Exception` around it.
-  **`closeAllSuppressing` has exactly one exception to "the caller's failure is never replaced",
-  and it is `ExceptionUtils.isJvmFatalOrOutOfMemoryError`**: such a failure takes the top slot with
-  the caller's suppressed onto it. Same argument as above, applied one level down — `Task
-  .preProcessException` inspects only the throwable it is handed, so a fatal one in a suppressed
-  slot is one nothing halts on, and for an `OutOfMemoryError` that means our code silently
-  overriding whatever the operator set `taskmanager.jvm-exit-on-oom` to. The diagnostic cost is
-  bounded (the real failure is one `getSuppressed()` away, and stack traces walk those
-  recursively) and the set is narrow by construction: `isJvmFatalError` is `InternalError` /
-  `UnknownError` / `ThreadDeath`, so **`NoClassDefFoundError` is deliberately *not* escalated** and
-  stays suppressed — which is what keeps this from degenerating into "any `Error` wins". The
-  escalation runs after the loop, never from inside it, so it costs no resource. Not extended to
-  `closeAll`, which has nothing to escalate over.
+  `Publisher` and a gRPC `ManagedChannel` — while `Throwable.class` wraps an `Error` as
+  `new Exception(e)`, which `Task.preProcessException` then never halts on. Ten lines keep the
+  type, which is what both `closeAll` tests and every site's `Error` test assert.
   For the same reason the six creation-guard call sites catch **`Throwable`, not `Exception`** —
   a client's first classload failing with `NoClassDefFoundError` repeats on every restart attempt
   — which precise rethrow makes compile without widening any `throws` clause. The module's
