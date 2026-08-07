@@ -448,6 +448,40 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   waits overlap) because `closeAll` runs entries in order, and it is what makes the ordering
   survive a failure — pinned by asserting the recorded call order in the failing case too, not just
   on the success path;
+  (a″) **`PubSubNotifyingPullSubscriber.awaitTerminated()` absorbs what the client raises because
+  the client re-reports a failure this subscriber has already delivered** (#325), not only because
+  the shutdown is best-effort — which was the whole of the stated reason until #325 measured it, and
+  is the weaker half. `Subscriber` extends gax's `AbstractApiService`, which holds a Guava
+  `AbstractService` as a **private inner field** — redeclared precisely so Guava can be shaded, so
+  no Guava type is catchable here and "`Subscriber` is a Guava `Service`" is the wrong shorthand.
+  `awaitTerminated` ends in that class's `checkCurrentState(TERMINATED)`, which on a `FAILED`
+  service throws `IllegalStateException` carrying `failureCause()` — the same `Throwable` the
+  failure listener recorded as `permanentError` and `pullMessages` already reported, wrapped in an
+  `IOException`. So `NotifyingPullSubscriber.close()`'s javadoc,
+  which promised `@throws Exception if the client does not shut down cleanly`, documented the
+  opposite of what the implementation does and had to be corrected rather than the implementation.
+  The repository-wide rule and the other seven SPIs measured against it are in the root `CLAUDE.md`.
+  **The three client operations are injected** (`SubscriberStart`, a `Runnable` stop, a nested
+  `TerminationWait`) because `Subscriber` cannot be subclassed, private constructor as ever, and
+  every path this class has that only a misbehaving client reaches was untested before: the absorb,
+  the timeout, and the startup-failure leak guard. `SubscriberStart` takes a `Consumer<Throwable>`
+  rather than an SDK `ApiService.Listener`, so no vendor type reaches the seam and a test delivers a
+  failure without building a listener; the production constructor cannot delegate through `this(...)`
+  because the receiver it hands the factory is `this::receiveMessage`, so the two constructors assign
+  the same fields and share only `startOrRelease`. **`BoundedShutdown` is deliberately not adopted
+  here**, though the base module's `CLAUDE.md` names this teardown as its nearest future adopter:
+  #265's problem was `Publisher.shutdown()` blocking the **task thread** uninterruptibly and without
+  bound, and here the task thread's wait is already bounded — `stopAsync()` returns at once and
+  `awaitTerminated` takes the budget — so the class would buy a thread and a residue counter for a
+  bound that exists. **State the reason that way and not as "there is no unbounded wait"**, because
+  there is one and `BoundedShutdown` could not take it either: `Subscriber.doStop()` spawns a bare
+  `new Thread(...)` running `runShutdown()` under `SubscriberShutdownSettings.getTimeout()`, whose
+  default is `Duration.ofSeconds(-1)`, no timeout (measured on 1.152.0, #325). A bare `new Thread`
+  **inherits** its creator's daemon flag, so on Flink's task thread it is non-daemon — a property of
+  who calls it, not of the SDK setting one. That thread is
+  the SDK's own, so all a bounded wait could do about it is what `awaitTerminated` already does:
+  give up and warn. Whether that residue is worth counting the way #311 counts the publisher's is
+  not settled here;
   (b) the "**fail when running without checkpointing**" guard **cannot read the configuration** —
   `SourceReaderContext.getConfiguration()` is the TaskManager configuration
   (`SourceOperatorFactory` passes `getTaskManagerInfo().getConfiguration()`), while

@@ -1174,7 +1174,15 @@ leaves or re-registers while parked, each rejection (ordering mismatch, exactly-
 without a dead-letter policy, a missing subscription with no creation settings), each subscription
 created with its own settings, no seek issued when a rejection is coming, and the start position
 running exactly once and never on a restore. The subscription-create options, the start position and
-the option-to-protobuf translation are unit-tested on their own. Emulator integration tests run the
+the option-to-protobuf translation are unit-tested on their own. The subscriber that wraps the client
+library is unit-tested too ([#325]({{< param BookRepo >}}/issues/325)), on the paths a working client
+never takes: one that fails to start, which is asked to stop again before the failure is reported (an
+`Error` from a first classload taking the same path as an exception); one that does not terminate
+within the shutdown timeout; and one that reports at teardown the very failure the reader has
+already been given, which is absorbed rather than raised a second time. Both of the last two are
+reported by a single `WARN` — `The Pub/Sub subscriber for subscription … did not shut down cleanly.`
+— and by nothing else, so that line is expected on a failing teardown rather than a sign of a
+further problem. Emulator integration tests run the
 production subscriber factory against the emulator and cover the acknowledgement round trip,
 nack-on-close (the nacks counted on the reader's own metric, and the messages redelivered rather
 than lost — redelivery *promptness* is a service-timing property the emulator does not specify, so

@@ -191,8 +191,17 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   since #323**, which built `LogCapture` in test-utils and used this very call site as one of its
   two motivating cases: `absorbsTheBatchersReportOfItsAccumulatedEntryFailures` now asserts the
   event carries the destination and the report as its throwable. (This bullet said the opposite
-  until #324 rebased over it — #323 pinned the line and left the claim standing.) Whether the SPI
-  contract above needs more than prose is #325.
+  until #324 rebased over it — #323 pinned the line and left the claim standing.) **#325 then
+  measured whether the SPI contract above is a property of the pattern or of gax**, across all nine
+  client-wrapping SPIs in this repository, and the answer is neither purely: a *second* connector
+  has the shape — the Pub/Sub source's subscriber, through Guava's `Service.awaitTerminated`
+  rethrowing `failureCause()` — by a mechanism unrelated to `BatcherStats`. So the rule is stated
+  once in the root `CLAUDE.md`, with what was measured *not* to have it, and nothing here changed:
+  the absorb is per-connector because the two mechanisms share no type to catch, and the third
+  implementation the contract is written for still does not exist. What the measurement does say
+  about this module is that the duplicate here is the **severe** one of the two — it lands after
+  the `FailureHandler` may have deliberately dropped those entry failures, so it fails a job the
+  policy kept running, where Pub/Sub's only competes with a failure that has already failed the job.
 - **`BigtableBatcherAdapter` holds its batcher as three functional values and its client as an
   `AutoCloseable`** (#324), which is the only seam a test can drive — and it is **two** vendor
   constraints rather than one, which is why both halves are injected. The batcher's is the
@@ -201,8 +210,10 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   The client's is plain unextendability — `BigtableDataClient` reports no closed state and its only
   constructor is package-private (`create(...)` is `public static`, which is what the offline tests
   use). **Note the base module's `BoundedShutdown` is the same shape, not a different one**: its
-  javadoc and the Pub/Sub `CLAUDE.md` both say `Publisher` is `final` and it is not — it is a
-  non-final class with a private constructor, unextendable by exactly the mechanism above. A
+  javadoc and the Pub/Sub `CLAUDE.md` both *said* `Publisher` is `final`, which it is not — it is a
+  non-final class with a private constructor, unextendable by exactly the mechanism above. Both were
+  corrected by #324 and two more sites by #325, so read that sentence as the record of a mistake
+  rather than as a live one. A
   **production constructor takes the batcher and delegates**, so the three method references binding
   one adapter to one batcher sit inside a class a test can construct rather than at the `create()`
   call site, where nothing would reach them — #321's "a seam whose wiring no test covered", avoided

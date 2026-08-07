@@ -17,10 +17,12 @@
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.core.ApiService;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +39,7 @@ import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 
 /**
  * {@link NotifyingPullSubscriber} backed by a {@code google-cloud-pubsub} {@link Subscriber}.
@@ -52,6 +55,16 @@ import java.util.concurrent.TimeoutException;
  * blocking inside the callback would stall the key's dispatch chain and hold a client-library
  * thread.
  *
+ * <p>The client's three lifecycle operations are held as functional values rather than as a {@link
+ * Subscriber}, <b>because that is the only seam a test can drive</b> (#325). {@code Subscriber} is
+ * a non-final class whose only constructor is private, so it cannot be subclassed to misbehave —
+ * the same mechanism that makes {@code Publisher} unfakeable for {@code BoundedShutdown}, and the
+ * same effect, by package-private access rather than private, for the {@code BigtableDataClient}
+ * behind Bigtable's batcher adapter. This class's failure paths all need a client that misbehaves:
+ * one that fails to start, one that never terminates, and one that reports at teardown a failure
+ * this subscriber has already delivered. None of them was reachable before, since the emulator and
+ * gated ITCases exercise only a client that works.
+ *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0),
  * with a caller-supplied data-available signal in place of per-subscriber notification futures.
@@ -61,12 +74,38 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubNotifyingPullSubscriber.class);
 
+    /**
+     * Registers a permanent-failure sink with the client and starts it, returning once it is
+     * running.
+     *
+     * <p>Takes the sink rather than an SDK {@code ApiService.Listener} so no vendor type reaches
+     * this seam: what this class needs from the listener is the {@link Throwable}, and a test
+     * driving a failure should not have to build a listener to deliver one.
+     */
+    @FunctionalInterface
+    interface SubscriberStart {
+        void start(Consumer<Throwable> onPermanentFailure);
+    }
+
+    /**
+     * The client's own bounded wait for termination, satisfied by {@code
+     * Subscriber::awaitTerminated}.
+     *
+     * <p>Not {@code BoundedShutdown.TerminationWait}, whose shape is {@code boolean await(...)
+     * throws InterruptedException} against this one's {@code void ... throws TimeoutException}.
+     */
+    @FunctionalInterface
+    interface TerminationWait {
+        void await(long timeout, TimeUnit unit) throws TimeoutException;
+    }
+
     private final String splitId;
     private final SubscriptionDestination subscription;
     private final AckTracker ackTracker;
     private final Runnable dataAvailableSignal;
     private final Duration shutdownTimeout;
-    private final Subscriber subscriber;
+    private final Runnable subscriberStopAsync;
+    private final TerminationWait subscriberAwaitTerminated;
 
     @GuardedBy("this")
     private final Deque<PubsubMessage> messages = new ArrayDeque<>();
@@ -103,28 +142,111 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
         this.ackTracker = ackTracker;
         this.dataAvailableSignal = dataAvailableSignal;
         this.shutdownTimeout = shutdownTimeout;
-        this.subscriber = subscriberFactory.create(subscription, this::receiveMessage);
+        Subscriber subscriber = subscriberFactory.create(subscription, this::receiveMessage);
+        this.subscriberStopAsync = subscriber::stopAsync;
+        this.subscriberAwaitTerminated = subscriber::awaitTerminated;
+        // The client is created here rather than in a this(...) delegation because the receiver it
+        // takes is this::receiveMessage, which does not exist until the instance does. So the two
+        // constructors assign the same fields instead of one calling the other, and share only what
+        // has to be shared: the start, and what it does when it fails.
+        startOrRelease(
+                onPermanentFailure ->
+                        registerFailureListenerAndStart(subscriber, onPermanentFailure));
+    }
+
+    /**
+     * The seam. Takes the client's three lifecycle operations directly, so a test can supply ones
+     * that fail; see the class javadoc for why a fake {@link Subscriber} is not an option.
+     */
+    @VisibleForTesting
+    PubSubNotifyingPullSubscriber(
+            String splitId,
+            SubscriptionDestination subscription,
+            AckTracker ackTracker,
+            Runnable dataAvailableSignal,
+            Duration shutdownTimeout,
+            SubscriberStart subscriberStart,
+            Runnable subscriberStopAsync,
+            TerminationWait subscriberAwaitTerminated)
+            throws IOException {
+        this.splitId = splitId;
+        this.subscription = subscription;
+        this.ackTracker = ackTracker;
+        this.dataAvailableSignal = dataAvailableSignal;
+        this.shutdownTimeout = shutdownTimeout;
+        this.subscriberStopAsync = subscriberStopAsync;
+        this.subscriberAwaitTerminated = subscriberAwaitTerminated;
+        startOrRelease(subscriberStart);
+    }
+
+    /**
+     * The production wiring, and the one thing here no unit test reaches — stated so it is not
+     * mistaken for pinned. Every test drives the seam constructor, so nothing checks that the
+     * listener is registered <em>before</em> the start (a failure raised in between would be lost,
+     * and the split would then stall silently rather than fail), that the executor is a direct one,
+     * or that the two teardown operations bind the client this starts. A fake {@link Subscriber} is
+     * what it would take, which is the thing that cannot be built.
+     */
+    private static void registerFailureListenerAndStart(
+            Subscriber subscriber, Consumer<Throwable> onPermanentFailure) {
+        subscriber.addListener(
+                new ApiService.Listener() {
+                    @Override
+                    public void failed(ApiService.State from, Throwable failure) {
+                        onPermanentFailure.accept(failure);
+                    }
+                },
+                // A direct executor: recording the failure and waking the fetcher are both cheap.
+                Runnable::run);
+        subscriber.startAsync().awaitRunning();
+    }
+
+    /**
+     * Starts the client, asking it to stop again if that fails.
+     *
+     * <p><b>How much that release actually recovers is less than this used to claim</b>, measured
+     * on {@code google-cloud-pubsub} 1.152.0 and Guava 33.5.0 for #325. Guava's {@code stopAsync()}
+     * is guarded by {@code state().compareTo(RUNNING) <= 0}, and {@code FAILED} sorts last — so
+     * once the service has failed, {@code stopAsync()} enters nothing and {@code doStop()} never
+     * runs. A failed start is precisely what leaves it {@code FAILED}: {@code Subscriber.doStart()}
+     * opens the {@code GrpcSubscriberStub} and then spawns a thread for {@code
+     * startStreamingConnections}, and a failure in that thread calls {@code notifyFailed} with the
+     * stub already open. So the channel and executors that case strands are <b>not</b> recovered
+     * here, and no public API of {@code Subscriber} recovers them — that is a real gap, not
+     * something this call closes.
+     *
+     * <p>What the call does still cover is every earlier state, where {@code stopAsync()} is not a
+     * no-op: a failure from registering the listener leaves the service {@code NEW}, and one racing
+     * a start in progress leaves it {@code STARTING}. It is kept for those, and because it costs a
+     * no-op otherwise — not because it makes a crash-looping job leak-free.
+     */
+    private void startOrRelease(SubscriberStart subscriberStart) throws IOException {
         try {
-            this.subscriber.addListener(
-                    new ApiService.Listener() {
-                        @Override
-                        public void failed(ApiService.State from, Throwable failure) {
-                            fail(failure);
-                        }
-                    },
-                    // A direct executor: recording the failure and waking the fetcher are both
-                    // cheap.
-                    Runnable::run);
-            this.subscriber.startAsync().awaitRunning();
+            subscriberStart.start(this::fail);
         } catch (RuntimeException e) {
-            // The client opened its gRPC channel and background executors before failing, and the
-            // SDK only releases them from its own shutdown path — so a startup failure must stop
-            // the subscriber explicitly or every restart attempt of a crash-looping job leaks a
-            // channel and its threads.
-            stopQuietly();
+            releaseAfterFailedStart(e);
             throw new IOException(
                     "Failed to start the Pub/Sub subscriber for subscription " + subscription, e);
+        } catch (Error e) {
+            // An Error takes the same release, for the reason #324 gave the sibling guard in
+            // DefaultMutationBatcherFactory.create: a client's first classload can fail with a
+            // NoClassDefFoundError, which repeats on every restart attempt and would otherwise walk
+            // past this. Rethrown unchanged rather than wrapped — an Error is not an IOException,
+            // and Flink's escalation reads the type it is handed.
+            releaseAfterFailedStart(e);
+            throw e;
         }
+    }
+
+    /**
+     * Through {@link Closers#closeAllSuppressing} rather than a bare call, for the reason #324 used
+     * it at the sibling site: a release that throws must be suppressed onto the failure being
+     * propagated, never replace it. The SDK's own {@code stopAsync()} cannot throw — Guava catches
+     * {@code Throwable} inside it — but this method's operations are injected, so what holds for
+     * the production client is not what holds for the seam.
+     */
+    private void releaseAfterFailedStart(Throwable failure) {
+        Closers.closeAllSuppressing(failure, this::stopQuietly);
     }
 
     /** Receives a message from the client library, on one of its callback threads. */
@@ -182,7 +304,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
         ackTracker.nackSplit(splitId);
         // Asked to stop but not waited for, so a reader owning several splits can start every
         // shutdown before it waits on any.
-        subscriber.stopAsync();
+        subscriberStopAsync.run();
     }
 
     @Override
@@ -197,13 +319,40 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
      * the JVM exits but loses nothing.
      */
     private void stopQuietly() {
-        subscriber.stopAsync();
+        subscriberStopAsync.run();
         awaitTerminated();
     }
 
+    /**
+     * Waits out the client's shutdown, reporting anything it raises to the log alone.
+     *
+     * <p>Best-effort as {@link #stopQuietly()} describes, and — the reason this absorb is required
+     * rather than merely tolerable — <b>the client reports here a failure this subscriber has
+     * already delivered</b>. {@code Subscriber} extends gax's {@code AbstractApiService}, which
+     * holds a Guava {@code AbstractService} as a private inner field (redeclared so Guava can be
+     * shaded, so no Guava type is catchable here); {@code awaitTerminated} ends in that class's
+     * {@code checkCurrentState(TERMINATED)}, which on a {@code FAILED} service throws {@code
+     * IllegalStateException} carrying {@code failureCause()} — the very {@link Throwable} the
+     * failure listener already recorded as {@link #permanentError} and {@link #pullMessages}
+     * already reported, wrapped in an {@link IOException}. Propagating it would report one failure
+     * twice — the contract {@link NotifyingPullSubscriber#close()} states, and the repository-wide
+     * rule the root {@code CLAUDE.md} carries (#325). Measured on {@code google-cloud-pubsub}
+     * 1.152.0, api-common 2.65.0 and Guava 33.5.0.
+     *
+     * <p><b>The catch is wider than that one case, deliberately, and it is worth knowing what else
+     * falls in it.</b> The wait has exactly three exits: the {@code FAILED} rethrow above, a {@code
+     * TimeoutException}, and a {@code checkCurrentState} mismatch that cannot happen (the wait
+     * returns only on {@code TERMINATED} or {@code FAILED}, and both are handled). A timeout is not
+     * a repeat of anything — it is absorbed on the older best-effort ground, that this split's
+     * messages are already nacked. Nor is a failure the SDK raises <em>during</em> this teardown,
+     * from the thread {@code doStop()} spawns: that reaches the listener, sets {@link
+     * #permanentError} with nothing left to read it, and arrives here as the same {@code
+     * IllegalStateException}. It is absorbed too, and it is the one case where something is lost
+     * rather than repeated — the {@code WARN} is its only record.
+     */
     private void awaitTerminated() {
         try {
-            subscriber.awaitTerminated(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            subscriberAwaitTerminated.await(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException | RuntimeException e) {
             LOG.warn(
                     "The Pub/Sub subscriber for subscription {} did not shut down cleanly.",

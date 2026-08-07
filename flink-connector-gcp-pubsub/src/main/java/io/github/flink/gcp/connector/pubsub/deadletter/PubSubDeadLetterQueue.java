@@ -184,9 +184,12 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
 
     /**
      * The two steps {@link #close()} runs, held as fields rather than called directly so a test can
-     * drive its failure path: {@link Publisher} is final, so there is no other seam. Set together
-     * with {@link #publisher} by {@link #open(FailureHandlerContext)} and cleared with it, which is
-     * why the first of them stands in for it as the not-open guard.
+     * drive its failure path: {@link Publisher} cannot be subclassed, so there is no other seam.
+     * (Not because it is {@code final}, as this said until #324 checked it against the 1.152.0
+     * sources — it is a non-final class whose only constructor is private, which forbids a subclass
+     * just as effectively.) Set together with {@link #publisher} by {@link
+     * #open(FailureHandlerContext)} and cleared with it, which is why the first of them stands in
+     * for it as the not-open guard.
      *
      * <p>The first is a {@link BoundedShutdown}: the SDK's own {@code shutdown()} is not guaranteed
      * to return, and running it inline on the task thread is what #312 removed.
@@ -348,8 +351,9 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      * because the first expiry throws and ends the interval — not because a call is the interval.
      *
      * <p>Static, taking its topic and budget as arguments, for the reason {@link #envelope} is:
-     * {@link Publisher} is final, so handing this the futures is the only way a test can reach it,
-     * and opening a real publisher to do so would strand a gax executor in the test JVM.
+     * {@link Publisher} cannot be subclassed (see the teardown fields above), so handing this the
+     * futures is the only way a test can reach it, and opening a real publisher to do so would
+     * strand a gax executor in the test JVM.
      */
     @VisibleForTesting
     static void flushOutstanding(
