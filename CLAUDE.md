@@ -928,6 +928,21 @@ converts a job that policy kept running into a failed one. Pub/Sub's first repor
 job, so the duplicate only adds a competing exception to a teardown the first one is causing. Both
 absorb, but do not read the second as evidence that the first is merely tidiness.
 
+**An absorb wide enough to catch the re-report catches more than the re-report, and what else falls
+in it has to be worked out per client** (#351, on the Pub/Sub subscriber). There, the same
+`IllegalStateException` also carries a failure the SDK raises *during* our teardown — `doStop()`
+runs `runShutdown()` on a thread of its own under `catch (Exception e) { notifyFailed(e); }` — which
+nothing has consumed, because the reader has stopped pulling. It is still absorbed, but it is now
+told apart and reported as its own thing. **What the discrimination must test is whether the failure
+was handed to a caller, not when it was recorded** — a distinction the first attempt at this got
+wrong twice: it snapshotted the recorded failure before the shutdown, which on the reader's own
+close path is taken *after* `stopAsync()` (every subscriber's `shutdown()` runs before any
+`close()`), and which in any case answers "was it readable" rather than "was it read". A boolean set
+where the failure is thrown answers the actual question and needs no ordering argument. A client
+whose teardown cannot raise a new failure needs none of this — which is most of the list below — so
+the question to ask of the next one is not "does it re-report" alone but "what else does this catch
+cover".
+
 **Measured not to have it**, so this is not re-derived:
 
 - `TopicPublisher` and `DeadLetterQueue` — `Publisher.shutdown()` is an already-shut-down

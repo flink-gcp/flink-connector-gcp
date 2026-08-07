@@ -139,6 +139,40 @@ class PubSubSplitReaderTest {
     }
 
     @Test
+    void aPausedSplitWithNothingBufferedIsNotMistakenForAFailedOne() throws Exception {
+        // The negative half of the check below, and the state a real aligned job spends its time
+        // in: paused, healthy, and producing nothing — which is what a paused split is *supposed*
+        // to do. A check that read silence rather than the recorded failure would fail every
+        // aligned job here. Deliberately not covered by pausedSplitsAreNotDrained, whose paused
+        // split has a message buffered, so a silence-based check would not fire there either.
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        subscriberOf(SPLIT_B).deliver(message("b"));
+
+        assertThat(payloadsBySplit(reader.fetch())).containsOnlyKeys(SPLIT_B.splitId());
+        reader.close();
+    }
+
+    @Test
+    void aPausedSplitsFailureSurfacesFromFetchEvenThoughNothingDrainsIt() throws Exception {
+        // #348: a paused split is skipped by the drain, so pullMessages — the only thing that used
+        // to report a permanent failure — is never reached, and the job would run on green with
+        // this subscription dead.
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        subscriberOf(SPLIT_B).deliver(message("b"));
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+
+        subscriberOf(SPLIT_A).failWith(new IOException("stream broke"));
+
+        assertThatThrownBy(reader::fetch)
+                .isInstanceOf(IOException.class)
+                .hasMessage("stream broke");
+        reader.close();
+    }
+
+    @Test
     void subscriberFailureSurfacesFromFetch() throws Exception {
         PubSubSplitReader reader = reader(10);
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));

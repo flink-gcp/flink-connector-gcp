@@ -47,6 +47,26 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
     List<PubsubMessage> pullMessages(int maxMessages) throws IOException;
 
     /**
+     * Reports a permanent failure without draining anything, so a split nothing is pulling from is
+     * still watched.
+     *
+     * <p>{@link #pullMessages} reports the same failure, and for a split the reader drains that is
+     * the only report needed. This exists for the split the reader deliberately does <em>not</em>
+     * drain: a paused one (#348). Watermark alignment pauses splits routinely, and a paused split
+     * is skipped entirely — so without this, a subscriber that fails while paused is asked for
+     * messages by nobody and its failure is read by nobody, leaving the job green with one
+     * subscription silently dead, which is the outcome a source exists to fail on.
+     *
+     * <p>An implementation must report the failure alone and never the absence of messages: a
+     * paused split is <em>supposed</em> to produce none, so a check that could not tell "paused and
+     * healthy" from "paused and dead" would fail every aligned job.
+     *
+     * @throws IOException if the subscriber has failed permanently, carrying the failure {@link
+     *     #pullMessages} would report
+     */
+    void checkFailure() throws IOException;
+
+    /**
      * Nacks every message this subscriber's split still holds and asks the client to shut down,
      * returning without waiting for it. Buffered messages are discarded — they were never emitted,
      * so Pub/Sub must redeliver them. Idempotent.
@@ -64,13 +84,21 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
      * finish, up to the configured shutdown timeout.
      *
      * <p>An implementation must not report a failure it has already delivered through {@link
-     * #pullMessages}. The reader consumes that one and fails the job on it, so a second report here
-     * only adds a competing exception to a teardown the first one is already causing — which is why
-     * the default implementation absorbs the one its client raises (#325). The repository-wide rule
-     * this is an instance of, and what was measured about the other connectors' clients, are in the
-     * root {@code CLAUDE.md}.
+     * #pullMessages} or {@link #checkFailure}. The reader consumes that one and fails the job on
+     * it, so a second report here only adds a competing exception to a teardown the first one is
+     * already causing — which is why {@link PubSubNotifyingPullSubscriber} absorbs the one its
+     * client raises (#325). The repository-wide rule this is an instance of, and what was measured
+     * about the other connectors' clients, are in the root {@code CLAUDE.md}.
      *
-     * @throws Exception if the shutdown itself goes wrong, for some reason other than that failure
+     * <p>A failure the client raises <em>during</em> this teardown is a different case, and this
+     * contract does not require it to be raised either (#351). Nothing has consumed it — the reader
+     * has stopped pulling — but the job is already ending, so an implementation may absorb it, and
+     * {@link PubSubNotifyingPullSubscriber} does. What it must not do is report it as the repeat
+     * above: they are opposite things to tell an operator, one saying a job failure is coming and
+     * the other that none is.
+     *
+     * @throws Exception if the shutdown itself goes wrong, for some reason other than either of
+     *     those failures
      */
     @Override
     void close() throws Exception;
