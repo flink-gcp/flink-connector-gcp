@@ -1,0 +1,44 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.pubsub.sql;
+
+import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
+
+/**
+ * What this module's tests have to know about the jar it builds, in one place: the shared harnesses
+ * in {@code testutils.sql} are generic over exactly these.
+ */
+final class UberJar {
+
+    static final ShadedJar SHADED =
+            ShadedJar.of(
+                    "flink-sql-connector-gcp-pubsub",
+                    "io/github/flink/gcp/connector/pubsub/shaded/");
+
+    static final String FACTORY_CLASS =
+            "io.github.flink.gcp.connector.pubsub.table.PubSubDynamicTableFactory";
+
+    /**
+     * A floor below which a parsed artifact list is assumed to be a parsing failure rather than a
+     * real bundle; the tree holds 52 today. Set a little below that: it exists to catch "the regex
+     * matched nothing", not to pin the count, which the NOTICE comparison itself already does
+     * exactly.
+     */
+    static final int MINIMUM_BUNDLED_ARTIFACTS = 40;
+
+    private UberJar() {}
+}

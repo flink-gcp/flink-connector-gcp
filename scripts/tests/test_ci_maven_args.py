@@ -31,6 +31,7 @@ MODULES = [
     "flink-connector-gcp-test-utils",
     "flink-connector-gcp-base",
     "flink-connector-gcp-bigquery",
+    "flink-sql-connector-gcp-bigquery",
     "flink-connector-gcp-pubsub",
     "flink-sql-connector-gcp-pubsub",
     "flink-connector-gcp-cloudtasks",
@@ -70,13 +71,21 @@ def write_pom(root, artifact, modules=(), deps=()):
 
 @pytest.fixture()
 def fake_repo(tmp_path, ci_maven_args, monkeypatch):
-    """A minimal reactor: base <- {a, b}, b <- shaded (with NOTICE.template)."""
-    write_pom(tmp_path, "root", modules=["base", "a", "b", "shaded"])
+    """A minimal reactor: base <- {a, b}, b <- shaded, plus a detached also-shaded.
+
+    Two shaded modules, and `also-shaded` sits *after* `shaded` in <modules> while sorting
+    before it — so a check that the shaded list comes out in reactor order cannot pass by
+    accident on an alphabetical one. It depends on nothing and nothing depends on it, so the
+    closure tests below see the graph they were written against.
+    """
+    write_pom(tmp_path, "root", modules=["base", "a", "b", "shaded", "also-shaded"])
     write_pom(tmp_path, "base")
     write_pom(tmp_path, "a", deps=["base"])
     write_pom(tmp_path, "b", deps=["base"])
     write_pom(tmp_path, "shaded", deps=["b"])
+    write_pom(tmp_path, "also-shaded")
     (tmp_path / "shaded" / "NOTICE.template").write_text("")
+    (tmp_path / "also-shaded" / "NOTICE.template").write_text("")
     monkeypatch.setattr(ci_maven_args, "ROOT", tmp_path)
     return tmp_path
 
@@ -184,6 +193,15 @@ def test_bare_path_equal_to_module_name_is_not_the_module(fake_repo, ci_maven_ar
     assert everything == ["a"]
 
 
+def test_shaded_modules_come_out_in_reactor_order(fake_repo, ci_maven_args):
+    # The workflow loops over this list and each iteration is an independent `just check-notice`,
+    # so order changes no outcome today — but three comments state it, and a rule the repository
+    # states is a rule it pins. Sorting instead of preserving reactor order passes every other
+    # test in this file.
+    modules = ci_maven_args.pom_modules()
+    assert ci_maven_args.shaded_modules(modules) == ["shaded", "also-shaded"]
+
+
 # --- the two-phase closure, on the synthetic repo ---
 
 
@@ -255,7 +273,14 @@ def outputs(result):
 
 def test_full_mode_builds_everything(ci_maven_args):
     out = outputs(run_cli("--full"))
-    assert out == {"run_build": "true", "maven_args": "", "check_notice": "true"}
+    assert out == {
+        "run_build": "true",
+        "maven_args": "",
+        "check_notice": "true",
+        "notice_modules": (
+            "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
+        ),
+    }
 
 
 def test_one_connector_builds_its_slice(ci_maven_args):
@@ -274,6 +299,37 @@ def test_pubsub_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
         run_cli("--files", json.dumps(["flink-connector-gcp-pubsub/pom.xml"]))
     )
     assert "flink-sql-connector-gcp-pubsub" in out["maven_args"]
+    assert out["check_notice"] == "true"
+
+
+def test_only_the_selected_shaded_modules_are_named(ci_maven_args):
+    # The workflow loops over this list, so a module the change did not select must not be in
+    # it: the check is meant to cover the modules that were built, and a rule that cannot see the
+    # selection would pay a second `-am` reactor for a module nothing had touched.
+    out = outputs(
+        run_cli("--files", json.dumps(["flink-connector-gcp-pubsub/pom.xml"]))
+    )
+    assert out["notice_modules"] == "flink-sql-connector-gcp-pubsub"
+    assert out["check_notice"] == "true"
+
+
+def test_a_change_reaching_no_shaded_module_names_none(ci_maven_args):
+    out = outputs(
+        run_cli("--files", json.dumps(["flink-connector-gcp-bigtable/src/X.java"]))
+    )
+    assert out["notice_modules"] == ""
+    assert out["check_notice"] == "false"
+
+
+def test_bigquery_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
+    # The same edge, on the second shaded module (#290): what makes it work is
+    # the dependency read out of the poms, so a third one needs no change here
+    # either — but a module that stopped pulling its uber-jar would ship an
+    # unrebuilt, unlicensed bundle, and that is what this pins.
+    out = outputs(
+        run_cli("--files", json.dumps(["flink-connector-gcp-bigquery/pom.xml"]))
+    )
+    assert "flink-sql-connector-gcp-bigquery" in out["maven_args"]
     assert out["check_notice"] == "true"
 
 
@@ -297,7 +353,12 @@ def test_base_change_collapses_to_the_full_reactor(ci_maven_args):
 )
 def test_root_only_changes_build_the_root_rat_check(ci_maven_args, files):
     out = outputs(run_cli("--files", json.dumps(files)))
-    assert out == {"run_build": "true", "maven_args": "-pl .", "check_notice": "false"}
+    assert out == {
+        "run_build": "true",
+        "maven_args": "-pl .",
+        "check_notice": "false",
+        "notice_modules": "",
+    }
 
 
 def test_a_root_only_path_does_not_swallow_a_module_selection(ci_maven_args):
@@ -316,12 +377,24 @@ def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
     # check runs inside the build job behind check_notice, so a licence-pin
     # change must keep the reactor that makes it true.
     out = outputs(run_cli("--files", json.dumps(["scripts/licence-sources.toml"])))
-    assert out == {"run_build": "true", "maven_args": "", "check_notice": "true"}
+    assert out == {
+        "run_build": "true",
+        "maven_args": "",
+        "check_notice": "true",
+        "notice_modules": (
+            "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
+        ),
+    }
 
 
 def test_ignored_only_skips_the_build(ci_maven_args):
     out = outputs(run_cli("--files", json.dumps(["opentofu/main.tf", "README.md"])))
-    assert out == {"run_build": "false", "maven_args": "", "check_notice": "false"}
+    assert out == {
+        "run_build": "false",
+        "maven_args": "",
+        "check_notice": "false",
+        "notice_modules": "",
+    }
 
 
 def test_real_module_list_matches_this_repository(ci_maven_args):

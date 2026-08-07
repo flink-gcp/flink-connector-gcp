@@ -72,6 +72,7 @@ jobs:
       run_build: ${{ steps.derive.outputs.run_build }}
       maven_args: ${{ steps.derive.outputs.maven_args }}
       check_notice: ${{ steps.derive.outputs.check_notice }}
+      notice_modules: ${{ steps.derive.outputs.notice_modules }}
     steps:
       # A pull_request checkout is the base-into-head merge commit
       # (refs/pull/N/merge); fetching its two parents as well (depth 2) makes
@@ -169,9 +170,25 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Check the SQL connector NOTICE
+      # The shaded modules the `changes` job selected, in reactor order, derived by
+      # the same script that decides everything else about the selection: a module
+      # carrying a NOTICE.template is a shaded module. Derived rather than listed,
+      # so a third `flink-sql-connector-gcp-*` is checked from the commit that adds
+      # it — an enumerated list would leave a new module's licensing unchecked with
+      # nothing to say so. Deriving it *there* rather than here is what keeps the
+      # set checked equal to the set built: a workflow-side rule cannot see the
+      # selection, and would pay a second `-am` reactor for a module nothing
+      # touched.
+      # Through the environment, not interpolated into the script: the value is a
+      # workflow output, and `run:` interpolation is a script-injection shape.
+      - name: Check the SQL connector NOTICEs
         if: needs.changes.outputs.check_notice == 'true'
-        run: just check-notice flink-sql-connector-gcp-pubsub
+        env:
+          NOTICE_MODULES: ${{ needs.changes.outputs.notice_modules }}
+        run: |
+          for module in $NOTICE_MODULES; do
+            just check-notice "$module"
+          done
 
   # This workflow's own verdict, which is what makes its result trustworthy
   # to ci.yaml's gate: a failed job already fails the workflow, but a `build`

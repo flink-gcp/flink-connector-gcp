@@ -17,6 +17,15 @@ This product includes software developed by third parties:
 
 This product redistributes third-party binaries:
 
+- The flink-sql-connector-gcp-bigquery module builds an uber-jar bundling the
+  BigQuery Storage Write, BigQuery REST and Cloud Storage clients and their
+  runtime dependencies, relocated under
+  io.github.flink.gcp.connector.bigquery.shaded. That jar carries its own
+  META-INF/NOTICE enumerating every bundled artifact by licence, and
+  META-INF/licenses/ with the text of each non-Apache-2.0 licence. Both are
+  checked in under
+  flink-sql-connector-gcp-bigquery/src/main/resources/META-INF/.
+
 - The flink-sql-connector-gcp-pubsub module builds an uber-jar bundling the
   Cloud Pub/Sub client and its runtime dependencies, relocated under
   io.github.flink.gcp.connector.pubsub.shaded. That jar carries its own

@@ -49,6 +49,89 @@ INSERT INTO events
 SELECT id, amount, event_ts, ROW(source, version) FROM staged_events;
 ```
 
+## Getting the connector onto the classpath
+
+Use `flink-sql-connector-gcp-bigquery`, an uber-jar built for exactly this: put it in Flink's `lib/`
+directory, or add it with `ADD JAR` in the SQL client. It bundles `flink-connector-gcp-bigquery`
+together with its whole runtime tree — the Storage Write API and REST clients, the Cloud Storage
+client, gRPC, protobuf, Avro, Guava, the Google auth and HTTP clients — which is 111 artifacts, not
+a dependency list anyone wants to assemble by hand.
+
+The plain `flink-connector-gcp-bigquery` jar works too, where the deployment already resolves
+transitive dependencies. That is the right choice for a DataStream job built with Maven or Gradle —
+and for one using the Avro serializer it is the only choice: `avro` is relocated inside the
+uber-jar, so the `AvroRecordSerializer` in it takes a relocated `IndexedRecord` that an ordinary job
+cannot supply. None of that applies to SQL, where the connector supplies its own `RowData`
+serializer.
+
+### Everything bundled is relocated
+
+Every bundled *third-party* package moves under `io.github.flink.gcp.connector.bigquery.shaded.`,
+so the versions of gRPC, protobuf, Guava, Jackson and Avro this connector needs cannot collide with
+the ones a job, another connector, or Flink itself brings. That is the point of the artifact:
+without it, a BigQuery job that also touches any other Google Cloud library becomes a
+version-alignment exercise. The connector's own `io.github.flink.gcp.connector.bigquery` stays
+where it is — it is this jar's public surface, and it is what the DDL's `connector` option resolves
+through.
+
+Six third-party packages are deliberately *not* relocated, and none of them can collide in a way
+that matters: `org.conscrypt`, which gRPC picks up reflectively as an optional TLS provider and
+does without when it is unusable; and the annotation-only `javax.annotation`, `org.jspecify`,
+`org.checkerframework`, `org.codehaus.mojo.animal_sniffer` and `android.annotation`, where a
+duplicate class is inert because nothing ever invokes it.
+
+Two packages the jar references are not in it. `org.slf4j` is excluded deliberately: Flink's own
+distribution provides it, and bundling it would be wrong either way round — relocated, the
+connector's logging would bind to a copy no Flink log configuration reaches and go silent;
+unrelocated, the jar would put a second `slf4j-api` on a classpath that already has one.
+`org.apache.commons.logging` is absent because nothing in the tree brings it; the Apache HTTP
+transport it belongs to is not the one the Google clients use by default, and it is left
+unrelocated precisely so that a deployment that does reach it can supply commons-logging in `lib/`
+in the ordinary way.
+
+`io.grpc:grpc-netty-shaded` *is* relocated, which takes some care: gRPC ships it already relocated
+once, having renamed its `META-INF/native/` libraries to match, because netty derives the native
+library name from its own package at load time. Relocating those classes a second time therefore
+means renaming the library files again in step. Leaving it alone was the obvious alternative and is
+wrong — the jar would then be unable to share a classpath with `flink-sql-connector-gcp-pubsub`,
+which bundles gRPC too. Sharing a `lib/` with it does work: of the 659 entries the two jars have in
+common, 655 are byte-identical, and the four that differ are per-jar metadata Flink reads through
+`ServiceLoader`, which enumerates every copy (measured 2026-08-06). **Merging the two into one fat
+jar is the case that does not work** — one connector's factory registration and one jar's `NOTICE`
+would be shadowed, silently. Put them in `lib/`, or add each with its own `ADD JAR`. One consequence of relocating an already-relocated gRPC: netty's **system
+property names** move with it, so a `-D` spelled `io.grpc.netty.shaded.io.netty.maxDirectMemory`
+has no effect here — it has to carry the shaded prefix above.
+
+The jar is about 64 MB (measured 2026-08-06). Some of that is a code path this connector never
+runs — the Storage *Read* API in `google-cloud-bigquerystorage` brings Apache Arrow, netty and
+flatbuffers — though less than it looks: those three are 3.2 MB of it, about 5%. They are bundled
+anyway, because the bundle is defined as "the runtime classpath" rather than as a list, and a list
+is how a dependency gets silently dropped from a jar instead of failing a build.
+
+### Credentials
+
+Not configurable, here or anywhere else in this project: the connector authenticates with
+**application default credentials**. There is no option for a key file, and none is planned. A
+TaskManager needs `GOOGLE_APPLICATION_CREDENTIALS`, a Workload Identity binding, or whatever its
+platform provides.
+
+### Licensing
+
+`META-INF/NOTICE` inside the jar lists every bundled artifact grouped by licence, and
+`META-INF/licenses/` carries the full text of each non-Apache-2.0 one — protobuf, gax, the Google
+auth library, the ThreeTen backport and ThreeTen-Extra, RE2/J, animal-sniffer, the Checker
+Framework qualifiers, the Stax2 API, JSON-java and the javax annotation API.
+
+The prose of the NOTICE is human-written, in the module's `NOTICE.template`; the artifact lists are
+generated into it from what Maven actually resolves, so a wrong licence grouping or a stale version
+cannot be written at all. Each licence text has a pinned source — the artifact's own jar where one
+ships a text, otherwise a curated URL matched to the bundled version — recorded with its sha256, so
+a text that changes upstream fails the build instead of being shipped unreviewed. `just
+update-notice <module>` regenerates both after a dependency change; `just check-notice <module>`
+verifies, offline, that what is checked in still matches the bundle and the pins. Generic
+licence-name URLs (`opensource.org`, `spdx.org`) are rejected as sources: they serve HTML pages or
+bare templates, and the copyright holder is part of a BSD or MIT text.
+
 ## Options
 
 Every option maps onto one builder setter of the DataStream API, which stays the source of truth.
@@ -344,3 +427,31 @@ stands in for. `storage-api-exactly-once` was tried and dropped — the emulator
 append offsets instead of honoring the requested one, and keeps no flush cursor, so the writer's
 offset check fails on the first append. What the emulator suite still covers is the plan-time
 refusals, in the planner where a SQL user meets them.
+
+The uber-jar is covered separately, in `flink-sql-connector-gcp-bigquery`.
+
+- `BigQuerySqlConnectorPackagingITCase` reads the built jar: the factory SPI file SQL discovers the
+  connector through, that every artifact on the runtime classpath contributed its classes, that no
+  class outside the shaded prefix is missing from a short documented allow-list — and that no entry
+  on that allow-list is dead, since an exemption matching nothing silently covers whatever arrives
+  under it later — that the netty native libraries were renamed to match their relocated package,
+  that the relocated gRPC service file names the relocated provider, that no service file hands a
+  relocated implementation to an interface this jar does not own — bar one documented exemption,
+  netty's BlockHound integration, which is inert unless that test-time agent is present — that
+  every licence text checked in reached the jar, and that the `NOTICE` claims no Apache provenance.
+- `BigQuerySqlConnectorSmokeITCase` runs a SQL `INSERT` against the emulator **through the shaded
+  classes** — the module's surefire configuration drops the connector artifact from the test
+  classpath and adds the uber-jar, and the test asserts the factory really did load from there,
+  because a regression in that setup would leave every other assertion about the wrong code. This
+  is the only test that exercises relocation at runtime, and it lets the sink create its own table,
+  so both transports are driven: the relocated REST client for the metadata half and the relocated
+  gRPC one for the rows. The harness drives the emulator with the *stock*, unrelocated BigQuery
+  client, so the two coexisting on one classpath is itself part of what is asserted.
+- `BundledDependenciesNoticeTest` diffs `META-INF/NOTICE` against the runtime dependency tree
+  recorded during the build, in both directions. The bundle is the whole runtime classpath, so a
+  new transitive is bundled automatically; this test is what makes it fail the build until the
+  NOTICE is regenerated to record it.
+
+All three are shared with `flink-sql-connector-gcp-pubsub` rather than copied: the checks live in
+`flink-connector-gcp-test-utils`, and each module contributes its artifact id, its shaded prefix,
+its factory and its own package root.

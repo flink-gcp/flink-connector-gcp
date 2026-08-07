@@ -668,7 +668,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `io.netty.util.internal.NativeLibraryLoader` — Beam gets away with collapsing `io.grpc.netty
   .shaded` to its vendor root only because what remains still satisfies that — and an underscore in
   the prefix would have to be spelled `_1`, which is why the shaded prefix must not grow one.
-  `PubSubSqlConnectorPackagingITCase` derives the expected string from the shaded prefix rather than
+  `AbstractSqlConnectorPackagingITCase` derives the expected string from the shaded prefix rather than
   repeating it, so config and assertion cannot drift. Untested residue, deliberately: whether the
   renamed libraries load through JNI is only exercised on Linux with epoll or tcnative, and a wrong
   rename degrades to NIO and JDK SSL *silently*. Still unrelocated are `org.conscrypt` (native
@@ -719,19 +719,25 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   non-SPDX "Go License". `licenseMerges` in the root pom's `pluginManagement` is what makes the
   vocabulary stable — this tree alone spells Apache-2.0 six ways — and it lives there so a
   sibling SQL module inherits one vocabulary rather than inventing a second.
-  **What a sibling actually costs, measured against the BigQuery module's 113-artifact tree**: the
-  plugin block and one execution in its pom, its own `NOTICE.template`, a CI step, and
-  `licence-sources.toml` entries for its non-Apache artifacts (the file and its pins are shared, so
-  overlapping dependencies cost nothing twice). No new `licenseMerges` — that list was extended
-  here, once, to cover the spellings that tree adds (`Apache License V2.0`, `BSD 3-clause`,
-  `MIT License`, `The MIT License`, `The BSD 2-Clause License`), and `failOnMissing` does not fire
-  on it. The test trio is the other reusable half: `ShadedJar` is generic modulo two constants
-  (artifact id, shaded prefix), `BundledDependenciesNoticeTest` is module-relative already, and
-  the packaging IT's skeleton carries over — including the netty-native assertions, since the
-  BigQuery tree bundles gRPC too. **Deliberately not extracted yet**: sharing needs a test-jar or
-  a shared test module, and generalising on one consumer means guessing the parameterisation —
-  extract when the second SQL module actually lands, shaped by what it needs (the call #27 made
-  for the emulator harnesses, extracted once the third consumer existed).
+  **What a sibling actually costs, and #290 paid it**: the plugin block and one execution in its
+  pom, its own `NOTICE.template`, a CI step, and `licence-sources.toml` entries for its non-Apache
+  artifacts (the file and its pins are shared, so overlapping dependencies cost nothing twice). The
+  estimate held except in one direction, and only because it was measured beforehand: the BigQuery
+  bundle resolves **111** third-party artifacts against the **114** the connector's own runtime
+  tree shows — `commons-io` and `commons-lang3` reach the connector only through `provided`
+  flink-core, and `slf4j-api` the SQL module excludes itself — and it needed **four** new pinned
+  texts (checker-qual, threeten-extra, stax2-api, JSON-java). No new `licenseMerges`, as predicted — that list was extended here, once, to cover
+  the spellings that tree adds (`Apache License V2.0`, `BSD 3-clause`, `MIT License`,
+  `The MIT License`, `The BSD 2-Clause License`), and `failOnMissing` did not fire.
+  **The test trio is extracted, not copied** (#290, discharging the #26 trigger): `ShadedJar` and
+  the two test bases live in `flink-connector-gcp-test-utils` under `testutils.sql`, and this
+  module now contributes four values through a local `UberJar` holder. What the second consumer
+  actually asked for, which is why extracting on one would have guessed wrong: a per-module
+  artifact floor (40 here is vacuous for a 111-artifact tree), the `ManagedChannelProvider` SPI
+  name derived from the shaded prefix rather than written out, and the whole
+  "which packages stay unrelocated" list split into a shared part and a per-module one. What it
+  did *not* need — an "excluded from the bundle" hook for the artifacts a module keeps out — is
+  recorded on the BigQuery side, where the exclusion happens in the dependency tree instead.
   **`download-licenses` must not be used for the licence texts**: it names files after the *licence*,
   so protobuf, gax, google-auth and threetenbp collapse into one BSD-3-Clause file and the last
   download wins. Measured — it left ThreeTen's copyright line standing for Google's code, and the

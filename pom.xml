@@ -63,6 +63,7 @@ limitations under the License.
         <module>flink-connector-gcp-test-utils</module>
         <module>flink-connector-gcp-base</module>
         <module>flink-connector-gcp-bigquery</module>
+        <module>flink-sql-connector-gcp-bigquery</module>
         <module>flink-connector-gcp-pubsub</module>
         <module>flink-sql-connector-gcp-pubsub</module>
         <module>flink-connector-gcp-cloudtasks</module>

@@ -783,6 +783,85 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
   `FileLoadsOptions.toString()` now renders `writeDisposition=write-append`, the visible cost of the
   enum's DDL spelling — log-only, nothing parses it, and the counterpart of the #287 entry's note
   about `StartPosition.toString()`
+- **`flink-sql-connector-gcp-bigquery`, the uber-jar** (#57, sub-issue #290): the shading and
+  licensing decisions are `flink-connector-gcp-pubsub/CLAUDE.md`'s, inherited wholesale and not
+  re-argued here — everything relocated including `grpc-netty-shaded` and its two `META-INF/native`
+  renames, `artifactSet` `*:*`, no Google artifact declared at `test` scope, the licence machinery
+  through `just update-notice` / `check-notice`. **Read that entry before changing this module's
+  pom.** What is this tree's own:
+  **`org.slf4j:slf4j-api` is the one artifact deliberately kept out of the bundle**, and the
+  Pub/Sub module has no counterpart because its tree carries no slf4j at all; this one gets it
+  through Avro. Bundling it is wrong either way round: relocated, the connector's own
+  `LoggerFactory` calls are rewritten with it, so they bind to a copy no Flink log configuration
+  reaches and the connector goes silent under a green job; unrelocated, the jar puts a second
+  `slf4j-api` on a classpath that already has flink-dist's. It is removed with an `<exclusion>` on
+  the connector dependency rather than a shade filter, so the tree the NOTICE, the licence report
+  and `BundledDependenciesNoticeTest` all read is the tree that is bundled — one fact, not a fact
+  plus an exception list. That is also why the shared NOTICE test needed no
+  "excluded from the bundle" hook: `includeScope=runtime` never sees it.
+  **The SQL module's runtime tree is not the connector module's** — 111 third-party artifacts
+  against 114 — which is worth knowing before reading a relocation list against the wrong
+  `dependency:tree`: `commons-lang3` and `commons-io` appear in the connector's and *not* here, and
+  `commons-compress` resolves 1.24.0 here against 1.26.0 there, because their only path is
+  `flink-core`, which is `provided` on the connector and so contributes nothing transitively.
+  `slf4j-api` is the third of the three, excluded here deliberately. The relocation list is derived
+  from the SQL module's own `runtime-classpath.txt`, not from the connector's.
+  **A relocation pattern rewrites *references*, so it must not be wider than the tree.**
+  `org.apache.commons` was the tempting one line for a tree carrying only commons-codec and
+  commons-compress, and it silently renamed httpclient's 113 references to
+  `org.apache.commons.logging` — an artifact this tree does not have — into a name private to the
+  jar, which no user can then satisfy by putting commons-logging in `lib/`. Two named patterns
+  instead. The general rule is the reason: derive the relocation list from the module's own
+  `runtime-classpath.txt`, not from what a package root looks like it should cover.
+  `com.google` is the standing exception, wholesale in both SQL modules, and it pays the same cost
+  for `com.google.appengine` — an optional dependency that was already absent.
+  **Three SPI files are filtered out because their interface is a JDK type**
+  (`javax.xml.stream.XML{Input,Output,Event}Factory`, `java.time.chrono.Chronology`). Only the
+  implementation relocates, so the jar would otherwise register relocated Woodstox as the **JVM's**
+  StAX provider for everything sharing it — and the deployment this artifact is for is Flink's
+  `lib/`, so that is Flink and every job on the TaskManager, quietly changing how unrelated XML
+  parses. Nothing here needs them: Woodstox arrives only because google-cloud-storage brings
+  jackson-dataformat-xml, which falls back to the JDK factory. An SPI whose interface relocates
+  with it (gRPC's providers, Jackson's modules) is unaffected, and the Flink factory SPI is the
+  jar's whole point. Found by review, not by a test — no assertion in the packaging suite looks at
+  resources.
+  **`org.apache.avro` is relocated, which makes the uber-jar's `AvroRecordSerializer` unusable from
+  a DataStream job** — its signature there takes a relocated `IndexedRecord`. Accepted rather than
+  exempted: it is the same trade the Pub/Sub jar already makes with `PubsubMessage`, which its own
+  SPI returns, and leaving Avro alone would put a second copy beside whatever `flink-avro` a SQL
+  deployment carries. Both READMEs and the docs page point a DataStream user at the plain connector
+  jar, which is the actual answer.
+  **Four `META-INF` paths are excluded from both SQL modules, and `META-INF/LICENSE` deliberately
+  is not.** `META-INF/native-image/**` and `META-INF/proguard/**` are build-tool inputs naming
+  unrelocated classes — GraalVM and R8 read them, a Flink deployment reads neither, and no bundled
+  class reads them at runtime (grepped, not assumed); reinstating them is what native-image support
+  would cost, and it would have to relocate them. `META-INF/services/javax.xml.stream.*` and
+  `java.time.chrono.Chronology` are the JDK-interface SPI files above. `META-INF/LICENSE` was
+  excluded with them and **reverted**: shade takes the project jar first, so the copy that survives
+  is this project's own — measured byte-identical to the repository root `LICENSE` — and dropping it
+  left the two jars a user downloads directly as the only artifacts here carrying no licence, while
+  two lines of the packaged NOTICE went on pointing at an "accompanying LICENSE file".
+  `theProjectsOwnLicenceIsInTheJar` is what holds it now.
+  **`META-INF/versions/**` is excluded from both SQL modules.** maven-shade relocates a versioned
+  class's *contents* and leaves it at its original path, so jackson-core's Java 11/17/21/22
+  variants shipped spelled `com/fasterxml/...` in a jar whose base copies had moved — caught by the
+  packaging test, not predicted. They are dead weight either way, since an uber-jar's manifest
+  carries no `Multi-Release: true` and the JVM never looks there; the Pub/Sub module takes the same
+  exclusion (costing it one inert OSGi metadata file) so the two poms cannot answer one question
+  two ways.
+  **Arrow, netty and flatbuffers are bundled for a code path this connector never runs** — the
+  Storage *Read* API in `google-cloud-bigquerystorage`. Excluding them was weighed and declined: it
+  reintroduces the enumerated include list #138 removed after measuring that an unlisted transitive
+  is silently *dropped* from the jar, and #64 would need them back. Priced before declining, per
+  the usual rule: 3.2 MB of the 58 MB of compressed entries, about 5% (measured 2026-08-06;
+  the docs page divides the same 3.2 MB by the 64 MB the file weighs on disk) — a third of what the
+  first estimate assumed.
+  The smoke ITCase lets the sink **create its own table**, so one job drives both relocated
+  transports — REST for the metadata half, gRPC for the rows — which is the shape only this
+  connector needs, since only it has two `emulator-*` options.
+  This module is also what discharged the #26 trigger: the packaging/NOTICE/`ShadedJar` trio moved
+  to `flink-connector-gcp-test-utils` (see that module's CLAUDE.md for the parameterisation)
+  instead of being copied
 - Deferred decisions are recorded on PR #46: `location()` granularity (decide in #10)
 - **BigQuery JSON serializer** (#66, JSON half — closes the issue): `JsonDocumentSerializer` takes
   **`String`** records and a **supplied** schema, since JSON has none of its own — either the

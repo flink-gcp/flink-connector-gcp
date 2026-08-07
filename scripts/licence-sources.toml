@@ -97,3 +97,53 @@ artifacts = ["javax.annotation:javax.annotation-api"]
 jar = "META-INF/LICENSE.txt"
 sha256 = "a4c80869daf4350b6773bd5e6ee1d0a6cc52b63db3a3d2dc20961b0cdd272a5c"
 # Shipped inside the artifact's own jar.
+
+[files."LICENSE.checker-qual"]
+artifacts = [
+    "org.checkerframework:checker-qual",
+    "org.checkerframework:checker-compat-qual",
+]
+jar = "META-INF/LICENSE.txt"
+sha256 = "e90eaa08dea089df10f2bf7f9dba63a5f6237c01562c4741e2e86773e78582d5"
+# Shipped inside checker-qual's own jar, and shared with checker-compat-qual,
+# which ships none: the text is the project's MIT licence for its qualifier
+# artifacts ("Checker Framework qualifiers", copyright the Checker Framework
+# developers), and both artifacts' POMs declare MIT - compat-qual's own, and
+# the project's checkerQualReleasePom.xml at tag checker-framework-2.5.6. The
+# version-matched tag was checked and rejected on correctness rather than
+# availability: the only licence texts it carries are a GPL2 root LICENSE.txt
+# for the framework and an Apache-2.0 maven-artifacts/LICENSE.txt, neither of
+# which describes the qual jars.
+# Note the order of `artifacts` is load-bearing: a `jar` source extracts from the first one, so
+# checker-qual must stay first. If it ever leaves the tree while compat-qual stays, this entry
+# needs a `url` source rather than a reorder - compat-qual's jar ships no licence text at all.
+
+[files."LICENSE.threeten-extra"]
+artifacts = ["org.threeten:threeten-extra"]
+jar = "META-INF/LICENSE.txt"
+sha256 = "ff3c303a06b9007bf90c7c2c2acac3afdd2af2b504fad21e8b27c9605e1fbcd4"
+# Shipped inside the artifact's own jar. A separate file from
+# LICENSE.threetenbp: same authors, same BSD-3-Clause, different copyright
+# years, and the years are part of the text.
+
+[files."LICENSE.stax2-api"]
+artifacts = ["org.codehaus.woodstox:stax2-api"]
+jar = "META-INF/LICENSE"
+sha256 = "b3e969d18f690ab8783e4ec77729c9fea85691b8090c550bb3c626dda5e837a7"
+# Shipped inside the artifact's own jar, byte-identical to
+# src/main/resources/META-INF/LICENSE at tag stax2-api-4.2.2. Note what the
+# publisher's file is: a statement that the licence is the 2-clause BSD,
+# naming FasterXML.com and 2010- as the holder and year, rather than the
+# clause text itself. It is pinned as-is because it is what the publisher
+# ships; substituting a template would drop that copyright line, which is
+# the part of a BSD licence a redistributor must reproduce.
+
+[files."LICENSE.json-java"]
+artifacts = ["org.json:json"]
+url = "https://raw.githubusercontent.com/stleary/JSON-java/20260719/LICENSE"
+sha256 = "86cc84f1773e3318ba26fd61b3ae508a167df38b361695e105f6e499e7a2736f"
+# The release tag for the bundled 20260719; the jar ships no licence file.
+# The whole text is "Public Domain." - the project relinquished the old JSON
+# License ("The Software shall be used for Good, not Evil"), whose use
+# restriction would have made this dependency a question for the user rather
+# than an entry here.

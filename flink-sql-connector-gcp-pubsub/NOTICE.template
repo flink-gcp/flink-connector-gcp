@@ -26,6 +26,11 @@ See bundled license files for details.
 
 {{CDDL + GPLv2 with classpath exception}}
 
+org.apache.httpcomponents:httpclient additionally redistributes mozilla/public-suffix-list.txt,
+which is licensed under the Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/) rather than
+under the Apache Software License 2.0 its artifact is listed under above. The file carries its own
+MPL header and is redistributed unmodified.
+
 io.grpc:grpc-netty-shaded additionally redistributes native libraries built from BoringSSL and
 Apache Tomcat Native. Their license texts travel with it and are preserved in this jar under
 META-INF/license/ (note the singular directory, which is gRPC's own, distinct from the

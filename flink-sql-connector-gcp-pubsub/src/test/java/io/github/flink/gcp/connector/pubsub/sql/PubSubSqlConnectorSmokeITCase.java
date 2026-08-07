@@ -29,6 +29,8 @@ import com.google.pubsub.v1.SubscriptionName;
 import com.google.pubsub.v1.TopicName;
 import io.github.flink.gcp.connector.testutils.pubsub.PubSubEmulatorContainers;
 import io.github.flink.gcp.connector.testutils.pubsub.PubSubTestClients;
+import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorSmokeITCase;
+import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -38,7 +40,6 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -76,12 +77,9 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  */
 @Testcontainers
 @Timeout(180)
-class PubSubSqlConnectorSmokeITCase {
+class PubSubSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
 
     private static final String PROJECT = "it-project";
-
-    private static final String FACTORY_CLASS =
-            "io.github.flink.gcp.connector.pubsub.table.PubSubDynamicTableFactory";
 
     /** Comfortably inside the class timeout, so a shortfall fails the assertion instead. */
     private static final Duration COLLECT_TIMEOUT = Duration.ofSeconds(60);
@@ -103,18 +101,14 @@ class PubSubSqlConnectorSmokeITCase {
         }
     }
 
-    @Test
-    void theConnectorUnderTestComesFromTheShadedJar() throws Exception {
-        Class<?> factory = Class.forName(FACTORY_CLASS);
-        Path loadedFrom =
-                Path.of(factory.getProtectionDomain().getCodeSource().getLocation().toURI());
+    @Override
+    protected ShadedJar shadedJar() {
+        return UberJar.SHADED;
+    }
 
-        assertThat(loadedFrom)
-                .as(
-                        "the surefire classpath surgery in this module's pom must put the uber-jar"
-                                + " in front of the reactor's unshaded classes, or every other"
-                                + " assertion here is about the wrong code")
-                .isEqualTo(ShadedJar.path().toAbsolutePath());
+    @Override
+    protected String factoryClass() {
+        return UberJar.FACTORY_CLASS;
     }
 
     @Test

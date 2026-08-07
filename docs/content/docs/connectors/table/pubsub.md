@@ -99,8 +99,9 @@ because nothing ever invokes it.
 once, having renamed its `META-INF/native/` libraries to match, because netty derives the native
 library name from its own package at load time. Relocating those classes a second time therefore
 means renaming the library files again in step. Leaving it alone was the obvious alternative and is
-wrong — the jar would then be unable to share a classpath with anything else bundling gRPC, which
-is the first thing a second GCP SQL connector would do.
+wrong — the jar would then be unable to share a classpath with anything else bundling gRPC. That
+is no longer the hypothetical it was when this was written: `flink-sql-connector-gcp-bigquery`
+bundles gRPC too, and the two are meant to sit in one `lib/`.
 
 ### Licensing
 

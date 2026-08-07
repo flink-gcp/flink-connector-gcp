@@ -15,7 +15,46 @@ Design decisions for the shared test-utils module (#27). Read before adding anyt
 - **No forced unification of emulator container fixtures.** The goccy BigQuery and aertje
   Cloud Tasks fixtures are hand-rolled, single-consumer, and structurally unlike the testcontainers
   `PubSubEmulatorContainer`; they stay in their modules (recorded on #27). Only what has multiple
-  consumers moves here.
+  consumers moves here — and #290 is what that rule looks like when it fires. The BigQuery SQL
+  uber-jar's smoke test needed the goccy container, so **its container half moved and nothing else
+  did**: `testutils.bigquery.BigQueryEmulatorContainers` owns the image tag, the two ports, the
+  wait strategy and a stock REST client, while `AbstractBigQueryEmulatorITCase` keeps `createTable`
+  and `queryNames`, which take connector types. That line is not tidiness — the SQL module runs its
+  tests against the *relocated* connector, so a helper naming a connector type could not compile
+  there at all, and the shared half deals only in stock `com.google.*` and testcontainers types,
+  the same constraint `PubSubTestClients` was built under. The Cloud Tasks fixture still has one
+  consumer and still stays where it is.
+- **`testutils.sql` holds the shaded-module test bases** (#290, discharging the #26 trigger — the
+  trigger called them a trio; the extraction landed as four):
+  `ShadedJar` plus the abstract `AbstractBundledDependenciesNoticeTest` and
+  `AbstractSqlConnectorPackagingITCase` and `AbstractSqlConnectorSmokeITCase`, which each
+  `flink-sql-connector-gcp-*` extends with thin concrete subclasses. **Abstract JUnit bases rather than assertion-free helpers**, decided
+  with the user: it puts every assertion and every message in one place, at the price of
+  `junit-jupiter` and `assertj-core` in this pom — the only two here that appear in no helper's
+  signature and exist purely so the bases compile, and `provided` like everything else for the
+  reason above. Naming an abstract base `Abstract*` is what keeps surefire from trying to run
+  it; being in `src/main/java` of a different module is what keeps it off the consumer's test-scan
+  entirely.
+  Three things the extraction changed rather than moved, each because the second consumer needed
+  it. The artifact-count floor is **per module** (a shared 40 is vacuous against a 111-artifact
+  tree), and lives on that module's `UberJar` holder because two unrelated bases ask for it. The
+  relocated `ManagedChannelProvider` SPI name is **derived from the shaded prefix**, as the netty
+  native-library name already was, so config and assertion cannot drift. And the
+  unrelocated-package allow-list is split into the base's shared half and the subclass's own.
+  **That split is the intersection, not the union, and the difference was a real hole**: written as
+  a union it carried `org/checkerframework/`, which only the BigQuery tree has, so a
+  `libraries-bom` bump bringing checker-qual into the Pub/Sub tree would have shipped it
+  unrelocated with the packaging test green. An allow-list entry only ever *permits*, so a vacuous
+  one is invisible where the escapes are checked —
+  `everyExemptionOnTheAllowListIsInTheJar` is the second direction, and it is what makes the
+  intersection a property rather than a discipline.
+  The smoke tests share `AbstractSqlConnectorSmokeITCase`, whose one test is the precondition the
+  rest of each smoke class rests on: that the connector came out of the uber-jar. One assertion is
+  worth a base class exactly when its failure makes every other assertion in the subclass
+  meaningless-but-green.
+  **`ShadedJar.of` rejects a prefix containing `_`**, which was a pom comment in both modules and
+  enforced by nothing: netty's `calculateMangledPackagePrefix()` would require it spelled `_1` in
+  the `META-INF/native` relocations and in every assertion derived from them.
 - **`StubWriterInitContext` answers what a sink reads and throws for everything else** (#206, its
   second consumer — it arrived with #205 in the BigQuery test tree and moved when Pub/Sub needed
   it). The unsupported methods are the point: a sink growing a new dependency on the context shows

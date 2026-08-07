@@ -18,9 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import com.google.cloud.NoCredentials;
 import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.StandardTableDefinition;
@@ -31,10 +29,10 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
 import io.github.flink.gcp.connector.testutils.TestContexts;
+import io.github.flink.gcp.connector.testutils.bigquery.BigQueryEmulatorContainers;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -52,41 +50,26 @@ public abstract class AbstractBigQueryEmulatorITCase {
 
     public static final String PROJECT = "it-project";
     public static final String DATASET = "it_dataset";
-    private static final int REST_PORT = 9050;
-    private static final int GRPC_PORT = 9060;
 
     public static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     @Container
     private static final GenericContainer<?> EMULATOR =
-            new GenericContainer<>("ghcr.io/goccy/bigquery-emulator:0.8.1")
-                    .withCommand("--project=" + PROJECT, "--dataset=" + DATASET)
-                    .withExposedPorts(REST_PORT, GRPC_PORT)
-                    .waitingFor(Wait.forListeningPorts(REST_PORT, GRPC_PORT));
+            BigQueryEmulatorContainers.newContainer(PROJECT, DATASET);
 
     public static BigQuery restClient;
 
     @BeforeAll
     static void createRestClient() {
-        restClient =
-                BigQueryOptions.newBuilder()
-                        .setHost(
-                                "http://"
-                                        + EMULATOR.getHost()
-                                        + ":"
-                                        + EMULATOR.getMappedPort(REST_PORT))
-                        .setProjectId(PROJECT)
-                        .setCredentials(NoCredentials.getInstance())
-                        .build()
-                        .getService();
+        restClient = BigQueryEmulatorContainers.restClient(EMULATOR, PROJECT);
     }
 
     public static String grpcEndpoint() {
-        return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(GRPC_PORT);
+        return BigQueryEmulatorContainers.grpcEndpoint(EMULATOR);
     }
 
     public static String restEndpoint() {
-        return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(REST_PORT);
+        return BigQueryEmulatorContainers.restEndpoint(EMULATOR);
     }
 
     /**
