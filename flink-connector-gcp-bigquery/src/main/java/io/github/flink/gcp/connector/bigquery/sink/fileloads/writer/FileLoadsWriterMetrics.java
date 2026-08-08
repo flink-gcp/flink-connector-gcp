@@ -37,9 +37,9 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
  * when the file is finished, so the byte counter advances in file-sized steps and lags the record
  * counter by the currently open files.
  *
- * <p>{@code numBytesSend} is therefore the <em>staged</em> size — Avro-encoded and
- * deflate-compressed — rather than the payload the records carried. It is the number that predicts
- * what the load job reads.
+ * <p>{@code numBytesSend} is therefore the <em>staged</em> size — Avro-encoded and compressed with
+ * whatever codec {@code StagedFileWriter} uses — rather than the payload the records carried. It is
+ * the number that predicts what the load job reads.
  *
  * <p>{@code currentSendTime} is deliberately left unset: nothing here corresponds to a request the
  * service answers.

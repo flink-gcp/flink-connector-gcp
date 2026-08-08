@@ -211,6 +211,20 @@
                                     <pattern>io.github.flink.gcp.connector.base</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.bigquery.shaded.io.github.flink.gcp.connector.base</shadedPattern>
                                 </relocation>
+                                <!-- zstd-jni, the codec FILE_LOADS stages with (#283). Its
+                                     per-platform native libraries live at the jar root under
+                                     linux/, darwin/, win/ and friends, and are deliberately NOT
+                                     relocated: Native.resourceName() builds their path from
+                                     os.name, os.arch and the library version, never from this
+                                     package, so shading the classes leaves the lookup intact -
+                                     unlike grpc-netty-shaded below, whose library name is derived
+                                     from its package and therefore needs the rename dance. The
+                                     filenames carry the version, so two jars bundling different
+                                     versions cannot collide over them either. -->
+                                <relocation>
+                                    <pattern>com.github.luben.zstd</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigquery.shaded.com.github.luben.zstd</shadedPattern>
+                                </relocation>
                                 <relocation>
                                     <pattern>com.google</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.bigquery.shaded.com.google</shadedPattern>

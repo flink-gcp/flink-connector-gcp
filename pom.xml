@@ -93,6 +93,10 @@ limitations under the License.
         <google-cloud-libraries-bom.version>26.85.1</google-cloud-libraries-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.1</avro.version>
+        <!-- Avro declares zstd-jni `optional`, so the codec it enables is only on the classpath
+             if we declare it. Pinned to what avro-parent ${avro.version} pins, so the codec and
+             the library it drives are the pair Avro itself tests. -->
+        <zstd-jni.version>1.5.7-4</zstd-jni.version>
         <!-- JSONObject is the parameter type of the Storage Write API client's
              JsonToProtoMessage, so this has to stay compatible with whatever
              google-cloud-bigquerystorage itself depends on (org.json is in no BOM).
@@ -239,6 +243,12 @@ limitations under the License.
             </dependency>
 
             <dependency>
+                <groupId>com.github.luben</groupId>
+                <artifactId>zstd-jni</artifactId>
+                <version>${zstd-jni.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>org.json</groupId>
                 <artifactId>json</artifactId>
                 <version>${org-json.version}</version>
@@ -317,7 +327,7 @@ limitations under the License.
                         <licenseMerges>
                             <licenseMerge>Apache-2.0|Apache 2.0|Apache 2|Apache License V2.0|Apache License, Version 2.0|The Apache License, Version 2.0|The Apache Software License, Version 2.0</licenseMerge>
                             <licenseMerge>BSD-3-Clause|BSD 3-clause|BSD New license</licenseMerge>
-                            <licenseMerge>BSD-2-Clause|The BSD 2-Clause License</licenseMerge>
+                            <licenseMerge>BSD-2-Clause|The BSD 2-Clause License|BSD 2-Clause License</licenseMerge>
                             <licenseMerge>MIT|MIT license|MIT License|The MIT License</licenseMerge>
                         </licenseMerges>
                     </configuration>
