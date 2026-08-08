@@ -64,6 +64,23 @@ public final class PubSubMetricNames {
     public static final String PENDING_ACKS = "pendingAcks";
     public static final String PENDING_CHECKPOINTS = "pendingCheckpoints";
 
+    /**
+     * The <em>state</em> a paused split is left in once its buffer outgrows its bound and the
+     * reader stops its subscriber (#357), so it takes the gauge shape — and "parked" in the sense
+     * {@link #PARKED_MESSAGES} already gives it here, held for a resumption that is expected. This
+     * is the one to alert on: a split that stays parked is one an aligned group is holding
+     * indefinitely, which on a healthy job does not happen.
+     */
+    public static final String PARKED_SPLITS = "parkedSplits";
+
+    /**
+     * The <em>event</em> behind that state, so it takes the counter shape. Both exist because
+     * neither answers the other's question: a park and its resume falling between two scrapes leave
+     * the gauge at zero with nothing to say they happened, while the gauge alone cannot tell one
+     * long pause from an alignment cycle parking a split over and over.
+     */
+    public static final String SPLITS_PARKED = "splitsParked";
+
     // Registered by the split enumerator, so these are job-wide rather than per subtask.
     public static final String ASSIGNED_SPLITS = "assignedSplits";
     public static final String UNASSIGNED_READERS = "unassignedReaders";

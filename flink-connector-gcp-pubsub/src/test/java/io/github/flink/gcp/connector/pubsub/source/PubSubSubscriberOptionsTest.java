@@ -34,6 +34,10 @@ class PubSubSubscriberOptionsTest {
 
         assertThat(options.getFlowControlMaxOutstandingElementCount()).isNull();
         assertThat(options.getFlowControlMaxOutstandingRequestBytes()).isNull();
+        // Unset, which resolves to twice the effective flow-control limits rather than to a
+        // number of their own — PausedSplitBufferLimits is where that fallback lives.
+        assertThat(options.getPausedSplitBufferMaxMessages()).isNull();
+        assertThat(options.getPausedSplitBufferMaxBytes()).isNull();
         assertThat(options.getParallelPullCount()).isNull();
         assertThat(options.getMaxAckExtensionPeriod()).isNull();
         assertThat(options.getMinDurationPerAckExtension()).isNull();
@@ -51,6 +55,8 @@ class PubSubSubscriberOptionsTest {
 
         assertThat(options.getFlowControlMaxOutstandingElementCount()).isEqualTo(500L);
         assertThat(options.getFlowControlMaxOutstandingRequestBytes()).isEqualTo(1_048_576L);
+        assertThat(options.getPausedSplitBufferMaxMessages()).isEqualTo(400L);
+        assertThat(options.getPausedSplitBufferMaxBytes()).isEqualTo(524_288L);
         assertThat(options.getParallelPullCount()).isNull();
         assertThat(options.getMaxAckExtensionPeriod()).isEqualTo(Duration.ofMinutes(30));
         assertThat(options.getMinDurationPerAckExtension()).isEqualTo(Duration.ofSeconds(15));
@@ -71,6 +77,12 @@ class PubSubSubscriberOptionsTest {
         assertThatThrownBy(() -> builder.flowControlMaxOutstandingRequestBytes(-1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("flowControlMaxOutstandingRequestBytes");
+        assertThatThrownBy(() -> builder.pausedSplitBufferMaxMessages(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("pausedSplitBufferMaxMessages");
+        assertThatThrownBy(() -> builder.pausedSplitBufferMaxBytes(-1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("pausedSplitBufferMaxBytes");
         assertThatThrownBy(() -> builder.parallelPullCount(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("parallelPullCount");
@@ -156,6 +168,8 @@ class PubSubSubscriberOptionsTest {
         return PubSubSubscriberOptions.builder()
                 .flowControlMaxOutstandingElementCount(500)
                 .flowControlMaxOutstandingRequestBytes(1_048_576)
+                .pausedSplitBufferMaxMessages(400)
+                .pausedSplitBufferMaxBytes(524_288)
                 .maxAckExtensionPeriod(Duration.ofMinutes(30))
                 .minDurationPerAckExtension(Duration.ofSeconds(15))
                 .maxDurationPerAckExtension(Duration.ofSeconds(60))

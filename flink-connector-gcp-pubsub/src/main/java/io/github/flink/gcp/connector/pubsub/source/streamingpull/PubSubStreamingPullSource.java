@@ -125,7 +125,11 @@ public class PubSubStreamingPullSource<T>
         Supplier<SplitReader<PubsubMessage, SubscriptionSplit>> splitReaderSupplier =
                 () ->
                         new PubSubSplitReader(
-                                subscriberFactory, ackTracker, options, checkpointDetector);
+                                subscriberFactory,
+                                ackTracker,
+                                options,
+                                checkpointDetector,
+                                metrics);
         return new PubSubSourceReader<>(
                 splitReaderSupplier,
                 new PubSubRecordEmitter<>(

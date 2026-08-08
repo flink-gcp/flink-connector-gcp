@@ -150,7 +150,8 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
                         options, OrderingMode.NONE, EmulatorEndpoint.parse(emulatorEndpoint())),
                 ackTracker,
                 options,
-                new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount));
+                new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount),
+                new TestReaderMetrics().metrics());
     }
 
     /**

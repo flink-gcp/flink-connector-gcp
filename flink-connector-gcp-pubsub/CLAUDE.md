@@ -72,7 +72,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `close()`; cascade cancellations are never counted; per-destination handles resolve once per
   `DestinationState`.
 
-## Source (`docs/adr/0011`, `0012`)
+## Source (`docs/adr/0011`, `0012`, `0066`)
 
 - **The reader checkpoints no splits** — the enumerator owns assignment and recomputes the plan
   on every start (`docs/adr/0011`).
@@ -86,6 +86,21 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   is **handed to a caller** — never replace it with a pre-shutdown snapshot; a paused split is
   still watched via `checkFailure()` from `fetch()` (#348); the failed-start release is kept
   although mostly a no-op (#349); `BoundedShutdown` is deliberately not adopted here.
+- **A paused split's buffer is bounded by parking its subscriber** (`docs/adr/0066`): past
+  `pausedSplitBufferMaxMessages`/`MaxBytes` — either one, each defaulting to **twice** the
+  flow-control limit it shadows (one lease-expiry wave is worth a whole window, and a bound at the
+  limit itself parks healthy splits — `docs/adr/0066` lists the three ways) — `fetch()` stops that
+  split's client and `pauseOrResumeSplits` opens a fresh one on resume. Three orderings are
+  load-bearing and none is obvious: the failure check runs **before** the park (a park closes, and
+  `close()` absorbs the failure); every split parked in one fetch goes through **one
+  `Closers.closeAll` list, every shutdown before any close** (#297's shape — parking one at a time
+  costs `splits × shutdownTimeout` serially, and alignment pauses splits as a group), with each
+  `checkFailure` heading its own entries; and
+  `pauseOrResumeSplits` **ends with `signalDataAvailable()`**, or a split paused while already
+  over its bound leaves the next fetch waiting forever, with every guard sitting after that wait. The SDK
+  defaults are read live from `Subscriber.Builder.getDefaultFlowControlSettings()` — never
+  mirrored, unlike `maxAckExtensionPeriod`'s, whose SDK constant is package-private. What this
+  costs is that #348 does not hold while a split is parked.
 - The real-GCP gated suite (#82) is the **only** coverage of ordered dispatch, dead-letter
   forwarding, ordered seek, create-option persistence, nack-redelivery promptness and the
   permission-denied message texts. Gating annotations go on every concrete class, never the

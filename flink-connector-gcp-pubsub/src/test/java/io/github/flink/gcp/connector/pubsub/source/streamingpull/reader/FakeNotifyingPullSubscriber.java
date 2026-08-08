@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.util.ExceptionUtils;
 
+import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 
 import javax.annotation.Nullable;
@@ -60,6 +61,30 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
     void deliver(PubsubMessage... delivered) {
         Collections.addAll(messages, delivered);
         dataAvailableSignal.run();
+    }
+
+    /**
+     * Buffers {@code count} messages carrying a payload of {@code payloadBytes}, and returns what
+     * they added to {@link #bufferUsage()}.
+     *
+     * <p>Returns the size rather than taking one, because the serialized size a payload costs
+     * includes protobuf's own framing: a test that needs a byte bound the buffer crosses should
+     * derive the bound from what was actually delivered, not from a number it hoped for.
+     */
+    long deliverSized(int count, int payloadBytes) {
+        String payload = String.join("", Collections.nCopies(payloadBytes, "x"));
+        long delivered = 0;
+        for (int index = 0; index < count; index++) {
+            PubsubMessage message =
+                    PubsubMessage.newBuilder()
+                            .setMessageId("sized-" + index)
+                            .setData(ByteString.copyFromUtf8(payload))
+                            .build();
+            messages.addLast(message);
+            delivered += message.getSerializedSize();
+        }
+        dataAvailableSignal.run();
+        return delivered;
     }
 
     /**
@@ -119,6 +144,15 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
         if (failure != null) {
             throw failure;
         }
+    }
+
+    @Override
+    public BufferUsage bufferUsage() {
+        long bytes = 0;
+        for (PubsubMessage message : messages) {
+            bytes += message.getSerializedSize();
+        }
+        return BufferUsage.of(messages.size(), bytes);
     }
 
     @Override

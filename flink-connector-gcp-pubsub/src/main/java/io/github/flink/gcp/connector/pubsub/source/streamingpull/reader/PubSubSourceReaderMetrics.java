@@ -24,6 +24,8 @@ import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 
 import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 /**
  * The reader's Pub/Sub-specific metrics.
  *
@@ -50,6 +52,18 @@ public final class PubSubSourceReaderMetrics {
     private final Counter messagesNacked;
     private final Counter messagesDropped;
     private final Counter deserializationErrors;
+    private final Counter splitsParked;
+
+    /**
+     * How many of this subtask's splits are parked right now.
+     *
+     * <p>Held here rather than in the split reader, and atomic, for two different readers: a
+     * fetcher may be rebuilt over a reader's life — and with it the {@code PubSubSplitReader} its
+     * supplier makes — while the subtask has one gauge either way, so the count has to outlive the
+     * split reader; and whatever writes it, the metric reporter reads it from a thread of its own.
+     * Every write is on the fetcher thread.
+     */
+    private final AtomicInteger parkedSplits = new AtomicInteger();
 
     /**
      * Registers the counters on the reader's metric group.
@@ -70,6 +84,9 @@ public final class PubSubSourceReaderMetrics {
         this.messagesDropped =
                 metricGroup.counter(
                         PubSubMetricNames.MESSAGES_DROPPED, new ThreadSafeSimpleCounter());
+        this.splitsParked =
+                metricGroup.counter(PubSubMetricNames.SPLITS_PARKED, new ThreadSafeSimpleCounter());
+        metricGroup.gauge(PubSubMetricNames.PARKED_SPLITS, (Gauge<Integer>) parkedSplits::get);
         // Flink's own standard counter, so a deserialization failure shows up in the same place as
         // every other connector's.
         this.deserializationErrors = metricGroup.getNumRecordsInErrorsCounter();
@@ -121,5 +138,16 @@ public final class PubSubSourceReaderMetrics {
     /** Counts one deserialization failure that did not drop its message. */
     public void deserializationFailed() {
         deserializationErrors.inc();
+    }
+
+    /** Records that a paused split's subscriber has been stopped. */
+    public void splitParked() {
+        splitsParked.inc();
+        parkedSplits.incrementAndGet();
+    }
+
+    /** Records that a parked split has a subscriber again, or has gone away. */
+    public void splitUnparked() {
+        parkedSplits.decrementAndGet();
     }
 }

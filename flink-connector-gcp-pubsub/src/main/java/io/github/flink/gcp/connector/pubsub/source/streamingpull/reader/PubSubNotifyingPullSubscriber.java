@@ -52,9 +52,16 @@ import java.util.function.Consumer;
  * on acknowledgement, which happens a whole checkpoint later — the client library's per-key
  * serialization waits for the callback to return, not for the acknowledgement.
  *
- * <p>Backpressure comes from the client library's flow control rather than from a bounded buffer:
- * blocking inside the callback would stall the key's dispatch chain and hold a client-library
- * thread.
+ * <p><b>The buffer is deliberately unbounded, and its bound is elsewhere.</b> The two things a
+ * bounded buffer could do here are both ruled out by the paragraph above: blocking inside the
+ * callback would stall the key's dispatch chain and hold a client-library thread, and refusing a
+ * message means nacking one already leased. So backpressure comes from the client library's flow
+ * control, which stops pulling once its outstanding limit fills — <em>for one {@code
+ * maxAckExtensionPeriod}</em>. Past it the client releases a message's flow-control permit while
+ * this subscriber is still holding the message, and pulling resumes with nothing capping what
+ * accumulates (#357, measured by {@code PubSubPausedSplitBufferITCase}). What bounds it after that
+ * is {@link PubSubSplitReader}, which reads {@link #bufferUsage()} and stops the client of a paused
+ * split that has outgrown it.
  *
  * <p>The client's three lifecycle operations are held as functional values rather than as a {@link
  * Subscriber}, <b>because that is the only seam a test can drive</b> (#325). {@code Subscriber} is
@@ -110,6 +117,13 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
 
     @GuardedBy("this")
     private final Deque<PubsubMessage> messages = new ArrayDeque<>();
+
+    /**
+     * The serialized size of everything in {@link #messages}, maintained alongside it because
+     * summing on demand is O(n) on a buffer whose whole problem is growing large.
+     */
+    @GuardedBy("this")
+    private long bufferedBytes;
 
     @GuardedBy("this")
     @Nullable
@@ -273,8 +287,15 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
         Closers.closeAllSuppressing(failure, this::stopQuietly);
     }
 
-    /** Receives a message from the client library, on one of its callback threads. */
-    private void receiveMessage(PubsubMessage message, AckHandle ackHandle) {
+    /**
+     * Receives a message from the client library, on one of its callback threads.
+     *
+     * <p>Package-private rather than private so the buffer accounting can be driven without a
+     * client: this is the client library's callback, and the seam constructor takes the client's
+     * lifecycle operations only, never its receiver.
+     */
+    @VisibleForTesting
+    void receiveMessage(PubsubMessage message, AckHandle ackHandle) {
         synchronized (this) {
             if (closed || permanentError != null) {
                 // Nack rather than drop: the message must go back for redelivery immediately.
@@ -283,6 +304,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
             }
             ackTracker.addPendingAck(splitId, message.getMessageId(), ackHandle);
             messages.addLast(message);
+            bufferedBytes += message.getSerializedSize();
         }
         dataAvailableSignal.run();
     }
@@ -305,7 +327,9 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
             }
             List<PubsubMessage> drained = new ArrayList<>(Math.min(maxMessages, messages.size()));
             while (drained.size() < maxMessages && !messages.isEmpty()) {
-                drained.add(messages.pollFirst());
+                PubsubMessage message = messages.pollFirst();
+                bufferedBytes -= message.getSerializedSize();
+                drained.add(message);
             }
             return drained;
         }
@@ -316,6 +340,11 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
         synchronized (this) {
             throwIfFailed();
         }
+    }
+
+    @Override
+    public synchronized BufferUsage bufferUsage() {
+        return BufferUsage.of(messages.size(), bufferedBytes);
     }
 
     /**
@@ -343,6 +372,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
             closed = true;
             // Buffered messages were never emitted; nackSplit below returns them for redelivery.
             messages.clear();
+            bufferedBytes = 0L;
         }
         // One list rather than two calls, for the reason #297 gave the same shape one level up in
         // PubSubSplitReader.close(): closed is already true by the time these run, so the stop must
