@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0030: A missing BigQuery table does not answer `NOT_FOUND`
 
 - Status: Accepted
-- Date: 2026-08-06 (measured on [#289], which grew a writer change because of it)
-- Issues: [#289], [#318] (the unmeasured buffered half)
+- Date: 2026-08-06 (measured on [#289], which grew a writer change because of it); buffered half
+  measured 2026-08-08 on [#318], which grew a committer change the same way
+- Issues: [#289], [#318]
 - Modules: bigquery (`sink.storage`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § A missing table does
   not say NOT_FOUND
@@ -28,20 +29,52 @@ limitations under the License.
 Opening a Storage Write API stream against a table that is not there answers
 `PERMISSION_DENIED: Permission 'TABLES_GET' denied on resource '<table>' (or it may not exist)`.
 The service masks existence, as an API that must not let an unauthorised caller probe for table
-names has to. The goccy emulator answers `NOT_FOUND` (and `UNKNOWN` on the default stream), and
-`AppendErrorClassifier` recovered on `NOT_FOUND` alone — so **`CREATE_IF_NEEDED` had never once
-created a table against the real service**, while every emulator test said it did. Nothing
-caught it because the gated storage-path suites create their tables up front.
+names has to. The goccy emulator answers `NOT_FOUND` (and `UNKNOWN` on both the default stream and
+`CreateWriteStream`), and `AppendErrorClassifier` recovered on `NOT_FOUND` alone — so
+**`CREATE_IF_NEEDED` had never once created a table against the real service**, while every
+emulator test said it did. Nothing caught it because the gated storage-path suites create their
+tables up front.
 
 The masked message means the text alone cannot tell a permission failure from a missing table.
 The decisive read-only probe is **`bq show <table>` under the *same* ADC**: it answers
 `Not found`, which proves the credentials hold `bigquery.tables.get` and therefore that only
 the table was missing — run it before blaming credentials.
 
+The buffered path was left inferred, and measuring it (2026-08-08, `CreateWriteStream` driven
+directly at a table that does not exist) produced two facts the inference did not carry:
+
+- **The code matches; the permission name is noise.** `CreateWriteStream` answers
+  `PERMISSION_DENIED: Permission 'TABLES_UPDATE_DATA' denied on resource '<table>' (or it may not
+  exist)`. That is now the third observation, and no rule connects them: an absent table said
+  `TABLES_GET` to a default-stream append and `TABLES_UPDATE_DATA` to `CreateWriteStream`, while
+  the propagation window said `TABLES_UPDATE_DATA` to that same append. The permission tracks
+  neither the RPC nor whether the table is absent — one more reason the rule matches codes, since
+  any text match would have been written against whichever of the three was seen first.
+- **The propagation window reaches the committer.** A `FlushRows` on a stream whose table the
+  writer has just created can answer the same masked code, and `BufferedStreamCommitter` retried
+  on `isTransient` alone — so the first commit after auto-creation failed the checkpoint. Observed
+  once in five end-to-end runs; the other four never saw the window, on `CreateWriteStream` either.
+  The datum, since a masked code is exactly what this ADR says not to reason about without one:
+  `PERMISSION_DENIED: Permission 'TABLES_UPDATE_DATA' denied on resource
+  'projects/<p>/datasets/<d>/tables/<t>' (or it may not exist)` — **naming the table, not the
+  stream**, from `BufferedStreamCommitter.flush` on the first commit of a two-subtask job.
+
+The second is a defect of the same shape as the one this ADR's first half fixed, found the same
+way: the half nobody had driven at a missing table was the half that was wrong.
+
+**What one observation does not settle** — the fix is right under every reading, but the mechanism
+is not pinned, and the masked code is precisely what cannot distinguish them. Table-metadata
+propagation is the reading recorded above; ACL propagation on a freshly created table would look
+identical, and is not obviously weaker given that the writer's own `CreateWriteStream` had already
+succeeded against that table moments earlier. Waiting is the right response either way, which is
+why this was not held for a discriminating measurement — but do not cite the mechanism as measured.
+
 ## Decision
 
 The verdict is `AppendErrorClassifier.isMissingTable`, taking both codes, consumed by
 `BigQueryDefaultStreamWriter` (three sites) and `BigQueryBufferedStreamWriter.createStream`.
+`BufferedStreamCommitter.flush` takes `isExistenceMasked`, the masked half alone — see the
+committer paragraph below for why the two cannot be the same predicate.
 
 Three things not to re-derive:
 
@@ -71,22 +104,76 @@ escalation fires only on the reconciliation, which runs once per repair, so a mi
 budget and fail a repair that was progressing. Deliberately those two failures only — a
 transient or stale-writer failure during a schema repair keeps the long budget.
 
+**The committer's allowance is narrower than the writers' in two ways, and both are load-bearing.**
+
+It is **gated on the disposition**, because the committer has no `tableCreated` flag to key on — the
+writer creates tables, the committer only flushes — so the question it can answer is not "did we
+just create this table" but "does anything in this job create tables", which is exactly
+`CreateDisposition`. Widening unconditionally was declined for costing a `CREATE_NEVER` job the
+budget for nothing.
+
+It takes **`isExistenceMasked` and not `isMissingTable`**, i.e. the masked `PERMISSION_DENIED`
+without the `NOT_FOUND`, and the rule behind that is **widen only what was observed** — the same
+discipline whose absence this ADR exists to record. Every observation of a table the real service
+will not confirm is the masked code; `NOT_FOUND` is in the wide verdict for the emulator, which
+answers it, and for the writers, which recovered on it before any of this was measured. Adding a
+commit-time allowance for a code the service has never been seen to answer for this condition would
+be a fresh unbacked inference, in the direction that costs rather than saves: about 55 s per
+committable with the default `recovery*` values, serially, across every committable a restore
+replays.
+
+The direction being declined is worth naming as a risk and not as a fact: `FlushRows` targets a
+write *stream*, streams age out on a seven-day TTL, and a missing stream is terminal mid-run — but
+what expiry answers is undocumented and unmeasured (the DataStream page's "Stream lifetime"
+paragraph says so), and a gone stream is recognised elsewhere in the classifier by a `StorageError`
+rather than by a status code. That is an argument for not guessing, not a claim about `NOT_FOUND`.
+The narrowing costs nothing measured: the emulator, whose signal *is* `NOT_FOUND`, cannot reach
+auto-creation on this write path at all ([#326]).
+
+Leaving the committer alone was declined too, and not because a restart would not recover it —
+`FlushRows` is idempotent and the restored commit succeeds — but because a job that sets
+`restart-strategy: none`, as a batch-shaped job reasonably does, then fails outright on a race it
+cannot influence.
+
 ## Consequences
 
 - The cost is stated rather than hidden: a job whose credentials genuinely lack the permission
   now attempts one creation before failing — naming `bigquery.tables.create`, which tells a
-  reader more than the masked `TABLES_GET` did — and if it holds `tables.create` but not the
+  reader more than the masked permission did — and if it holds `tables.create` but not the
   data-write permission it leaves behind the empty table it was authorised to create.
-- Two existing tests used `PERMISSION_DENIED` as their unambiguous *terminal* example and now
-  use `INVALID_ARGUMENT`; that premise is gone, so do not restore it.
+- Tests that used `PERMISSION_DENIED` as their unambiguous *terminal* example use
+  `INVALID_ARGUMENT` instead — two on the first pass, and on the second `BufferedStreamCommitterTest`
+  plus `BigQueryBufferedStreamWriterRestoreTest`, which the first pass missed because its writer
+  path never consulted the verdict. No test in this module uses it that way now. Two *javadoc*
+  sentences did, and were the last places a user could read the old rule — `BigQuerySinkBuilder`'s
+  failure-handler doc and the `FailureHandler` SPI's in the base module, both of which now say
+  `INVALID_ARGUMENT`; the base one keeps a line about why, since which codes are terminal is a
+  per-connector fact rather than a general one.
 - Two messages stopped asserting what the masked code cannot establish: the four "does not
   exist, creating it" logs became "may not exist", and `retryFailureMessage`'s "after creating
   the table" became "after a table-creation attempt" — a 409 means the table was already there.
   `reconcileSchema`'s own "does not exist" log is **not** in that set: it is driven by a REST
   `getSchema` returning null, which does establish nonexistence.
-- **`BigQueryBufferedStreamWriter`'s half is unmeasured**: the gated exactly-once suite
-  pre-creates its tables, so whether `CreateWriteStream` masks the same way is inferred rather
-  than observed — [#318].
+- Under `CREATE_IF_NEEDED` a genuine permission denial on `FlushRows` now surfaces after the
+  recovery budget rather than at once, and the flush's failure message says how many attempts it
+  spent rather than only that a budget ran out — the word "transient" would be wrong for the
+  denial. The trade is the one the writer already makes, and it is bounded: the committer has one
+  schedule, so the `scheduleFor` hazard above cannot arise here.
+- `AppendErrorClassifier.isExistenceMasked` is `public` because the committer lives in a sibling
+  package; `isMissingTable` stays package-private, since every caller of it is in the writer
+  package and the committer only names it in prose. Both are `@Internal` either way.
+- `BufferedStreamCommitter.getCreateDisposition` exists **only** so the sink's wiring of it can be
+  asserted. Without it that seam is untestable short of a live client, and a `createCommitter` that
+  hardcoded a disposition would ship green — the failure would appear as a real-GCP job losing a
+  race it usually wins.
+- The gated case that made the measurement (`BigQueryBufferedStreamMissingTableITCase`) drives
+  `CreateWriteStream` **directly** for the response and through a job for the auto-creation, which
+  is not decoration: a job's own recovery swallows exactly the response being measured, so a job
+  alone can only tell you that auto-creation worked, never what the service said. Its end-to-end
+  case is deliberately not the regression test for the committer — the window appeared in one run
+  of five, so a job that fails only when the race is lost would be flaky rather than
+  discriminating. `BufferedStreamCommitterTest` carries that.
 
 [#289]: https://github.com/laughingman7743/flink-connector-gcp/issues/289
+[#326]: https://github.com/laughingman7743/flink-connector-gcp/issues/326
 [#318]: https://github.com/laughingman7743/flink-connector-gcp/issues/318

@@ -163,7 +163,8 @@ public class BigQueryBufferedStreamSink<T>
 
     @Override
     public Committer<BufferedStreamCommittable> createCommitter(CommitterInitContext context) {
-        return new BufferedStreamCommitter(serviceFactory, config.getLocation(), options);
+        return new BufferedStreamCommitter(
+                serviceFactory, config.getLocation(), options, config.getCreateDisposition());
     }
 
     @Override

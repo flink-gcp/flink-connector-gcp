@@ -178,7 +178,7 @@ public class BigQuerySinkBuilder<T> {
      *
      * <p>The handler decides per row: returning normally drops the row, throwing fails the ongoing
      * write or checkpoint. Transient append failures are retried without involving the handler, and
-     * terminal request failures such as {@code PERMISSION_DENIED} always fail the job. The sink
+     * terminal request failures such as {@code INVALID_ARGUMENT} always fail the job. The sink
      * drives the handler's lifecycle ({@code open}/{@code flush}/{@code close}) as documented on
      * {@link FailureHandler}. The parameter is contravariant, so a cross-connector {@code
      * FailureHandler<FailedElement>} is accepted as-is.

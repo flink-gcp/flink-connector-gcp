@@ -35,7 +35,7 @@ section; the three forms of the Default column are explained
 | `destination` | **required**, unless `destinationResolver` is set | Writes every record to one fixed table |
 | `destinationResolver` | — | Resolves the table per record. Rejected under `STORAGE_API_EXACTLY_ONCE` |
 | `serializer` | **required** | Converts each record into the protobuf row the Storage Write API accepts, or into `null` to skip it |
-| `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing destination table is created or fails the job |
+| `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing destination table is created or fails the job. `CREATE_IF_NEEDED` also lets `STORAGE_API_EXACTLY_ONCE` wait out the post-creation propagation window at commit time, so `CREATE_NEVER` opts out of both |
 | `tableCreateOptions` | plain tables | [Creation settings](#tablecreateoptions) for every table the sink creates |
 | `tableCreateOptionsProvider` | — | The same, resolved per destination. Overrides `tableCreateOptions` |
 | `schemaUpdateOptions` | updates disabled | [What the sink may change](#schemaupdateoptions) about a destination table's schema |
@@ -108,7 +108,7 @@ adopts whichever stream writer is built first.
 
 Required by `STORAGE_API_EXACTLY_ONCE` and rejected by the other two methods; every knob is
 defaulted, so `builder().build()` means "the defaults". The recovery schedule governs stream
-creation, transient re-appends and the restore probe — see
+creation, transient re-appends, the restore probe and the committer's flush retries — see
 [Exactly-once]({{< relref "docs/connectors/datastream/bigquery" >}}#exactly-once-buffered-streams).
 
 | Option | Default | What it does |

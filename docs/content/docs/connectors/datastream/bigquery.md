@@ -718,12 +718,35 @@ PERMISSION_DENIED: Permission 'TABLES_GET' denied on resource
 
 BigQuery masks the table's existence, as an API that must not let an unauthorised caller probe for
 table names has to. The same masking appears again in the window right after the connector creates
-the table, while metadata propagates — there naming `TABLES_UPDATE_DATA`. Both codes therefore count
-as "the table may not be there", under `CREATE_IF_NEEDED` and while a just-created table settles.
+the table, while metadata propagates. Both codes therefore count as "the table may not be there",
+under `CREATE_IF_NEEDED` and while a just-created table settles.
+
+**The permission the message names is not worth reading.** Three cases have been observed and none
+predicts another: an absent table answers `TABLES_GET` to a default-stream append and
+`TABLES_UPDATE_DATA` to the exactly-once path's `CreateWriteStream`, while the propagation window
+answers `TABLES_UPDATE_DATA` to that same append. The connector matches the status code and never
+the text.
+
+The propagation window is not confined to opening a stream. On the exactly-once path it can also
+reach the `FlushRows` that commits a checkpoint, so under `CREATE_IF_NEEDED` the committer waits it
+out on the same **recovery** budget rather than failing the checkpoint — it creates nothing itself,
+so the wait is its whole repair. Price it before relying on it: with the default `recovery*` values
+that budget is **about 55 s per committable**, spent serially, so a job whose credentials genuinely
+lack the write permission reports that much later than it used to — and on a restart, where the
+committer re-commits every pending checkpoint during task initialization, once per pending
+checkpoint before the task fails again. Shorten it with `recoveryMaxAttempts`/`recoveryMaxBackoff`,
+or opt out of both the wait and auto-creation with `CreateDisposition.CREATE_NEVER`, under which the
+committer fails immediately since nothing in such a job creates tables.
+
+The committer takes only the masked `PERMISSION_DENIED` and not `NOT_FOUND`. That is a
+widen-only-what-was-measured rule rather than a claim about `NOT_FOUND`: every observation of a
+table the service will not confirm has been the masked code, while `FlushRows` targets a write
+stream, and what an [expired stream](#exactly-once-buffered-streams) answers is not documented and
+has not been measured here. So a `NOT_FOUND` at commit time stays terminal.
 
 The cost of reading `PERMISSION_DENIED` that way falls on a job whose credentials genuinely lack
 the permission. It now attempts one table creation before failing — and fails naming
-`bigquery.tables.create`, which says more than the masked `TABLES_GET` did. Where that attempt
+`bigquery.tables.create`, which says more than the masked permission did. Where that attempt
 *succeeds*, including the HTTP 409 the connector treats as success for an existing table, the batch
 is then re-appended for the rest of the **recovery** retry budget before the job fails, so the
 failure arrives later than it used to. It is never waited out on the fifteen-minute schema budget,
@@ -732,10 +755,11 @@ the data-write permission leaves behind the empty table it was authorised to cre
 names individual rows is excluded: rows plus a code is a verdict about the data, not about the
 table.
 
-Measured against the service on 2026-08-06, with credentials the REST API answers `Not found` for on
-the same table. The goccy emulator answers `NOT_FOUND` (and `UNKNOWN` on the default stream), so
-emulator tests alone cannot see this — which is why they did not, and why auto-creation had never
-once fired against the real service.
+Measured against the service on 2026-08-06 for the default stream and on 2026-08-08 for the
+exactly-once path, both with credentials the REST API answers `Not found` for on the same table. The
+goccy emulator answers `NOT_FOUND` (and `UNKNOWN` on both the default stream and
+`CreateWriteStream`), so emulator tests alone cannot see this — which is why they did not, and why
+auto-creation had never once fired against the real service.
 
 ## Schema evolution
 
@@ -972,7 +996,14 @@ would silently ignore, and a schema mismatch fails the job with a hint (update t
 band and restart). Table auto-creation under `CREATE_IF_NEEDED` *is* supported: it runs at
 stream-creation time — schema from the serializer, partitioning and clustering from
 `tableCreateOptions(...)` — with retries while table metadata propagates, and `CREATE_NEVER`
-fails immediately.
+fails immediately. The propagation window also reaches the commit, so the same allowance applies
+to the checkpoint's `FlushRows` (see
+[A missing table does not say `NOT_FOUND`](#a-missing-table-does-not-say-not_found)). Every subtask
+races to create the same table: the losers get HTTP 409, which the connector treats as success, but
+the race is not free — at a high enough sink parallelism BigQuery answers `Exceeded rate limits: too
+many table update operations for this table` instead, which is not a 409 and does not count as
+success. A job measured at parallelism ten recovered and completed anyway; to avoid the question,
+create the table up front and use `CreateDisposition.CREATE_NEVER`.
 
 **Error handling.** Serialization failures and oversized rows go to the `FailureHandler` before
 any stream exists, as in the at-least-once method. Server-side **row-level rejections are also
@@ -1185,8 +1216,8 @@ Append failures are classified on the task thread and routed by class:
 | Transient | `UNAVAILABLE`, `ABORTED`, `INTERNAL`, `CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `UNKNOWN` | Retried by the SDK's in-stream retries first (by default 500 ms initial delay, ×2 up to 30 s, 5 attempts); failures that still surface are re-appended by the writer on a rebuilt stream writer with backoff (by default 500 ms initial, doubled up to 10 s, 10 attempts, ±25% jitter). They do not fail the job unless the retry budget is exhausted |
 | Stale stream writer | `STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`, writer closed, the SDK's callback-wait watchdog timeout (a sent append got no response within the SDK's hardcoded 5 minutes; the raw exception carries no status code) | Repaired like transient failures: the destination's stream writer is rebuilt and the batch re-appended within the retry budget |
 | Schema mismatch | `SCHEMA_MISMATCH_EXTRA_FIELDS` (rows carry fields the table does not have) | With `schemaUpdateOptions(...)` enabled: the table schema is reconciled and the batch re-appended while the update propagates (see [Schema evolution](#schema-evolution)). Otherwise terminal |
-| Missing table | `NOT_FOUND`, and the `PERMISSION_DENIED` the service [masks a missing table behind](#a-missing-table-does-not-say-not_found) | Under `CREATE_IF_NEEDED`: the table is created and the batch re-appended while metadata propagates, within the **recovery** retry budget — never the schema one, whatever the repair was already running on (see [Table auto-creation](#table-auto-creation)). Under `CREATE_NEVER`: terminal |
-| Terminal | `INVALID_ARGUMENT`, the two codes above under `CREATE_NEVER`, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
+| Missing table | `NOT_FOUND`, and the `PERMISSION_DENIED` the service [masks a missing table behind](#a-missing-table-does-not-say-not_found) | Under `CREATE_IF_NEEDED`: the table is created and the batch re-appended while metadata propagates, within the **recovery** retry budget — never the schema one, whatever the repair was already running on (see [Table auto-creation](#table-auto-creation)). On the exactly-once path the committer's `FlushRows` waits the same window out — but on the `PERMISSION_DENIED` **only**, since it creates nothing itself and a `NOT_FOUND` there names a write stream. Under `CREATE_NEVER`: terminal |
+| Terminal | `INVALID_ARGUMENT`, the two codes above under `CREATE_NEVER`, `NOT_FOUND` from the exactly-once committer's `FlushRows` under any disposition, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
 | Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured failure handler; surviving rows of the batch are re-appended. A row-detailed error whose own status code is transient is classified transient, not row-level: outage-shaped failures never reach the handler |
 
 A record the serializer *skips* by returning `null` is in none of those classes: it is not a
@@ -1392,6 +1423,14 @@ Flink's own committer metrics for free, on the committer's metric group: `totalC
 `successfulCommittables`, `alreadyCommittedCommittables`, `failedCommittables`,
 `retriedCommittables` and the `pendingCommittables` gauge. The connector registers none of them, and
 documents them here because they are what to read for commit health.
+
+**Two of them are always zero, and that is a property of the design rather than of your job.**
+Nothing here signals Flink's `CommitRequest` retry hooks: a commit that has to be retried is
+retried *inside* `commit()` — including the wait for a just-created table's metadata, above — and a
+re-commit of an offset BigQuery has already flushed is treated as success there too. So
+`retriedCommittables` and `alreadyCommittedCommittables` never move, and both of those situations
+show up as commit duration and as `pendingCommittables` instead. Read the committer's log for the
+retry itself; it names the stream, the attempt and the backoff.
 
 `FILE_LOADS` adds one of its own:
 
@@ -1611,6 +1650,13 @@ credential-less CI:
   masked-`PERMISSION_DENIED` recovery above. Driven through SQL because that is where the options
   are configured; the `TableAdmin` path underneath is the one the DataStream API takes, so the
   answer covers `tableCreateOptions(...)` too
+- **what a missing table answers on the exactly-once path**
+  (`BigQueryBufferedStreamMissingTableITCase`): `CreateWriteStream` driven straight at a table that
+  is not there, because a job's own recovery swallows the very response being measured — a job can
+  only show you that auto-creation worked, never what the service said. Its third case is that job,
+  writing into a table it has to create first. This is where the `TABLES_UPDATE_DATA` wording above
+  and the committer's propagation-window allowance were measured; the emulator cannot stand in,
+  since it answers `UNKNOWN` to `CreateWriteStream`
 - serializer column-type fidelity (`BigQuerySerializerFidelityITCase`): the encodings an
   emulator divergence would silently corrupt — `NUMERIC`/`BIGNUMERIC` (decimal byte encoding)
   and `TIME`/`DATETIME` (packed civil-time encoding), which the emulator reads back as unrelated

@@ -27,7 +27,9 @@ import java.io.Serializable;
  * BigQuery, rows rejected by the Storage Write API with per-row error details, rows that fail
  * serialization, and rows exceeding the per-row size limit). Transient failures are retried by the
  * sinks without involving the handler, and terminal request-level failures such as {@code
- * PERMISSION_DENIED} always fail the job.
+ * INVALID_ARGUMENT} always fail the job. ({@code PERMISSION_DENIED} was the example here until
+ * BigQuery was measured to answer it for a table that is merely missing, which its sink recovers
+ * from — a reminder that which codes are terminal is a per-connector fact, not a general one.)
  *
  * <p>The sink writer drives the handler on the Flink task thread only, so implementations need not
  * be thread-safe:

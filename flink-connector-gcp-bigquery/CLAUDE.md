@@ -40,9 +40,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   verdict (`isWriterClosed`); repair in place, and do not add a bounded `future.get` — declined
   with reasons (`docs/adr/0017`).
 - **A missing table answers `PERMISSION_DENIED`, not `NOT_FOUND`** — `isMissingTable` takes both
-  codes, match status codes never message text, exclude failures naming rows, and keep
-  `scheduleFor`'s budget bounds at both `retryBatches` sites (`docs/adr/0030`; the buffered half
-  is unmeasured, #318). Do not use `PERMISSION_DENIED` as a terminal example in tests.
+  codes, match status codes never message text (the *permission* named tracks neither the RPC nor
+  whether the table is absent: three observations, `TABLES_GET` once and `TABLES_UPDATE_DATA`
+  twice), exclude failures naming rows, and keep `scheduleFor`'s budget bounds at both
+  `retryBatches` sites. The propagation window after auto-creation reaches
+  **`BufferedStreamCommitter.flush` too** (~55 s per committable, serially, at the defaults), which
+  gates on `CREATE_IF_NEEDED` (no `tableCreated` flag to key on) and takes the narrower
+  **`isExistenceMasked`** on a **widen-only-what-was-observed** rule — never on a claim about what
+  an expired stream answers, which is unmeasured (`docs/adr/0030`, both halves measured). **Never
+  use `PERMISSION_DENIED` as a terminal example** — four tests and two javadoc sentences moved to
+  `INVALID_ARGUMENT`, the second pair including the base module's `FailureHandler`.
 
 ## FILE_LOADS (`docs/adr/0018`–`0021`)
 
