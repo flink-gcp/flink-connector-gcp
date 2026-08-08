@@ -19,6 +19,7 @@
 # directions — which is the thing to get right when adding one:
 #
 #   [[builders]]        module     -> page   what must be documented
+#     its `sources`     class      -> that page, for a builder the globs miss
 #   [[config_options]]  ConfigOption class -> page
 #   [exempt]            source side         a setter that exists with no row
 #   [extra]             page side           a row that exists with no setter
@@ -38,10 +39,19 @@
 # through silently, which is the rot this check is for. A module with options
 # and no entry here fails for the same reason — see the next connector, since
 # Bigtable and Spanner both arrive as new modules.
+#
+# `sources` is the one exception, and it does not reopen that hole. A public
+# builder need not be named for the options it takes — `PubSubDeadLetterQueue`
+# is named for what it is — and from the day that class landed nothing checked
+# its five knobs in either direction (#328). Naming the class here reaches it;
+# what keeps the naming honest is that the script fails on a public builder no
+# mapping reaches at all, so a class cannot be invisible the way that one was,
+# only listed or deliberately marked `@Internal`.
 
 # Builder options: every public builder setter under the module's main sources
 # must be named in the page. Sources are `*Options.java`, `*SinkBuilder.java`
-# and `*SourceBuilder.java`, minus anything claimed by [[config_options]].
+# and `*SourceBuilder.java`, minus anything claimed by [[config_options]], plus
+# anything `sources` names.
 [[builders]]
 module = "flink-connector-gcp-bigquery"
 page = "docs/content/docs/reference/bigquery.md"
@@ -49,6 +59,12 @@ page = "docs/content/docs/reference/bigquery.md"
 [[builders]]
 module = "flink-connector-gcp-pubsub"
 page = "docs/content/docs/reference/pubsub.md"
+# One instance of this queue serves every connector here, but the class is
+# Pub/Sub's and publishes to a Pub/Sub topic, so its knobs are documented once
+# on this page and the other reference pages link to it.
+sources = [
+  "flink-connector-gcp-pubsub/src/main/java/io/github/flink/gcp/connector/pubsub/deadletter/PubSubDeadLetterQueue.java",
+]
 
 [[builders]]
 module = "flink-connector-gcp-cloudtasks"

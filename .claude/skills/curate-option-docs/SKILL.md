@@ -1,6 +1,6 @@
 ---
 name: curate-option-docs
-description: Decide how to respond when `just check-option-docs` / `scripts/check-option-docs.py` fails. Use on "is a builder option but no `Option`-headed table names it", "the option table names X, which no builder declares", "declares options but no [[builders]] entry maps it", "matches *Options.java but declares no builder setter", or when adding a connector, an options class, or a Table API option. Covers where a row goes, what its Default column may say, and the opposite directions [exempt] and [extra] point in.
+description: Decide how to respond when `just check-option-docs` / `scripts/check-option-docs.py` fails. Use on "is a builder option but no `Option`-headed table names it", "the option table names X, which no builder declares", "declares options but no [[builders]] entry maps it", "declares public builder setters but nothing maps it", "is named under X's sources but", "matches *Options.java but declares no builder setter", or when adding a connector, an options class, a public builder, or a Table API option. Covers where a row goes, what its Default column may say, the opposite directions [exempt] and [extra] point in, and when a builder is reached by `sources` rather than by a glob.
 ---
 
 # Curate a configuration-reference decision
@@ -21,6 +21,7 @@ a reference page. It is offline and takes under a second.
 | Table | Direction | Answers |
 |---|---|---|
 | `[[builders]]` | module → page | Which reference page must document this module's builder setters |
+| its `sources` | source file → that page | A public builder the globs cannot see, named one per line |
 | `[[config_options]]` | source file → page | Which page must document this `ConfigOption` class's keys |
 | `[exempt]` | **source side** | A setter that exists and deliberately has *no* row. Keyed `Class.setter` |
 | `[extra]` | **page side** | A row that exists and has *no* setter or key behind it. Keyed by the name as the table writes it |
@@ -105,6 +106,31 @@ Spanner (issue #36) will hit. This is not an allowlist decision:
    the module README.
 4. Run the check and write rows until it passes.
 
+## Failure: "declares public builder setters (…) but nothing maps it"
+
+A public builder the globs cannot see — the gap that left `PubSubDeadLetterQueue.Builder`'s five
+knobs unchecked in both directions from the day the class landed (issue #328). Neither direction says anything
+about a class it never reads, so this guard reports one before the silence starts. It is not an
+allowlist decision, and there are exactly two answers:
+
+- **It is a user-facing option surface** → add its path to that module's `sources` list in
+  `[[builders]]`, then write rows until the check passes. The class is then parsed, keyed and
+  checked exactly as a glob-matched one, so `[exempt]` keys read `Class.setter` as usual. If the
+  module has no `[[builders]]` entry at all, it needs one first — that is the section above.
+- **It is not** → annotate the class `@Internal`, which is the honest fix when the builder is
+  assembled by a factory rather than by a user (`BigQueryDynamicSink`, `SubscriptionInfo`). Only
+  the file's **first top-level type**'s annotation is read, so a nested `@Internal` will not do it.
+
+An unannotated class is reported on purpose: `check-flink-api-tiers.py` treats an unannotated type
+as needing a decision rather than as absent, and so does this. Do not answer the guard by widening
+`SOURCE_GLOBS` — see the last section.
+
+Its exit-2 siblings, all config-authoring errors in a `sources` entry: the file does not exist, it
+lives outside the module's main source roots, it already matches `SOURCE_GLOBS`, or it declares no
+setter this script recognises. Each message names its own remedy and two of them are *delete the
+entry* — a mapping onto a class the globs already scan, and one onto a class with nothing to check,
+are both the dead claim a never-firing allowlist entry is.
+
 ## Failure: "matches `*Options.java` but declares no builder setter this script recognises"
 
 Exit code 2 — infrastructure, not policy. Two causes, and they need opposite fixes:
@@ -125,8 +151,10 @@ Never make this one go away by deleting the file from the scan without establish
   a behaviour change, and which one it is decides whether it is a docs commit.
 - **Widening `SOURCE_GLOBS`.** The boundary is deliberate: serialization schemas' `with*` methods
   configure a record rather than the sink, and the script has no way to judge which `with*` on
-  which fluent type is an option. The reasoning is in the comment above `SOURCE_GLOBS`; changing it
-  is a design decision, not maintenance.
+  which fluent type is an option. Widening it to reach a class the guard reported was measured on
+  #328 and declined — `*Queue.java` alone breaks the check two different ways, and a wider pattern
+  pulls in 19 `@Internal` setters that would each demand a row. The reasoning is in the comment
+  above `SOURCE_GLOBS`; changing it is a design decision, not maintenance.
 
 ## What this check does not do
 

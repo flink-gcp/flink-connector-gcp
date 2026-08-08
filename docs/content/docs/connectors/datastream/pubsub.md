@@ -622,7 +622,9 @@ neither substitutes for the other.
 `PubSubDeadLetterQueue` is this repository's one shipped `DeadLetterQueue` implementation
 (experimental, [#211]({{< param BookRepo >}}/issues/211)). It publishes each failed element to a
 Pub/Sub topic, and it sees failures through the shared `FailedElement` contract — so **one instance
-serves every connector here**, not only this one:
+serves every connector here**, not only this one. Every knob and its default is in the
+[configuration reference]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder);
+this section is why they are what they are.
 
 ```java
 PubSubSink.<String>builder()

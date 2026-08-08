@@ -64,9 +64,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   on a character boundary; the cause chain stays out of the envelope.
 - Both its budgets (`shutdownTimeout`, `flushTimeout`) are wait-side, one deadline per wait —
   never one per future — and both reject a `Duration` too large for `toNanos()`. Expiry throws;
-  futures are not cancelled. Its knobs are documented in the datastream pages' dead-lettering
-  prose, not in `reference/pubsub.md` tables (#328 tracks the checker gap; #329 its missing
-  metrics).
+  futures are not cancelled. Its five knobs are documented once, as a
+  `## PubSubDeadLetterQueue.builder()` section of `reference/pubsub.md`, with the other three
+  reference pages linking to it; the datastream pages' dead-lettering prose keeps what they are
+  *for*. `check-option-docs` reaches the class only because `option-docs.toml` names its file in
+  pubsub's `sources` — nothing about the file matches `SOURCE_GLOBS` (#328). #329 is the other
+  gap, this queue registering no metrics at all.
 
 ## Metrics (`docs/adr/0010`; conventions in the base module's CLAUDE.md)
 

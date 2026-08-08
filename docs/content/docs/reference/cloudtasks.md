@@ -42,7 +42,7 @@ execute. That inversion is the connector's whole reason for existing, and it is 
 | `serializer` | **required** | Builds the `Task` — URL, method, headers, body, schedule, authorization — or returns `null` to skip the record. It must carry no name |
 | `taskIdExtractor` | — | Opts into named tasks, deduplicating by the extracted key. The sink hashes it with SHA-256 |
 | `writerOptions` | [defaults](#cloudtaskswriteroptions) | The in-flight cap and the two retry budgets |
-| `failedTaskHandler` | `FailureHandler.failJob()` | What happens to a task that terminally fails — fail, drop, or dead-letter |
+| `failedTaskHandler` | `FailureHandler.failJob()` | What happens to a task that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
 
 **The task itself is configured on the serialization schema, not here.** `httpTarget(url)` starts a

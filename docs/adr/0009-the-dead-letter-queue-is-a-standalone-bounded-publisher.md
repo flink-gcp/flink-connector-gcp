@@ -109,12 +109,16 @@ infinite budget stays expressible as a large `Duration` without being a mode.
   tested at all (it sat outside every try/catch in both callers, while `offer`'s `publish(...)`
   two lines earlier was wrapped). `flushTimeout()` is readable off the instance, which is why
   its serialization test needs no `open()` where `shutdownTimeout`'s does.
-- Documented in the three datastream pages' dead-lettering prose and **not** as a
-  `reference/pubsub.md` row: every table there is `Option`-headed, so a row would fail
-  `check-option-docs`'s staleness direction and need an `[extra]` entry — and `[extra]` is for
-  keys someone else declares. That this builder is invisible to that checker in both directions
-  is a gap of its own, filed as [#328]; [#329] is the other thing [#321] left standing, this
-  queue registering no metrics at all.
+- The knobs are documented as a `## PubSubDeadLetterQueue.builder()` section of
+  `reference/pubsub.md`, once, with the other reference pages linking to it — the class is
+  Pub/Sub's even though one instance serves every connector. This reverses what [#321] settled:
+  a row was declined then because every table on that page is `Option`-headed, so it would have
+  failed `check-option-docs`'s staleness direction and needed an `[extra]` entry, and `[extra]`
+  is for keys someone else declares. That objection was a symptom of the checker not reading
+  this class at all — [#328] made the class reachable by naming it in the module's `sources`,
+  after which the row is satisfied by the setter behind it and no allowlist entry is involved.
+  The datastream pages' dead-lettering prose keeps what it is for and points at the values.
+  [#329] is the other thing [#321] left standing, this queue registering no metrics at all.
 - **Both of this class's budgets reject a `Duration` too large to express in nanoseconds**,
   because the flush knob's own documentation offers a long one as the way to say "effectively
   unbounded" and `Duration.toNanos()` would otherwise throw on a TaskManager — at the first

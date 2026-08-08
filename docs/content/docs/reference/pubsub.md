@@ -22,7 +22,8 @@ limitations under the License.
 
 # Cloud Pub/Sub options
 
-Every option the Pub/Sub sink and source take. What each one is *for* is on the
+Every option the Pub/Sub sink and source take, and the ones the shared
+[dead-letter queue](#pubsubdeadletterqueuebuilder) takes. What each one is *for* is on the
 [Cloud Pub/Sub connector]({{< relref "docs/connectors/datastream/pubsub" >}}) page, linked from
 each section; the three forms of the Default column are explained
 [here]({{< relref "docs/reference" >}}#what-a-default-means).
@@ -99,7 +100,7 @@ page, where it also explains why the shutdown budget exists.
 
 | Option | Default | What it does |
 |---|---|---|
-| `shutdownTimeout` | 30 s | How long the sink's close waits for one publisher to shut down. Measured from the moment the publisher is asked to stop, and every publisher is asked before any is waited on, so a close costs this once however many topics were written to. Keep it under Flink's `task.cancellation.timeout` (180 s by default), past which a cancelling task is a fatal TaskManager error. It bounds the sink's own publishers — a `sendToDeadLetterQueue(...)` handler spends a second budget of the same shape on top (`PubSubDeadLetterQueue.builder().shutdownTimeout(...)`, 30 s by default), so keep the sum under that limit. See [Publisher lifecycle]({{< relref "docs/connectors/datastream/pubsub" >}}#publisher-lifecycle) |
+| `shutdownTimeout` | 30 s | How long the sink's close waits for one publisher to shut down. Measured from the moment the publisher is asked to stop, and every publisher is asked before any is waited on, so a close costs this once however many topics were written to. Keep it under Flink's `task.cancellation.timeout` (180 s by default), past which a cancelling task is a fatal TaskManager error. It bounds the sink's own publishers — a `sendToDeadLetterQueue(...)` handler spends [a second budget of the same shape](#pubsubdeadletterqueuebuilder) on top, so keep the sum under that limit. See [Publisher lifecycle]({{< relref "docs/connectors/datastream/pubsub" >}}#publisher-lifecycle) |
 
 **Metrics.**
 
@@ -177,3 +178,19 @@ topic binding. Creation only, never an update. See
 
 `enableExactlyOnceDelivery` is deliberately absent: the source's startup check rejects such a
 subscription, so offering it would only let you create one the source then refuses.
+
+## `PubSubDeadLetterQueue.builder()`
+
+Experimental ([#211]({{< param BookRepo >}}/issues/211)). The class is Pub/Sub's, but **one instance
+serves every connector in this repository** — it is what `FailureHandler.sendToDeadLetterQueue(...)`
+takes on a BigQuery, Cloud Tasks or Bigtable sink too, which is why those pages send you here. What
+each option is *for*, and how to size the two budgets against a checkpoint interval, is under
+[Dead-lettering to a Pub/Sub topic]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-lettering-to-a-pubsub-topic).
+
+| Option | Default | What it does |
+|---|---|---|
+| `topic` | **required** | Publishes every dead letter to one topic, which must already exist — this queue never creates one |
+| `maxOutstandingMessages` | `1000` | How many publishes may be outstanding before an offer waits for them. `WRITE_THROUGH` (`0`) publishes each element synchronously, the narrowest loss window at one round trip per element; `UNBOUNDED` (`-1`) buffers until the flush |
+| `flushTimeout` | 60 s | How long **one wait** for outstanding publishes may take — the wait in `flush()`, and the one an offer makes when the bound above is full. One deadline per wait rather than per publish, and there is no unbounded setting. Expiry throws, failing the checkpoint or the task |
+| `shutdownTimeout` | 30 s | How long the queue's own close waits for its publisher. Spent *after* the sink's own `shutdownTimeout`, so keep the sum under Flink's `task.cancellation.timeout` (180 s by default) |
+| `emulatorEndpoint` | — | Points the queue at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |
