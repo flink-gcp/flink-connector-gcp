@@ -52,10 +52,10 @@ workflow-level filter. The pieces:
   already carries exactly those patterns, so no licence-header check is lost — plus
   everything under `.github/` that is **not** a workflow or a composite action (templates,
   CODEOWNERS, `dependabot.yml`; a rule, not a list, so a new template needs no edit). The two
-  copies are no longer identical: the push list keeps naming the inert `.github/` files one
-  by one, because GitHub's `!` negation in `paths-ignore` is order-sensitive and a mistake
-  there silently stops CI on a real workflow change — while the cost of not mirroring the
-  rule is one full build per merge of a template.
+  copies are no longer identical: the push list names inert `.github/` files individually
+  (today, the PR template) rather than mirroring the rule, because GitHub's `!` negation in
+  `paths-ignore` is order-sensitive and a mistake there silently stops CI on a real workflow
+  change — while the cost of under-ignoring is one full build per merge of such a file.
 - **A root-only change builds `-pl .` alone** ([#253]): `docs/**`, `scripts/**` and the root
   uv project (`pyproject.toml`, `uv.lock`) are the paths whose only Maven-relevant consumer
   is the root module's rat run, which scans the whole working tree and is their only

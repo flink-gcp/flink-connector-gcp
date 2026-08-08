@@ -448,9 +448,12 @@ carries the full skeleton, the evidence and the declined alternatives). The rule
   an SPI's real implementation is named after **the SDK resource its `close()` releases**
 - Serializer input formats are subpackages of the SPI (`sink.serializer.<format>`, #125) and
   must not import each other — cross-format javadoc references are fully-qualified `{@link}`s
+- A connector's failure type sits at the `sink` root — a one-class `sink.failure` fails the
+  layer test (BigQuery's `sink.failure` is the grandfathered exception, kept for churn cost)
 - The **module root** holds what belongs to the connector as a whole rather than to one
-  direction: the `@Internal` `<Product>MetricNames` inventory every connector carries (#280)
-  and, in Bigtable, the `@PublicEvolving` `TableDestination`
+  direction: the `@Internal` `<Product>MetricNames` inventory every connector carries (#280),
+  Pub/Sub's `@Internal` `PubSubShutdownResidue`, and Bigtable's `@PublicEvolving`
+  `TableDestination`
 
 ## Emulators are conveniences, not authorities
 
@@ -534,7 +537,7 @@ connector gets its own module file rather than a section here.
   absorb has no test. The nine-SPI survey, the asymmetric consequences and the #351 refinement
   (what else a wide absorb catches) are in the ADR.
 - **A test driving a sink's production `createWriter(WriterInitContext)` sets an emulator
-  endpoint** (`docs/adr/0029`, Consequences): the production path builds the connector's real
-  client, and an eagerly constructed one demands ADC — green on any machine with credentials,
-  red only in CI. Build the sink with `emulatorEndpoint("localhost:1")`, and say in a comment
-  why the endpoint is not optional so a simplification pass does not remove it.
+  endpoint** (`docs/adr/0064`): the production path builds the connector's real client, and an
+  eagerly constructed one demands ADC — green on any machine with credentials, red only in CI.
+  Build the sink with `emulatorEndpoint("localhost:1")`, and say in a comment why the endpoint
+  is not optional so a simplification pass does not remove it.

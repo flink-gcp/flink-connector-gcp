@@ -30,8 +30,10 @@ limitations under the License.
 ## Decision
 
 - **`opentofu/flink-gcp` is the single root module for the project's persistent GCP
-  resources** ([#5]): enabled APIs, the state bucket, the WIF pool/provider, three service
-  accounts and the shared IT bucket/dataset. Fine-grained test resources (tables, topics,
+  resources** ([#5]): enabled APIs, the state bucket, the WIF pool/provider, the service
+  accounts (the plan/apply/E2E CI identities, later joined by the deliberately unprivileged
+  `e2e-no-pubsub` probe) and the shared IT bucket/dataset. Fine-grained test resources (tables,
+  topics,
   subscriptions, queues) are created by the tests themselves and never belong here. A new
   connector's API and E2E grants are added in the PR that first needs them, not in advance.
 - **CI is tfaction v2** (`tfaction-root.yaml` at the root): pull requests touching

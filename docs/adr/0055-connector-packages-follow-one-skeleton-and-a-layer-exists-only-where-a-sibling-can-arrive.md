@@ -65,12 +65,14 @@ packages — which is also what lets package-private coupling stay package-priva
   trade-offs the connector documentation records as cutting both ways.
 - The **module root** holds what belongs to the connector as a whole rather than to one
   direction: the `@Internal` `<Product>MetricNames` inventory every connector carries
-  ([#280], ADR-0038) and, in Bigtable, the `@PublicEvolving` `TableDestination`.
-  `PubSubMetricNames` is why the placement is a rule rather than a preference: its names span
-  `sink.writer`, `source.streamingpull.reader` and `.enumerator`, so the module root is the
-  only package that can hold one inventory. What the two residents share is the *scope*, not
-  the visibility — a names class is `public` because Java has no module-internal access and
-  its sub-packages must import it, which is what the `@Internal` annotation is there to say.
+  ([#280], ADR-0038); Pub/Sub's `@Internal` `PubSubShutdownResidue` (ADR-0007's
+  classloader-scoped residue holder, shared by the sink writer and the dead-letter queue); and,
+  in Bigtable, the `@PublicEvolving` `TableDestination`. `PubSubMetricNames` is why the
+  placement is a rule rather than a preference: its names span `sink.writer`,
+  `source.streamingpull.reader` and `.enumerator`, so the module root is the only package that
+  can hold one inventory. What the residents share is the *scope*, not the visibility — a
+  names class is `public` because Java has no module-internal access and its sub-packages must
+  import it, which is what the `@Internal` annotation is there to say.
 
 **One family, with no second one in prospect, means no layer** ([#119]): the module goes
 straight to `sink` + `sink.writer` (`sink.committer`, … as the topology requires). Decided
