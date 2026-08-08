@@ -19,16 +19,30 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-07-19 ([#14]); load stage revised 2026-07-20 ([#69]); committer schedules
   2026-08-01 ([#198]); revised by [#337] (2026-08-08); conflict handler revised by [#380]
-  (2026-08-08)
-- Issues: [#14], [#69], [#198], [#337], [#380]
+  (2026-08-08); load-job grouping refined by [#284] (2026-08-08)
+- Issues: [#14], [#69], [#198], [#337], [#380], [#284]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
 ## Decision
 
 - Exactly-once via deterministic BigQuery job ids (hash of destination + sorted staged URIs)
-  with get-then-submit re-attach. Avro-only staging in v0.1, written with the
-  `google-cloud-storage` client directly (no Flink filesystem plugin dependency).
+  with get-then-submit re-attach. Written with the `google-cloud-storage` client directly (no
+  Flink filesystem plugin dependency).
+- **A load job is one destination in one staging format** (refined by [#284]). The format travels
+  in the committable rather than being read from configuration at commit time, because a
+  committable recovered from state has to be loaded as the format its file was *actually* written
+  in — and a load job carries exactly one. So `LoadJobOrchestrator` keys on `(destination,
+  format)`, which changes nothing for a commit whose committables share a format, and issues **two
+  load jobs for one table** for the transitional commit that does not: the first after the format
+  changes, including the upgrade that introduced the format at all, where committables already in
+  committer state are Avro. The one-job-per-table property and its atomicity do not hold for that
+  commit. Draining the old format first was rejected — the writer cannot see what is in committer
+  state — as was refusing the mix, which would wedge the restart that produced it. The job ids need
+  no format segment: they already hash the source URI list, and the two formats' files are distinct
+  objects. The committable serializer is version 3 and **migrates** version 2 — the layout `main` has
+  produced since [#69], all Avro by construction — where it still rejects version 1, which predates
+  [#69] and never survived a job.
 - **Load jobs run in the committer** behind a pre-commit topology (`SupportsPreCommitTopology`)
   whose trailing `.global()` routes every subtask's committables to committer subtask 0. The
   [#14] post-commit-topology design was replaced in [#69]: records emitted to a post-commit
@@ -115,4 +129,5 @@ limitations under the License.
 [#69]: https://github.com/laughingman7743/flink-connector-gcp/issues/69
 [#198]: https://github.com/laughingman7743/flink-connector-gcp/issues/198
 [#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337
+[#284]: https://github.com/laughingman7743/flink-connector-gcp/issues/284
 [#380]: https://github.com/laughingman7743/flink-connector-gcp/issues/380

@@ -21,6 +21,7 @@ import org.apache.flink.annotation.Internal;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.Schema;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 
 import java.util.List;
 
@@ -34,6 +35,7 @@ public final class LoadJobSpec {
     private final JobInfo.CreateDisposition createDisposition;
     private final JobInfo.WriteDisposition writeDisposition;
     private final List<JobInfo.SchemaUpdateOption> schemaUpdateOptions;
+    private final StagingFormat format;
 
     LoadJobSpec(
             TableDestination destination,
@@ -41,13 +43,15 @@ public final class LoadJobSpec {
             Schema schema,
             JobInfo.CreateDisposition createDisposition,
             JobInfo.WriteDisposition writeDisposition,
-            List<JobInfo.SchemaUpdateOption> schemaUpdateOptions) {
+            List<JobInfo.SchemaUpdateOption> schemaUpdateOptions,
+            StagingFormat format) {
         this.destination = destination;
         this.sourceUris = List.copyOf(sourceUris);
         this.schema = schema;
         this.createDisposition = createDisposition;
         this.writeDisposition = writeDisposition;
         this.schemaUpdateOptions = List.copyOf(schemaUpdateOptions);
+        this.format = format;
     }
 
     /** Returns the destination table. */
@@ -80,6 +84,11 @@ public final class LoadJobSpec {
         return schemaUpdateOptions;
     }
 
+    /** Returns the format the staged files were written in, which configures the load job. */
+    public StagingFormat getFormat() {
+        return format;
+    }
+
     @Override
     public String toString() {
         return "LoadJobSpec{destination="
@@ -92,6 +101,8 @@ public final class LoadJobSpec {
                 + writeDisposition
                 + ", schemaUpdateOptions="
                 + schemaUpdateOptions
+                + ", format="
+                + format
                 + "}";
     }
 }

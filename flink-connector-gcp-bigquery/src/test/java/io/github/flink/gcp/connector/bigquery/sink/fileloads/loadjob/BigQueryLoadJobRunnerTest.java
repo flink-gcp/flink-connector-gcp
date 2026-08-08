@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery.JobAnswer;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -729,14 +730,48 @@ class BigQueryLoadJobRunnerTest {
         assertThat(copy.getWriteDisposition()).isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
     }
 
+    @Test
+    void avroLoadsCarryTheAvroFormatAndLogicalTypes() throws Exception {
+        client.answering(JobAnswer.absent());
+
+        runner().submitLoad(JOB_ID, loadSpec(List.of(), StagingFormat.AVRO));
+
+        LoadJobConfiguration submitted = client.created.get(0).getConfiguration();
+        assertThat(submitted.getFormat()).isEqualTo(FormatOptions.avro().getType());
+        assertThat(submitted.getUseAvroLogicalTypes()).isTrue();
+    }
+
+    @Test
+    void parquetLoadsEnableListInference() throws Exception {
+        client.answering(JobAnswer.absent());
+
+        runner().submitLoad(JOB_ID, loadSpec(List.of(), StagingFormat.PARQUET));
+
+        LoadJobConfiguration submitted = client.created.get(0).getConfiguration();
+        assertThat(submitted.getFormat()).isEqualTo(FormatOptions.parquet().getType());
+        // Not a style preference. Without it a REPEATED column loads as an empty array and the job
+        // reports success — measured against a provided schema naming the column STRING REPEATED,
+        // which returned every row with zero elements. Nothing downstream would report it.
+        assertThat(submitted.getParquetOptions()).isNotNull();
+        assertThat(submitted.getParquetOptions().getEnableListInference()).isTrue();
+        // useAvroLogicalTypes is meaningless here and must not travel with a Parquet load.
+        assertThat(submitted.getUseAvroLogicalTypes()).isNull();
+    }
+
     private static LoadJobSpec loadSpec(List<JobInfo.SchemaUpdateOption> schemaUpdateOptions) {
+        return loadSpec(schemaUpdateOptions, StagingFormat.AVRO);
+    }
+
+    private static LoadJobSpec loadSpec(
+            List<JobInfo.SchemaUpdateOption> schemaUpdateOptions, StagingFormat format) {
         return new LoadJobSpec(
                 DESTINATION,
                 List.of("gs://bucket/a.avro"),
                 SCHEMA,
                 JobInfo.CreateDisposition.CREATE_IF_NEEDED,
                 JobInfo.WriteDisposition.WRITE_APPEND,
-                schemaUpdateOptions);
+                schemaUpdateOptions,
+                format);
     }
 
     private static CopyJobSpec copySpec() {

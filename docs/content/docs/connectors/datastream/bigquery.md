@@ -1087,7 +1087,7 @@ buffer *is* GCS. Files roll at `maxStagingFileBytes` (16 MiB, discussed below). 
 topology routes every subtask's
 committables to a single committer subtask (in streaming through a stage that stamps each
 committable with its checkpoint id), and that committer — the actual commit — groups the staged
-files by destination table and runs **one load job per table** (all jobs submitted first, then
+files by destination table *and staging format* and runs **one load job per table** (all jobs submitted first, then
 awaited — BigQuery runs them concurrently server-side): once at end of input in batch, once per
 completed checkpoint in streaming. Before its first load of a run, each destination is
 **reconciled against the live table** through the REST API — a missing table is created (schema
@@ -1180,6 +1180,16 @@ to stay on the single-job path; lowering it buys little. And note it does nothin
 parallelism: a checkpoint's data divided by the subtask count already produces files inside the
 band, so the threshold never fires. These numbers are one measurement of a service that is free to
 change, not a guarantee.
+
+**One exception to one-job-per-table.** A load job carries exactly one source format, so the
+committables of a destination are grouped by format as well. Normally they all share one and this
+changes nothing. The case that does not is transitional: the first commit after the staging format
+changes — including the upgrade that introduced the format at all, where committables already in
+committer state were written as Avro — sees both, and that commit issues **two load jobs for the
+one table**, losing the single-job atomicity for it alone. The alternatives are worse: draining the
+old format first would need the writer to know what is still in committer state, which it cannot,
+and refusing the mix would wedge the restart that produced it. Job ids stay deterministic without
+help, since they hash the source URI list and the two formats' files are different objects.
 
 **Per-load-job limits.** In batch, a table whose staged files exceed one load job's limits
 (10,000 source URIs / 11 TiB) is loaded partition-wise into temporary tables (`WRITE_TRUNCATE`,

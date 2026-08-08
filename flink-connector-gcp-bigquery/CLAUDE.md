@@ -101,6 +101,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   builds their path from `os.name`/`os.arch`/version and never from the package (the opposite of
   grpc-netty-shaded, whose loader derives its library name from its own package — that argument lives in `flink-connector-gcp-pubsub/CLAUDE.md`). A packaging IT computes that path the same way and fails on
   whichever platform it runs on.
+- **The staging format travels in the committable, and load jobs group on it.** A committable
+  restored from state must load as the format its file was written in, which configuration read at
+  commit time cannot tell you — so `LoadJobOrchestrator` keys on `(destination, format)` and the
+  transitional commit after a format change issues **two jobs for one table**, deliberately. Job
+  ids need no format segment: they hash the source URI list, which already differs. The serializer
+  is v3 and **migrates v2** (the layout `main` has produced since #69, whose committables are all Avro by
+  construction) where it still rejects v1. `enableListInference` on every Parquet load is not
+  style: without it a `REPEATED` column loads as an empty array and the job reports success.
 - **The staging roll threshold is a measured band, and smaller is not better**: the curve is a
   basin with a floor near 8 MiB, so any change to `maxStagingFileBytes` needs a floor as well as a
   ceiling, and the 10,000-URI cap is what the value trades *against* rather than what it is derived

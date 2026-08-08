@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -116,8 +117,18 @@ class LoadJobOrchestratorTest {
 
     private static FileLoadsCommittable file(
             TableDestination destination, String name, long bytes) {
+        return file(destination, name, bytes, StagingFormat.AVRO);
+    }
+
+    private static FileLoadsCommittable file(
+            TableDestination destination, String name, long bytes, StagingFormat format) {
         return new FileLoadsCommittable(
-                FLINK_JOB_ID, destination, "gs://bucket/prefix/" + name + ".avro", bytes, 10);
+                FLINK_JOB_ID,
+                destination,
+                "gs://bucket/prefix/" + name + format.getExtension(),
+                bytes,
+                10,
+                format);
     }
 
     /** Everything one orchestration run touches. */
@@ -216,6 +227,55 @@ class LoadJobOrchestratorTest {
                         "gs://bucket/prefix/a.avro",
                         "gs://bucket/prefix/b.avro",
                         "gs://bucket/prefix/z.avro");
+    }
+
+    @Test
+    void oneDestinationInTwoFormatsBecomesTwoLoadJobs() throws IOException {
+        // The transitional commit: committables written before the staging format changed are
+        // still in committer state alongside new ones. A load job carries exactly one format, so
+        // the destination cannot be loaded by a single job here — and the alternative, refusing
+        // the mix, would wedge the restart that produced it.
+        Harness harness = Harness.plain();
+
+        harness.orchestrator.run(
+                List.of(
+                        file(T1, "a", 10, StagingFormat.AVRO),
+                        file(T1, "b", 10, StagingFormat.AVRO),
+                        file(T1, "c", 10, StagingFormat.PARQUET)));
+
+        assertThat(harness.runner.loads).hasSize(2);
+        assertThat(harness.runner.loads.values())
+                .extracting(LoadJobSpec::getFormat)
+                .containsExactlyInAnyOrder(StagingFormat.AVRO, StagingFormat.PARQUET);
+        // Each job carries only its own format's files, which is the property that makes the
+        // split correct rather than merely two jobs.
+        assertThat(harness.runner.loads.values())
+                .allSatisfy(
+                        spec ->
+                                assertThat(spec.getSourceUris())
+                                        .allSatisfy(
+                                                uri ->
+                                                        assertThat(uri)
+                                                                .endsWith(
+                                                                        spec.getFormat()
+                                                                                .getExtension())));
+        // Deterministic ids still discriminate without the format being in them: the id hashes
+        // the source URI list, and the two sets are disjoint.
+        assertThat(harness.runner.loads.keySet()).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void oneDestinationInOneFormatIsStillOneLoadJob() throws IOException {
+        // The control the test above needs: grouping on the format must not split what used to be
+        // a single job, which is every commit that is not the transitional one.
+        Harness harness = Harness.plain();
+
+        harness.orchestrator.run(
+                List.of(
+                        file(T1, "a", 10, StagingFormat.AVRO),
+                        file(T1, "b", 10, StagingFormat.AVRO)));
+
+        assertThat(harness.runner.loads).hasSize(1);
     }
 
     @Test

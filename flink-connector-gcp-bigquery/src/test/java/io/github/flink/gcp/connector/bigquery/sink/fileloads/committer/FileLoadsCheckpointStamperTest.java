@@ -21,6 +21,7 @@ import org.apache.flink.streaming.api.connector.sink2.CommittableWithLineage;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
@@ -37,7 +38,12 @@ class FileLoadsCheckpointStamperTest {
 
     private static FileLoadsCommittable file(String name) {
         return new FileLoadsCommittable(
-                FLINK_JOB_ID, T1, "gs://bucket/prefix/" + name + ".avro", 10, 5);
+                FLINK_JOB_ID,
+                T1,
+                "gs://bucket/prefix/" + name + ".avro",
+                10,
+                5,
+                StagingFormat.AVRO);
     }
 
     @Test
