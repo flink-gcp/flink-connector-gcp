@@ -41,7 +41,7 @@ the reasoning is under
 | `serializer` | **required** | Turns a record into a `RowMutationEntry`, or into `null` to skip it |
 | `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through, which is what selects the routing policy and the request priority |
 | `writerOptions` | [defaults](#bigtablewriteroptions) | The batch thresholds and the in-flight bounds |
-| `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation that terminally fails. Only the two data-shaped failures reach it — see [Error handling]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling) |
+| `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation that terminally fails. Only the two data-shaped failures reach it — see [Error handling]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
 
 **The mutation itself is built by the serializer, not configured here.** Row key, column families

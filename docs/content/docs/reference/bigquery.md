@@ -39,7 +39,7 @@ section; the three forms of the Default column are explained
 | `tableCreateOptions` | plain tables | [Creation settings](#tablecreateoptions) for every table the sink creates |
 | `tableCreateOptionsProvider` | — | The same, resolved per destination. Overrides `tableCreateOptions` |
 | `schemaUpdateOptions` | updates disabled | [What the sink may change](#schemaupdateoptions) about a destination table's schema |
-| `failedRowHandler` | `FailureHandler.failJob()` | What happens to a row that terminally fails — fail, drop, or dead-letter |
+| `failedRowHandler` | `FailureHandler.failJob()` | What happens to a row that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `location` | — | The BigQuery location shared by the destination tables |
 | `defaultStreamOptions` | [defaults](#defaultstreamoptions) | Tuning for `STORAGE_API_AT_LEAST_ONCE`; rejected for the other two |
 | `bufferedStreamOptions` | **required** for `STORAGE_API_EXACTLY_ONCE` | [Tuning](#bufferedstreamoptions) for that method; rejected for the other two |

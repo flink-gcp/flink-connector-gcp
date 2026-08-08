@@ -169,10 +169,10 @@ being the next entry in its own `closeAll` list; and **the DLQ's hardcoded 30 s 
 `PubSubDeadLetterQueue.Builder.shutdownTimeout(Duration)`** — once the docs promise a budget
 covering the whole close, the half a user cannot reach is the half they cannot fix. It is a
 second budget spent after the sink's, and both user-facing documents say to keep the **sum**
-under `task.cancellation.timeout`. (`check-option-docs` does not see this builder — its
-`SOURCE_GLOBS` is `*Options.java` / `*SinkBuilder.java` / `*SourceBuilder.java` — so the knob is
-documented in the datastream page's dead-lettering prose; that whole-builder invisibility is
-[#328].)
+under `task.cancellation.timeout`. (`check-option-docs`'s `SOURCE_GLOBS` — `*Options.java` /
+`*SinkBuilder.java` / `*SourceBuilder.java` — does not match this builder's file, so from the day
+the class landed neither direction of that check read it. [#328] reached it by naming the file in
+the module's `sources`, and both budgets now carry a `reference/pubsub.md` row.)
 
 ## Consequences
 

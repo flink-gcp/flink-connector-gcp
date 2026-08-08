@@ -18,12 +18,15 @@
 Two directions, both required, for each mapping in scripts/option-docs.toml:
 
 * **Coverage** — every public builder setter of a module's `*Options` /
-  `*SinkBuilder` / `*SourceBuilder` classes is named in that module's reference
-  page, and every `ConfigOption` key of the Table API surface is named in the
-  page documenting it. A knob added without a doc row fails here.
+  `*SinkBuilder` / `*SourceBuilder` classes, plus any class its `sources` list
+  names, is named in that module's reference page, and every `ConfigOption` key
+  of the Table API surface is named in the page documenting it. A knob added
+  without a doc row fails here.
 * **Staleness** — every option an *option table* names exists in the source. A
   renamed or deleted knob fails here rather than lingering as a row nobody can
   act on.
+* **Reach** — a public builder no mapping can see is itself a failure, since
+  neither direction above says anything about a class it never reads (#328).
 
 An option table is one whose first column header is exactly `Option`. That is
 the whole selection rule, and it is what keeps this check off the metadata,
@@ -44,6 +47,8 @@ to no options at all, malformed config).
 Standard library only, like its siblings in this directory.
 """
 
+import fnmatch
+import os.path
 import re
 import sys
 from pathlib import Path
@@ -60,7 +65,10 @@ except ModuleNotFoundError:  # pragma: no cover - version guard, not logic
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = Path(__file__).resolve().parent / "option-docs.toml"
 
-# The three source shapes a module's builder options live in.
+# The three source shapes a module's builder options live in. A class named for
+# what it *is* rather than for the options it takes is reached by a `sources`
+# entry instead, and `unmapped_public_builders` below is what makes finding one
+# somebody's problem rather than nobody's.
 #
 # `*SerializationSchema.java` is deliberately absent, and the boundary is worth
 # stating because seven `with*` methods sit just outside it (`withAttributes`,
@@ -71,6 +79,15 @@ CONFIG = Path(__file__).resolve().parent / "option-docs.toml"
 # for what a schema can be told to do. Widening the globs to cover them would
 # also mean this script deciding which `with*` on which fluent type is an
 # option, which is a judgement it has no way to make.
+#
+# Widening them to reach `PubSubDeadLetterQueue` was the other candidate on
+# #328, and it was measured rather than argued. `*Queue.java` also matches
+# `base/failure/DeadLetterQueue.java`, an interface with no setters in an
+# unmapped module — exit 1 from the stray-module guard, then exit 2 from the
+# zero-setter guard once the module is mapped. A wider pattern reaching every
+# class with a nested builder adds `BigQueryDynamicSink` and `SubscriptionInfo`,
+# 19 setters that are `@Internal` and would each demand a row or an [exempt]
+# entry. Naming the one class costs one config line and no false demands.
 SOURCE_GLOBS = ("*Options.java", "*SinkBuilder.java", "*SourceBuilder.java")
 
 # `public Builder maxInFlightBytes(long ...)` on a nested options builder, and
@@ -82,6 +99,32 @@ SETTER = re.compile(
 )
 
 CONFIG_OPTION_KEY = re.compile(r'ConfigOptions\.key\(\s*"([^"]+)"\s*\)')
+
+# The annotation block immediately above a file's first top-level type, and only
+# that one: a builder nested inside an `@Internal` class is internal too, which
+# is how `BigQueryDynamicSink.Builder`'s 14 setters stay out. The block is
+# optional in the pattern so an *unannotated* type still matches and is read as
+# carrying no annotation — reported rather than skipped, which is the direction
+# check-flink-api-tiers.py takes on an unannotated type as well.
+#
+# A top-level declaration is what starts at column 0, so `public` is not required
+# and must not be: 22 of this repository's `@Internal` main sources are
+# package-private (`@Internal` then `final class BoolFieldOptionReader`), and
+# demanding `public` would read their annotation as absent and report them by a
+# message telling you to add the annotation they already carry. Blank lines are
+# allowed inside the block for the same reason — a javadoc between the annotation
+# and the declaration is blanked to them by the time this runs.
+TOP_LEVEL_TYPE = re.compile(
+    r"^((?:@[\w.]+(?:\([^\n]*\))?[ \t]*\n|[ \t]*\n)*)"
+    r"^(?:(?:public|final|abstract|sealed|non-sealed|strictfp|static)\s+)*"
+    r"(?:class|interface|enum|record|@interface)\s+\w+",
+    re.MULTILINE,
+)
+
+# Anchored at a line start so `@SuppressWarnings("@Internal")` — a string literal,
+# which blank_comments deliberately keeps — cannot exempt a class, and accepting a
+# package qualifier so the fully-qualified spelling counts.
+INTERNAL = re.compile(r"^@(?:[\w.]+\.)?Internal\b", re.MULTILINE)
 
 # Comments are blanked before both scans above run, so a setter named in javadoc
 # — `{@link #maxInFlightMessages(int)}` is everywhere in these files — cannot be
@@ -163,34 +206,165 @@ def option_table_entries(page: Path) -> dict[str, int]:
     return entries
 
 
-def builder_setters(module: str, claimed: set[str]) -> dict[str, set[str]]:
+def main_source_trees() -> list[Path]:
+    """Every module's main source roots — the one place this location is spelled.
+
+    `java*` rather than `java`, because `java-flink1` / `java-flink2` hold the
+    per-major `CrossVersionSink` seam (ADR-0054). Nothing there declares an
+    option today; reading them anyway is what keeps one from being invisible if
+    something ever does, and is what check-metric-docs.py already does.
+
+    Four things need this — the glob scan, the reach guard, the stray-module
+    guard and the per-module lookup below — and spelling it four times means a
+    fifth source root has four edit sites and three chances to be missed.
+    """
+    return sorted(ROOT.glob("*/src/main/java*"))
+
+
+def main_source_roots(module: str) -> list[Path]:
+    """The subset of the above belonging to one module."""
+    return [
+        tree
+        for tree in main_source_trees()
+        if tree.relative_to(ROOT).parts[0] == module
+    ]
+
+
+def glob_matched() -> set[str]:
+    """Repo-relative paths of every main source SOURCE_GLOBS reaches, any module.
+
+    Every module and not only the mapped ones, because this feeds the
+    unmapped-builder guard: an unmapped module's options are the stray-module
+    guard's business, and reporting them a second time by a message saying they
+    match no pattern would be false as well as noisy.
+    """
+    return {
+        str(source.relative_to(ROOT))
+        for tree in main_source_trees()
+        for pattern in SOURCE_GLOBS
+        for source in tree.rglob(pattern)
+    }
+
+
+def setters_of(path: Path, text: str, whence: str, remedy: str) -> set[str]:
+    """The public builder setters one source declares; none of them is an error.
+
+    A class this script was told to read and cannot parse makes the whole run
+    untrustworthy rather than that one class merely absent, so it is exit 2 in
+    both cases and only the wording differs.
+    """
+    setters = set(SETTER.findall(blank_comments(text)))
+    if not setters:
+        infra(
+            f"{path.relative_to(ROOT)} {whence} but declares no builder setter this "
+            f"script recognises. Either it is not an options class — {remedy} — or "
+            f"its builder no longer follows the shape SETTER matches, which would "
+            f"make every other class's result untrustworthy too."
+        )
+    return setters
+
+
+def builder_setters(
+    module: str, claimed: set[str], sources: list[str]
+) -> dict[str, set[str]]:
     """Public builder setters per class under one module's main sources.
+
+    An explicitly named `sources` class is parsed, keyed and checked in both
+    directions exactly as a glob-matched one is.
 
     Sources listed under [[config_options]] are skipped: their options are
     ConfigOptions rather than builder setters, so finding none in them is
     correct rather than the parse failure it would be anywhere else.
+
+    Setters are merged per class name rather than assigned, because two source
+    roots hold the same file name by design — every connector has a
+    `CrossVersionSink.java` in both `java-flink1` and `java-flink2` (ADR-0054) —
+    and assigning would let the root sorted last hide the other's options behind
+    an exit 0. The name is the key because `[exempt]` is keyed `Class.setter`.
     """
     found: dict[str, set[str]] = {}
-    root = ROOT / module / "src" / "main" / "java"
-    if not root.is_dir():
-        infra(f"{module}/src/main/java does not exist; {CONFIG.name} names it.")
-    for pattern in SOURCE_GLOBS:
-        for source in sorted(root.rglob(pattern)):
-            if str(source.relative_to(ROOT)) in claimed:
-                continue
-            setters = set(SETTER.findall(blank_comments(source.read_text("utf-8"))))
-            if not setters:
-                infra(
-                    f"{source.relative_to(ROOT)} matches {pattern} but declares no "
-                    f"builder setter this script recognises. Either it is not an "
-                    f"options class — narrow SOURCE_GLOBS — or its builder no "
-                    f"longer follows the shape SETTER matches, which would make "
-                    f"every other class's result untrustworthy too."
+    roots = main_source_roots(module)
+    if not roots:
+        infra(f"{module}/src/main has no java* source root; {CONFIG.name} names it.")
+    for root in roots:
+        for pattern in SOURCE_GLOBS:
+            for source in sorted(root.rglob(pattern)):
+                if str(source.relative_to(ROOT)) in claimed:
+                    continue
+                found.setdefault(source.stem, set()).update(
+                    setters_of(
+                        source,
+                        source.read_text("utf-8"),
+                        f"matches {pattern}",
+                        "narrow SOURCE_GLOBS",
+                    )
                 )
-            found[source.stem] = setters
+    for name in sources:
+        path = ROOT / name
+        # Existence before placement: a typo'd path is the likelier authoring
+        # error of the two, and "does not exist" locates it where "does not live
+        # in one of its main source roots" only puzzles.
+        if not path.is_file():
+            infra(f"{name} does not exist; {CONFIG.name} names it under {module}.")
+        if not any(root in path.parents for root in roots):
+            infra(
+                f"{name} is named under {module}'s sources but does not live in one "
+                f"of its main source roots. A sources entry names a class of the "
+                f"module it is listed under, or the page it is mapped to means "
+                f"nothing."
+            )
+        if any(fnmatch.fnmatch(path.name, pattern) for pattern in SOURCE_GLOBS):
+            infra(
+                f"{name} is named under {module}'s sources but already matches "
+                f"SOURCE_GLOBS, so it is scanned either way. Delete the entry — a "
+                f"mapping that changes nothing is a claim nobody can check."
+            )
+        found.setdefault(path.stem, set()).update(
+            setters_of(
+                path,
+                read(path),
+                f"is named under {module}'s sources",
+                "delete the entry",
+            )
+        )
     if not found:
-        infra(f"No options sources found under {module}/src/main/java.")
+        infra(f"No options sources found under {module}/src/main.")
     return found
+
+
+def unmapped_public_builders(seen: set[str]) -> list[str]:
+    """Public builders that no mapping in the config reaches.
+
+    The gap #328 closed. `PubSubDeadLetterQueue.Builder`'s five knobs matched no
+    SOURCE_GLOBS pattern, so *both* directions skipped the whole class and
+    neither said so — a knob could be added, renamed or deleted, and a row could
+    go stale, with nothing failing either way. A `sources` entry reaches one
+    class; this is what keeps the next one from being invisible for as long.
+
+    It is the stray-module guard one level down. `@Internal` is the only
+    exemption; see TOP_LEVEL_TYPE for what is read to decide it.
+    """
+    problems: list[str] = []
+    for tree in main_source_trees():
+        for source in sorted(tree.rglob("*.java")):
+            name = str(source.relative_to(ROOT))
+            if name in seen:
+                continue
+            blanked = blank_comments(source.read_text("utf-8"))
+            setters = sorted(set(SETTER.findall(blanked)))
+            if not setters:
+                continue
+            declaration = TOP_LEVEL_TYPE.search(blanked)
+            if declaration and INTERNAL.search(declaration.group(1)):
+                continue
+            problems.append(
+                f"{name} declares public builder setters ({', '.join(setters)}) "
+                f"but nothing maps it: it matches no SOURCE_GLOBS pattern and no "
+                f"[[builders]] sources entry names it, so both directions of this "
+                f"check skip the whole class. Map it in {CONFIG.name}, or mark the "
+                f"class @Internal if it is not a user-facing option surface."
+            )
+    return problems
 
 
 def load_config() -> dict:
@@ -206,9 +380,23 @@ def load_config() -> dict:
     for entry in config["builders"]:
         if "module" not in entry or "page" not in entry:
             infra(f"a [[builders]] entry in {CONFIG.name} lacks module or page.")
+        sources = entry.get("sources", [])
+        if not isinstance(sources, list) or not all(
+            isinstance(source, str) for source in sources
+        ):
+            infra(
+                f"the sources of the [[builders]] entry for {entry['module']} in "
+                f"{CONFIG.name} is not a list of paths."
+            )
+        # Normalised here, once, because a path is both joined to ROOT and
+        # compared as a string against `str(source.relative_to(ROOT))`. Written
+        # `./a/b.java`, the join reads it and the comparison does not, so the
+        # class would be fully checked *and* reported as reached by nothing.
+        entry["sources"] = [os.path.normpath(source) for source in sources]
     for entry in config.get("config_options", []):
         if "source" not in entry or "page" not in entry:
             infra(f"a [[config_options]] entry in {CONFIG.name} lacks source or page.")
+        entry["source"] = os.path.normpath(entry["source"])
     return config
 
 
@@ -228,12 +416,17 @@ def main() -> int:
 
     claimed = {entry["source"] for entry in config.get("config_options", [])}
 
+    # What is left over after this is what unmapped_public_builders looks at.
+    seen = set(claimed) | glob_matched()
+    for entry in config["builders"]:
+        seen.update(entry.get("sources", []))
+
     # A module that grows options and is never mapped would be checked by
     # nothing, silently — the failure mode a per-module mapping otherwise has,
     # and the one a new connector walks straight into. Bigtable and Spanner are
     # the known candidates.
     mapped = {entry["module"] for entry in config["builders"]}
-    for tree in sorted(ROOT.glob("*/src/main/java")):
+    for tree in main_source_trees():
         module = tree.relative_to(ROOT).parts[0]
         if module in mapped:
             continue
@@ -251,10 +444,12 @@ def main() -> int:
                 f"checks them. Add the module and its reference page."
             )
 
+    problems += unmapped_public_builders(seen)
+
     for entry in config["builders"]:
         module, page = entry["module"], ROOT / entry["page"]
         documented = option_table_entries(page)
-        by_class = builder_setters(module, claimed)
+        by_class = builder_setters(module, claimed, entry.get("sources", []))
         real: set[str] = set()
         for klass, setters in by_class.items():
             real |= setters

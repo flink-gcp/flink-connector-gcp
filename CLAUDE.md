@@ -86,7 +86,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   that header *is* the opt-in, which is what keeps the check off the metadata, type-mapping and
   policy tables the same pages carry — and every option those tables name must exist. Modules are
   mapped to pages in `scripts/option-docs.toml`, not classes, so a **new** `*Options` class is
-  required to appear from the moment it exists. Two allowlists, pointing opposite ways —
+  required to appear from the moment it exists. A public builder whose file matches no
+  `SOURCE_GLOBS` pattern — one named for what it *is*, as `PubSubDeadLetterQueue` is — is
+  reached by naming it in that module's `sources` list, and **a public builder no mapping
+  reaches is itself a failure** (#328), which is what keeps that explicit list from being the
+  silent class-by-class mapping the config's own comment argues against; `@Internal` is its
+  only exemption, read off the file's first top-level type. Widening the globs instead was
+  measured and declined — the record is the comment above `SOURCE_GLOBS`. Two allowlists,
+  pointing opposite ways —
   `[exempt]` is a setter with no row, `[extra]` a row with no setter — and **an entry that
   never fires fails**, as a stale one does in `flink-api-tiers.toml`. The pages are
   **hand-written, not generated**: their tables group knobs and carry defaults the sources do
