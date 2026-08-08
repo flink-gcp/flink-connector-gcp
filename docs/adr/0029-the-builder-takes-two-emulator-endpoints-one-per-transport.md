@@ -54,6 +54,22 @@ exist never touches the REST client at all.
   of them would pass with the endpoints reaching no client at all. `gax-grpc` moved from test to
   compile scope with this.
 
+## Consequences
+
+**Any test that drives a sink's production `createWriter(WriterInitContext)` builds that
+connector's real client, and must set an emulator endpoint** — `emulatorEndpoint("localhost:1")`
+or any unused port works, since every connector's endpoint path takes `NoCredentialsProvider`
+plus a plaintext channel and nothing is dialled until a record is written. Where the client is
+constructed eagerly, the bare production path demands application-default credentials, so the
+test passes on any machine with ADC configured and fails in CI with *"Your default credentials
+were not found"* — local `just verify` cannot catch it, only CI can. Measured on Cloud Tasks
+(PR [#242](https://github.com/laughingman7743/flink-connector-gcp/pull/242):
+`DefaultTaskCreatorFactory.create()` builds its client eagerly, two green local runs, then red
+CI); the Pub/Sub twin passed only because that sink creates its publishers lazily — a property
+of that sink, not a general rule. Swapping in the injecting seam instead would defeat the
+test's point, which is the production path itself. Say in a comment why the endpoint is not
+optional, or a later simplification pass removes it.
+
 [#15]: https://github.com/laughingman7743/flink-connector-gcp/issues/15
 [#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
 [#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
