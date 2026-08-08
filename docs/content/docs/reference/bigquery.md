@@ -138,6 +138,7 @@ where the load-job quota that shapes `minCheckpointInterval` is set out.
 | `writeDisposition` | `WRITE_APPEND` | How loaded rows land in a table that already holds data. Streaming requires `WRITE_APPEND` |
 | `tempDataset` | the destination's own dataset | Where temporary tables go when a table's staged files exceed one load job's limits |
 | `minCheckpointInterval` | 2 min | Smallest checkpoint interval accepted in streaming; a shorter one is rejected when the graph is built |
+| `maxStagingFileBytes` | 16 MiB | Size at which an open staging file is finished and the next one opened. [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) carries the measurement it comes from and when raising it is worthwhile |
 | `loadJobPollInitialBackoff` | 1 s | First backoff between polls of a submitted load or copy job |
 | `loadJobPollMaxBackoff` | 30 s | Cap of that backoff, before jitter. There is deliberately no attempt cap |
 | `schemaReconcileInitialBackoff` | 500 ms | First backoff after losing an etag race while reconciling a table's schema |

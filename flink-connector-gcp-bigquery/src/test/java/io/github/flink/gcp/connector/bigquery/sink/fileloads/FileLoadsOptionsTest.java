@@ -37,6 +37,10 @@ class FileLoadsOptionsTest {
         assertThat(options.getTempDataset()).isNull();
         assertThat(options.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_APPEND);
         assertThat(options.getMinCheckpointInterval()).isEqualTo(Duration.ofMinutes(2));
+        // Asserted as a literal rather than against the constant, which would hold whatever the
+        // constant became: this default is a measured value and moving it is a decision
+        // (docs/adr/0070), so it should cost an edit here.
+        assertThat(options.getMaxStagingFileBytes()).isEqualTo(16L * 1024 * 1024);
         assertThat(options.getLoadJobPollInitialBackoff())
                 .isEqualTo(FileLoadsOptions.DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF);
         assertThat(options.getLoadJobPollMaxBackoff())
@@ -158,7 +162,8 @@ class FileLoadsOptionsTest {
                 .contains("loadJobPollMaxBackoff=PT30S")
                 .contains("schemaReconcileInitialBackoff=PT0.5S")
                 .contains("schemaReconcileMaxBackoff=PT10S")
-                .contains("schemaReconcileMaxAttempts=10");
+                .contains("schemaReconcileMaxAttempts=10")
+                .contains("maxStagingFileBytes=16777216");
     }
 
     private static FileLoadsOptions.Builder base() {
@@ -174,6 +179,26 @@ class FileLoadsOptionsTest {
                         .build();
 
         assertThat(options.getMinCheckpointInterval()).isEqualTo(Duration.ofSeconds(30));
+    }
+
+    @Test
+    void maxStagingFileBytesOverrideIsKept() {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .maxStagingFileBytes(64L * 1024 * 1024)
+                        .build();
+
+        assertThat(options.getMaxStagingFileBytes()).isEqualTo(64L * 1024 * 1024);
+    }
+
+    @Test
+    void rejectsNonPositiveMaxStagingFileBytes() {
+        assertThatThrownBy(() -> FileLoadsOptions.builder().maxStagingFileBytes(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxStagingFileBytes");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().maxStagingFileBytes(-1))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -269,10 +294,16 @@ class FileLoadsOptionsTest {
                         .stagingPath("gs://bucket")
                         .perDestinationMetrics(true)
                         .build();
+        FileLoadsOptions f =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .maxStagingFileBytes(64L * 1024 * 1024)
+                        .build();
 
         assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
         assertThat(a).isNotEqualTo(c);
         assertThat(a).isNotEqualTo(d);
         assertThat(a).isNotEqualTo(e);
+        assertThat(a).isNotEqualTo(f);
     }
 }

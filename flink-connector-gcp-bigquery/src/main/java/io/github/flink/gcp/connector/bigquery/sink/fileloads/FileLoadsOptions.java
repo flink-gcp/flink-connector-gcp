@@ -96,10 +96,33 @@ public final class FileLoadsOptions implements Serializable {
     /** Default for {@link Builder#schemaReconcileMaxAttempts(int)}. */
     public static final int DEFAULT_SCHEMA_RECONCILE_MAX_ATTEMPTS = 10;
 
+    /**
+     * Default for {@link Builder#maxStagingFileBytes(long)}: 16 MiB, chosen from measured load
+     * throughput rather than from the URI arithmetic alone that chose its 1.5 GiB predecessor.
+     *
+     * <p>Measured against real BigQuery on 2026-08-08 — 769 MiB staged as Avro, seven loads per
+     * point, configurations interleaved — load duration against staging file size is a basin with a
+     * floor near 8 MiB and steep sides: 2 MiB took 15.0 s, 4 MiB 9.7 s, 8 MiB 8.3 s, 16 MiB 9.3 s,
+     * 32 MiB 11.1 s and 128 MiB 16.9 s. So smaller is <em>not</em> monotonically better, and any
+     * change to this value needs a floor as well as a ceiling.
+     *
+     * <p>16 MiB rather than the measured optimum because of what the value trades against: a load
+     * job takes at most 10,000 source URIs, so this size sets how much of one destination goes
+     * through a single load job before the temporary-table plus copy path is needed — ~156 GiB
+     * here, ~78 GiB at 8 MiB, ~14.6 TiB at the 1.5 GiB this replaces. Twice the headroom costs 12%
+     * of load time.
+     *
+     * <p>The threshold only fires where a subtask writes more than it to one destination between
+     * commits. At high parallelism a checkpoint's data divided by the subtask count is already
+     * inside the band, and this value never applies.
+     */
+    public static final long DEFAULT_MAX_STAGING_FILE_BYTES = 16L * 1024 * 1024;
+
     private final String stagingPath;
     @Nullable private final String tempDataset;
     private final WriteDisposition writeDisposition;
     private final Duration minCheckpointInterval;
+    private final long maxStagingFileBytes;
     private final Duration loadJobPollInitialBackoff;
     private final Duration loadJobPollMaxBackoff;
     private final Duration schemaReconcileInitialBackoff;
@@ -117,6 +140,7 @@ public final class FileLoadsOptions implements Serializable {
         this.tempDataset = builder.tempDataset;
         this.writeDisposition = builder.writeDisposition;
         this.minCheckpointInterval = builder.minCheckpointInterval;
+        this.maxStagingFileBytes = builder.maxStagingFileBytes;
         this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
@@ -154,6 +178,11 @@ public final class FileLoadsOptions implements Serializable {
      */
     public Duration getMinCheckpointInterval() {
         return minCheckpointInterval;
+    }
+
+    /** Returns the size at which an open staging file is finished and the next one opened. */
+    public long getMaxStagingFileBytes() {
+        return maxStagingFileBytes;
     }
 
     /** Returns the first backoff between load- or copy-job completion polls. */
@@ -222,6 +251,7 @@ public final class FileLoadsOptions implements Serializable {
                 && Objects.equals(tempDataset, that.tempDataset)
                 && writeDisposition == that.writeDisposition
                 && minCheckpointInterval.equals(that.minCheckpointInterval)
+                && maxStagingFileBytes == that.maxStagingFileBytes
                 && loadJobPollInitialBackoff.equals(that.loadJobPollInitialBackoff)
                 && loadJobPollMaxBackoff.equals(that.loadJobPollMaxBackoff)
                 && schemaReconcileInitialBackoff.equals(that.schemaReconcileInitialBackoff)
@@ -237,6 +267,7 @@ public final class FileLoadsOptions implements Serializable {
                 tempDataset,
                 writeDisposition,
                 minCheckpointInterval,
+                maxStagingFileBytes,
                 loadJobPollInitialBackoff,
                 loadJobPollMaxBackoff,
                 schemaReconcileInitialBackoff,
@@ -255,6 +286,8 @@ public final class FileLoadsOptions implements Serializable {
                 + writeDisposition
                 + ", minCheckpointInterval="
                 + minCheckpointInterval
+                + ", maxStagingFileBytes="
+                + maxStagingFileBytes
                 + ", loadJobPollInitialBackoff="
                 + loadJobPollInitialBackoff
                 + ", loadJobPollMaxBackoff="
@@ -278,6 +311,7 @@ public final class FileLoadsOptions implements Serializable {
         @Nullable private String tempDataset;
         private WriteDisposition writeDisposition = WriteDisposition.WRITE_APPEND;
         private Duration minCheckpointInterval = DEFAULT_MIN_CHECKPOINT_INTERVAL;
+        private long maxStagingFileBytes = DEFAULT_MAX_STAGING_FILE_BYTES;
         private Duration loadJobPollInitialBackoff = DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF;
         private Duration loadJobPollMaxBackoff = DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF;
         private Duration schemaReconcileInitialBackoff = DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF;
@@ -354,6 +388,33 @@ public final class FileLoadsOptions implements Serializable {
         public Builder minCheckpointInterval(Duration minCheckpointInterval) {
             OptionChecks.checkPositive(minCheckpointInterval, "minCheckpointInterval");
             this.minCheckpointInterval = minCheckpointInterval;
+            return this;
+        }
+
+        /**
+         * Sets the size at which an open staging file is finished and the next one opened. Defaults
+         * to {@link FileLoadsOptions#DEFAULT_MAX_STAGING_FILE_BYTES}, whose javadoc carries the
+         * measurement the value comes from.
+         *
+         * <p>Worth setting only where the default's trade-off does not fit the deployment, and the
+         * two directions are not symmetric. <b>Raise it</b> for a job writing a very large volume
+         * to a single destination, which the 10,000-URI cap would otherwise push onto the
+         * temporary-table plus copy path — the cap is a file count, so the ceiling moves with this
+         * value. <b>Lowering it</b> buys little: the measured floor is around 8 MiB and load time
+         * climbs steeply below it.
+         *
+         * <p>At high parallelism this knob does nothing at all, since a checkpoint's data divided
+         * by the subtask count already produces smaller files than any sensible threshold.
+         *
+         * @param maxStagingFileBytes the roll threshold in bytes, positive
+         * @return this builder
+         */
+        public Builder maxStagingFileBytes(long maxStagingFileBytes) {
+            Preconditions.checkArgument(
+                    maxStagingFileBytes > 0,
+                    "maxStagingFileBytes must be positive: %s",
+                    maxStagingFileBytes);
+            this.maxStagingFileBytes = maxStagingFileBytes;
             return this;
         }
 

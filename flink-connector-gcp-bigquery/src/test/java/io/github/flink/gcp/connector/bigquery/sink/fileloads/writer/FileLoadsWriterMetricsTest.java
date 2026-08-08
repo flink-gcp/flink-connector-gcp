@@ -103,8 +103,7 @@ class FileLoadsWriterMetricsTest {
                         FileLoadsOptions.builder()
                                 .stagingPath("gs://bucket/prefix")
                                 .perDestinationMetrics(true)
-                                .build(),
-                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                                .build());
 
         writer.write(new TestRow("skipped-table", "skip-me", 1L), CONTEXT);
         writer.write(new TestRow("t", "alice", 1L), CONTEXT);
@@ -172,8 +171,7 @@ class FileLoadsWriterMetricsTest {
                         FileLoadsOptions.builder()
                                 .stagingPath("gs://bucket/prefix")
                                 .perDestinationMetrics(true)
-                                .build(),
-                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                                .build());
 
         writer.write(new TestRow("t1", "alice", 1L), CONTEXT);
         writer.write(new TestRow("t2", "bob", 2L), CONTEXT);
@@ -211,15 +209,18 @@ class FileLoadsWriterMetricsTest {
     }
 
     private FileLoadsWriter<TestRow> writer() {
-        return writer(FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+        return writer(FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
     }
 
-    private FileLoadsWriter<TestRow> writer(long maxFileBytes) {
+    private FileLoadsWriter<TestRow> writer(long maxStagingFileBytes) {
         return writer(
-                FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(), maxFileBytes);
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxStagingFileBytes(maxStagingFileBytes)
+                        .build());
     }
 
-    private FileLoadsWriter<TestRow> writer(FileLoadsOptions options, long maxFileBytes) {
+    private FileLoadsWriter<TestRow> writer(FileLoadsOptions options) {
         return new FileLoadsWriter<>(
                 FileLoadsWriterTest.config(FailureHandler.logAndDrop()),
                 options,
@@ -227,7 +228,6 @@ class FileLoadsWriterMetricsTest {
                 metrics,
                 "0123456789abcdef0123456789abcdef",
                 3,
-                1,
-                maxFileBytes);
+                1);
     }
 }

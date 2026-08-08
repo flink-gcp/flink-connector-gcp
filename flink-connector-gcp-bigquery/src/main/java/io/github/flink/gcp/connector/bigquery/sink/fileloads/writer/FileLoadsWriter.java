@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
@@ -56,8 +55,8 @@ import java.util.UUID;
  * writer that streams into a GCS resumable upload, so memory use is proportional to the number of
  * concurrently open destinations (one upload chunk plus one Avro block each), not to the data
  * volume or job length. In streaming execution the inter-checkpoint buffer therefore <em>is</em>
- * GCS. Files are rolled at {@link #DEFAULT_MAX_FILE_BYTES} so the common case stays within a single
- * direct load job (10,000 files x 1.5 GiB well exceeds typical batches).
+ * GCS. Files are rolled at {@link FileLoadsOptions#getMaxStagingFileBytes()}, which is sized for
+ * load throughput and bounded by the per-load-job URI cap — see that option's default for both.
  *
  * <p>Staging object names include the Flink job id, subtask index, attempt number and a random
  * component, so files written by failed attempts can neither collide with live ones nor be loaded:
@@ -82,18 +81,12 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
 
     private static final Logger LOG = LoggerFactory.getLogger(FileLoadsWriter.class);
 
-    /**
-     * Size at which a staging file is rolled. 1.5 GiB keeps 10,000 files (the per-load-job URI
-     * limit) at ~15 TB, aligning the fast single-load path with BigQuery's per-job byte limit.
-     */
-    static final long DEFAULT_MAX_FILE_BYTES = 1_610_612_736L;
-
     private final BigQuerySinkConfig<T> config;
     private final StagingStorage storage;
     private final String flinkJobId;
     private final String pathPrefix;
     private final String filePrefix;
-    private final long maxFileBytes;
+    private final long maxStagingFileBytes;
     private final FileLoadsWriterMetrics metrics;
 
     private final Map<TableDestination, DestinationState> destinations = new HashMap<>();
@@ -118,27 +111,6 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
             String flinkJobId,
             int subtaskIndex,
             int attemptNumber) {
-        this(
-                config,
-                options,
-                storage,
-                metricGroup,
-                flinkJobId,
-                subtaskIndex,
-                attemptNumber,
-                DEFAULT_MAX_FILE_BYTES);
-    }
-
-    @VisibleForTesting
-    FileLoadsWriter(
-            BigQuerySinkConfig<T> config,
-            FileLoadsOptions options,
-            StagingStorage storage,
-            SinkWriterMetricGroup metricGroup,
-            String flinkJobId,
-            int subtaskIndex,
-            int attemptNumber,
-            long maxFileBytes) {
         this.config = config;
         this.storage = storage;
         this.flinkJobId = flinkJobId;
@@ -149,7 +121,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                         + attemptNumber
                         + "-"
                         + UUID.randomUUID().toString().substring(0, 8);
-        this.maxFileBytes = maxFileBytes;
+        this.maxStagingFileBytes = options.getMaxStagingFileBytes();
         this.metrics = new FileLoadsWriterMetrics(metricGroup, options.isPerDestinationMetrics());
         // The map is the task thread's; a reporter thread sampling it can see a size mid-update,
         // which is what "best-effort" means for a gauge over live writer state.
@@ -222,7 +194,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
         // The staging file is this write path's hand-off, so the record counts here — the bytes
         // cannot, since an Avro block's encoded size is only known once the file is finished.
         metrics.recordStaged(metrics.forTable(destination));
-        if (state.file.bytesWritten() >= maxFileBytes) {
+        if (state.file.bytesWritten() >= maxStagingFileBytes) {
             finishFile(state);
         }
     }

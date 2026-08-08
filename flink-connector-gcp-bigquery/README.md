@@ -76,7 +76,7 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   (descriptor accessor + `ByteString` rows); for FILE_LOADS, the `BigQueryIndirectSink`/
   `BigQueryLoadJobOperator` design (SinkV2 post-commit topology on a single non-parallel
   operator, deterministic BigQuery job ids with get-then-submit re-attach for exactly-once
-  retries, 1.5 GiB size-based file rolling, best-effort cleanup); for
+  retries, 1.5 GB size-based file rolling, best-effort cleanup); for
   STORAGE_API_EXACTLY_ONCE, the `BigQueryBufferedWriter`/`BigQueryCommitter` design (one
   buffered stream per subtask reused across checkpoints and tracked in writer state, the
   restore-time validation append that adopts or abandons the restored stream, inclusive flush

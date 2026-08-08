@@ -1053,7 +1053,8 @@ completion polling, `schemaReconcile*` for the etag-race reconcile) — all desc
 **Topology.** Parallel writers encode records (serializer proto bytes → Avro `GenericRecord`) and
 stream them straight to per-destination GCS objects — rows never accumulate on the heap, so memory
 use is ~5 MiB per open destination regardless of data volume; in streaming the inter-checkpoint
-buffer *is* GCS. Files roll at 1.5 GiB. The pre-commit topology routes every subtask's
+buffer *is* GCS. Files roll at `maxStagingFileBytes` (16 MiB, discussed below). The pre-commit
+topology routes every subtask's
 committables to a single committer subtask (in streaming through a stage that stamps each
 committable with its checkpoint id), and that committer — the actual commit — groups the staged
 files by destination table and runs **one load job per table** (all jobs submitted first, then
@@ -1119,6 +1120,23 @@ risk (shared with the Beam and Dataproc designs): if a failure destroys the pers
 committables *and* re-runs the writer stage after load jobs were already submitted, the retried
 run produces new file names — and thus new job ids — while the first run's jobs keep running
 server-side, which can duplicate rows under `WRITE_APPEND`.
+
+**Staging file size.** `maxStagingFileBytes` decides when an open staging file is finished and the
+next one opened, and its default of 16 MiB comes from measuring load duration against file size
+rather than from the URI arithmetic below. Measured against BigQuery on 2026-08-08 — 769 MiB
+staged as Avro, seven loads per point, configurations interleaved to keep drift in the shared slot
+pool off the axis — the curve is a basin with a floor near 8 MiB and steep sides: 2 MiB per file
+took 15.0 s, 4 MiB 9.7 s, 8 MiB 8.3 s, 16 MiB 9.3 s, 32 MiB 11.1 s and 128 MiB 16.9 s. **Smaller
+is not monotonically better**, which is the half that is easy to guess wrong.
+
+16 MiB rather than the 8 MiB floor because of what the value trades against: a load job takes at
+most 10,000 source URIs, so the roll size sets how much of one destination goes through a single
+load job before the temporary-table path below is needed — about 156 GiB at this value against
+78 GiB at 8 MiB. **Raise it** for a job writing a very large volume to one destination and wanting
+to stay on the single-job path; lowering it buys little. And note it does nothing at high
+parallelism: a checkpoint's data divided by the subtask count already produces files inside the
+band, so the threshold never fires. These numbers are one measurement of a service that is free to
+change, not a guarantee.
 
 **Per-load-job limits.** In batch, a table whose staged files exceed one load job's limits
 (10,000 source URIs / 11 TiB) is loaded partition-wise into temporary tables (`WRITE_TRUNCATE`,
@@ -1367,7 +1385,7 @@ each would be a constant.
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-row handler |
 | `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
 | `openDestinations` | gauge | destinations holding conversion state |
-| `filesStaged` | counter | staging files finished (rolled at 1.5 GiB, and at every commit) |
+| `filesStaged` | counter | staging files finished (rolled at `maxStagingFileBytes`, and at every commit) |
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
 
 There is deliberately **no `errorClass` on the FILE_LOADS writer**: it makes no per-record request,
