@@ -132,6 +132,16 @@ sha256 = "b3e969d18f690ab8783e4ec77729c9fea85691b8090c550bb3c626dda5e837a7"
 # ships; substituting a template would drop that copyright line, which is
 # the part of a BSD licence a redistributor must reproduce.
 
+[files."LICENSE.zstd-jni"]
+artifacts = ["com.github.luben:zstd-jni"]
+url = "https://raw.githubusercontent.com/luben/zstd-jni/v1.5.7-4/LICENSE"
+sha256 = "289a6adada5726047b9e68bf607cc44fbbac953bbb4fd29f53ffe75b5cb3e7b1"
+# Tag v1.5.7-4 is the exact bundled version; the jar ships no licence file at
+# all (checked: it carries only classes and the per-platform native libraries).
+# The POM-declared URL is opensource.org, which serves an HTML page and would
+# in any case drop the "Luben Karavelov" copyright line that a BSD licence
+# requires a redistributor to reproduce.
+
 [files."LICENSE.json-java"]
 artifacts = ["org.json:json"]
 url = "https://raw.githubusercontent.com/stleary/JSON-java/20260719/LICENSE"

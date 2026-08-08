@@ -241,6 +241,32 @@ class FileLoadsWriterTest {
     }
 
     @Test
+    void stagesWithTheZstandardCodec() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+
+        writer.write(new TestRow("t", "a", 1L), CONTEXT);
+        FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
+        writer.close();
+
+        byte[] staged = storage.getObjects().get(committable.getUri());
+        try (DataFileReader<GenericRecord> reader =
+                new DataFileReader<>(
+                        new SeekableByteArrayInput(staged), new GenericDatumReader<>())) {
+            // Read out of the container's own metadata, so this fails when the codec changes rather
+            // than only when it stops working. Asserting the bytes decode would not do: every codec
+            // decodes, so a silent switch back to deflate would cost 3.6x the write CPU (#283) with
+            // nothing to report it.
+            assertThat(reader.getMetaString("avro.codec")).isEqualTo("zstandard");
+            assertThat(reader.next().get("name")).hasToString("a");
+        }
+    }
+
+    @Test
     void stagesOneFilePerDestination() throws Exception {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         BigQuerySinkConfig<TestRow> config = config(FailureHandler.failJob());

@@ -101,6 +101,7 @@ This project bundles the following dependencies under the Apache Software Licens
 This project bundles the following dependencies under the BSD 2-Clause License (https://opensource.org/licenses/BSD-2-Clause).
 See bundled license files for details.
 
+- com.github.luben:zstd-jni:1.5.7-4 (META-INF/licenses/LICENSE.zstd-jni)
 - org.codehaus.woodstox:stax2-api:4.2.2 (META-INF/licenses/LICENSE.stax2-api)
 
 This project bundles the following dependencies under the BSD 3-Clause License (https://opensource.org/licenses/BSD-3-Clause).

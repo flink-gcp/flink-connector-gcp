@@ -18,8 +18,16 @@ package io.github.flink.gcp.connector.bigquery.sql;
 
 import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorPackagingITCase;
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
+import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.stream.Collectors;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Asserts the shape of this module's uber-jar. The checks are the shared ones; what is BigQuery's
@@ -64,5 +72,88 @@ class BigQuerySqlConnectorPackagingITCase extends AbstractSqlConnectorPackagingI
     @Override
     protected int minimumBundledArtifacts() {
         return UberJar.MINIMUM_BUNDLED_ARTIFACTS;
+    }
+
+    /**
+     * zstd-jni's native libraries must stay at the jar root, unrelocated, while its classes move
+     * under the shaded prefix.
+     *
+     * <p>The base class checks classes, so nothing above would notice a shading change that moved
+     * or dropped these — and the symptom would be an {@code UnsatisfiedLinkError} on a TaskManager
+     * the first time a FILE_LOADS staging file is opened, not a build failure.
+     *
+     * <p>The expected path is <em>computed the way {@code Native.resourceName()} computes it</em> —
+     * {@code "/" + osName() + "/" + os.arch + "/lib" + "zstd-jni-" + version + ext} — rather than
+     * hardcoded, so this fails on whichever platform it runs on rather than passing everywhere
+     * because one hardcoded entry happens to survive.
+     */
+    @Test
+    void zstdNativeLibrariesStayAtTheJarRootWhileItsClassesAreRelocated() throws Exception {
+        try (JarFile jar = new JarFile(shadedJar().path().toFile())) {
+            List<String> names = names(jar);
+
+            List<String> natives =
+                    names.stream()
+                            .filter(n -> n.matches(".*/libzstd-jni-[^/]+\\.(so|dylib|dll)"))
+                            .collect(Collectors.toList());
+            assertThat(natives)
+                    .as("zstd-jni's per-platform native libraries")
+                    .isNotEmpty()
+                    .allSatisfy(
+                            n ->
+                                    assertThat(n)
+                                            .as(
+                                                    "a native library moved under the shaded"
+                                                            + " prefix, where Native.resourceName()"
+                                                            + " will not look for it")
+                                            .doesNotStartWith(SHADED_PREFIX));
+
+            assertThat(names)
+                    .as("the native library for the platform this test runs on")
+                    .contains(expectedNativeEntry(natives));
+
+            assertThat(names)
+                    .as("zstd-jni's classes, which must be relocated like every other bundle")
+                    .anyMatch(n -> n.startsWith(SHADED_PREFIX + "com/github/luben/zstd/"))
+                    .noneMatch(n -> n.startsWith("com/github/luben/zstd/"));
+        }
+    }
+
+    private static final String SHADED_PREFIX = "io/github/flink/gcp/connector/bigquery/shaded/";
+
+    /** The entry {@code com.github.luben.zstd.util.Native} will ask this JVM's classloader for. */
+    private static String expectedNativeEntry(List<String> natives) {
+        // Native.osName(), Native.libExtension() and Native.resourceName(), reproduced.
+        String os = System.getProperty("os.name").toLowerCase().replace(' ', '_');
+        String extension;
+        if (os.startsWith("win")) {
+            os = "win";
+            extension = ".dll";
+        } else if (os.startsWith("mac")) {
+            os = "darwin";
+            extension = ".dylib";
+        } else {
+            extension = ".so";
+        }
+        String arch = System.getProperty("os.arch");
+        if (os.equals("darwin") && arch.equals("amd64")) {
+            arch = "x86_64";
+        }
+        // Only the version is read off the bundle, so a dependency bump needs no edit here while a
+        // bump that lost the natives still fails.
+        String any = natives.get(0);
+        String version =
+                any.substring(
+                        any.lastIndexOf("libzstd-jni-") + "libzstd-jni-".length(),
+                        any.lastIndexOf('.'));
+        return os + "/" + arch + "/libzstd-jni-" + version + extension;
+    }
+
+    private static List<String> names(JarFile jar) {
+        List<String> names = new ArrayList<>();
+        for (Enumeration<JarEntry> entries = jar.entries(); entries.hasMoreElements(); ) {
+            names.add(entries.nextElement().getName());
+        }
+        return names;
     }
 }

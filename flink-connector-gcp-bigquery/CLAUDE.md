@@ -90,6 +90,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Every load reconciles against the live table via `ensureFinalTable`; the native
   `ALLOW_FIELD_*` options are kept deliberately, and the once-per-destination union warn is
   load-bearing (`docs/adr/0021`).
+- **Staging files are zstandard, and the reason is CPU — never size.** Measured with this
+  writer: deflate 11,436 ms against zstandard 3,182 ms for 2M rows, and 1.8% *more* bytes, so a
+  size win must not be reintroduced from #283's 1,000-row probe (17% is a small-file artifact).
+  Level 3 is Avro's `DEFAULT_ZSTANDARD_LEVEL`; level 1 measured slower *and* larger, so there is
+  nothing below to trade for, and `CodecFactory.zstandardCodec()` has no no-arg overload. The
+  library is `com.github.luben:zstd-jni`, which Avro declares `optional` — hence the explicit
+  runtime-scope declaration — and the uber-jar relocates its classes while **leaving its native
+  libraries unrelocated at the jar root**, which is safe only because `Native.resourceName()`
+  builds their path from `os.name`/`os.arch`/version and never from the package (the opposite of
+  grpc-netty-shaded, whose loader derives its library name from its own package — that argument lives in `flink-connector-gcp-pubsub/CLAUDE.md`). A packaging IT computes that path the same way and fails on
+  whichever platform it runs on.
 - **The staging roll threshold is a measured band, and smaller is not better**: the curve is a
   basin with a floor near 8 MiB, so any change to `maxStagingFileBytes` needs a floor as well as a
   ceiling, and the 10,000-URI cap is what the value trades *against* rather than what it is derived

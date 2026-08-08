@@ -1151,6 +1151,19 @@ committables *and* re-runs the writer stage after load jobs were already submitt
 run produces new file names — and thus new job ids — while the first run's jobs keep running
 server-side, which can duplicate rows under `WRITE_APPEND`.
 
+**Compression.** Staging files are Avro containers compressed with **zstandard**, and the reason
+is CPU rather than size. Compression runs on the task thread — the same one streaming into the GCS
+upload while the job processes records — so it comes straight off throughput. Measured 2026-08-08
+with this writer, 2,000,000 rows, five passes on OpenJDK 21: deflate 11,436 ms, zstandard 3,182 ms,
+and 2,134 ms with no codec at all, so the compression itself costs 9,302 ms against 1,048 ms. Size
+is a wash — zstandard came out 1.8% *larger* here — so it is not a reason to expect smaller staged
+objects or a smaller bill.
+
+This puts `com.github.luben:zstd-jni` on the connector's runtime classpath. Avro declares it
+`optional`, so it is declared here explicitly; a deployment assembling its own dependency set needs
+it present, and the SQL uber-jar bundles it with its per-platform native libraries left at the jar
+root where the library looks for them.
+
 **Staging file size.** `maxStagingFileBytes` decides when an open staging file is finished and the
 next one opened, and its default of 16 MiB comes from measuring load duration against file size
 rather than from the URI arithmetic below. Measured against BigQuery on 2026-08-08 — 769 MiB

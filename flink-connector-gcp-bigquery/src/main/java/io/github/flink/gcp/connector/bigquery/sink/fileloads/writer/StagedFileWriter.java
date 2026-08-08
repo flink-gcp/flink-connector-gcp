@@ -33,9 +33,49 @@ import java.io.OutputStream;
  * One open Avro staging file: an Avro container writer over a byte-counting staging stream,
  * tracking the row count and (approximate, trailing by up to one unflushed Avro block) byte count
  * used for size-based rolling and load-job partitioning.
+ *
+ * <p>Files are compressed with zstandard, and the reason is CPU rather than size — see {@link
+ * #STAGING_CODEC}.
  */
 @Internal
 final class StagedFileWriter {
+
+    /**
+     * The staging codec: zstandard at Avro's own {@code DEFAULT_ZSTANDARD_LEVEL} (3).
+     *
+     * <p><b>Chosen for CPU, not for size.</b> Compression runs on the task thread — the same one
+     * streaming into the GCS upload while the job processes records — so its cost is subtracted
+     * from throughput directly. Measured 2026-08-08 with this writer, 2,000,000 rows of a realistic
+     * mix, five passes after a warm-up, single-threaded on OpenJDK 21 (aarch64): deflate 11,436 ms,
+     * zstandard 3,182 ms, and 2,134 ms with no codec at all — so the compression itself costs 9,302
+     * ms against 1,048 ms, a factor of 8.9.
+     *
+     * <p>Size is a wash and must not be quoted as a reason: 201,708,003 bytes against deflate's
+     * 198,227,825, so zstandard is 1.8% <em>larger</em> here, matching the 1.01-1.02x measured at a
+     * million rows on #283. A 17% win appears only on files of a few thousand rows, where the
+     * dictionary dominates, and does not generalise.
+     *
+     * <p>Level 3 rather than a lower one: level 1 measured slower (3,459 ms) <em>and</em> 5%
+     * larger, so there is nothing below to trade for.
+     *
+     * <p>The single-argument overload is the one taken deliberately: it selects {@code
+     * ZstandardCodec.Option(level, false, false)} — no per-block checksum and no recycling buffer
+     * pool. A checksum would duplicate what the Avro container and GCS already provide, and the
+     * pool is a memory/throughput trade this writer has no measurement for. Note the two- and
+     * three-argument overloads take {@code useChecksum} before {@code useBufferPool}, which is easy
+     * to transpose.
+     *
+     * <p>Shared as a static because a {@code CodecFactory} is an immutable descriptor — {@code
+     * DataFileWriter.setCodec} calls {@code createInstance()} to build a per-writer {@code Codec} —
+     * so one instance is safe across the writers of a TaskManager. Avro keeps its own built-ins in
+     * a static registry the same way.
+     *
+     * <p>The library is {@code com.github.luben:zstd-jni}, which Avro declares {@code optional} —
+     * this module declares it at runtime scope, and a shaded distribution has to keep its native
+     * libraries reachable.
+     */
+    private static final CodecFactory STAGING_CODEC =
+            CodecFactory.zstandardCodec(CodecFactory.DEFAULT_ZSTANDARD_LEVEL);
 
     private final String flinkJobId;
     private final TableDestination destination;
@@ -57,7 +97,7 @@ final class StagedFileWriter {
         this.countingStream = new CountingOutputStream(stream);
         DataFileWriter<GenericRecord> writer =
                 new DataFileWriter<>(new GenericDatumWriter<GenericRecord>(schema))
-                        .setCodec(CodecFactory.deflateCodec(CodecFactory.DEFAULT_DEFLATE_LEVEL));
+                        .setCodec(STAGING_CODEC);
         try {
             this.avroWriter = writer.create(schema, countingStream);
         } catch (IOException | RuntimeException e) {
