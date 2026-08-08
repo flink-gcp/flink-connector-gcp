@@ -55,6 +55,7 @@ class PubSubPublisherOptionsTest {
                 .recoveryInitialBackoff(Duration.ofMillis(100))
                 .recoveryMaxBackoff(Duration.ofSeconds(1))
                 .recoveryMaxAttempts(3)
+                .publishProgressTimeout(Duration.ofSeconds(90))
                 .shutdownTimeout(Duration.ofSeconds(45))
                 .build();
     }
@@ -91,6 +92,7 @@ class PubSubPublisherOptionsTest {
         assertThat(defaults.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(500));
         assertThat(defaults.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(10));
         assertThat(defaults.getRecoveryMaxAttempts()).isEqualTo(10);
+        assertThat(defaults.getPublishProgressTimeout()).isEqualTo(Duration.ofSeconds(600));
         assertThat(defaults.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(defaults.hasBatchingOverrides()).isFalse();
         assertThat(defaults.hasRetryOverrides()).isFalse();
@@ -120,6 +122,7 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
         assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(1));
         assertThat(options.getRecoveryMaxAttempts()).isEqualTo(3);
+        assertThat(options.getPublishProgressTimeout()).isEqualTo(Duration.ofSeconds(90));
         assertThat(options.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(45));
         assertThat(options.hasBatchingOverrides()).isTrue();
         assertThat(options.hasRetryOverrides()).isTrue();
@@ -185,6 +188,12 @@ class PubSubPublisherOptionsTest {
         assertThatThrownBy(() -> builder.recoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("recoveryMaxAttempts");
+        assertThatThrownBy(() -> builder.publishProgressTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("publishProgressTimeout");
+        assertThatThrownBy(() -> builder.publishProgressTimeout(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("publishProgressTimeout");
         assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("shutdownTimeout");
@@ -264,6 +273,25 @@ class PubSubPublisherOptionsTest {
                                 .build()
                                 .getRetryMaxAttempts())
                 .isEqualTo(0);
+    }
+
+    /**
+     * The knob's own documentation offers a very long {@code Duration} as the way to say
+     * "effectively unbounded", so one too long for {@code Duration.toNanos()} has to be refused
+     * here rather than throwing on a TaskManager at the first wait (#334 is the same trap in the
+     * two {@code shutdownTimeout} setters).
+     */
+    @Test
+    void rejectsAProgressBudgetTooLargeForNanoseconds() {
+        PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
+        Duration expressible = Duration.ofNanos(Long.MAX_VALUE);
+
+        assertThatThrownBy(() -> builder.publishProgressTimeout(expressible.plusNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("publishProgressTimeout must be at most");
+        // The boundary itself is accepted, or the message would be describing a value it rejects.
+        assertThat(builder.publishProgressTimeout(expressible).build().getPublishProgressTimeout())
+                .isEqualTo(expressible);
     }
 
     @Test

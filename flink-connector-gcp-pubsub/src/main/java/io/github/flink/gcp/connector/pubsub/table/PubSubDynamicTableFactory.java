@@ -128,6 +128,7 @@ public class PubSubDynamicTableFactory
                         PubSubConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
                         PubSubConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
                         PubSubConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                        PubSubConnectorOptions.SINK_PUBLISH_PROGRESS_TIMEOUT,
                         PubSubConnectorOptions.SINK_SHUTDOWN_TIMEOUT,
                         PubSubConnectorOptions.SINK_METRICS_PER_DESTINATION,
                         FactoryUtil.SINK_PARALLELISM));

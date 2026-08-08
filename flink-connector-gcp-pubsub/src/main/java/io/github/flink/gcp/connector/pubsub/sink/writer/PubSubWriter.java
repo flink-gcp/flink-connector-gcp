@@ -43,6 +43,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -51,6 +52,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * At-least-once writer publishing records to dynamic per-record Pub/Sub topic destinations.
@@ -172,12 +175,36 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubWriter.class);
 
+    /**
+     * How long {@link #awaitPublishProgress} parks when the mailbox is empty. Short enough that a
+     * completion arriving mid-park is picked up promptly, and reached only while nothing is
+     * arriving — under load {@code tryYield} keeps returning {@code true} and nothing parks.
+     */
+    private static final long PROGRESS_POLL_INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
+
+    /**
+     * The fraction of {@code publishProgressTimeout} a wait may spend without progress before it
+     * says so. Spending the whole budget in silence is what makes a stall hard to operate: the
+     * error counters cannot move — no publish is resolving, which is the definition of the state —
+     * so nothing else reports it until the job dies, and at the shipped default that is ten minutes
+     * later, by which time Flink's own checkpoint timeout may have failed the job first with a
+     * message that names nothing about Pub/Sub.
+     */
+    private static final int PROGRESS_WARN_FRACTION = 10;
+
+    /**
+     * What {@link #awaitPublishProgress} returns when it ran a mail rather than measuring a gap.
+     */
+    private static final long RAN_A_MAIL = -1L;
+
     private final PubSubSinkConfig<T> config;
     private final PublisherFactory publisherFactory;
     private final TopicAdmin topicAdmin;
     private final MailboxExecutor mailboxExecutor;
     private final int maxInFlightMessages;
     private final long maxInFlightBytes;
+    private final long publishProgressTimeoutNanos;
+    private final long publishProgressWarnAfterNanos;
     private final RetrySchedule recoverySchedule;
     private final boolean orderingEnabled;
     private final FailureHandler<? super FailedMessage> failedMessageHandler;
@@ -209,6 +236,33 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * them.
      */
     private int parkedMessages;
+
+    /**
+     * When the publisher last answered a publish, successfully or not — the clock {@link
+     * #awaitPublishProgress} measures its budget against.
+     *
+     * <p>Stamped in the completion callback, on whichever SDK thread runs it, and <b>not</b> when
+     * the resulting mailbox mail runs: what the budget is asking is whether the publisher is still
+     * answering, and a mail that has been enqueued but not yet dequeued already answers that. Were
+     * it stamped on the task thread instead, a mailbox busy with unrelated work for longer than the
+     * budget would fail a sink whose every publish was completing on time.
+     *
+     * <p>The one field of this writer not confined to the task thread, hence {@code volatile}: it
+     * is a monotonic timestamp rather than logical state, so a reader wants the freshest value and
+     * nothing is derived from reading it together with anything else. Initialised at construction
+     * so it is always a real {@code nanoTime} reading — the zero default is not one, and comparing
+     * it against a reading is only meaningful as a difference.
+     */
+    private volatile long lastCompletionNanos;
+
+    /**
+     * When {@link #warnIfStalled} last spoke; touched only on the task thread. A field rather than
+     * a per-wait flag because a wait is not an incident: {@link #repairDestination}'s isolation
+     * pass drains once per parked message, and a parked batch runs to about twice {@code
+     * maxInFlightMessages}, so one {@code flush} can make a thousand waits and a per-wait flag
+     * would put a line in the log for each of them.
+     */
+    private long lastStallWarnNanos;
 
     /**
      * First terminal publish failure; set and read only on the task thread (failure callbacks
@@ -275,6 +329,31 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 options.getMaxInFlightBytes() > 0, "maxInFlightBytes must be positive");
         this.maxInFlightMessages = options.getMaxInFlightMessages();
         this.maxInFlightBytes = options.getMaxInFlightBytes();
+        // Checked here for the reason the two caps above are: Java deserialization does not run
+        // the builder, and a non-positive budget would make every wait expire on its first pass.
+        // Null-tolerant on purpose: this field was added under an unchanged serialVersionUID, so
+        // the stream the guard exists for — an older one, which the builder never ran against —
+        // carries no value for it at all. Without the null check that case is a bare NPE from
+        // isZero() rather than the named failure the two caps above give.
+        Preconditions.checkArgument(
+                options.getPublishProgressTimeout() != null
+                        && !options.getPublishProgressTimeout().isZero()
+                        && !options.getPublishProgressTimeout().isNegative(),
+                "publishProgressTimeout must be positive");
+        // The ceiling as well as the floor: toNanos() below is the call the builder's own ceiling
+        // exists to protect, and this re-check is here precisely for the instance the builder never
+        // saw.
+        Preconditions.checkArgument(
+                options.getPublishProgressTimeout().compareTo(Duration.ofNanos(Long.MAX_VALUE))
+                        <= 0,
+                "publishProgressTimeout must be at most %s",
+                Duration.ofNanos(Long.MAX_VALUE));
+        this.publishProgressTimeoutNanos = options.getPublishProgressTimeout().toNanos();
+        // A tenth of the budget: long enough that ordinary backpressure never reaches it, early
+        // enough that the line beats both clocks that can end the job.
+        this.publishProgressWarnAfterNanos = publishProgressTimeoutNanos / PROGRESS_WARN_FRACTION;
+        this.lastCompletionNanos = System.nanoTime();
+        this.lastStallWarnNanos = this.lastCompletionNanos - publishProgressWarnAfterNanos;
         this.recoverySchedule = recoverySchedule;
         this.orderingEnabled = options.isEnableMessageOrdering();
         this.failedMessageHandler = config.getFailedMessageHandler();
@@ -476,15 +555,27 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * in-flight caps have room, surfacing any captured publish failure before the caller publishes.
      *
      * <p>Both predicates are "at or above the cap", never "would this message fit", so an empty
-     * writer always admits. That matters beyond overshoot accounting: {@link
-     * MailboxExecutor#yield()} blocks until a mail arrives, and with nothing in flight no mail can
-     * arrive, so any predicate that can hold at zero is a task hang rather than backpressure. The
-     * positive-value preconditions on both options are what rule that out.
+     * writer always admits. That matters beyond overshoot accounting: a wait here ends only when a
+     * publish completes, and with nothing in flight none can, so any predicate that can hold at
+     * zero waits for something that cannot happen — before {@code publishProgressTimeout} a task
+     * hang, and since it a job failure blaming the topic. The positive-value preconditions on both
+     * options are what rule that out.
+     *
+     * <p>A wait that finds the mailbox empty asks the publishers to send what they are still
+     * batching — see {@link #sendWhatIsStillBatched}, which every wait here does, not just this
+     * one.
      */
     private void awaitCapacity() throws IOException, InterruptedException {
+        boolean flushed = false;
+        long start = System.nanoTime();
         while (inFlightMessages >= maxInFlightMessages || inFlightBytes >= maxInFlightBytes) {
             checkAsyncError();
-            mailboxExecutor.yield();
+            long idleNanos = awaitPublishProgress(start, "admitting a record");
+            if (idleNanos != RAN_A_MAIL && !flushed) {
+                flushed = true;
+                sendWhatIsStillBatched();
+            }
+            warnIfStalled(idleNanos, "admitting a record");
         }
         checkAsyncError();
     }
@@ -503,11 +594,163 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * {@code inFlightBytes == 0} does not imply an empty writer.
      */
     private void drainInFlight() throws IOException, InterruptedException {
+        long start = System.nanoTime();
         while (inFlightMessages > 0) {
             checkAsyncError();
-            mailboxExecutor.yield();
+            warnIfStalled(
+                    awaitPublishProgress(start, "draining the in-flight publishes"),
+                    "draining the in-flight publishes");
         }
         checkAsyncError();
+    }
+
+    /**
+     * Says once, per wait, that this wait has stopped making progress — long before the budget that
+     * ends it.
+     *
+     * <p>The counters an operator watches cannot report this state: no publish is resolving, which
+     * is what the state <em>is</em>, so {@code errorClass.*.errors} and {@code
+     * numRecordsSendErrors} stay where they were for its whole duration. Without this line the
+     * first thing anyone sees is the job dying — at the shipped default ten minutes later, and
+     * possibly of Flink's checkpoint timeout instead, which names nothing about Pub/Sub.
+     *
+     * @return whether the line has now been said, to be passed back on the next pass
+     */
+    private void warnIfStalled(long idleNanos, String what) {
+        if (idleNanos == RAN_A_MAIL || idleNanos < publishProgressWarnAfterNanos) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (now - lastStallWarnNanos < publishProgressWarnAfterNanos) {
+            return;
+        }
+        lastStallWarnNanos = now;
+        LOG.warn(
+                "No publish to Pub/Sub has completed for {} while {} ({} publish(es) in flight)."
+                        + " The sink is waiting, not failing: it fails if nothing completes within"
+                        + " its publishProgressTimeout of {}. Watch numRecordsSend, which stays"
+                        + " flat for as long as this lasts; the error counters need not move at"
+                        + " all, since a publish that never answers is never counted as a failure.",
+                Duration.ofNanos(idleNanos),
+                what,
+                inFlightMessages,
+                Duration.ofNanos(publishProgressTimeoutNanos));
+    }
+
+    /**
+     * Asks every publisher to send what it is still batching — the writer's answer to a wait that
+     * has nothing left to run.
+     *
+     * <p>A message counts against the in-flight caps from the moment the publisher accepts it,
+     * which is before it goes anywhere, so a wait can be waiting on messages that are merely
+     * batched. That would put {@code batchDelayThreshold} <em>inside</em> {@code
+     * publishProgressTimeout}: a batch delay configured longer than the budget would expire a wait
+     * on a perfectly reachable topic, for messages this writer never sent. The task thread is
+     * blocked in the wait, so it cannot add the message that would trip the size threshold instead.
+     *
+     * <p>Called only once the mailbox has been found empty, and at most once per wait. Both halves
+     * matter. A wait whose completions are arriving is a batcher that is working, and flushing it
+     * per record — which is what a cap-bound writer does — would collapse every batch to one
+     * message exactly while the job is under load. And once is enough, because nothing can join a
+     * batch while the task thread is parked here.
+     *
+     * <p>Every wait needs it, not just the admission gate: {@link #repairPendingTopics} opens with
+     * a drain of its own, reached from a {@link #write} whose predecessor was parked by a failure
+     * mail during a capacity wait — so its in-flight message can be sitting unflushed in exactly
+     * the same way.
+     */
+    private void sendWhatIsStillBatched() {
+        for (DestinationState state : states.values()) {
+            state.publisher.flushOutstanding();
+        }
+    }
+
+    /**
+     * Runs one mailbox mail, failing if nothing has completed a publish for {@code
+     * publishProgressTimeout}.
+     *
+     * <p>What is bounded is a <b>stall, not a slow topic</b>: {@link #lastCompletionNanos} is
+     * restamped by every completion the publisher reports, so one that keeps answering never spends
+     * the budget however long the wait lasts in total, while one that has stopped answering
+     * entirely fails the job once. That distinction is the whole design — a plain deadline on the
+     * call would fail a job the SDK's retries were about to rescue, which is the objection the
+     * issue raised against bounding the sink's own writes at all (#333).
+     *
+     * <p>Both callers pass the moment their wait began, which is what stops an idle writer from
+     * expiring immediately: with no publish in the last hour, {@code lastCompletionNanos} is an
+     * hour old and only the later of the two is the honest start of <em>this</em> wait.
+     *
+     * <p>{@link MailboxExecutor#yield()} cannot be used here — it blocks until a mail arrives, and
+     * a stalled publisher sends none, so the deadline would never be read. {@link
+     * MailboxExecutor#tryYield()} plus a short park is the only shape the interface offers, and it
+     * costs nothing in the case that matters: while completions are arriving {@code tryYield}
+     * returns {@code true} and nothing parks at all.
+     *
+     * <p>The budget is read only once {@code tryYield} has come back empty; the body says what that
+     * costs and why the alternative costs more. Returns the time this wait has gone without
+     * progress, or {@link #RAN_A_MAIL} if it ran one instead — which is what tells the caller the
+     * mailbox is empty, so that {@link #sendWhatIsStillBatched} and the warning are worth doing.
+     * The caller owns the once-per-wait flags for those, because {@link #awaitCapacity} is on the
+     * record path and a state object here would be an allocation per record.
+     */
+    private long awaitPublishProgress(long waitStartNanos, String what)
+            throws IOException, InterruptedException {
+        // Read first, and on every pass. The blocking yield() this replaced took the mailbox lock
+        // interruptibly and so threw of its own accord; tryYield() does not look at the flag at
+        // all, so without this a cancellation arriving while mails keep coming would not be
+        // observed until the budget ran out — and would then surface as the wrong exception.
+        if (Thread.interrupted()) {
+            throw new InterruptedException("Interrupted while " + what + " for Pub/Sub.");
+        }
+        // The budget is read only once the mailbox has nothing left to run, and that ordering is
+        // the conservative half of a genuine trade rather than an accident. Reading it first lets
+        // the wait expire while work it has not yet done would have ended it — a completion mail
+        // queued behind other work is a publish that already succeeded, and failing the job for it
+        // would blame an unreachable topic for a busy task thread. Reading it here instead means a
+        // mailbox saturated for the whole budget defers the check, so a stall behind continuous
+        // unrelated mail traffic is noticed late rather than never. Failing a healthy job is the
+        // worse of the two, so this ordering takes the late notice.
+        if (mailboxExecutor.tryYield()) {
+            return RAN_A_MAIL;
+        }
+        // Subtraction rather than Math.max: both are System.nanoTime() readings — the constructor
+        // stamps lastCompletionNanos so it is never the zero default — and their ordering is only
+        // meaningful as a difference.
+        long idleSinceNanos =
+                lastCompletionNanos - waitStartNanos > 0 ? lastCompletionNanos : waitStartNanos;
+        long idleNanos = System.nanoTime() - idleSinceNanos;
+        if (idleNanos >= publishProgressTimeoutNanos) {
+            throw new IOException(
+                    "No publish to Pub/Sub completed for "
+                            + Duration.ofNanos(idleNanos)
+                            + " while "
+                            + what
+                            + " ("
+                            + inFlightMessages
+                            + " publish(es) still in flight), so the sink gave up its"
+                            + " publishProgressTimeout of "
+                            + Duration.ofNanos(publishProgressTimeoutNanos)
+                            + ". Nothing is dropped: the job fails and the records behind those"
+                            + " publishes are replayed from the last completed checkpoint, as"
+                            + " duplicates if the client delivers them after all. This bounds a"
+                            + " publisher that has stopped answering, not a slow one — any"
+                            + " completion restarts the budget. Every retryable status the client"
+                            + " keeps retrying looks the same from here, so read the cause and the"
+                            + " errorClass counters before assuming the topic is unreachable:"
+                            + " RESOURCE_EXHAUSTED is a quota to raise, not a budget."
+                            + " PubSubPublisherOptions.builder().publishProgressTimeout(...) is the"
+                            + " budget to raise when the publisher is merely slower than it.");
+        }
+        // Parked rather than spun, and in slices so the deadline is still read promptly. The
+        // remainder is what keeps a budget shorter than the slice honest.
+        long parkNanos =
+                Math.min(PROGRESS_POLL_INTERVAL_NANOS, publishProgressTimeoutNanos - idleNanos);
+        if (parkNanos > 0) {
+            // Returns on interrupt without throwing and without clearing the flag, so the next
+            // pass's read above is what turns it into an InterruptedException.
+            LockSupport.parkNanos(parkNanos);
+        }
+        return idleNanos;
     }
 
     private void checkAsyncError() throws IOException {
@@ -659,6 +902,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * dropped message left paused, or both — until none remain (or the repair fails).
      */
     private void repairPendingTopics() throws IOException, InterruptedException {
+        // Ahead of the drain below, which is the one wait in this class with no flush in front of
+        // it; see sendWhatIsStillBatched for the window that opens without this.
+        sendWhatIsStillBatched();
         while (repairNeeded) {
             repairNeeded = false;
             // Drain before snapshotting the parked batches: a parked root's cascade-cancellation
@@ -1027,11 +1273,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
         @Override
         public void onSuccess(String messageId) {
+            lastCompletionNanos = System.nanoTime();
             mailboxExecutor.execute(this, state.completionDescription);
         }
 
         @Override
         public void onFailure(Throwable throwable) {
+            lastCompletionNanos = System.nanoTime();
             mailboxExecutor.execute(
                     () ->
                             onPublishFailed(

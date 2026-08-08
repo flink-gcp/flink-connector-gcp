@@ -13,7 +13,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `io.github.flink.gcp.connector.pubsub.*`. Keep the README's provenance section and `NOTICE`
   accurate on any further adaptation.
 
-## Sink (`docs/adr/0004`, `0005`, `0006`, `0007`, `0008`)
+## Sink (`docs/adr/0004`–`0008`, `0052`)
 
 - Publisher-based flush-on-checkpoint stateless writer; `AsyncSinkBase` was rejected — do not
   re-propose it (`docs/adr/0004`).
@@ -22,6 +22,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The three drains (`drainInFlight()`, named apart from `awaitCapacity()`) must keep meaning
   "empty, and `checkAsyncError`". Admission is "below the cap", never "does this message fit" —
   a fits-predicate hangs the task. A repair republishes its parked batch exempt from both caps.
+- **The sink's two mailbox waits (`awaitCapacity`, `drainInFlight`) are bounded on *progress*,
+  never on the call** (#333; `docs/adr/0052`): `publishProgressTimeout` restarts on every
+  completion, progress is stamped on the SDK thread (the writer's one `volatile` field), the
+  budget is read only after `tryYield()` comes back empty, and the loop reads
+  `Thread.interrupted()` itself. Blocking at the in-flight cap flushes the SDK's batcher once,
+  or its `batchDelayThreshold` would sit inside the budget. A stalled wait WARNs at a tenth of the
+  budget — the answer to the default racing Flink's checkpoint timeout, chosen over ADR-0009's
+  smaller default, which with ordering would turn a short outage into a restart loop. It bounds a
+  stalled publisher, not a checkpoint's total spend.
 - **Per-key order is restored by sorting the parked batch on a publish sequence, never by
   observation order** — anything derived from mail order is a race (#78; `docs/adr/0004`).
 - **Exactly two failures are routed**: a record the serializer rejects, and a publish rejected
