@@ -70,41 +70,11 @@ Closing or re-scoping an issue includes rewording its rendered mentions in the s
 status word ("planned", "under investigation") may only appear beside the issue link that lets a
 reader check it.
 
-## Step 5: re-close what this round opened
-
-Round two changes designs; the measurement above is what says so. **Its own fixes are then the
-least-reviewed code in the pull request**, and what they break is usually not behaviour but the
-places that *state* the design.
-
-Measured on PR #373, where this round moved a default (a bound from one times a limit to twice
-it) and its fixes then contradicted the code they described in four places across three documents:
-the **public builder javadoc** still carried the old default *and* reinstated verbatim the premise
-the ADR had just withdrawn; the ADR's Decision paragraph disagreed with its own bullet two lines
-below; the module `CLAUDE.md` carried the old default; and the ADR and `CLAUDE.md` both described
-a call shape the fix had replaced.
-Green mutants and a green build say nothing about a javadoc that disagrees with its own ADR.
-
-So after acting, grep for the **old claim** — not for the new term — and visit every place that
-*states* the design rather than describing the behaviour:
-
-- **the public javadoc of whatever the change configures.** A builder setter is read far more often
-  than a docs page, and a stale default there does the most damage;
-- **the ADR's Decision paragraph**, not only the bullet you edited;
-- **the module `CLAUDE.md`**;
-- **the reference and SQL option tables**, where a default is a value rather than prose.
-
-Trust the grep over the edits you remember making. A mechanical rename needs the same sweep: the
-same pull request left a parameter and two test method names carrying the old word.
-
-This is step 4 pointed at your own fixes: step 4 catches prose the *diff* made false, this catches
-prose this *round* made false.
-
 ## Scope
 
 The cost is real, so the *full* round is for changes whose description makes claims about
 framework behaviour, deployment, timing, or "this is the only way" — not for a typo fix. For a
-small change, steps 1 and 4 alone still apply: list the claims, grep the page. Step 5 applies
-whenever this round changed anything, however small the round was.
+small change, steps 1 and 4 alone still apply: list the claims, grep the page.
 
 ## Record it
 
@@ -121,8 +91,6 @@ your own initiative.
 - [ ] Each checked against a source of truth, not against the diff
 - [ ] Deferred measurements paid
 - [ ] The whole page grepped for the changed term, not just the edited paragraph
-- [ ] What this round's own fixes made stale swept — the **old claim** grepped, and the javadoc,
-      ADR Decision paragraph, module `CLAUDE.md` and option tables visited
 - [ ] Mutation batch re-run if this round changed code
 - [ ] A PR comment recording the round
 - [ ] Only now is the PR ready

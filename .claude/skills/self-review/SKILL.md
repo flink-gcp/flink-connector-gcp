@@ -74,9 +74,6 @@ Two rules from the repository that bite here:
   exceptions.
 - **Re-run the mutation batch after acting on the review**, not only before. Rework has left
   alive a mutant that had been alive all along (PR #317).
-- **A fix that changes a design leaves every statement of that design stale** — the javadoc, the
-  ADR's Decision paragraph, the module `CLAUDE.md`, an option table's Default column. Neither the
-  mutants nor the build can see it. `self-review-round-two` step 5 is the sweep.
 
 Re-run whatever the change touches: `just verify-module <module>` while iterating, then
 `just verify`, plus `just lint`, `just check-option-docs`, `just check-metric-docs`, `just docs`

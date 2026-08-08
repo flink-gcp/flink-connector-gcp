@@ -1,0 +1,484 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
+
+import com.google.api.gax.paging.Page;
+import com.google.cloud.NoCredentials;
+import com.google.cloud.Policy;
+import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryException;
+import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.Connection;
+import com.google.cloud.bigquery.ConnectionSettings;
+import com.google.cloud.bigquery.Dataset;
+import com.google.cloud.bigquery.DatasetId;
+import com.google.cloud.bigquery.DatasetInfo;
+import com.google.cloud.bigquery.InsertAllRequest;
+import com.google.cloud.bigquery.InsertAllResponse;
+import com.google.cloud.bigquery.Job;
+import com.google.cloud.bigquery.JobId;
+import com.google.cloud.bigquery.JobInfo;
+import com.google.cloud.bigquery.JobStatus;
+import com.google.cloud.bigquery.Model;
+import com.google.cloud.bigquery.ModelId;
+import com.google.cloud.bigquery.ModelInfo;
+import com.google.cloud.bigquery.Project;
+import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.QueryResponse;
+import com.google.cloud.bigquery.Routine;
+import com.google.cloud.bigquery.RoutineId;
+import com.google.cloud.bigquery.RoutineInfo;
+import com.google.cloud.bigquery.Schema;
+import com.google.cloud.bigquery.Table;
+import com.google.cloud.bigquery.TableDataWriteChannel;
+import com.google.cloud.bigquery.TableId;
+import com.google.cloud.bigquery.TableInfo;
+import com.google.cloud.bigquery.TableResult;
+import com.google.cloud.bigquery.TestJobs;
+import com.google.cloud.bigquery.WriteChannelConfiguration;
+
+import javax.annotation.Nullable;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * The parts of {@link BigQuery} {@link BigQueryLoadJobRunner} reads, with everything else
+ * unsupported — so a new dependency on the client shows up as a failing test rather than as a
+ * silent null.
+ *
+ * <p>Three methods are live ({@link #getJob}, {@link #create}, {@link #delete(TableId)}), plus
+ * {@link #getOptions()}, which the runner never calls itself — {@link Job}'s constructor does, so a
+ * stub throwing there fails on the first submitted job. The other 51 throw.
+ *
+ * <p>{@code getJob} answers <em>positionally</em> — the first call takes the first scripted answer
+ * — because the runner's calls are a sequence, not a lookup: a submit probes {@code base}, {@code
+ * base-r1}, ... and an await polls the same id repeatedly. Running past the script is a failure
+ * naming the call, which turns "polled once more than the test expected" into a named assertion
+ * failure instead of an unscripted null. Each answered job is stamped with the id it was
+ * <em>asked</em> for, as the service does.
+ */
+final class StubBigQuery implements BigQuery {
+
+    /** Every {@link JobId} {@code getJob} was called with, in order. */
+    final List<JobId> getJobCalls = new ArrayList<>();
+
+    /** What {@code getJob} answers, one entry per call. */
+    private final List<JobAnswer> getJobAnswers = new ArrayList<>();
+
+    /** Every {@link JobInfo} {@code create} was called with, in order. */
+    final List<JobInfo> created = new ArrayList<>();
+
+    /** Every {@link TableId} {@code delete} was called with, in order. */
+    final List<TableId> deleted = new ArrayList<>();
+
+    /** The status a created job reports. */
+    JobStatus createdStatus = TestJobs.status(JobStatus.State.DONE);
+
+    /** Thrown by {@code create} when set. */
+    @Nullable BigQueryException createFailure;
+
+    /** Thrown by {@code delete} when set. */
+    @Nullable RuntimeException deleteFailure;
+
+    /**
+     * The options {@link Job}'s constructor reads.
+     *
+     * <p>Both setters are load-bearing, for different reasons. Without the project id {@link
+     * BigQueryOptions} refuses to build unless it can determine one — the reason already recorded
+     * on {@code BigQueryTableAdmin.emulatorOptions}. Without the credentials the build runs an
+     * application-default-credentials lookup; measured 2026-08-08 against google-cloud-core 2.72.0,
+     * {@code ServiceOptions.defaultCredentials()} catches every exception and answers {@code null},
+     * so that lookup would not fail the test — it would make it read the environment (a credentials
+     * file, or a metadata-server probe with its timeout) for a value nothing here uses.
+     */
+    private final BigQueryOptions options =
+            BigQueryOptions.newBuilder()
+                    .setProjectId("stub-project")
+                    .setCredentials(NoCredentials.getInstance())
+                    .build();
+
+    /** What a scripted {@code getJob} call answers. */
+    static final class JobAnswer {
+
+        @Nullable private final JobStatus status;
+        private final boolean present;
+        @Nullable private final BigQueryException failure;
+
+        private JobAnswer(
+                @Nullable JobStatus status, boolean present, @Nullable BigQueryException failure) {
+            this.status = status;
+            this.present = present;
+            this.failure = failure;
+        }
+
+        /** Answers that no job exists under the id asked for. */
+        static JobAnswer absent() {
+            return new JobAnswer(null, false, null);
+        }
+
+        /** Answers with a job in the given status. */
+        static JobAnswer withStatus(JobStatus status) {
+            return new JobAnswer(status, true, null);
+        }
+
+        /** Answers with a job whose status the response did not carry. */
+        static JobAnswer withoutStatus() {
+            return new JobAnswer(null, true, null);
+        }
+
+        /** Fails the lookup, as the client does once its own retries are exhausted. */
+        static JobAnswer failing(BigQueryException failure) {
+            return new JobAnswer(null, false, failure);
+        }
+    }
+
+    /** Scripts the answers {@code getJob} gives, in call order. */
+    void answering(JobAnswer... answers) {
+        getJobAnswers.addAll(List.of(answers));
+    }
+
+    @Override
+    public BigQueryOptions getOptions() {
+        return options;
+    }
+
+    @Override
+    @Nullable
+    public Job getJob(JobId jobId, JobOption... options) {
+        noOptions(options);
+        getJobCalls.add(jobId);
+        int call = getJobCalls.size() - 1;
+        if (call >= getJobAnswers.size()) {
+            throw new UnsupportedOperationException(
+                    "getJob call "
+                            + (call + 1)
+                            + " (for "
+                            + jobId.getJob()
+                            + ") is past the end of the script.");
+        }
+        JobAnswer answer = getJobAnswers.get(call);
+        if (answer.failure != null) {
+            throw answer.failure;
+        }
+        return answer.present ? TestJobs.job(this, jobId, answer.status) : null;
+    }
+
+    @Override
+    public Job create(JobInfo jobInfo, JobOption... options) {
+        noOptions(options);
+        created.add(jobInfo);
+        if (createFailure != null) {
+            throw createFailure;
+        }
+        return TestJobs.job(this, jobInfo.getJobId(), createdStatus);
+    }
+
+    @Override
+    public boolean delete(TableId tableId) {
+        deleted.add(tableId);
+        if (deleteFailure != null) {
+            throw deleteFailure;
+        }
+        return true;
+    }
+
+    /**
+     * Rejects a request narrowed by {@link JobOption}s, which the runner passes none of.
+     *
+     * <p>Not fussiness: {@code JobField.REQUIRED_FIELDS} is the job reference and the configuration
+     * alone, so a poll narrowed with {@code JobOption.fields(...)} would come back with no status —
+     * and {@code awaitJob}, which has no attempt bound by design, would wait for a job it can never
+     * see finish. Scripting an answer for such a call would hide that.
+     */
+    private static void noOptions(JobOption... options) {
+        if (options.length > 0) {
+            throw new UnsupportedOperationException(
+                    "BigQueryLoadJobRunner passes no JobOptions; got " + List.of(options) + ".");
+        }
+    }
+
+    private static UnsupportedOperationException unsupported(String call) {
+        return new UnsupportedOperationException(
+                "BigQueryLoadJobRunner has no reason to call " + call + ".");
+    }
+
+    @Override
+    public Dataset create(DatasetInfo datasetInfo, DatasetOption... options) {
+        throw unsupported("create(DatasetInfo)");
+    }
+
+    @Override
+    public Table create(TableInfo tableInfo, TableOption... options) {
+        throw unsupported("create(TableInfo)");
+    }
+
+    @Override
+    public Routine create(RoutineInfo routineInfo, RoutineOption... options) {
+        throw unsupported("create(RoutineInfo)");
+    }
+
+    @Override
+    public Connection createConnection(ConnectionSettings connectionSettings) {
+        throw unsupported("createConnection(ConnectionSettings)");
+    }
+
+    @Override
+    public Connection createConnection() {
+        throw unsupported("createConnection()");
+    }
+
+    @Override
+    public Dataset getDataset(String datasetId, DatasetOption... options) {
+        throw unsupported("getDataset(String)");
+    }
+
+    @Override
+    public Dataset getDataset(DatasetId datasetId, DatasetOption... options) {
+        throw unsupported("getDataset(DatasetId)");
+    }
+
+    @Override
+    public Page<Dataset> listDatasets(DatasetListOption... options) {
+        throw unsupported("listDatasets()");
+    }
+
+    @Override
+    public Page<Project> listProjects(ProjectListOption... options) {
+        throw unsupported("listProjects()");
+    }
+
+    @Override
+    public Page<Dataset> listDatasets(String projectId, DatasetListOption... options) {
+        throw unsupported("listDatasets(String)");
+    }
+
+    @Override
+    public boolean delete(String datasetId, DatasetDeleteOption... options) {
+        throw unsupported("delete(String)");
+    }
+
+    @Override
+    public boolean delete(DatasetId datasetId, DatasetDeleteOption... options) {
+        throw unsupported("delete(DatasetId)");
+    }
+
+    @Override
+    public boolean delete(String datasetId, String tableId) {
+        throw unsupported("delete(String, String)");
+    }
+
+    @Override
+    public boolean delete(ModelId modelId) {
+        throw unsupported("delete(ModelId)");
+    }
+
+    @Override
+    public boolean delete(RoutineId routineId) {
+        throw unsupported("delete(RoutineId)");
+    }
+
+    @Override
+    public boolean delete(JobId jobId) {
+        throw unsupported("delete(JobId)");
+    }
+
+    @Override
+    public Dataset update(DatasetInfo datasetInfo, DatasetOption... options) {
+        throw unsupported("update(DatasetInfo)");
+    }
+
+    @Override
+    public Table update(TableInfo tableInfo, TableOption... options) {
+        throw unsupported("update(TableInfo)");
+    }
+
+    @Override
+    public Model update(ModelInfo modelInfo, ModelOption... options) {
+        throw unsupported("update(ModelInfo)");
+    }
+
+    @Override
+    public Routine update(RoutineInfo routineInfo, RoutineOption... options) {
+        throw unsupported("update(RoutineInfo)");
+    }
+
+    @Override
+    public Table getTable(String datasetId, String tableId, TableOption... options) {
+        throw unsupported("getTable(String, String)");
+    }
+
+    @Override
+    public Table getTable(TableId tableId, TableOption... options) {
+        throw unsupported("getTable(TableId)");
+    }
+
+    @Override
+    public Model getModel(String datasetId, String modelId, ModelOption... options) {
+        throw unsupported("getModel(String, String)");
+    }
+
+    @Override
+    public Model getModel(ModelId modelId, ModelOption... options) {
+        throw unsupported("getModel(ModelId)");
+    }
+
+    @Override
+    public Routine getRoutine(String datasetId, String routineId, RoutineOption... options) {
+        throw unsupported("getRoutine(String, String)");
+    }
+
+    @Override
+    public Routine getRoutine(RoutineId routineId, RoutineOption... options) {
+        throw unsupported("getRoutine(RoutineId)");
+    }
+
+    @Override
+    public Page<Routine> listRoutines(String datasetId, RoutineListOption... options) {
+        throw unsupported("listRoutines(String)");
+    }
+
+    @Override
+    public Page<Routine> listRoutines(DatasetId datasetId, RoutineListOption... options) {
+        throw unsupported("listRoutines(DatasetId)");
+    }
+
+    @Override
+    public Page<Table> listTables(String datasetId, TableListOption... options) {
+        throw unsupported("listTables(String)");
+    }
+
+    @Override
+    public Page<Table> listTables(DatasetId datasetId, TableListOption... options) {
+        throw unsupported("listTables(DatasetId)");
+    }
+
+    @Override
+    public Page<Model> listModels(String datasetId, ModelListOption... options) {
+        throw unsupported("listModels(String)");
+    }
+
+    @Override
+    public Page<Model> listModels(DatasetId datasetId, ModelListOption... options) {
+        throw unsupported("listModels(DatasetId)");
+    }
+
+    @Override
+    public List<String> listPartitions(TableId tableId) {
+        throw unsupported("listPartitions(TableId)");
+    }
+
+    @Override
+    public InsertAllResponse insertAll(InsertAllRequest request) {
+        throw unsupported("insertAll(InsertAllRequest)");
+    }
+
+    @Override
+    public TableResult listTableData(
+            String datasetId, String tableId, TableDataListOption... options) {
+        throw unsupported("listTableData(String, String)");
+    }
+
+    @Override
+    public TableResult listTableData(TableId tableId, TableDataListOption... options) {
+        throw unsupported("listTableData(TableId)");
+    }
+
+    @Override
+    public TableResult listTableData(
+            String datasetId, String tableId, Schema schema, TableDataListOption... options) {
+        throw unsupported("listTableData(String, String, Schema)");
+    }
+
+    @Override
+    public TableResult listTableData(
+            TableId tableId, Schema schema, TableDataListOption... options) {
+        throw unsupported("listTableData(TableId, Schema)");
+    }
+
+    @Override
+    public Job getJob(String jobId, JobOption... options) {
+        throw unsupported("getJob(String)");
+    }
+
+    @Override
+    public Page<Job> listJobs(JobListOption... options) {
+        throw unsupported("listJobs()");
+    }
+
+    @Override
+    public boolean cancel(String jobId) {
+        throw unsupported("cancel(String)");
+    }
+
+    @Override
+    public boolean cancel(JobId jobId) {
+        throw unsupported("cancel(JobId)");
+    }
+
+    @Override
+    public TableResult query(QueryJobConfiguration configuration, JobOption... options) {
+        throw unsupported("query(QueryJobConfiguration)");
+    }
+
+    @Override
+    public TableResult query(
+            QueryJobConfiguration configuration, JobId jobId, JobOption... options) {
+        throw unsupported("query(QueryJobConfiguration, JobId)");
+    }
+
+    @Override
+    public Object queryWithTimeout(
+            QueryJobConfiguration configuration,
+            JobId jobId,
+            Long timeoutMs,
+            JobOption... options) {
+        throw unsupported("queryWithTimeout(QueryJobConfiguration, JobId, Long)");
+    }
+
+    @Override
+    public QueryResponse getQueryResults(JobId jobId, QueryResultsOption... options) {
+        throw unsupported("getQueryResults(JobId)");
+    }
+
+    @Override
+    public TableDataWriteChannel writer(WriteChannelConfiguration writeChannelConfiguration) {
+        throw unsupported("writer(WriteChannelConfiguration)");
+    }
+
+    @Override
+    public TableDataWriteChannel writer(
+            JobId jobId, WriteChannelConfiguration writeChannelConfiguration) {
+        throw unsupported("writer(JobId, WriteChannelConfiguration)");
+    }
+
+    @Override
+    public Policy getIamPolicy(TableId tableId, IAMOption... options) {
+        throw unsupported("getIamPolicy(TableId)");
+    }
+
+    @Override
+    public Policy setIamPolicy(TableId tableId, Policy policy, IAMOption... options) {
+        throw unsupported("setIamPolicy(TableId, Policy)");
+    }
+
+    @Override
+    public List<String> testIamPermissions(
+            TableId table, List<String> permissions, IAMOption... options) {
+        throw unsupported("testIamPermissions(TableId, List)");
+    }
+}

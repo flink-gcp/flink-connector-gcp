@@ -443,7 +443,9 @@ Under `io.github.flink.gcp.connector.<product>` — migrated to ADR (`docs/adr/0
 carries the full skeleton, the evidence and the declined alternatives). The rules:
 
 - Public API lives at a package's root, implementation in subpackages beneath it; test sources
-  mirror the main-tree packages. The `sink` root holds public sink API plus the `@Internal`
+  mirror the main-tree packages — the **one** exception being a helper that must declare a
+  vendor's package to reach it (`docs/adr/0067`, and read it before adding a second). The `sink`
+  root holds public sink API plus the `@Internal`
   types shared by every write method, and a new top-level class there needs a reason to be
   public API. The standing exceptions beside the facade: a single-family module's `@Internal`
   `Sink` class, and the `CrossVersionSink` seam in the per-major source roots (ADR-0054)
@@ -557,3 +559,14 @@ connector gets its own module file rather than a section here.
   eagerly constructed one demands ADC — green on any machine with credentials, red only in CI.
   Build the sink with `emulatorEndpoint("localhost:1")`, and say in a comment why the endpoint
   is not optional so a simplification pass does not remove it.
+- **A value object a vendor SDK will not let anyone construct is minted from a test helper
+  declared in the vendor's package** (#337; `docs/adr/0067`) — not by abstracting the value away
+  in production code, and never by adding a mocking framework. Both halves of the bar are
+  required: the type has no public constructor, factory or reachable super-constructor, *and* the
+  behaviour under test genuinely reads it. `flink-connector-gcp-bigquery`'s
+  `src/test/java/com/google/cloud/bigquery/TestJobs.java` is the only Java source in this
+  repository whose package is outside `io.github.flink.gcp.*`; a second one is a decision to
+  take, not a precedent to follow. The helper reaches as few package-private members as it can
+  (a redundant overload is one more thing an SDK release can move), and its javadoc names them,
+  why no other reach exists, and the SDK version the reach was verified against — a bump that
+  moves a reached member then fails a test at compile time, which is the whole safety argument.

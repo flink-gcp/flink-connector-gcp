@@ -62,7 +62,7 @@ limitations under the License.
   test already asserts a counter, a returned value or an absorbed exception — asserting the log
   there was tried and **reverted**; do not re-add them. **The other 17 sites are unasserted on
   purpose, and nothing tracks them as a gap** ([#336] proposed opening injection points to reach
-  five of them and was closed; [#337] is open over one site's class for the unrelated reason that `BigQueryLoadJobRunner` has no unit test of its own). The backend is log4j2 and both mechanisms [#323] proposed are
+  five of them and was closed; [#337] gave `BigQueryLoadJobRunner` — the class holding two of the seventeen — its first unit test and **added no log assertion**, which is the bar applied rather than skipped: its swallowed temporary-table delete is identified by the test that scripts the failure and sees nothing escape, and its probe warning by the sequence of ids the test reads back). The backend is log4j2 and both mechanisms [#323] proposed are
   unavailable (logback absent; log4j's `ListAppender` ships only in a test-jar this build does
   not resolve), so the appender is hand-rolled; `log4j-core` is deliberately not declared in the
   pom (nothing manages a log4j version, and a hand pin that drifts from Flink's runtime
