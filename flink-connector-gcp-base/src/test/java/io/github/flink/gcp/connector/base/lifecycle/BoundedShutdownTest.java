@@ -424,6 +424,68 @@ class BoundedShutdownTest {
                 .hasMessage("shutdown blew up");
     }
 
+    /**
+     * The budget is rejected here as well as at every setter that feeds one: a longer {@code
+     * Duration} throws {@code ArithmeticException} from {@code toNanos()} in {@link
+     * BoundedShutdown#start()} instead — on a TaskManager, out of a teardown, where it reaches
+     * Flink's teardown path and not a caller's {@code try}. This is the backstop for a consumer
+     * whose budget is built in code and passes no setter (#334; ADR-0068).
+     */
+    @Test
+    void aBudgetTooLargeForNanosecondsIsRejectedAtConstructionRatherThanAtStart() {
+        Duration expressible = Duration.ofNanos(Long.MAX_VALUE);
+
+        assertThatThrownBy(
+                        () ->
+                                new BoundedShutdown(
+                                        () -> {},
+                                        (t, unit) -> true,
+                                        DESCRIPTION,
+                                        null,
+                                        expressible.plusNanos(1),
+                                        abandoned))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timeout must be at most")
+                .hasMessageContaining("292 years");
+    }
+
+    /**
+     * And the boundary it accepts really is a budget, which is worth pinning because the arithmetic
+     * looks broken there and is not: {@code System.nanoTime() + timeout.toNanos()} overflows, and
+     * {@code deadlineNanos - System.nanoTime()} then wraps a second time, the two cancelling to the
+     * true remainder (measured 2026-08-08: 106751 days out of a 106751-day budget). Nothing here is
+     * defended against that overflow, deliberately — this test is what says a later {@code
+     * Math.addExact} or clamp, added to "harden" the stamp, would turn the documented way of saying
+     * "effectively unbounded" into an exception or a zero wait.
+     *
+     * <p>The termination wait is the seam: it is handed what is left, so a fake records it.
+     */
+    @Test
+    void theLargestExpressibleBudgetIsNotSpentTheInstantItStarts() throws Exception {
+        AtomicLong remaining = new AtomicLong();
+        CountDownLatch awaited = new CountDownLatch(1);
+        BoundedShutdown teardown =
+                new BoundedShutdown(
+                        () -> {},
+                        (t, unit) -> {
+                            remaining.set(unit.toNanos(t));
+                            awaited.countDown();
+                            return true;
+                        },
+                        DESCRIPTION,
+                        null,
+                        Duration.ofNanos(Long.MAX_VALUE),
+                        abandoned);
+
+        teardown.start();
+        awaitUninterruptibly(awaited);
+        teardown.close();
+
+        // Within a hair of the whole budget, since the shutdown step does nothing: what this
+        // rejects is the 0 an overflowed deadline produced.
+        assertThat(remaining.get()).isGreaterThan(Duration.ofDays(365L * 100).toNanos());
+    }
+
     @Test
     void theBudgetIsReadableForTheCallerThatHandedItOver() {
         BoundedShutdown teardown =

@@ -133,6 +133,16 @@ public final class DefaultStreamOptions implements Serializable {
      */
     public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofHours(1);
 
+    /**
+     * The largest idle timeout a nanosecond clock can express, about 292 years. It is checked
+     * because {@link Builder#destinationIdleTimeout(Duration)}'s documentation offers a long
+     * duration as the way to say "never evict", and a {@link Duration} whose nanosecond count
+     * overruns a {@code long} would instead throw an {@link ArithmeticException} from the writer's
+     * constructor on a TaskManager, failing the job as it starts rather than the setter that
+     * accepted it. The rule every budget of this shape follows is ADR-0068.
+     */
+    private static final Duration MAX_DESTINATION_IDLE_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
+
     private final long maxAppendRequestBytes;
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
@@ -614,9 +624,12 @@ public final class DefaultStreamOptions implements Serializable {
          * bound; correctness is unaffected, and a destination that receives a record again after
          * eviction rebuilds its stream writer transparently. The sweep runs at the end of each
          * successful flush, when nothing is pending or in flight. Defaults to {@link
-         * #DEFAULT_DESTINATION_IDLE_TIMEOUT}; to never evict, set a very large duration.
+         * #DEFAULT_DESTINATION_IDLE_TIMEOUT}; to never evict, set a very large duration — up to
+         * {@code Duration.ofNanos(Long.MAX_VALUE)}, about 292 years, which is as long as the
+         * writer's nanosecond clock can express.
          *
-         * @param destinationIdleTimeout the idle timeout
+         * @param destinationIdleTimeout the idle timeout, positive and at most {@code
+         *     Duration.ofNanos(Long.MAX_VALUE)}
          * @return this builder
          */
         public Builder destinationIdleTimeout(Duration destinationIdleTimeout) {
@@ -626,6 +639,10 @@ public final class DefaultStreamOptions implements Serializable {
                     !destinationIdleTimeout.isNegative() && !destinationIdleTimeout.isZero(),
                     "destinationIdleTimeout must be positive: %s",
                     destinationIdleTimeout);
+            Preconditions.checkArgument(
+                    destinationIdleTimeout.compareTo(MAX_DESTINATION_IDLE_TIMEOUT) <= 0,
+                    "destinationIdleTimeout must be at most %s (about 292 years)",
+                    MAX_DESTINATION_IDLE_TIMEOUT);
             this.destinationIdleTimeout = destinationIdleTimeout;
             return this;
         }

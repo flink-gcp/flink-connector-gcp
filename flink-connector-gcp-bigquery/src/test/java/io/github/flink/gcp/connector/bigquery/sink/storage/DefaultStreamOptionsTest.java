@@ -164,6 +164,32 @@ class DefaultStreamOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /**
+     * The knob's own documentation offers a very large duration as the way to say "never evict", so
+     * one too long for {@code Duration.toNanos()} is refused here rather than throwing {@code
+     * ArithmeticException} from the writer's constructor on a TaskManager, failing the job as it
+     * starts (#334; ADR-0068).
+     */
+    @Test
+    void rejectsAnIdleTimeoutTooLargeForNanoseconds() {
+        Duration expressible = Duration.ofNanos(Long.MAX_VALUE);
+
+        assertThatThrownBy(
+                        () ->
+                                DefaultStreamOptions.builder()
+                                        .destinationIdleTimeout(expressible.plusNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("destinationIdleTimeout must be at most")
+                .hasMessageContaining("292 years");
+        // The boundary itself is accepted, or the message would be describing a value it rejects.
+        assertThat(
+                        DefaultStreamOptions.builder()
+                                .destinationIdleTimeout(expressible)
+                                .build()
+                                .getDestinationIdleTimeout())
+                .isEqualTo(expressible);
+    }
+
     @Test
     void multiplierOfExactlyOneIsAccepted() {
         assertThat(

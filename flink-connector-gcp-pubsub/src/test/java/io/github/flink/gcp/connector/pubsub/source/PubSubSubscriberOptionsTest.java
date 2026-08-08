@@ -116,6 +116,35 @@ class PubSubSubscriberOptionsTest {
                 .isEqualTo(Duration.ZERO);
     }
 
+    /**
+     * Both budgets are refused past what {@code Duration.toNanos()} can express (#334; ADR-0068).
+     * {@code firstCheckpointTimeout} is the one with the crash — {@code MissingCheckpointDetector}
+     * converts it in its constructor, so a longer budget fails the reader as it is built on a
+     * TaskManager. {@code shutdownTimeout} is spent in milliseconds and would not throw; it takes
+     * the same ceiling because it is the same knob name, with the same "effectively unbounded"
+     * reading, as the sink's.
+     */
+    @Test
+    void rejectsBudgetsTooLargeForNanoseconds() {
+        PubSubSubscriberOptions.Builder builder = PubSubSubscriberOptions.builder();
+        Duration expressible = Duration.ofNanos(Long.MAX_VALUE);
+
+        assertThatThrownBy(() -> builder.firstCheckpointTimeout(expressible.plusNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("firstCheckpointTimeout must be at most")
+                .hasMessageContaining("292 years");
+        assertThatThrownBy(() -> builder.shutdownTimeout(expressible.plusNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shutdownTimeout must be at most")
+                .hasMessageContaining("292 years");
+
+        // The boundary itself is accepted, or each message would describe a value it rejects.
+        PubSubSubscriberOptions options =
+                builder.firstCheckpointTimeout(expressible).shutdownTimeout(expressible).build();
+        assertThat(options.getFirstCheckpointTimeout()).isEqualTo(expressible);
+        assertThat(options.getShutdownTimeout()).isEqualTo(expressible);
+    }
+
     @Test
     void rejectsAMinimumAckExtensionAtOrAboveTheMaximum() {
         // The SDK enforces this itself, but with a message-less argument check.

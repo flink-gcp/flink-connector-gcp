@@ -100,7 +100,7 @@ adopts whichever stream writer is built first.
 
 | Option | Default | What it does |
 |---|---|---|
-| `destinationIdleTimeout` | 1 h | How long a destination may go without records before its stream writer is closed and dropped. Set a very large duration to never evict |
+| `destinationIdleTimeout` | 1 h | How long a destination may go without records before its stream writer is closed and dropped. Set a very large duration to never evict — up to about 292 years (`Duration.ofNanos(Long.MAX_VALUE)`), the largest the builder accepts |
 | `flushInterval` | disabled | Periodic processing-time flush, for streaming jobs running without checkpointing. A mitigation, not a substitute for the guarantee |
 | `perDestinationMetrics` | `false` | Register `recordsSend`/`sendErrors` counters per destination table. Off by default because Flink cannot unregister a metric — see [Metrics]({{< relref "docs/connectors/datastream/bigquery" >}}#metrics) |
 

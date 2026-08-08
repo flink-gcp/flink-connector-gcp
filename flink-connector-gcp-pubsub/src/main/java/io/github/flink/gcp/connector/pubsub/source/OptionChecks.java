@@ -29,7 +29,30 @@ import java.time.Duration;
  */
 final class OptionChecks {
 
+    /** The largest {@code Duration} a nanosecond budget can express, about 292 years. */
+    private static final Duration MAX_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
+
     private OptionChecks() {}
+
+    /**
+     * Returns the budget, having checked it can be converted to nanoseconds.
+     *
+     * <p>A longer one throws {@link ArithmeticException} from {@code Duration.toNanos()} instead —
+     * on a TaskManager, when the reader that spends it is built or torn down, rather than here on
+     * the client (#334; the rule is ADR-0068).
+     *
+     * @param duration the budget to check
+     * @param name the option name, for the failure message
+     * @return the budget
+     */
+    static Duration checkExpressibleInNanos(Duration duration, String name) {
+        Preconditions.checkArgument(
+                duration.compareTo(MAX_TIMEOUT) <= 0,
+                "%s must be at most %s (about 292 years)",
+                name,
+                MAX_TIMEOUT);
+        return duration;
+    }
 
     /**
      * Returns the duration, having checked it is present and positive.

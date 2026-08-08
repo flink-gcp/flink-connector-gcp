@@ -488,11 +488,19 @@ public final class PubSubSubscriberOptions implements Serializable {
          * default), past which a reader is abandoned mid-close and the messages it had not yet
          * released only return after their acknowledgement deadline.
          *
-         * @param shutdownTimeout the shutdown budget, positive
+         * @param shutdownTimeout the shutdown budget, positive and at most {@code
+         *     Duration.ofNanos(Long.MAX_VALUE)}
          * @return this builder
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {
-            this.shutdownTimeout = OptionChecks.checkPositive(shutdownTimeout, "shutdownTimeout");
+            OptionChecks.checkPositive(shutdownTimeout, "shutdownTimeout");
+            // Unlike the sink's knob of the same name, this one is spent in milliseconds — a
+            // range a million times wider, and the reader's CountDownLatch saturates rather than
+            // throwing when it converts them back. So this ceiling is far tighter than that
+            // conversion needs, and it is the rule (ADR-0068) rather than a crash: one answer for
+            // one knob name, whose "effectively unbounded" reading is the same on both sides.
+            this.shutdownTimeout =
+                    OptionChecks.checkExpressibleInNanos(shutdownTimeout, "shutdownTimeout");
             return this;
         }
 
@@ -523,7 +531,8 @@ public final class PubSubSubscriberOptions implements Serializable {
          * rather than reading the checkpoint configuration, and why it measures it from the first
          * assignment rather than from the reader's creation.
          *
-         * @param firstCheckpointTimeout the detector budget, non-negative; zero disables it
+         * @param firstCheckpointTimeout the detector budget, non-negative and at most {@code
+         *     Duration.ofNanos(Long.MAX_VALUE)}; zero disables it
          * @return this builder
          */
         public Builder firstCheckpointTimeout(Duration firstCheckpointTimeout) {
@@ -532,7 +541,11 @@ public final class PubSubSubscriberOptions implements Serializable {
             Preconditions.checkArgument(
                     !firstCheckpointTimeout.isNegative(),
                     "firstCheckpointTimeout must not be negative");
-            this.firstCheckpointTimeout = firstCheckpointTimeout;
+            // MissingCheckpointDetector converts this with toNanos() in its constructor, so a
+            // longer budget fails the reader as it is built on a TaskManager (#334; ADR-0068).
+            this.firstCheckpointTimeout =
+                    OptionChecks.checkExpressibleInNanos(
+                            firstCheckpointTimeout, "firstCheckpointTimeout");
             return this;
         }
 

@@ -563,4 +563,28 @@ class PubSubWriterProgressTimeoutTest {
                 .as("the shared defaults() singleton was not the thing forged")
                 .isEqualTo(PubSubPublisherOptions.builder().build());
     }
+
+    /**
+     * The ceiling half of that guard, which had no test: the constructor's {@code toNanos()} is
+     * what it protects, so a forged budget past it would throw {@code ArithmeticException} here
+     * rather than the argument failure the floor case gets (#334; ADR-0068). Same forge, same
+     * singleton assertion, and it pins the year count the message carries — {@code
+     * Duration.toString()} alone renders the ceiling as an hour count nobody reads.
+     */
+    @Test
+    void aBudgetTooLargeForNanosecondsIsRejectedWhereItIsReliedOn() throws Exception {
+        PubSubPublisherOptions options = PubSubPublisherOptions.builder().build();
+        Field field = PubSubPublisherOptions.class.getDeclaredField("publishProgressTimeout");
+        field.setAccessible(true);
+        field.set(options, Duration.ofNanos(Long.MAX_VALUE).plusNanos(1));
+
+        assertThatThrownBy(() -> newWriter(options))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("publishProgressTimeout must be at most")
+                .hasMessageContaining("292 years");
+
+        assertThat(PubSubPublisherOptions.defaults())
+                .as("the shared defaults() singleton was not the thing forged")
+                .isEqualTo(PubSubPublisherOptions.builder().build());
+    }
 }
