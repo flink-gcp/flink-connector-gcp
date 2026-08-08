@@ -115,20 +115,25 @@ class SubscriptionCreateOptionsTest {
                 .hasMessageContaining("whole number of seconds");
     }
 
+    /**
+     * Exact messages, because the value the user typed is part of what the rejection has to say — a
+     * builder chain that sets several durations otherwise leaves them guessing which one it meant
+     * (ADR-0068).
+     */
     @Test
     void rejectsNonPositiveDurations() {
         assertThatThrownBy(() -> SubscriptionCreateOptions.builder().ackDeadline(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("ackDeadline must be positive");
+                .hasMessage("ackDeadline must be positive: PT0S");
         assertThatThrownBy(
                         () ->
                                 SubscriptionCreateOptions.builder()
                                         .messageRetention(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("messageRetention must be positive");
+                .hasMessage("messageRetention must be positive: PT-1S");
         assertThatThrownBy(() -> SubscriptionCreateOptions.builder().expirationTtl(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("expirationTtl must be positive");
+                .hasMessage("expirationTtl must be positive: PT0S");
     }
 
     @Test

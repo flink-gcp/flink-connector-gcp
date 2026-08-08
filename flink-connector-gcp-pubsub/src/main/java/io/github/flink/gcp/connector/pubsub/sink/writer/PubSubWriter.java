@@ -32,6 +32,7 @@ import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
@@ -193,13 +194,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private static final int PROGRESS_WARN_FRACTION = 10;
 
     /**
-     * The largest budget this writer's nanosecond arithmetic can express, about 292 years. The
-     * builder rejects the same value; this is the re-check for the instance the builder never saw
-     * (ADR-0068).
-     */
-    private static final Duration MAX_PROGRESS_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
-
-    /**
      * What {@link #awaitPublishProgress} returns when it ran a mail rather than measuring a gap.
      */
     private static final long RAN_A_MAIL = -1L;
@@ -350,10 +344,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         // The ceiling as well as the floor: toNanos() below is the call the builder's own ceiling
         // exists to protect, and this re-check is here precisely for the instance the builder never
         // saw.
-        Preconditions.checkArgument(
-                options.getPublishProgressTimeout().compareTo(MAX_PROGRESS_TIMEOUT) <= 0,
-                "publishProgressTimeout must be at most %s (about 292 years)",
-                MAX_PROGRESS_TIMEOUT);
+        OptionChecks.checkExpressibleInNanos(
+                options.getPublishProgressTimeout(), "publishProgressTimeout");
         this.publishProgressTimeoutNanos = options.getPublishProgressTimeout().toNanos();
         // A tenth of the budget: long enough that ordinary backpressure never reaches it, early
         // enough that the line beats both clocks that can end the job.

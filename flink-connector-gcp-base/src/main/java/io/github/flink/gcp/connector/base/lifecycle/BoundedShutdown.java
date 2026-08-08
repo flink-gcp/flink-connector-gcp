@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -112,17 +113,6 @@ public final class BoundedShutdown implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(BoundedShutdown.class);
 
-    /**
-     * The largest budget a nanosecond clock can express, about 292 years.
-     *
-     * <p>Every rejection message in this repository names that year count beside the value, and it
-     * is not decoration: {@link Duration#toString()} renders this constant as {@code
-     * PT2562047H47M16.854775807S}, an hour count no reader turns into "292 years" — measured
-     * through the Table API, where it is what a SQL user is shown (ADR-0068). Tests pin the year
-     * count, so removing it fails rather than quietly making the message unreadable.
-     */
-    private static final Duration MAX_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
-
     /** The client's own bounded wait, satisfied by e.g. {@code Publisher::awaitTermination}. */
     @FunctionalInterface
     public interface TerminationWait {
@@ -191,16 +181,12 @@ public final class BoundedShutdown implements AutoCloseable {
         this.awaitTermination = awaitTermination;
         this.description = description;
         this.release = release;
-        this.timeout = Preconditions.checkNotNull(timeout, "timeout must not be null");
         // Checked here rather than left to start(), where toNanos() would throw
         // ArithmeticException instead — on a TaskManager, out of a teardown, where it reaches
         // Flink's teardown path and not a caller's try. Every setter feeding a budget here
         // rejects the same value, so a user meets it on the client; this covers the consumer
         // whose budget is built in code and passes no setter (#334; ADR-0068).
-        Preconditions.checkArgument(
-                timeout.compareTo(MAX_TIMEOUT) <= 0,
-                "timeout must be at most %s (about 292 years)",
-                MAX_TIMEOUT);
+        this.timeout = OptionChecks.checkExpressibleInNanos(timeout, "timeout");
         // Checked here, not where it is used: the one increment sits on the give-up path, ahead of
         // the warning that explains it, so a null would turn a bounded and logged give-up into an
         // NPE out of close() with the diagnostic swallowed — during exactly the outage this class

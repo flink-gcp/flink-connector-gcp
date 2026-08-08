@@ -21,6 +21,7 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -351,12 +352,7 @@ public final class FileLoadsOptions implements Serializable {
          * @return this builder
          */
         public Builder minCheckpointInterval(Duration minCheckpointInterval) {
-            Preconditions.checkNotNull(
-                    minCheckpointInterval, "minCheckpointInterval must not be null");
-            Preconditions.checkArgument(
-                    !minCheckpointInterval.isNegative() && !minCheckpointInterval.isZero(),
-                    "minCheckpointInterval must be positive: %s",
-                    minCheckpointInterval);
+            OptionChecks.checkPositive(minCheckpointInterval, "minCheckpointInterval");
             this.minCheckpointInterval = minCheckpointInterval;
             return this;
         }

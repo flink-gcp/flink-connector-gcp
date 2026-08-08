@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.pubsub.source;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
+
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
