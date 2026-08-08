@@ -85,8 +85,12 @@ both directions.
   a label is a second index with no review and no diff.
 - **An index checker script**: declined for now under the measure-before-building rule. The
   known trigger: if the index in `README.md` is found to have drifted from the files twice, a
-  `scripts/check-adr-index.py` in the house checker style (stdlib-only, a `just` recipe, a
-  `curate-*` skill, synthetic pytest cases) is the recorded fix.
+  `scripts/check-adr-index.py` in the house checker style (a `just` recipe, synthetic pytest
+  cases, and an allowlist only if one is needed) is the recorded fix. The two properties this
+  once also listed have since acquired counter-examples and are not part of the style:
+  `check-gated-tags` has no `curate-*` skill because it has no allowlist to exercise judgment
+  over, and `check-skill-frontmatter` is not standard-library-only because answering its question
+  needs a YAML parser (ADR-0069).
 
 ## Consequences
 

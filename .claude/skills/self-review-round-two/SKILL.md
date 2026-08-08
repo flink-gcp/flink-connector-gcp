@@ -1,6 +1,6 @@
 ---
 name: self-review-round-two
-description: Run round two of this repository's mandatory two-round self-review — is the pull request description *true*? Use after `self-review` and before telling anyone the PR is ready, or when about to claim a PR is finished. Its lenses point outward rather than at the diff: the user meeting the error, the operator reading the dashboard, the blast radius of a move, an adversary defeating the invariant, and a reader following the docs. Also pays any measurement round one deferred.
+description: "Run round two of this repository's mandatory two-round self-review — is the pull request description *true*? Use after `self-review` and before telling anyone the PR is ready, or when about to claim a PR is finished. Its lenses point outward rather than at the diff: the user meeting the error, the operator reading the dashboard, the blast radius of a move, an adversary defeating the invariant, and a reader following the docs. Also pays any measurement round one deferred."
 ---
 
 # Self-review, round two

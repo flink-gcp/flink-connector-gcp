@@ -107,8 +107,11 @@ ci-maven-args *args:
 # pytest over scripts/ (the CI deriver and the CI gate today), through the
 # root uv project (pyproject.toml): uv is pinned in mise.toml like the
 # linters, pytest is pinned in uv.lock, and --locked makes a drifted lockfile
-# fail instead of silently re-resolving. The scripts themselves stay
-# standard-library executables; the tests load them by file path.
+# fail instead of silently re-resolving. The scripts stay standard-library
+# executables bar check-skill-frontmatter.py, which declares PyYAML in PEP 723
+# metadata of its own and runs through `uv run --no-project`; because the tests
+# load every script by file path, that import has to resolve here too, which is
+# why pyyaml is in the dev group and not in the project's dependencies.
 #
 # Run the scripts/tests suite with pytest.
 test-scripts:
@@ -303,6 +306,21 @@ lint:
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
     mise x npm:markdownlint-cli2 -- markdownlint-cli2
     mise x opentofu -- tofu fmt -check -recursive opentofu/
+
+# Does every skill's frontmatter parse, so Claude Code can load it at all? A
+# broken one is invisible: the file stays valid markdown, no build step reads
+# it, and the skill's absence looks like Claude choosing not to use it. It
+# happened to a *mandatory* review skill (ADR-0069).
+#
+# Through `uv run`, and --no-project so it uses the PEP 723 metadata in the
+# script's own header rather than the repository's uv project: parsing YAML
+# needs a parser the standard library does not have, and keeping that dependency
+# inline leaves the script self-contained and installs one package rather than
+# the test suite's five. That download is also why this is a verify.yaml job and
+# not part of `just lint`, which stays offline — check-flink-api-tiers's rule,
+# applied rather than excepted.
+check-skill-frontmatter:
+    mise x uv -- uv run --no-project scripts/check-skill-frontmatter.py
 
 # The GCP resources behind the real-GCP integration tests (service accounts,
 # WIF, buckets, the dataset) live in opentofu/flink-gcp, planned and applied

@@ -16,7 +16,9 @@
 # #247): dependency management for the scripts/tests suite and pytest
 # configuration, nothing more, at the repository root where uv expects a
 # project. The layout is not a Python package's — the code under test lives
-# in scripts/ as standard-library executables that are never importable —
+# in scripts/ as executables that are never importable, standard-library-only
+# but for check-skill-frontmatter.py, which declares PyYAML in PEP 723 metadata
+# of its own (hence the dev-group pyyaml below: the suite loads it by path) —
 # so this project is never packaged (`package = false`) and the tests load
 # the scripts by file path; `testpaths` below is the one layout
 # customisation that needs saying. pytest's constraint is deliberately loose
@@ -33,8 +35,13 @@ requires-python = ">=3.11"
 package = false
 
 [dependency-groups]
+# pyyaml is a *test* dependency, not the project's: check-skill-frontmatter.py
+# declares it in PEP 723 metadata of its own and runs through
+# `uv run --no-project`, but the suite loads that script by file path, so the
+# import has to resolve here too. Nothing else in scripts/ needs it.
 dev = [
     "pytest>=9",
+    "pyyaml>=6",
 ]
 
 [tool.pytest.ini_options]
