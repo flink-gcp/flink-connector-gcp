@@ -26,14 +26,17 @@ import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.StubBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link BigQueryTableAdmin}. */
 class BigQueryTableAdminTest {
@@ -220,6 +223,128 @@ class BigQueryTableAdminTest {
                                         "denied",
                                         new BigQueryError("accessDenied", null, "denied"))))
                 .isFalse();
+    }
+
+    @Test
+    void theRateLimitedCreationRaceIsRetriable() {
+        // Measured 2026-08-08: sixteen concurrent creations of one missing table, five of them
+        // answered exactly this — HTTP 403, reason rateLimitExceeded, "Exceeded rate limits: too
+        // many table update operations for this table". Not a 409, so nothing else lets it through.
+        assertThat(
+                        BigQueryTableAdmin.isRetriable(
+                                new BigQueryException(
+                                        403,
+                                        "Exceeded rate limits: too many table update operations"
+                                                + " for this table.",
+                                        new BigQueryError(
+                                                "rateLimitExceeded",
+                                                null,
+                                                "Exceeded rate limits"))))
+                .isTrue();
+    }
+
+    @Test
+    void theSdkDoesNotConsiderTheRateLimitedCreationRaceRetryable() {
+        // Why the connector needs a rule of its own at all: BigQueryImpl.create runs under
+        // runWithRetries, but the handler consults isRetryable(), whose RETRYABLE_ERRORS set is
+        // 500/502/503/504 alone. Measured false on the real failure; pinned so a client release
+        // that starts retrying it is noticed here rather than by two layers retrying at once.
+        assertThat(
+                        new BigQueryException(
+                                        403,
+                                        "Exceeded rate limits",
+                                        new BigQueryError(
+                                                "rateLimitExceeded", null, "Exceeded rate limits"))
+                                .isRetryable())
+                .isFalse();
+    }
+
+    @Test
+    void retriableCreationFailuresAreRecognizedByHttpCode() {
+        assertThat(BigQueryTableAdmin.isRetriable(new BigQueryException(429, "too many requests")))
+                .isTrue();
+        // Borrowed from the client rather than restated: 503 is in its own RETRYABLE_ERRORS.
+        assertThat(BigQueryTableAdmin.isRetriable(new BigQueryException(503, "unavailable")))
+                .isTrue();
+        assertThat(BigQueryTableAdmin.isRetriable(new BigQueryException(403, "forbidden")))
+                .isFalse();
+        assertThat(BigQueryTableAdmin.isRetriable(new BigQueryException(400, "bad request")))
+                .isFalse();
+    }
+
+    @Test
+    void theOtherQuotaReasonIsNotRetriable() {
+        // quotaExceeded is left out on the widen-only-what-was-observed rule: the measurement
+        // answered rateLimitExceeded, and BigQuery attaches this one to quotas refilling on
+        // boundaries no connector budget outwaits as well as to rates.
+        assertThat(
+                        BigQueryTableAdmin.isRetriable(
+                                new BigQueryException(
+                                        403,
+                                        "quota",
+                                        new BigQueryError("quotaExceeded", null, "quota"))))
+                .isFalse();
+    }
+
+    @Test
+    void aFailedCreationIsTypedByWhetherRepeatingItCanHelp() {
+        BigQueryException rateLimited =
+                new BigQueryException(
+                        403, "quota", new BigQueryError("rateLimitExceeded", null, "quota"));
+        BigQueryException denied =
+                new BigQueryException(
+                        403, "denied", new BigQueryError("accessDenied", null, "denied"));
+
+        assertThat(BigQueryTableAdmin.toFailure(DESTINATION, rateLimited))
+                .isInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("p.d.t")
+                .hasCause(rateLimited);
+        assertThat(BigQueryTableAdmin.toFailure(DESTINATION, denied))
+                .isExactlyInstanceOf(IOException.class)
+                .hasMessageContaining("p.d.t")
+                .hasCause(denied);
+    }
+
+    @Test
+    void createTypesTheClientsFailureRatherThanFlatteningIt() throws Exception {
+        // The link the two cases above do not reach: create's catch has to hand its failure to
+        // toFailure. Wrapping it in a plain IOException instead compiles, keeps every other test
+        // green, and silently restores the defect #383 fixes — the writers would stop retrying a
+        // lost creation race, because they route on the type alone.
+        StubBigQuery client = new StubBigQuery();
+        client.createTableFailure =
+                new BigQueryException(
+                        403, "quota", new BigQueryError("rateLimitExceeded", null, "quota"));
+        BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
+
+        assertThatThrownBy(() -> admin.create(DESTINATION, SCHEMA, TableCreateOptions.defaults()))
+                .isInstanceOf(RetriableTableAdminException.class);
+        assertThat(client.createdTables).hasSize(1);
+    }
+
+    @Test
+    void createLeavesATerminalClientFailureTerminal() {
+        StubBigQuery client = new StubBigQuery();
+        client.createTableFailure =
+                new BigQueryException(
+                        403, "denied", new BigQueryError("accessDenied", null, "denied"));
+        BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
+
+        assertThatThrownBy(() -> admin.create(DESTINATION, SCHEMA, TableCreateOptions.defaults()))
+                .isExactlyInstanceOf(IOException.class);
+    }
+
+    @Test
+    void createTreatsAConflictAsSuccess() throws Exception {
+        // The oldest rule in this class, and until now it had no unit test either: a subtask that
+        // lost the creation race to another subtask's completed creation has nothing left to do.
+        StubBigQuery client = new StubBigQuery();
+        client.createTableFailure = new BigQueryException(409, "Already Exists");
+        BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
+
+        admin.create(DESTINATION, SCHEMA, TableCreateOptions.defaults());
+
+        assertThat(client.createdTables).hasSize(1);
     }
 
     @Test

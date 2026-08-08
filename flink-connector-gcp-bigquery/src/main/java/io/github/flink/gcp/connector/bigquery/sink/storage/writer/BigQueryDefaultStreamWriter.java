@@ -564,7 +564,8 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * Returns the destination's state, creating it if absent. When creating the appender itself
      * fails with a missing-table verdict (the SDK looks up the table's location when none is
      * configured) and the disposition allows it, the table is created and the appender creation
-     * retried.
+     * retried. A recovery that fails in turn carries that first verdict as a suppressed exception,
+     * so the failure a reader acts on still says what made this writer try to create a table.
      */
     private DestinationState ensureState(TableDestination destination) throws IOException {
         DestinationState state = states.get(destination);
@@ -578,9 +579,22 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 throw wrapFailure("Failed to open a BigQuery write stream to " + destination, e);
             }
             LOG.info(
-                    "Destination table {} may not exist, creating it (CREATE_IF_NEEDED)",
-                    destination);
-            recoverDestination(destination, Collections.emptyList());
+                    "Destination table {} may not exist, creating it (CREATE_IF_NEEDED)"
+                            + " (cause: {})",
+                    destination,
+                    e.toString());
+            try {
+                recoverDestination(destination, Collections.emptyList());
+            } catch (IOException | RuntimeException recoveryFailure) {
+                // The verdict that sent us here is what tells the two readings of a masked
+                // PERMISSION_DENIED apart — a table that is not there, or an existing one these
+                // credentials cannot write to. Without it a reader of "cannot create the table"
+                // has no way to see that the real problem was the second. Suppressed rather than
+                // chained: the recovery failure is the one to act on. Same shape as
+                // BigQueryLoadJobRunner.create's conflict lookup.
+                recoveryFailure.addSuppressed(e);
+                throw recoveryFailure;
+            }
             return states.get(destination);
         }
         states.put(destination, state);
@@ -840,9 +854,12 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         String reason;
         switch (action) {
             case CREATE_TABLE:
+                // The trailing placeholder is not decoration: slf4j drops an extra argument that
+                // is not a Throwable, so without it the cause this method is handed goes nowhere
+                // — and a masked PERMISSION_DENIED is exactly the cause a reader needs to see.
                 reason =
                         "An append to {} failed because the table may not exist, creating it"
-                                + " (CREATE_IF_NEEDED)";
+                                + " (CREATE_IF_NEEDED) (cause: {})";
                 break;
             case UPDATE_SCHEMA:
                 reason =
@@ -961,6 +978,14 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         retryBatches(destination, batches, true, false, recoverySchedule);
     }
 
+    /**
+     * Creates the destination table, which every repair path that discovers a missing table
+     * reaches. A creation the service rate-limits is repeated by the {@link TableAdmin} the sink
+     * wired ({@code RetryingTableAdmin}, on the recovery schedule), so this call blocks rather than
+     * failing — and nothing here chooses a budget, which is what keeps a creation off the
+     * fifteen-minute schema one however the repair around it got here. {@link #scheduleFor} keeps
+     * the missing-table verdict itself off that budget for the same reason.
+     */
     private void createTable(TableDestination destination) throws IOException {
         tableAdmin.create(
                 destination,
@@ -968,7 +993,8 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 config.getTableCreateOptionsProvider().optionsFor(destination));
         // The single creation site, so the counter needs no guard against the repair paths that
         // reach it. Creation is idempotent across subtasks, so this counts what this subtask
-        // asked for, not what BigQuery had to do.
+        // asked for, not what BigQuery had to do — and a creation the admin had to repeat counts
+        // once, since the repeats happen before this line is reached.
         metrics.tableCreated();
     }
 

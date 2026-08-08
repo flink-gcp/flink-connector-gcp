@@ -114,12 +114,20 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         private final List<TableSchema> schemas = new ArrayList<>();
         private final List<TableCreateOptions> options = new ArrayList<>();
 
+        /** What each creation attempt throws, one entry per attempt; exhausted means success. */
+        private final Deque<IOException> creationFailures = new ArrayDeque<>();
+
         @Override
         public void create(
-                TableDestination destination, TableSchema schema, TableCreateOptions opts) {
+                TableDestination destination, TableSchema schema, TableCreateOptions opts)
+                throws IOException {
             destinations.add(destination);
             schemas.add(schema);
             options.add(opts);
+            IOException failure = creationFailures.poll();
+            if (failure != null) {
+                throw failure;
+            }
         }
     }
 
@@ -197,6 +205,26 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
             TableAdmin creator,
             long maxAppendRequestBytes,
             int recoveryMaxAttempts) {
+        return writer(
+                config,
+                factory,
+                creator,
+                maxAppendRequestBytes,
+                recoveryMaxAttempts,
+                recoveryMaxAttempts);
+    }
+
+    /**
+     * The overload with the two budgets set apart, so a case can tell which of them bounded a
+     * repair. The equal-budget default above cannot: every schedule mix-up reads the same.
+     */
+    private static BigQueryDefaultStreamWriter<String> writer(
+            BigQuerySinkConfig<String> config,
+            ScriptedAppenderFactory factory,
+            TableAdmin creator,
+            long maxAppendRequestBytes,
+            int recoveryMaxAttempts,
+            int schemaWaitMaxAttempts) {
         return new BigQueryDefaultStreamWriter<>(
                 config,
                 factory,
@@ -204,7 +232,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                 TestSinkWriterMetricGroup.create(),
                 maxAppendRequestBytes,
                 BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts),
-                BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts));
+                BigQueryDefaultStreamWriterTest.fastSchedule(schemaWaitMaxAttempts));
     }
 
     @Test
@@ -449,6 +477,39 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         assertThat(factory.created.get(0).closed).isTrue();
         assertThat(factory.created.get(1).appends).hasSize(2);
         assertThat(factory.allAppendedRows()).containsExactlyInAnyOrder("aa", "bb", "aa", "bb");
+    }
+
+    // ------------------------------------------------------------------
+    // A lost creation race (#383)
+    // ------------------------------------------------------------------
+
+    @Test
+    void aFailedRecoveryKeepsTheVerdictThatStartedIt() {
+        // Without this the writer reports "cannot create the table" and nothing else, while the
+        // failure that sent it there — a masked PERMISSION_DENIED, which is either a missing table
+        // *or* an existing one these credentials cannot write to — is discarded by the catch that
+        // handled it. A reader then cannot tell which of the two readings applies, and the second
+        // one is not about table creation at all.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.failingCreations = 1; // opening the appender answers the missing-table verdict
+        RecordingTableAdmin creator = new RecordingTableAdmin();
+        creator.creationFailures.add(new IOException("bigquery.tables.create denied"));
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(CreateDisposition.CREATE_IF_NEEDED, null),
+                        factory,
+                        creator,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        assertThatThrownBy(() -> writer.write("aa", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("bigquery.tables.create denied")
+                .satisfies(
+                        failure ->
+                                assertThat(failure.getSuppressed())
+                                        .singleElement()
+                                        .isInstanceOf(StatusRuntimeException.class));
     }
 
     @Test

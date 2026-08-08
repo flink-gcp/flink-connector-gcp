@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.LoadJobOrch
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.LoadJobRunner;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,7 +118,18 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
                 () ->
                         new BigQueryLoadJobRunner(
                                 config.getLocation(), options.toLoadJobPollSchedule()),
-                BigQueryTableAdmin::new);
+                // Wrapped for the reason the storage writers' admins are (#383): a creation the
+                // per-table metadata quota rate-limits is repeated rather than failing the commit.
+                // This path races less — loads commit on one subtask, so nothing here competes with
+                // itself — but a second job or a restart still can, and leaving it unwrapped would
+                // make "a creation is retried" depend on which write method you picked.
+                //
+                // The reconcile schedule rather than a knob of its own: it is already this write
+                // method's budget for contention on exactly that quota, since the etag race
+                // updateSchema loses is the same per-table budget a creation spends.
+                () ->
+                        new RetryingTableAdmin(
+                                new BigQueryTableAdmin(), options.toSchemaReconcileSchedule()));
     }
 
     @VisibleForTesting
@@ -184,7 +196,15 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
         return runner;
     }
 
-    private TableAdmin tableAdmin() {
+    /**
+     * The admin this committer creates and reconciles destination tables through.
+     *
+     * <p>Package-private rather than private so a test can assert that the public constructor's
+     * default factory wraps it for the creation retry (#383): every other test here injects its own
+     * factory, so a default that stopped wrapping would leave them all green.
+     */
+    @VisibleForTesting
+    TableAdmin tableAdmin() {
         if (tableAdmin == null) {
             tableAdmin = tableAdminFactory.get();
         }

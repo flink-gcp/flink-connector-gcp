@@ -47,9 +47,11 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 
@@ -537,14 +539,32 @@ class BigQueryBufferedStreamWriterTest {
     }
 
     private static TableAdmin recordingAdmin(List<TableDestination> created) {
+        return recordingAdmin(created, new ArrayDeque<>());
+    }
+
+    /**
+     * A recording admin whose creations fail off {@code failures}, one entry per attempt, and
+     * succeed once it runs out.
+     */
+    private static TableAdmin recordingAdmin(
+            List<TableDestination> created, Deque<IOException> failures) {
         return new BigQueryDefaultStreamWriterTest.NoopTableAdmin() {
             @Override
             public void create(
-                    TableDestination destination, TableSchema schema, TableCreateOptions options) {
+                    TableDestination destination, TableSchema schema, TableCreateOptions options)
+                    throws IOException {
                 created.add(destination);
+                IOException failure = failures.poll();
+                if (failure != null) {
+                    throw failure;
+                }
             }
         };
     }
+
+    // ------------------------------------------------------------------
+    // A lost creation race (#383)
+    // ------------------------------------------------------------------
 
     @Test
     void closeNeverFinalizesTheStream() throws Exception {

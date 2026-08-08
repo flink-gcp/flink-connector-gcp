@@ -48,11 +48,13 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.writer.BufferedStream
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.BufferedStreamWriterStateSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.WriteClientBufferedStreamServiceFactory;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.function.Supplier;
 
 /**
  * The {@link WriteMethod#STORAGE_API_EXACTLY_ONCE} sink: each writer subtask appends rows to one
@@ -125,15 +127,41 @@ public class BigQueryBufferedStreamSink<T>
     public StatefulSinkWriter<T, BufferedStreamWriterState> restoreWriter(
             WriterInitContext context, Collection<BufferedStreamWriterState> recoveredState)
             throws IOException {
-        return restoreWriter(
-                context, recoveredState, new BigQueryTableAdmin(config.getEmulatorRestEndpoint()));
+        return restoreWriter(context, recoveredState, this::createTableAdmin);
     }
 
+    /**
+     * The admin the writer creates its destination table through: the REST one, wrapped so a
+     * creation the per-table quota rate-limits is repeated rather than failing the stream (#383).
+     *
+     * <p>A method rather than an inline expression so a test can assert what was wired. The
+     * overload below lets a test inject its own admin, which means the wrap is otherwise reachable
+     * only by a job against real BigQuery — and a {@code restoreWriter} that stopped wrapping would
+     * ship green, the failure appearing as a job losing a race it usually wins. Same argument as
+     * {@code BufferedStreamCommitter.getCreateDisposition}.
+     *
+     * @return the admin
+     */
+    @VisibleForTesting
+    TableAdmin createTableAdmin() {
+        return new RetryingTableAdmin(
+                new BigQueryTableAdmin(config.getEmulatorRestEndpoint()),
+                options.toRecoverySchedule());
+    }
+
+    /**
+     * The seam takes a <em>factory</em> rather than an admin so the admin is built inside the guard
+     * below: {@link #createTableAdmin} reads the options for its retry budget, and an options
+     * object carrying an impossible one throws there — outside, that would leave the handler
+     * unopened on one path and open on every other, which is the asymmetry {@code
+     * BigQuerySinkFailureHandlerOpenTest} caught. Same shape as {@code FileLoadsCommitter}'s {@code
+     * Supplier<TableAdmin>}, for the same reason.
+     */
     @VisibleForTesting
     StatefulSinkWriter<T, BufferedStreamWriterState> restoreWriter(
             WriterInitContext context,
             Collection<BufferedStreamWriterState> recoveredState,
-            TableAdmin tableAdmin)
+            Supplier<TableAdmin> tableAdminFactory)
             throws IOException {
         config.getFailedRowHandler().open(DefaultFailureHandlerContext.of(context));
         try {
@@ -141,16 +169,17 @@ public class BigQueryBufferedStreamSink<T>
                     config,
                     options,
                     serviceFactory,
-                    tableAdmin,
+                    tableAdminFactory.get(),
                     context.metricGroup(),
                     context.getTaskInfo().getIndexOfThisSubtask(),
                     recoveredState);
         } catch (Throwable e) {
             // The handler is the only thing to release: the service factory opens no client until
-            // the writer asks it to, and the table admin is built by the caller. Nothing downstream
-            // would close it — no writer exists to do it — and Flink rebuilds the writer on every
-            // restart attempt, so an opened handler would accumulate per attempt on a task manager
-            // that stays alive. This is also createWriter's failure path, which delegates here.
+            // the writer asks it to, and the table admin holds none until then either. Nothing
+            // downstream would close it — no writer exists to do it — and Flink rebuilds the writer
+            // on every restart attempt, so an opened handler would accumulate per attempt on a task
+            // manager that stays alive. This is also createWriter's failure path, which delegates
+            // here.
             //
             // Throwable, not Exception: a client's first classload can fail with a
             // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past

@@ -56,7 +56,9 @@ import java.util.Map;
  *
  * <p>The client is created lazily on the first use, so jobs whose destination tables all exist and
  * never evolve their schemas never construct it. HTTP conflicts on creation (409, the table was
- * created concurrently — for example by a parallel subtask) are treated as success.
+ * created concurrently — for example by a parallel subtask) are treated as success; a creation that
+ * lost the same race to the per-table metadata-update quota instead ({@link #isRetriable}) is typed
+ * as a {@link RetriableTableAdminException} for the caller to repeat.
  *
  * <p>Schema updates are etag-conditioned: {@link #getSchema} snapshots the REST {@code Table}
  * (which carries the etag), and {@link #updateSchema} submits the modified table so BigQuery
@@ -78,6 +80,7 @@ public class BigQueryTableAdmin implements TableAdmin {
 
     private static final int HTTP_CONFLICT = 409;
     private static final int HTTP_PRECONDITION_FAILED = 412;
+    private static final int HTTP_TOO_MANY_REQUESTS = 429;
 
     /** Error reason of a failed etag precondition. */
     private static final String REASON_CONDITION_NOT_MET = "conditionNotMet";
@@ -127,8 +130,62 @@ public class BigQueryTableAdmin implements TableAdmin {
                 LOG.info("BigQuery table {} already exists, not creating it", destination);
                 return;
             }
-            throw new IOException("Failed to create BigQuery table " + destination, e);
+            throw toFailure(destination, e);
         }
+    }
+
+    /**
+     * Types a failed creation for the caller: {@link RetriableTableAdminException} when repeating
+     * the call can fix it, a plain {@link IOException} when it cannot.
+     *
+     * @param destination the table the creation was for
+     * @param e the failure from the client
+     * @return the failure to throw
+     */
+    @VisibleForTesting
+    static IOException toFailure(TableDestination destination, BigQueryException e) {
+        String message = "Failed to create BigQuery table " + destination;
+        return isRetriable(e)
+                ? new RetriableTableAdminException(message, e)
+                : new IOException(message, e);
+    }
+
+    /**
+     * Whether repeating a REST call that failed this way can succeed.
+     *
+     * <p>Three sources, and the client library is only the first of them. {@link
+     * BigQueryException#isRetryable()} is the SDK's own verdict — server errors and the network
+     * failures it wraps — and is borrowed rather than restated so a client release that widens it
+     * widens this too. HTTP 429 is the standard rate-limit code. And the {@code rateLimitExceeded}
+     * reason is BigQuery's per-table metadata-update quota, the same one {@link #isLostRace}
+     * already names for schema updates: one constant, now two consumers, because creating and
+     * updating a table spend the same budget.
+     *
+     * <p><b>The client does not retry any of this itself.</b> {@code BigQueryImpl.create} does run
+     * under {@code runWithRetries}, but the handler it runs under consults {@code isRetryable()},
+     * whose {@code RETRYABLE_ERRORS} set is {@code 500/502/503/504} alone (checked against
+     * google-cloud-bigquery 2.68.0) — so a rate-limited creation surfaces to the caller on the
+     * first attempt. Measured 2026-08-08 by racing sixteen concurrent creations of one missing
+     * table: five answered {@code 403}, reason {@code rateLimitExceeded}, "Exceeded rate limits:
+     * too many table update operations for this table", with {@code isRetryable()} reporting {@code
+     * false}.
+     *
+     * <p>{@code quotaExceeded} is deliberately absent, on the widen-only-what-was-observed rule the
+     * missing-table verdict was written under (ADR-0030): what the measurement answered was {@code
+     * rateLimitExceeded}, and no creation here has been seen to answer the other reason. BigQuery
+     * attaches it to quotas that refill on boundaries longer than any connector budget as well as
+     * to rates, so accepting it unmeasured would risk turning a failure that is immediate and names
+     * its own reason into a budget exhaustion that does not.
+     *
+     * @param e the failure from the client
+     * @return whether the call may be repeated
+     */
+    @VisibleForTesting
+    static boolean isRetriable(BigQueryException e) {
+        if (e.isRetryable() || e.getCode() == HTTP_TOO_MANY_REQUESTS) {
+            return true;
+        }
+        return REASON_RATE_LIMIT_EXCEEDED.equals(reasonOf(e));
     }
 
     @Override
@@ -257,8 +314,17 @@ public class BigQueryTableAdmin implements TableAdmin {
         if (e.getCode() == HTTP_CONFLICT || e.getCode() == HTTP_PRECONDITION_FAILED) {
             return true;
         }
-        String reason = e.getError() != null ? e.getError().getReason() : e.getReason();
+        String reason = reasonOf(e);
         return REASON_CONDITION_NOT_MET.equals(reason) || REASON_RATE_LIMIT_EXCEEDED.equals(reason);
+    }
+
+    /**
+     * The error reason the service attached, preferring the structured error's over the exception's
+     * own — the client populates one or the other depending on how the failure was constructed.
+     */
+    @Nullable
+    private static String reasonOf(BigQueryException e) {
+        return e.getError() != null ? e.getError().getReason() : e.getReason();
     }
 
     /**

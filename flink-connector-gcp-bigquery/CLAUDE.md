@@ -31,7 +31,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   delegates to `JsonToProtoMessage`; its `BYTES`-column gap is pursued upstream, not patched
   locally (`docs/adr/0025`).
 
-## Error handling and recovery (`docs/adr/0017`, `0030`)
+## Error handling and recovery (`docs/adr/0017`, `0030`, `0071`)
 
 - Only row verdicts route to the `FailureHandler`; `findRowLevel` rejects a row-detailed error
   whose own status is transient, and `replayBatches` carries the same no-progress guard as
@@ -50,8 +50,27 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   an expired stream answers, which is unmeasured (`docs/adr/0030`, both halves measured). **Never
   use `PERMISSION_DENIED` as a terminal example** — four tests and two javadoc sentences moved to
   `INVALID_ARGUMENT`, the second pair including the base module's `FailureHandler`.
+- **A REST failure's retryability is `BigQueryTableAdmin`'s, never `AppendErrorClassifier`'s**, and
+  it travels as `RetriableTableAdminException` so the client's `BigQueryException` stays in
+  `sink.tables` — the whole point of the `TableAdmin` SPI (`docs/adr/0071`). The verdict borrows
+  `BigQueryException.isRetryable()` rather than restating 5xx, adds HTTP 429 and the
+  `rateLimitExceeded` reason `isLostRace` already names for the same per-table quota, and leaves
+  `quotaExceeded` out (unobserved, and the reason BigQuery also uses for longer-boundary quotas).
+  Measured 2026-08-08: sixteen concurrent creations of one absent table, five answered
+  `403 rateLimitExceeded` with the SDK's own `isRetryable()` reporting `false`, so there is no
+  client-side retry to sit behind. **None of the four creation sites retried even with the call
+  inside the `try`** — two are guarded by a `tableCreated` flag, two return before their caller
+  loops — so "move it inside" was never the fix.
+- **The retry is `RetryingTableAdmin`, a decorator, and it is wired at the three places a
+  `TableAdmin` is *constructed*** — both storage sinks on `recovery*`, `FileLoadsCommitter` on
+  `schemaReconcile*` — never at the creation sites (`docs/adr/0071`). A use-site rewrite was tried
+  first and **missed `LoadJobOrchestrator`**, which is the whole argument: construction sites are
+  enumerable, use sites are not. Callers keep the SPI, and no site names a schedule, so none can
+  name the wrong one. Only `create` retries — `updateSchema`'s `false` means re-read, and repeating
+  it would re-submit a stale proposal. **Each wrap has a test asserting the schedule's attempt
+  count**, since every other test injects its own admin and an unwrapped one ships green.
 
-## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`)
+## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`)
 
 - Deterministic job ids + get-then-submit re-attach; loads commit **in the committer** on the
   checkpoint, synchronously; streaming overflow appends sequentially (`docs/adr/0018`). The

@@ -38,9 +38,20 @@ public interface TableAdmin {
      * Creates the given table. Idempotent: creating a table that already exists (for example
      * because a parallel subtask created it first) succeeds silently.
      *
+     * <p>Losing that race the other way — the service rate-limiting the creation rather than
+     * reporting the table as already there — is reported as a {@link RetriableTableAdminException}.
+     * Every other {@link IOException} is terminal. An implementation that cannot tell the two apart
+     * must report the terminal one: a repeat costs a budget, and repeating what will never succeed
+     * spends it before failing.
+     *
+     * <p>Nothing that <em>calls</em> this method repeats it. {@link RetryingTableAdmin} does, and
+     * every construction site wraps in one, so a caller sees a creation that either succeeded or
+     * exhausted a budget it never had to name.
+     *
      * @param destination the table to create
      * @param schema the table schema, in Storage API form
      * @param options partitioning and clustering options
+     * @throws RetriableTableAdminException if the creation failed in a way repeating it can fix
      * @throws IOException if the table cannot be created
      */
     void create(TableDestination destination, TableSchema schema, TableCreateOptions options)
