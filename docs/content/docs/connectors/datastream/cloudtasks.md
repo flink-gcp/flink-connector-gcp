@@ -482,8 +482,8 @@ it is spent *after* the sink's own teardown — so a sink that dead-letters shou
 against Flink's `task.cancellation.timeout`. Full description on the
 [Pub/Sub page]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-lettering-to-a-pubsub-topic).
 
-The queue reports what it published, what it still holds and how long its waits take, as four
-metrics registered on **this sink's** writer group — documented once, with the queue, under
+The queue reports what it published, what it still holds and how long its waits take, on
+**this sink's** writer group — documented once, with the queue, under
 [Dead-letter metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-letter-metrics). How
 many tasks were dead-lettered in the first place is [`numRecordsSendErrors`](#metrics) here.
 

@@ -708,6 +708,7 @@ that sink's own names, one set per subtask.
 | `deadLettersPublished` | counter | dead letters the service **confirmed**, counted as each publish resolves rather than when it was handed over |
 | `outstandingDeadLetters` | gauge | dead letters handed to the client library and not yet confirmed, which `maxOutstandingMessages` bounds |
 | `deadLetterFlushMillis` | gauge | how long the most recent wait for those publishes took — the number to read against `flushTimeout`. A flush with nothing buffered is not a wait and leaves it alone |
+| `longestDeadLetterFlushMillis` | gauge | the longest such wait **this task attempt** has seen. It never falls, and a restart starts it over |
 | `deadLetterPublisherShutdownsAbandoned` | counter | the queue's publisher closes that overran `shutdownTimeout`, process-wide in the sense [Publisher lifecycle](#publisher-lifecycle) describes |
 
 **How many were dead-lettered is already `numRecordsSendErrors`**, which every sink in this
@@ -726,6 +727,16 @@ due. The wait it reports is whichever ran last, the one in `flush()` or the one 
 at the outstanding bound; both spend the same budget. A `flush()` that finds nothing buffered — on
 a job that dead-letters occasionally, that is almost every checkpoint — does not touch it, so the
 value stays that of the last wait there actually was rather than being zeroed a barrier later.
+
+**Read `longestDeadLetterFlushMillis` for the spike the other one cannot keep.** Waits happen as
+often as the queue drains, which under `maxOutstandingMessages(0)` is once per *element* — so a
+publish that nearly spent the budget is overwritten thousands of times before a reporter runs, and
+alerting on the last-wait gauge alone would miss exactly the warning it exists to give. The maximum
+is the one to alert on (`longestDeadLetterFlushMillis` approaching `flushTimeout` means the next
+disturbance fails the job); the last wait is the one to read for what is happening now. Because it
+never falls, a high value means "this attempt saw a wait that long", not "waits are long now" —
+those two questions are why there are two gauges, and a restart clears it along with the rest of
+the writer's state.
 
 **`deadLetterPublisherShutdownsAbandoned` is separate from the sink's
 `publisherShutdownsAbandoned`** on purpose. They count different publishers, and a Pub/Sub sink that

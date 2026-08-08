@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 ([#211]); flush bound added 2026-08-06 ([#321]); metrics added 2026-08-08
-  ([#329])
-- Issues: [#211] (the [#37] series), [#321], [#329]
+  ([#329]), the longest-wait gauge 2026-08-09 ([#405])
+- Issues: [#211] (the [#37] series), [#321], [#329], [#405]
 - Modules: pubsub (driven by any connector's `FailureHandler`)
 - Current behavior: the three datastream pages' dead-lettering sections, and `pubsub.md`'s
   "Dead-letter metrics"
@@ -130,7 +130,7 @@ infinite budget stays expressible as a large `Duration` without being a mode.
   own `drainInFlight()` — the leg that dominates what a checkpoint spends, and unbounded
   outright under `enableMessageOrdering` until [#333] bounded it on progress (ADR-0052).
 
-## The four metrics ([#329])
+## The five metrics ([#329], [#405])
 
 **Where the names live is settled by the options decision above**: the class is Pub/Sub's even
 though one instance serves every connector, so they are declared in `PubSubMetricNames`. The
@@ -152,7 +152,19 @@ each of the four carries `deadLetter` in its name.
   expiry — the case worth having it for — is not the one it skips, and held `volatile` because a
   non-volatile `long` read from the reporter thread may tear (the sink's gauges expose `int` state,
   which cannot). A cumulative counter of waited time was declined: it cannot tell one wait that
-  spent the whole budget from many short ones, and the budget is per wait.
+  spent the whole budget from many short ones, and the budget is per wait. An empty `flush()` does
+  not record — `flush()` runs at every barrier, so on a job that dead-letters occasionally those
+  calls would zero the slow wait a barrier after it happened.
+- **The last wait is joined by the longest one** ([#405]), because one gauge cannot answer both
+  questions: waits happen as often as the queue drains — once per *element* under
+  `WRITE_THROUGH` — so the last-wait gauge is overwritten many times between two scrapes, and
+  alerting on it alone misses exactly the near-expiry it exists to warn about.
+  `longestDeadLetterFlushMillis` never falls and is scoped to the **task attempt**, being writer
+  state rather than the class-loader-scoped residue. Declined for the same job: a gauge that
+  **resets when read** (Flink supports several reporters, and each read would steal the value from
+  the others), and a `Histogram` — `check-metric-docs` recognises `.counter(` and `.gauge(` only,
+  so a histogram is invisible to the rule that makes `*MetricNames` the inventory, and costs the
+  checker, its tests and its skill before it costs any connector code.
 - **`deadLetterPublisherShutdownsAbandoned` is a second residue adder**, reversing this record's
   earlier "a publisher too, so it counts into the same total the sink's do". One name cannot serve
   both: these register on the host's group, a Pub/Sub sink has already registered
@@ -184,3 +196,4 @@ each of the four carries `deadLetter` in its name.
 [#329]: https://github.com/laughingman7743/flink-connector-gcp/issues/329
 [#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
 [#334]: https://github.com/laughingman7743/flink-connector-gcp/issues/334
+[#405]: https://github.com/laughingman7743/flink-connector-gcp/issues/405

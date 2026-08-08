@@ -307,7 +307,7 @@ handled elements is at-least-once for failures that recur on replay; the SPI's o
 guarantee in full.
 
 `PubSubDeadLetterQueue`, this repository's one shipped implementation, reports what it published,
-what it still holds and how long its waits take as four metrics registered on **this sink's** writer
+what it still holds and how long its waits take on **this sink's** writer
 group — documented once, with the queue, under
 [Dead-letter metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-letter-metrics).
 

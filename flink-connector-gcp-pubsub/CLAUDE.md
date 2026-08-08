@@ -70,7 +70,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   reference pages linking to it; the datastream pages' dead-lettering prose keeps what they are
   *for*. `check-option-docs` reaches the class only because `option-docs.toml` names its file in
   pubsub's `sources` — nothing about the file matches `SOURCE_GLOBS` (#328).
-- **Its four metrics register on the *host* sink writer's group** (#329) — the only group
+- **Its five metrics register on the *host* sink writer's group** (#329, #405) — the only group
   `FailureHandlerContext` carries — so a BigQuery job reports them beside BigQuery's own, which is
   why every one of the names carries `deadLetter`. They are `PubSubMetricNames`', by the argument
   that already puts the options on `reference/pubsub.md`. Three rules not to re-derive:
@@ -78,7 +78,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `numRecordsSendErrors`, which every writer here increments immediately before calling the
   handler, so the premise #329 was filed on ("leaves that accounting entirely") is false;
   `deadLetterFlushMillis` is written in a `finally`, so the expiry is not the case it skips, and is
-  `volatile` because a `long` is read from the reporter thread; and the queue's abandoned teardowns
+  `volatile` because a `long` is read from the reporter thread — with an empty `flush()` recording
+  nothing, and `longestDeadLetterFlushMillis` beside it (#405) because waits happen faster than
+  scrapes, once per *element* under `WRITE_THROUGH`; and the queue's abandoned teardowns
   count into a **second** `PubSubShutdownResidue` adder, since one name on the host's group would
   collide with the sink's and Flink drops the later registration.
 

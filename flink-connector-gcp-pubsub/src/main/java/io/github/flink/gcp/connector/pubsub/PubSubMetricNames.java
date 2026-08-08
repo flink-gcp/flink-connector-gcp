@@ -122,6 +122,15 @@ public final class PubSubMetricNames {
     public static final String DEAD_LETTER_FLUSH_MILLIS = "deadLetterFlushMillis";
 
     /**
+     * The longest of those waits so far, which is the one a reporter can actually catch (#405):
+     * waits happen as often as the queue drains — once per <em>element</em> under {@code
+     * WRITE_THROUGH} — so the last-wait gauge above is overwritten between two scrapes, and a
+     * publish that nearly spent {@code flushTimeout} leaves no trace in it. Per task attempt, since
+     * it is writer state.
+     */
+    public static final String LONGEST_DEAD_LETTER_FLUSH_MILLIS = "longestDeadLetterFlushMillis";
+
+    /**
      * {@link #PUBLISHER_SHUTDOWNS_ABANDONED} for the dead-letter publisher, counted separately and
      * named separately because it is registered on a group that may already carry that name — the
      * host sink's, when the host is a Pub/Sub sink. Flink resolves such a collision by keeping the
