@@ -167,7 +167,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      * overruns a {@code long} would instead throw an {@link ArithmeticException} on a TaskManager —
      * out of the first flush, or out of {@code BoundedShutdown.start()} for the shutdown budget.
      * That is the shape of failure this class already rejects at the setter for {@code
-     * emulatorEndpoint}. The same trap remains one level down, in {@code BoundedShutdown} itself.
+     * emulatorEndpoint}, and the rule every budget of this shape now follows is ADR-0068.
      */
     private static final Duration MAX_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
 
@@ -360,6 +360,10 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
             TopicDestination topic,
             Duration budget)
             throws IOException {
+        // Overflows at MAX_TIMEOUT, which the setter accepts, and is correct anyway: the
+        // subtraction below wraps a second time and the two cancel, leaving the true remainder
+        // (measured — theLargestExpressibleBudgetIsNotSpentTheInstantTheFlushStarts pins it).
+        // Math.addExact here would turn that legal budget into a failed flush.
         long deadlineNanos = System.nanoTime() + budget.toNanos();
         int resolved = 0;
         try {
@@ -558,7 +562,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                     "shutdownTimeout must be positive");
             Preconditions.checkArgument(
                     shutdownTimeout.compareTo(MAX_TIMEOUT) <= 0,
-                    "shutdownTimeout must be at most " + MAX_TIMEOUT);
+                    "shutdownTimeout must be at most " + MAX_TIMEOUT + " (about 292 years)");
             this.shutdownTimeout = shutdownTimeout;
             return this;
         }
@@ -597,7 +601,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                     "flushTimeout must be positive");
             Preconditions.checkArgument(
                     flushTimeout.compareTo(MAX_TIMEOUT) <= 0,
-                    "flushTimeout must be at most " + MAX_TIMEOUT);
+                    "flushTimeout must be at most " + MAX_TIMEOUT + " (about 292 years)");
             this.flushTimeout = flushTimeout;
             return this;
         }

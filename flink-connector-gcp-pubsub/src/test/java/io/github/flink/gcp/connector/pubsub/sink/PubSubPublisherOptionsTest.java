@@ -278,8 +278,7 @@ class PubSubPublisherOptionsTest {
     /**
      * The knob's own documentation offers a very long {@code Duration} as the way to say
      * "effectively unbounded", so one too long for {@code Duration.toNanos()} has to be refused
-     * here rather than throwing on a TaskManager at the first wait (#334 is the same trap in the
-     * two {@code shutdownTimeout} setters).
+     * here rather than throwing on a TaskManager at the first wait (#334; ADR-0068).
      */
     @Test
     void rejectsAProgressBudgetTooLargeForNanoseconds() {
@@ -288,9 +287,30 @@ class PubSubPublisherOptionsTest {
 
         assertThatThrownBy(() -> builder.publishProgressTimeout(expressible.plusNanos(1)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("publishProgressTimeout must be at most");
+                .hasMessageContaining("publishProgressTimeout must be at most")
+                .hasMessageContaining("292 years");
         // The boundary itself is accepted, or the message would be describing a value it rejects.
         assertThat(builder.publishProgressTimeout(expressible).build().getPublishProgressTimeout())
+                .isEqualTo(expressible);
+    }
+
+    /**
+     * The same bound on the budget that reaches {@code BoundedShutdown}, which converts it when the
+     * writer's close starts the teardown — so an unbounded value would throw {@code
+     * ArithmeticException} out of a close on a TaskManager, where it reaches Flink's teardown path
+     * and not a user's {@code try} (#334; ADR-0068).
+     */
+    @Test
+    void rejectsAShutdownBudgetTooLargeForNanoseconds() {
+        PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
+        Duration expressible = Duration.ofNanos(Long.MAX_VALUE);
+
+        assertThatThrownBy(() -> builder.shutdownTimeout(expressible.plusNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shutdownTimeout must be at most")
+                .hasMessageContaining("292 years");
+        // The boundary itself is accepted, or the message would be describing a value it rejects.
+        assertThat(builder.shutdownTimeout(expressible).build().getShutdownTimeout())
                 .isEqualTo(expressible);
     }
 

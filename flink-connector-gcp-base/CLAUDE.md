@@ -49,7 +49,7 @@ record — context, evidence, declined alternatives — is the named ADR under `
   rejected, never trimmed, and the host splits at the last colon, kept verbatim. Public
   signatures stay `String`.
 
-## `base.lifecycle` (`docs/adr/0040`, `docs/adr/0007`)
+## `base.lifecycle` (`docs/adr/0040`, `docs/adr/0007`, `docs/adr/0068`)
 
 - **`BoundedShutdown`**: why it exists, and the decisions inside it, are `docs/adr/0007`; the
   class contract (daemon thread, nullable-`Runnable` release hook, idempotent `close()`,
@@ -64,6 +64,13 @@ record — context, evidence, declined alternatives — is the named ADR under `
   it; the next seam here should cite this rather than widen by default. The Pub/Sub source's
   subscriber teardown was measured (#325) and is **not** a candidate adopter
   (`docs/adr/0012`). A first draft held an `AtomicLong` here; do not reintroduce it.
+  **The budget is a precondition, not just a parameter**: at most
+  `Duration.ofNanos(Long.MAX_VALUE)`, rejected by the constructor as well as by every setter that
+  feeds one, because a consumer building its budget in code reaches no setter (#334;
+  `docs/adr/0068`). At that ceiling `deadlineNanos` overflows and `remainingNanos()` is **still
+  correct** — the subtraction wraps back, measured — so leave the arithmetic alone: an
+  `Math.addExact` or a clamp added to "harden" it is the change that would break a legal budget,
+  and is what `theLargestExpressibleBudgetIsNotSpentTheInstantItStarts` exists to catch.
 - **`Closers`**: every `close()`-shaped call site goes through `closeAll` /
   `closeAllSuppressing`; the contract lives in the class javadoc, the written-out-loop decision
   and its `Error`-type reasoning in `docs/adr/0040`. A new call site owes the `Error` test

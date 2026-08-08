@@ -543,6 +543,15 @@ connector gets its own module file rather than a section here.
   to catch. A client that cannot be subclassed holds its operations as functional values, or the
   absorb has no test. The nine-SPI survey, the asymmetric consequences and the #351 refinement
   (what else a wide absorb catches) are in the ADR.
+- **A `Duration` knob a connector will convert to nanoseconds is bounded at the setter that
+  accepts it** (#334; `docs/adr/0068`), at `Duration.ofNanos(Long.MAX_VALUE)` — past that
+  `toNanos()` throws on a TaskManager, out of a teardown or a constructor, and never where the
+  value was typed. The rule covers the knob documented as taking a long `Duration` to mean
+  "unbounded" even where its own conversion would not throw, so one knob name has one answer;
+  `BoundedShutdown` checks it again in its constructor, being shared and reachable without a
+  setter. A `nanoTime` deadline stamped at that ceiling **overflows and is still correct** — the
+  read subtracts and wraps back — so never "harden" one with `Math.addExact` or a clamp, which is
+  what would break it. Which sites convert how, and that measurement, are in the ADR.
 - **A test driving a sink's production `createWriter(WriterInitContext)` sets an emulator
   endpoint** (`docs/adr/0064`): the production path builds the connector's real client, and an
   eagerly constructed one demands ADC — green on any machine with credentials, red only in CI.

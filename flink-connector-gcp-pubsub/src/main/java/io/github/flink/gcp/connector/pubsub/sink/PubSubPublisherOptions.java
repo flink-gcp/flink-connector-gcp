@@ -674,11 +674,10 @@ public final class PubSubPublisherOptions implements Serializable {
             checkPositive(publishProgressTimeout, "publishProgressTimeout");
             // Expressible in nanoseconds, because that is the arithmetic the writer's wait does:
             // a Duration past that throws from toNanos() on a TaskManager rather than here, at the
-            // first wait the writer makes (#334 is the same trap one level down, in the two
-            // shutdownTimeout setters).
+            // first wait the writer makes. The rule every such budget follows is ADR-0068.
             Preconditions.checkArgument(
                     publishProgressTimeout.compareTo(MAX_TIMEOUT) <= 0,
-                    "publishProgressTimeout must be at most %s",
+                    "publishProgressTimeout must be at most %s (about 292 years)",
                     MAX_TIMEOUT);
             this.publishProgressTimeout = publishProgressTimeout;
             return this;
@@ -696,11 +695,22 @@ public final class PubSubPublisherOptions implements Serializable {
          * clean shutdown an over-long close merely delays the task rather than killing the
          * TaskManager.
          *
-         * @param shutdownTimeout the shutdown budget, positive
+         * @param shutdownTimeout the shutdown budget, positive and at most {@code
+         *     Duration.ofNanos(Long.MAX_VALUE)}
          * @return this builder
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {
-            this.shutdownTimeout = checkPositive(shutdownTimeout, "shutdownTimeout");
+            checkPositive(shutdownTimeout, "shutdownTimeout");
+            // Expressible in nanoseconds, for the reason publishProgressTimeout is: this budget
+            // reaches BoundedShutdown, which converts it with toNanos() when the writer's close
+            // starts the teardown — so a longer one throws ArithmeticException on a TaskManager,
+            // out of a close, where it reaches Flink's teardown path and not a user's try (#334;
+            // ADR-0068). BoundedShutdown checks it too, for a caller that reaches no setter.
+            Preconditions.checkArgument(
+                    shutdownTimeout.compareTo(MAX_TIMEOUT) <= 0,
+                    "shutdownTimeout must be at most %s (about 292 years)",
+                    MAX_TIMEOUT);
+            this.shutdownTimeout = shutdownTimeout;
             return this;
         }
 

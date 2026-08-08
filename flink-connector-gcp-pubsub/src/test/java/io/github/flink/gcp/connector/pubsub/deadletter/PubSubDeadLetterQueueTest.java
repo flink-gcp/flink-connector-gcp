@@ -248,16 +248,20 @@ class PubSubDeadLetterQueueTest {
                 .hasMessageContaining("flushTimeout");
         // The knob's own documentation offers a long budget as the way to say "effectively
         // unbounded", so one too long to express in nanoseconds is rejected here rather than
-        // throwing an ArithmeticException out of the first flush on a TaskManager.
+        // throwing an ArithmeticException out of the first flush on a TaskManager. The message
+        // says how long the ceiling is, because Duration.toString() renders it as
+        // PT2562047H47M16.854775807S and a reader cannot see a year count in that (ADR-0068).
         assertThatThrownBy(() -> builder.flushTimeout(Duration.ofDays(400_000)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("at most");
+                .hasMessageContaining("at most")
+                .hasMessageContaining("292 years");
         assertThatCode(() -> builder.flushTimeout(Duration.ofDays(1000)))
                 .doesNotThrowAnyException();
         // The queue's other budget reaches BoundedShutdown.start(), which converts it the same way.
         assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ofDays(400_000)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("at most");
+                .hasMessageContaining("at most")
+                .hasMessageContaining("292 years");
     }
 
     @Test
@@ -557,6 +561,33 @@ class PubSubDeadLetterQueueTest {
 
         assertThat(grants).hasSize(1);
         assertThat(grants.get(0)).isGreaterThanOrEqualTo(Duration.ZERO);
+    }
+
+    /**
+     * The largest budget the setter accepts really is a budget, which is worth pinning because the
+     * arithmetic looks broken there and is not: the deadline stamp overflows and the subtraction
+     * that reads it wraps a second time, the two cancelling to the true remainder. What this guards
+     * is a later {@code Math.addExact} or clamp on that stamp, which would turn {@code
+     * flushTimeout}'s documented way of saying "effectively unbounded" into a failed flush or the
+     * setting that waited least (#334; ADR-0068).
+     */
+    @Test
+    void theLargestExpressibleBudgetIsNotSpentTheInstantTheFlushStarts() {
+        List<Duration> grants = new ArrayList<>();
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        outstanding.add(new RecordingFuture(Duration.ZERO, grants));
+
+        assertThatCode(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {},
+                                        outstanding,
+                                        TOPIC,
+                                        Duration.ofNanos(Long.MAX_VALUE)))
+                .doesNotThrowAnyException();
+
+        assertThat(grants).hasSize(1);
+        assertThat(grants.get(0)).isGreaterThan(Duration.ofDays(365L * 100));
     }
 
     @Test

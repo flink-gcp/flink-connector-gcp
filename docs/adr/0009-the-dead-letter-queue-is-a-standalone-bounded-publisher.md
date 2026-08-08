@@ -118,8 +118,9 @@ infinite budget stays expressible as a large `Duration` without being a mode.
 - **Both of this class's budgets reject a `Duration` too large to express in nanoseconds**,
   because the flush knob's own documentation offers a long one as the way to say "effectively
   unbounded" and `Duration.toNanos()` would otherwise throw on a TaskManager — at the first
-  flush, or inside `BoundedShutdown.start()`. The same trap one level down, in `BoundedShutdown`
-  itself and the two `*Options.shutdownTimeout(...)` setters that feed it, is [#334]; the sink's
+  flush, or inside `BoundedShutdown.start()`. [#334] then made that the rule for every budget of
+  this shape, `BoundedShutdown` included, and measured the flush deadline's own overflow at that
+  ceiling as benign (ADR-0068); the sink's
   own `drainInFlight()` — the leg that dominates what a checkpoint spends, and unbounded
   outright under `enableMessageOrdering` until [#333] bounded it on progress (ADR-0052).
 

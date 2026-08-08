@@ -81,6 +81,16 @@ import java.util.concurrent.atomic.LongAdder;
  * the callers are writer teardowns, which Flink runs on the task thread by construction — so a
  * third consumer has to honour it deliberately.
  *
+ * <p><b>The budget must be expressible in nanoseconds</b> — at most {@code
+ * Duration.ofNanos(Long.MAX_VALUE)}, about 292 years — because nanoseconds are the arithmetic the
+ * clock does. The constructor rejects a longer one, rather than leaving {@link Duration#toNanos()}
+ * to throw {@link ArithmeticException} from {@link #start()}: that would land on a TaskManager
+ * during a teardown, where it reaches Flink's teardown path and not a caller's {@code try}. Every
+ * option setter that feeds a budget here rejects the same value, so a user meets it on the client;
+ * this is the backstop for a consumer whose budget is built in code and passes no setter (#334). A
+ * budget at that ceiling is a real budget — see {@link #remainingNanos()}, whose arithmetic looks
+ * wrong there and is not.
+ *
  * <p>The threading of the remaining mutable state, stated precisely because the class is shared:
  *
  * <ul>
@@ -101,6 +111,17 @@ import java.util.concurrent.atomic.LongAdder;
 public final class BoundedShutdown implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(BoundedShutdown.class);
+
+    /**
+     * The largest budget a nanosecond clock can express, about 292 years.
+     *
+     * <p>Every rejection message in this repository names that year count beside the value, and it
+     * is not decoration: {@link Duration#toString()} renders this constant as {@code
+     * PT2562047H47M16.854775807S}, an hour count no reader turns into "292 years" — measured
+     * through the Table API, where it is what a SQL user is shown (ADR-0068). Tests pin the year
+     * count, so removing it fails rather than quietly making the message unreadable.
+     */
+    private static final Duration MAX_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
 
     /** The client's own bounded wait, satisfied by e.g. {@code Publisher::awaitTermination}. */
     @FunctionalInterface
@@ -146,7 +167,9 @@ public final class BoundedShutdown implements AutoCloseable {
      *     propagated, so this is for a release that does not fail — {@code
      *     ManagedChannel.shutdownNow()} is the one it was written for. A resource whose release can
      *     fail belongs in the caller's own {@link Closers#closeAll} list beside this one instead.
-     * @param timeout the whole budget, measured from {@link #start()}
+     * @param timeout the whole budget, measured from {@link #start()}; at most {@code
+     *     Duration.ofNanos(Long.MAX_VALUE)}, which is checked — a non-positive one is not, and
+     *     gives up at once, the callers' own setters being where positivity is refused
      * @param abandonedCount incremented once whenever {@link #close()} gives up, so the owner can
      *     report the residue. <b>Supplied by the caller rather than held here, and that is the
      *     design</b>: the count has to outlive the task to be observable at all (measured — a
@@ -168,7 +191,16 @@ public final class BoundedShutdown implements AutoCloseable {
         this.awaitTermination = awaitTermination;
         this.description = description;
         this.release = release;
-        this.timeout = timeout;
+        this.timeout = Preconditions.checkNotNull(timeout, "timeout must not be null");
+        // Checked here rather than left to start(), where toNanos() would throw
+        // ArithmeticException instead — on a TaskManager, out of a teardown, where it reaches
+        // Flink's teardown path and not a caller's try. Every setter feeding a budget here
+        // rejects the same value, so a user meets it on the client; this covers the consumer
+        // whose budget is built in code and passes no setter (#334; ADR-0068).
+        Preconditions.checkArgument(
+                timeout.compareTo(MAX_TIMEOUT) <= 0,
+                "timeout must be at most %s (about 292 years)",
+                MAX_TIMEOUT);
         // Checked here, not where it is used: the one increment sits on the give-up path, ahead of
         // the warning that explains it, so a null would turn a bounded and logged give-up into an
         // NPE out of close() with the diagnostic swallowed — during exactly the outage this class
@@ -195,7 +227,16 @@ public final class BoundedShutdown implements AutoCloseable {
         return abandonedCount;
     }
 
-    /** Returns the budget the timeout has not yet used, in nanoseconds; never negative. */
+    /**
+     * Returns the budget the timeout has not yet used, in nanoseconds; never negative.
+     *
+     * <p>Correct at the largest budget this class accepts, where {@link #deadlineNanos} has
+     * overflowed: this subtraction wraps a second time and the two cancel, leaving the true
+     * remainder — measured rather than argued, and pinned by {@code
+     * theLargestExpressibleBudgetIsNotSpentTheInstantItStarts}. Do not "harden" the stamp in {@link
+     * #start()} with {@code Math.addExact} or a saturating add: the first turns a legal budget into
+     * an exception, the second changes nothing, and both are what that test guards against.
+     */
     private long remainingNanos() {
         return Math.max(deadlineNanos - System.nanoTime(), 0);
     }

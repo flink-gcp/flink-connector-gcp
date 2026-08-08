@@ -1488,7 +1488,9 @@ example date-suffixed daily tables), whose per-destination state otherwise grows
 The sweep runs at the end of each successful flush — the point where nothing is pending or in
 flight, so closing a stream writer cannot cancel a live append. Correctness is unaffected: an
 evicted destination that receives a record again rebuilds its stream writer transparently, at
-the cost of that one rebuild. To never evict, set a very large duration.
+the cost of that one rebuild. To never evict, set a very large duration — up to about 292 years
+(`Duration.ofNanos(Long.MAX_VALUE)`), which is as long as the writer's nanosecond clock can
+express and therefore the largest value the builder accepts.
 
 `flushInterval` bounds the loss window of streaming jobs running *without* checkpointing, where
 Flink only flushes at end of input: every interval, the writer appends all pending batches and
