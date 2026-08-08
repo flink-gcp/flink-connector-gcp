@@ -271,6 +271,106 @@ class BigQueryLoadJobRunnerTest {
         assertThat(client.getJobCalls)
                 .extracting(id -> id.getJob())
                 .containsExactly(JOB_ID, JOB_ID);
+        // The conflicting attempt is the only submit: attaching must not create a second job,
+        // which the real service would answer with another 409 (the stub's one-shot would not).
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getJob())
+                .containsExactly(JOB_ID);
+    }
+
+    @Test
+    void aConflictWithARunningJobBehindItIsAttachedToAndPolled() throws Exception {
+        // The common real outcome of the race: the zombie is still loading. It is attached to and
+        // awaited like any re-attached running job.
+        client.answering(
+                JobAnswer.absent(),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+        client.createFailure = conflict();
+
+        BigQueryLoadJobRunner runner = runner();
+        runner.submitLoad(JOB_ID, loadSpec(List.of()));
+        runner.awaitJob(JOB_ID);
+
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getJob())
+                .containsExactly(JOB_ID);
+        // The probe, the conflict lookup, then the poll that saw the job finish.
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly(JOB_ID, JOB_ID, JOB_ID);
+    }
+
+    @Test
+    void aConflictWithAFailedJobBehindItProbesTheNextIdInsteadOfAttaching() throws Exception {
+        // The probe said absent, the create lost the race anyway, and the job it lost to had
+        // already failed. Attaching would fail the commit with that stored failure; a fresh -rN
+        // id can still load the data, which is the whole point of the probes.
+        client.answering(
+                JobAnswer.absent(),
+                JobAnswer.withStatus(failed("zombie had failed")),
+                JobAnswer.absent());
+        client.createFailure = conflict();
+
+        BigQueryLoadJobRunner runner = runner();
+        runner.submitLoad(JOB_ID, loadSpec(List.of()));
+        runner.awaitJob(JOB_ID);
+
+        // The base id's probe, the conflict lookup, then the retry id's probe.
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly(JOB_ID, JOB_ID, JOB_ID + "-r1");
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getJob())
+                .containsExactly(JOB_ID, JOB_ID + "-r1");
+    }
+
+    @Test
+    void aConflictOnTheLastRetryIdFeedsTheGiveUpMessage() {
+        // The failed job the conflict lookup finds reports its error the same way one the probe
+        // finds does: as the "last error" of the give-up message, since it was met last.
+        client.answering(
+                JobAnswer.withStatus(failed("first")),
+                JobAnswer.withStatus(failed("second")),
+                JobAnswer.withStatus(failed("third")),
+                JobAnswer.withStatus(failed("fourth")),
+                JobAnswer.withStatus(failed("fifth")),
+                JobAnswer.absent(),
+                JobAnswer.withStatus(failed("behind the conflict")));
+        client.createFailure = conflict();
+
+        BigQueryLoadJobRunner runner = runner();
+
+        assertThatThrownBy(() -> runner.submitLoad(JOB_ID, loadSpec(List.of())))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("all its retry ids failed")
+                .hasMessageContaining("behind the conflict");
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getJob())
+                .containsExactly(JOB_ID + "-r5");
+    }
+
+    @Test
+    void aStatuslessJobFromTheCreateIsAttachedToAndPolled() throws Exception {
+        // What the SDK's own already-exists absorber hands back: it re-fetches the conflicting
+        // job with fields that exclude the status (ADR-0018), so no failed-job verdict can be
+        // read from it. It must be attached to — polling resolves what it is — never probed
+        // past, or the absorber's every answer would burn a retry id.
+        client.createdStatus = null;
+        client.answering(
+                JobAnswer.absent(), JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+
+        BigQueryLoadJobRunner runner = runner();
+        runner.submitLoad(JOB_ID, loadSpec(List.of()));
+        runner.awaitJob(JOB_ID);
+
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getJob())
+                .containsExactly(JOB_ID);
+        // The probe, then the poll that resolved the missing status.
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly(JOB_ID, JOB_ID);
     }
 
     @Test
@@ -486,9 +586,8 @@ class BigQueryLoadJobRunnerTest {
     }
 
     @Test
-    void aJobThatWasAlreadyFailedWhenItWasAttachedFailsTheCommit() throws Exception {
-        // The one route to a failed job in the runner's hands: submitOrAttach refuses to attach to
-        // one, but create's conflict handler attaches to whatever the losing race left behind.
+    void aFailureThatReportsNoExecutionErrorsAppendsNone() throws Exception {
+        client.createdStatus = TestJobs.status(JobStatus.State.RUNNING);
         client.answering(
                 JobAnswer.absent(),
                 JobAnswer.withStatus(
@@ -496,7 +595,6 @@ class BigQueryLoadJobRunnerTest {
                                 JobStatus.State.DONE,
                                 new BigQueryError("invalid", null, "bad schema"),
                                 null)));
-        client.createFailure = conflict();
 
         BigQueryLoadJobRunner runner = runner();
         runner.submitLoad(JOB_ID, loadSpec(List.of()));
