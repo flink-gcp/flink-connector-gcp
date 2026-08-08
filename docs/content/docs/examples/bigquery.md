@@ -211,7 +211,10 @@ adding partitioning to a running pipeline changes only the tables created from t
 `TableDestination` and returns the options for it.
 
 Creation is idempotent across parallel subtasks (a 409 counts as success), so nothing needs
-coordinating. The credentials need `bigquery.tables.create` on the dataset; `CREATE_NEVER` turns a
+coordinating — and a subtask the per-table quota rate-limits instead of answering 409 retries the
+creation within the recovery budget, so a wide parallelism costs a backoff rather than the job
+(see [Losing the creation race]({{< relref "/docs/connectors/datastream/bigquery" >}}#losing-the-creation-race-costs-a-retry-not-the-job)).
+The credentials need `bigquery.tables.create` on the dataset; `CREATE_NEVER` turns a
 missing table into an immediate job failure instead, which is what to use when a missing table
 means a routing bug.
 

@@ -21,6 +21,8 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
+import com.google.cloud.bigquery.BigQueryError;
+import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
@@ -37,6 +39,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.tables.RetriableTableAdminException;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import io.github.flink.gcp.connector.testutils.TestContexts;
@@ -58,13 +61,20 @@ class BigQueryDefaultStreamWriterTest {
 
     static final TableAdmin NOOP_ADMIN = new NoopTableAdmin();
 
-    /** Admin whose tables always "exist" implicitly: creation is a no-op, reads find nothing. */
+    /**
+     * Admin whose tables always "exist" implicitly: creation is a no-op, reads find nothing.
+     *
+     * <p>{@code create} keeps the SPI's {@code throws IOException} although it never throws, so
+     * subclasses can script a failing creation — which is otherwise impossible, since an override
+     * may not widen the checked exceptions of the method it overrides.
+     */
     static class NoopTableAdmin implements TableAdmin {
         @Override
         public void create(
                 TableDestination destination,
                 TableSchema schema,
-                io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions options) {}
+                io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions options)
+                throws IOException {}
 
         @Override
         public TableSchemaSnapshot getSchema(TableDestination destination) {
@@ -81,6 +91,23 @@ class BigQueryDefaultStreamWriterTest {
     /** A fast retry schedule for tests: 1 ms backoffs, the given attempt budget. */
     static RetrySchedule fastSchedule(int maxAttempts) {
         return new RetrySchedule(1, 1, maxAttempts, 0);
+    }
+
+    /**
+     * What a subtask that lost the table-creation race to the per-table metadata-update quota is
+     * answered, as {@code BigQueryTableAdmin} types it. Measured 2026-08-08 by racing sixteen
+     * concurrent creations of one missing table: five came back HTTP 403 / {@code
+     * rateLimitExceeded} rather than the 409 the connector treats as success (#383).
+     *
+     * <p>Here rather than in one test class because all three writer test classes drive it.
+     */
+    static RetriableTableAdminException rateLimited(TableDestination destination) {
+        return new RetriableTableAdminException(
+                "Failed to create BigQuery table " + destination,
+                new BigQueryException(
+                        403,
+                        "Exceeded rate limits: too many table update operations for this table.",
+                        new BigQueryError("rateLimitExceeded", null, "Exceeded rate limits")));
     }
 
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;

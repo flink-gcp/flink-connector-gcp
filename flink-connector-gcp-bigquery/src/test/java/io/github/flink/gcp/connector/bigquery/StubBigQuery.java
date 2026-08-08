@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
+package io.github.flink.gcp.connector.bigquery;
 
 import com.google.api.gax.paging.Page;
 import com.google.cloud.NoCredentials;
@@ -50,6 +50,7 @@ import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TableResult;
 import com.google.cloud.bigquery.TestJobs;
 import com.google.cloud.bigquery.WriteChannelConfiguration;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.BigQueryLoadJobRunner;
 
 import javax.annotation.Nullable;
 
@@ -57,13 +58,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The parts of {@link BigQuery} {@link BigQueryLoadJobRunner} reads, with everything else
- * unsupported — so a new dependency on the client shows up as a failing test rather than as a
- * silent null.
+ * The parts of {@link BigQuery} this module's REST callers read, with everything else unsupported —
+ * so a new dependency on the client shows up as a failing test rather than as a silent null.
  *
- * <p>Three methods are live ({@link #getJob}, {@link #create}, {@link #delete(TableId)}), plus
- * {@link #getOptions()}, which the runner never calls itself — {@link Job}'s constructor does, so a
- * stub throwing there fails on the first submitted job. The other 51 throw.
+ * <p>Four methods are live ({@link #getJob}, {@link #create(JobInfo, JobOption...)}, {@link
+ * #create(TableInfo, TableOption...)}, {@link #delete(TableId)}), plus {@link #getOptions()}, which
+ * no caller invokes itself — {@link Job}'s constructor does, so a stub throwing there fails on the
+ * first submitted job. The other 50 throw.
+ *
+ * <p>It lives here, beside {@link RealBigQuery}, rather than in one caller's package, because it
+ * has two consumers: {@link BigQueryLoadJobRunner}'s tests, which it was written for, and {@code
+ * BigQueryTableAdmin}'s, which need a failing {@code create(TableInfo)} to pin how a REST failure
+ * is typed. A third consumer earns its methods here the same way.
  *
  * <p>{@code getJob} answers <em>positionally</em> — the first call takes the first scripted answer
  * — because the runner's calls are a sequence, not a lookup: a submit probes {@code base}, {@code
@@ -72,31 +78,37 @@ import java.util.List;
  * failure instead of an unscripted null. Each answered job is stamped with the id it was
  * <em>asked</em> for, as the service does.
  */
-final class StubBigQuery implements BigQuery {
+public final class StubBigQuery implements BigQuery {
 
     /** Every {@link JobId} {@code getJob} was called with, in order. */
-    final List<JobId> getJobCalls = new ArrayList<>();
+    public final List<JobId> getJobCalls = new ArrayList<>();
 
     /** What {@code getJob} answers, one entry per call. */
     private final List<JobAnswer> getJobAnswers = new ArrayList<>();
 
     /** Every {@link JobInfo} {@code create} was called with, in order. */
-    final List<JobInfo> created = new ArrayList<>();
+    public final List<JobInfo> created = new ArrayList<>();
 
     /** Every {@link TableId} {@code delete} was called with, in order. */
-    final List<TableId> deleted = new ArrayList<>();
+    public final List<TableId> deleted = new ArrayList<>();
 
     /**
      * The status a created job reports; {@code null} for the statusless job the SDK's own
      * already-exists absorber hands back (it re-fetches with fields that exclude the status).
      */
-    @Nullable JobStatus createdStatus = TestJobs.status(JobStatus.State.DONE);
+    @Nullable public JobStatus createdStatus = TestJobs.status(JobStatus.State.DONE);
 
     /** Thrown by the next {@code create} call when set, and consumed by it: later calls succeed. */
-    @Nullable BigQueryException createFailure;
+    @Nullable public BigQueryException createFailure;
+
+    /** Every {@link TableInfo} {@code create(TableInfo)} was called with, in order. */
+    public final List<TableInfo> createdTables = new ArrayList<>();
+
+    /** Thrown by the next {@code create(TableInfo)} call, and consumed by it. */
+    @Nullable public BigQueryException createTableFailure;
 
     /** Thrown by {@code delete} when set. */
-    @Nullable RuntimeException deleteFailure;
+    @Nullable public RuntimeException deleteFailure;
 
     /**
      * The options {@link Job}'s constructor reads.
@@ -116,7 +128,7 @@ final class StubBigQuery implements BigQuery {
                     .build();
 
     /** What a scripted {@code getJob} call answers. */
-    static final class JobAnswer {
+    public static final class JobAnswer {
 
         @Nullable private final JobStatus status;
         private final boolean present;
@@ -130,28 +142,28 @@ final class StubBigQuery implements BigQuery {
         }
 
         /** Answers that no job exists under the id asked for. */
-        static JobAnswer absent() {
+        public static JobAnswer absent() {
             return new JobAnswer(null, false, null);
         }
 
         /** Answers with a job in the given status. */
-        static JobAnswer withStatus(JobStatus status) {
+        public static JobAnswer withStatus(JobStatus status) {
             return new JobAnswer(status, true, null);
         }
 
         /** Answers with a job whose status the response did not carry. */
-        static JobAnswer withoutStatus() {
+        public static JobAnswer withoutStatus() {
             return new JobAnswer(null, true, null);
         }
 
         /** Fails the lookup, as the client does once its own retries are exhausted. */
-        static JobAnswer failing(BigQueryException failure) {
+        public static JobAnswer failing(BigQueryException failure) {
             return new JobAnswer(null, false, failure);
         }
     }
 
     /** Scripts the answers {@code getJob} gives, in call order. */
-    void answering(JobAnswer... answers) {
+    public void answering(JobAnswer... answers) {
         getJobAnswers.addAll(List.of(answers));
     }
 
@@ -229,7 +241,16 @@ final class StubBigQuery implements BigQuery {
 
     @Override
     public Table create(TableInfo tableInfo, TableOption... options) {
-        throw unsupported("create(TableInfo)");
+        createdTables.add(tableInfo);
+        if (createTableFailure == null) {
+            // Deliberately not a return: a successful creation would have to hand back a Table,
+            // which the SDK lets nobody construct (docs/adr/0067), and no caller reads the value.
+            // Every test here scripts a failure, so reaching this is a test that forgot to.
+            throw unsupported("a successful create(TableInfo)");
+        }
+        BigQueryException failure = createTableFailure;
+        createTableFailure = null;
+        throw failure;
     }
 
     @Override

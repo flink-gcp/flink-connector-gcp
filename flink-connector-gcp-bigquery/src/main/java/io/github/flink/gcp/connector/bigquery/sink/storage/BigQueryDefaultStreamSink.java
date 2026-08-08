@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryDefaul
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.RowAppenderFactory;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.StreamWriterRowAppenderFactory;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 
 import java.io.IOException;
@@ -81,7 +82,7 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
             return new BigQueryDefaultStreamWriter<>(
                     config,
                     new StreamWriterRowAppenderFactory(options, config.getEmulatorEndpoint()),
-                    new BigQueryTableAdmin(config.getEmulatorRestEndpoint()),
+                    createTableAdmin(),
                     context.metricGroup(),
                     options,
                     context.getProcessingTimeService());
@@ -98,6 +99,25 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
             Closers.closeAllSuppressing(e, config.getFailedRowHandler()::close);
             throw e;
         }
+    }
+
+    /**
+     * The admin the writer creates tables through: the REST one, wrapped so a creation the
+     * per-table quota rate-limits is repeated rather than failing the write (#383).
+     *
+     * <p>A method rather than an inline expression so a test can assert what was wired. The
+     * overload below lets a test inject its own admin, which means the wrap is otherwise reachable
+     * only by a job against real BigQuery — and a `createWriter` that stopped wrapping would ship
+     * green, the failure appearing as a job losing a race it usually wins. Same argument as {@code
+     * BufferedStreamCommitter.getCreateDisposition}.
+     *
+     * @return the admin
+     */
+    @VisibleForTesting
+    TableAdmin createTableAdmin() {
+        return new RetryingTableAdmin(
+                new BigQueryTableAdmin(config.getEmulatorRestEndpoint()),
+                options.toRecoverySchedule());
     }
 
     /** Test entry point; unlike the production path it does not open the failure handler. */

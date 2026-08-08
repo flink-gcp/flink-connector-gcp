@@ -221,14 +221,15 @@ The connector's own `BufferedStreamOptions`, which this write method **requires*
 family above, a DDL that selects the write method and sets none of these still gets one, with every
 knob at its default — so there is no key to remember beside `sink.write-method`.
 
-One thing to decide before the first run of a job that auto-creates its table: each writer subtask
-creates the stream itself, and on a missing table each one attempts the creation. Against BigQuery's
-per-table metadata quota that is a race — measured at parallelism 10, the service answers *"Exceeded
-rate limits: too many table update operations for this table"* and the recovery schedule
-(`sink.buffered-stream.recovery.*`) absorbs it, but the budget is finite and a large cluster's
-default parallelism is larger than 10. Either create the table first and use
-`'sink.create-disposition' = 'create-never'`, or cap `sink.parallelism` for the run that creates
-it.
+Worth knowing before the first run of a job that auto-creates its table: each writer subtask creates
+the stream itself, and on a missing table each one attempts the creation. Against BigQuery's
+per-table metadata quota that is a race — measured at parallelism 10, and again by racing sixteen
+creations directly, where the service answered HTTP 403 `rateLimitExceeded`, *"Exceeded rate limits:
+too many table update operations for this table"*. The connector retries the creation itself within
+`sink.buffered-stream.recovery.*`, so losing the race costs a backoff rather than the job. The
+budget is still finite, so on a very large cluster the cheaper answer is to skip the race: create
+the table first and use `'sink.create-disposition' = 'create-never'`, or cap `sink.parallelism` for
+the run that creates it.
 
 There is no connection-pool group here: unlike the default-stream path, these appenders never enter
 the SDK's connection pool, so there is nothing for its sizing knobs to size.

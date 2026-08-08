@@ -41,6 +41,7 @@ import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import io.github.flink.gcp.connector.testutils.TestContexts;
@@ -224,6 +225,29 @@ class BigQueryDefaultStreamWriterMetricsTest {
         assertThat(counter("tablesCreated")).isEqualTo(1);
         assertThat(counter("schemaReconciliations")).isZero();
         assertThat(errors("NOT_FOUND")).isEqualTo(1);
+    }
+
+    @Test
+    void countsARetriedCreationOnceRatherThanPerAttempt() throws Exception {
+        // The counter answers "how many tables did this subtask ask for", not "how many REST calls
+        // did it take" — so the two attempts a lost creation race costs must not read as two
+        // tables. The writer counts after the admin returns, which is what makes it hold however
+        // many times the admin had to ask.
+        //
+        // The admin is wrapped here as the sink wraps it in production: the retry is the
+        // decorator's, so an unwrapped fake would make this case pass for the wrong reason.
+        factory.scriptedResults.add(failedWith(Status.Code.NOT_FOUND));
+        admin.creationFailures.add(BigQueryDefaultStreamWriterTest.rateLimited(DESTINATION));
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        new RetryingTableAdmin(
+                                admin, BigQueryDefaultStreamWriterTest.fastSchedule(3)));
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+
+        assertThat(admin.creates).containsExactly(DESTINATION, DESTINATION);
+        assertThat(counter("tablesCreated")).isEqualTo(1);
     }
 
     @Test
@@ -446,6 +470,18 @@ class BigQueryDefaultStreamWriterMetricsTest {
         return writer(new StringSerializer(), null);
     }
 
+    /** A writer over a given admin — for the one case that needs the production wrap around it. */
+    private BigQueryDefaultStreamWriter<String> writer(TableAdmin tableAdmin) {
+        return new BigQueryDefaultStreamWriter<>(
+                config(new StringSerializer(), null, (element, context) -> DESTINATION),
+                factory,
+                tableAdmin,
+                metrics,
+                BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                BigQueryDefaultStreamWriterTest.fastSchedule(3));
+    }
+
     private BigQueryDefaultStreamWriter<String> writer(
             BigQueryProtoSerializer<String> serializer, SchemaUpdateOptions schemaUpdateOptions) {
         return writer(serializer, schemaUpdateOptions, (element, context) -> DESTINATION);
@@ -578,6 +614,10 @@ class BigQueryDefaultStreamWriterMetricsTest {
 
         private final List<TableDestination> creates = new ArrayList<>();
         private final List<TableSchema> updates = new ArrayList<>();
+
+        /** What each creation attempt throws, one entry per attempt; exhausted means success. */
+        private final Deque<IOException> creationFailures = new ArrayDeque<>();
+
         private TableSchema liveSchema;
 
         RecordingTableAdmin(TableSchema liveSchema) {
@@ -586,8 +626,13 @@ class BigQueryDefaultStreamWriterMetricsTest {
 
         @Override
         public void create(
-                TableDestination destination, TableSchema schema, TableCreateOptions options) {
+                TableDestination destination, TableSchema schema, TableCreateOptions options)
+                throws IOException {
             creates.add(destination);
+            IOException failure = creationFailures.poll();
+            if (failure != null) {
+                throw failure;
+            }
             liveSchema = schema;
         }
 

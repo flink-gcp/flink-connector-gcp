@@ -722,7 +722,10 @@ public class BigQueryBufferedStreamWriter<T>
     /**
      * Creates a buffered stream on the destination table. A missing table is created under {@code
      * CREATE_IF_NEEDED} and the stream creation retried while the table metadata propagates to the
-     * Storage Write API backend.
+     * Storage Write API backend. The creation itself is repeated by the {@link TableAdmin} the sink
+     * wired ({@code RetryingTableAdmin}, on this method's own recovery schedule), so a subtask that
+     * loses the creation race to the per-table quota rather than to an HTTP 409 waits its turn
+     * instead of failing the write.
      */
     private String createStream() throws IOException {
         boolean tableCreated = false;

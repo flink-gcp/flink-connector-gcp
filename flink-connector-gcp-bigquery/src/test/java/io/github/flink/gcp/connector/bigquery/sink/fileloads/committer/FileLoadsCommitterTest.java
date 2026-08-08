@@ -35,6 +35,8 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeLoadJob
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import io.github.flink.gcp.connector.testutils.TestSinkCommitterMetricGroup;
 import org.junit.jupiter.api.Test;
@@ -147,6 +149,40 @@ class FileLoadsCommitterTest {
                             .map(TestCommitRequest::new)
                             .collect(Collectors.toList()));
         }
+    }
+
+    @Test
+    void theDefaultAdminFactoryWrapsForTheCreationRetry() {
+        // Every case above injects its own factory, so a public constructor that stopped wrapping
+        // would leave them all green — and the only thing to notice would be a commit failing a
+        // creation race it could have waited out (#383). The reconcile budget and not a knob of
+        // its own: it is already this write method's budget for contention on the same per-table
+        // metadata quota, so the attempt count is what names which schedule was taken.
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .schemaReconcileMaxAttempts(6)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .destination(T1)
+                                        .serializer(new SchemaOnlySerializer())
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        FileLoadsCommitter committer =
+                new FileLoadsCommitter(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        TestSinkCommitterMetricGroup.create());
+
+        TableAdmin admin = committer.tableAdmin();
+
+        assertThat(admin).isInstanceOf(RetryingTableAdmin.class);
+        assertThat(((RetryingTableAdmin) admin).getSchedule().maxAttempts()).isEqualTo(6);
     }
 
     private static FileLoadsCommittable file(String name) {

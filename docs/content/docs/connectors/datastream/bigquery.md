@@ -706,6 +706,36 @@ relaxing a column afterwards is a schema update rather than an edit.
 
 With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
 
+### Losing the creation race costs a retry, not the job
+
+HTTP 409 is not the only way to lose the race. Past a handful of concurrent creations of the same
+table, BigQuery answers the **per-table metadata-update quota** instead — measured 2026-08-08 by
+racing sixteen creations at one absent table, of which five came back:
+
+```text
+403  rateLimitExceeded
+Exceeded rate limits: too many table update operations for this table.
+```
+
+That is not a 409, so it does not count as success, and the client library does not retry it either
+(its own retryable set is `500/502/503/504`). The connector retries the creation in place within the
+**recovery** budget — the same `recovery*` values the rest of the repair path uses, never the longer
+schema-wait one, since a rate limit on table updates clears in seconds. At most one creation budget
+is spent per repair, so the worst case is one recovery budget for the creation on top of the one the
+enclosing repair already has.
+
+This holds for **every** write method, not only the storage ones: FILE_LOADS creates its destination
+tables in the committer, and that creation is retried too — on `schemaReconcile*`, already this
+write method's budget for contention on the same per-table metadata quota.
+
+Retried or not, `tablesCreated` counts one creation per table this subtask asked for.
+
+A failure that repeating cannot fix — a `bigquery.tables.create` denial, an invalid schema — is not
+retried and surfaces immediately. Nor is the neighbouring `quotaExceeded` reason, which BigQuery
+attaches to quotas refilling on boundaries longer than any connector budget as well as to rates: it
+has not been observed for a creation here, and spending the budget on one would only delay a failure
+that already names its own reason.
+
 ### A missing table does not say `NOT_FOUND`
 
 Opening a Storage Write API stream against a table that is not there answers **`PERMISSION_DENIED`**,
@@ -999,11 +1029,11 @@ stream-creation time — schema from the serializer, partitioning and clustering
 fails immediately. The propagation window also reaches the commit, so the same allowance applies
 to the checkpoint's `FlushRows` (see
 [A missing table does not say `NOT_FOUND`](#a-missing-table-does-not-say-not_found)). Every subtask
-races to create the same table: the losers get HTTP 409, which the connector treats as success, but
-the race is not free — at a high enough sink parallelism BigQuery answers `Exceeded rate limits: too
-many table update operations for this table` instead, which is not a 409 and does not count as
-success. A job measured at parallelism ten recovered and completed anyway; to avoid the question,
-create the table up front and use `CreateDisposition.CREATE_NEVER`.
+races to create the same table: the losers get HTTP 409, which the connector treats as success, and
+a loser the per-table quota answers instead retries the creation on the same budget (see
+[Losing the creation race costs a retry, not the job](#losing-the-creation-race-costs-a-retry-not-the-job)).
+Skipping the race entirely is still an option: create the table up front and use
+`CreateDisposition.CREATE_NEVER`.
 
 **Error handling.** Serialization failures and oversized rows go to the `FailureHandler` before
 any stream exists, as in the at-least-once method. Server-side **row-level rejections are also
@@ -1235,7 +1265,8 @@ Append failures are classified on the task thread and routed by class:
 | Stale stream writer | `STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`, writer closed, the SDK's callback-wait watchdog timeout (a sent append got no response within the SDK's hardcoded 5 minutes; the raw exception carries no status code) | Repaired like transient failures: the destination's stream writer is rebuilt and the batch re-appended within the retry budget |
 | Schema mismatch | `SCHEMA_MISMATCH_EXTRA_FIELDS` (rows carry fields the table does not have) | With `schemaUpdateOptions(...)` enabled: the table schema is reconciled and the batch re-appended while the update propagates (see [Schema evolution](#schema-evolution)). Otherwise terminal |
 | Missing table | `NOT_FOUND`, and the `PERMISSION_DENIED` the service [masks a missing table behind](#a-missing-table-does-not-say-not_found) | Under `CREATE_IF_NEEDED`: the table is created and the batch re-appended while metadata propagates, within the **recovery** retry budget — never the schema one, whatever the repair was already running on (see [Table auto-creation](#table-auto-creation)). On the exactly-once path the committer's `FlushRows` waits the same window out — but on the `PERMISSION_DENIED` **only**, since it creates nothing itself and a `NOT_FOUND` there names a write stream. Under `CREATE_NEVER`: terminal |
-| Terminal | `INVALID_ARGUMENT`, the two codes above under `CREATE_NEVER`, `NOT_FOUND` from the exactly-once committer's `FlushRows` under any disposition, retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
+| Rate-limited creation | The REST creation itself answering HTTP 429, or 403 with reason `rateLimitExceeded` — the per-table metadata-update quota a creation race can exceed | The creation is repeated within the **recovery** budget (see [Losing the creation race costs a retry, not the job](#losing-the-creation-race-costs-a-retry-not-the-job)). HTTP 409 is not in this class: it means the table is already there and counts as success |
+| Terminal | `INVALID_ARGUMENT`, the two codes above under `CREATE_NEVER`, `NOT_FOUND` from the exactly-once committer's `FlushRows` under any disposition, a creation failure repeating cannot fix (`bigquery.tables.create` denied, an invalid schema, the unobserved `quotaExceeded` reason), retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
 | Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured failure handler; surviving rows of the batch are re-appended. A row-detailed error whose own status code is transient is classified transient, not row-level: outage-shaped failures never reach the handler |
 
 A record the serializer *skips* by returning `null` is in none of those classes: it is not a
