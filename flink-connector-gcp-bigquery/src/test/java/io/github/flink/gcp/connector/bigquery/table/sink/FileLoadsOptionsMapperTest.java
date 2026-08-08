@@ -63,6 +63,9 @@ class FileLoadsOptionsMapperTest {
                 "minCheckpointInterval",
                 BigQueryConnectorOptions.SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL);
         SETTER_TO_OPTION.put(
+                "maxStagingFileBytes",
+                BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES);
+        SETTER_TO_OPTION.put(
                 "loadJobPollInitialBackoff",
                 BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF);
         SETTER_TO_OPTION.put(
@@ -155,6 +158,9 @@ class FileLoadsOptionsMapperTest {
         options.put(key("tempDataset"), "staging_dataset");
         options.put(key("writeDisposition"), "write-truncate");
         options.put(key("minCheckpointInterval"), "30 s");
+        // A MemorySize key, so the unit suffix is the point: a plain "64" would also parse, and
+        // would pass whether or not the mapper converted the value.
+        options.put(key("maxStagingFileBytes"), "64 mb");
         options.put(key("loadJobPollInitialBackoff"), "2 s");
         options.put(key("loadJobPollMaxBackoff"), "40 s");
         options.put(key("schemaReconcileInitialBackoff"), "1 s");
@@ -168,6 +174,7 @@ class FileLoadsOptionsMapperTest {
         assertThat(mapped.getTempDataset()).isEqualTo("staging_dataset");
         assertThat(mapped.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE);
         assertThat(mapped.getMinCheckpointInterval()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(mapped.getMaxStagingFileBytes()).isEqualTo(64L * 1024 * 1024);
         assertThat(mapped.getLoadJobPollInitialBackoff()).isEqualTo(Duration.ofSeconds(2));
         assertThat(mapped.getLoadJobPollMaxBackoff()).isEqualTo(Duration.ofSeconds(40));
         // The setters say schemaReconcile*, the getters say schemaUpdate*.

@@ -51,7 +51,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   use `PERMISSION_DENIED` as a terminal example** — four tests and two javadoc sentences moved to
   `INVALID_ARGUMENT`, the second pair including the base module's `FailureHandler`.
 
-## FILE_LOADS (`docs/adr/0018`–`0021`)
+## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`)
 
 - Deterministic job ids + get-then-submit re-attach; loads commit **in the committer** on the
   checkpoint, synchronously; streaming overflow appends sequentially (`docs/adr/0018`). The
@@ -71,6 +71,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Every load reconciles against the live table via `ensureFinalTable`; the native
   `ALLOW_FIELD_*` options are kept deliberately, and the once-per-destination union warn is
   load-bearing (`docs/adr/0021`).
+- **The staging roll threshold is a measured band, and smaller is not better**: the curve is a
+  basin with a floor near 8 MiB, so any change to `maxStagingFileBytes` needs a floor as well as a
+  ceiling, and the 10,000-URI cap is what the value trades *against* rather than what it is derived
+  from (`docs/adr/0070`). The writer keeps no copy of the value and no test-only constructor takes
+  it — it reads the option, so a test configures it the way a user would. Load-time numbers quoted
+  anywhere carry their date and sample size; a superseding measurement edits them in place.
 
 ## Exactly-once (`docs/adr/0022`)
 

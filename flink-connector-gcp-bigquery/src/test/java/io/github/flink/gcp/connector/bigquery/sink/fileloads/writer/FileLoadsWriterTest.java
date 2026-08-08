@@ -216,16 +216,18 @@ class FileLoadsWriterTest {
     }
 
     private static FileLoadsWriter<TestRow> writer(
-            BigQuerySinkConfig<TestRow> config, StagingStorage storage, long maxFileBytes) {
+            BigQuerySinkConfig<TestRow> config, StagingStorage storage, long maxStagingFileBytes) {
         return new FileLoadsWriter<>(
                 config,
-                FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxStagingFileBytes(maxStagingFileBytes)
+                        .build(),
                 storage,
                 TestSinkWriterMetricGroup.create(),
                 "0123456789abcdef0123456789abcdef",
                 3,
-                1,
-                maxFileBytes);
+                1);
     }
 
     private static List<GenericRecord> readAvro(byte[] bytes) throws IOException {
@@ -243,7 +245,7 @@ class FileLoadsWriterTest {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         BigQuerySinkConfig<TestRow> config = config(FailureHandler.failJob());
         FileLoadsWriter<TestRow> writer =
-                writer(config, storage, FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                writer(config, storage, FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         writer.write(new TestRow("t1", "b", null), CONTEXT);
@@ -296,7 +298,7 @@ class FileLoadsWriterTest {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         CollectingHandler handler = new CollectingHandler();
         FileLoadsWriter<TestRow> writer =
-                writer(config(handler), storage, FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                writer(config(handler), storage, FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         writer.write(new TestRow("t1", "a", 1L, true, false), CONTEXT);
         Collection<FileLoadsCommittable> committables = writer.prepareCommit();
@@ -315,7 +317,7 @@ class FileLoadsWriterTest {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         CollectingHandler handler = new CollectingHandler();
         FileLoadsWriter<TestRow> writer =
-                writer(config(handler), storage, FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                writer(config(handler), storage, FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         writer.write(new TestRow("t1", "runtime-boom", 1L), CONTEXT);
         Collection<FileLoadsCommittable> committables = writer.prepareCommit();
@@ -331,7 +333,7 @@ class FileLoadsWriterTest {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         CollectingHandler handler = new CollectingHandler();
         FileLoadsWriter<TestRow> writer =
-                writer(config(handler), storage, FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                writer(config(handler), storage, FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         writer.write(new TestRow("t1", "a", 1L, false, true), CONTEXT);
         writer.write(new TestRow("t1", "b", 2L), CONTEXT);
@@ -352,7 +354,7 @@ class FileLoadsWriterTest {
                 writer(
                         config(FailureHandler.failJob()),
                         storage,
-                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         assertThatThrownBy(() -> writer.write(new TestRow("t1", "a", 1L, true, false), CONTEXT))
                 .isInstanceOf(IOException.class);
@@ -367,7 +369,7 @@ class FileLoadsWriterTest {
                 writer(
                         config(FailureHandler.failJob()),
                         new InMemoryStagingStorage(),
-                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         writer.flush(false);
         writer.flush(true);
@@ -380,7 +382,7 @@ class FileLoadsWriterTest {
                 writer(
                         config(handler),
                         new InMemoryStagingStorage(),
-                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         writer.write(new TestRow("t1", "a", 1L, true, false), CONTEXT);
         writer.flush(false);
@@ -398,7 +400,7 @@ class FileLoadsWriterTest {
                 writer(
                         config(handler),
                         new InMemoryStagingStorage(),
-                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         writer.close();
 
@@ -414,7 +416,7 @@ class FileLoadsWriterTest {
         CollectingHandler handler = new CollectingHandler();
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         FileLoadsWriter<TestRow> writer =
-                writer(config(handler), storage, FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                writer(config(handler), storage, FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         storage.closeFailure = new NoClassDefFoundError("staged file close blew up");
 
@@ -433,7 +435,7 @@ class FileLoadsWriterTest {
                 writer(
                         config(FailureHandler.failJob()),
                         storage,
-                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         writer.flush(false);
@@ -462,7 +464,7 @@ class FileLoadsWriterTest {
                 writer(
                         config(FailureHandler.failJob()),
                         storage,
-                        FileLoadsWriter.DEFAULT_MAX_FILE_BYTES);
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
 
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         writer.close();

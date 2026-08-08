@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
@@ -59,6 +60,7 @@ public final class FileLoadsOptionsMapper {
                     BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_DATASET,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_WRITE_DISPOSITION,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_MAX_BACKOFF,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_INITIAL_BACKOFF,
@@ -108,6 +110,9 @@ public final class FileLoadsOptionsMapper {
                 .ifPresent(builder::writeDisposition);
         config.getOptional(BigQueryConnectorOptions.SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL)
                 .ifPresent(builder::minCheckpointInterval);
+        config.getOptional(BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES)
+                .map(MemorySize::getBytes)
+                .ifPresent(builder::maxStagingFileBytes);
 
         config.getOptional(BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF)
                 .ifPresent(builder::loadJobPollInitialBackoff);

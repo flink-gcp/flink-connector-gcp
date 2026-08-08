@@ -462,6 +462,18 @@ public final class BigQueryConnectorOptions {
                                     + " one, so lowering this is an explicit opt-in for a job whose"
                                     + " daily count stays safe.");
 
+    public static final ConfigOption<MemorySize> SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES =
+            ConfigOptions.key("sink.file-loads.max-staging-file-bytes")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The size at which an open staging file is finished and the next one"
+                                    + " opened. Raise it for a very large volume to one destination,"
+                                    + " which the 10,000-URI per-load-job cap would otherwise push"
+                                    + " onto the temporary-table plus copy path; lowering it buys"
+                                    + " little, because measured load time climbs steeply below"
+                                    + " about 8 MiB per file.");
+
     public static final ConfigOption<Duration> SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF =
             ConfigOptions.key("sink.file-loads.load-job-poll.initial-backoff")
                     .durationType()
