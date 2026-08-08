@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-06 (measured on [#289], which grew a writer change because of it); buffered half
-  measured 2026-08-08 on [#318], which grew a committer change the same way
-- Issues: [#289], [#318]
+  measured 2026-08-08 on [#318], which grew a committer change the same way; the buffered
+  **append** side measured 2026-08-08 on [#382], which grew no code change because of it
+- Issues: [#289], [#318], [#382]
 - Modules: bigquery (`sink.storage`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § A missing table does
   not say NOT_FOUND
@@ -62,6 +63,41 @@ directly at a table that does not exist) produced two facts the inference did no
 The second is a defect of the same shape as the one this ADR's first half fixed, found the same
 way: the half nobody had driven at a missing table was the half that was wrong.
 
+The buffered writer's **append** side was inferred in its turn, and measuring it settled it the
+other way round: the window does not reach an append, so its four recovery decisions need no
+missing-table verdict. (A table *dropped* mid-run would of course answer the masked code to an
+append; that is terminal by design here, and no allowance would repair it.) 140 trials, in seven
+runs of twenty, a table of its own each, driving the writer's own sequence and pausing before no
+RPC that had not already failed — `CreateWriteStream` at the absent table, a creation through
+`BigQueryTableAdmin`, `CreateWriteStream` again, the first `AppendRows` on the stream that opens,
+then the `FlushRows` that would commit it:
+
+| the RPC, in the order a trial drives it | denials | trials affected |
+|---|---|---|
+| `CreateWriteStream` at the absent table | 140 | 140, by construction |
+| `CreateWriteStream` after the creation | 45 | 32 (23%), never more than two in a row |
+| the first `AppendRows` on the stream | **0** | **0** |
+| the first `FlushRows` on that stream | 11 | 11 (8%), every one cleared by the next attempt |
+
+The zero is not a weak observation, and keeping the flush in the same trial is what makes it strong:
+the appends had *the same 140 opportunities* the flush was denied at eleven times, on the same
+table, immediately before it. So they were not sheltered by a window that had already closed — the
+window was demonstrably still open for `FlushRows` — and had they shared the flush's rate, zero of
+140 would have arrived with probability 1 × 10⁻⁵. Zero of 140 puts the 95% upper bound on the
+per-trial rate at about 2%.
+
+Five end-to-end runs of the auto-creating job in the same session, two subtasks racing to create one
+table and ten creation attempts across five tables, add nothing at either place: no committer
+retry, no failed append, no restart. That is the shape the single flush observation above came from
+and it did not recur in five, so read that one-in-five as a small sample rather than as a rate.
+A reading that fits both write paths, offered as a reading and not as a mechanism: an append is
+denied when it is the writer's *first* contact with the table, and not otherwise. On the default
+stream the first RPC **is** an append — where the `TABLES_GET` denial and the post-creation window
+were both seen — while on the buffered path a stream has already been opened on the table before any
+append is sent. What it does not explain is `FlushRows`, which names the table too and is denied
+*after* an append to the same table has succeeded; so whatever propagates here is not one monotonic
+per-table fact, and the mechanism stays unpinned exactly as the paragraph below says.
+
 **What one observation does not settle** — the fix is right under every reading, but the mechanism
 is not pinned, and the masked code is precisely what cannot distinguish them. Table-metadata
 propagation is the reading recorded above; ACL propagation on a freshly created table would look
@@ -75,6 +111,17 @@ The verdict is `AppendErrorClassifier.isMissingTable`, taking both codes, consum
 `BigQueryDefaultStreamWriter` (three sites) and `BigQueryBufferedStreamWriter.createStream`.
 `BufferedStreamCommitter.flush` takes `isExistenceMasked`, the masked half alone — see the
 committer paragraph below for why the two cannot be the same predicate.
+
+**The buffered writer's append side takes no verdict at all, and that is a measured decision rather
+than an omission.** Its four recovery decisions — `recover`, `resendAtSameOffset`, `replayBatches`
+and `probeRestoredStream` — stay transient-only. Widening them would have been this ADR's own
+mistake a third time, on zero observations where the committer's allowance has one, and it is not
+free either: under `CREATE_IF_NEEDED` each of the four would then spend the recovery budget on a
+genuine denial that fails at once today. `openAppender` is not a fifth candidate: read against
+bigquerystorage 3.30.0, `StreamWriter.build()` sends no `AppendRows` — its `ConnectionWorker`
+creates a client of its own and starts its append thread, and the bidi stream opens from that
+thread on the first append — so no server verdict can arrive there, only a local `INVALID_ARGUMENT`
+for a null writer schema.
 
 Three things not to re-derive:
 
@@ -173,7 +220,26 @@ cannot influence.
   case is deliberately not the regression test for the committer — the window appeared in one run
   of five, so a job that fails only when the race is lost would be flaky rather than
   discriminating. `BufferedStreamCommitterTest` carries that.
+- `createStream`'s allowance is **exercised**, not defensive: 45 denials across 32 of the 140 trials
+  needed it, and nothing had measured that before. It does not contradict the four job runs above
+  that saw no `CreateWriteStream` denial — those are eight opportunities, and at this rate eight
+  clean ones arrive about one time in eight.
+- The append case stays in that class, and it **asserts its append count is zero** rather than only
+  printing it: the four sites are transient-only *because* of that zero, so the run that finds
+  otherwise has to stop. Logging it alone would leave the observation that overturns this decision
+  in a weekly job's output and nowhere else, which is the same as never having measured it. A denial
+  at the stream or the flush is expected and only recorded, and the tally is logged *before* the
+  assertion so a failing run still carries all three numbers. What keeps a **quiet** run from
+  reading as an answer is the flush in the same trial: no append denial beside no flush denial says
+  only that nothing propagated slowly that day, and at the 8% rate above one run of twenty lands
+  there about 20% of the time — as one of the seven did. Every failure it meets is also held to a
+  missing-table or transient verdict, so a change in what the service answers fails it too.
+- What would reopen this: **one** observed masked denial from an append on either storage path earns
+  a new issue naming this ADR, not a reopening of [#382] — the [#174] protocol. The four sites are
+  named above so that issue can start from the list rather than rediscover it.
 
+[#174]: https://github.com/laughingman7743/flink-connector-gcp/issues/174
 [#289]: https://github.com/laughingman7743/flink-connector-gcp/issues/289
 [#326]: https://github.com/laughingman7743/flink-connector-gcp/issues/326
 [#318]: https://github.com/laughingman7743/flink-connector-gcp/issues/318
+[#382]: https://github.com/laughingman7743/flink-connector-gcp/issues/382

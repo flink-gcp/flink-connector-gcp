@@ -99,6 +99,15 @@ import java.util.concurrent.ExecutionException;
  * buffered stream's schema is pinned at creation, and mid-stream schema evolution is out of scope
  * for this write method.
  *
+ * <p><b>A missing table is {@link #createStream}'s business alone.</b> Every append-side recovery
+ * decision here is transient-only on purpose: the propagation window after this writer creates a
+ * table has not been observed to reach an append. Measured over 140 trials, in which the {@code
+ * FlushRows} taken on the same table immediately after each append was denied eleven times and no
+ * append was denied once (see {@code docs/adr/0030}, which also names the four sites and what a
+ * single contrary observation would earn). Adding the verdict here would spend the recovery budget
+ * on a denial that fails at once today — including the one case that is terminal by design, a table
+ * dropped while the job runs, which no amount of waiting repairs.
+ *
  * <p>Backpressure comes from the SDK: {@code StreamWriter} bounds its in-flight requests and blocks
  * further appends until the server acknowledges.
  *
