@@ -130,7 +130,12 @@ POM_NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 # Rule 1 above: the pull-request half of the Maven workflow's paths-ignore. Keep in
 # sync with the push trigger's paths-ignore in .github/workflows/verify.yaml.
 IGNORED_BASENAMES = {"README.md", "CLAUDE.md"}
-IGNORED_PREFIXES = ("opentofu/",)
+# .claude/ is the harness's own directory — skills, settings, worktrees. No build
+# reads it, and rat excludes every dot-directory (`**/.*/**` in the root pom), so
+# like .github/ below it does not even buy the root-only rat run. Named here
+# because editing a skill is a routine change (ADR-0069 made it more so), and
+# without this rule a one-word fix to a description forced the full reactor.
+IGNORED_PREFIXES = ("opentofu/", ".claude/")
 IGNORED_FILES = {
     "tfaction-root.yaml",
     ".github/workflows/tofu-plan.yaml",

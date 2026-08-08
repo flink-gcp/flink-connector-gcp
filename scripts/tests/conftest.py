@@ -60,3 +60,8 @@ def check_notice():
 @pytest.fixture(scope="session")
 def check_metric_docs():
     return load_script("check-metric-docs.py")
+
+
+@pytest.fixture(scope="session")
+def check_skill_frontmatter():
+    return load_script("check-skill-frontmatter.py")

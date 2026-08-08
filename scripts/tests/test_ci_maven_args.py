@@ -407,3 +407,37 @@ def test_malformed_json_is_an_infrastructure_error():
 
 def test_modes_are_mutually_exclusive():
     assert run_cli("--files", "[]", "--full").returncode == 2
+
+
+def test_a_skill_edit_builds_nothing(tmp_path):
+    # .claude/ is the harness's own directory: no build reads it and rat excludes
+    # every dot-directory, so a one-word fix to a skill description must not cost
+    # the full reactor — which it did until ADR-0069 made skills a routine edit
+    # surface and the measurement was taken.
+    out = outputs(
+        run_cli("--files", json.dumps([".claude/skills/push-pr-branch/SKILL.md"]))
+    )
+
+    assert out["maven_args"] == ""
+    assert out["check_notice"] == "false"
+
+
+def test_a_skill_edit_beside_a_module_change_still_builds_that_module(tmp_path):
+    # Ignoring the skill must not ignore what it travelled with. A leaf module,
+    # deliberately: a change to base reaches every connector and the deriver
+    # answers "all modules" with empty maven_args, which would pass this test
+    # without proving the skill was the part that got ignored.
+    out = outputs(
+        run_cli(
+            "--files",
+            json.dumps(
+                [
+                    ".claude/skills/push-pr-branch/SKILL.md",
+                    "flink-connector-gcp-cloudtasks/src/main/java/X.java",
+                ]
+            ),
+        )
+    )
+
+    assert "flink-connector-gcp-cloudtasks" in out["maven_args"]
+    assert "flink-connector-gcp-bigquery" not in out["maven_args"]

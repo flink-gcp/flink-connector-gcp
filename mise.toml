@@ -21,7 +21,8 @@ actionlint = "1.7.12"
 # linter that gains a rule fails a pull request that changed nothing.
 ruff = "0.16.0"
 # scripts/check-notice.py and scripts/check-flink-api-tiers.py are
-# standard-library only, but that standard library must be 3.11+: tomllib
+# standard-library only bar check-skill-frontmatter.py, whose PyYAML comes from
+# its own PEP 723 header; and that standard library must be 3.11+: tomllib
 # reads their scripts/*.toml configs. A major.minor pin, not exact — the
 # requirement is the module’s presence, and a patch release cannot fail a
 # pull request. CI does not use this entry: the ci.yaml jobs that run a

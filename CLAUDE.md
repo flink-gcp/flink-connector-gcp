@@ -79,7 +79,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   allowlist entry in `scripts/flink-api-tiers.toml`; a new one — or a stale entry — fails.
   Runs as its own `verify.yaml` job, not in `lint.yaml` and not inside `just lint` (ADR-0058),
   and it downloads the sources jars (into `target/flink-api-tiers/`) while `just lint` stays
-  offline
+  offline — the rule that also put `check-skill-frontmatter` in `verify.yaml`
 - `just check-option-docs` — holds `docs/content/docs/reference/` to the options the connectors
   actually take (#89), both directions: every public builder setter and every Table API
   `ConfigOption` key must be named in a table whose **first column header is exactly `Option`** —
@@ -122,7 +122,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   (`pyproject.toml` + committed `uv.lock`; uv itself pinned in `mise.toml`). Runs as
   lint.yaml's `script_tests` job. A new `scripts/*.py` checker owes its tests here, alongside
   the curate-* skill the checker rule already demands — a skill being owed for *judgment*,
-  which is why `check-gated-tags` has tests here and no skill.
+  which is why `check-gated-tags` and `check-skill-frontmatter` have tests here and no skill.
   **A checker's tests are synthetic — a tree built in `tmp_path` with `ROOT`/`CONFIG`/`SOURCES`
   monkeypatched onto it — never assertions against the real repository**, which is what keeps
   lint.yaml's paths filter from having to grow to every input those checkers read.
@@ -142,7 +142,24 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   deliberately absent: every PR touching `opentofu/` gets a full plan, which subsumes it).
   Deliberately does **not** run `just --fmt --check` — an unstable feature, excluded from
   just's compatibility guarantee (ADR-0057). actionlint is handed
-  `-shellcheck "$(mise which shellcheck)"` rather than letting it find the runner image's own
+  `-shellcheck "$(mise which shellcheck)"` rather than letting it find the runner image's own.
+  It also runs `just check-skill-frontmatter` (below)
+- `just check-skill-frontmatter` — is every `.claude/skills/*/SKILL.md` frontmatter strict YAML?
+  **A house style, not Claude Code's requirement, and the difference is measured**: the unquoted
+  `description:` carrying a `: ` that PyYAML rejects outright was loaded by Claude Code with its
+  description intact, so its reader is the more tolerant of the two and this check cannot tell you
+  what it would refuse (ADR-0069). What it buys is that a file every tool agrees about cannot fail
+  silently — the file stays valid markdown, no build step reads it, markdownlint's globs exclude
+  it, and a skill that did not load looks like Claude choosing not to use it. Parses with
+  **PyYAML** rather than a hand-rolled approximation (a second, diverging parser is the failure
+  this repository has paid for elsewhere), declared in the script's own **PEP 723** header, so the
+  uv project takes no *runtime* dependency and this one script runs as
+  `uv run --no-project scripts/…` (pyyaml is in the dev group all the same, because
+  `just test-scripts` loads the script by file path). Also checks
+  name-matches-directory, a non-empty description, no duplicate key and a skill directory whose
+  `SKILL.md` is gone; no allowlist, so no curate-* skill. **Its own `verify.yaml` job, not part of
+  `just lint`** — because it downloads, and `just lint` stays offline; that is
+  `check-flink-api-tiers`'s rule applied rather than excepted
 - `just docs` / `just docs-serve` / `just docs-chroma` — build the site as CI does (a deprecation,
   a broken `relref` or a missing shortcode fails the build), preview it, regenerate the chroma
   palettes. `mise.toml` pins hugo-extended and Go; hugo-book is a Hugo module pinned in
@@ -264,6 +281,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   table a change with new tests carries, the decisions weighed and declined. Squash before merge
   (the review fix-ups are session bookkeeping), so the merged commit message carries the same
   WHAT/WHY and the per-round detail stays in the PR comments
+- **Every push of a PR branch goes through `.claude/skills/push-pr-branch/`** — the first one, each
+  review round's fix-ups, and the final one. Squashing with `git reset --soft origin/main` on a
+  branch that has not been rebased builds a commit whose parent is main's tip and whose tree is the
+  branch's older one, silently reverting everything main gained meanwhile. **Rebase first, then
+  squash**, and read `git diff --diff-filter=D --name-only origin/main` — a list, not the
+  diffstat's number — before every push. Nothing downstream reports this: CI passes on a consistent
+  revert, "require branches to be up to date" is satisfied by the reverting commit itself, and
+  GitHub's "Update branch" cements the deletions rather than undoing them (`docs/adr/0069`)
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency
   findings, not only correctness ones — and push the fixes before asking for review. Record the
   findings *and the deferrals, with their reasons* as a PR comment; recording is not routing, which
