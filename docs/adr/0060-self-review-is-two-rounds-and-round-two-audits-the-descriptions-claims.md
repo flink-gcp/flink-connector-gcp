@@ -65,3 +65,11 @@ docs recommend). None of those is reachable from a lens aimed at the diff.
   framework behaviour, deployment, or "this is the only way", not for a typo fix.
 - Findings *and* deferrals, with their reasons, are recorded as a PR comment; recording is
   not routing, which ADR-0061 governs.
+- **The rounds are carried by two project skills**, `.claude/skills/self-review/` and
+  `.claude/skills/self-review-round-two/`, rather than by a built-in command. Claude Code's
+  `/code-review` — and `/review`, an alias of it since v2.1.223 — is marked
+  `disable-model-invocation` by design, so it cannot be started on Claude's behalf or scheduled;
+  a decision this repository requires on *every* draft PR cannot rest on a command only the user
+  can type. The built-in remains worth asking the user for as a second opinion, and the skills
+  carry what it does not know: these lenses, the verify-before-acting rule, the mutation-batch
+  re-run and the recording format.
