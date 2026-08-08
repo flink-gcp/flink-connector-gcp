@@ -131,6 +131,8 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                         BigQueryConnectorOptions.SINK_FILE_LOADS_WRITE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES,
+                        BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_FORMAT,
+                        BigQueryConnectorOptions.SINK_FILE_LOADS_PARQUET_COMPRESSION,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_MAX_BACKOFF,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_INITIAL_BACKOFF,

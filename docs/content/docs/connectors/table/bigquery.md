@@ -260,6 +260,8 @@ default, and required by the write method rather than by the connector — and l
 | `sink.file-loads.write-disposition` | Enum | `writeDisposition(...)` — `write-append`, `write-truncate` or `write-empty`. Streaming execution accepts `write-append` only, since every checkpoint issues its own load job |
 | `sink.file-loads.min-checkpoint-interval` | Duration | `minCheckpointInterval(...)`, the smallest checkpoint interval streaming execution accepts. Lowering it is an explicit opt-in — BigQuery allows 1,500 load jobs per table per day and each checkpoint issues at least one |
 | `sink.file-loads.max-staging-file-bytes` | MemorySize | `maxStagingFileBytes(...)`, the size at which an open staging file is finished and the next one opened. The default is measured — see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) — and raising it matters mainly for a very large volume to one destination, since the 10,000-URI per-load-job cap is a file count |
+| `sink.file-loads.staging-format` | Enum | `stagingFormat(...)` — `avro` (default) or `parquet`. Parquet needs `parquet-avro`, and a Hadoop runtime unless the compression is `none`, on the cluster's classpath; a destination whose schema has a `JSON` column stages Avro whatever this says |
+| `sink.file-loads.parquet-compression` | Enum | `parquetCompression(...)` — `zstd` (default) or `none`. Rejected when the staging format is `avro` |
 | `sink.file-loads.load-job-poll.initial-backoff` | Duration | `loadJobPollInitialBackoff(...)` |
 | `sink.file-loads.load-job-poll.max-backoff` | Duration | `loadJobPollMaxBackoff(...)` |
 | `sink.file-loads.schema-reconcile.initial-backoff` | Duration | `schemaReconcileInitialBackoff(...)` |

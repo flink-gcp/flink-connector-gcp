@@ -97,6 +97,11 @@ limitations under the License.
              if we declare it. Pinned to what avro-parent ${avro.version} pins, so the codec and
              the library it drives are the pair Avro itself tests. -->
         <zstd-jni.version>1.5.7-4</zstd-jni.version>
+        <!-- The optional Parquet staging path (#284). `provided` everywhere: a deployment that
+             selects StagingFormat.PARQUET places these on its own runtime classpath, guided by the
+             docs, so no user pays for a format they did not ask for. -->
+        <parquet.version>1.17.1</parquet.version>
+        <hadoop.version>3.4.1</hadoop.version>
         <!-- JSONObject is the parameter type of the Storage Write API client's
              JsonToProtoMessage, so this has to stay compatible with whatever
              google-cloud-bigquerystorage itself depends on (org.json is in no BOM).
@@ -246,6 +251,18 @@ limitations under the License.
                 <groupId>com.github.luben</groupId>
                 <artifactId>zstd-jni</artifactId>
                 <version>${zstd-jni.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.parquet</groupId>
+                <artifactId>parquet-avro</artifactId>
+                <version>${parquet.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.hadoop</groupId>
+                <artifactId>hadoop-common</artifactId>
+                <version>${hadoop.version}</version>
             </dependency>
 
             <dependency>

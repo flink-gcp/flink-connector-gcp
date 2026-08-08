@@ -112,6 +112,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   builds their path from `os.name`/`os.arch`/version and never from the package (the opposite of
   grpc-netty-shaded, whose loader derives its library name from its own package — that argument lives in `flink-connector-gcp-pubsub/CLAUDE.md`). A packaging IT computes that path the same way and fails on
   whichever platform it runs on.
+- **Parquet staging is opt-in and its dependencies are `provided`** (`docs/adr/0072`). Avro is the
+  default and stays it: below **256 MiB of load input** Parquet is 3-5x slower — the regime every
+  streaming checkpoint sits in — and compressed Parquet cannot be written without a Hadoop runtime
+  ("No Hadoop" was measured false; only `UNCOMPRESSED` escapes, at 1.21x Avro's bytes). The `JSON`
+  fallback is automatic and a correctness override, not a preference. Parquet's row-group size
+  comes from `maxStagingFileBytes` and **must**: at Parquet's own 128 MiB default nothing reaches
+  the stream until close and the roll never fires. Both formats are written from the same Avro
+  schema, so `TableSchemaToAvroConverter`'s rejections — including flexible column names — apply to
+  Parquet unchanged.
 - **The staging format travels in the committable, and load jobs group on it.** A committable
   restored from state must load as the format its file was written in, which configuration read at
   commit time cannot tell you — so `LoadJobOrchestrator` keys on `(destination, format)` and the

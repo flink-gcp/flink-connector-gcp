@@ -41,6 +41,8 @@ class FileLoadsOptionsTest {
         // constant became: this default is a measured value and moving it is a decision
         // (docs/adr/0070), so it should cost an edit here.
         assertThat(options.getMaxStagingFileBytes()).isEqualTo(16L * 1024 * 1024);
+        assertThat(options.getStagingFormat()).isEqualTo(StagingFormat.AVRO);
+        assertThat(options.getParquetCompression()).isEqualTo(ParquetCompression.ZSTD);
         assertThat(options.getLoadJobPollInitialBackoff())
                 .isEqualTo(FileLoadsOptions.DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF);
         assertThat(options.getLoadJobPollMaxBackoff())
@@ -199,6 +201,50 @@ class FileLoadsOptionsTest {
                 .hasMessageContaining("maxStagingFileBytes");
         assertThatThrownBy(() -> FileLoadsOptions.builder().maxStagingFileBytes(-1))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void parquetCompressionIsRejectedUnderAvro() {
+        // Rejected rather than ignored: a configuration that says "compress Parquet" on an Avro
+        // sink has said something contradictory, and silently dropping it is worse than failing.
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket")
+                                        .parquetCompression(ParquetCompression.NONE)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("parquetCompression")
+                .hasMessageContaining("PARQUET");
+    }
+
+    @Test
+    void parquetCompressionIsAcceptedUnderParquet() {
+        // The success side the #289 lesson asks for: a rule that only ever rejects could be
+        // rejecting for the wrong reason.
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .stagingFormat(StagingFormat.PARQUET)
+                        .parquetCompression(ParquetCompression.NONE)
+                        .build();
+
+        assertThat(options.getStagingFormat()).isEqualTo(StagingFormat.PARQUET);
+        assertThat(options.getParquetCompression()).isEqualTo(ParquetCompression.NONE);
+    }
+
+    @Test
+    void parquetIsAcceptedBecauseTheDependenciesAreOnTheTestClasspath() {
+        // The classpath probe in build() passes here — parquet-avro and hadoop-common are
+        // `provided`, which Maven puts on the test classpath. That is what makes this assertion
+        // meaningful rather than vacuous: the probe runs, and it succeeds.
+        assertThat(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket")
+                                .stagingFormat(StagingFormat.PARQUET)
+                                .build()
+                                .getStagingFormat())
+                .isEqualTo(StagingFormat.PARQUET);
     }
 
     @Test

@@ -31,7 +31,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 |---|---|
 | `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool |
 | `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit on checkpoints; single fixed destination |
-| `FILE_LOADS` | GCS-staged Avro files + BigQuery load jobs; batch and streaming (checkpoint-triggered), exactly-once |
+| `FILE_LOADS` | GCS-staged files (Avro by default, Parquet opt-in) + BigQuery load jobs; batch and streaming (checkpoint-triggered), exactly-once |
 
 Per-feature implementation status is tracked in the
 [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md).
@@ -444,7 +444,7 @@ Changing an existing `STRING` column to `GEOGRAPHY` by adding the marker to a ru
 **breaking schema change**. Schema evolution only relaxes modes and adds columns, so the union is
 rejected rather than rows being corrupted — see [Schema evolution](#schema-evolution).
 
-`FILE_LOADS` carries a `GEOGRAPHY` column as well: staged Avro files hold the text in a `string`
+`FILE_LOADS` carries a `GEOGRAPHY` column as well: staged files hold the text in a `string`
 field and the load job is given an explicit destination schema that types it. That pairing is
 verified end to end against real BigQuery by `BigQueryFileLoadsITCase`, BigQuery's documentation
 describing WKT loading for CSV and JSON but not for Avro.
@@ -1063,7 +1063,7 @@ rather than risk silent divergence.
 
 ## File loads
 
-`WriteMethod.FILE_LOADS` writes each destination table's rows to Avro files on Cloud Storage and
+`WriteMethod.FILE_LOADS` writes each destination table's rows to files on Cloud Storage and
 loads them with BigQuery load jobs — free of streaming-insert cost, always exactly-once. Batch
 execution loads everything at end of input; streaming execution loads each checkpoint's files
 (the checkpoint is the trigger, like Beam's streaming FILE_LOADS `triggeringFrequency` model):
@@ -1175,6 +1175,38 @@ This puts `com.github.luben:zstd-jni` on the connector's runtime classpath. Avro
 it present, and the SQL uber-jar bundles it with its per-platform native libraries left at the jar
 root where the library looks for them.
 
+**Staging format.** `stagingFormat` decides what rows are staged in, and **`AVRO` is the default
+and the recommended value**. `PARQUET` stages 0.785x the bytes — measured flat across a 64x range
+of file sizes — and loads a large batch faster, but it is opt-in for three reasons, all of which
+should be read before selecting it:
+
+- **It needs dependencies this connector does not ship.** `org.apache.parquet:parquet-avro` must be
+  on the cluster's classpath, and — for any compression at all — a Hadoop runtime
+  (`org.apache.hadoop:hadoop-common` and its dependencies), because every codec in
+  `parquet-hadoop` is resolved through Hadoop's `CompressionCodec` SPI. Both are checked when the
+  job graph is built, so a missing one fails on the client with the artifact named rather than on a
+  TaskManager. `parquetCompression(NONE)` is the one configuration that needs no Hadoop at all —
+  and it stages **1.21x** the bytes of the Avro it would replace, so it is an escape hatch for a
+  deployment that cannot place a Hadoop runtime, not a shortcut.
+- **It cannot carry a `JSON` column.** A `PARQUET` load is refused at job-configuration level
+  whenever the provided schema names one, whatever the file contains. A destination whose schema
+  has a `JSON` column therefore stages Avro whatever this option says — an automatic correctness
+  override, logged once per destination.
+- **Below 256 MiB of total input per load job it is several times slower than Avro.** Measured
+  2026-08-08: ~150 MiB loaded in 13.4-16.7 s as Parquet against 6.0 s as Avro, ~250 MiB in
+  17.1-23.4 s against 6.7 s, while just above the threshold Parquet drops to 4.7 s. The step sits
+  at 256 MiB regardless of file count or file size; Avro shows nothing like it. A streaming
+  checkpoint's load is normally well under that, so **Parquet is a batch choice**: reach for it
+  where one destination's per-commit volume clearly clears 256 MiB.
+
+Parquet's row-group size is taken from `maxStagingFileBytes` rather than left at Parquet's 128 MiB
+default, which would buffer a whole row group before anything reached Cloud Storage and stop the
+roll threshold firing at all. Row-group count was measured not to affect load duration.
+
+Neither format changes the column mapping: both are written from the same Avro schema, so
+`TableSchemaToAvroConverter`'s rejections — `INTERVAL`, `RANGE` and BigQuery flexible column names —
+apply identically. **Parquet does not relax column naming.**
+
 **Staging file size.** `maxStagingFileBytes` decides when an open staging file is finished and the
 next one opened, and its default of 16 MiB comes from measuring load duration against file size
 rather than from the URI arithmetic below. Measured against BigQuery on 2026-08-08 — 769 MiB
@@ -1223,7 +1255,7 @@ reconciled schema; on `WRITE_APPEND` jobs the native
 schema changes made externally mid-run. With `WRITE_TRUNCATE` there is nothing to reconcile — the
 loaded schema replaces the table schema wholesale. With updates **disabled**, the live table's
 schema wins outright: the serializer's differences are not applied, and — measured against real
-BigQuery — a staged Avro field the table lacks is then **silently ignored by the load**, the
+BigQuery — a staged field the table lacks is then **silently ignored by the load**, the
 remaining columns loading normally (the committer logs a warning naming the field, once per
 destination per run; before [#142]({{< param BookRepo >}}/issues/142) the same configuration
 failed the whole job at submission with *"Cannot add fields"* whenever the run fit one load job).

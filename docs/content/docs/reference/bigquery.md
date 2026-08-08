@@ -134,11 +134,13 @@ where the load-job quota that shapes `minCheckpointInterval` is set out.
 
 | Option | Default | What it does |
 |---|---|---|
-| `stagingPath` | **required** | The `gs://` prefix staged Avro files are written to |
+| `stagingPath` | **required** | The `gs://` prefix staged files are written to |
 | `writeDisposition` | `WRITE_APPEND` | How loaded rows land in a table that already holds data. Streaming requires `WRITE_APPEND` |
 | `tempDataset` | the destination's own dataset | Where temporary tables go when a table's staged files exceed one load job's limits |
 | `minCheckpointInterval` | 2 min | Smallest checkpoint interval accepted in streaming; a shorter one is rejected when the graph is built |
 | `maxStagingFileBytes` | 16 MiB | Size at which an open staging file is finished and the next one opened. [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) carries the measurement it comes from and when raising it is worthwhile |
+| `stagingFormat` | `AVRO` | The file format rows are staged in. `PARQUET` is opt-in and needs dependencies this connector does not ship — see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) before selecting it |
+| `parquetCompression` | `ZSTD` | How Parquet staging files are compressed. Rejected under `AVRO`. `NONE` is the only value needing no Hadoop runtime, and stages more bytes than Avro does |
 | `loadJobPollInitialBackoff` | 1 s | First backoff between polls of a submitted load or copy job |
 | `loadJobPollMaxBackoff` | 30 s | Cap of that backoff, before jitter. There is deliberately no attempt cap |
 | `schemaReconcileInitialBackoff` | 500 ms | First backoff after losing an etag race while reconciling a table's schema |

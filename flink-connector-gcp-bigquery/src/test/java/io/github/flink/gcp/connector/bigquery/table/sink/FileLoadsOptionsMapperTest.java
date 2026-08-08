@@ -22,6 +22,8 @@ import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
 import org.junit.jupiter.api.Test;
 
@@ -65,6 +67,10 @@ class FileLoadsOptionsMapperTest {
         SETTER_TO_OPTION.put(
                 "maxStagingFileBytes",
                 BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES);
+        SETTER_TO_OPTION.put(
+                "stagingFormat", BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_FORMAT);
+        SETTER_TO_OPTION.put(
+                "parquetCompression", BigQueryConnectorOptions.SINK_FILE_LOADS_PARQUET_COMPRESSION);
         SETTER_TO_OPTION.put(
                 "loadJobPollInitialBackoff",
                 BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF);
@@ -161,6 +167,8 @@ class FileLoadsOptionsMapperTest {
         // A MemorySize key, so the unit suffix is the point: a plain "64" would also parse, and
         // would pass whether or not the mapper converted the value.
         options.put(key("maxStagingFileBytes"), "64 mb");
+        options.put(key("stagingFormat"), "parquet");
+        options.put(key("parquetCompression"), "none");
         options.put(key("loadJobPollInitialBackoff"), "2 s");
         options.put(key("loadJobPollMaxBackoff"), "40 s");
         options.put(key("schemaReconcileInitialBackoff"), "1 s");
@@ -175,6 +183,8 @@ class FileLoadsOptionsMapperTest {
         assertThat(mapped.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE);
         assertThat(mapped.getMinCheckpointInterval()).isEqualTo(Duration.ofSeconds(30));
         assertThat(mapped.getMaxStagingFileBytes()).isEqualTo(64L * 1024 * 1024);
+        assertThat(mapped.getStagingFormat()).isEqualTo(StagingFormat.PARQUET);
+        assertThat(mapped.getParquetCompression()).isEqualTo(ParquetCompression.NONE);
         assertThat(mapped.getLoadJobPollInitialBackoff()).isEqualTo(Duration.ofSeconds(2));
         assertThat(mapped.getLoadJobPollMaxBackoff()).isEqualTo(Duration.ofSeconds(40));
         // The setters say schemaReconcile*, the getters say schemaUpdate*.
@@ -182,6 +192,19 @@ class FileLoadsOptionsMapperTest {
         assertThat(mapped.getSchemaUpdateMaxBackoff()).isEqualTo(Duration.ofSeconds(20));
         assertThat(mapped.getSchemaUpdateMaxAttempts()).isEqualTo(3);
         assertThat(mapped.isPerDestinationMetrics()).isTrue();
+    }
+
+    @Test
+    void parquetCompressionUnderAvroIsRejectedRatherThanIgnored() {
+        // The mapper applies it unconditionally so the builder's rule fires. A DDL that sets a
+        // Parquet codec on an Avro table has said something contradictory, and silently dropping
+        // it is the outcome this repository treats as worse than an error.
+        Map<String, String> options = staged();
+        options.put(key("parquetCompression"), "none");
+
+        assertThatThrownBy(() -> map(options))
+                .hasMessageContaining("parquetCompression")
+                .hasMessageContaining("PARQUET");
     }
 
     @Test

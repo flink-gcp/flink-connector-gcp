@@ -20,108 +20,67 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.apache.avro.Schema;
-import org.apache.avro.file.CodecFactory;
-import org.apache.avro.file.DataFileWriter;
-import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
 
 import java.io.IOException;
 import java.io.OutputStream;
 
 /**
- * One open Avro staging file: an Avro container writer over a byte-counting staging stream,
- * tracking the row count and (approximate, trailing by up to one unflushed Avro block) byte count
- * used for size-based rolling and load-job partitioning.
+ * One open staging file, streaming into the Cloud Storage upload channel it was opened over.
  *
- * <p>Files are compressed with zstandard, and the reason is CPU rather than size — see {@link
- * #STAGING_CODEC}.
+ * <p>Implementations track the row count and a byte count used for size-based rolling and load-job
+ * partitioning. That count trails the appended data — by an unflushed Avro block, or by a whole
+ * Parquet row group — so a rolled file lands at or slightly above the threshold rather than exactly
+ * on it.
  */
 @Internal
-final class StagedFileWriter {
+interface StagedFileWriter {
 
     /**
-     * The staging codec: zstandard at Avro's own {@code DEFAULT_ZSTANDARD_LEVEL} (3).
+     * Opens a writer for the given format.
      *
-     * <p><b>Chosen for CPU, not for size.</b> Compression runs on the task thread — the same one
-     * streaming into the GCS upload while the job processes records — so its cost is subtracted
-     * from throughput directly. Measured 2026-08-08 with this writer, 2,000,000 rows of a realistic
-     * mix, five passes after a warm-up, single-threaded on OpenJDK 21 (aarch64): deflate 11,436 ms,
-     * zstandard 3,182 ms, and 2,134 ms with no codec at all — so the compression itself costs 9,302
-     * ms against 1,048 ms, a factor of 8.9.
+     * <p>{@link ParquetStagedFileWriter} is referenced only from the {@code PARQUET} branch, so a
+     * deployment that never selects Parquet never loads it — which is what lets {@code
+     * parquet-avro} be a {@code provided} dependency rather than one this connector ships.
      *
-     * <p>Size is a wash and must not be quoted as a reason: 201,708,003 bytes against deflate's
-     * 198,227,825, so zstandard is 1.8% <em>larger</em> here, matching the 1.01-1.02x measured at a
-     * million rows on #283. A 17% win appears only on files of a few thousand rows, where the
-     * dictionary dominates, and does not generalise.
-     *
-     * <p>Level 3 rather than a lower one: level 1 measured slower (3,459 ms) <em>and</em> 5%
-     * larger, so there is nothing below to trade for.
-     *
-     * <p>The single-argument overload is the one taken deliberately: it selects {@code
-     * ZstandardCodec.Option(level, false, false)} — no per-block checksum and no recycling buffer
-     * pool. A checksum would duplicate what the Avro container and GCS already provide, and the
-     * pool is a memory/throughput trade this writer has no measurement for. Note the two- and
-     * three-argument overloads take {@code useChecksum} before {@code useBufferPool}, which is easy
-     * to transpose.
-     *
-     * <p>Shared as a static because a {@code CodecFactory} is an immutable descriptor — {@code
-     * DataFileWriter.setCodec} calls {@code createInstance()} to build a per-writer {@code Codec} —
-     * so one instance is safe across the writers of a TaskManager. Avro keeps its own built-ins in
-     * a static registry the same way.
-     *
-     * <p>The library is {@code com.github.luben:zstd-jni}, which Avro declares {@code optional} —
-     * this module declares it at runtime scope, and a shaded distribution has to keep its native
-     * libraries reachable.
+     * @param maxStagingFileBytes the roll threshold, which sizes Parquet's row group; see that
+     *     implementation for why it cannot be ignored there
      */
-    private static final CodecFactory STAGING_CODEC =
-            CodecFactory.zstandardCodec(CodecFactory.DEFAULT_ZSTANDARD_LEVEL);
-
-    private final String flinkJobId;
-    private final TableDestination destination;
-    private final String uri;
-    private final CountingOutputStream countingStream;
-    private final DataFileWriter<GenericRecord> avroWriter;
-    private long rowCount;
-
-    StagedFileWriter(
+    static StagedFileWriter open(
+            StagingFormat format,
+            ParquetCompression compression,
             String flinkJobId,
             TableDestination destination,
             String uri,
             Schema schema,
-            OutputStream stream)
+            OutputStream stream,
+            long maxStagingFileBytes)
             throws IOException {
-        this.flinkJobId = flinkJobId;
-        this.destination = destination;
-        this.uri = uri;
-        this.countingStream = new CountingOutputStream(stream);
-        DataFileWriter<GenericRecord> writer =
-                new DataFileWriter<>(new GenericDatumWriter<GenericRecord>(schema))
-                        .setCodec(STAGING_CODEC);
-        try {
-            this.avroWriter = writer.create(schema, countingStream);
-        } catch (IOException | RuntimeException e) {
-            // DataFileWriter.close() is a no-op before create() succeeds; close the staging
-            // stream directly so the upload channel does not leak.
-            try {
-                stream.close();
-            } catch (IOException | RuntimeException suppressed) {
-                e.addSuppressed(suppressed);
-            }
-            throw e;
+        switch (format) {
+            case AVRO:
+                return new AvroStagedFileWriter(flinkJobId, destination, uri, schema, stream);
+            case PARQUET:
+                return new ParquetStagedFileWriter(
+                        flinkJobId,
+                        destination,
+                        uri,
+                        schema,
+                        stream,
+                        compression,
+                        maxStagingFileBytes);
+            default:
+                throw new IllegalStateException("Unhandled staging format: " + format);
         }
     }
 
-    void append(GenericRecord record) throws IOException {
-        avroWriter.append(record);
-        rowCount++;
-    }
+    /** Appends one converted row. */
+    void append(GenericRecord record) throws IOException;
 
-    /** Returns the bytes written so far, trailing the appended data by one unflushed block. */
-    long bytesWritten() {
-        return countingStream.getCount();
-    }
+    /** Returns the bytes handed to the staging stream so far, trailing the appended data. */
+    long bytesWritten();
 
     /**
      * Closes the file — finalizing the staging object — and returns its committable.
@@ -129,60 +88,8 @@ final class StagedFileWriter {
      * @return the committable describing the finalized object
      * @throws IOException if the file cannot be finalized
      */
-    FileLoadsCommittable finish() throws IOException {
-        avroWriter.close();
-        return new FileLoadsCommittable(
-                flinkJobId,
-                destination,
-                uri,
-                countingStream.getCount(),
-                rowCount,
-                StagingFormat.AVRO);
-    }
+    FileLoadsCommittable finish() throws IOException;
 
     /** Closes the file discarding errors; the object (finalized or not) is never referenced. */
-    void abort() {
-        try {
-            avroWriter.close();
-        } catch (IOException | RuntimeException e) {
-            // The object is unreferenced garbage either way; nothing to do.
-        }
-    }
-
-    /** Plain byte-counting stream wrapper (kept local to avoid a Guava dependency). */
-    private static final class CountingOutputStream extends OutputStream {
-
-        private final OutputStream delegate;
-        private long count;
-
-        CountingOutputStream(OutputStream delegate) {
-            this.delegate = delegate;
-        }
-
-        long getCount() {
-            return count;
-        }
-
-        @Override
-        public void write(int b) throws IOException {
-            delegate.write(b);
-            count++;
-        }
-
-        @Override
-        public void write(byte[] b, int off, int len) throws IOException {
-            delegate.write(b, off, len);
-            count += len;
-        }
-
-        @Override
-        public void flush() throws IOException {
-            delegate.flush();
-        }
-
-        @Override
-        public void close() throws IOException {
-            delegate.close();
-        }
-    }
+    void abort();
 }
