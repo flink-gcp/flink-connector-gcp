@@ -34,7 +34,7 @@ final class UberJar {
 
     /**
      * A floor below which a parsed artifact list is assumed to be a parsing failure rather than a
-     * real bundle; the tree holds 111 today. Set a little below that: it exists to catch "the regex
+     * real bundle; the tree holds 110 today. Set a little below that: it exists to catch "the regex
      * matched nothing", not to pin the count, which the NOTICE comparison itself already does
      * exactly.
      */

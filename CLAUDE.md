@@ -456,9 +456,14 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   A library under a restrictive licence — the GPL family, or the newer source-available and
   non-commercial ones (SSPL, BUSL, Commons Clause, …) — is normally rejected outright rather than
   recorded in a NOTICE; adoption of one would be a project discussion, not a licensing entry.
-  `scripts/check-notice.py` enforces this for the shaded modules (decided with the user on #138;
-  the one standing exemption is `javax.annotation-api`, dual-licensed and taken under CDDL with
-  the classpath exception)
+  `scripts/check-notice.py` enforces this for the shaded modules (decided with the user on #138),
+  with **no exemption list** — a dual licence offering a permissive arm is not an exception, since
+  taking that arm elects it on this project's behalf and has to be stated in the NOTICE. The one
+  such artifact the bundles carried, `javax.annotation-api`, was measured to be referenced by
+  nothing and excluded rather than elected (#352; ADR-0015). Note what the gate does and does not
+  catch: it matches the *resolved licence name*, so the same artifact arriving under a plain
+  `CDDL 1.0` spelling would pass it and be caught only structurally, by having no template
+  paragraph
 - Never open or reference the private in-house implementation this project supersedes; design
   references must be public OSS or official documentation only
 

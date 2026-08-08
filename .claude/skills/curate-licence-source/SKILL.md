@@ -65,11 +65,19 @@ project is Apache-2.0 with no usage restrictions, and the standing decision
 (recorded in the root `CLAUDE.md`, Licensing) is that such a dependency is
 normally rejected outright — usually by excluding or replacing whatever pulled
 it in. Present the user with what pulled the dependency in
-(`./mvnw dependency:tree -Dincludes=<ga>`) and the options; only a user
-decision changes the gate, and `RESTRICTED_EXEMPT` in `scripts/check-notice.py`
-is where an agreed exemption is recorded with its reasoning
-(`javax.annotation-api`, dual-licensed and taken under CDDL with the classpath
-exception, is the model).
+(`./mvnw dependency:tree -Dincludes=<ga>`) and the options; only a user decision
+changes the gate, and the gate has no exemption list to add to.
+
+**A dual licence offering a permissive arm is not a way past this.** It reads
+like one — take the CDDL arm and the GPL never applies — but a dual licence is
+an *offer*, and electing an arm is a statement this project makes to its users,
+which then has to be written into the NOTICE and its obligations met
+(CDDL-1.0 §3.1's source-availability clause, for one). `javax.annotation-api`
+(`CDDL + GPLv2 with classpath exception`) is the worked example, and its answer
+was this section's ordinary one rather than a special case: nothing referenced
+it, so it was excluded from both bundles (#352, ADR-0015, which carries the
+measurement). **Measure before you draft prose** — the artifact that needs no
+licence paragraph is the one that is not in the jar.
 
 ## Failure: packaging IT reports an unrelocated package root
 

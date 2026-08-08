@@ -103,7 +103,10 @@ public abstract class AbstractBundledDependenciesNoticeTest {
                                 + " `just update-notice <module>`, and for anything new confirm the"
                                 + " licence against the artifact's own pom before grouping it — the"
                                 + " generated META-INF/DEPENDENCIES lists licences pre-mediation, so"
-                                + " its versions can differ from what actually resolves.")
+                                + " its versions can differ from what actually resolves. An artifact"
+                                + " on the bundled side that the NOTICE omits may instead be one the"
+                                + " pom deliberately excludes and a change has re-admitted: check the"
+                                + " <exclusions> on the connector dependency before regenerating.")
                 .containsExactlyInAnyOrderElementsOf(bundledArtifacts());
     }
 

@@ -92,12 +92,6 @@ jar = "META-INF/LICENSE.txt"
 sha256 = "f046720e38f8b071dbd0656ded91ad6e9328a4bb48bd50632f185598885b9cdd"
 # Shipped inside the artifact's own jar.
 
-[files."LICENSE.javax-annotation-api"]
-artifacts = ["javax.annotation:javax.annotation-api"]
-jar = "META-INF/LICENSE.txt"
-sha256 = "a4c80869daf4350b6773bd5e6ee1d0a6cc52b63db3a3d2dc20961b0cdd272a5c"
-# Shipped inside the artifact's own jar.
-
 [files."LICENSE.checker-qual"]
 artifacts = [
     "org.checkerframework:checker-qual",

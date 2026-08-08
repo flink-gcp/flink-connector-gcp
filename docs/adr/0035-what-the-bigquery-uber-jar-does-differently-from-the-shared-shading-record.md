@@ -27,20 +27,22 @@ limitations under the License.
 The shading and licensing decisions are ADR-0015's, inherited wholesale. What is this tree's
 own:
 
-- **`org.slf4j:slf4j-api` is the one artifact deliberately kept out of the bundle** (the Pub/Sub
-  tree carries no slf4j at all; this one gets it through Avro). Bundling it is wrong either way
+- **`org.slf4j:slf4j-api` is the artifact kept out of *this* bundle and not the other's** (the
+  Pub/Sub tree carries no slf4j at all; this one gets it through Avro). The exclusion both trees
+  take, `javax.annotation-api`, is ADR-0015's. Bundling slf4j is wrong either way
   round: relocated, the connector's own `LoggerFactory` calls are rewritten with it, so they
   bind to a copy no Flink log configuration reaches and the connector goes silent under a green
   job; unrelocated, the jar puts a second `slf4j-api` on a classpath that already has
-  flink-dist's. It is removed with an `<exclusion>` on the connector dependency rather than a
-  shade filter, so the tree the NOTICE, the licence report and `BundledDependenciesNoticeTest`
-  all read is the tree that is bundled — one fact, not a fact plus an exception list.
-- **The SQL module's runtime tree is not the connector module's** — 111 third-party artifacts
+  flink-dist's. It leaves by an `<exclusion>` on the connector dependency rather than a shade
+  filter, which is ADR-0015's rule for every exclusion and carries its reason.
+- **The SQL module's runtime tree is not the connector module's** — 110 third-party artifacts
   against 114 — worth knowing before reading a relocation list against the wrong
   `dependency:tree`: `commons-lang3` and `commons-io` appear only in the connector's, and
   `commons-compress` resolves 1.24.0 here against 1.26.0 there, because their only path is
   `flink-core`, which is `provided` on the connector and contributes nothing transitively. The
-  relocation list is derived from the SQL module's own `runtime-classpath.txt`.
+  other two are the exclusions this pom declares — `slf4j-api`, this tree's, and
+  `javax.annotation-api`, both trees' (ADR-0015). The relocation list is derived from the SQL
+  module's own `runtime-classpath.txt`.
 - **A relocation pattern rewrites *references*, so it must not be wider than the tree.**
   `org.apache.commons` was the tempting one line for a tree carrying only commons-codec and
   commons-compress, and it silently renamed httpclient's 113 references to

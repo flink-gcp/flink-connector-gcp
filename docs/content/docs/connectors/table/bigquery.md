@@ -54,7 +54,7 @@ SELECT id, amount, event_ts, ROW(source, version) FROM staged_events;
 Use `flink-sql-connector-gcp-bigquery`, an uber-jar built for exactly this: put it in Flink's `lib/`
 directory, or add it with `ADD JAR` in the SQL client. It bundles `flink-connector-gcp-bigquery`
 together with its whole runtime tree — the Storage Write API and REST clients, the Cloud Storage
-client, gRPC, protobuf, Avro, Guava, the Google auth and HTTP clients — which is 111 artifacts, not
+client, gRPC, protobuf, Avro, Guava, the Google auth and HTTP clients — which is 110 artifacts, not
 a dependency list anyone wants to assemble by hand.
 
 The plain `flink-connector-gcp-bigquery` jar works too, where the deployment already resolves
@@ -78,7 +78,9 @@ Six third-party packages are deliberately *not* relocated, and none of them can 
 that matters: `org.conscrypt`, which gRPC picks up reflectively as an optional TLS provider and
 does without when it is unusable; and the annotation-only `javax.annotation`, `org.jspecify`,
 `org.checkerframework`, `org.codehaus.mojo.animal_sniffer` and `android.annotation`, where a
-duplicate class is inert because nothing ever invokes it.
+duplicate class is inert because nothing ever invokes it. `javax.annotation` here is jsr305's
+classes only — `javax.annotation-api`, the other artifact publishing into that package, is not
+bundled ([#352]({{< param BookRepo >}}/issues/352)).
 
 Two packages the jar references are not in it. `org.slf4j` is excluded deliberately: Flink's own
 distribution provides it, and bundling it would be wrong either way round — relocated, the
@@ -94,9 +96,10 @@ once, having renamed its `META-INF/native/` libraries to match, because netty de
 library name from its own package at load time. Relocating those classes a second time therefore
 means renaming the library files again in step. Leaving it alone was the obvious alternative and is
 wrong — the jar would then be unable to share a classpath with `flink-sql-connector-gcp-pubsub`,
-which bundles gRPC too. Sharing a `lib/` with it does work: of the 659 entries the two jars have in
-common, 655 are byte-identical, and the four that differ are per-jar metadata Flink reads through
-`ServiceLoader`, which enumerates every copy (measured 2026-08-06). **Merging the two into one fat
+which bundles gRPC too. Sharing a `lib/` with it does work: of the 501 file entries the two jars
+have in common (directory entries excluded), 497 are byte-identical, and the four that differ are
+per-jar metadata Flink reads through `ServiceLoader`, which enumerates every copy — the manifest,
+the `NOTICE`, and the two service files (measured 2026-08-08, one build of each jar). **Merging the two into one fat
 jar is the case that does not work** — one connector's factory registration and one jar's `NOTICE`
 would be shadowed, silently. Put them in `lib/`, or add each with its own `ADD JAR`. One consequence of relocating an already-relocated gRPC: netty's **system
 property names** move with it, so a `-D` spelled `io.grpc.netty.shaded.io.netty.maxDirectMemory`
@@ -120,7 +123,7 @@ platform provides.
 `META-INF/NOTICE` inside the jar lists every bundled artifact grouped by licence, and
 `META-INF/licenses/` carries the full text of each non-Apache-2.0 one — protobuf, gax, the Google
 auth library, the ThreeTen backport and ThreeTen-Extra, RE2/J, animal-sniffer, the Checker
-Framework qualifiers, the Stax2 API, JSON-java and the javax annotation API.
+Framework qualifiers, the Stax2 API and JSON-java.
 
 The prose of the NOTICE is human-written, in the module's `NOTICE.template`; the artifact lists are
 generated into it from what Maven actually resolves, so a wrong licence grouping or a stale version

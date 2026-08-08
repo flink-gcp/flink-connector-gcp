@@ -30,16 +30,28 @@ from a lens aimed at the diff.**
 
 ## Step 1: extract the claims
 
-Before looking at any code, list every factual assertion the change makes, from all four places it
+Before looking at any code, list every factual assertion the change makes, from all five places it
 hides:
 
 1. The PR description — especially "the only way", "always", "never", "measured", "cannot".
 2. Javadoc and comments **added or edited by this diff**.
 3. The docs pages the diff touches.
 4. The commit message.
+5. **The issue's premise, wherever the change restates it.** A description written from an issue
+   inherits that issue's factual claims, and they arrived unverified: an issue is a report, not a
+   measurement.
 
 A claim is anything a reader could act on and be wrong. Write the list out; a claim you did not
 name is a claim you did not check.
+
+The fifth is the one a careful round two still misses, because a restated premise does not read
+like a claim being made — it reads like context being cited. [#352] said the dual-licensed
+artifact's shipped licence text "carries no GPL-2.0 text at all"; it carries the full GPL v2, and
+the PR description and commit message had repeated the sentence verbatim. **Restating an issue is
+asserting it**, so check the premise against the artifact rather than against the issue — and when
+it fails, correct the record in the PR, because the issue is what the next reader will find.
+
+[#352]: https://github.com/laughingman7743/flink-connector-gcp/issues/352
 
 ## Step 2: the outward lenses
 
@@ -87,7 +99,7 @@ your own initiative.
 
 ## Done when
 
-- [ ] Every claim in description, javadoc, docs and commit message listed
+- [ ] Every claim in description, javadoc, docs, commit message **and the issue's premise** listed
 - [ ] Each checked against a source of truth, not against the diff
 - [ ] Deferred measurements paid
 - [ ] The whole page grepped for the changed term, not just the edited paragraph

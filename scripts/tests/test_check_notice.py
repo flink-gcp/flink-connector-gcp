@@ -68,7 +68,11 @@ def write_template(module, *groups):
 
 
 def write_sources(path, entries):
-    lines = []
+    # The `[files]` header is unconditional: the real licence-sources.toml always
+    # carries the table, and a file without it makes load_sources raise KeyError
+    # rather than the failure under test — which turns a clean assertion into an
+    # opaque traceback pointing at the fixture.
+    lines = ["[files]", ""]
     for name, entry in entries.items():
         artifacts = ", ".join(f'"{artifact}"' for artifact in entry["artifacts"])
         pointer = (
@@ -109,6 +113,9 @@ def module(tmp_path, check_notice, monkeypatch):
         parents=True
     )
     monkeypatch.setattr(check_notice, "SOURCES", tmp_path / "licence-sources.toml")
+    # ROOT is what the dead-entry check discovers shaded modules under. Pointed at
+    # the synthetic tree, never the real repository.
+    monkeypatch.setattr(check_notice, "ROOT", tmp_path)
     return directory
 
 
@@ -192,6 +199,10 @@ def test_a_missing_report_fails(module, check_notice):
         "Elastic License 2.0",
         "Creative Commons Non-Commercial",
         "Noncommercial licence",
+        # A dual licence whose other arm is permissive is still restricted: the
+        # gate makes electing an arm a decision, not a default. This exact
+        # spelling is javax.annotation-api's, excluded from both bundles.
+        "CDDL + GPLv2 with classpath exception",
     ],
 )
 def test_restricted_licences_are_recognised(check_notice, licence):
@@ -214,46 +225,35 @@ def test_permissive_licences_pass_the_gate(check_notice, licence):
     assert not check_notice.RESTRICTED.search(licence)
 
 
+@pytest.mark.parametrize(
+    ("licence", "ga"),
+    [
+        ("GPLv2", "com.example:copyleft"),
+        # The dual-licensed one, whose licence *text* and template paragraph the
+        # module could satisfy: the gate must still answer, because satisfying
+        # them means electing an arm on this project's behalf. javax.annotation-api
+        # resolved to exactly this and is excluded from both bundles, so this case
+        # is what reports it arriving again.
+        (
+            "CDDL + GPLv2 with classpath exception",
+            "javax.annotation:javax.annotation-api",
+        ),
+    ],
+)
 def test_a_restricted_dependency_stops_before_any_notice_work(
-    module, run, check_notice, capsys
+    module, run, check_notice, capsys, licence, ga
 ):
-    # The template deliberately has no paragraph for GPLv2, so rendering would
+    # The template deliberately has a paragraph for neither, so rendering would
     # fail too: the gate is what must answer, and it must answer first. The
     # message is "decide adoption", not "add a paragraph".
-    write_report(module, ("GPLv2", "com.example:copyleft", "1.0"))
+    write_report(module, (licence, ga, "1.0"))
     write_template(module, "Apache-2.0")
     write_sources(check_notice.SOURCES, {})
     assert run(module) == 1
     assert "discuss adoption first" in capsys.readouterr().err
-
-
-def test_the_classpath_exception_dual_licence_is_exempt(module, run, check_notice):
-    # javax.annotation-api: dual-licensed, taken under CDDL, and the only
-    # combination deliberately in the bundle today.
-    licence = "CDDL + GPLv2 with classpath exception"
-    write_report(module, (licence, "javax.annotation:javax.annotation-api", "1.3.2"))
-    write_template(module, licence)
-    text = b"CDDL text\n"
-    write_sources(
-        check_notice.SOURCES,
-        {
-            "LICENSE.javax-annotation": {
-                "artifacts": ["javax.annotation:javax.annotation-api"],
-                "url": "https://example.invalid/LICENSE",
-                "sha256": sha256(text),
-            }
-        },
-    )
-    licences = module / "src" / "main" / "resources" / "META-INF" / "licenses"
-    (licences / "LICENSE.javax-annotation").write_bytes(text)
-    notice_path(module).write_text(
-        check_notice.render_notice(
-            module / "NOTICE.template",
-            check_notice.read_resolved(module),
-            check_notice.load_sources(),
-        )
-    )
-    assert run(module) == 0
+    # What "stops before any notice work" means, asserted rather than inferred
+    # from the message: moving the gate below render_notice fails here.
+    assert not notice_path(module).exists()
 
 
 # --- the licence-source index ---
@@ -538,6 +538,99 @@ def bundle(tmp_path, module, check_notice):
 
 def test_a_matching_bundle_passes(bundle, run, check_notice):
     assert run(bundle) == 0
+
+
+def test_an_entry_no_module_bundles_is_dead(bundle, run, check_notice, capsys):
+    # licence-sources.toml is shared across modules, so `relevant` — which is per
+    # module — never looks at an entry nothing bundles. Without this the pin for a
+    # dropped dependency sits in the file indefinitely, checked by nothing.
+    write_sources(
+        check_notice.SOURCES,
+        {
+            # The `bundle` fixture's own entry, kept live so only the second one
+            # can be what fails.
+            "LICENSE.gax": {
+                "artifacts": ["com.google.api:gax"],
+                "jar": "META-INF/LICENSE",
+                "sha256": sha256(LICENCE_TEXT),
+            },
+            "LICENSE.gone": {
+                "artifacts": ["com.example:dropped"],
+                "url": "https://example.invalid/LICENSE",
+                "sha256": "0" * 64,
+            },
+        },
+    )
+    assert run(bundle) == 1
+    err = capsys.readouterr().err
+    assert "LICENSE.gone" in err
+    # And only that one. gax's bullet carries a ` (META-INF/licenses/…)` pointer,
+    # so this is also what holds NOTICE_BULLET to the pointered form: parse it
+    # wrong and every entry looks dead, which the line above cannot tell apart.
+    assert "LICENSE.gax" not in err
+
+
+def test_the_offline_check_does_not_fetch_a_url_entry(
+    tmp_path, module, run, check_notice, monkeypatch
+):
+    # The whole point of the check half is that CI runs it offline. Everything
+    # else here uses a jar: pointer, whose text is read from disk either way — so
+    # only a url: entry can catch a check path that starts fetching.
+    def refuse(*args, **kwargs):
+        raise AssertionError("the offline check fetched a licence text")
+
+    monkeypatch.setattr(check_notice.urllib.request, "urlopen", refuse)
+    write_report(module, ("BSD-3-Clause", "com.google.api:gax", "2.0.0"))
+    write_template(module, "BSD-3-Clause")
+    write_sources(
+        check_notice.SOURCES,
+        {
+            "LICENSE.gax": {
+                "artifacts": ["com.google.api:gax"],
+                "url": "https://example.invalid/LICENSE",
+                "sha256": sha256(LICENCE_TEXT),
+            }
+        },
+    )
+    licences = module / "src" / "main" / "resources" / "META-INF" / "licenses"
+    (licences / "LICENSE.gax").write_bytes(LICENCE_TEXT)
+    notice_path(module).write_text(
+        check_notice.render_notice(
+            module / "NOTICE.template",
+            check_notice.read_resolved(module),
+            check_notice.load_sources(),
+        )
+    )
+    assert run(module) == 0
+
+
+def test_a_placeholder_group_may_contain_spaces(module, run, check_notice):
+    # Two shipping templates use them ({{Go License}}, {{Public Domain}}) and no
+    # other test does, so tightening PLACEHOLDER would pass the suite and emit the
+    # placeholder line verbatim into a released NOTICE.
+    write_report(module, ("Go License", "com.google.re2j:re2j", "1.8"))
+    write_template(module, "Go License")
+    write_sources(
+        check_notice.SOURCES,
+        {
+            "LICENSE.re2j": {
+                "artifacts": ["com.google.re2j:re2j"],
+                "url": "https://example.invalid/LICENSE",
+                "sha256": sha256(LICENCE_TEXT),
+            }
+        },
+    )
+    licences = module / "src" / "main" / "resources" / "META-INF" / "licenses"
+    (licences / "LICENSE.re2j").write_bytes(LICENCE_TEXT)
+    rendered = check_notice.render_notice(
+        module / "NOTICE.template",
+        check_notice.read_resolved(module),
+        check_notice.load_sources(),
+    )
+    assert "{{Go License}}" not in rendered
+    assert "- com.google.re2j:re2j:1.8" in rendered
+    notice_path(module).write_text(rendered)
+    assert run(module) == 0
 
 
 def test_a_hand_edited_notice_fails(bundle, run, capsys):

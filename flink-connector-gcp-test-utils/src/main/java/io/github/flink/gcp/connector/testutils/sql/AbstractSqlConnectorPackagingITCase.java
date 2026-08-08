@@ -464,16 +464,22 @@ public abstract class AbstractSqlConnectorPackagingITCase {
     }
 
     /**
-     * Every licence text the module checked in reached the jar.
+     * The jar's licence texts are exactly the ones the module checked in.
      *
      * <p>Read from the source directory rather than listed per module, so it is the whole set and
      * stays current: {@code scripts/check-notice.py} holds *that directory* to the bundle in both
      * directions, against the pinned sources — but it reads the source tree and never opens the
-     * built artifact, so it is this assertion and nothing else that connects the two. A shade
-     * filter broad enough to swallow the directory is the way that breaks, and this PR widened one.
+     * built artifact, so it is this assertion and nothing else that connects the two.
+     *
+     * <p>Both directions, and the second one is not symmetry for its own sake. A shade filter broad
+     * enough to swallow the directory drops texts the NOTICE points at. The other way round,
+     * maven-resources-plugin does not prune a resource deleted from {@code src/}, so an incremental
+     * build leaves the old copy in {@code target/classes} and ships a licence for something the jar
+     * no longer bundles — observed on the change that first deleted one (#352). {@code
+     * check-notice.py} cannot see it: its stray-file check reads the source tree.
      */
     @Test
-    void everyCheckedInLicenceTextIsPackaged() throws Exception {
+    void theJarsLicenceTextsAreExactlyTheCheckedInOnes() throws Exception {
         Path licences =
                 ShadedJar.basedir()
                         .resolve(Path.of("src", "main", "resources", "META-INF", "licenses"));
@@ -488,9 +494,14 @@ public abstract class AbstractSqlConnectorPackagingITCase {
         assertThat(expected).as("licence texts checked in under %s", licences).isNotEmpty();
 
         try (JarFile jar = open()) {
-            assertThat(entryNames(jar))
-                    .as("the licence texts the NOTICE points at")
-                    .containsAll(expected);
+            assertThat(
+                            entryNames(jar).stream()
+                                    .filter(name -> name.startsWith("META-INF/licenses/"))
+                                    .filter(name -> !name.endsWith("/"))
+                                    .sorted()
+                                    .collect(Collectors.toList()))
+                    .as("META-INF/licenses/ in the jar, against %s", licences)
+                    .containsExactlyElementsOf(expected);
         }
     }
 
