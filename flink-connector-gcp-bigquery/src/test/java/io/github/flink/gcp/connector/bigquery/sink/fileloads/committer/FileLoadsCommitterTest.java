@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeLoadJobRunner;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
@@ -187,7 +188,12 @@ class FileLoadsCommitterTest {
 
     private static FileLoadsCommittable file(String name) {
         return new FileLoadsCommittable(
-                FLINK_JOB_ID, T1, "gs://bucket/prefix/" + name + ".avro", 10, 5);
+                FLINK_JOB_ID,
+                T1,
+                "gs://bucket/prefix/" + name + ".avro",
+                10,
+                5,
+                StagingFormat.AVRO);
     }
 
     @Test
@@ -247,7 +253,13 @@ class FileLoadsCommitterTest {
         String originalJobId = "fedcba9876543210fedcba9876543210";
 
         harness.commit(
-                new FileLoadsCommittable(originalJobId, T1, "gs://bucket/prefix/a.avro", 10, 5)
+                new FileLoadsCommittable(
+                                originalJobId,
+                                T1,
+                                "gs://bucket/prefix/a.avro",
+                                10,
+                                5,
+                                StagingFormat.AVRO)
                         .withCheckpointId(3));
 
         assertThat(harness.runner.loads.keySet())

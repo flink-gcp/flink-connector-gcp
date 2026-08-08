@@ -31,9 +31,11 @@ import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.LoadJobConfiguration;
+import com.google.cloud.bigquery.ParquetOptions;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -96,15 +98,38 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                 LoadJobConfiguration.newBuilder(
                                 BigQueryTableAdmin.toTableId(spec.getDestination()),
                                 spec.getSourceUris())
-                        .setFormatOptions(FormatOptions.avro())
-                        .setUseAvroLogicalTypes(true)
                         .setSchema(spec.getSchema())
                         .setCreateDisposition(spec.getCreateDisposition())
                         .setWriteDisposition(spec.getWriteDisposition());
+        configureFormat(load, spec.getFormat());
         if (!spec.getSchemaUpdateOptions().isEmpty()) {
             load.setSchemaUpdateOptions(spec.getSchemaUpdateOptions());
         }
         submitOrAttach(jobId, load.build(), spec.toString());
+    }
+
+    /**
+     * Applies the source format the staged files were written in.
+     *
+     * <p>{@code enableListInference} is <b>not</b> optional on the Parquet side and must not be
+     * "simplified" away: without it a {@code REPEATED} column loads as an <em>empty array with no
+     * error at all</em> — measured against a provided destination schema naming the column {@code
+     * STRING REPEATED}, which returned every row with zero elements and reported success. That is
+     * the failure shape of #206, and {@code
+     * BigQueryLoadJobRunnerTest.parquetLoadsEnableListInference} is what fails if it is dropped.
+     */
+    private static void configureFormat(LoadJobConfiguration.Builder load, StagingFormat format) {
+        switch (format) {
+            case AVRO:
+                load.setFormatOptions(FormatOptions.avro()).setUseAvroLogicalTypes(true);
+                return;
+            case PARQUET:
+                load.setFormatOptions(
+                        ParquetOptions.newBuilder().setEnableListInference(true).build());
+                return;
+            default:
+                throw new IllegalStateException("Unhandled staging format: " + format);
+        }
     }
 
     @Override

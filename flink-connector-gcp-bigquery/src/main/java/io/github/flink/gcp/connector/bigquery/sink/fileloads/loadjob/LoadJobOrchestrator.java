@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.tables.SchemaUnifier;
 import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter;
@@ -208,23 +209,67 @@ public final class LoadJobOrchestrator {
                 checkpointId != null ? " for checkpoint " + checkpointId : "");
     }
 
-    /** Groups, sorts and bin-packs the committables into per-destination load plans. */
+    /**
+     * Groups, sorts and bin-packs the committables into load plans, one per destination <em>and
+     * staging format</em>.
+     *
+     * <p>The format is part of the key because a load job carries exactly one: a job is configured
+     * {@code AVRO} or {@code PARQUET}, never both. Normally every committable of a destination
+     * shares a format and this groups exactly as it did before. The case that needs it is
+     * transitional — the commit that follows a change of staging format, or the upgrade that
+     * introduces the format at all, where committables already in committer state were written as
+     * Avro and new ones are not.
+     *
+     * <p><b>That commit therefore issues two load jobs for one table</b>, and the "one load job per
+     * table" property — and the single-job atomicity that comes with it — does not hold for it. The
+     * alternatives were both worse: draining the old format first needs the writer to know what is
+     * still in committer state, which it cannot, and rejecting the mix would wedge the restart of
+     * any job whose format changed, recoverable only by discarding state.
+     *
+     * <p>The job ids need no help from this: {@link #jobId} hashes the source URI list, and the two
+     * formats' files are different objects, so their ids already differ.
+     */
     private List<DestinationLoad> plan(List<FileLoadsCommittable> committables) {
-        Map<TableDestination, List<FileLoadsCommittable>> byDestination =
-                new TreeMap<>(Comparator.comparing(TableDestination::toTablePath));
+        Map<DestinationFormat, List<FileLoadsCommittable>> byDestination =
+                new TreeMap<>(
+                        Comparator.comparing((DestinationFormat k) -> k.destination.toTablePath())
+                                .thenComparing(k -> k.format));
         for (FileLoadsCommittable committable : committables) {
             byDestination
-                    .computeIfAbsent(committable.getDestination(), unused -> new ArrayList<>())
+                    .computeIfAbsent(
+                            new DestinationFormat(
+                                    committable.getDestination(), committable.getFormat()),
+                            unused -> new ArrayList<>())
                     .add(committable);
         }
         List<DestinationLoad> loads = new ArrayList<>(byDestination.size());
-        for (Map.Entry<TableDestination, List<FileLoadsCommittable>> entry :
+        for (Map.Entry<DestinationFormat, List<FileLoadsCommittable>> entry :
                 byDestination.entrySet()) {
             List<FileLoadsCommittable> files = entry.getValue();
             files.sort(Comparator.comparing(FileLoadsCommittable::getUri));
-            loads.add(new DestinationLoad(entry.getKey(), partition(files)));
+            loads.add(
+                    new DestinationLoad(
+                            entry.getKey().destination, entry.getKey().format, partition(files)));
         }
         return loads;
+    }
+
+    /**
+     * The grouping key: one load job is one destination in one format.
+     *
+     * <p>No {@code equals}/{@code hashCode}: the map is a {@link TreeMap} and orders by the
+     * comparator above, which is also what keeps the job order deterministic. Adding them would be
+     * code no caller reaches.
+     */
+    private static final class DestinationFormat {
+
+        private final TableDestination destination;
+        private final StagingFormat format;
+
+        DestinationFormat(TableDestination destination, StagingFormat format) {
+            this.destination = destination;
+            this.format = format;
+        }
     }
 
     @VisibleForTesting
@@ -250,7 +295,8 @@ public final class LoadJobOrchestrator {
     private void submitLoads(DestinationLoad load) throws IOException {
         TableDestination destination = load.destination;
         if (load.partitions.size() == 1) {
-            load.loadJobIds.add(submitDirectLoad(destination, load.partitions.get(0), null));
+            load.loadJobIds.add(
+                    submitDirectLoad(destination, load.format, load.partitions.get(0), null));
             return;
         }
         if (checkpointId != null) {
@@ -261,7 +307,9 @@ public final class LoadJobOrchestrator {
             // carry schema-update options, which must not race each other on the destination
             // table the way concurrent ALLOW_FIELD_ADDITION jobs would.
             for (int i = 0; i < load.partitions.size(); i++) {
-                runner.awaitJob(submitDirectLoad(destination, load.partitions.get(i), "p" + i));
+                runner.awaitJob(
+                        submitDirectLoad(
+                                destination, load.format, load.partitions.get(i), "p" + i));
             }
             return;
         }
@@ -284,7 +332,8 @@ public final class LoadJobOrchestrator {
                             JobInfo.CreateDisposition.CREATE_IF_NEEDED,
                             // Truncating makes a retried partition load idempotent.
                             JobInfo.WriteDisposition.WRITE_TRUNCATE,
-                            List.of()));
+                            List.of(),
+                            load.format));
         }
     }
 
@@ -295,6 +344,7 @@ public final class LoadJobOrchestrator {
      */
     private String submitDirectLoad(
             TableDestination destination,
+            StagingFormat format,
             List<FileLoadsCommittable> partition,
             @Nullable String suffix)
             throws IOException {
@@ -310,7 +360,8 @@ public final class LoadJobOrchestrator {
                         schema,
                         toCreateDisposition(config.getCreateDisposition()),
                         toWriteDisposition(options.getWriteDisposition()),
-                        schemaUpdateOptions()));
+                        schemaUpdateOptions(),
+                        format));
         return jobId;
     }
 
@@ -524,13 +575,18 @@ public final class LoadJobOrchestrator {
     private static final class DestinationLoad {
 
         private final TableDestination destination;
+        private final StagingFormat format;
         private final List<List<FileLoadsCommittable>> partitions;
         private final List<String> loadJobIds = new ArrayList<>();
         private final List<TableDestination> tempTables = new ArrayList<>();
         private String copyJobId;
 
-        DestinationLoad(TableDestination destination, List<List<FileLoadsCommittable>> partitions) {
+        DestinationLoad(
+                TableDestination destination,
+                StagingFormat format,
+                List<List<FileLoadsCommittable>> partitions) {
             this.destination = destination;
+            this.format = format;
             this.partitions = partitions;
         }
     }

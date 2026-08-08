@@ -32,6 +32,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.slf4j.Logger;
@@ -275,7 +276,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                         + filePrefix
                         + "-"
                         + state.fileSequence++
-                        + ".avro";
+                        + StagingFormat.AVRO.getExtension();
         return new StagedFileWriter(
                 flinkJobId, destination, uri, state.avroSchema, storage.createObject(uri));
     }

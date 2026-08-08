@@ -31,12 +31,22 @@ import java.io.IOException;
  * Serializer for {@link FileLoadsCommittable}. Version 2 added the originating Flink job id and the
  * optional checkpoint id; version 1 (the pre-#69, batch-only layout) never survived a job, so it is
  * rejected instead of migrated.
+ *
+ * <p>Version 3 added the staging format. Version 2 <em>is</em> migrated, unlike version 1: it is a
+ * layout {@code main} has produced since #69, so committables written by it are in committer state
+ * across the upgrade that introduces {@link StagingFormat}, and every one of them is Avro by
+ * construction — that was the only format then. Rejecting them would fail a restart for no reason.
+ * (Version 1 predates #69 and never survived a job, which is why it is still rejected rather than
+ * migrated.)
  */
 @Internal
 public final class FileLoadsCommittableSerializer
         implements SimpleVersionedSerializer<FileLoadsCommittable> {
 
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
+
+    /** The layout before the staging format, whose committables are all Avro. */
+    private static final int VERSION_WITHOUT_FORMAT = 2;
 
     @Override
     public int getVersion() {
@@ -54,6 +64,7 @@ public final class FileLoadsCommittableSerializer
             out.writeUTF(committable.getUri());
             out.writeLong(committable.getByteCount());
             out.writeLong(committable.getRowCount());
+            out.writeUTF(committable.getFormat().name());
             Long checkpointId = committable.getCheckpointId();
             out.writeBoolean(checkpointId != null);
             if (checkpointId != null) {
@@ -65,7 +76,7 @@ public final class FileLoadsCommittableSerializer
 
     @Override
     public FileLoadsCommittable deserialize(int version, byte[] serialized) throws IOException {
-        if (version != VERSION) {
+        if (version != VERSION && version != VERSION_WITHOUT_FORMAT) {
             throw new IOException("Unknown committable version: " + version);
         }
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(serialized))) {
@@ -75,9 +86,12 @@ public final class FileLoadsCommittableSerializer
             String uri = in.readUTF();
             long byteCount = in.readLong();
             long rowCount = in.readLong();
+            // Version 2 predates the format entirely, and everything it wrote was Avro.
+            StagingFormat format =
+                    version == VERSION ? StagingFormat.valueOf(in.readUTF()) : StagingFormat.AVRO;
             Long checkpointId = in.readBoolean() ? in.readLong() : null;
             return new FileLoadsCommittable(
-                    flinkJobId, destination, uri, byteCount, rowCount, checkpointId);
+                    flinkJobId, destination, uri, byteCount, rowCount, format, checkpointId);
         }
     }
 }

@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.apache.avro.Schema;
 import org.apache.avro.file.CodecFactory;
 import org.apache.avro.file.DataFileWriter;
@@ -131,7 +132,12 @@ final class StagedFileWriter {
     FileLoadsCommittable finish() throws IOException {
         avroWriter.close();
         return new FileLoadsCommittable(
-                flinkJobId, destination, uri, countingStream.getCount(), rowCount);
+                flinkJobId,
+                destination,
+                uri,
+                countingStream.getCount(),
+                rowCount,
+                StagingFormat.AVRO);
     }
 
     /** Closes the file discarding errors; the object (finalized or not) is never referenced. */
