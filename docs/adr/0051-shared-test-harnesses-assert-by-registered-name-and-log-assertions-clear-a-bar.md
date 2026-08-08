@@ -54,11 +54,11 @@ limitations under the License.
   — *not* the `getNumCommittables*Counter` accessor names; [#210]'s issue text called them
   `numCommittables*`, and a docs page written from that would have named metrics no reporter
   emits.
-- **`LogCapture` is the shared log-assertion harness** ([#323]), **deliberately narrow: 7 of the
-  repository's 24 `LOG.warn`/`LOG.error` sites**. The bar: the log is the report — remove the
-  assertion and the branch has nothing identifying the event left. Today's sites: `FailureHandlers.LogAndDrop` (the log is the whole behaviour), the Bigtable batcher's absorbed shutdown report ([#238]), `BoundedShutdown`'s two warnings ([#265]/[#312]), the two FILE_LOADS quota warnings, and `LoadJobOrchestrator`'s live-schema warning. The bar exists because the
+- **`LogCapture` is the shared log-assertion harness** ([#323]), **deliberately narrow: 8 of the
+  repository's 25 `LOG.warn`/`LOG.error` sites**. The bar: the log is the report — remove the
+  assertion and the branch has nothing identifying the event left. Today's sites: `FailureHandlers.LogAndDrop` (the log is the whole behaviour), the Bigtable batcher's absorbed shutdown report ([#238]), `BoundedShutdown`'s two warnings ([#265]/[#312]), the two FILE_LOADS quota warnings, `LoadJobOrchestrator`'s live-schema warning, and the Pub/Sub sink's stalled-wait warning ([#333], ADR-0052 — a publish that never answers is never counted as a failure, so no counter names the state). The bar exists because the
   cost is real: an assertion couples a test to the *wording* of a message. Measured 2026-08-06
-  over all 24 sites: 13 were already driven by an existing test, and for 9 of those the same
+  over the 24 sites that existed then: 13 were already driven by an existing test, and for 9 of those the same
   test already asserts a counter, a returned value or an absorbed exception — asserting the log
   there was tried and **reverted**; do not re-add them. **The other 17 sites are unasserted on
   purpose, and nothing tracks them as a gap** ([#336] proposed opening injection points to reach
@@ -85,5 +85,6 @@ limitations under the License.
 [#280]: https://github.com/laughingman7743/flink-connector-gcp/issues/280
 [#312]: https://github.com/laughingman7743/flink-connector-gcp/issues/312
 [#323]: https://github.com/laughingman7743/flink-connector-gcp/issues/323
+[#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
 [#336]: https://github.com/laughingman7743/flink-connector-gcp/issues/336
 [#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337

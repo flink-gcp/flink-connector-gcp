@@ -252,6 +252,93 @@ each checkpoint barrier, and whenever the queue's outstanding bound fills — ha
 own, `flushTimeout`, described under
 [Dead-lettering to a Pub/Sub topic](#dead-lettering-to-a-pubsub-topic).
 
+### What a running job can spend, and `publishProgressTimeout`
+
+The sink itself makes two waits on the task thread, and both are on the same thing — a publish
+completing. `write` waits when the in-flight caps are full, which is ordinary backpressure; `flush`
+waits at every checkpoint barrier until *nothing* is in flight, which is the checkpoint's sync
+phase. Neither is bounded by the caps: those bound how many publishes are outstanding, not how long
+one takes.
+
+What bounds them is `publishProgressTimeout` (600 s by default), and what it bounds is a **stall,
+not a slow topic**. The budget restarts at every completion, so a publisher that keeps answering
+never spends it however long the wait lasts in total; one that has stopped answering entirely
+spends it once and fails the job. Nothing is dropped — the sink is at-least-once and holds no Flink
+state, so the records behind the unresolved publishes are replayed from the last completed
+checkpoint.
+
+Without `enableMessageOrdering` this rarely fires, because a publish already gives up at
+`retryTotalTimeout` (600 s by default) and that failure fails the job by itself — measured
+2026-08-07, one run: 591 s against an unreachable endpoint. **With ordering, nothing inside the sink
+ends an outage but this.** The SDK replaces the publisher's retry settings with "retry forever" (see
+above), so no publish ever resolves and no failure is ever produced; the same measurement left an
+ordered flush still waiting at 700 s, past the budget the unordered one had already died of.
+
+Outside the sink, Flink's `execution.checkpointing.timeout` still ends such a job at its default —
+and since that default is also 600 s, expect it to be what you see first, with the less specific
+`Checkpoint expired`. The budget is chosen to match what the unordered path already spends rather
+than to beat that clock; if you want a Pub/Sub-named failure ahead of it, set this below your
+checkpoint timeout, as the dead-letter queue's `flushTimeout` does by defaulting to a tenth of it.
+Where the two stop being interchangeable is `execution.checkpointing.tolerable-failed-checkpoints`:
+raise it above `0` and the checkpoint timeout stops failing anything, leaving this budget alone.
+
+Which of the two waits a stalled sink is parked in is not something an operator gets to choose — it
+depends only on whether the in-flight caps fill before the checkpoint barrier arrives. Measured on a
+job at 5000 records/s with a 1 s checkpoint interval: at the default `maxInFlightMessages` of 1000
+the task thread was parked in `write`, and only with a cap large enough for the barrier to arrive
+first was it parked in `flush`. That is why one budget covers both.
+
+One interaction it deliberately does not leave to you: a message counts against the in-flight caps
+from the moment the publisher accepts it, which is before it goes anywhere, so at the cap every
+in-flight message can still be sitting in an SDK batch. Blocking at the cap therefore sends what the
+batcher is holding, once — otherwise `batchDelayThreshold` would be a term *inside* this budget, and
+a batch delay configured longer than it would fail a job on a perfectly reachable topic. The two
+knobs are independent as a result, and no configuration of one is rejected because of the other.
+
+The budget does **not** bound the total time a checkpoint can spend. A `flush` that keeps making
+progress can still cost several publish budgets in sequence: the republish recovery adds a drain per
+attempt (up to `recoveryMaxAttempts`, 10 by default) and an isolation pass one per parked message —
+and a parked batch can hold about twice `maxInFlightMessages`, so that second multiplier is the
+larger of the two. Those drains are sequential. Size `publishProgressTimeout` against how long a
+publish takes when the topic is healthy, which for most jobs is milliseconds; the 600 s default is
+not that number, it is the retry budget an unhealthy one spends before the client gives up.
+
+It also bounds the sink's *own* waits and nothing else on the task thread. A `DestinationResolver`,
+a serializer, a `FailureHandler` or a `DeadLetterQueue` you supply runs on that thread too — inside
+the wait, in the handler's case — and this budget cannot bound code it is executing. The built-in
+`PubSubDeadLetterQueue` bounds itself with `flushTimeout`; a handler of your own must not block
+indefinitely. Topic auto-creation's `createTopic` call is outside it too, bounded by the client's
+own settings.
+
+**A wait that has stopped making progress says so** — a `WARN` naming Pub/Sub, the wait it is in and
+how many publishes are outstanding, once a tenth of the budget has passed with nothing completing
+and at most once per that interval thereafter. At the default that is a line at 60 s, and at most
+one a minute, rather than a job that dies silently at 600 s; the line beats both clocks that can end
+the job, including the checkpoint timeout whose message names nothing about Pub/Sub.
+
+The counters are not where this shows up, which is why the line exists: a publish that never answers
+is never counted as a failure, so `errorClass.*.errors` and `numRecordsSendErrors` need not move at
+all while the sink is stalled — they will sit at whatever the repairs before it left them. What is
+reliable is `numRecordsSend` going flat. Alert on that and on the warning.
+
+The expiry itself does not tell you which retryable status is behind it, because the client retries
+them all the same way. `RESOURCE_EXHAUSTED` — a publish quota — reaches the same message as an
+unreachable topic, and raising the budget is the wrong answer for it; read the cause on the
+exception.
+
+If you leave it at its default, note what happens without it: an ordered sink whose topic became
+unreachable does not fail. With Flink's own defaults the *checkpoint* timeout eventually fails the
+job — 600 s of a stalled job, ending in `Checkpoint expired before completing`, which names nothing
+about Pub/Sub. With `execution.checkpointing.tolerable-failed-checkpoints` raised above `0`, nothing
+fails it at all: measured, the job stayed `RUNNING` with its record count frozen while checkpoint
+after checkpoint expired underneath it.
+
+The cost of the bound is the honest other half: a disturbance longer than the budget now fails the
+job where the SDK's retries used to absorb it, and a persistent one becomes a restart loop. That is
+the trade the default is chosen for — 600 s is what the unordered path already spends before failing
+of its own accord, so an ordered sink is being given the same self-termination rather than a
+stricter one.
+
 ## Topic auto-creation
 
 Under `createDisposition(CreateDisposition.CREATE_IF_NEEDED)` — the default — publishes that

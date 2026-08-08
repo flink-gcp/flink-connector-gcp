@@ -120,8 +120,8 @@ infinite budget stays expressible as a large `Duration` without being a mode.
   unbounded" and `Duration.toNanos()` would otherwise throw on a TaskManager — at the first
   flush, or inside `BoundedShutdown.start()`. The same trap one level down, in `BoundedShutdown`
   itself and the two `*Options.shutdownTimeout(...)` setters that feed it, is [#334]; the sink's
-  own unbounded `drainInFlight()` — the leg that dominates what a checkpoint spends, unbounded
-  outright under `enableMessageOrdering` — is [#333].
+  own `drainInFlight()` — the leg that dominates what a checkpoint spends, and unbounded
+  outright under `enableMessageOrdering` until [#333] bounded it on progress (ADR-0052).
 
 [#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
 [#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119

@@ -87,8 +87,9 @@ page, where it also explains why the shutdown budget exists.
 | Option | Default | What it does |
 |---|---|---|
 | `enableMessageOrdering` | `false` | Honours ordering keys. Without it, a message carrying one is rejected with an error naming this option. With it, a dropping `failedMessageHandler` leaves a gap in the dropped message's key, and `retryTotalTimeout`/`retryMaxAttempts` may not be set (see above) |
-| `maxInFlightMessages` | 1000 | Caps the writer's unacknowledged publishes; a write at the cap yields to the mailbox |
+| `maxInFlightMessages` | 1000 | Caps the writer's unacknowledged publishes. A write at the cap yields to the mailbox, asks the publishers to send what they are still batching, and is bounded by `publishProgressTimeout` |
 | `maxInFlightBytes` | 64 MiB | Caps their total serialized size. `Long.MAX_VALUE` bounds by count only |
+| `publishProgressTimeout` | 600 s | How long the sink may wait with **no** publish completing before it fails the job. The budget restarts at every completion, so a topic that keeps answering never spends it however slow it is; one that has stopped answering spends it once. Covers both waits the sink makes on the task thread — the admission gate above and the checkpoint drain. With `enableMessageOrdering` nothing *inside the sink* ends an outage but this. See [What a running job can spend]({{< relref "docs/connectors/datastream/pubsub" >}}#what-a-running-job-can-spend-and-publishprogresstimeout) |
 | `recoveryInitialBackoff` | 500 ms | First backoff of a republish — after creating a missing topic, or after resuming an ordering key |
 | `recoveryMaxBackoff` | 10 s | Cap of that backoff, before ±25% jitter |
 | `recoveryMaxAttempts` | 10 | Republish attempts per destination and incident. Bounds a repair making no progress, not the length of a rejected run (see [Ordering and a dropping policy]({{< relref "docs/connectors/datastream/pubsub" >}}#ordering-and-a-dropping-policy)) |

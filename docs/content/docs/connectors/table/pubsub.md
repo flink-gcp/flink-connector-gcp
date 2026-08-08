@@ -235,6 +235,7 @@ setting any of them alongside an explicit `create-never` is rejected.
 | `sink.message-ordering.enabled` | Boolean | `enableMessageOrdering` |
 | `sink.in-flight.max-messages` | Integer | `maxInFlightMessages` |
 | `sink.in-flight.max-bytes` | MemorySize | `maxInFlightBytes` |
+| `sink.publish-progress-timeout` | Duration | `publishProgressTimeout` |
 | `sink.recovery.initial-backoff` | Duration | `recoveryInitialBackoff` |
 | `sink.recovery.max-backoff` | Duration | `recoveryMaxBackoff` |
 | `sink.recovery.max-attempts` | Integer | `recoveryMaxAttempts` |

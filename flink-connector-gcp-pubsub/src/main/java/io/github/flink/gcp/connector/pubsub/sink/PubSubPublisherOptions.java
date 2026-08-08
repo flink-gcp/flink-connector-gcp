@@ -68,6 +68,7 @@ public final class PubSubPublisherOptions implements Serializable {
     private final boolean enableMessageOrdering;
     private final int maxInFlightMessages;
     private final long maxInFlightBytes;
+    private final Duration publishProgressTimeout;
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
@@ -89,6 +90,7 @@ public final class PubSubPublisherOptions implements Serializable {
         this.enableMessageOrdering = builder.enableMessageOrdering;
         this.maxInFlightMessages = builder.maxInFlightMessages;
         this.maxInFlightBytes = builder.maxInFlightBytes;
+        this.publishProgressTimeout = builder.publishProgressTimeout;
         this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
@@ -215,6 +217,11 @@ public final class PubSubPublisherOptions implements Serializable {
         return recoveryMaxAttempts;
     }
 
+    /** Returns how long the writer waits with no publish completing before it fails. */
+    public Duration getPublishProgressTimeout() {
+        return publishProgressTimeout;
+    }
+
     /** Returns how long the writer's close waits for a publisher to shut down. */
     public Duration getShutdownTimeout() {
         return shutdownTimeout;
@@ -271,6 +278,7 @@ public final class PubSubPublisherOptions implements Serializable {
                 && perDestinationMetrics == that.perDestinationMetrics
                 && maxInFlightMessages == that.maxInFlightMessages
                 && maxInFlightBytes == that.maxInFlightBytes
+                && publishProgressTimeout.equals(that.publishProgressTimeout)
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && Objects.equals(batchElementCountThreshold, that.batchElementCountThreshold)
                 && Objects.equals(batchRequestByteThreshold, that.batchRequestByteThreshold)
@@ -305,6 +313,7 @@ public final class PubSubPublisherOptions implements Serializable {
                 enableMessageOrdering,
                 maxInFlightMessages,
                 maxInFlightBytes,
+                publishProgressTimeout,
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
@@ -342,6 +351,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 + maxInFlightMessages
                 + ", maxInFlightBytes="
                 + maxInFlightBytes
+                + ", publishProgressTimeout="
+                + publishProgressTimeout
                 + ", recoveryInitialBackoff="
                 + recoveryInitialBackoff
                 + ", recoveryMaxBackoff="
@@ -373,6 +384,11 @@ public final class PubSubPublisherOptions implements Serializable {
         private boolean enableMessageOrdering;
         private int maxInFlightMessages = 1000;
         private long maxInFlightBytes = 64L * 1024 * 1024;
+
+        /** The largest {@code Duration} a nanosecond budget can express. */
+        private static final Duration MAX_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
+
+        private Duration publishProgressTimeout = Duration.ofSeconds(600);
         private Duration recoveryInitialBackoff = Duration.ofMillis(500);
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
         private int recoveryMaxAttempts = 10;
@@ -621,6 +637,50 @@ public final class PubSubPublisherOptions implements Serializable {
             Preconditions.checkArgument(
                     recoveryMaxAttempts > 0, "recoveryMaxAttempts must be positive");
             this.recoveryMaxAttempts = recoveryMaxAttempts;
+            return this;
+        }
+
+        /**
+         * Sets how long the writer may wait with <em>no</em> publish completing before it fails.
+         * Defaults to 600 seconds.
+         *
+         * <p>This bounds a stall, not a slow topic: the budget restarts at every completion, so a
+         * topic that keeps answering — however slowly, and however long the wait in total — never
+         * spends it, while a publisher that has stopped resolving anything at all fails the job
+         * once. It covers both waits the writer makes on the task thread, the in-flight admission
+         * gate in {@code write} and the drain at a checkpoint, because which of the two a stalled
+         * sink is parked in depends only on whether the in-flight cap fills before the checkpoint
+         * barrier arrives.
+         *
+         * <p>Without {@code enableMessageOrdering} this rarely fires: a publish gives up at {@code
+         * retryTotalTimeout} (600 s by default), which fails the job by itself. With ordering the
+         * SDK retries a publish without limit, so nothing <em>inside the sink</em> ends an outage
+         * but this. Outside it, Flink's own {@code execution.checkpointing.timeout} still fails the
+         * job at its default — later, and naming nothing about Pub/Sub — but only while {@code
+         * execution.checkpointing.tolerable-failed-checkpoints} is 0. Raise that and this budget is
+         * the only thing left (issue #333).
+         *
+         * <p>Expiry fails the job and drops nothing: the sink is at-least-once and stores nothing
+         * in Flink state, so the records behind the unresolved publishes are replayed from the last
+         * completed checkpoint. The cost of that is real and is the reason this is a knob: a
+         * disturbance that outlasts the budget now restarts the job where the SDK's retries used to
+         * absorb it, and a persistent one becomes a restart loop.
+         *
+         * @param publishProgressTimeout the no-progress budget, positive and at most {@code
+         *     Duration.ofNanos(Long.MAX_VALUE)}
+         * @return this builder
+         */
+        public Builder publishProgressTimeout(Duration publishProgressTimeout) {
+            checkPositive(publishProgressTimeout, "publishProgressTimeout");
+            // Expressible in nanoseconds, because that is the arithmetic the writer's wait does:
+            // a Duration past that throws from toNanos() on a TaskManager rather than here, at the
+            // first wait the writer makes (#334 is the same trap one level down, in the two
+            // shutdownTimeout setters).
+            Preconditions.checkArgument(
+                    publishProgressTimeout.compareTo(MAX_TIMEOUT) <= 0,
+                    "publishProgressTimeout must be at most %s",
+                    MAX_TIMEOUT);
+            this.publishProgressTimeout = publishProgressTimeout;
             return this;
         }
 

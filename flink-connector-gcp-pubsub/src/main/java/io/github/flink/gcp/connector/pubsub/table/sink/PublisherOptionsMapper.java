@@ -101,6 +101,8 @@ public final class PublisherOptionsMapper {
         config.getOptional(PubSubConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS)
                 .ifPresent(builder::recoveryMaxAttempts);
 
+        config.getOptional(PubSubConnectorOptions.SINK_PUBLISH_PROGRESS_TIMEOUT)
+                .ifPresent(builder::publishProgressTimeout);
         config.getOptional(PubSubConnectorOptions.SINK_SHUTDOWN_TIMEOUT)
                 .ifPresent(builder::shutdownTimeout);
 

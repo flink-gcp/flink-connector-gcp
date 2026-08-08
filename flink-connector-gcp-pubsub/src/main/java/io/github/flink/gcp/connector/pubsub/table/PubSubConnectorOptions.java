@@ -500,6 +500,20 @@ public final class PubSubConnectorOptions {
                             "The cap on the serialized bytes of unacknowledged publishes per sink"
                                     + " subtask.");
 
+    public static final ConfigOption<Duration> SINK_PUBLISH_PROGRESS_TIMEOUT =
+            ConfigOptions.key("sink.publish-progress-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long the sink may wait with no publish completing before it fails."
+                                    + " The budget restarts at every completion, so it bounds a"
+                                    + " publisher that has stopped answering rather than a slow topic."
+                                    + " It covers both waits the sink makes on the task thread, the"
+                                    + " in-flight admission gate and the checkpoint drain. With"
+                                    + " 'sink.message-ordering.enabled' the SDK retries a publish"
+                                    + " without limit, so nothing inside the sink ends such an"
+                                    + " outage but this.");
+
     public static final ConfigOption<Duration> SINK_RECOVERY_INITIAL_BACKOFF =
             ConfigOptions.key("sink.recovery.initial-backoff")
                     .durationType()
