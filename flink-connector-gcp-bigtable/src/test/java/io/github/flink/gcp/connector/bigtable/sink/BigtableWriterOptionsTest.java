@@ -34,6 +34,7 @@ class BigtableWriterOptionsTest {
         assertThat(options.getBatchByteSize()).isNull();
         assertThat(options.getMaxInFlightMutations()).isEqualTo(1000);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(64L * 1024 * 1024);
+        assertThat(options.getMaxConsecutiveRejections()).isEqualTo(100);
         assertThat(options).isEqualTo(BigtableWriterOptions.builder().build());
     }
 
@@ -45,13 +46,19 @@ class BigtableWriterOptionsTest {
                         .batchByteSize(1024)
                         .maxInFlightMutations(7)
                         .maxInFlightBytes(4096)
+                        .maxConsecutiveRejections(5)
                         .build();
 
         assertThat(options.getBatchElementCount()).isEqualTo(50L);
         assertThat(options.getBatchByteSize()).isEqualTo(1024L);
         assertThat(options.getMaxInFlightMutations()).isEqualTo(7);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(4096L);
-        assertThat(options.toString()).contains("batchElementCount=50", "maxInFlightMutations=7");
+        assertThat(options.getMaxConsecutiveRejections()).isEqualTo(5);
+        assertThat(options.toString())
+                .contains(
+                        "batchElementCount=50",
+                        "maxInFlightMutations=7",
+                        "maxConsecutiveRejections=5");
     }
 
     @Test
@@ -82,5 +89,23 @@ class BigtableWriterOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> builder.maxInFlightBytes(-1))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void theRejectionBoundTakesOnlyPositiveValuesOrTheUnboundedSentinel() {
+        BigtableWriterOptions.Builder builder = BigtableWriterOptions.builder();
+
+        // Zero has no meaning here: "no rejection tolerated" is 1, and a bound of zero would
+        // silently override the dropping handler the user configured.
+        assertThatThrownBy(() -> builder.maxConsecutiveRejections(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxConsecutiveRejections");
+        assertThatThrownBy(() -> builder.maxConsecutiveRejections(-2))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        builder.maxConsecutiveRejections(BigtableWriterOptions.UNBOUNDED)
+                                .build()
+                                .getMaxConsecutiveRejections())
+                .isEqualTo(BigtableWriterOptions.UNBOUNDED);
     }
 }

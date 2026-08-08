@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0045: A `ROW_LEVEL` verdict is confirmed solo before it is routed (Bigtable)
 
 - Status: Accepted
-- Date: 2026-08-07
-- Issues: [#239] (adopting Pub/Sub's [#264] design — ADR-0008; [#361] is the open bound)
+- Date: 2026-08-07; dropping-policy bound added 2026-08-08 ([#361])
+- Issues: [#239] (adopting Pub/Sub's [#264] design — ADR-0008), [#361] (the bound)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Failed-mutation
   policy
@@ -62,9 +62,19 @@ checkpoint interval, and it terminates because every submission inside it is sol
   [#360](https://github.com/laughingman7743/flink-connector-gcp/pull/360), and narrower than it
   first reads: under the default `failJob()` the pass issues **one** solo request before the
   handler's throw becomes `asyncError` and the pass's own drain rethrows it, so the unbounded
-  case is *only* a dropping policy — where nothing ends the pass, because nothing is meant to.
-  Bounding it with a configurable threshold is [#361]; the same shape probably exists in
-  Pub/Sub's pass, which that issue is scoped to confirm.
+  case is *only* a dropping policy. **What ends the pass there is `maxConsecutiveRejections`**
+  ([#361]; the value is on the reference page): confirmed rejections accumulate across passes on
+  the writer, any applied mutation resets the count — one bad record an hour can never become a
+  failure — and reaching the bound fails the job with a message naming the option, the count and
+  the last rejection's status, after routing the mutation that tripped it. Consecutive-with-reset
+  was chosen over a windowed ratio (no window parameter, a natural reset, and a half-bad stream
+  keeps the policy the user chose); a protective default was chosen over an opt-in sentinel, with
+  `-1` restoring the unbounded pass. Serializer rejections do not count: they say nothing about
+  the service's view of the stream. The bound is deliberately not `runIsolationPass()`'s loop
+  budget, which is a per-pass invariant tripwire whose message must keep meaning "this connector
+  has a bug" — the two failures share no text. Pub/Sub's repair pass has the same unbounded shape
+  under a dropping policy (confirmed structurally, read 2026-08-08); applying this same decision
+  there is [#361]'s remaining half, to be recorded as a revision to ADR-0008 when it lands.
 - Pinned offline by `BigtableWriterTest` through a `FakeMutationBatcher` that decides outcomes
   **per request** — a request carrying a rejected row key fails every entry of that request — so
   the pass's behaviour emerges from the fake rather than being scripted; and against the service

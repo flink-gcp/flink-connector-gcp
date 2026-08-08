@@ -234,10 +234,19 @@ price of not discarding the records batched with a bad one
 
 Under the default `failJob()` policy that cost is bounded by the failure itself — the first
 confirmed rejection fails the job, so the pass isolates one mutation and stops. It is a **dropping**
-policy that pays it, and pays it for as long as the stream stays bad, because nothing else ends the
-pass. Bounding that with a configurable threshold, so a stream whose data is broken rather than
-merely anomalous fails instead of trickling one request at a time, is
-[#361]({{< param BookRepo >}}/issues/361).
+policy that pays it, and what ends the pass there is
+[`maxConsecutiveRejections`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions)
+([#361]({{< param BookRepo >}}/issues/361)): a dropping policy is a decision to keep running
+through *anomalous* records, and a stream being refused wholesale is not that — it is broken data
+degraded to one request per record under a green job — so once that many confirmed rejections
+arrive in a row, with not one successfully applied mutation between them, the job fails with a
+message naming the option, the count and the last rejection's status. Every mutation rejected up to
+that point — the tripping one included — was routed to the handler first; what a handler had
+durably delivered by then follows the `FailureHandler` contract's own checkpoint-contingent
+guarantee. Any applied mutation resets the count — an occasional bad record can never accumulate into a
+failure — and only rejections the pass has *confirmed* count: records the serializer rejects say
+nothing about the service's view of the stream. The `-1` sentinel removes the bound for a pipeline
+that really does want to trickle through arbitrarily bad data.
 
 **Only a status that is unrecoverable by definition is routed**, which is why the row-level class is
 `INVALID_ARGUMENT` alone. gRPC defines it as *"problematic regardless of the state of the system"*
@@ -299,9 +308,11 @@ guarantee in full.
 
 Watch [`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/bigtable" >}}#metrics) rather
 than the job status when running anything other than `failJob()`: it counts every mutation the
-handler received, so a serializer bug rejecting every record — which this sink cannot tell from a
-one-off, the classification being a response status code rather than a judgement about the stream —
-shows up as a rate rather than as a failure. It counts records rather than batches: a rejection is
+handler received. A **serializer** bug rejecting every record shows up only as a rate — serializer
+rejections never count toward
+[`maxConsecutiveRejections`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions), since
+they say nothing about the service's view of the stream — where a stream the *service* refuses
+wholesale fails the job at that bound. It counts records rather than batches: a rejection is
 [confirmed against one mutation](#error-handling) before the handler sees it.
 
 ## Metrics

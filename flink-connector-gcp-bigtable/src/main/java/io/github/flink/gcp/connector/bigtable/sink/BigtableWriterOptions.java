@@ -55,18 +55,30 @@ public final class BigtableWriterOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    /**
+     * The default {@link Builder#maxConsecutiveRejections(int)}: enough confirmed rejections in a
+     * row to say the stream's data is broken rather than anomalous, at an isolation cost of about a
+     * hundred solo requests — one {@code MutateRows} round trip each — before the job fails.
+     */
+    public static final int DEFAULT_MAX_CONSECUTIVE_REJECTIONS = 100;
+
+    /** {@link Builder#maxConsecutiveRejections(int)} value under which the bound never fires. */
+    public static final int UNBOUNDED = -1;
+
     private static final BigtableWriterOptions DEFAULTS = builder().build();
 
     @Nullable private final Long batchElementCount;
     @Nullable private final Long batchByteSize;
     private final int maxInFlightMutations;
     private final long maxInFlightBytes;
+    private final int maxConsecutiveRejections;
 
     private BigtableWriterOptions(Builder builder) {
         this.batchElementCount = builder.batchElementCount;
         this.batchByteSize = builder.batchByteSize;
         this.maxInFlightMutations = builder.maxInFlightMutations;
         this.maxInFlightBytes = builder.maxInFlightBytes;
+        this.maxConsecutiveRejections = builder.maxConsecutiveRejections;
     }
 
     /**
@@ -80,7 +92,9 @@ public final class BigtableWriterOptions implements Serializable {
 
     /**
      * Returns the default options: the client's own batch thresholds, at most 1000 unacknowledged
-     * mutations and at most 64 MiB of them.
+     * mutations, at most 64 MiB of them, and a job failure after {@value
+     * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed rejections under a dropping
+     * policy.
      *
      * @return the default options
      */
@@ -110,6 +124,14 @@ public final class BigtableWriterOptions implements Serializable {
         return maxInFlightBytes;
     }
 
+    /**
+     * Returns how many consecutive confirmed rejections fail the job, or {@link #UNBOUNDED} for
+     * none.
+     */
+    public int getMaxConsecutiveRejections() {
+        return maxConsecutiveRejections;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -121,6 +143,7 @@ public final class BigtableWriterOptions implements Serializable {
         BigtableWriterOptions that = (BigtableWriterOptions) o;
         return maxInFlightMutations == that.maxInFlightMutations
                 && maxInFlightBytes == that.maxInFlightBytes
+                && maxConsecutiveRejections == that.maxConsecutiveRejections
                 && Objects.equals(batchElementCount, that.batchElementCount)
                 && Objects.equals(batchByteSize, that.batchByteSize);
     }
@@ -128,7 +151,11 @@ public final class BigtableWriterOptions implements Serializable {
     @Override
     public int hashCode() {
         return Objects.hash(
-                batchElementCount, batchByteSize, maxInFlightMutations, maxInFlightBytes);
+                batchElementCount,
+                batchByteSize,
+                maxInFlightMutations,
+                maxInFlightBytes,
+                maxConsecutiveRejections);
     }
 
     @Override
@@ -141,6 +168,8 @@ public final class BigtableWriterOptions implements Serializable {
                 + maxInFlightMutations
                 + ", maxInFlightBytes="
                 + maxInFlightBytes
+                + ", maxConsecutiveRejections="
+                + maxConsecutiveRejections
                 + "}";
     }
 
@@ -152,6 +181,7 @@ public final class BigtableWriterOptions implements Serializable {
         @Nullable private Long batchByteSize;
         private int maxInFlightMutations = 1000;
         private long maxInFlightBytes = 64L * 1024 * 1024;
+        private int maxConsecutiveRejections = DEFAULT_MAX_CONSECUTIVE_REJECTIONS;
 
         private Builder() {}
 
@@ -213,6 +243,36 @@ public final class BigtableWriterOptions implements Serializable {
         public Builder maxInFlightBytes(long maxInFlightBytes) {
             Preconditions.checkArgument(maxInFlightBytes > 0, "maxInFlightBytes must be positive");
             this.maxInFlightBytes = maxInFlightBytes;
+            return this;
+        }
+
+        /**
+         * Sets how many <em>consecutive</em> confirmed rejections fail the job. Defaults to {@value
+         * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS}; {@link #UNBOUNDED} (-1) never fails it.
+         *
+         * <p>This bound only matters beside a dropping {@code failedMutationHandler} — under the
+         * default {@code failJob()} the first confirmed rejection fails the job anyway. A dropping
+         * policy is a decision to keep running through <em>anomalous</em> records, and the sink
+         * pays one solo request per rejection to isolate each from the good records batched with
+         * it. When every record is being refused, that is no longer a stream with anomalies but a
+         * broken pipeline degraded to unbatched writes under a green job — so once this many
+         * confirmed rejections arrive in a row, with not one successfully applied mutation between
+         * them, the job fails with a message naming this option. Any applied mutation resets the
+         * count: an occasional bad record can never accumulate into a failure, however long the job
+         * runs.
+         *
+         * <p>Only rejections the isolation pass has <em>confirmed</em> against a single mutation
+         * count; records the serializer rejects do not, since they say nothing about the service's
+         * view of the stream.
+         *
+         * @param maxConsecutiveRejections the bound, positive or {@link #UNBOUNDED}
+         * @return this builder
+         */
+        public Builder maxConsecutiveRejections(int maxConsecutiveRejections) {
+            Preconditions.checkArgument(
+                    maxConsecutiveRejections > 0 || maxConsecutiveRejections == UNBOUNDED,
+                    "maxConsecutiveRejections must be positive or -1 (unbounded)");
+            this.maxConsecutiveRejections = maxConsecutiveRejections;
             return this;
         }
 
