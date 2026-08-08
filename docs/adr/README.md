@@ -49,9 +49,10 @@ ADRs, not 360.
   the index alone answers "what was decided".
 - Issue references are explicit links (these files render on GitHub, where bare `#N` is dead
   text); each file carries the Apache-2.0 header as an HTML comment (apache-rat checks it).
-- Sections: `Context`, `Decision` and `Consequences` are required; `Evidence` (measured facts,
-  each with its date and sample size) and `Alternatives declined` (each with the reason) appear
-  whenever they exist.
+- Sections: `Decision` is required; `Context`, `Consequences`, `Evidence` (measured facts,
+  each with its date and sample size) and `Alternatives declined` (each with the reason)
+  appear whenever they exist — half the archive is Decision-only, and that is the intended
+  shape for a record whose context fits in its opening sentence.
 - A decision *cluster* (one design with several dependent sub-decisions) is one ADR with
   subsections, not one file per sub-decision.
 
@@ -161,7 +162,7 @@ Template:
 | [0054](0054-flink-1-20-is-supported-from-the-same-source-tree-at-source-level.md) | Flink 1.20 is supported from the same source tree, at source level | Accepted | 2026-08-01 | [#32](https://github.com/laughingman7743/flink-connector-gcp/issues/32) | all connectors |
 | [0055](0055-connector-packages-follow-one-skeleton-and-a-layer-exists-only-where-a-sibling-can-arrive.md) | Connector packages follow one skeleton, and a layer exists only where a sibling can arrive | Accepted | 2026-07-20 | [#63](https://github.com/laughingman7743/flink-connector-gcp/issues/63), [#119](https://github.com/laughingman7743/flink-connector-gcp/issues/119), [#121](https://github.com/laughingman7743/flink-connector-gcp/issues/121), [#125](https://github.com/laughingman7743/flink-connector-gcp/issues/125) | all connector modules |
 | [0056](0056-the-api-reference-is-unfiltered-aggregated-javadoc-at-one-unversioned-path.md) | The API reference is unfiltered aggregated JavaDoc at one unversioned path | Accepted | 2026-08-01 | [#88](https://github.com/laughingman7743/flink-connector-gcp/issues/88) | all (docs) |
-| [0057](0057-ci-calls-justfile-recipes-and-a-tools-version-placement-decides-its-installer.md) | CI calls justfile recipes, and a tool's version placement decides its installer | Accepted | 2026-07-26 | [#111](https://github.com/laughingman7743/flink-connector-gcp/issues/111), [#245](https://github.com/laughingman7743/flink-connector-gcp/issues/245), [#132](https://github.com/laughingman7743/flink-connector-gcp/issues/132) | all (build/CI) |
+| [0057](0057-ci-calls-justfile-recipes-and-a-tools-version-placement-decides-its-installer.md) | CI calls justfile recipes, and a tool's version placement decides its installer | Accepted | 2026-07-26 | [#111](https://github.com/laughingman7743/flink-connector-gcp/issues/111), [#132](https://github.com/laughingman7743/flink-connector-gcp/issues/132) | all (build/CI) |
 | [0058](0058-verify-yaml-selects-what-a-pull-request-builds-instead-of-filtering-whether-it-runs.md) | `verify.yaml` selects what a pull request builds instead of filtering whether it runs | Accepted | 2026-08-02 | [#243](https://github.com/laughingman7743/flink-connector-gcp/issues/243), [#253](https://github.com/laughingman7743/flink-connector-gcp/issues/253) | all (CI) |
 | [0059](0059-ci-yaml-orchestrates-pull-request-ci-behind-one-required-check.md) | `ci.yaml` orchestrates pull-request CI behind one required check, "CI passed" | Accepted | 2026-08-02 | [#250](https://github.com/laughingman7743/flink-connector-gcp/issues/250) | all (CI) |
 | [0060](0060-self-review-is-two-rounds-and-round-two-audits-the-descriptions-claims.md) | Self-review is two rounds with different lenses, and round two audits the description's claims | Accepted | 2026-08-06 | — | all (workflow) |
@@ -169,3 +170,4 @@ Template:
 | [0062](0062-milestones-are-releases-and-priority-labels-order-what-breaks.md) | Milestones are releases and priority labels order what breaks inside them | Accepted | 2026-08-07 | — | all (tracker) |
 | [0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md) | Persistent GCP infrastructure is one tofu root module, applied by tfaction from the reviewed plan over WIF | Accepted | 2026-07-29 | [#5](https://github.com/laughingman7743/flink-connector-gcp/issues/5), [#177](https://github.com/laughingman7743/flink-connector-gcp/issues/177) | opentofu |
 | [0064](0064-a-test-driving-a-production-createwriter-sets-an-emulator-endpoint.md) | A test driving a production `createWriter` sets an emulator endpoint | Accepted | 2026-08-02 | [#209](https://github.com/laughingman7743/flink-connector-gcp/issues/209) | all connectors (tests) |
+| [0065](0065-gated-real-gcp-suites-are-opt-in-per-command-and-just-e2e-is-the-opt-in.md) | Gated real-GCP suites are opt-in per command, and `just e2e` is the opt-in | Accepted | 2026-08-02 | [#245](https://github.com/laughingman7743/flink-connector-gcp/issues/245) | all connectors (tests/CI) |

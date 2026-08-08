@@ -18,9 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-26 ([#111], with the shim incident on PR
-  [#113](https://github.com/laughingman7743/flink-connector-gcp/pull/113)); gated-suite
-  opt-in settled 2026-08-02 ([#245])
-- Issues: [#111], [#245], [#132]
+  [#113](https://github.com/laughingman7743/flink-connector-gcp/pull/113))
+- Issues: [#111], [#132]
 - Modules: all (build/CI)
 - Current behavior: root `CLAUDE.md` § Build (the imperative rules), `justfile`
 
@@ -86,25 +85,5 @@ placement scheme:
   added code generation without touching CI. None of this changes why `just` comes from
   `taiki-e/install-action` in every workflow: one binary on `PATH` and no shims at all.
 
-**Gated real-GCP suites are opt-in per command, and `just e2e` is the recipe that *is* the
-opt-in** ([#245]). Each gated ITCase carries `@Tag("gated")`, which the root pom's
-`test.excluded.groups` excludes from every surefire execution; `just e2e` is the only thing
-that clears it, with `-Dtest.excluded.groups=`. The `@EnabledIfEnvironmentVariable` gate
-alone had made the choice per *shell*, all-or-nothing: `just verify` runs the same
-`integration-tests` execution, so a shell holding `BIGTABLE_IT_PROJECT` created two one-node
-Bigtable instances on every full build. The tag makes the choice per command instead, for
-`./mvnw verify` as much as for `just verify`. The environment annotation stays exactly where
-it is (the E2E discovery greps it), so **the two markers must be kept together**, which
-`just check-gated-tags` enforces in both directions — a gate with no tag runs a billed suite
-during any `verify` in a holding shell, a tag with no gate runs nowhere at all, since
-`just e2e` selects by the gate. The check is deliberately **gate-agnostic**, matching the
-annotation rather than the three variables the E2E workflow sets, so
-`BigQueryDefaultStreamSchemaEvolutionITCase` — outside that suite on purpose, ~2 h against
-the real service — is covered too. Because the recipe is now the opt-in, its pre-flight makes
-a missing variable an error, and a post-run assertion (`scripts/e2e-gated-its.sh`, which
-derives the class list from the gating annotation) checks the gated classes actually
-executed.
-
 [#111]: https://github.com/laughingman7743/flink-connector-gcp/issues/111
 [#132]: https://github.com/laughingman7743/flink-connector-gcp/issues/132
-[#245]: https://github.com/laughingman7743/flink-connector-gcp/issues/245
