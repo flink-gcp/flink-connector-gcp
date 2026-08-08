@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -69,6 +70,20 @@ class PubSubDeadLetterQueueTest {
     private static final TopicDestination TOPIC = TopicDestination.of("my-project", "dead-letters");
 
     private static final Instant OFFERED_AT = Instant.parse("2026-08-02T04:05:06Z");
+
+    /**
+     * The group {@link #metrics} registers on, read back by the tests that drive {@code
+     * flushOutstanding} directly. Per test instance, so every count starts at zero.
+     */
+    private final TestSinkWriterMetricGroup metricGroup = TestSinkWriterMetricGroup.create();
+
+    /**
+     * What the static flush seam is handed. Its outstanding supplier is a constant zero: the tests
+     * using it hold their own list, and the gauge over a queue's own list is asserted through a
+     * queue that opened.
+     */
+    private final PubSubDeadLetterQueueMetrics metrics =
+            new PubSubDeadLetterQueueMetrics(metricGroup, () -> 0);
 
     /** A failed element from some other connector, which is the case this queue exists for. */
     private static final class StubElement implements FailedElement {
@@ -417,12 +432,14 @@ class PubSubDeadLetterQueueTest {
     }
 
     /**
-     * The queue's teardown is handed the same counter the sink's publishers feed, so its
-     * abandonments reach {@code publisherShutdownsAbandoned} too. Identity rather than a driven
-     * give-up, for the reason its sibling in {@code DefaultPublisherFactoryTest} records.
+     * The queue's teardown is handed the dead-letter residue counter, <b>not</b> the sink
+     * publishers' — these metrics register on whichever sink hosts the queue, and a Pub/Sub sink
+     * has already registered {@code publisherShutdownsAbandoned} on that group, which Flink would
+     * resolve by dropping this one with a warning. Identity rather than a driven give-up, for the
+     * reason its sibling in {@code DefaultPublisherFactoryTest} records.
      */
     @Test
-    void theTeardownIsHandedTheConnectorsResidueCounter() throws Exception {
+    void theTeardownIsHandedTheDeadLetterResidueCounter() throws Exception {
         PubSubDeadLetterQueue queue =
                 PubSubDeadLetterQueue.builder()
                         .topic(TOPIC)
@@ -431,7 +448,8 @@ class PubSubDeadLetterQueueTest {
         queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
         try {
             assertThat(((BoundedShutdown) queue.publisherShutdown).abandonedCounter())
-                    .isSameAs(PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
+                    .isSameAs(PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED)
+                    .isNotSameAs(PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
         } finally {
             queue.close();
         }
@@ -453,7 +471,11 @@ class PubSubDeadLetterQueueTest {
         assertThatThrownBy(
                         () ->
                                 PubSubDeadLetterQueue.flushOutstanding(
-                                        () -> {}, outstanding, TOPIC, Duration.ofMillis(200)))
+                                        () -> {},
+                                        outstanding,
+                                        TOPIC,
+                                        Duration.ofMillis(200),
+                                        metrics))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining(TOPIC.toString())
                 .hasMessageContaining("flushTimeout")
@@ -486,7 +508,11 @@ class PubSubDeadLetterQueueTest {
         assertThatThrownBy(
                         () ->
                                 PubSubDeadLetterQueue.flushOutstanding(
-                                        () -> {}, outstanding, TOPIC, Duration.ofSeconds(1)))
+                                        () -> {},
+                                        outstanding,
+                                        TOPIC,
+                                        Duration.ofSeconds(1),
+                                        metrics))
                 .isInstanceOf(IOException.class)
                 // At least one of the three fitted, so the count is what is left rather than the
                 // whole list — how many fitted depends on the machine, that some did does not.
@@ -513,7 +539,11 @@ class PubSubDeadLetterQueueTest {
         assertThatThrownBy(
                         () ->
                                 PubSubDeadLetterQueue.flushOutstanding(
-                                        () -> {}, outstanding, TOPIC, Duration.ofMillis(50)))
+                                        () -> {},
+                                        outstanding,
+                                        TOPIC,
+                                        Duration.ofMillis(50),
+                                        metrics))
                 .isInstanceOf(IOException.class);
 
         // Re-awaiting a future that outlived one budget would only report the same thing again.
@@ -537,7 +567,7 @@ class PubSubDeadLetterQueueTest {
         assertThatCode(
                         () ->
                                 PubSubDeadLetterQueue.flushOutstanding(
-                                        () -> {}, outstanding, TOPIC, Duration.ofNanos(1)))
+                                        () -> {}, outstanding, TOPIC, Duration.ofNanos(1), metrics))
                 .doesNotThrowAnyException();
         assertThat(outstanding).isEmpty();
     }
@@ -556,7 +586,7 @@ class PubSubDeadLetterQueueTest {
         assertThatCode(
                         () ->
                                 PubSubDeadLetterQueue.flushOutstanding(
-                                        () -> {}, outstanding, TOPIC, Duration.ofNanos(1)))
+                                        () -> {}, outstanding, TOPIC, Duration.ofNanos(1), metrics))
                 .doesNotThrowAnyException();
 
         assertThat(grants).hasSize(1);
@@ -583,11 +613,202 @@ class PubSubDeadLetterQueueTest {
                                         () -> {},
                                         outstanding,
                                         TOPIC,
-                                        Duration.ofNanos(Long.MAX_VALUE)))
+                                        Duration.ofNanos(Long.MAX_VALUE),
+                                        metrics))
                 .doesNotThrowAnyException();
 
         assertThat(grants).hasSize(1);
         assertThat(grants.get(0)).isGreaterThan(Duration.ofDays(365L * 100));
+    }
+
+    // ---------------------------------------------------------------- the metrics
+
+    /**
+     * The counter names confirmations, not hand-offs: a wait that resolves two of three publishes
+     * and then fails must report two. Counting at the offer instead — the shape the issue proposed
+     * — would report three here, and would also duplicate {@code numRecordsSendErrors}, which every
+     * sink increments on this same group immediately before calling its failure handler.
+     */
+    @Test
+    void onlyConfirmedPublishesAreCounted() {
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            SettableApiFuture<String> resolved = SettableApiFuture.create();
+            resolved.set("message-" + i);
+            outstanding.add(resolved);
+        }
+        SettableApiFuture<String> failed = SettableApiFuture.create();
+        failed.setException(new IllegalStateException("the service rejected it"));
+        outstanding.add(failed);
+
+        assertThatThrownBy(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {},
+                                        outstanding,
+                                        TOPIC,
+                                        Duration.ofSeconds(30),
+                                        metrics))
+                .isInstanceOf(IOException.class);
+
+        assertThat(metricGroup.counterValue("deadLettersPublished")).isEqualTo(2);
+    }
+
+    /**
+     * The duration is recorded on the failing path too, which is the path worth having it on: the
+     * wait that spent the whole budget is the one an operator sizing {@code flushTimeout} wants,
+     * and recording only on success would skip exactly it. (That value is rarely scraped, since the
+     * expiry fails the job — the reason it is a gauge to read <em>before</em> the failure, as a
+     * series.)
+     */
+    @Test
+    void theFlushDurationIsRecordedWhetherTheWaitResolvedOrExpired() {
+        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        outstanding.add(SettableApiFuture.create());
+
+        assertThatThrownBy(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {},
+                                        outstanding,
+                                        TOPIC,
+                                        Duration.ofMillis(200),
+                                        metrics))
+                .isInstanceOf(IOException.class);
+
+        // At least the budget, since the wait ran it out; the upper bound is loose because the
+        // exact overshoot is the scheduler's business.
+        assertThat(metricGroup.<Long>gaugeValue("deadLetterFlushMillis"))
+                .isGreaterThanOrEqualTo(150L)
+                .isLessThan(10_000L);
+    }
+
+    /** And the successful path leaves the gauge holding that wait rather than the previous one. */
+    @Test
+    void aResolvedFlushReplacesTheDurationTheLastOneLeft() {
+        List<ApiFuture<String>> slow = new ArrayList<>();
+        slow.add(new RecordingFuture(Duration.ofMillis(300), new ArrayList<>()));
+        assertThatCode(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, slow, TOPIC, Duration.ofSeconds(30), metrics))
+                .doesNotThrowAnyException();
+        assertThat(metricGroup.<Long>gaugeValue("deadLetterFlushMillis"))
+                .isGreaterThanOrEqualTo(250L);
+
+        SettableApiFuture<String> immediate = SettableApiFuture.create();
+        immediate.set("message");
+        List<ApiFuture<String>> quick = new ArrayList<>();
+        quick.add(immediate);
+        assertThatCode(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, quick, TOPIC, Duration.ofSeconds(30), metrics))
+                .doesNotThrowAnyException();
+
+        assertThat(metricGroup.<Long>gaugeValue("deadLetterFlushMillis")).isLessThan(250L);
+        assertThat(metricGroup.counterValue("deadLettersPublished")).isEqualTo(2);
+    }
+
+    /**
+     * A flush with nothing buffered is not a wait, and must not overwrite the last real one. {@code
+     * flush()} runs at every checkpoint barrier, so on a job that dead-letters occasionally almost
+     * every call is empty — recording those would erase the slow wait an operator is being told to
+     * watch, within one checkpoint interval of it happening.
+     */
+    @Test
+    void anEmptyFlushDoesNotEraseTheDurationOfTheLastRealOne() {
+        List<ApiFuture<String>> slow = new ArrayList<>();
+        slow.add(new RecordingFuture(Duration.ofMillis(300), new ArrayList<>()));
+        assertThatCode(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, slow, TOPIC, Duration.ofSeconds(30), metrics))
+                .doesNotThrowAnyException();
+        long afterRealWait = metricGroup.<Long>gaugeValue("deadLetterFlushMillis");
+        assertThat(afterRealWait).isGreaterThanOrEqualTo(250L);
+
+        assertThatCode(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {},
+                                        new ArrayList<>(),
+                                        TOPIC,
+                                        Duration.ofSeconds(30),
+                                        metrics))
+                .doesNotThrowAnyException();
+
+        assertThat(metricGroup.<Long>gaugeValue("deadLetterFlushMillis")).isEqualTo(afterRealWait);
+    }
+
+    /**
+     * The gauge reads the queue's live buffer rather than a number snapshotted when it opened, and
+     * keeps answering after {@code close()} has discarded that buffer — a gauge is polled by the
+     * reporter thread, which does not stop when the task's writer does.
+     */
+    @Test
+    void theOutstandingGaugeTracksTheBufferAndSurvivesTheClose() throws Exception {
+        StubWriterInitContext context = new StubWriterInitContext(0);
+        TestSinkWriterMetricGroup group = context.getSinkWriterMetricGroup();
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .emulatorEndpoint("localhost:1")
+                        // The offer below leaves a publish the unreachable endpoint can never
+                        // resolve, so the close waits out this budget: at the 30 s default this
+                        // one test would cost thirty seconds of every build.
+                        .shutdownTimeout(Duration.ofSeconds(2))
+                        .build();
+        queue.open(DefaultFailureHandlerContext.of(context));
+        try {
+            assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isZero();
+            assertThat(group.counterValue("deadLettersPublished")).isZero();
+
+            queue.offer(new StubElement(ByteString.copyFromUtf8("row bytes"), "Rejected."));
+
+            // Handed to the client library and unresolved — the endpoint is unreachable on
+            // purpose, so nothing can confirm it and the confirmation counter must stay at zero.
+            assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isEqualTo(1);
+            assertThat(group.counterValue("deadLettersPublished")).isZero();
+        } finally {
+            queue.close();
+        }
+
+        assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isZero();
+    }
+
+    /**
+     * The residue counter is registered under the dead-letter name and reads the dead-letter adder
+     * — the discriminating half being that the sink publishers' adder does not move it, which is
+     * what makes the two series answer "which publisher is stalling" rather than one number twice.
+     */
+    @Test
+    void theResidueCounterReadsTheDeadLetterAdderAlone() throws Exception {
+        PubSubShutdownResidue.resetForTests();
+        StubWriterInitContext context = new StubWriterInitContext(0);
+        TestSinkWriterMetricGroup group = context.getSinkWriterMetricGroup();
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .emulatorEndpoint("localhost:1")
+                        .build();
+        queue.open(DefaultFailureHandlerContext.of(context));
+        try {
+            assertThat(group.counterValue("deadLetterPublisherShutdownsAbandoned")).isZero();
+
+            PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED.increment();
+            assertThat(group.counterValue("deadLetterPublisherShutdownsAbandoned")).isZero();
+
+            PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED.increment();
+            assertThat(group.counterValue("deadLetterPublisherShutdownsAbandoned")).isEqualTo(1);
+
+            // The sink's own name is not registered by the queue: a host that is not a Pub/Sub
+            // sink must not appear to report the sink publishers' residue.
+            assertThat(group.hasMetric("publisherShutdownsAbandoned")).isFalse();
+        } finally {
+            queue.close();
+            PubSubShutdownResidue.resetForTests();
+        }
     }
 
     @Test
@@ -602,7 +823,11 @@ class PubSubDeadLetterQueueTest {
         assertThatThrownBy(
                         () ->
                                 PubSubDeadLetterQueue.flushOutstanding(
-                                        () -> {}, outstanding, TOPIC, Duration.ofSeconds(30)))
+                                        () -> {},
+                                        outstanding,
+                                        TOPIC,
+                                        Duration.ofSeconds(30),
+                                        metrics))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Publishing a dead letter")
                 .hasCauseInstanceOf(IllegalStateException.class)
@@ -619,7 +844,11 @@ class PubSubDeadLetterQueueTest {
             assertThatThrownBy(
                             () ->
                                     PubSubDeadLetterQueue.flushOutstanding(
-                                            () -> {}, outstanding, TOPIC, Duration.ofSeconds(2)))
+                                            () -> {},
+                                            outstanding,
+                                            TOPIC,
+                                            Duration.ofSeconds(2),
+                                            metrics))
                     .isInstanceOf(IOException.class)
                     .hasMessageContaining("Interrupted while publishing");
             // Future.get clears the flag; without the restore the rest of the teardown would stop
@@ -649,7 +878,8 @@ class PubSubDeadLetterQueueTest {
                                         },
                                         outstanding,
                                         TOPIC,
-                                        Duration.ofSeconds(30)))
+                                        Duration.ofSeconds(30),
+                                        metrics))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining(TOPIC.toString())
                 .hasCauseInstanceOf(IllegalStateException.class);

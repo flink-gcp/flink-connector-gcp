@@ -17,10 +17,12 @@ limitations under the License.
 # ADR-0009: `PubSubDeadLetterQueue` is a standalone publisher with bounded flush and close
 
 - Status: Accepted
-- Date: 2026-08-02 ([#211]); flush bound added 2026-08-06 ([#321])
-- Issues: [#211] (the [#37] series), [#321]
+- Date: 2026-08-02 ([#211]); flush bound added 2026-08-06 ([#321]); metrics added 2026-08-08
+  ([#329])
+- Issues: [#211] (the [#37] series), [#321], [#329]
 - Modules: pubsub (driven by any connector's `FailureHandler`)
-- Current behavior: the three datastream pages' dead-lettering sections
+- Current behavior: the three datastream pages' dead-lettering sections, and `pubsub.md`'s
+  "Dead-letter metrics"
 
 ## Decision
 
@@ -118,7 +120,7 @@ infinite budget stays expressible as a large `Duration` without being a mode.
   this class at all — [#328] made the class reachable by naming it in the module's `sources`,
   after which the row is satisfied by the setter behind it and no allowlist entry is involved.
   The datastream pages' dead-lettering prose keeps what it is for and points at the values.
-  [#329] is the other thing [#321] left standing, this queue registering no metrics at all.
+
 - **Both of this class's budgets reject a `Duration` too large to express in nanoseconds**,
   because the flush knob's own documentation offers a long one as the way to say "effectively
   unbounded" and `Duration.toNanos()` would otherwise throw on a TaskManager — at the first
@@ -127,6 +129,48 @@ infinite budget stays expressible as a large `Duration` without being a mode.
   ceiling as benign (ADR-0068); the sink's
   own `drainInFlight()` — the leg that dominates what a checkpoint spends, and unbounded
   outright under `enableMessageOrdering` until [#333] bounded it on progress (ADR-0052).
+
+## The four metrics ([#329])
+
+**Where the names live is settled by the options decision above**: the class is Pub/Sub's even
+though one instance serves every connector, so they are declared in `PubSubMetricNames`. The
+alternative — a shared holder in `base` for names several connectors have in common — is the shape
+ADR-0038 records as built first and **withdrawn**, and the answer taken needs no change to
+`check-metric-docs`. The group is not a choice at all: `FailureHandlerContext` carries the **host
+sink writer's**, so a BigQuery job's dead-letter metrics appear beside BigQuery's own. That is why
+each of the four carries `deadLetter` in its name.
+
+- **`deadLettersPublished` counts confirmations, not hand-offs**, which reverses what [#329]
+  proposed. The issue's premise — that a record routed to the queue "leaves that accounting
+  entirely" — is **false, checked across all six writers**: every one increments
+  `numRecordsSendErrors` immediately before calling its failure handler, so under
+  `sendToDeadLetterQueue(...)` the offered count is already on that same group, and a hand-off
+  counter here would be that series twice. What nothing reported is how much of it reached the
+  topic, which is what [#329]'s own acceptance criterion asks for. Incremented one future at a
+  time, after the `get`, so a partly resolved wait reports what it resolved.
+- **`deadLetterFlushMillis` is a gauge of the last completed wait**, recorded in a `finally` so the
+  expiry — the case worth having it for — is not the one it skips, and held `volatile` because a
+  non-volatile `long` read from the reporter thread may tear (the sink's gauges expose `int` state,
+  which cannot). A cumulative counter of waited time was declined: it cannot tell one wait that
+  spent the whole budget from many short ones, and the budget is per wait.
+- **`deadLetterPublisherShutdownsAbandoned` is a second residue adder**, reversing this record's
+  earlier "a publisher too, so it counts into the same total the sink's do". One name cannot serve
+  both: these register on the host's group, a Pub/Sub sink has already registered
+  `publisherShutdownsAbandoned` there, and `AbstractMetricGroup.addMetric` (read in flink-runtime
+  2.2.1) resolves that by keeping the metric registered first and logging `Name collision: … Metric
+  will not be reported.` — which a healthy configuration would then log at every subtask. Splitting
+  is what ADR-0007 already prescribes for a new owner ("a future adopter gets its own field here"),
+  and it closes the gap `pubsub.md` used to state outright: a job with no Pub/Sub sink reported
+  those teardowns in **no metric**, only as a `WARN` on `BoundedShutdown`. The collision is not a
+  guess about one version — the drop branch and its "Metric will not be reported" message are in
+  flink-runtime 1.20.4, 2.2.1 and 2.3.0 alike, which is the whole supported range. Declined
+  instead: putting the four under a fixed `deadLetterQueue.` subgroup,
+  which avoids the collision but is unrepresentable in `check-metric-docs`'s `[[subgroups]]` — that
+  mechanism reads a *templated* middle segment out of the `base.metrics` registrars — so it would
+  have cost the checker, its tests and its skill.
+- The read-only `Counter` view over a residue adder became a top-level `AbandonedShutdownsCounter`
+  taking the adder as an argument, since there are now two registrars; it was a private class
+  inside `PubSubSinkWriterMetrics`.
 
 [#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
 [#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119

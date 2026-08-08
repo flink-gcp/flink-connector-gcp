@@ -697,6 +697,43 @@ any disturbance you mean to survive says the same thing without making waiting f
 teardown the sink's publishers get — see [Publisher lifecycle](#publisher-lifecycle) for why an SDK
 publisher's shutdown needs bounding at all. It is spent *after* the sink's, so budget for the sum.
 
+#### Dead-letter metrics
+
+The queue registers these on **the metric group of whichever sink is dead-lettering**, which is the
+only group it is given: a BigQuery or Cloud Tasks job dead-lettering to a topic reports them beside
+that sink's own names, one set per subtask.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `deadLettersPublished` | counter | dead letters the service **confirmed**, counted as each publish resolves rather than when it was handed over |
+| `outstandingDeadLetters` | gauge | dead letters handed to the client library and not yet confirmed, which `maxOutstandingMessages` bounds |
+| `deadLetterFlushMillis` | gauge | how long the most recent wait for those publishes took — the number to read against `flushTimeout`. A flush with nothing buffered is not a wait and leaves it alone |
+| `deadLetterPublisherShutdownsAbandoned` | counter | the queue's publisher closes that overran `shutdownTimeout`, process-wide in the sense [Publisher lifecycle](#publisher-lifecycle) describes |
+
+**How many were dead-lettered is already `numRecordsSendErrors`**, which every sink in this
+repository increments immediately before calling its failure handler — so under
+`sendToDeadLetterQueue(...)` that standard counter reports exactly what this queue was offered, on
+this same group. Read the three as a chain: `numRecordsSendErrors` offered, `outstandingDeadLetters`
+in flight, `deadLettersPublished` confirmed. A gap between the first and the last that the next
+checkpoint does not close is a queue falling behind; it cannot persist quietly, because the flush
+that fails to close it throws.
+
+**`deadLetterFlushMillis` is what a `flushTimeout` expiry has no time to tell you.** The expiry
+fails the job, and a metric group is torn down with its task, so the value to act on is the series
+*before* the failure: waits climbing towards the budget over several checkpoints are the warning
+that raising `flushTimeout` — or lowering `maxOutstandingMessages` so each wait carries less — is
+due. The wait it reports is whichever ran last, the one in `flush()` or the one an offer triggered
+at the outstanding bound; both spend the same budget. A `flush()` that finds nothing buffered — on
+a job that dead-letters occasionally, that is almost every checkpoint — does not touch it, so the
+value stays that of the last wait there actually was rather than being zeroed a barrier later.
+
+**`deadLetterPublisherShutdownsAbandoned` is separate from the sink's
+`publisherShutdownsAbandoned`** on purpose. They count different publishers, and a Pub/Sub sink that
+also dead-letters to Pub/Sub carries both names on one group — which one name could not do, since
+Flink resolves a duplicate registration by keeping the metric registered first and dropping the
+other. Everything the sink counter's notes below say about scope, what "abandoned" means and how to
+aggregate across TaskManagers holds for this one too, with its own name substituted in the PromQL.
+
 ## Sink metrics
 
 Registered on the sink writer's metric group, one set per subtask:
@@ -710,7 +747,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `inFlightMessages` | gauge | publishes not yet acknowledged |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
 | `parkedMessages` | gauge | messages held for a destination's next republish — after a missing topic, after an ordering key was paused by a dropped message, or a batch awaiting the one-message-per-request republish that confirms a rejection |
-| `publisherShutdownsAbandoned` | counter | publisher closes that overran their shutdown budget. **Not this subtask's, and not this attempt's** — see below |
+| `publisherShutdownsAbandoned` | counter | **sink** publisher closes that overran their shutdown budget. **Not this subtask's, and not this attempt's** — see below. A dead-letter queue's are [counted apart](#dead-letter-metrics) |
 | `topicsCreated` | counter | completed topic-creation repairs under `CREATE_IF_NEEDED` (see below) |
 | `errorClass.CODE.errors` | counter | failed publishes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `destination.TOPIC.recordsSend`, `destination.TOPIC.sendErrors` | counter | the same two counts per topic, **only** with `perDestinationMetrics(true)` |
@@ -765,18 +802,22 @@ Flink gives us to report a JVM-level quantity. Read it that way and it is useful
 
 Two consequences of that worth stating outright, because they surprise:
 
-- A pipeline that **publishes** but has no Pub/Sub *sink* still contributes. `PubSub → BigQuery`
-  with `sendToDeadLetterQueue(PubSubDeadLetterQueue…)` owns a Pub/Sub publisher, so its abandoned
-  teardowns land in the shared count — while that job registers no such metric itself, because it
-  has no Pub/Sub sink writer. Its residue shows up on a *different* pipeline's dashboard.
+- A pipeline with **no Pub/Sub sink** still contributes to a count no Pub/Sub sink reads.
+  `PubSub → BigQuery` with `sendToDeadLetterQueue(PubSubDeadLetterQueue…)` owns a Pub/Sub
+  publisher, and its abandoned teardowns land in the class loader's dead-letter residue — which
+  that job *does* report, as
+  [`deadLetterPublisherShutdownsAbandoned`](#dead-letter-metrics) on its BigQuery sink's group,
+  but every other pipeline sharing the loader reports the same total.
 - Conversely a job cancelled and resubmitted from its own jar gets a fresh class loader and a count
   of zero while any stranded threads remain: **zero does not mean clean**.
 
-It counts every bounded teardown the class loader has served, so a Pub/Sub sink that also
-dead-letters to Pub/Sub sees both its publishers' and its queue's. The gap that leaves: a job with
-**no** Pub/Sub sink — a BigQuery or Cloud Tasks job dead-lettering to a topic — registers nothing,
-because nothing there owns a Pub/Sub sink writer's metric group. Its abandoned dead-letter teardowns
-are still in the logs, at `WARN` on `BoundedShutdown`.
+It counts every bounded teardown of a **sink** publisher the class loader has served. A dead-letter
+queue's teardowns are counted apart, under
+[`deadLetterPublisherShutdownsAbandoned`](#dead-letter-metrics), which is what lets a job with no
+Pub/Sub sink report them in a metric at all rather than only as a `WARN` in its logs: that queue
+registers on whichever sink hosts it, and one name for both residues would collide on the group of
+a Pub/Sub sink that also dead-letters. Sum the two when what you want is "every publisher this
+class loader gave up on"; read them apart when what you want is which publisher is stalling.
 
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
 exactly what reached `failedMessageHandler(...)` — a record the serializer rejected, and a publish

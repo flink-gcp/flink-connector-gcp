@@ -122,6 +122,16 @@ import java.util.concurrent.TimeoutException;
  * nothing. The queue's <em>close</em> waits for the same publishes under a budget of its own,
  * {@link Builder#shutdownTimeout(Duration)}.
  *
+ * <h2>Metrics</h2>
+ *
+ * <p>{@link #open(FailureHandlerContext)} registers four names on the metric group the context
+ * carries — <b>the host sink writer's</b>, so a BigQuery job dead-lettering to a topic reports them
+ * beside BigQuery's own. They are {@code deadLettersPublished}, {@code outstandingDeadLetters},
+ * {@code deadLetterFlushMillis} and {@code deadLetterPublisherShutdownsAbandoned}; what each means
+ * is on this connector's documentation page, under "Dead-letter metrics". The count of elements
+ * <em>offered</em> is not among them because every sink here already reports it as {@code
+ * numRecordsSendErrors} on that same group.
+ *
  * <p>Instances are configured on the job graph and serialized to the tasks; the publisher itself is
  * created in {@link #open(FailureHandlerContext)}. Lifecycle, and the at-least-once guarantee that
  * comes with it, are the {@link DeadLetterQueue} contract's.
@@ -190,6 +200,11 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     /** Publishes not yet awaited; task-thread only, like every other field here. */
     private transient List<ApiFuture<String>> outstanding;
 
+    /**
+     * Registered on the host sink writer's metric group by {@link #open(FailureHandlerContext)}.
+     */
+    private transient PubSubDeadLetterQueueMetrics metrics;
+
     private transient int subtaskIndex;
 
     private PubSubDeadLetterQueue(
@@ -241,8 +256,12 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                             "dead-letter topic " + topic,
                             null,
                             shutdownTimeout,
-                            // A publisher too, so it counts into the same total the sink's do.
-                            PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
+                            // A residue of its own rather than the sink publishers' total: these
+                            // metrics register on whichever sink hosts the queue, and a Pub/Sub
+                            // sink has already registered `publisherShutdownsAbandoned` there —
+                            // Flink would drop the later registration with a warning. Splitting
+                            // them also says which publisher is stalling.
+                            PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED);
             channelShutdown = this::shutdownChannel;
         } catch (IOException | RuntimeException e) {
             // The channel is owned here until the publisher takes it over on success.
@@ -254,6 +273,11 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                     "Failed to create the dead-letter publisher for Pub/Sub topic " + topic + ".",
                     e);
         }
+        // Last, so that the names exist exactly when the queue can be used: an open that threw
+        // above fails the writer's creation, and the metric group goes with the task.
+        metrics =
+                new PubSubDeadLetterQueueMetrics(
+                        context.getMetricGroup(), this::getOutstandingMessages);
     }
 
     @Override
@@ -275,14 +299,16 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         if (maxOutstandingMessages >= 0 && outstanding.size() >= maxOutstandingMessages) {
             // Bounds what one checkpoint interval can accumulate when *every* record fails. At
             // zero this is a synchronous publish per element, which is the write-through mode.
-            flushOutstanding(publisher::publishAllOutstanding, outstanding, topic, flushTimeout);
+            flushOutstanding(
+                    publisher::publishAllOutstanding, outstanding, topic, flushTimeout, metrics);
         }
     }
 
     @Override
     public void flush() throws IOException {
         Preconditions.checkState(publisher != null, "The dead-letter queue is not open.");
-        flushOutstanding(publisher::publishAllOutstanding, outstanding, topic, flushTimeout);
+        flushOutstanding(
+                publisher::publishAllOutstanding, outstanding, topic, flushTimeout, metrics);
     }
 
     @Override
@@ -298,6 +324,10 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
             publisher = null;
             ownedChannel = null;
             outstanding = null;
+            // The registered gauges outlive this field — they read through method references —
+            // so clearing it releases nothing and only keeps this block's meaning uniform: after
+            // close, every field open() set is gone.
+            metrics = null;
             publisherShutdown = null;
             channelShutdown = null;
         }
@@ -338,23 +368,34 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      * Builder#flushTimeout(Duration)}). During an outage that costs one budget rather than several,
      * because the first expiry throws and ends the interval — not because a call is the interval.
      *
-     * <p>Static, taking its topic and budget as arguments, for the reason {@link #envelope} is:
-     * {@link Publisher} cannot be subclassed (see the teardown fields above), so handing this the
-     * futures is the only way a test can reach it, and opening a real publisher to do so would
-     * strand a gax executor in the test JVM.
+     * <p>Static, taking its topic, budget and metrics as arguments, for the reason {@link
+     * #envelope} is: {@link Publisher} cannot be subclassed (see the teardown fields above), so
+     * handing this the futures is the only way a test can reach it, and opening a real publisher to
+     * do so would strand a gax executor in the test JVM.
+     *
+     * <p><b>{@code deadLettersPublished} is counted here, one future at a time</b>, rather than at
+     * the offer that handed the publish over: the offered count is already {@code
+     * numRecordsSendErrors} on this same metric group, and a partly resolved wait must not report
+     * the publishes it never got to.
      */
     @VisibleForTesting
     static void flushOutstanding(
             Runnable publishAll,
             List<ApiFuture<String>> outstanding,
             TopicDestination topic,
-            Duration budget)
+            Duration budget,
+            PubSubDeadLetterQueueMetrics metrics)
             throws IOException {
+        long startNanos = System.nanoTime();
+        // Read before the finally clears the list: a flush with nothing buffered is not a wait,
+        // and recording it would erase the slow wait an operator is meant to see. `flush()` runs
+        // at every barrier, so on a job that dead-letters occasionally almost every call is empty.
+        boolean hadPublishesToAwait = !outstanding.isEmpty();
         // Overflows at the ceiling the setter accepts, and is correct anyway: the
         // subtraction below wraps a second time and the two cancel, leaving the true remainder
         // (measured — theLargestExpressibleBudgetIsNotSpentTheInstantTheFlushStarts pins it).
         // Math.addExact here would turn that legal budget into a failed flush.
-        long deadlineNanos = System.nanoTime() + budget.toNanos();
+        long deadlineNanos = startNanos + budget.toNanos();
         int resolved = 0;
         try {
             try {
@@ -374,6 +415,8 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                     future.get(
                             Math.max(deadlineNanos - System.nanoTime(), 0), TimeUnit.NANOSECONDS);
                     resolved++;
+                    // After the get, so only a publish the service confirmed is counted.
+                    metrics.deadLetterPublished();
                 } catch (ExecutionException e) {
                     throw new IOException(
                             "Publishing a dead letter to Pub/Sub topic " + topic + " failed.",
@@ -407,6 +450,13 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                 }
             }
         } finally {
+            // Recorded however the wait ended, so that one which spent the whole budget is the one
+            // the gauge holds — an expiry fails the job, so that value is rarely scraped, but a
+            // duration metric that skipped exactly the interesting case would be worse.
+            if (hadPublishesToAwait) {
+                metrics.flushCompleted(
+                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos));
+            }
             // Cleared whatever happened: a failure fails the job, and re-awaiting futures that
             // already failed — or that outlived one budget — would only report the same thing
             // again. The unresolved ones are deliberately not cancelled, so a message the SDK still

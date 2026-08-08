@@ -306,6 +306,11 @@ failed), the row key, and — as the shared contract's payload — the **seriali
 handled elements is at-least-once for failures that recur on replay; the SPI's own page states that
 guarantee in full.
 
+`PubSubDeadLetterQueue`, this repository's one shipped implementation, reports what it published,
+what it still holds and how long its waits take as four metrics registered on **this sink's** writer
+group — documented once, with the queue, under
+[Dead-letter metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-letter-metrics).
+
 Watch [`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/bigtable" >}}#metrics) rather
 than the job status when running anything other than `failJob()`: it counts every mutation the
 handler received. A **serializer** bug rejecting every record shows up only as a rate — serializer

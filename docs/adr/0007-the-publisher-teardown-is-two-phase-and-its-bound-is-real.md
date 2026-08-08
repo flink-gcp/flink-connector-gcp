@@ -123,7 +123,11 @@ the settings either way. The check is advisory, and that is the whole of it.
 
 - The **storage** is a `LongAdder` at the **module root** that this connector owns and passes
   into every `BoundedShutdown` it builds — the base class holds no count, so a future adopter
-  gets its own field here rather than a second meaning for this one. It has to outlive the task:
+  gets its own field here rather than a second meaning for this one. **[#329] is that adopter**:
+  the dead-letter queue's teardowns moved to a second adder, reported as
+  `deadLetterPublisherShutdownsAbandoned`, because that queue registers on the *host* sink's
+  metric group and a Pub/Sub sink has already registered this name there (ADR-0009). This count
+  is therefore the **sink's publishers'** alone. It has to outlive the task:
   measured, with a MiniCluster probe whose reporter ran at 10 ms (default 10 s) and never once
   saw a close-time counter above zero over four runs, while a counter incremented during the run
   read its full value; the writer's metric group is unregistered as its task is cleaned up, in
@@ -132,8 +136,8 @@ the settings either way. The check is advisory, and that is the whole of it.
   isolates it per job, the SQL uber-jar in `lib/` shares one count across every job on the
   TaskManager. Nothing is corrupted either way — it becomes a TaskManager property, which is the
   honest scope for threads that are in the JVM whoever left them, and the docs say so, including
-  that a `PubSub → BigQuery` job dead-lettering to Pub/Sub contributes to a count it does not
-  itself display.
+  that a `PubSub → BigQuery` job dead-lettering to Pub/Sub contributes to a dead-letter count
+  every other pipeline on that loader reports too.
 - The **instrument does not follow from the storage**, which the first draft got wrong by
   registering a gauge: a cumulative count of events is a counter by the base module's naming
   rule, and a caller-supplied `Counter` reading the connector's adder registers the same number
@@ -192,3 +196,4 @@ DLQ's **flush**, a separate budget (ADR-0009).
 [#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
 [#324]: https://github.com/laughingman7743/flink-connector-gcp/issues/324
 [#328]: https://github.com/laughingman7743/flink-connector-gcp/issues/328
+[#329]: https://github.com/laughingman7743/flink-connector-gcp/issues/329

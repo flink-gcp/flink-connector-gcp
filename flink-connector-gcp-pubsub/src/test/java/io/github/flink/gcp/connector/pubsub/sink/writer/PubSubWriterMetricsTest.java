@@ -187,8 +187,15 @@ class PubSubWriterMetricsTest {
             // directly: what is pinned is that it is wired to the live figure rather than to one
             // snapshotted when the writer was built.
             assertThat(counter("publisherShutdownsAbandoned")).isEqualTo(1);
+
+            // And it reports the sink's publishers alone. A dead-letter queue's abandoned
+            // teardowns count into a residue of their own (#329), because that queue registers on
+            // whichever sink hosts it and would otherwise collide with this very name here.
+            PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED.increment();
+            assertThat(counter("publisherShutdownsAbandoned")).isEqualTo(1);
         } finally {
             blocked.countDown();
+            PubSubShutdownResidue.resetForTests();
         }
     }
 
