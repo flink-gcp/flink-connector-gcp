@@ -1378,6 +1378,11 @@ it is spent *after* the sink's own teardown — so a sink that dead-letters shou
 against Flink's `task.cancellation.timeout`. Full description on the
 [Pub/Sub page]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-lettering-to-a-pubsub-topic).
 
+The queue reports what it published, what it still holds and how long its waits take, as four
+metrics registered on **this sink's** writer group — documented once, with the queue, under
+[Dead-letter metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-letter-metrics). How
+many rows were dead-lettered in the first place is [`numRecordsSendErrors`](#metrics) here.
+
 Retries preserve the at-least-once contract: a batch whose append outcome was lost may be
 re-appended in full, so duplicates are possible (as with any retry in this write method). Worst
 case, a single repair can take about a minute of SDK retries plus a minute of writer re-appends

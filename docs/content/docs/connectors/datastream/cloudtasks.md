@@ -482,6 +482,11 @@ it is spent *after* the sink's own teardown — so a sink that dead-letters shou
 against Flink's `task.cancellation.timeout`. Full description on the
 [Pub/Sub page]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-lettering-to-a-pubsub-topic).
 
+The queue reports what it published, what it still holds and how long its waits take, as four
+metrics registered on **this sink's** writer group — documented once, with the queue, under
+[Dead-letter metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-letter-metrics). How
+many tasks were dead-lettered in the first place is [`numRecordsSendErrors`](#metrics) here.
+
 One limit is worth stating because the documentation contradicts itself: the maximum task size is
 given as **100 KB** by the `CreateTask` API reference and the proto, and as **1 MiB** by the quotas
 page. The sink does not validate against either; an oversized task is rejected by the service.

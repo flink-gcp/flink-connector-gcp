@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
+import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.github.flink.gcp.connector.testutils.pubsub.PubSubEmulatorContainers;
 import io.github.flink.gcp.connector.testutils.pubsub.PubSubTestClients;
 import org.junit.jupiter.api.AfterAll;
@@ -172,14 +173,46 @@ class PubSubDeadLetterQueueITCase {
     @Test
     void writeThroughPublishesWithoutWaitingForAFlush() throws Exception {
         try (Fixture fixture = newFixture(PubSubDeadLetterQueue.WRITE_THROUGH)) {
-            fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+            StubWriterInitContext context = new StubWriterInitContext(0);
+            fixture.queue.open(DefaultFailureHandlerContext.of(context));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("durable already")));
 
             // The point of the mode: offer returned only once the publish was acknowledged, so
-            // nothing is outstanding and the message is already in the topic.
+            // nothing is outstanding and the message is already in the topic — and the confirmed
+            // count says so without a flush, which is what makes it a confirmation count.
             assertThat(fixture.queue.getOutstandingMessages()).isZero();
+            assertThat(context.getSinkWriterMetricGroup().counterValue("deadLettersPublished"))
+                    .isEqualTo(1);
             assertThat(clients.pullMessagesUntil(fixture.subscriptionPath, 1, PULL_DEADLINE))
                     .hasSize(1);
+        }
+    }
+
+    /**
+     * The metrics against a live topic: the confirmed count moves when the service has answered,
+     * which under the default bound is at the flush and not at the offers. The unit tests pin the
+     * same rule against fake futures; this one pins it against a real client, where a mutant
+     * counting at the hand-off would report two before the flush.
+     */
+    @Test
+    void theConfirmedCountMovesAtTheFlushAndTheGaugeEmpties() throws Exception {
+        try (Fixture fixture = newFixture()) {
+            StubWriterInitContext context = new StubWriterInitContext(0);
+            TestSinkWriterMetricGroup group = context.getSinkWriterMetricGroup();
+            fixture.queue.open(DefaultFailureHandlerContext.of(context));
+
+            fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row one")));
+            fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row two")));
+
+            assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isEqualTo(2);
+            assertThat(group.counterValue("deadLettersPublished")).isZero();
+
+            fixture.queue.flush();
+
+            assertThat(group.counterValue("deadLettersPublished")).isEqualTo(2);
+            assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isZero();
+            assertThat(clients.pullMessagesUntil(fixture.subscriptionPath, 2, PULL_DEADLINE))
+                    .hasSize(2);
         }
     }
 

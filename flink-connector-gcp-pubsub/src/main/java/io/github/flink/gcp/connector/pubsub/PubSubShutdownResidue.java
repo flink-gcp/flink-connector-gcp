@@ -57,6 +57,18 @@ public final class PubSubShutdownResidue {
      */
     public static final LongAdder PUBLISHER_SHUTDOWNS_ABANDONED = new LongAdder();
 
+    /**
+     * The same for the dead-letter queue's publisher, reported as {@code
+     * PubSubMetricNames#DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED}. A second field rather than a
+     * second meaning for the one above, which is the rule this class already states for a new
+     * owner: the queue's metrics are registered on the <em>host</em> sink writer's group, and a
+     * host that is itself a Pub/Sub sink has already registered the name above there — Flink keeps
+     * the metric registered first and drops the other with a "Metric will not be reported" warning,
+     * so sharing a name would make a healthy configuration log one. Reading them apart also answers
+     * which publisher is stalling, which one total cannot.
+     */
+    public static final LongAdder DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED = new LongAdder();
+
     private PubSubShutdownResidue() {}
 
     /**
@@ -67,5 +79,6 @@ public final class PubSubShutdownResidue {
     @VisibleForTesting
     public static void resetForTests() {
         PUBLISHER_SHUTDOWNS_ABANDONED.reset();
+        DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED.reset();
     }
 }

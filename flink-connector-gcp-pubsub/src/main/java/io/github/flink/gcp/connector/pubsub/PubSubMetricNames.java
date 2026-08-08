@@ -34,6 +34,14 @@ import org.apache.flink.annotation.Internal;
  * the subgroup leaves {@code base.metrics} registers on this connector's behalf ({@code
  * errorClass.CODE.errors}, {@code destination.TOPIC.recordsSend}). The user-facing meaning of each
  * name is on the connector's documentation page, not duplicated here.
+ *
+ * <p><b>The dead-letter names below are this connector's and appear on somebody else's sink.</b>
+ * {@code PubSubDeadLetterQueue} serves every connector in this repository and registers on the
+ * metric group {@code FailureHandlerContext} hands it — the <em>host</em> sink writer's — so a
+ * BigQuery or Cloud Tasks job dead-lettering to a topic reports them beside that sink's own names.
+ * They are declared here because the class is Pub/Sub's, the argument that already places its
+ * options on {@code reference/pubsub.md} (ADR-0009), and each carries {@code deadLetter} so that it
+ * reads unambiguously in that company.
  */
 @Internal
 public final class PubSubMetricNames {
@@ -84,6 +92,45 @@ public final class PubSubMetricNames {
     // Registered by the split enumerator, so these are job-wide rather than per subtask.
     public static final String ASSIGNED_SPLITS = "assignedSplits";
     public static final String UNASSIGNED_READERS = "unassignedReaders";
+
+    // Registered by the dead-letter queue (PubSubDeadLetterQueueMetrics), on the host sink
+    // writer's metric group — see the class javadoc above.
+
+    /**
+     * Counts dead letters the service has <em>confirmed</em>, at the point each publish future
+     * resolves, rather than at the offer that handed it to the client library. The offer-side count
+     * already exists on the same metric group and is not this connector's to register: every sink
+     * here increments {@code numRecordsSendErrors} immediately before calling the failure handler,
+     * so under {@code sendToDeadLetterQueue(...)} it counts exactly what was offered. A hand-off
+     * counter here would be that series a second time, while what nothing reports is how much of it
+     * reached the topic.
+     */
+    public static final String DEAD_LETTERS_PUBLISHED = "deadLettersPublished";
+
+    /**
+     * The <em>state</em> the confirmed count is read against: dead letters handed to the client
+     * library and not yet resolved, which {@code maxOutstandingMessages} bounds.
+     */
+    public static final String OUTSTANDING_DEAD_LETTERS = "outstandingDeadLetters";
+
+    /**
+     * How long the most recently completed wait for those publishes took, in milliseconds — the
+     * state to read against {@code flushTimeout}, which is what a checkpoint's flush is spending.
+     * Both waits the budget covers report here, the one in {@code flush()} and the one {@code
+     * maxOutstandingMessages} triggers inside an offer.
+     */
+    public static final String DEAD_LETTER_FLUSH_MILLIS = "deadLetterFlushMillis";
+
+    /**
+     * {@link #PUBLISHER_SHUTDOWNS_ABANDONED} for the dead-letter publisher, counted separately and
+     * named separately because it is registered on a group that may already carry that name — the
+     * host sink's, when the host is a Pub/Sub sink. Flink resolves such a collision by keeping the
+     * metric registered first and dropping the other with a warning, so one name for both would
+     * make a healthy configuration log "Metric will not be reported". Splitting them also says
+     * which publisher is stalling. The count itself is {@link PubSubShutdownResidue}.
+     */
+    public static final String DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED =
+            "deadLetterPublisherShutdownsAbandoned";
 
     private PubSubMetricNames() {}
 }
