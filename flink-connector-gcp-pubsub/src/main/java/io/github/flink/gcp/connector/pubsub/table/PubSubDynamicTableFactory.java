@@ -84,6 +84,8 @@ public class PubSubDynamicTableFactory
                         PubSubConnectorOptions.SCAN_DESERIALIZATION_FAILURE_POLICY,
                         PubSubConnectorOptions.SCAN_FLOW_CONTROL_MAX_OUTSTANDING_ELEMENT_COUNT,
                         PubSubConnectorOptions.SCAN_FLOW_CONTROL_MAX_OUTSTANDING_REQUEST_BYTES,
+                        PubSubConnectorOptions.SCAN_PAUSED_SPLIT_BUFFER_MAX_MESSAGES,
+                        PubSubConnectorOptions.SCAN_PAUSED_SPLIT_BUFFER_MAX_BYTES,
                         PubSubConnectorOptions.SCAN_PARALLEL_PULL_COUNT,
                         PubSubConnectorOptions.SCAN_ACK_MAX_EXTENSION_PERIOD,
                         PubSubConnectorOptions.SCAN_ACK_MIN_DURATION_PER_EXTENSION,

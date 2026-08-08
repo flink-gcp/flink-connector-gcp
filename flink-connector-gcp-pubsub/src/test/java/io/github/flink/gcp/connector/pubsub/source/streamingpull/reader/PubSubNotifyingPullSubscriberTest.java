@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.util.ExceptionUtils;
 
+import com.google.protobuf.ByteString;
+import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
@@ -374,6 +376,72 @@ class PubSubNotifyingPullSubscriberTest {
         // The Error takes the same release as the exception above — the same rule as the sibling
         // guard in DefaultMutationBatcherFactory.create (#324). Same caveat as that test's.
         assertThat(calls).containsExactly("stopAsync", "awaitTerminated");
+    }
+
+    @Test
+    void reportsWhatIsBufferedInBothDimensions() throws Exception {
+        // Messages of different sizes, deliberately: an accounting that counted messages where it
+        // means bytes passes every same-size test there is.
+        PubSubNotifyingPullSubscriber subscriber = subscriberOf(new ScriptedClient());
+        PubsubMessage small = message("s", "x");
+        PubsubMessage large = message("l", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+
+        subscriber.receiveMessage(small, new RecordingAckHandle("s"));
+        subscriber.receiveMessage(large, new RecordingAckHandle("l"));
+
+        assertThat(subscriber.bufferUsage().messages()).isEqualTo(2);
+        assertThat(subscriber.bufferUsage().bytes())
+                .isEqualTo(small.getSerializedSize() + large.getSerializedSize());
+    }
+
+    @Test
+    void aDrainReleasesExactlyWhatItRemoved() throws Exception {
+        // The half that decides whether the reader's bound is a bound at all: without the drain's
+        // subtraction the load only ever grows, so a busy split would eventually be parked the
+        // moment it was paused.
+        PubSubNotifyingPullSubscriber subscriber = subscriberOf(new ScriptedClient());
+        PubsubMessage first = message("1", "x");
+        PubsubMessage second = message("2", "xxxxxxxxxx");
+        subscriber.receiveMessage(first, new RecordingAckHandle("1"));
+        subscriber.receiveMessage(second, new RecordingAckHandle("2"));
+
+        assertThat(subscriber.pullMessages(1)).containsExactly(first);
+
+        assertThat(subscriber.bufferUsage().messages()).isEqualTo(1);
+        assertThat(subscriber.bufferUsage().bytes()).isEqualTo(second.getSerializedSize());
+    }
+
+    @Test
+    void shutdownEmptiesTheUsageItReports() throws Exception {
+        PubSubNotifyingPullSubscriber subscriber = subscriberOf(new ScriptedClient());
+        subscriber.receiveMessage(message("1", "xxxxx"), new RecordingAckHandle("1"));
+
+        subscriber.shutdown();
+
+        // The buffer is discarded and nacked by the shutdown, so what a parked subscriber reports
+        // holding is nothing.
+        assertThat(subscriber.bufferUsage().messages()).isZero();
+        assertThat(subscriber.bufferUsage().bytes()).isZero();
+    }
+
+    @Test
+    void aMessageArrivingAfterShutdownIsNackedRatherThanBuffered() throws Exception {
+        PubSubNotifyingPullSubscriber subscriber = subscriberOf(new ScriptedClient());
+        subscriber.shutdown();
+        RecordingAckHandle late = new RecordingAckHandle("late");
+
+        subscriber.receiveMessage(message("1", "xxxxx"), late);
+
+        assertThat(subscriber.bufferUsage().messages()).isZero();
+        assertThat(subscriber.bufferUsage().bytes()).isZero();
+        assertThat(late.isNacked()).isTrue();
+    }
+
+    private static PubsubMessage message(String messageId, String payload) {
+        return PubsubMessage.newBuilder()
+                .setMessageId(messageId)
+                .setData(ByteString.copyFromUtf8(payload))
+                .build();
     }
 
     private PubSubNotifyingPullSubscriber subscriberOf(ScriptedClient client) throws IOException {

@@ -102,7 +102,8 @@ class PubSubNackPromptnessRealGcpITCase extends AbstractPubSubRealGcpITCase {
                 new DefaultSubscriberFactory(options, OrderingMode.NONE, null),
                 ackTracker,
                 options,
-                new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount));
+                new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount),
+                new TestReaderMetrics().metrics());
     }
 
     private static PubSubAckTracker newTracker() {

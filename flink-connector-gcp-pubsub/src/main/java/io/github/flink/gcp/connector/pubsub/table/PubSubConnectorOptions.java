@@ -138,6 +138,29 @@ public final class PubSubConnectorOptions {
                             "How many bytes of messages the subscriber keeps outstanding before"
                                     + " pausing the stream.");
 
+    public static final ConfigOption<Long> SCAN_PAUSED_SPLIT_BUFFER_MAX_MESSAGES =
+            ConfigOptions.key("scan.paused-split-buffer.max-messages")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How many messages a split paused by watermark alignment may buffer"
+                                    + " before its subscriber is stopped, to be reopened when the"
+                                    + " split resumes. Defaults to twice the effective flow-control"
+                                    + " message limit, which is what one lease-expiry wave adds"
+                                    + " once the client library stops extending a paused split's"
+                                    + " leases. Lowering it can park a split while a checkpoint"
+                                    + " covering its output is still in flight, which re-emits"
+                                    + " those records on resume.");
+
+    public static final ConfigOption<MemorySize> SCAN_PAUSED_SPLIT_BUFFER_MAX_BYTES =
+            ConfigOptions.key("scan.paused-split-buffer.max-bytes")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The same in bytes, applied together with the message cap: whichever is"
+                                    + " exceeded first stops the subscriber. Defaults to twice the"
+                                    + " effective flow-control byte limit.");
+
     public static final ConfigOption<Integer> SCAN_PARALLEL_PULL_COUNT =
             ConfigOptions.key("scan.parallel-pull-count")
                     .intType()

@@ -24,6 +24,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
+import org.apache.flink.util.ExceptionUtils;
 
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
@@ -32,6 +33,7 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSpl
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
@@ -74,9 +76,11 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
     private final SubscriberOpener subscriberOpener;
     private final int maxRecordsPerFetch;
     private final MissingCheckpointDetector checkpointDetector;
+    private final PausedSplitBufferLimits pausedSplitBufferLimits;
+    private final PubSubSourceReaderMetrics metrics;
 
-    /** Subscribers by split id, in assignment order so drains visit splits fairly. */
-    private final Map<String, NotifyingPullSubscriber> subscribers = new LinkedHashMap<>();
+    /** Assigned splits by id, in assignment order so drains visit splits fairly. */
+    private final Map<String, AssignedSplit> splits = new LinkedHashMap<>();
 
     private final Set<String> pausedSplits = new HashSet<>();
 
@@ -99,12 +103,15 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
      * @param checkpointDetector fails the reader if checkpoints never arrive; armed by the first
      *     split assignment and evaluated from {@link #fetch()}, because the state it detects is the
      *     state with no records
+     * @param metrics the reader's metrics, which own the parked-split count because it outlives
+     *     this object
      */
     public PubSubSplitReader(
             SubscriberFactory subscriberFactory,
             AckTracker ackTracker,
             PubSubSubscriberOptions options,
-            MissingCheckpointDetector checkpointDetector) {
+            MissingCheckpointDetector checkpointDetector,
+            PubSubSourceReaderMetrics metrics) {
         this(
                 (split, signal) ->
                         new PubSubNotifyingPullSubscriber(
@@ -115,17 +122,45 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
                                 signal,
                                 options.getShutdownTimeout()),
                 options.getMaxRecordsPerFetch(),
-                checkpointDetector);
+                checkpointDetector,
+                PausedSplitBufferLimits.of(options),
+                metrics);
     }
 
     @VisibleForTesting
     PubSubSplitReader(
             SubscriberOpener subscriberOpener,
             int maxRecordsPerFetch,
-            MissingCheckpointDetector checkpointDetector) {
+            MissingCheckpointDetector checkpointDetector,
+            PausedSplitBufferLimits pausedSplitBufferLimits,
+            PubSubSourceReaderMetrics metrics) {
         this.subscriberOpener = subscriberOpener;
         this.maxRecordsPerFetch = maxRecordsPerFetch;
         this.checkpointDetector = checkpointDetector;
+        this.pausedSplitBufferLimits = pausedSplitBufferLimits;
+        this.metrics = metrics;
+    }
+
+    /**
+     * One assigned split and the subscriber serving it.
+     *
+     * <p>The split itself is retained because reopening a parked one needs it, and a {@code null}
+     * subscriber <em>is</em> the parked state: {@link #addSplit} either opens one or throws, so
+     * nothing else can produce one, and a second flag could disagree with it.
+     */
+    private static final class AssignedSplit {
+
+        private final SubscriptionSplit split;
+        @Nullable private NotifyingPullSubscriber subscriber;
+
+        private AssignedSplit(SubscriptionSplit split, NotifyingPullSubscriber subscriber) {
+            this.split = split;
+            this.subscriber = subscriber;
+        }
+
+        private boolean isParked() {
+            return subscriber == null;
+        }
     }
 
     /** Opens the subscriber backing one split; the seam that lets tests supply a fake client. */
@@ -156,6 +191,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             drainInto(builder);
         }
         checkPausedSplitsForFailure();
+        parkOverfullPausedSplits();
         checkpointDetector.check();
         return builder.build();
     }
@@ -187,10 +223,108 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
         // fetcher's assignedSplits before enqueuing the task (checked against flink-connector-base
         // 2.1.2 sources and 1.20.0 bytecode), and AddSplitsTask populates that map and calls
         // handleSplitsChanges in the same task on this thread.
-        for (Map.Entry<String, NotifyingPullSubscriber> entry : subscribers.entrySet()) {
-            if (pausedSplits.contains(entry.getKey())) {
-                entry.getValue().checkFailure();
+        for (Map.Entry<String, AssignedSplit> entry : splits.entrySet()) {
+            AssignedSplit assigned = entry.getValue();
+            // A parked split has no client, so there is no failure for it to have. What that costs
+            // is stated where the park happens.
+            if (pausedSplits.contains(entry.getKey()) && !assigned.isParked()) {
+                assigned.subscriber.checkFailure();
             }
+        }
+    }
+
+    /**
+     * Stops the subscriber of any paused split whose buffer has outgrown its bound, to be reopened
+     * when the split resumes (#357).
+     *
+     * <p><b>The bound exists because the client library's does not hold.</b> A paused split is
+     * never drained, and what was supposed to cap it is flow control — but the client stops
+     * extending a message's deadline once {@code maxAckExtensionPeriod} has passed since it was
+     * received, and releases that message's flow-control permit when it does, while this reader is
+     * still holding the message. Permits therefore free up at the rate messages expire, pulling
+     * resumes, and the buffer grows for as long as the pause lasts (measured by {@code
+     * PubSubPausedSplitBufferITCase}: one flow-control window per period, indefinitely). An
+     * indefinite pause is ordinary — an aligned group holds its slowest member's watermark, so one
+     * quiet subscription pauses every other split until the strategy's idleness lets it go — which
+     * makes this a memory hazard rather than a stall.
+     *
+     * <p>Stopping the client is the response because the alternatives are worse where it counts.
+     * Refusing messages in the receiver callback means either blocking a client-library thread,
+     * which stalls an ordering key's dispatch chain, or nacking a message already leased, which
+     * loops it back through delivery and spends a dead-letter policy's attempts on a split nobody
+     * is consuming. Failing the job trades an eventual heap exhaustion for a restart into the same
+     * state. Stopping the client returns every lease at once ({@code NACK_IMMEDIATELY}), frees the
+     * buffer, and leaves a split that is doing nothing costing nothing — which is what a pause
+     * asked for.
+     *
+     * <p>Evaluated from {@link #fetch()} after {@link #checkPausedSplitsForFailure()}, and the
+     * order is load-bearing: parking runs {@code close()}, which absorbs what the client raises
+     * (#325), so a split that is both dead and overfull has to fail the job rather than be quietly
+     * stopped. Failing first covers every split; the one that could fail in between is covered by
+     * the {@code checkFailure} at the head of the list below.
+     *
+     * <p>The release goes through <b>one {@link Closers#closeAll} list holding every parked split's
+     * steps, every shutdown before any close</b> — the shape and the reason of {@link #close()}
+     * (#297). Alignment pauses a subtask's splits as a group and they cross the bound in the same
+     * wave, so parking them one at a time would spend {@code shutdownTimeout} per split on the
+     * fetcher thread, serially, exactly the {@code splits × timeout} cost that method exists to
+     * avoid. Starting every shutdown first overlaps the waits into one, and the single list keeps
+     * every nack running when an earlier step throws.
+     */
+    private void parkOverfullPausedSplits() throws IOException {
+        if (pausedSplits.isEmpty()) {
+            // The ordinary path, and the one that must cost nothing: a job that never aligns
+            // watermarks pauses no split, so it neither walks the map a second time nor allocates.
+            return;
+        }
+        // Two lists so the closes can be appended after every shutdown, as close() orders them.
+        List<AutoCloseable> steps = new ArrayList<>();
+        List<AutoCloseable> closes = new ArrayList<>();
+        for (Map.Entry<String, AssignedSplit> entry : splits.entrySet()) {
+            AssignedSplit assigned = entry.getValue();
+            if (assigned.isParked() || !pausedSplits.contains(entry.getKey())) {
+                continue;
+            }
+            BufferUsage usage = assigned.subscriber.bufferUsage();
+            if (!pausedSplitBufferLimits.exceededBy(usage)) {
+                continue;
+            }
+            LOG.warn(
+                    "Paused split {} has buffered {}, past the {} a paused split may hold, so its"
+                            + " Pub/Sub subscriber is being stopped and its messages returned for"
+                            + " redelivery; a fresh subscriber opens when the split resumes. The split"
+                            + " is paused by watermark alignment, and a pause this long usually"
+                            + " means an aligned source has gone idle without withIdleness(...) on"
+                            + " its watermark strategy: add it, or bring the aligned group's slow"
+                            + " member forward. Raising pausedSplitBufferMaxMessages or"
+                            + " pausedSplitBufferMaxBytes only holds more memory for a split"
+                            + " nothing is consuming, so prefer it only for a pause you expect to"
+                            + " end.",
+                    entry.getKey(),
+                    usage,
+                    pausedSplitBufferLimits);
+            NotifyingPullSubscriber subscriber = assigned.subscriber;
+            // Marked parked before the release, so a release that throws cannot leave the reader
+            // holding a half-closed client it would go on to drain or close a second time.
+            assigned.subscriber = null;
+            metrics.splitParked();
+            // The failure check first, and this is its last chance: after the park there is no
+            // client for checkPausedSplitsForFailure to watch, and close() absorbs the client's own
+            // report of it (#325).
+            steps.add(subscriber::checkFailure);
+            steps.add(subscriber::shutdown);
+            closes.add(subscriber);
+        }
+        if (closes.isEmpty()) {
+            return;
+        }
+        steps.addAll(closes);
+        try {
+            Closers.closeAll(steps);
+        } catch (Exception e) {
+            // Rethrown as-is when it is the IOException checkFailure raises, so a failure reported
+            // here is the same failure, of the same type, the drain would have reported.
+            ExceptionUtils.rethrowIOException(e);
         }
     }
 
@@ -214,15 +348,18 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
     }
 
     private void addSplit(SubscriptionSplit split) {
-        if (subscribers.containsKey(split.splitId())) {
+        if (splits.containsKey(split.splitId())) {
             // The enumerator recomputes assignments deterministically, so a re-registered reader
             // may be handed a split it already consumes.
             return;
         }
         LOG.info("Opening a Pub/Sub subscriber for split {}.", split.splitId());
+        splits.put(split.splitId(), new AssignedSplit(split, openSubscriber(split)));
+    }
+
+    private NotifyingPullSubscriber openSubscriber(SubscriptionSplit split) {
         try {
-            subscribers.put(
-                    split.splitId(), subscriberOpener.open(split, this::signalDataAvailable));
+            return subscriberOpener.open(split, this::signalDataAvailable);
         } catch (IOException e) {
             throw new RuntimeException(
                     "Failed to open the Pub/Sub subscriber for split " + split.splitId(), e);
@@ -230,11 +367,18 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
     }
 
     private void removeSplit(SubscriptionSplit split) {
-        NotifyingPullSubscriber subscriber = subscribers.remove(split.splitId());
+        AssignedSplit assigned = splits.remove(split.splitId());
         pausedSplits.remove(split.splitId());
-        if (subscriber == null) {
+        if (assigned == null) {
             return;
         }
+        if (assigned.isParked()) {
+            // Nothing to close and nothing to nack: parking already did both. The count still has
+            // to be given back, or the gauge keeps reporting a split that no longer exists.
+            metrics.splitUnparked();
+            return;
+        }
+        NotifyingPullSubscriber subscriber = assigned.subscriber;
         LOG.info("Closing the Pub/Sub subscriber for removed split {}.", split.splitId());
         try {
             // The failure check comes before the close, and is the last chance to report one: a
@@ -258,10 +402,48 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
     public void pauseOrResumeSplits(
             Collection<SubscriptionSplit> splitsToPause,
             Collection<SubscriptionSplit> splitsToResume) {
-        // A streaming-pull client cannot be paused, so a paused split is simply not drained; the
-        // client library's flow control then stops pulling once its buffer fills.
+        // A streaming-pull client cannot be paused, so a paused split is simply not drained. The
+        // client library's flow control then stops pulling once its outstanding limit fills — for
+        // one maxAckExtensionPeriod, after which parkOverfullPausedSplits() is the bound (#357).
         splitsToPause.forEach(split -> pausedSplits.add(split.splitId()));
-        splitsToResume.forEach(split -> pausedSplits.remove(split.splitId()));
+        for (SubscriptionSplit split : splitsToResume) {
+            // Reopened before the pause is lifted, so "parked implies paused" holds at every
+            // point: a reopen that throws would otherwise leave a split with no subscriber that
+            // the drain no longer skips, and the drain dereferences it.
+            reopenIfParked(split.splitId());
+            pausedSplits.remove(split.splitId());
+        }
+        // Pausing is itself an event the guards in fetch() have to see, because after it there may
+        // be nothing left to wake them. A split paused while it still holds messages an earlier
+        // fetch did not drain is already over its bound with its signal spent, and the client has
+        // stopped delivering — so the next fetch drains nothing, waits on a signal that never
+        // comes, and never reaches the checks that sit after that wait. One signal here costs an
+        // empty fetch and closes it.
+        //
+        // Growth and failure each carry their own signal (receiveMessage and fail both raise it),
+        // so this is the pause's own case and not a second belt for theirs.
+        signalDataAvailable();
+    }
+
+    /**
+     * Opens a fresh subscriber for a split that was parked while paused.
+     *
+     * <p>Here rather than lazily in the drain, mirroring {@link #addSplit}: the reopen belongs
+     * where its cause is, on the same thread and through the same seam, and a drain should not
+     * throw for a reason that is not about draining. A reopen that fails fails the job, exactly as
+     * an assignment that cannot open its subscriber does — the same client failure, reported
+     * whenever it happens.
+     */
+    private void reopenIfParked(String splitId) {
+        AssignedSplit assigned = splits.get(splitId);
+        if (assigned == null || !assigned.isParked()) {
+            return;
+        }
+        LOG.info(
+                "Reopening the Pub/Sub subscriber for split {}, parked while it was paused.",
+                splitId);
+        assigned.subscriber = openSubscriber(assigned.split);
+        metrics.splitUnparked();
     }
 
     @Override
@@ -285,27 +467,52 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             // throws — a bare loop would skip the closes wholesale, leaving every subscriber open
             // holding messages Pub/Sub only redelivers once their acknowledgement deadline
             // expires. The order within the list is the property the paragraph above argues for.
-            List<AutoCloseable> steps = new ArrayList<>(subscribers.size() * 2);
-            for (NotifyingPullSubscriber subscriber : subscribers.values()) {
+            //
+            // A parked split contributes neither step: its shutdown already ran, and with it the
+            // nack, so there is nothing left to release.
+            List<NotifyingPullSubscriber> open = openSubscribers();
+            List<AutoCloseable> steps = new ArrayList<>(open.size() * 2);
+            for (NotifyingPullSubscriber subscriber : open) {
                 steps.add(subscriber::shutdown);
             }
-            steps.addAll(subscribers.values());
+            steps.addAll(open);
             Closers.closeAll(steps);
         } finally {
-            subscribers.clear();
+            // Give the parked count back before dropping the splits, as removeSplit does: the
+            // gauge lives in the reader's metrics because it outlives this object, so a reader
+            // closing while it holds parked splits would leave it reporting splits that are gone.
+            for (AssignedSplit assigned : splits.values()) {
+                if (assigned.isParked()) {
+                    metrics.splitUnparked();
+                }
+            }
+            splits.clear();
             pausedSplits.clear();
         }
     }
 
+    /** Returns the subscribers of every split that is not parked, in assignment order. */
+    private List<NotifyingPullSubscriber> openSubscribers() {
+        List<NotifyingPullSubscriber> open = new ArrayList<>(splits.size());
+        for (AssignedSplit assigned : splits.values()) {
+            if (!assigned.isParked()) {
+                open.add(assigned.subscriber);
+            }
+        }
+        return open;
+    }
+
     private int drainInto(RecordsBySplits.Builder<PubsubMessage> builder) throws IOException {
         int total = 0;
-        for (Map.Entry<String, NotifyingPullSubscriber> entry : subscribers.entrySet()) {
+        for (Map.Entry<String, AssignedSplit> entry : splits.entrySet()) {
+            AssignedSplit assigned = entry.getValue();
             if (pausedSplits.contains(entry.getKey())) {
                 // Skipped here and watched by checkPausedSplitsForFailure instead, which is the
-                // only thing that reports a paused subscriber's failure.
+                // only thing that reports a paused subscriber's failure. A parked split is a paused
+                // one, so it never reaches the pull below.
                 continue;
             }
-            List<PubsubMessage> messages = entry.getValue().pullMessages(maxRecordsPerFetch);
+            List<PubsubMessage> messages = assigned.subscriber.pullMessages(maxRecordsPerFetch);
             if (!messages.isEmpty()) {
                 builder.addAll(entry.getKey(), messages);
                 total += messages.size();

@@ -67,6 +67,19 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
     void checkFailure() throws IOException;
 
     /**
+     * Returns what this subscriber currently holds buffered, so the reader can bound a split it is
+     * not draining.
+     *
+     * <p>Reported rather than bounded here because the bound is the reader's policy and the
+     * response is the reader's to make: this buffer is deliberately unbounded, and a subscriber
+     * that refused a message would have to block a client-library thread or nack it, which are the
+     * two things the implementation's design rules out (see {@link PubSubNotifyingPullSubscriber}).
+     *
+     * @return the buffered messages and their total serialized size
+     */
+    BufferUsage bufferUsage();
+
+    /**
      * Nacks every message this subscriber's split still holds and asks the client to shut down,
      * returning without waiting for it. Buffered messages are discarded — they were never emitted,
      * so Pub/Sub must redeliver them. Idempotent.

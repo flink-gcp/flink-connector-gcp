@@ -841,9 +841,13 @@ is equivalent to not setting options at all. Every knob and its default is in th
 [configuration reference]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions); this
 section is why they are what they are.
 
-**Flow control is the real bound on in-flight messages.** Because the source acknowledges only on
-checkpoint completion, everything received since the last completed checkpoint counts against these
-limits, and the client stops pulling once they are reached. `maxRecordsPerFetch` only caps how much
+**Flow control is the bound on in-flight messages, for as long as the client is extending their
+leases.** Because the source acknowledges only on checkpoint completion, everything received since
+the last completed checkpoint counts against these limits, and the client stops pulling once they
+are reached — until `maxAckExtensionPeriod` passes for a message the job has not emitted, after
+which the client releases its permit while the connector still holds it. That only reaches a split
+nothing is draining, which is a paused one, and it is bounded there by `pausedSplitBufferMaxMessages`
+/ `pausedSplitBufferMaxBytes` (see [Watermark alignment](#watermark-alignment)). `maxRecordsPerFetch` only caps how much
 a single fetch drains from one split; it is not a memory bound. The limit behavior is not exposed
 because the SDK subscriber does not expose it either — it forces blocking regardless of the
 settings, which for a subscriber means it stops pulling rather than blocking a thread.
@@ -1042,6 +1046,8 @@ Registered on the reader and enumerator metric groups:
 | `messagesDropped` | counter | messages discarded by `DROP` |
 | `pendingAcks` | gauge | messages received or emitted but not yet acknowledged |
 | `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
+| `parkedSplits` | gauge | paused splits whose subscriber has been stopped, awaiting a resume |
+| `splitsParked` | counter | times a paused split outgrew its buffer bound and its subscriber was stopped |
 | `assignedSplits` / `unassignedReaders` | gauge (enumerator) | splits handed out; readers that got none |
 | `numRecordsInErrors` | counter (Flink standard) | deserialization failures |
 
@@ -1104,7 +1110,10 @@ only when the interval happens to be set at cluster level, for the same visibili
 
 **Nack.** Messages that are pending, staged, or bound to an incomplete checkpoint are **nacked when
 the reader closes**, so Pub/Sub redelivers them immediately instead of after the acknowledgement
-deadline expires — this is what makes failover recover quickly. The SDK subscriber is additionally
+deadline expires — this is what makes failover recover quickly. A reader close is not the only
+occasion: parking a paused split whose buffer outgrew its bound nacks the same three states, on a
+running job with no failure and no restart, so those records are redelivered and emitted again when
+the split resumes (see [Watermark alignment](#watermark-alignment)). The SDK subscriber is additionally
 configured with `NACK_IMMEDIATELY` shutdown, which releases messages the client buffered but never
 handed to the source; the SDK's `WAIT_FOR_PROCESSING` default would instead wait for
 acknowledgements that only arrive at checkpoint completion. Acknowledgement state is scoped per
@@ -1128,7 +1137,9 @@ and lock coordination. Under FLIP-27 that bridge is the framework's job: `SplitR
 already a pull loop, and `SourceReaderBase` already owns the element queue and the backpressure
 between the fetcher and the task thread. The remaining reason — that flow control becomes a knob the
 user can get wrong, and that it rather than Flink bounds how much is buffered — does apply here, and
-is why the subscriber's flow-control settings are exposed rather than hidden.
+is why the subscriber's flow-control settings are exposed rather than hidden. It is also why the
+connector has a bound of its own for the one case flow control stops covering, a paused split (see
+[Watermark alignment](#watermark-alignment)).
 
 Two things decided it the other way:
 
@@ -1176,29 +1187,72 @@ subtasks and never asks a source to pause a split.
 
 A streaming-pull connection cannot itself be paused, so a paused split is simply not drained.
 
-**A long pause is bounded by `maxAckExtensionPeriod`, not by flow control, and past it the buffer is
-unbounded.** The client library's flow control holds the pause at first — it stops pulling once its
+**Flow control bounds a pause only for `maxAckExtensionPeriod`, and the connector bounds it after
+that.** The client library's flow control holds the pause at first — it stops pulling once its
 outstanding limit fills — but its lease-extension budget is measured from when a message was
 *received*, not from when the job emits it. Once `maxAckExtensionPeriod` (1 h by default) passes for
 a buffered message, the client library stops extending its lease, Pub/Sub redelivers it, and the
 client **releases that message's flow-control permit** — while the connector is still holding the
-message. Permits therefore free up at the rate messages expire, pulling resumes, and the paused
-split's in-memory buffer grows with nothing capping it. The redelivered copy is buffered too, so on
-resume both copies are emitted; acknowledgement stays correct (the superseded handle is nacked), but
-this is the at-least-once contract being exercised rather than an edge case.
+message. Permits therefore free up in a wave, pulling resumes, and the buffer grows again by about
+a whole flow-control window each time — with no ceiling in the two waves the measurement ran, and
+none in the mechanism ([#357]({{< param BookRepo >}}/issues/357)). The wave lands one
+acknowledgement deadline *before* the period elapses, not after it, because the client drops a
+message it can no longer extend past the next deadline.
 
-The practical consequence is that **an indefinite pause is a memory hazard, not just a stall**. An
-aligned group holds its slowest member's watermark, so a subscription that goes quiet holds every
-other split paused forever unless the strategy carries `withIdleness(...)`. `pendingAcks` is the
-signature to alert on: it climbs while the split's output stays flat.
+**So past its bound, a paused split's subscriber is stopped, and a fresh one opens when the split
+resumes.** The bound is [`pausedSplitBufferMaxMessages` and
+`pausedSplitBufferMaxBytes`]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions), and either
+being exceeded is enough — which of the two binds depends on message size. Both default to
+**twice** the flow-control limit they shadow: one lease-expiry wave is worth a whole window, so the
+lapse crosses that bound and ordinary skew does not. (A healthy buffer can sit a little above the
+flow-control limit — a message larger than the byte limit is admitted anyway, a dead-letter
+subscription's delivery-attempt attribute is added after the client reserves, and a redelivery is
+held beside the copy it supersedes — so a bound at the limit itself would park healthy splits.)
+
+Stopping the client hands every lease back, so **nothing is lost**: Pub/Sub redelivers what was
+buffered and the split consumes it after the resume. It is not free of duplication, and the
+duplication is the point to plan for. The nack covers what the split had *emitted* since the last
+completed checkpoint as well as what it was holding, so those records are emitted a second time on
+resume — within the at-least-once contract, but on a running job rather than at a restart. Each
+nacked message also spends one attempt against a dead-letter policy's `maxDeliveryAttempts`;
+`messagesNacked` is where that shows up. Under `orderingMode(PER_KEY)` nothing else pulls those
+messages meanwhile, and a key is replayed in order rather than reordered.
+
+"At once" is the intent rather than a guarantee: if the client does not terminate within
+`shutdownTimeout` the reader gives up on it with a `WARN`, and its messages then wait out their
+acknowledgement deadline instead.
+
+The bound is evaluated once per fetch, so it caps what a split holds between checks rather than what
+its buffer can momentarily reach: a burst delivered between two fetches overshoots it, bounded in
+turn by what the client library delivers at once (measured at 104 and 121 buffered against a bound of
+60 over two runs, one wave of a 50-message window each time).
+
+**An indefinite pause is still a problem, just no longer a memory one.** An aligned group holds its
+slowest member's watermark, so a subscription that goes quiet holds every other split paused forever
+unless the strategy carries `withIdleness(...)` — and a split that stays parked consumes nothing
+while its subscription's backlog grows, until Pub/Sub's message retention begins dropping it.
+`parkedSplits` is the signature to alert on, and it is zero on a healthy job for a reason worth
+stating: a park takes about a `maxAckExtensionPeriod` of *continuous* pause to reach, which a
+strategy carrying `withIdleness(...)` does not produce. So a split that is parked means alignment
+is holding it indefinitely, and the fix is the strategy or the laggard — add `withIdleness(...)`,
+bring the slow member forward, or widen the drift limit. Raising the bound holds more memory for a
+split nobody is consuming, which is worth doing only for a pause you know is bounded and have the
+heap for. `splitsParked` counts the parks themselves, which is what a park and its resume falling
+between two scrapes would otherwise hide.
 
 **A paused split is still watched.** If its subscriber fails permanently while paused, the job
 fails, exactly as it would for a split that was being consumed
 ([#348]({{< param BookRepo >}}/issues/348)) — worth stating because the opposite is the natural
 reading of "not drained".
 
-Only a *permanent* failure does this: the client library reports one just for a status it will not
-retry, so a `PERMISSION_DENIED` or a deleted subscription, never a blip. Note what that means for a
+That guarantee stops at the park, and deliberately: **a parked split has no client**, so a
+subscription deleted or its access revoked *during* the pause goes unnoticed until the split
+resumes, where reopening its subscriber fails the job instead. A failure recorded before the park is
+still reported. The alternative is the unbounded buffer this replaces — detection that costs a
+TaskManager.
+
+Only a *permanent* failure fails a paused split's job: the client library reports one just for a
+status it will not retry, so a `PERMISSION_DENIED` or a deleted subscription, never a blip. Note what that means for a
 subscription being decommissioned deliberately — deleting it, or revoking the job's access to it,
 fails the job, and a restart then fails in the startup check rather than recovering. Removing a
 subscription from a running pipeline means removing it from `subscriptions(...)` and redeploying.

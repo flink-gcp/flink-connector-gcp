@@ -41,6 +41,10 @@ import java.util.Objects;
  * blocking regardless of what the settings say, which for a subscriber simply means it stops
  * pulling.
  *
+ * <p>That bound lapses after {@link Builder#maxAckExtensionPeriod(Duration)} for a split nothing is
+ * draining, which is what {@link Builder#pausedSplitBufferMaxMessages(long)} and {@link
+ * Builder#pausedSplitBufferMaxBytes(long)} exist for (#357).
+ *
  * <p>The subscriber shutdown <em>mode</em> is deliberately not a knob. It is fixed to {@code
  * NACK_IMMEDIATELY} so that closing a reader releases messages at once; the SDK's {@code
  * WAIT_FOR_PROCESSING} default would wait for acknowledgements that only arrive at checkpoint
@@ -58,6 +62,8 @@ public final class PubSubSubscriberOptions implements Serializable {
 
     @Nullable private final Long flowControlMaxOutstandingElementCount;
     @Nullable private final Long flowControlMaxOutstandingRequestBytes;
+    @Nullable private final Long pausedSplitBufferMaxMessages;
+    @Nullable private final Long pausedSplitBufferMaxBytes;
     @Nullable private final Integer parallelPullCount;
     @Nullable private final Duration maxAckExtensionPeriod;
     @Nullable private final Duration minDurationPerAckExtension;
@@ -70,6 +76,8 @@ public final class PubSubSubscriberOptions implements Serializable {
     private PubSubSubscriberOptions(Builder builder) {
         this.flowControlMaxOutstandingElementCount = builder.flowControlMaxOutstandingElementCount;
         this.flowControlMaxOutstandingRequestBytes = builder.flowControlMaxOutstandingRequestBytes;
+        this.pausedSplitBufferMaxMessages = builder.pausedSplitBufferMaxMessages;
+        this.pausedSplitBufferMaxBytes = builder.pausedSplitBufferMaxBytes;
         this.parallelPullCount = builder.parallelPullCount;
         this.maxAckExtensionPeriod = builder.maxAckExtensionPeriod;
         this.minDurationPerAckExtension = builder.minDurationPerAckExtension;
@@ -110,6 +118,24 @@ public final class PubSubSubscriberOptions implements Serializable {
     @Nullable
     public Long getFlowControlMaxOutstandingRequestBytes() {
         return flowControlMaxOutstandingRequestBytes;
+    }
+
+    /**
+     * Returns the message cap on a paused split's buffer, or {@code null} for twice the effective
+     * flow-control outstanding-message limit.
+     */
+    @Nullable
+    public Long getPausedSplitBufferMaxMessages() {
+        return pausedSplitBufferMaxMessages;
+    }
+
+    /**
+     * Returns the byte cap on a paused split's buffer, or {@code null} for twice the effective
+     * flow-control outstanding-byte limit.
+     */
+    @Nullable
+    public Long getPausedSplitBufferMaxBytes() {
+        return pausedSplitBufferMaxBytes;
     }
 
     /** Returns the streaming-pull connection count, or {@code null} for the SDK default. */
@@ -183,6 +209,8 @@ public final class PubSubSubscriberOptions implements Serializable {
                 && Objects.equals(
                         flowControlMaxOutstandingRequestBytes,
                         that.flowControlMaxOutstandingRequestBytes)
+                && Objects.equals(pausedSplitBufferMaxMessages, that.pausedSplitBufferMaxMessages)
+                && Objects.equals(pausedSplitBufferMaxBytes, that.pausedSplitBufferMaxBytes)
                 && Objects.equals(parallelPullCount, that.parallelPullCount)
                 && Objects.equals(maxAckExtensionPeriod, that.maxAckExtensionPeriod)
                 && Objects.equals(minDurationPerAckExtension, that.minDurationPerAckExtension)
@@ -196,6 +224,8 @@ public final class PubSubSubscriberOptions implements Serializable {
         return Objects.hash(
                 flowControlMaxOutstandingElementCount,
                 flowControlMaxOutstandingRequestBytes,
+                pausedSplitBufferMaxMessages,
+                pausedSplitBufferMaxBytes,
                 parallelPullCount,
                 maxAckExtensionPeriod,
                 minDurationPerAckExtension,
@@ -212,6 +242,10 @@ public final class PubSubSubscriberOptions implements Serializable {
                 + flowControlMaxOutstandingElementCount
                 + ", flowControlMaxOutstandingRequestBytes="
                 + flowControlMaxOutstandingRequestBytes
+                + ", pausedSplitBufferMaxMessages="
+                + pausedSplitBufferMaxMessages
+                + ", pausedSplitBufferMaxBytes="
+                + pausedSplitBufferMaxBytes
                 + ", parallelPullCount="
                 + parallelPullCount
                 + ", maxAckExtensionPeriod="
@@ -237,6 +271,8 @@ public final class PubSubSubscriberOptions implements Serializable {
 
         @Nullable private Long flowControlMaxOutstandingElementCount;
         @Nullable private Long flowControlMaxOutstandingRequestBytes;
+        @Nullable private Long pausedSplitBufferMaxMessages;
+        @Nullable private Long pausedSplitBufferMaxBytes;
         @Nullable private Integer parallelPullCount;
         @Nullable private Duration maxAckExtensionPeriod;
         @Nullable private Duration minDurationPerAckExtension;
@@ -280,6 +316,71 @@ public final class PubSubSubscriberOptions implements Serializable {
                     flowControlMaxOutstandingRequestBytes > 0,
                     "flowControlMaxOutstandingRequestBytes must be positive");
             this.flowControlMaxOutstandingRequestBytes = flowControlMaxOutstandingRequestBytes;
+            return this;
+        }
+
+        /**
+         * Caps how many messages a split paused by watermark alignment may buffer before the reader
+         * stops its subscriber, returning the messages to Pub/Sub and opening a fresh subscriber
+         * when the split resumes. Optional; defaults to <b>twice</b> the effective {@link
+         * #flowControlMaxOutstandingElementCount(long)} — so 2000 messages when nothing is set.
+         *
+         * <p><b>The factor is what the lapse itself is worth</b>, which is why the default needs no
+         * number of its own. Once {@link #maxAckExtensionPeriod(Duration)} passes for a message
+         * nobody is draining, the client library stops extending its lease and releases its
+         * flow-control permit while the reader still holds it — a whole window of permits per
+         * expiry wave, so the first wave carries a paused split's buffer past twice the limit
+         * (#357). A bound at the limit itself would be crossed by less than that: a message larger
+         * than the byte limit is admitted anyway, a dead-letter subscription's delivery-attempt
+         * attribute is added after the client reserves, and a redelivery is held beside the copy it
+         * supersedes — so it would park healthy splits.
+         *
+         * <p>Set this lower to bound a paused split's memory more tightly, at the cost of parking
+         * sooner and so redelivering more; set it higher to tolerate a longer pause before the
+         * subscriber is stopped, and lowering it makes the following more likely rather than
+         * introducing it: stopping the subscriber returns everything the split has not had
+         * acknowledged, including records it already emitted under a checkpoint still in flight, so
+         * those are emitted again on resume. That is within the at-least-once contract, but it is
+         * duplication on a running job rather than at a restart.
+         *
+         * <p><b>It is a bound on what is held between checks, not a cap the buffer cannot pass.</b>
+         * The reader evaluates it once per fetch, so a burst delivered between two fetches can
+         * overshoot it — bounded in turn by what the client library will deliver at once, which is
+         * its flow-control window (measured at 104 and 121 buffered against a bound of 60, over two
+         * runs of a 50-message window).
+         *
+         * @param pausedSplitBufferMaxMessages the buffered-message cap, positive
+         * @return this builder
+         */
+        public Builder pausedSplitBufferMaxMessages(long pausedSplitBufferMaxMessages) {
+            Preconditions.checkArgument(
+                    pausedSplitBufferMaxMessages > 0,
+                    "pausedSplitBufferMaxMessages must be positive");
+            this.pausedSplitBufferMaxMessages = pausedSplitBufferMaxMessages;
+            return this;
+        }
+
+        /**
+         * Caps the bytes a split paused by watermark alignment may buffer, as {@link
+         * #pausedSplitBufferMaxMessages(long)} caps the count. Optional; defaults to <b>twice</b>
+         * the effective {@link #flowControlMaxOutstandingRequestBytes(long)} — so 200 MB when
+         * nothing is set.
+         *
+         * <p>Both caps apply, and the reader stops the subscriber when <em>either</em> is exceeded,
+         * because which one binds depends on message size: with small messages the count limit is
+         * reached first and a byte cap alone would let a pause run for days, while with large ones
+         * the byte limit binds and a count cap alone would let the buffer reach gigabytes.
+         *
+         * <p>Sizes are the serialized message size, the same unit the client library's flow control
+         * counts in.
+         *
+         * @param pausedSplitBufferMaxBytes the buffered-byte cap, positive
+         * @return this builder
+         */
+        public Builder pausedSplitBufferMaxBytes(long pausedSplitBufferMaxBytes) {
+            Preconditions.checkArgument(
+                    pausedSplitBufferMaxBytes > 0, "pausedSplitBufferMaxBytes must be positive");
+            this.pausedSplitBufferMaxBytes = pausedSplitBufferMaxBytes;
             return this;
         }
 

@@ -51,6 +51,11 @@ public final class SubscriberOptionsMapper {
         config.getOptional(PubSubConnectorOptions.SCAN_FLOW_CONTROL_MAX_OUTSTANDING_REQUEST_BYTES)
                 .map(MemorySize::getBytes)
                 .ifPresent(builder::flowControlMaxOutstandingRequestBytes);
+        config.getOptional(PubSubConnectorOptions.SCAN_PAUSED_SPLIT_BUFFER_MAX_MESSAGES)
+                .ifPresent(builder::pausedSplitBufferMaxMessages);
+        config.getOptional(PubSubConnectorOptions.SCAN_PAUSED_SPLIT_BUFFER_MAX_BYTES)
+                .map(MemorySize::getBytes)
+                .ifPresent(builder::pausedSplitBufferMaxBytes);
         config.getOptional(PubSubConnectorOptions.SCAN_PARALLEL_PULL_COUNT)
                 .ifPresent(builder::parallelPullCount);
 

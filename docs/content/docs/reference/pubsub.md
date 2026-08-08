@@ -135,15 +135,17 @@ the sink creates. See
 ## `PubSubSubscriberOptions`
 
 Set through `subscriberOptions(...)`. The flow-control, connection-count and ack-extension knobs go
-to the SDK subscriber and are unset by default; the last three are the source's own. Google
-publishes no recommended flow-control values, so the SDK defaults stand — see
+to the SDK subscriber and are unset by default; the paused-split bounds and the last three are the
+source's own. Google publishes no recommended flow-control values, so the SDK defaults stand — see
 [Tuning]({{< relref "docs/connectors/datastream/pubsub" >}}#tuning) for the one sizing rule that is
 specific to this source, that acknowledgement waits for a checkpoint.
 
 | Option | Default | What it does |
 |---|---|---|
-| `flowControlMaxOutstandingElementCount` | *unset ⇒ SDK default (1000)* | Messages one subscriber holds outstanding before it stops pulling |
+| `flowControlMaxOutstandingElementCount` | *unset ⇒ SDK default (1000)* | Messages one subscriber holds outstanding before it stops pulling, for as long as it is extending their leases |
 | `flowControlMaxOutstandingRequestBytes` | *unset ⇒ SDK default (100 MB)* | The same in bytes |
+| `pausedSplitBufferMaxMessages` | *unset ⇒ twice the effective `flowControlMaxOutstandingElementCount` (so 2000 by default)* | Messages a split paused by watermark alignment may buffer before its subscriber is stopped and reopened on resume |
+| `pausedSplitBufferMaxBytes` | *unset ⇒ twice the effective `flowControlMaxOutstandingRequestBytes` (so 200 MB by default)* | The same in bytes; whichever bound is exceeded first stops the subscriber |
 | `parallelPullCount` | *unset ⇒ SDK default (1)* | Streaming-pull connections per subscriber. Rejected under `orderingMode(PER_KEY)` |
 | `maxAckExtensionPeriod` | *unset ⇒ SDK default (1 h)* | How long the client library keeps extending a message's deadline. Must exceed the checkpoint interval comfortably |
 | `minDurationPerAckExtension` | *unset ⇒ SDK default (adaptive)* | Smallest extension requested at a time |

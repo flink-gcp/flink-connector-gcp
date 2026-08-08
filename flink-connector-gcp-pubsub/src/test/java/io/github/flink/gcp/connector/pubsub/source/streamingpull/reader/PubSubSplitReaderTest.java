@@ -23,8 +23,10 @@ import org.apache.flink.util.clock.ManualClock;
 
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -51,10 +53,38 @@ class PubSubSplitReaderTest {
             new SubscriptionSplit(SubscriptionDestination.of("project", "sub-b"), "1");
     private static final Duration BUDGET = Duration.ofMinutes(10);
 
+    /**
+     * A bound no test reaches by accident, so a park only ever happens where one was asked for. The
+     * park tests build their own reader with a bound they cross deliberately.
+     */
+    private static final PausedSplitBufferLimits NO_PARK =
+            PausedSplitBufferLimits.of(
+                    PubSubSubscriberOptions.builder()
+                            .pausedSplitBufferMaxMessages(Long.MAX_VALUE)
+                            .pausedSplitBufferMaxBytes(Long.MAX_VALUE)
+                            .build());
+
     private final Map<String, FakeNotifyingPullSubscriber> subscribers = new HashMap<>();
+    private final TestReaderMetrics readerMetrics = new TestReaderMetrics();
 
     /** Set by the ordering test so the fakes record their release/close calls in one list. */
     private List<String> calls;
+
+    /** Set by the reopen test to make the next {@code SubscriberOpener} call fail. */
+    private IOException failNextOpen;
+
+    private static MissingCheckpointDetector noCheckpointDetector() {
+        return new MissingCheckpointDetector(Duration.ZERO, () -> 0);
+    }
+
+    /** The bound a park test crosses deliberately. */
+    private static PausedSplitBufferLimits boundOf(long maxMessages, long maxBytes) {
+        return PausedSplitBufferLimits.of(
+                PubSubSubscriberOptions.builder()
+                        .pausedSplitBufferMaxMessages(maxMessages)
+                        .pausedSplitBufferMaxBytes(maxBytes)
+                        .build());
+    }
 
     @Test
     void drainsEveryAssignedSplitInOneFetch() throws Exception {
@@ -169,6 +199,307 @@ class PubSubSplitReaderTest {
         assertThatThrownBy(reader::fetch)
                 .isInstanceOf(IOException.class)
                 .hasMessage("stream broke");
+        reader.close();
+    }
+
+    @Test
+    void aPausedSplitOutgrowingItsMessageBoundHasItsSubscriberStopped() throws Exception {
+        // #357: what was supposed to bound a paused split's buffer is the client library's flow
+        // control, and it stops doing so after maxAckExtensionPeriod — the client releases a
+        // message's permit while this reader still holds the message. Past the bound the reader
+        // stops the client itself.
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(2, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        FakeNotifyingPullSubscriber parked = subscriberOf(SPLIT_A);
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        parked.deliver(message("1"), message("2"), message("3"));
+        subscriberOf(SPLIT_B).deliver(message("b"));
+
+        try (LogCapture capture = LogCapture.of(PubSubSplitReader.class)) {
+            reader.fetch();
+
+            // The counter says how many parks happened; only the log says which split, at what
+            // size, against what bound — which is the whole of what sizing the knob needs.
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .satisfies(
+                            logged -> {
+                                assertThat(logged).contains(SPLIT_A.splitId());
+                                assertThat(logged).contains("3 messages");
+                                assertThat(logged).contains("2 messages");
+                                assertThat(logged).contains("pausedSplitBufferMaxMessages");
+                            });
+        }
+
+        assertThat(parked.isShutdownRequested()).isTrue();
+        assertThat(parked.isClosed()).isTrue();
+        assertThat(readerMetrics.counter("splitsParked")).isEqualTo(1);
+        assertThat(readerMetrics.gauge("parkedSplits")).isEqualTo(1);
+        reader.close();
+    }
+
+    @Test
+    void aPausedSplitOutgrowingItsByteBoundHasItsSubscriberStopped() throws Exception {
+        // The dimension that fires here is bytes, with the message count deliberately under its
+        // own bound: whichever limit binds depends on message size, so a reader that required both
+        // would never park a workload of few large messages — the one whose buffer is a memory
+        // problem soonest.
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(100, 200));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        FakeNotifyingPullSubscriber parked = subscriberOf(SPLIT_A);
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        long buffered = parked.deliverSized(3, 100);
+
+        assertThat(buffered).isGreaterThan(200);
+        reader.fetch();
+
+        assertThat(parked.isClosed()).isTrue();
+        assertThat(readerMetrics.counter("splitsParked")).isEqualTo(1);
+        reader.close();
+    }
+
+    @Test
+    void aPausedSplitExactlyAtItsBoundIsNotParked() throws Exception {
+        // Strictly greater, so the bound is a size the buffer may hold rather than one it may not
+        // reach — and a paused split at exactly the flow-control limit is the healthy state, not
+        // the lapsed one.
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(2, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        FakeNotifyingPullSubscriber paused = subscriberOf(SPLIT_A);
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        paused.deliver(message("1"), message("2"));
+
+        reader.fetch();
+
+        assertThat(paused.isClosed()).isFalse();
+        assertThat(readerMetrics.counter("splitsParked")).isZero();
+        reader.close();
+    }
+
+    @Test
+    void aSplitThatIsNotPausedIsNeverParkedHoweverMuchItBuffers() throws Exception {
+        // A split being drained cannot be over its bound for long, and stopping its client would
+        // be a connector deciding to stop consuming a split Flink never asked it to pause. The
+        // bound applies to a paused split alone.
+        PubSubSplitReader reader = reader(1, noCheckpointDetector(), boundOf(2, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        FakeNotifyingPullSubscriber busy = subscriberOf(SPLIT_A);
+        busy.deliver(message("1"), message("2"), message("3"), message("4"));
+
+        try (LogCapture capture = LogCapture.of(PubSubSplitReader.class)) {
+            reader.fetch();
+
+            assertThat(capture.getMessages()).isEmpty();
+        }
+
+        assertThat(busy.isClosed()).isFalse();
+        assertThat(readerMetrics.counter("splitsParked")).isZero();
+        assertThat(readerMetrics.gauge("parkedSplits")).isZero();
+        reader.close();
+    }
+
+    @Test
+    void aPausedSplitWithNothingBufferedIsNotParked() throws Exception {
+        // The state an aligned job spends its time in. A bound that fired on the pause rather than
+        // on the buffer would stop every paused split's client and make alignment cost a
+        // reconnection each time.
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(2, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        subscriberOf(SPLIT_B).deliver(message("b"));
+
+        reader.fetch();
+
+        assertThat(subscriberOf(SPLIT_A).isClosed()).isFalse();
+        assertThat(readerMetrics.counter("splitsParked")).isZero();
+        reader.close();
+    }
+
+    @Test
+    void resumingAParkedSplitOpensAFreshSubscriberThatDrainsAgain() throws Exception {
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        FakeNotifyingPullSubscriber parked = subscriberOf(SPLIT_A);
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        parked.deliver(message("1"), message("2"));
+        reader.fetch();
+        assertThat(parked.isClosed()).isTrue();
+
+        reader.pauseOrResumeSplits(Collections.emptyList(), List.of(SPLIT_A));
+
+        // A different instance, because the stopped client cannot be restarted — and one that
+        // consumes, because Pub/Sub redelivers what the park nacked.
+        FakeNotifyingPullSubscriber reopened = subscriberOf(SPLIT_A);
+        assertThat(reopened).isNotSameAs(parked);
+        assertThat(readerMetrics.gauge("parkedSplits")).isZero();
+        assertThat(readerMetrics.counter("splitsParked")).isEqualTo(1);
+
+        reopened.deliver(message("1"), message("2"));
+        assertThat(payloadsBySplit(reader.fetch()).get(SPLIT_A.splitId()))
+                .containsExactly("1", "2");
+        reader.close();
+    }
+
+    @Test
+    void aSplitPausedWhileAlreadyOverItsBoundIsStillParked() throws Exception {
+        // The case pausing itself has to signal for. This split's buffer went over the bound while
+        // it was being drained, so its arrival signal is already spent; the pause then stops the
+        // client delivering, and nothing is left to end the next fetch's wait. Without a signal
+        // from the pause, that fetch parks before reaching the check and this test hangs to its
+        // class timeout rather than failing an assertion.
+        PubSubSplitReader reader = reader(1, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        FakeNotifyingPullSubscriber subscriber = subscriberOf(SPLIT_A);
+        subscriber.deliver(message("1"), message("2"), message("3"));
+        // Drains one of the three and consumes the signal, leaving two buffered and none pending.
+        reader.fetch();
+
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        reader.fetch();
+
+        assertThat(subscriber.isClosed()).isTrue();
+        assertThat(readerMetrics.counter("splitsParked")).isEqualTo(1);
+        reader.close();
+    }
+
+    @Test
+    void resumingASplitThatWasNeverParkedKeepsItsSubscriber() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        FakeNotifyingPullSubscriber original = subscriberOf(SPLIT_A);
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+
+        reader.pauseOrResumeSplits(Collections.emptyList(), List.of(SPLIT_A));
+
+        assertThat(subscriberOf(SPLIT_A)).isSameAs(original);
+        assertThat(readerMetrics.gauge("parkedSplits")).isZero();
+        reader.close();
+    }
+
+    @Test
+    void aPausedSplitThatIsBothFailedAndOverfullFailsTheJobRatherThanBeingParked()
+            throws Exception {
+        // The reason the failure check runs before the park: parking closes the subscriber, and
+        // close() absorbs the client's own report of a failure it has already delivered (#325). A
+        // park that ran first would swallow the failure the reader exists to raise.
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        FakeNotifyingPullSubscriber failing = subscriberOf(SPLIT_A);
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        failing.deliver(message("1"), message("2"));
+        failing.failWith(new IOException("stream broke"));
+
+        assertThatThrownBy(reader::fetch)
+                .isInstanceOf(IOException.class)
+                .hasMessage("stream broke");
+
+        assertThat(readerMetrics.counter("splitsParked")).isZero();
+        reader.close();
+    }
+
+    @Test
+    void aFailureToReopenAResumedSplitFailsTheJob() throws Exception {
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        subscriberOf(SPLIT_A).deliver(message("1"), message("2"));
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        reader.fetch();
+        failNextOpen = new IOException("no such subscription");
+
+        // The same failure an assignment that cannot open its subscriber raises — a subscription
+        // deleted during the pause is noticed here, since a parked split has no client to notice
+        // with.
+        assertThatThrownBy(
+                        () -> reader.pauseOrResumeSplits(Collections.emptyList(), List.of(SPLIT_A)))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining(SPLIT_A.splitId())
+                .hasRootCauseMessage("no such subscription");
+        reader.close();
+    }
+
+    @Test
+    void removingAParkedSplitReleasesNothingAndStopsCountingIt() throws Exception {
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        subscriberOf(SPLIT_A).deliver(message("1"), message("2"));
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        reader.fetch();
+
+        reader.handleSplitsChanges(new SplitsRemoval<>(List.of(SPLIT_A)));
+
+        // Parking already nacked and closed; what removal must not do is leave the gauge counting
+        // a split that no longer exists.
+        assertThat(readerMetrics.gauge("parkedSplits")).isZero();
+        reader.close();
+    }
+
+    @Test
+    void closingTheReaderWithAParkedSplitIsClean() throws Exception {
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        FakeNotifyingPullSubscriber parked = subscriberOf(SPLIT_A);
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        parked.deliver(message("1"), message("2"));
+        reader.fetch();
+
+        reader.close();
+
+        // The parked subscriber is not shut down twice, and the split still holding a client is.
+        assertThat(subscriberOf(SPLIT_B).isClosed()).isTrue();
+        assertThat(parked.isClosed()).isTrue();
+        // And the count goes back. The gauge lives in the reader's metrics precisely because it
+        // outlives this object, so a close that dropped a parked split without giving its count
+        // back would leave the gauge reporting a split that no longer exists.
+        assertThat(readerMetrics.gauge("parkedSplits")).isZero();
+    }
+
+    @Test
+    void parkingSeveralSplitsAtOnceShutsThemAllDownBeforeWaitingOnAny() throws Exception {
+        // Alignment pauses a subtask's splits as a group and they cross the bound in the same wave,
+        // so this is the ordinary case rather than an exotic one. shutdown() nacks and returns at
+        // once while close() waits up to shutdownTimeout, so parking one split at a time would
+        // spend splits × timeout on the fetcher thread — the cost close() is written to avoid.
+        calls = new ArrayList<>();
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        reader.pauseOrResumeSplits(List.of(SPLIT_A, SPLIT_B), Collections.emptyList());
+        subscriberOf(SPLIT_A).deliver(message("a1"), message("a2"));
+        subscriberOf(SPLIT_B).deliver(message("b1"), message("b2"));
+
+        reader.fetch();
+
+        assertThat(calls)
+                .containsExactly(
+                        "shutdown:" + SPLIT_A.splitId(),
+                        "shutdown:" + SPLIT_B.splitId(),
+                        "close:" + SPLIT_A.splitId(),
+                        "close:" + SPLIT_B.splitId());
+        assertThat(readerMetrics.gauge("parkedSplits")).isEqualTo(2);
+        reader.close();
+    }
+
+    @Test
+    void aSplitWhoseReopenFailedIsStillTreatedAsPaused() throws Exception {
+        // The reopen runs before the pause is lifted, so a split that could not be reopened keeps
+        // both halves of "parked implies paused". Lifting the pause first would leave a split with
+        // no subscriber that the drain no longer skips, and the drain dereferences it.
+        // SPLIT_B stays active so the fetch below has something to return: a reader holding only a
+        // paused split parks, and the point here is what the drain does once it runs.
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        subscriberOf(SPLIT_A).deliver(message("1"), message("2"));
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        reader.fetch();
+        failNextOpen = new IOException("no such subscription");
+        assertThatThrownBy(
+                        () -> reader.pauseOrResumeSplits(Collections.emptyList(), List.of(SPLIT_A)))
+                .isInstanceOf(RuntimeException.class);
+
+        // Flink fails the job on that throw, so this fetch does not happen in production — it is
+        // here because the invariant must not rest on that. Lift the pause before the reopen and
+        // the drain stops skipping a split whose subscriber is gone, then dereferences it.
+        subscriberOf(SPLIT_B).deliver(message("b"));
+        assertThat(payloadsBySplit(reader.fetch())).containsOnlyKeys(SPLIT_B.splitId());
         reader.close();
     }
 
@@ -386,8 +717,20 @@ class PubSubSplitReaderTest {
 
     private PubSubSplitReader reader(
             int maxRecordsPerFetch, MissingCheckpointDetector checkpointDetector) {
+        return reader(maxRecordsPerFetch, checkpointDetector, NO_PARK);
+    }
+
+    private PubSubSplitReader reader(
+            int maxRecordsPerFetch,
+            MissingCheckpointDetector checkpointDetector,
+            PausedSplitBufferLimits pausedSplitBufferLimits) {
         return new PubSubSplitReader(
                 (split, signal) -> {
+                    if (failNextOpen != null) {
+                        IOException failure = failNextOpen;
+                        failNextOpen = null;
+                        throw failure;
+                    }
                     FakeNotifyingPullSubscriber subscriber =
                             new FakeNotifyingPullSubscriber(signal).named(split.splitId());
                     if (calls != null) {
@@ -397,7 +740,9 @@ class PubSubSplitReaderTest {
                     return subscriber;
                 },
                 maxRecordsPerFetch,
-                checkpointDetector);
+                checkpointDetector,
+                pausedSplitBufferLimits,
+                readerMetrics.metrics());
     }
 
     private FakeNotifyingPullSubscriber subscriberOf(SubscriptionSplit split) {

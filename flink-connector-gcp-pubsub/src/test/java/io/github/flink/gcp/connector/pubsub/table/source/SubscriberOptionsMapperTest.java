@@ -53,6 +53,12 @@ class SubscriberOptionsMapperTest {
         SETTER_TO_OPTION.put(
                 "flowControlMaxOutstandingRequestBytes",
                 PubSubConnectorOptions.SCAN_FLOW_CONTROL_MAX_OUTSTANDING_REQUEST_BYTES);
+        SETTER_TO_OPTION.put(
+                "pausedSplitBufferMaxMessages",
+                PubSubConnectorOptions.SCAN_PAUSED_SPLIT_BUFFER_MAX_MESSAGES);
+        SETTER_TO_OPTION.put(
+                "pausedSplitBufferMaxBytes",
+                PubSubConnectorOptions.SCAN_PAUSED_SPLIT_BUFFER_MAX_BYTES);
         SETTER_TO_OPTION.put("parallelPullCount", PubSubConnectorOptions.SCAN_PARALLEL_PULL_COUNT);
         SETTER_TO_OPTION.put(
                 "maxAckExtensionPeriod", PubSubConnectorOptions.SCAN_ACK_MAX_EXTENSION_PERIOD);
@@ -99,6 +105,8 @@ class SubscriberOptionsMapperTest {
         Map<String, String> options = new HashMap<>();
         options.put(key("flowControlMaxOutstandingElementCount"), "500");
         options.put(key("flowControlMaxOutstandingRequestBytes"), "7 mb");
+        options.put(key("pausedSplitBufferMaxMessages"), "900");
+        options.put(key("pausedSplitBufferMaxBytes"), "11 mb");
         options.put(key("parallelPullCount"), "3");
         options.put(key("maxAckExtensionPeriod"), "30 min");
         options.put(key("minDurationPerAckExtension"), "20 s");
@@ -114,6 +122,8 @@ class SubscriberOptionsMapperTest {
 
         assertThat(mapped.getFlowControlMaxOutstandingElementCount()).isEqualTo(500L);
         assertThat(mapped.getFlowControlMaxOutstandingRequestBytes()).isEqualTo(7L * 1024 * 1024);
+        assertThat(mapped.getPausedSplitBufferMaxMessages()).isEqualTo(900L);
+        assertThat(mapped.getPausedSplitBufferMaxBytes()).isEqualTo(11L * 1024 * 1024);
         assertThat(mapped.getParallelPullCount()).isEqualTo(3);
         assertThat(mapped.getMaxAckExtensionPeriod()).isEqualTo(Duration.ofMinutes(30));
         assertThat(mapped.getMinDurationPerAckExtension()).isEqualTo(Duration.ofSeconds(20));
