@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -159,17 +160,6 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      * corresponds to a whole number of attempts.
      */
     public static final Duration DEFAULT_FLUSH_TIMEOUT = Duration.ofSeconds(60);
-
-    /**
-     * The largest budget either of this queue's two waits can express, about 292 years. It is
-     * checked because {@link Builder#flushTimeout(Duration)}'s documentation offers a long budget
-     * as the way to say "effectively unbounded", and a {@link Duration} whose nanosecond count
-     * overruns a {@code long} would instead throw an {@link ArithmeticException} on a TaskManager —
-     * out of the first flush, or out of {@code BoundedShutdown.start()} for the shutdown budget.
-     * That is the shape of failure this class already rejects at the setter for {@code
-     * emulatorEndpoint}, and the rule every budget of this shape now follows is ADR-0068.
-     */
-    private static final Duration MAX_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
 
     private final TopicDestination topic;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
@@ -360,7 +350,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
             TopicDestination topic,
             Duration budget)
             throws IOException {
-        // Overflows at MAX_TIMEOUT, which the setter accepts, and is correct anyway: the
+        // Overflows at the ceiling the setter accepts, and is correct anyway: the
         // subtraction below wraps a second time and the two cancel, leaving the true remainder
         // (measured — theLargestExpressibleBudgetIsNotSpentTheInstantTheFlushStarts pins it).
         // Math.addExact here would turn that legal budget into a failed flush.
@@ -556,14 +546,12 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
          * @return this builder
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {
-            Preconditions.checkNotNull(shutdownTimeout, "shutdownTimeout must not be null");
-            Preconditions.checkArgument(
-                    !shutdownTimeout.isZero() && !shutdownTimeout.isNegative(),
-                    "shutdownTimeout must be positive");
-            Preconditions.checkArgument(
-                    shutdownTimeout.compareTo(MAX_TIMEOUT) <= 0,
-                    "shutdownTimeout must be at most " + MAX_TIMEOUT + " (about 292 years)");
-            this.shutdownTimeout = shutdownTimeout;
+            OptionChecks.checkPositive(shutdownTimeout, "shutdownTimeout");
+            // This budget reaches BoundedShutdown.start(), which converts it with toNanos(): a
+            // longer one throws ArithmeticException on a TaskManager, out of a close. The shape of
+            // failure this class already rejects at the setter for emulatorEndpoint (ADR-0068).
+            this.shutdownTimeout =
+                    OptionChecks.checkExpressibleInNanos(shutdownTimeout, "shutdownTimeout");
             return this;
         }
 
@@ -595,14 +583,11 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
          * @return this builder
          */
         public Builder flushTimeout(Duration flushTimeout) {
-            Preconditions.checkNotNull(flushTimeout, "flushTimeout must not be null");
-            Preconditions.checkArgument(
-                    !flushTimeout.isZero() && !flushTimeout.isNegative(),
-                    "flushTimeout must be positive");
-            Preconditions.checkArgument(
-                    flushTimeout.compareTo(MAX_TIMEOUT) <= 0,
-                    "flushTimeout must be at most " + MAX_TIMEOUT + " (about 292 years)");
-            this.flushTimeout = flushTimeout;
+            OptionChecks.checkPositive(flushTimeout, "flushTimeout");
+            // This knob's own documentation offers a long budget as the way to say "effectively
+            // unbounded", so the ceiling is what keeps that instruction from throwing
+            // ArithmeticException out of the first flush on a TaskManager (ADR-0068).
+            this.flushTimeout = OptionChecks.checkExpressibleInNanos(flushTimeout, "flushTimeout");
             return this;
         }
 

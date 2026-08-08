@@ -20,6 +20,8 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
+
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
@@ -163,11 +165,7 @@ public final class TopicCreateOptions implements Serializable {
          * @return this builder
          */
         public Builder messageRetention(Duration messageRetention) {
-            Preconditions.checkNotNull(messageRetention, "messageRetention must not be null");
-            Preconditions.checkArgument(
-                    !messageRetention.isNegative() && !messageRetention.isZero(),
-                    "messageRetention must be positive, but was %s",
-                    messageRetention);
+            OptionChecks.checkPositive(messageRetention, "messageRetention");
             this.messageRetention = messageRetention;
             return this;
         }

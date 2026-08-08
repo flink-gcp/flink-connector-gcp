@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -132,16 +133,6 @@ public final class DefaultStreamOptions implements Serializable {
      * its stream writer once.
      */
     public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofHours(1);
-
-    /**
-     * The largest idle timeout a nanosecond clock can express, about 292 years. It is checked
-     * because {@link Builder#destinationIdleTimeout(Duration)}'s documentation offers a long
-     * duration as the way to say "never evict", and a {@link Duration} whose nanosecond count
-     * overruns a {@code long} would instead throw an {@link ArithmeticException} from the writer's
-     * constructor on a TaskManager, failing the job as it starts rather than the setter that
-     * accepted it. The rule every budget of this shape follows is ADR-0068.
-     */
-    private static final Duration MAX_DESTINATION_IDLE_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
 
     private final long maxAppendRequestBytes;
     private final Duration recoveryInitialBackoff;
@@ -417,12 +408,7 @@ public final class DefaultStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
-            Preconditions.checkNotNull(
-                    recoveryInitialBackoff, "recoveryInitialBackoff must not be null");
-            Preconditions.checkArgument(
-                    !recoveryInitialBackoff.isNegative() && !recoveryInitialBackoff.isZero(),
-                    "recoveryInitialBackoff must be positive: %s",
-                    recoveryInitialBackoff);
+            OptionChecks.checkPositive(recoveryInitialBackoff, "recoveryInitialBackoff");
             this.recoveryInitialBackoff = recoveryInitialBackoff;
             return this;
         }
@@ -435,11 +421,7 @@ public final class DefaultStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
-            Preconditions.checkNotNull(recoveryMaxBackoff, "recoveryMaxBackoff must not be null");
-            Preconditions.checkArgument(
-                    !recoveryMaxBackoff.isNegative() && !recoveryMaxBackoff.isZero(),
-                    "recoveryMaxBackoff must be positive: %s",
-                    recoveryMaxBackoff);
+            OptionChecks.checkPositive(recoveryMaxBackoff, "recoveryMaxBackoff");
             this.recoveryMaxBackoff = recoveryMaxBackoff;
             return this;
         }
@@ -472,11 +454,7 @@ public final class DefaultStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder retryInitialDelay(Duration retryInitialDelay) {
-            Preconditions.checkNotNull(retryInitialDelay, "retryInitialDelay must not be null");
-            Preconditions.checkArgument(
-                    !retryInitialDelay.isNegative() && !retryInitialDelay.isZero(),
-                    "retryInitialDelay must be positive: %s",
-                    retryInitialDelay);
+            OptionChecks.checkPositive(retryInitialDelay, "retryInitialDelay");
             this.retryInitialDelay = retryInitialDelay;
             return this;
         }
@@ -505,11 +483,7 @@ public final class DefaultStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder retryMaxDelay(Duration retryMaxDelay) {
-            Preconditions.checkNotNull(retryMaxDelay, "retryMaxDelay must not be null");
-            Preconditions.checkArgument(
-                    !retryMaxDelay.isNegative() && !retryMaxDelay.isZero(),
-                    "retryMaxDelay must be positive: %s",
-                    retryMaxDelay);
+            OptionChecks.checkPositive(retryMaxDelay, "retryMaxDelay");
             this.retryMaxDelay = retryMaxDelay;
             return this;
         }
@@ -538,11 +512,7 @@ public final class DefaultStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder maxRetryDuration(Duration maxRetryDuration) {
-            Preconditions.checkNotNull(maxRetryDuration, "maxRetryDuration must not be null");
-            Preconditions.checkArgument(
-                    !maxRetryDuration.isNegative() && !maxRetryDuration.isZero(),
-                    "maxRetryDuration must be positive: %s",
-                    maxRetryDuration);
+            OptionChecks.checkPositive(maxRetryDuration, "maxRetryDuration");
             this.maxRetryDuration = maxRetryDuration;
             return this;
         }
@@ -633,17 +603,14 @@ public final class DefaultStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder destinationIdleTimeout(Duration destinationIdleTimeout) {
-            Preconditions.checkNotNull(
-                    destinationIdleTimeout, "destinationIdleTimeout must not be null");
-            Preconditions.checkArgument(
-                    !destinationIdleTimeout.isNegative() && !destinationIdleTimeout.isZero(),
-                    "destinationIdleTimeout must be positive: %s",
-                    destinationIdleTimeout);
-            Preconditions.checkArgument(
-                    destinationIdleTimeout.compareTo(MAX_DESTINATION_IDLE_TIMEOUT) <= 0,
-                    "destinationIdleTimeout must be at most %s (about 292 years)",
-                    MAX_DESTINATION_IDLE_TIMEOUT);
-            this.destinationIdleTimeout = destinationIdleTimeout;
+            OptionChecks.checkPositive(destinationIdleTimeout, "destinationIdleTimeout");
+            // This knob's own documentation offers a very large duration as the way to say "never
+            // evict", so the ceiling is what keeps that instruction from throwing
+            // ArithmeticException from the writer's constructor on a TaskManager, failing the job
+            // as it starts rather than here (ADR-0068).
+            this.destinationIdleTimeout =
+                    OptionChecks.checkExpressibleInNanos(
+                            destinationIdleTimeout, "destinationIdleTimeout");
             return this;
         }
 
@@ -661,11 +628,7 @@ public final class DefaultStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder flushInterval(Duration flushInterval) {
-            Preconditions.checkNotNull(flushInterval, "flushInterval must not be null");
-            Preconditions.checkArgument(
-                    !flushInterval.isNegative() && !flushInterval.isZero(),
-                    "flushInterval must be positive: %s",
-                    flushInterval);
+            OptionChecks.checkPositive(flushInterval, "flushInterval");
             this.flushInterval = flushInterval;
             return this;
         }

@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 
 import javax.annotation.Nullable;
@@ -385,9 +386,6 @@ public final class PubSubPublisherOptions implements Serializable {
         private int maxInFlightMessages = 1000;
         private long maxInFlightBytes = 64L * 1024 * 1024;
 
-        /** The largest {@code Duration} a nanosecond budget can express. */
-        private static final Duration MAX_TIMEOUT = Duration.ofNanos(Long.MAX_VALUE);
-
         private Duration publishProgressTimeout = Duration.ofSeconds(600);
         private Duration recoveryInitialBackoff = Duration.ofMillis(500);
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
@@ -433,7 +431,8 @@ public final class PubSubPublisherOptions implements Serializable {
          * @return this builder
          */
         public Builder batchDelayThreshold(Duration batchDelayThreshold) {
-            this.batchDelayThreshold = checkPositive(batchDelayThreshold, "batchDelayThreshold");
+            this.batchDelayThreshold =
+                    OptionChecks.checkPositive(batchDelayThreshold, "batchDelayThreshold");
             return this;
         }
 
@@ -450,7 +449,8 @@ public final class PubSubPublisherOptions implements Serializable {
          * @return this builder
          */
         public Builder retryTotalTimeout(Duration retryTotalTimeout) {
-            this.retryTotalTimeout = checkPositive(retryTotalTimeout, "retryTotalTimeout");
+            this.retryTotalTimeout =
+                    OptionChecks.checkPositive(retryTotalTimeout, "retryTotalTimeout");
             return this;
         }
 
@@ -461,7 +461,8 @@ public final class PubSubPublisherOptions implements Serializable {
          * @return this builder
          */
         public Builder retryInitialDelay(Duration retryInitialDelay) {
-            this.retryInitialDelay = checkPositive(retryInitialDelay, "retryInitialDelay");
+            this.retryInitialDelay =
+                    OptionChecks.checkPositive(retryInitialDelay, "retryInitialDelay");
             return this;
         }
 
@@ -486,7 +487,7 @@ public final class PubSubPublisherOptions implements Serializable {
          * @return this builder
          */
         public Builder retryMaxDelay(Duration retryMaxDelay) {
-            this.retryMaxDelay = checkPositive(retryMaxDelay, "retryMaxDelay");
+            this.retryMaxDelay = OptionChecks.checkPositive(retryMaxDelay, "retryMaxDelay");
             return this;
         }
 
@@ -499,7 +500,7 @@ public final class PubSubPublisherOptions implements Serializable {
          */
         public Builder retryInitialRpcTimeout(Duration retryInitialRpcTimeout) {
             this.retryInitialRpcTimeout =
-                    checkPositive(retryInitialRpcTimeout, "retryInitialRpcTimeout");
+                    OptionChecks.checkPositive(retryInitialRpcTimeout, "retryInitialRpcTimeout");
             return this;
         }
 
@@ -525,7 +526,8 @@ public final class PubSubPublisherOptions implements Serializable {
          * @return this builder
          */
         public Builder retryMaxRpcTimeout(Duration retryMaxRpcTimeout) {
-            this.retryMaxRpcTimeout = checkPositive(retryMaxRpcTimeout, "retryMaxRpcTimeout");
+            this.retryMaxRpcTimeout =
+                    OptionChecks.checkPositive(retryMaxRpcTimeout, "retryMaxRpcTimeout");
             return this;
         }
 
@@ -671,15 +673,13 @@ public final class PubSubPublisherOptions implements Serializable {
          * @return this builder
          */
         public Builder publishProgressTimeout(Duration publishProgressTimeout) {
-            checkPositive(publishProgressTimeout, "publishProgressTimeout");
+            OptionChecks.checkPositive(publishProgressTimeout, "publishProgressTimeout");
             // Expressible in nanoseconds, because that is the arithmetic the writer's wait does:
             // a Duration past that throws from toNanos() on a TaskManager rather than here, at the
             // first wait the writer makes. The rule every such budget follows is ADR-0068.
-            Preconditions.checkArgument(
-                    publishProgressTimeout.compareTo(MAX_TIMEOUT) <= 0,
-                    "publishProgressTimeout must be at most %s (about 292 years)",
-                    MAX_TIMEOUT);
-            this.publishProgressTimeout = publishProgressTimeout;
+            this.publishProgressTimeout =
+                    OptionChecks.checkExpressibleInNanos(
+                            publishProgressTimeout, "publishProgressTimeout");
             return this;
         }
 
@@ -700,17 +700,14 @@ public final class PubSubPublisherOptions implements Serializable {
          * @return this builder
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {
-            checkPositive(shutdownTimeout, "shutdownTimeout");
+            OptionChecks.checkPositive(shutdownTimeout, "shutdownTimeout");
             // Expressible in nanoseconds, for the reason publishProgressTimeout is: this budget
             // reaches BoundedShutdown, which converts it with toNanos() when the writer's close
             // starts the teardown — so a longer one throws ArithmeticException on a TaskManager,
             // out of a close, where it reaches Flink's teardown path and not a user's try (#334;
             // ADR-0068). BoundedShutdown checks it too, for a caller that reaches no setter.
-            Preconditions.checkArgument(
-                    shutdownTimeout.compareTo(MAX_TIMEOUT) <= 0,
-                    "shutdownTimeout must be at most %s (about 292 years)",
-                    MAX_TIMEOUT);
-            this.shutdownTimeout = shutdownTimeout;
+            this.shutdownTimeout =
+                    OptionChecks.checkExpressibleInNanos(shutdownTimeout, "shutdownTimeout");
             return this;
         }
 
@@ -769,15 +766,8 @@ public final class PubSubPublisherOptions implements Serializable {
             return new PubSubPublisherOptions(this);
         }
 
-        private static Duration checkPositive(Duration duration, String name) {
-            Preconditions.checkNotNull(duration, "%s must not be null", name);
-            Preconditions.checkArgument(
-                    !duration.isZero() && !duration.isNegative(), "%s must be positive", name);
-            return duration;
-        }
-
         private static Duration checkAtLeastOneMilli(Duration duration, String name) {
-            checkPositive(duration, name);
+            OptionChecks.checkPositive(duration, name);
             Preconditions.checkArgument(
                     duration.toMillis() >= 1,
                     "%s must be at least 1 millisecond (it is applied at millisecond"

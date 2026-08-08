@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0068: A `Duration` budget is bounded at the setter by what a nanosecond clock can express
 
 - Status: Accepted
-- Date: 2026-08-08
-- Issues: [#334], [#321], [#333]
-- Modules: base (`BoundedShutdown`), pubsub, bigquery
+- Date: 2026-08-08; revised by [#381] (2026-08-08)
+- Issues: [#334], [#321], [#333], [#381]
+- Modules: base (`base.options`, `BoundedShutdown`), pubsub, bigquery
 - Current behavior: each knob's row in `docs/content/docs/reference/{pubsub,bigquery}.md`
 
 ## Context
@@ -98,19 +98,41 @@ below, and it is also what showed the raw `Duration` to be unreadable on its own
   four conversions, leaving the two constructor-side ones and the `toMillis()` one untouched.
 - **Checking only at the setters** ([#334]'s candidate 1), which is what the issue proposed. Kept
   as half the answer rather than all of it, for the class-invariant reason above.
-- **A shared `checkExpressibleInNanos` helper in `flink-connector-gcp-base`**, collapsing the
-  three module-local ceiling constants into one definition. Declined for now against the base
-  module's own bar (ADR-0036: a type moves in once it has multiple consumers *and* the move is
-  argued): a new `@Internal` type crossing a module boundary to hold one `checkArgument` is a
-  larger decision than the defect, and the two existing precedents ([#321], [#333]) each spell the
-  check out locally. Within the Pub/Sub source the sharing that already exists is reused —
-  `OptionChecks.checkExpressibleInNanos` serves both of its knobs.
+- **A shared helper in `flink-connector-gcp-base`, at [#334]'s scope.** Declined there and taken
+  by [#381]; the Decision above is what stands. The reason it waited is worth keeping: at that
+  point the ceiling was one `checkArgument` in a bug fix on a shipped path, and a new `@Internal`
+  type crossing a module boundary is a decision about the base module's surface rather than a
+  consequence of the fix. What changed the balance was measuring the duplication — six files, and
+  a message whose readable half a copy drops.
 - **Restating the bound in the Table API mappers.** ADR-0007's rule is that a check whose message
   names Java setters needs restating in DDL keys. Declined on the measurement above rather than on
   the "unreachable in practice" reasoning [#321] and [#333] used: the message does reach the SQL
   user in the cause, and `shutdownTimeout` is legible as `sink.shutdown-timeout` — unlike
   ADR-0007's `retryTotalTimeout`, which appears nowhere in a `WITH` clause and is why that rule
   exists. What the measurement *did* change is the message itself, above.
+
+**[#381]: the rule has one implementation, `base.options.OptionChecks`.** A rule enforced by
+copying four lines is a rule the next knob obeys only if its author remembers it, and the part a
+copy silently drops is the message's readable half. Both checks a `Duration` option setter runs
+moved there, and both clear the base module's multiple-consumer bar (ADR-0036) on their own: nine
+ceiling call sites across base, pubsub and bigquery; thirty-one positivity call sites across
+pubsub and bigquery.
+
+- The ceiling constant had stood in **six files**, with its message written out in eight.
+- Positivity had **two implementations and three message shapes for one check** — `"x must be
+  positive"`, `"x must be positive: <value>"` and `"x must be positive, but was <value>"`. That is
+  what a rule with no single implementation decays into, and the third shape was found only by
+  grepping for the check rather than for either known wording.
+- **The value-carrying form won.** A rejection naming only the knob leaves a builder chain that
+  sets several durations ambiguous, and the value costs nothing to include. Nineteen Pub/Sub
+  messages gained it; BigQuery's eleven already had it and are unchanged.
+- The blocker the old split itself named is removed by the same move:
+  `pubsub.source.OptionChecks`' javadoc explained that the sink kept a private copy because
+  sharing "would need a public type to cross the package boundary" — an `@Internal` base type is
+  that, and is smaller than a public Pub/Sub one.
+
+Numeric (`int`/`long`) positivity checks stayed inline: the helper is `Duration`-typed, and
+Bigtable and Cloud Tasks have no `Duration` positivity check to unify.
 
 **The rejection message names the year count, not only the `Duration`.** `Duration.toString()`
 renders the ceiling as `PT2562047H47M16.854775807S`; nobody reads "292 years" out of an hour count
@@ -163,3 +185,4 @@ the failure.**
 [#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
 [#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
 [#334]: https://github.com/laughingman7743/flink-connector-gcp/issues/334
+[#381]: https://github.com/laughingman7743/flink-connector-gcp/issues/381

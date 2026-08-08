@@ -20,6 +20,7 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 
 import javax.annotation.Nullable;

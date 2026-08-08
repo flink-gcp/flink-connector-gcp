@@ -49,6 +49,23 @@ record — context, evidence, declined alternatives — is the named ADR under `
   rejected, never trimmed, and the host splits at the last colon, kept verbatim. Public
   signatures stay `String`.
 
+## `base.options` (`docs/adr/0068`)
+
+- `OptionChecks` holds `checkPositive` and `checkExpressibleInNanos`; both clear the
+  multiple-consumer bar on their own (nine ceiling sites across three modules, thirty-one
+  positivity sites across two). **A new check owes an argument of that shape** — "it is a
+  precondition too" is not one, and this is not a general-purpose precondition library.
+- **Every `Duration` positivity message carries the offending value**, which is what settled the
+  three shapes the tree had grown for one check. A rejection that names only the knob leaves a
+  builder chain setting several durations ambiguous.
+- `checkExpressibleInNanos` deliberately does **not** check positivity: `BoundedShutdown` accepts
+  a spent budget and the first-checkpoint watchdog accepts `Duration.ZERO`, so a caller wanting
+  both calls both. Its message names the ceiling **and the year count**, because
+  `Duration.toString()` renders it as an hour count that a SQL user is shown verbatim; tests pin
+  the year count, so dropping it fails.
+- Numeric (`int`/`long`) positivity checks stay inline in their builders — the helper is
+  `Duration`-typed, and Bigtable and Cloud Tasks have no `Duration` positivity check at all.
+
 ## `base.lifecycle` (`docs/adr/0040`, `docs/adr/0007`, `docs/adr/0068`)
 
 - **`BoundedShutdown`**: why it exists, and the decisions inside it, are `docs/adr/0007`; the

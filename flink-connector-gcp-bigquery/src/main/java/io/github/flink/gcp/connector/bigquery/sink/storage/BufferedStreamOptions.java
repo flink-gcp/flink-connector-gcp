@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -289,12 +290,7 @@ public final class BufferedStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
-            Preconditions.checkNotNull(
-                    recoveryInitialBackoff, "recoveryInitialBackoff must not be null");
-            Preconditions.checkArgument(
-                    !recoveryInitialBackoff.isNegative() && !recoveryInitialBackoff.isZero(),
-                    "recoveryInitialBackoff must be positive: %s",
-                    recoveryInitialBackoff);
+            OptionChecks.checkPositive(recoveryInitialBackoff, "recoveryInitialBackoff");
             this.recoveryInitialBackoff = recoveryInitialBackoff;
             return this;
         }
@@ -307,11 +303,7 @@ public final class BufferedStreamOptions implements Serializable {
          * @return this builder
          */
         public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
-            Preconditions.checkNotNull(recoveryMaxBackoff, "recoveryMaxBackoff must not be null");
-            Preconditions.checkArgument(
-                    !recoveryMaxBackoff.isNegative() && !recoveryMaxBackoff.isZero(),
-                    "recoveryMaxBackoff must be positive: %s",
-                    recoveryMaxBackoff);
+            OptionChecks.checkPositive(recoveryMaxBackoff, "recoveryMaxBackoff");
             this.recoveryMaxBackoff = recoveryMaxBackoff;
             return this;
         }

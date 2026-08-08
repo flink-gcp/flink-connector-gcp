@@ -20,6 +20,8 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
+
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -214,11 +216,7 @@ public final class TableCreateOptions implements Serializable {
          * @return this builder
          */
         public Builder timePartitioningExpiration(Duration expiration) {
-            Preconditions.checkNotNull(expiration, "expiration must not be null");
-            Preconditions.checkArgument(
-                    !expiration.isNegative() && !expiration.isZero(),
-                    "expiration must be positive: %s",
-                    expiration);
+            OptionChecks.checkPositive(expiration, "expiration");
             this.timePartitioningExpirationMs = expiration.toMillis();
             return this;
         }
