@@ -267,18 +267,25 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency
   findings, not only correctness ones — and push the fixes before asking for review. Record the
   findings *and the deferrals, with their reasons* as a PR comment; recording is not routing, which
-  the bullet below governs. Which command to use:
-  - `/review <pr>` reviews a pull request and **Claude can start it itself**, so this is the one
-    to reach for once the draft PR exists
-  - `/code-review` reviews the working diff and is **user-invocable only** — Claude gets
-    `disable-model-invocation` if it tries, so ask the user to run it rather than assuming it will
-    happen
-  - With neither, fall back to review subagents given *distinct* lenses (correctness and
-    concurrency, public API and simplification, test quality and flakiness). One agent asked for
-    "a review" returns much less than three asked for different things — and verify each finding
-    against the code before acting on it
-- **Then run a second round with different lenses, and do it before saying the PR is ready**
-  (ADR-0060 carries the measurement that pinned this). The rounds answer different questions:
+  the bullet below governs. **How the round is run is `.claude/skills/self-review/`**, and round
+  two is `.claude/skills/self-review-round-two/` — the two skills carry the lenses, the
+  verify-before-acting rule and the recording format, so neither round depends on a command Claude
+  cannot start:
+  - **`/code-review` and its alias `/review` are user-invocable only.** Both are marked
+    `disable-model-invocation`, which is the documented design and not a local setting: they
+    cannot be scheduled either, and a scheduled task naming one reads it as plain text. Ask the
+    user to run `/code-review` when the built-in's second opinion is wanted; never wait for it in
+    place of the skills. (Before Claude Code v2.1.223 `/review` was a separate command that ran a
+    single-pass, read-only review of a GitHub pull request, and this rule described it as one
+    Claude could start — hence the correction.)
+  - The lenses stay *distinct* — correctness and concurrency, public API and simplification, test
+    quality and flakiness — because one pass asked for "a review" returns much less than three
+    asked for different things. Run them as parallel subagents where the session permits the Agent
+    tool and sequentially where it does not, say which was done, and verify each finding against
+    the code before acting on it
+- **Then run a second round with different lenses, and do it before saying the PR is ready** —
+  `.claude/skills/self-review-round-two/`, which is where its procedure lives (ADR-0060 carries
+  the measurement that pinned this). The rounds answer different questions:
   round one asks whether the code does what the description says, **round two asks whether the
   description is true**, with lenses pointed outward rather than at the diff — the user meeting
   the error, the operator reading the dashboard, the blast radius of a move, an adversary trying
