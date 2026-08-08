@@ -45,7 +45,7 @@ briefly enumerated the checkers as their own required contexts.
 
 ## Alternatives declined
 
-- **A settings-side list of required contexts** (what PR #305 briefly had): it has to be
+- **A settings-side list of required contexts** (what PR [#305](https://github.com/laughingman7743/flink-connector-gcp/pull/305) briefly had): it has to be
   edited every time a job is added or retired, falls silently out of step with a renamed job,
   and cannot follow path-conditional jobs. A stale `needs` entry or `uses` path, by contrast,
   is a workflow-parse error no run survives unnoticed.

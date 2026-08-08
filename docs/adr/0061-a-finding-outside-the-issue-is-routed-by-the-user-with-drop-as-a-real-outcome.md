@@ -34,18 +34,18 @@ is filed forever. The routing is the user's: ask in the session that found it, f
 the user has said is not being folded in — and `gh issue create` is never how the routing
 happens on its own. An issue for work about to happen in the open pull request is noise.
 
-Four constraints, each of them a mistake PR #339 made in one sitting:
+Four constraints, each of them a mistake PR [#339](https://github.com/laughingman7743/flink-connector-gcp/pull/339) made in one sitting:
 
-- **Verify the finding before routing it.** A review subagent's example is not evidence. #339
+- **Verify the finding before routing it.** A review subagent's example is not evidence. PR [#339](https://github.com/laughingman7743/flink-connector-gcp/pull/339)
   filed a hole in the licensing gate on a synthesised `THIRD-PARTY.txt` line that
   license-maven-plugin does not in fact produce for this tree's one dual-licensed artifact —
   so the issue described a defect that does not exist. An unverified finding wastes the
   user's decision, not just the tracker.
-- **Route every finding, not the ones that look like they need a decision.** #339 asked about
+- **Route every finding, not the ones that look like they need a decision.** PR [#339](https://github.com/laughingman7743/flink-connector-gcp/pull/339) asked about
   three, got three answers, and filed four more unasked. Having asked is not a licence for
   the rest.
 - **A decision the user has already given is not reopenable by the note.** Told to fold the
-  pom consolidation into #339, it filed an issue instead. That is the same error pointed the
+  pom consolidation into PR [#339](https://github.com/laughingman7743/flink-connector-gcp/pull/339), it filed an issue instead. That is the same error pointed the
   other way, and it is worse: it overrides an answer rather than skipping a question.
 - **Never batch-file at the end of a review.** Findings arrive together; the decisions are
   one per finding, and a batch is how the ones that should have been dropped ride along with
@@ -62,7 +62,7 @@ right when the first task is finding out whether the problem is real; the issue 
 
 ## Evidence
 
-[#323], [#324] and [#325] came out of PR #322 this way, after the same mistake had been made
+[#323], [#324] and [#325] came out of PR [#322](https://github.com/laughingman7743/flink-connector-gcp/pull/322) this way, after the same mistake had been made
 there first — three findings written up in a self-review comment and a module `CLAUDE.md`,
 and left there.
 

@@ -75,7 +75,7 @@ placement scheme:
   pins java and maven, and the action defaults **both** `add_shims_to_path` and `export_path`
   to `true`, so out of the box its shims and env paths land in front of the JDK the job just
   installed. That is a default to disarm, not a combination to forbid — the rule said "must
-  not run together" until it was checked, extrapolated from the PR #113 incident, which was a
+  not run together" until it was checked, extrapolated from the PR [#113](https://github.com/laughingman7743/flink-connector-gcp/pull/113) incident, which was a
   *different* mechanism; the two have never actually run together in any workflow here. When
   a `setup-java` job does need a mise-pinned tool: set `add_shims_to_path: false`, scope
   `install_args` to that tool, and invoke it by explicit path — `just lint` hands actionlint

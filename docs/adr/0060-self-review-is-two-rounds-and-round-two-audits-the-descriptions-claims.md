@@ -44,13 +44,13 @@ Three rules the rounds share:
   whichever one an agent happened to read.
 - **A deferred measurement is a claim**: if a premise was flagged as reasoned-but-unmeasured,
   round two measures it, because the flag is not a substitute.
-- **The mutation batch is re-run after acting on a review**, not only before — PR #317's
+- **The mutation batch is re-run after acting on a review**, not only before — PR [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317)'s
   rework left alive a mutant that had been alive all along, because no test pinned that the
   call sites feed the counter the metric reports.
 
 ## Evidence
 
-Measured on 2026-08-06 across PRs #314 and #317, both of which had passed round one and were
+Measured on 2026-08-06 across PRs [#314](https://github.com/laughingman7743/flink-connector-gcp/pull/314) and [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317), both of which had passed round one and were
 CI-green: round two found, in each, **claims written in the PR's own javadoc, docs or
 description that were false** — "it reaches SQL unchanged as an `IllegalStateException`"
 (`FactoryUtil` wraps everything a factory throws), "the only shape that works" (it forced the
@@ -60,7 +60,7 @@ docs recommend). None of those is reachable from a lens aimed at the diff.
 
 ## Consequences
 
-- The cost is real — three agents plus verification, and on PR #317 round two changed the
+- The cost is real — three agents plus verification, and on PR [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317) round two changed the
   design — so the full second round is for changes whose description makes claims about
   framework behaviour, deployment, or "this is the only way", not for a typo fix.
 - Findings *and* deferrals, with their reasons, are recorded as a PR comment; recording is
