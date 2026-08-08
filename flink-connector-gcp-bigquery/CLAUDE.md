@@ -50,6 +50,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   an expired stream answers, which is unmeasured (`docs/adr/0030`, both halves measured). **Never
   use `PERMISSION_DENIED` as a terminal example** — four tests and two javadoc sentences moved to
   `INVALID_ARGUMENT`, the second pair including the base module's `FailureHandler`.
+- **The buffered writer's four append-side decisions take no missing-table verdict, and that is
+  measured** (`docs/adr/0030`, its append arm): 140 trials, 0 denials at the first append against
+  11 at the `FlushRows` taken on the same table immediately after — so the appends were not merely
+  lucky with the timing. Do not widen `recover`, `resendAtSameOffset`, `replayBatches` or
+  `probeRestoredStream` on the argument that the window reaches everything; `openAppender` is not
+  a fifth site either, since `StreamWriter.build()` sends no RPC. **One** contrary observation
+  earns a new issue naming the ADR, not a reopening of #382 — and the gated case *asserts* its
+  append count is zero rather than logging it, so that observation stops a run instead of sitting
+  in weekly output. The same run makes `createStream`'s allowance measured rather than defensive:
+  a quarter of trials needed it, where the case that pre-creates its table had never once been
+  denied.
 - **A REST failure's retryability is `BigQueryTableAdmin`'s, never `AppendErrorClassifier`'s**, and
   it travels as `RetriableTableAdminException` so the client's `BigQueryException` stays in
   `sink.tables` — the whole point of the `TableAdmin` SPI (`docs/adr/0071`). The verdict borrows
