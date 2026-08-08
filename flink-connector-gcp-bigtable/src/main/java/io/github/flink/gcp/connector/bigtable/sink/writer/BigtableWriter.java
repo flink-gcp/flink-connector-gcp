@@ -95,7 +95,13 @@ import java.util.Deque;
  * park cannot grow across a checkpoint interval — and it terminates because every submission inside
  * it is solo, which it bounds itself rather than assumes. Its cost is real: a stream whose
  * rejections are frequent spends roughly one request per record while isolating, which is what buys
- * back the records batched with a bad one.
+ * back the records batched with a bad one. Under a dropping policy that degradation is bounded by
+ * {@code BigtableWriterOptions.maxConsecutiveRejections} (#361): once that many confirmed
+ * rejections arrive with no applied mutation between them, the stream's data is broken rather than
+ * anomalous, and the writer fails the job instead of isolating it record by record. The bound is a
+ * policy about the stream, accumulated across passes in {@link #consecutiveRejections}; the pass's
+ * own loop budget is a per-pass invariant tripwire, and the two failures deliberately share no
+ * message.
  *
  * <p>A failure that first surfaces during {@link #close()} reaches neither the handler nor {@link
  * #asyncError}: Flink quiesces the task mailbox before it closes operators, so a completion
@@ -128,6 +134,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     private final MailboxExecutor mailboxExecutor;
     private final int maxInFlightMutations;
     private final long maxInFlightBytes;
+    private final int maxConsecutiveRejections;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
     private final BigtableWriterMetrics metrics;
 
@@ -149,6 +156,14 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * of needing another one.
      */
     private final Deque<ParkedMutation> pendingIsolation = new ArrayDeque<>();
+
+    /**
+     * Confirmed rejections routed since the last successfully applied mutation; touched only on the
+     * task thread. Every success mail zeroes it, and {@code
+     * BigtableWriterOptions.maxConsecutiveRejections} — whose javadoc carries the reasoning — is
+     * what it is compared against (#361).
+     */
+    private int consecutiveRejections;
 
     /**
      * First terminal failure; set and read only on the task thread (failure callbacks re-dispatch
@@ -184,8 +199,16 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                 options.getMaxInFlightMutations() > 0, "maxInFlightMutations must be positive");
         Preconditions.checkArgument(
                 options.getMaxInFlightBytes() > 0, "maxInFlightBytes must be positive");
+        // Re-checked for the same deserialization reason, though the failure mode is milder: a
+        // zero would fail the job on the first confirmed rejection, silently overriding the
+        // handler the user configured, rather than hanging anything.
+        Preconditions.checkArgument(
+                options.getMaxConsecutiveRejections() > 0
+                        || options.getMaxConsecutiveRejections() == BigtableWriterOptions.UNBOUNDED,
+                "maxConsecutiveRejections must be positive or -1 (unbounded)");
         this.maxInFlightMutations = options.getMaxInFlightMutations();
         this.maxInFlightBytes = options.getMaxInFlightBytes();
+        this.maxConsecutiveRejections = options.getMaxConsecutiveRejections();
         this.failedMutationHandler = config.getFailedMutationHandler();
         this.metrics = new BigtableWriterMetrics(metricGroup);
         this.metrics.bindWriterState(
@@ -464,6 +487,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      */
     private void routeFailedMutation(RowMutationEntry entry, Throwable throwable) {
         metrics.mutationFailed();
+        consecutiveRejections++;
         try {
             failedMutationHandler.handle(
                     FailedMutation.of(
@@ -484,6 +508,38 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                                                 + ".",
                                         e);
             }
+        }
+        // After the routing, not instead of it: the mutation that tripped the bound really was
+        // refused, and a dead-letter destination missing it would be worse than one holding it —
+        // the same argument as routing beside an existing asyncError. First failure still wins.
+        if (maxConsecutiveRejections != BigtableWriterOptions.UNBOUNDED
+                && consecutiveRejections >= maxConsecutiveRejections
+                && asyncError == null) {
+            String run =
+                    consecutiveRejections == 1
+                            ? "refused a mutation (status "
+                                    + BigtableErrorClassifier.statusCode(throwable)
+                                    + ")"
+                            : "refused "
+                                    + consecutiveRejections
+                                    + " mutations in a row (the last with status "
+                                    + BigtableErrorClassifier.statusCode(throwable)
+                                    + ") with none applied between them";
+            asyncError =
+                    new IOException(
+                            "Bigtable table "
+                                    + destination
+                                    + " "
+                                    + run
+                                    + ", reaching maxConsecutiveRejections("
+                                    + maxConsecutiveRejections
+                                    + "): the stream's data looks broken rather than anomalous, so"
+                                    + " the job fails instead of isolating it record by record."
+                                    + " Every rejected mutation, this one included, was routed to"
+                                    + " the configured handler first;"
+                                    + " BigtableWriterOptions.builder().maxConsecutiveRejections(-1)"
+                                    + " removes this bound.",
+                            throwable);
         }
     }
 
@@ -540,6 +596,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         @Override
         public void run() {
             releaseInFlight(serializedSize);
+            // An applied mutation is evidence the stream is not wholly broken, whichever request
+            // shape carried it — a solo re-submission included — so the consecutive-rejection
+            // bound resets on every success.
+            consecutiveRejections = 0;
         }
 
         @Override

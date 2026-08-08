@@ -160,6 +160,172 @@ class BigtableWriterTest {
     }
 
     @Test
+    void failsTheJobOnceConsecutiveConfirmedRejectionsReachTheBound() throws Exception {
+        // #361: a dropping policy keeps the job green through anomalous records, but a stream
+        // refused wholesale is broken data degraded to one solo request per record — so the bound
+        // fails the job, with every rejected mutation routed before it does.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        serializer(),
+                        handler);
+        batcher.rejectedRowKeys.add("row-1");
+        batcher.rejectedRowKeys.add("row-2");
+
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("maxConsecutiveRejections(2)")
+                .hasMessageContaining("refused 2 mutations in a row")
+                .hasMessageContaining("INVALID_ARGUMENT")
+                // The pass's own loop budget reports a connector bug; the bound reports the
+                // stream. An operator must be able to tell the two failures apart.
+                .hasMessageNotContaining("isolation contract");
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactly("row-1", "row-2");
+    }
+
+    @Test
+    void theBoundTrippingMidPassAbandonsTheRestOfThePark() throws Exception {
+        // The throw escapes the pass with mutations still parked behind it: neither applied nor
+        // routed, which the failed checkpoint covers — the restart replays them. Pins that the
+        // abandoned mutation is not silently routed after the bound has spoken.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        serializer(),
+                        handler);
+        batcher.rejectedRowKeys.add("row-1");
+        batcher.rejectedRowKeys.add("row-2");
+        batcher.rejectedRowKeys.add("row-3");
+
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+        writer.write("row-3", TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("maxConsecutiveRejections(2)");
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactly("row-1", "row-2");
+        assertThat(parked(writer)).isEqualTo(1);
+    }
+
+    @Test
+    void aCollateralSuccessInsideTheIsolationPassResetsTheCount() throws Exception {
+        // The interleaving the pass was designed around: a good record batched between two bad
+        // ones is applied by its solo re-submission, and that success resets the count mid-pass —
+        // two bad records in one batch are two runs of one, not one run of two.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        serializer(),
+                        handler);
+        batcher.rejectedRowKeys.add("row-1");
+        batcher.rejectedRowKeys.add("row-3");
+
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+        writer.write("row-3", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactly("row-1", "row-3");
+    }
+
+    @Test
+    void aSuccessZeroesTheCountRatherThanCancellingOneRejection() throws Exception {
+        // Two confirmed rejections, one success, two more: a counter that merely decremented on
+        // success would reach the bound of 3 at the fourth rejection; zeroing keeps every run at
+        // two. "Any applied mutation resets the count" means reset, not repayment.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().maxConsecutiveRejections(3).build(),
+                        serializer(),
+                        handler);
+        batcher.rejectedRowKeys.add("row-1");
+        batcher.rejectedRowKeys.add("row-2");
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+        writer.flush(false);
+
+        writer.write("row-3", TestContexts.NO_OP);
+        writer.flush(false);
+
+        batcher.rejectedRowKeys.add("row-4");
+        batcher.rejectedRowKeys.add("row-5");
+        writer.write("row-4", TestContexts.NO_OP);
+        writer.write("row-5", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactly("row-1", "row-2", "row-4", "row-5");
+    }
+
+    @Test
+    void anAppliedMutationResetsTheConsecutiveRejectionCount() throws Exception {
+        // One bad record an hour must never accumulate into a failure: with a success between
+        // them, two rejections stay below a bound of 2 for the whole run.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().maxConsecutiveRejections(2).build(),
+                        serializer(),
+                        handler);
+        batcher.rejectedRowKeys.add("row-1");
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.flush(false);
+
+        writer.write("row-2", TestContexts.NO_OP);
+        writer.flush(false);
+
+        batcher.rejectedRowKeys.add("row-3");
+        writer.write("row-3", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactly("row-1", "row-3");
+    }
+
+    @Test
+    void theUnboundedSentinelKeepsIsolatingThroughConsecutiveRejections() throws Exception {
+        // -1 restores the unbounded pass for a pipeline that really does want to trickle through
+        // arbitrarily bad data. Discriminating: a sentinel misread as a bound of -1 or 0 would
+        // fail the job on the first confirmed rejection here.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder()
+                                .maxConsecutiveRejections(BigtableWriterOptions.UNBOUNDED)
+                                .build(),
+                        serializer(),
+                        handler);
+        batcher.rejectedRowKeys.add("row-1");
+        batcher.rejectedRowKeys.add("row-2");
+        batcher.rejectedRowKeys.add("row-3");
+
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+        writer.write("row-3", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactly("row-1", "row-2", "row-3");
+    }
+
+    @Test
     void parksABatchedRejectionInsteadOfRoutingIt() throws Exception {
         // The half of the pass a completed flush hides: between the report and the verdict the
         // mutation is neither in flight nor routed, and only the park says it still exists.

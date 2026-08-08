@@ -25,7 +25,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - A `ROW_LEVEL` verdict answering a batched submission is parked and confirmed solo by
   `runIsolationPass()` — **the discriminator is our own submission, never the exception's
-  shape** (`docs/adr/0045`; the bound on a dropping policy's pass is #361).
+  shape** (`docs/adr/0045`, which also carries `maxConsecutiveRejections`, the #361 bound on a
+  dropping policy's pass: consecutive confirmed rejections, reset by any applied mutation, never
+  serializer rejections, and never the pass's own loop budget — that one is an invariant
+  tripwire, not a policy).
 - The batcher's shutdown report (`BatchingException`) is absorbed and WARN-logged, never thrown;
   `InterruptedException` and gax's `IllegalStateException` still propagate; the contract is on
   `MutationBatcher.close()` (`docs/adr/0046`; the cross-connector rule is `docs/adr/0003`).

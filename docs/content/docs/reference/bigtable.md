@@ -66,6 +66,7 @@ setting options at all.
 | `batchByteSize` | *unset ⇒ 20 MB* (the client's threshold) | How many bytes of mutations it accumulates before sending a batch |
 | `maxInFlightMutations` | 1000 | Caps unacknowledged mutations. At the cap `write()` yields to the task mailbox |
 | `maxInFlightBytes` | 64 MiB | Caps their serialized size, which is the bound that actually bounds memory |
+| `maxConsecutiveRejections` | 100 | Fails the job once this many confirmed rejections arrive in a row with no applied mutation between them — the guardrail on a dropping policy's [isolation cost]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). Any success resets the count; `-1` removes the bound |
 
 **Raising `maxInFlightMutations` far above its default does not raise the effective bound; it moves
 it.** The client has a flow controller of its own — 1000 entries per channel and 100 MB, and it
