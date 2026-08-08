@@ -65,7 +65,12 @@ except ModuleNotFoundError:  # pragma: no cover - version guard, not logic
         ">= 3.11. CI installs one with actions/setup-python."
     )
 
+ROOT = Path(__file__).resolve().parent.parent
 SOURCES = Path(__file__).parent / "licence-sources.toml"
+
+# `- groupId:artifactId:version` or the same with a ` (META-INF/licenses/…)` pointer,
+# which is how render_notice writes a bullet.
+NOTICE_BULLET = re.compile(r"^- (?P<ga>[\w.\-]+:[\w.\-]+):[\w.+\-]+")
 
 # `    (Licence Name) Artifact Description (groupId:artifactId:version - url)`
 THIRD_PARTY_LINE = re.compile(
@@ -89,9 +94,12 @@ TEXT_EXEMPT_GROUP = "Apache-2.0"
 # paragraph, and the message says to decide adoption first. Matched against the
 # resolved licence names (post-merge). A licence name this misses is still
 # caught structurally — no template paragraph, hard failure — this is the
-# sharper message for the families known to be a problem. The one exemption is
-# dual-licensed *with the classpath exception*, taken under CDDL: the
-# combination deliberately in the bundle today.
+# sharper message for the families known to be a problem. The gate has no
+# exemption, not even for a dual licence whose other arm is permissive: the one
+# such artifact these bundles carried (javax.annotation-api, CDDL 1.0 / GPL 2.0
+# with the classpath exception) was measured to be referenced by nothing and is
+# excluded rather than elected, so an artifact resolving to that name again is a
+# regression this gate reports rather than a case it waves through.
 # The token alternation deliberately does not end at a word boundary: Maven's
 # most common spellings are `GPLv2`/`LGPLv3`, where a trailing \b never matches
 # (the next character is a word character), and the spelled-out names carry no
@@ -103,11 +111,6 @@ RESTRICTED = re.compile(
     r"|Non-?Commercial",
     re.IGNORECASE,
 )
-# Keyed by the merged licence *name*, which means any artifact resolving to this
-# exact dual-licence string rides the exemption — acceptable because the string
-# itself names the terms (classpath exception, CDDL alternative), and a second
-# artifact under the same terms would get the same answer.
-RESTRICTED_EXEMPT = {"CDDL + GPLv2 with classpath exception"}
 
 
 def fail(message: str) -> "sys.NoReturn":
@@ -154,6 +157,32 @@ def load_sources() -> dict[str, dict]:
                 fail(f"{SOURCES}: {ga} appears under both {owners[ga]} and {name}.")
             owners[ga] = name
     return files
+
+
+def bundled_across_all_modules() -> set[str] | None:
+    """Every groupId:artifactId named by a checked-in NOTICE, or None if there is none.
+
+    Read from the committed NOTICEs rather than from resolved bundles, so this is
+    whole-repository yet needs no Maven run and no module beyond the one being
+    checked: a shaded module is one carrying a NOTICE.template. None means no
+    module has a generated NOTICE yet, which is a fresh tree rather than a
+    finding.
+    """
+    modules = [t.parent for t in ROOT.glob("*/NOTICE.template")]
+    notices = [
+        m / "src" / "main" / "resources" / "META-INF" / "NOTICE" for m in modules
+    ]
+    readable = [n for n in notices if n.is_file()]
+    if not readable:
+        return None
+    return {
+        match["ga"]
+        for notice in readable
+        for match in map(
+            NOTICE_BULLET.match, notice.read_text(encoding="utf-8").splitlines()
+        )
+        if match
+    }
 
 
 def render_notice(
@@ -298,7 +327,7 @@ def main() -> int:
         fail(f"{template} does not exist.")
 
     resolved = read_resolved(module)
-    for licence in sorted(set(resolved.values()) - RESTRICTED_EXEMPT):
+    for licence in sorted(set(resolved.values())):
         if RESTRICTED.search(licence):
             offenders = sorted(g for g, lic in resolved.items() if lic == licence)
             fail(
@@ -357,6 +386,26 @@ def main() -> int:
             "META-INF/NOTICE differs from what NOTICE.template + the resolved "
             "bundle generate. Run `just update-notice <module>` and commit the result."
         )
+    # A stale entry is silent otherwise: `relevant` is per module, so an entry no
+    # module bundles is never materialised and never checked. Asked across every
+    # shaded module, because the file is shared and an entry live in one tree is
+    # not dead because this one lacks it — and asked after the comparison above,
+    # so a NOTICE that drifted reports the drift rather than the entries the
+    # drift orphaned.
+    everywhere = bundled_across_all_modules()
+    if everywhere is not None:
+        dead = sorted(
+            name
+            for name, entry in files.items()
+            if not any(ga in everywhere for ga in entry["artifacts"])
+        )
+        if dead:
+            problems.append(
+                f"{SOURCES.name}: {dead} name no artifact any module's checked-in "
+                f"META-INF/NOTICE lists. A pinned licence text nothing points at "
+                f"rots unread — remove the entry, or regenerate the NOTICE that "
+                f"should have named it."
+            )
     for name, entry in relevant.items():
         path = licence_dir / name
         if not path.is_file():

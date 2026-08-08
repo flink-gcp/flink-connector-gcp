@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sql;
 
 import io.github.flink.gcp.connector.testutils.sql.AbstractBundledDependenciesNoticeTest;
 
-/** Holds this module's {@code META-INF/NOTICE} to the 111 artifacts it bundles. */
+/** Holds this module's {@code META-INF/NOTICE} to the 110 artifacts it bundles. */
 class BundledDependenciesNoticeTest extends AbstractBundledDependenciesNoticeTest {
 
     @Override

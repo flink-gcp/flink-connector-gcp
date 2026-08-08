@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0015: Everything bundled in a SQL uber-jar is relocated, and its NOTICE is generated and pinned
 
 - Status: Accepted
-- Date: 2026-07-27
+- Date: 2026-07-27, revised by [#352] (2026-08-08)
 - Issues: [#138] (the first shaded module; what is decided here is inherited, not re-argued, by
   every later `flink-sql-connector-gcp-*` — [#290] paid the sibling cost and records what is
-  specific to its own tree)
+  specific to its own tree), [#352]
 - Modules: flink-sql-connector-gcp-pubsub (and, by inheritance, every flink-sql-connector-gcp-*)
 - Current behavior: the SQL connector pages and each SQL module's README
 
@@ -55,6 +55,23 @@ on Linux with epoll or tcnative, and a wrong rename degrades to NIO and JDK SSL 
 Still unrelocated are `org.conscrypt` (native libraries too, but a reflectively-loaded optional
 TLS provider gRPC does without) and four annotation-only packages, where a duplicate class is
 inert because nothing invokes it.
+
+**An artifact whose licence costs more than its classes are worth is excluded from the bundle,
+and a dual licence is such a cost.** A dual licence is an *offer*: shipping the artifact means
+**electing an arm on this project's behalf**, saying which in the NOTICE, and meeting that arm's
+obligations — CDDL-1.0 §3.1's source-availability clause, for the one case there has been. So the
+first question is not how to word the election but whether anything uses the artifact.
+`javax.annotation:javax.annotation-api` ([#352]) is that case, and nothing did; the Evidence
+section carries the measurement. Two things follow. `javax/annotation/` is a **single-licence**
+package in both jars — jsr305 (Apache-2.0) publishes the rest of it — which the packaging
+allow-list cannot report either way, being prefix-based and satisfied by *some* class under the
+entry. And `check-notice.py`'s restricted-licence gate keeps **no exemption**, so an artifact
+resolving to that licence name **fails the build** rather than riding a list: the exclusion's own
+regression test. **An excluded artifact leaves by an `<exclusion>` on the connector dependency,
+never a shade filter** — the tree the NOTICE, the licence report and
+`BundledDependenciesNoticeTest` read is then the tree that is bundled, one fact rather than a fact
+plus an exception list — and the connector jars still declare it, so a DataStream user resolving
+transitively is unaffected. ADR-0035 records the exclusion only one tree takes.
 
 **Three build traps worth not rediscovering:**
 
@@ -120,9 +137,20 @@ SQL module inherits one vocabulary rather than inventing a second.
 **What a sibling actually costs, and [#290] paid it**: the plugin block and one execution in its
 pom, its own `NOTICE.template`, a CI step, and `licence-sources.toml` entries for its non-Apache
 artifacts (the file and its pins are shared, so overlapping dependencies cost nothing twice).
-The estimate held except where it was measured beforehand: the BigQuery bundle resolves **111**
+The estimate held except where it was measured beforehand: the BigQuery bundle resolves **110**
 third-party artifacts against the **114** the connector's own runtime tree shows, and needed
 **four** new pinned texts. No new `licenseMerges`, as predicted.
+
+**`javax.annotation-api` is referenced by nothing** (measured 2026-08-08, offline): across every
+artifact of both SQL trees as they then stood — 52 and 111, all resolvable from the local
+repository — and every class of both built uber-jars (16444 and 26947), **not one** references
+any of its 15 types, searched both as constant-pool entries (`javax/annotation/Generated`, …) and
+as dotted names. Every `javax.annotation.*` string that *is* in the jars belongs to jsr305. Three
+things explain it: `javax.annotation.Generated`, the annotation gRPC's generated stubs carry, is
+`@Retention(SOURCE)` and so cannot appear in a class file at all (`javap -v`); upstream
+`api-common` lists the artifact under `ignoredUnusedDeclaredDependencies`, "declared to fix upper
+bound failures"; and it reaches the trees only through the few artifacts that declare it at
+`compile` where most of their siblings declare it `provided`.
 
 ## Consequences
 
@@ -136,8 +164,11 @@ third-party artifacts against the **114** the connector's own runtime tree shows
   is a Python script rather than a Maven plugin, so it is a CI step of its own, and the test is
   what makes the same drift fail inside `just verify`.
 - What is specific to a tree (an artifact kept out of the bundle, a relocation only it needs)
-  belongs beside that connector — the BigQuery jar's record is its module's.
+  belongs beside that connector — the BigQuery jar's record is its module's, ADR-0035, and
+  `slf4j-api` is there because only that tree carries it. An exclusion both trees take is this
+  record's, which is where `javax.annotation-api` sits.
 
 [#26]: https://github.com/laughingman7743/flink-connector-gcp/issues/26
 [#138]: https://github.com/laughingman7743/flink-connector-gcp/issues/138
 [#290]: https://github.com/laughingman7743/flink-connector-gcp/issues/290
+[#352]: https://github.com/laughingman7743/flink-connector-gcp/issues/352

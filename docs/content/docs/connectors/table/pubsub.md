@@ -76,7 +76,7 @@ GROUP BY window_start;
 Use `flink-sql-connector-gcp-pubsub`, an uber-jar built for exactly this: put it in Flink's `lib/`
 directory, or add it with `ADD JAR` in the SQL client. It bundles `flink-connector-gcp-pubsub`
 together with its whole runtime tree — the Pub/Sub client, gRPC, protobuf, Guava, the Google auth
-and HTTP clients — which is 52 artifacts, not a dependency list anyone wants to assemble by hand.
+and HTTP clients — which is 51 artifacts, not a dependency list anyone wants to assemble by hand.
 
 The plain `flink-connector-gcp-pubsub` jar works too, where the deployment already resolves
 transitive dependencies. That is the right choice for a DataStream job built with Maven or Gradle.
@@ -93,7 +93,9 @@ Five packages are deliberately *not* relocated, and none of them can collide in 
 `org.conscrypt`, which gRPC picks up reflectively as an optional TLS provider and does without when
 it is unusable; and the annotation-only `javax.annotation`, `org.jspecify`,
 `org.codehaus.mojo.animal_sniffer` and `android.annotation`, where a duplicate class is inert
-because nothing ever invokes it.
+because nothing ever invokes it. `javax.annotation` here is jsr305's classes only —
+`javax.annotation-api`, the other artifact publishing into that package, is not bundled
+([#352]({{< param BookRepo >}}/issues/352)).
 
 `io.grpc:grpc-netty-shaded` *is* relocated, which takes some care: gRPC ships it already relocated
 once, having renamed its `META-INF/native/` libraries to match, because netty derives the native
@@ -107,7 +109,7 @@ bundles gRPC too, and the two are meant to sit in one `lib/`.
 
 `META-INF/NOTICE` inside the jar lists every bundled artifact grouped by licence, and
 `META-INF/licenses/` carries the full text of each non-Apache-2.0 one — protobuf, gax, the Google
-auth library, ThreeTen backport, RE2/J, animal-sniffer and the javax annotation API.
+auth library, ThreeTen backport, RE2/J and animal-sniffer.
 
 The prose of the NOTICE is human-written, in the module's `NOTICE.template`; the artifact lists are
 generated into it from what Maven actually resolves, so a wrong licence grouping or a stale version

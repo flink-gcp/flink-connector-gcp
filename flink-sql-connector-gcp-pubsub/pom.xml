@@ -43,6 +43,34 @@
             <groupId>io.github.flink-gcp</groupId>
             <artifactId>flink-connector-gcp-pubsub</artifactId>
             <version>${project.version}</version>
+            <!-- The one artifact of the tree that must NOT be bundled. Excluded here rather
+                 than filtered out of the shade, so that the dependency tree the NOTICE, the
+                 licence report and BundledDependenciesNoticeTest all read is the tree that
+                 is actually bundled - one fact, not a fact plus an exception list. The
+                 connector jar still declares it, so a DataStream user resolving
+                 transitively is unaffected. -->
+            <exclusions>
+                <!-- Fifteen classes nothing loads, dual-licensed
+                     CDDL-1.0 / GPL-2.0-with-classpath-exception. Why a dual licence alone
+                     disqualifies an artifact, and why the answer is exclusion rather than
+                     electing an arm, is ADR-0015.
+
+                     The measurement it rests on, 2026-08-08: across this module's other 51
+                     bundled artifacts and the built uber-jar's 16444 classes, not one
+                     references any of its types, by constant-pool entry or by name. The one
+                     a reader expects to find, the @Generated on gRPC's generated stubs, is
+                     Retention(SOURCE) and so never reaches a class file at all; upstream
+                     api-common lists the artifact under ignoredUnusedDeclaredDependencies,
+                     "declared to fix upper bound failures". Several artifacts of this tree
+                     declare it at compile scope where most of their siblings declare it
+                     provided; the path that wins mediation is google-cloud-pubsub's, which
+                     is what `./mvnw dependency:tree
+                     -Dincludes=javax.annotation:javax.annotation-api` prints. -->
+                <exclusion>
+                    <groupId>javax.annotation</groupId>
+                    <artifactId>javax.annotation-api</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- Test scope. The integration tests run against the shaded jar rather than
@@ -260,7 +288,8 @@
                                        optional TLS provider, and it falls back to JDK SSL when
                                        absent or unusable. So the rename dance buys nothing here.
 
-                                     javax.annotation (jsr305 and javax.annotation-api),
+                                     javax.annotation (jsr305 alone; javax.annotation-api is
+                                     excluded from the tree - see above),
                                      org.jspecify, org.codehaus.mojo.animal_sniffer,
                                      android.annotation — annotation-only artifacts. Relocation
                                        exists to stop two versions of a *behaving* class fighting

@@ -20,12 +20,6 @@ See bundled license files for details.
 
 {{MIT}}
 
-This project bundles the following dependencies under the CDDL 1.0 and the GPL 2.0 with Classpath
-Exception, dual-licensed (https://github.com/javaee/javax.annotation/blob/master/LICENSE).
-See bundled license files for details.
-
-{{CDDL + GPLv2 with classpath exception}}
-
 org.apache.httpcomponents:httpclient additionally redistributes mozilla/public-suffix-list.txt,
 which is licensed under the Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/) rather than
 under the Apache Software License 2.0 its artifact is listed under above. The file carries its own

@@ -38,8 +38,9 @@ Four constraints, each of them a mistake PR [#339](https://github.com/laughingma
 
 - **Verify the finding before routing it.** A review subagent's example is not evidence. PR [#339](https://github.com/laughingman7743/flink-connector-gcp/pull/339)
   filed a hole in the licensing gate on a synthesised `THIRD-PARTY.txt` line that
-  license-maven-plugin does not in fact produce for this tree's one dual-licensed artifact —
-  so the issue described a defect that does not exist. An unverified finding wastes the
+  license-maven-plugin did not in fact produce for the dual-licensed artifact the tree carried
+  then (`javax.annotation-api`, since excluded by [#352](https://github.com/laughingman7743/flink-connector-gcp/issues/352)) — so the issue described a
+  defect that does not exist. An unverified finding wastes the
   user's decision, not just the tracker.
 - **Route every finding, not the ones that look like they need a decision.** PR [#339](https://github.com/laughingman7743/flink-connector-gcp/pull/339) asked about
   three, got three answers, and filed four more unasked. Having asked is not a licence for

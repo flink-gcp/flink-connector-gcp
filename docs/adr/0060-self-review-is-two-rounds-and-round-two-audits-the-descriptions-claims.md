@@ -58,6 +58,15 @@ storage, not the instrument), "the repository's first main-code static" (it is t
 "scoped to the job's class loader" (true for a job jar, false for the `lib/` deployment the
 docs recommend). None of those is reachable from a lens aimed at the diff.
 
+A third PR extended *where* those claims come from rather than the finding rate. On
+[#386](https://github.com/laughingman7743/flink-connector-gcp/pull/386) the false one was the
+**issue's own premise**, restated verbatim in the description and the commit message:
+[#352](https://github.com/laughingman7743/flink-connector-gcp/issues/352) said a bundled licence
+text carried no GPL-2.0 text at all, and it carries the whole of it. Restating an issue is
+asserting it, and a premise cited as context does not read like a claim being made — so the round's
+claim list names the issue as a fifth source, beside the description, the comments, the docs and
+the commit message.
+
 ## Consequences
 
 - The cost is real — three agents plus verification, and on PR [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317) round two changed the

@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.pubsub.sql;
 
 import io.github.flink.gcp.connector.testutils.sql.AbstractBundledDependenciesNoticeTest;
 
-/** Holds this module's {@code META-INF/NOTICE} to the 52 artifacts it bundles. */
+/** Holds this module's {@code META-INF/NOTICE} to the 51 artifacts it bundles. */
 class BundledDependenciesNoticeTest extends AbstractBundledDependenciesNoticeTest {
 
     @Override
