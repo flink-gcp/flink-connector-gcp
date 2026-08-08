@@ -124,13 +124,13 @@ import java.util.concurrent.TimeoutException;
  *
  * <h2>Metrics</h2>
  *
- * <p>{@link #open(FailureHandlerContext)} registers four names on the metric group the context
+ * <p>{@link #open(FailureHandlerContext)} registers five names on the metric group the context
  * carries — <b>the host sink writer's</b>, so a BigQuery job dead-lettering to a topic reports them
  * beside BigQuery's own. They are {@code deadLettersPublished}, {@code outstandingDeadLetters},
- * {@code deadLetterFlushMillis} and {@code deadLetterPublisherShutdownsAbandoned}; what each means
- * is on this connector's documentation page, under "Dead-letter metrics". The count of elements
- * <em>offered</em> is not among them because every sink here already reports it as {@code
- * numRecordsSendErrors} on that same group.
+ * {@code deadLetterFlushMillis}, {@code longestDeadLetterFlushMillis} and {@code
+ * deadLetterPublisherShutdownsAbandoned}; what each means is on this connector's documentation
+ * page, under "Dead-letter metrics". The count of elements <em>offered</em> is not among them
+ * because every sink here already reports it as {@code numRecordsSendErrors} on that same group.
  *
  * <p>Instances are configured on the job graph and serialized to the tasks; the publisher itself is
  * created in {@link #open(FailureHandlerContext)}. Lifecycle, and the at-least-once guarantee that

@@ -711,6 +711,67 @@ class PubSubDeadLetterQueueTest {
     }
 
     /**
+     * The spike the last-wait gauge cannot keep (#405). Waits happen as often as the queue drains —
+     * once per element under {@code WRITE_THROUGH} — so a slow one is overwritten long before a
+     * reporter reads it, and only the maximum survives to say the budget was nearly spent.
+     */
+    @Test
+    void theLongestWaitSurvivesTheFastWaitsThatFollowIt() {
+        List<ApiFuture<String>> slow = new ArrayList<>();
+        slow.add(new RecordingFuture(Duration.ofMillis(300), new ArrayList<>()));
+        assertThatCode(
+                        () ->
+                                PubSubDeadLetterQueue.flushOutstanding(
+                                        () -> {}, slow, TOPIC, Duration.ofSeconds(30), metrics))
+                .doesNotThrowAnyException();
+        long spike = metricGroup.<Long>gaugeValue("longestDeadLetterFlushMillis");
+        assertThat(spike).isGreaterThanOrEqualTo(250L);
+
+        // Several fast waits, as a steadily dead-lettering job makes between two scrapes.
+        for (int i = 0; i < 3; i++) {
+            SettableApiFuture<String> immediate = SettableApiFuture.create();
+            immediate.set("message-" + i);
+            List<ApiFuture<String>> quick = new ArrayList<>();
+            quick.add(immediate);
+            assertThatCode(
+                            () ->
+                                    PubSubDeadLetterQueue.flushOutstanding(
+                                            () -> {},
+                                            quick,
+                                            TOPIC,
+                                            Duration.ofSeconds(30),
+                                            metrics))
+                    .doesNotThrowAnyException();
+        }
+
+        // The last-wait gauge has forgotten the spike, which is the whole point of the second one.
+        assertThat(metricGroup.<Long>gaugeValue("deadLetterFlushMillis")).isLessThan(250L);
+        assertThat(metricGroup.<Long>gaugeValue("longestDeadLetterFlushMillis")).isEqualTo(spike);
+    }
+
+    /** It is a maximum, not a last-write-wins under another name. */
+    @Test
+    void theLongestWaitRisesOnlyWhenAWaitBeatsIt() {
+        metrics.flushCompleted(40L);
+        assertThat(metricGroup.<Long>gaugeValue("longestDeadLetterFlushMillis")).isEqualTo(40L);
+
+        metrics.flushCompleted(900L);
+        assertThat(metricGroup.<Long>gaugeValue("longestDeadLetterFlushMillis")).isEqualTo(900L);
+
+        metrics.flushCompleted(41L);
+        assertThat(metricGroup.<Long>gaugeValue("longestDeadLetterFlushMillis")).isEqualTo(900L);
+        // ... while the last-wait gauge does follow it down.
+        assertThat(metricGroup.<Long>gaugeValue("deadLetterFlushMillis")).isEqualTo(41L);
+    }
+
+    /** Both duration gauges start at zero, so a job that never dead-lettered reports no wait. */
+    @Test
+    void bothDurationGaugesStartAtZero() {
+        assertThat(metricGroup.<Long>gaugeValue("deadLetterFlushMillis")).isZero();
+        assertThat(metricGroup.<Long>gaugeValue("longestDeadLetterFlushMillis")).isZero();
+    }
+
+    /**
      * A flush with nothing buffered is not a wait, and must not overwrite the last real one. {@code
      * flush()} runs at every checkpoint barrier, so on a job that dead-letters occasionally almost
      * every call is empty — recording those would erase the slow wait an operator is being told to

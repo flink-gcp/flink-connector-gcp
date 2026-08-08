@@ -62,6 +62,21 @@ final class PubSubDeadLetterQueueMetrics {
     private volatile long flushMillis;
 
     /**
+     * The longest wait this writer has seen, in milliseconds, which is the one {@link #flushMillis}
+     * cannot keep: waits happen as often as the queue drains — once per <em>element</em> under
+     * {@code WRITE_THROUGH} — so a slow one is overwritten long before a reporter reads it (#405).
+     *
+     * <p>Written on the task thread only, so the compare-and-assign in {@link #flushCompleted} is
+     * safe without a CAS; {@code volatile} for the same tearing reason as its sibling.
+     *
+     * <p>It never falls, and its scope is the <b>task attempt</b> rather than the class loader —
+     * this is writer state, unlike the shutdown residue — so a restart starts it over. That is the
+     * right scope for "how bad did it get on this attempt", and it is why a value that stays high
+     * is not a stuck metric.
+     */
+    private volatile long longestFlushMillis;
+
+    /**
      * Registers the queue's metrics.
      *
      * @param metricGroup the host sink writer's metric group
@@ -75,6 +90,9 @@ final class PubSubDeadLetterQueueMetrics {
                 PubSubMetricNames.OUTSTANDING_DEAD_LETTERS, (Gauge<Integer>) outstanding::getAsInt);
         metricGroup.gauge(
                 PubSubMetricNames.DEAD_LETTER_FLUSH_MILLIS, (Gauge<Long>) () -> flushMillis);
+        metricGroup.gauge(
+                PubSubMetricNames.LONGEST_DEAD_LETTER_FLUSH_MILLIS,
+                (Gauge<Long>) () -> longestFlushMillis);
         // The queue's own residue, under a name of its own: this group may already carry the
         // sink's `publisherShutdownsAbandoned`, and Flink resolves a collision by dropping the
         // later registration with a warning rather than by failing.
@@ -99,9 +117,15 @@ final class PubSubDeadLetterQueueMetrics {
      * at every checkpoint barrier, so on a job that dead-letters occasionally those calls would
      * otherwise overwrite the slow wait this exists to show with a zero.
      *
+     * <p>It feeds both duration gauges: the last wait, and the longest one this writer has seen —
+     * which is what survives the next fast wait overwriting the first.
+     *
      * @param millis the elapsed time of the wait
      */
     void flushCompleted(long millis) {
         flushMillis = millis;
+        if (millis > longestFlushMillis) {
+            longestFlushMillis = millis;
+        }
     }
 }
