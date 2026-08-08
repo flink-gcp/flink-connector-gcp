@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0041: The Bigtable sink is implemented — not adopted or vendored — on four checked SDK facts
 
 - Status: Accepted
-- Date: 2026-08-02 (design settled on [#33], which holds the full comparison)
-- Issues: [#33], [#216], [#217], [#232]
+- Date: 2026-08-02 (design settled on [#33], which holds the full comparison), revised by [#236]
+  (2026-08-08)
+- Issues: [#33], [#216], [#217], [#232], [#236]
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md`
 
@@ -58,6 +59,10 @@ rather than assumed:
   nor its mutations. Accepted deliberately: nothing mechanical flags it, since
   `check-flink-api-tiers` audits `org.apache.flink` imports only. If it ever disappears, the
   byte bound and `FailedMutation.getPayloadBytes()`/`getRowKey()` are the call sites to revisit.
+  **Its per-record cost is measured, not assumed** ([#236]): the writer's call is one of four
+  identical constructions per record, three of which are the client's own, and it is immaterial —
+  the Evidence section carries the numbers and their limits. There is no local fix to weigh
+  against them, which is why the knob to reach for is upstream, not here.
 
 Further design decisions of the same cluster:
 
@@ -80,6 +85,146 @@ Further design decisions of the same cluster:
   `BigtableMutateRowsSink` sits beside its facade and `FailedMutation` at the `sink` root (the
   post-[#213] placement rule).
 
+## Evidence
+
+Concerns the fourth SDK fact only — what the writer's per-record `toProto()` costs ([#236]).
+Measured against `google-cloud-bigtable` 2.80.0, `gax` 2.82.0 and `protobuf-java` 4.33.2, the
+versions `libraries-bom` 26.85.1 resolves for this module.
+
+**The writer's call is one of four, and three of the four are the client's own.** Read from the
+sources rather than inferred: `MutateRowsBatchingDescriptor.createResource()` builds the proto
+**twice** — once through `countBytes()`, once for `element.toProto().getMutationsCount()` — and
+gax's `BatcherImpl.add()` calls it on every element; `BulkMutation.add(entry)`, reached from the
+same `add()` through `RequestBuilder`, builds a third, and that one is the request that goes on
+the wire. `BigtableWriter.write()` builds the fourth. So removing the writer's call would cut the
+count by a quarter, not the half the issue assumed.
+
+**The serialization walk in the writer's call is shallow, and it copies nothing.**
+`Mutation.addMutation()` calls `mutation.getSerializedSize()` on every cell as it is added, to
+maintain a running `byteSize`, and protobuf memoizes serialized size per message instance. Those
+child `com.google.bigtable.v2.Mutation` instances are shared by reference into every `Entry`
+built afterwards, so what `getSerializedSize()` does here is read memoized child sizes and sum
+their tag and length prefixes — never re-serialize a payload. The memoization is not assumed
+either: `Mutation.getSerializedSize()`'s bytecode at `protobuf-java` 4.33.2 opens on
+`getfield memoizedSize` and returns early. The construction around it is `ImmutableList.build()`,
+an `Entry.Builder`, `addAllMutations` and `build()`: reference copying.
+
+Measured 2026-08-08 on an Apple aarch64 laptop, OpenJDK 21.0.5, `-Xmx4g` and the JDK 21 default
+collector; five JVM forks, each 4 s warmup then 7 timed iterations of ≥2 s per arm, per-iteration
+medians then the median across forks. Entries are pre-built into a pool so the child protos
+arrive memoized exactly as they do in production. Arms: `build` (constructing the entry, which
+every record pays anyway), `ours` (the writer's line), `client` (the three constructions above),
+and `both`, whose `both − client` is the marginal cost the writer really adds.
+
+| Mutation shape | Entry | `build` | `ours` | `client` | `ours` allocation |
+|---|---|---|---|---|---|
+| 1 cell / 64 B | 88 B | 61.5 ns | **33.0 ns** | 96.0 ns | 176 B |
+| 8 cells / 128 B | 1191 B | 394.3 ns | **154.1 ns** | 351.7 ns | 336 B |
+| 64 cells / 128 B | 9533 B | 2889.2 ns | **912.0 ns** | 1279.1 ns | 1232 B |
+| 1000 cells / 128 B | 149 897 B | 44 034.1 ns | **20 415.0 ns** | 24 438.2 ns | 16 208 B |
+
+- **The writer's line allocates almost exactly a third of what the client's own proto work
+  allocates** — 32.1%, 32.7%, 33.1%, 33.3% across the four shapes — which is the four-versus-three
+  reading confirmed by measurement rather than by reading the same sources twice.
+- **Its allocation is ~16 B per mutation on a ~200 B fixed cost** (the 1-cell case measures
+  176 B): two eight-byte reference copies per mutation, no payload. Note this also rules out the
+  JIT quietly deleting the work — the writer's `Entry` never escapes, so scalar replacement could
+  in principle have elided it and made the arm meaningless; the allocation counter says it did
+  not.
+- **It is ~17% of the writer's in-process per-record path** (`build` + `ours` + `client`) — 17.3%,
+  17.1%, 18.0%, 23.0% across three orders of magnitude. That is an *upper* bound on the share:
+  the real path also carries `awaitCapacity`, the callback allocation, `ApiFutures.addCallback`
+  and the metric updates, none of which are in the denominator. So even with a free service,
+  removing the line would raise a CPU-bound ceiling by at most about a fifth.
+- **Against the service it is noise.** Bigtable publishes up to 14,000 rows per second per SSD
+  node, estimated at 1 KB rows — 71.4 µs of node budget per row. At the measured shape closest to
+  that assumption (8 cells / 128 B, a 1191 B entry), the line costs 154 ns, or **0.22%** of it.
+
+**Verdict: immaterial.** The local code is left alone.
+
+**Why the allocation ratio is a flat third while the time ratio is not.** `ours` takes 34.4%,
+43.8%, 71.3% and 83.5% of `client`'s *time* as the mutation count grows, against a *bytes* ratio
+pinned at a third — which looks like a contradiction and is not. Only constructions allocate, and
+there are three of them in `client` against one in `ours`; but only *one* of the client's three
+walks the size, since `createResource`'s second call reads `getMutationsCount()` and
+`BulkMutation.add` reads nothing. So `ours` is one construction plus a walk while `client` is
+three constructions plus one walk, and the walk grows with the mutation count. A fifth arm
+measured the split directly — `entry.toProto().getMutationsCount()`, construction with no walk,
+three forks:
+
+| Mutation shape | construction | size walk | walk share | construction allocation |
+|---|---|---|---|---|
+| 1 cell / 64 B | 27.1 ns | 3.8 ns | 12.3% | 176 B |
+| 8 cells / 128 B | 95.1 ns | 60.1 ns | 38.7% | 336 B |
+| 64 cells / 128 B | 213.7 ns | 545.3 ns | 71.8% | 1232 B |
+| 1000 cells / 128 B | 2433.1 ns | 16 251.1 ns | 87.0% | 16 208 B |
+
+Two things fall out, and both are checks rather than restatements. The construction arm allocates
+**byte-for-byte** what `ours` does at every shape, so the walk allocates nothing — the shallow-walk
+claim measured rather than argued from the sources. And `3 × construction + 1 walk` predicts the
+independently measured `client` to within 2–11% at every shape (85.1 vs 96.0, 345.4 vs 351.7,
+1186.4 vs 1279.1, 23 551 vs 24 438), which is the whole structural model confirmed by arms that
+share no code path.
+
+**What the measurement is and is not good for.** The allocation figures are exact: `both − client`
+matched `ours` to 0.0% in all twenty fork×shape cells, which is the harness's own validity check.
+The nanosecond figures are not that good — the same check brackets them to roughly ±30% at the
+realistic shapes and worse at 1000 cells, where per-record allocation of 341 KB makes the arm
+GC-bound; that shape is a slope probe and not a workload anything should send. The conclusion
+survives an order of magnitude of error, so ±30% does not threaten it, but a future comparison of
+two candidate *implementations* would need a better harness than this.
+A JVM-configuration change moved every arm by 2–4.5× while leaving every allocation figure
+untouched, which is why the configuration above is stated rather than assumed; a rerun that does
+not reproduce these ratios should suspect its own configuration first. The harness itself is not
+in the repository (it is a one-off decision input, not a regression guard); its source is on the
+[#236] pull request.
+
+**The upstream lever, recorded because it is where a real fix lives.** Two findings in
+`googleapis/google-cloud-java/java-bigtable` — `googleapis/java-bigtable` is archived:
+`createResource()` builds the proto twice where once would do, and `RowMutationEntry` exposes no
+size accessor even though `Mutation` already tracks `byteSize` and `numMutations` as private
+fields. Both are the client's own hot path for every bulk-mutation user, not only this connector.
+Both were re-read on that repository's **`main`** on 2026-08-08, not only in the pinned release,
+so neither is a fix already shipped and waiting on a bump, and both are now filed with a pull
+request each: `googleapis/google-cloud-java#14016` with #14017, and #14018 with #14019.
+
+Implementing the second turned up a **third** defect, filed as #14020 with #14021: `Mutation`
+enforces `MAX_MUTATIONS` and `MAX_BYTE_SIZE` against counters that only `addMutation` maintains,
+while three `fromProto` factories add to the list directly — so mutations wrapped from a proto
+count towards neither. Measured rather than inferred: five wrapped mutations plus `MAX_MUTATIONS`
+added through `setCell` produced 100,005 mutations with no exception. The count is backstopped by
+`RowMutationEntry.toProto()` and `BulkMutation.add`, which re-check the real list size, so it
+surfaces late and as a different exception type; the **byte** limit has no backstop anywhere, and
+that is the half genuinely lost. It reaches this connector only through
+`createFromMutationUnsafe`, which the sink does not use — recorded because it bounds what a future
+serializer may rely on.
+
+Adopting the accessors once a released client has them is [#400], deliberately a separate issue
+from [#236]: the measurement [#236] asked for is finished and its answer was "change nothing
+locally", while adoption waits on three approvals, a release and a BOM bump that are not this
+repository's to give. [#131]'s mechanism — a test pinning the broken behaviour, which fails the
+moment a bump fixes it — does not transfer, because nothing here depends on the missing accessors,
+so no test changes when they arrive.
+
+## Alternatives declined
+
+Concerns the fourth SDK fact only ([#236]); the rest of this ADR's alternatives are on [#33].
+
+- **Dropping the byte bound**, so no size is needed. No: it is the bound that actually bounds
+  memory. A single row mutation can be megabytes, so a count alone bounds nothing — the same
+  argument [#85] settled for Pub/Sub.
+- **Estimating the size** instead of computing it. No: an estimate that is wrong high stalls the
+  writer, and one that is wrong low makes the bound meaningless. A guess is worse than a real
+  number that costs something — and the measurement above says the real number costs 0.22% of a
+  node's per-row budget, so there is nothing to buy.
+- **Caching the proto on the completion callback**, so the failure path does not build a fifth one
+  in `FailedMutation`. No: that doubles retention for every in-flight mutation to save an
+  allocation on a path only failures reach.
+- **Any local fix at all.** There is none to weigh: `RowMutationEntry` exposes neither its key,
+  its mutations nor its size, verified against 2.80.0 with `javap` and re-read on upstream `main`
+  — beyond the mutation builders and the static factories, `toProto()` is its only instance
+  method. This is why the fix is upstream by elimination rather than by preference.
+
 [#33]: https://github.com/laughingman7743/flink-connector-gcp/issues/33
 [#85]: https://github.com/laughingman7743/flink-connector-gcp/issues/85
 [#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
@@ -87,3 +232,6 @@ Further design decisions of the same cluster:
 [#216]: https://github.com/laughingman7743/flink-connector-gcp/issues/216
 [#217]: https://github.com/laughingman7743/flink-connector-gcp/issues/217
 [#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
+[#131]: https://github.com/laughingman7743/flink-connector-gcp/issues/131
+[#236]: https://github.com/laughingman7743/flink-connector-gcp/issues/236
+[#400]: https://github.com/laughingman7743/flink-connector-gcp/issues/400

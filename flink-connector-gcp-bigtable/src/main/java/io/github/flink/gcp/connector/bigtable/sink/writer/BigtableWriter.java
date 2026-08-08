@@ -251,7 +251,9 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             return;
         }
         // Not memoized by the entry, which builds a fresh proto per call, so it is taken once here
-        // and carried by the callback: it is both the byte counter's unit and the metric's.
+        // and carried by the callback: it is both the byte counter's unit and the metric's. What
+        // that construction costs, and that no local route avoids it, are measured in ADR-0041 —
+        // read those numbers before treating this line as an optimisation target.
         int serializedSize = entry.toProto().getSerializedSize();
         awaitCapacity();
         submit(entry, serializedSize, true, false);
