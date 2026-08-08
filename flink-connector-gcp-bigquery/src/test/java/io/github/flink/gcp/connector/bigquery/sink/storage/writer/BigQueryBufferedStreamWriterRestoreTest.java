@@ -221,10 +221,12 @@ class BigQueryBufferedStreamWriterRestoreTest {
 
     @Test
     void terminalProbeFailurePropagates() {
+        // INVALID_ARGUMENT, not PERMISSION_DENIED: the latter is a missing-table verdict elsewhere
+        // in this module, so it is no longer an unambiguous terminal example anywhere here.
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         service.appendResults.add(
                 FakeBufferedStreamService.failure(
-                        new StatusRuntimeException(Status.PERMISSION_DENIED)));
+                        new StatusRuntimeException(Status.INVALID_ARGUMENT)));
         BigQueryBufferedStreamWriter<String> writer =
                 writer(
                         config(),

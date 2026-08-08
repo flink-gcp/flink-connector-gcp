@@ -51,7 +51,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * generated row exactly once afterwards.
  *
  * <p>Destination tables are created up front (and deleted afterwards) so the tests exercise the
- * write path, not table-metadata propagation; auto-creation is covered by unit and emulator tests.
+ * write path, not table-metadata propagation. Auto-creation on this write path — and what the
+ * service answers for a table that is not there — is {@code
+ * BigQueryBufferedStreamMissingTableITCase}, which exists because this pre-creation left the
+ * question unasked.
  *
  * <p>Skipped unless {@code BQ_IT_PROJECT} and {@code BQ_IT_DATASET} are set (no bucket needed —
  * nothing is staged).

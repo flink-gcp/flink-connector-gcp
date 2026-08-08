@@ -42,6 +42,7 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -459,6 +460,90 @@ class BigQueryBufferedStreamWriterTest {
                         })
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Failed to create a BigQuery buffered stream");
+    }
+
+    @Test
+    void createsTheTableOnTheMaskedPermissionDeniedTheServiceAnswers() throws Exception {
+        // NOT_FOUND is the emulator's answer. CreateWriteStream against a table that is not there
+        // answers PERMISSION_DENIED on the real service, so without the wide verdict auto-creation
+        // on this path would fire nowhere but the emulator.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.createFailures.add(maskedAsPermissionDenied("TABLES_GET"));
+        List<TableDestination> created = new ArrayList<>();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(config(), fastOptions(3), service, recordingAdmin(created));
+
+        writer.write("a", CONTEXT);
+        writer.flush(false);
+
+        assertThat(created).containsExactly(DESTINATION);
+        assertThat(service.createdStreams).hasSize(1);
+        // As in the NOT_FOUND twin: the recovered stream must still carry the pending batch.
+        assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
+    }
+
+    @Test
+    void waitsOutTheSameMaskingWhileTheCreatedTablePropagates() throws Exception {
+        // The propagation window right after creation masks the same way, naming a different
+        // permission. createStream's post-creation clause has to take the wide verdict too, or the
+        // writer creates the table and then fails on the very next CreateWriteStream.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.createFailures.add(maskedAsPermissionDenied("TABLES_GET"));
+        service.createFailures.add(maskedAsPermissionDenied("TABLES_UPDATE_DATA"));
+        List<TableDestination> created = new ArrayList<>();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(config(), fastOptions(3), service, recordingAdmin(created));
+
+        writer.write("a", CONTEXT);
+        writer.flush(false);
+
+        // Created once — the guard holds across the retry — and the third attempt opened a stream.
+        assertThat(created).containsExactly(DESTINATION);
+        assertThat(service.createdStreams).hasSize(1);
+        assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
+    }
+
+    @Test
+    void failsOnTheMaskedPermissionDeniedUnderCreateNever() {
+        // The disposition is what authorises creation; the wider verdict must not slip past it.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.createFailures.add(maskedAsPermissionDenied("TABLES_GET"));
+        List<TableDestination> created = new ArrayList<>();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), null, CreateDisposition.CREATE_NEVER),
+                        fastOptions(3),
+                        service,
+                        recordingAdmin(created));
+
+        assertThatThrownBy(
+                        () -> {
+                            writer.write("a", CONTEXT);
+                            writer.flush(false);
+                        })
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Failed to create a BigQuery buffered stream");
+        assertThat(created).isEmpty();
+    }
+
+    /** The failure real BigQuery masks a missing table behind, naming the given permission. */
+    private static StatusRuntimeException maskedAsPermissionDenied(String permission) {
+        return new StatusRuntimeException(
+                Status.PERMISSION_DENIED.withDescription(
+                        "Permission '"
+                                + permission
+                                + "' denied on resource"
+                                + " 'projects/p/datasets/d/tables/t' (or it may not exist)."));
+    }
+
+    private static TableAdmin recordingAdmin(List<TableDestination> created) {
+        return new BigQueryDefaultStreamWriterTest.NoopTableAdmin() {
+            @Override
+            public void create(
+                    TableDestination destination, TableSchema schema, TableCreateOptions options) {
+                created.add(destination);
+            }
+        };
     }
 
     @Test

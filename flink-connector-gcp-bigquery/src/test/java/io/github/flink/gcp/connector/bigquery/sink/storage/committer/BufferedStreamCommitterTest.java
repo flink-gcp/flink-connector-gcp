@@ -23,10 +23,12 @@ import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.StorageError;
 import com.google.protobuf.Any;
+import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.FakeBufferedStreamService;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -88,6 +90,11 @@ class BufferedStreamCommitterTest {
     }
 
     private static BufferedStreamCommitter committer(FakeBufferedStreamService service) {
+        return committer(service, CreateDisposition.CREATE_IF_NEEDED);
+    }
+
+    private static BufferedStreamCommitter committer(
+            FakeBufferedStreamService service, CreateDisposition createDisposition) {
         return new BufferedStreamCommitter(
                 service.asFactory(),
                 null,
@@ -95,7 +102,18 @@ class BufferedStreamCommitterTest {
                         .recoveryInitialBackoff(Duration.ofMillis(1))
                         .recoveryMaxBackoff(Duration.ofMillis(1))
                         .recoveryMaxAttempts(3)
-                        .build());
+                        .build(),
+                createDisposition);
+    }
+
+    /** The failure real BigQuery masks a missing table behind, naming the given permission. */
+    private static StatusRuntimeException maskedAsPermissionDenied(String permission) {
+        return new StatusRuntimeException(
+                Status.PERMISSION_DENIED.withDescription(
+                        "Permission '"
+                                + permission
+                                + "' denied on resource"
+                                + " 'projects/p/datasets/d/tables/t' (or it may not exist)."));
     }
 
     @Test
@@ -201,10 +219,12 @@ class BufferedStreamCommitterTest {
 
     @Test
     void flushFailurePropagatesAsIOException() {
+        // INVALID_ARGUMENT, not PERMISSION_DENIED: the latter is no longer unambiguously terminal
+        // here, because the service masks a table that has not propagated behind it.
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         service.flushResults.add(
                 ApiExceptionFactory.createException(
-                        null, GrpcStatusCode.of(Status.Code.PERMISSION_DENIED), false));
+                        null, GrpcStatusCode.of(Status.Code.INVALID_ARGUMENT), false));
         BufferedStreamCommitter committer = committer(service);
 
         assertThatThrownBy(
@@ -213,6 +233,79 @@ class BufferedStreamCommitterTest {
                                         requests(new BufferedStreamCommittable(STREAM, 41, 0))))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Failed to flush BigQuery stream");
+        assertThat(service.flushes).hasSize(1);
+    }
+
+    @Test
+    void theMaskedPermissionDeniedIsWaitedOutUnderCreateIfNeeded() throws Exception {
+        // The propagation window after the writer auto-creates a table reaches FlushRows too, and
+        // it masks exactly as CreateWriteStream did. Without this the first commit of a job that
+        // created its own table fails the checkpoint — measured once in five runs, 2026-08-08.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.flushResults.add(maskedAsPermissionDenied("TABLES_UPDATE_DATA"));
+        BufferedStreamCommitter committer = committer(service);
+
+        committer.commit(requests(new BufferedStreamCommittable(STREAM, 41, 0)));
+
+        assertThat(service.flushes).hasSize(2);
+        assertThat(service.flushes.get(1).offset).isEqualTo(41);
+    }
+
+    @Test
+    void aNotFoundStaysTerminalEvenUnderCreateIfNeeded() {
+        // The committer's verdict is deliberately narrower than the writers': FlushRows names a
+        // write stream, and a stream aged out of its seven-day TTL answers permanently. Taking the
+        // writers' whole isMissingTable here would spend the recovery budget — serially, per
+        // committable — on a failure that cannot succeed.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.flushResults.add(
+                ApiExceptionFactory.createException(
+                        null, GrpcStatusCode.of(Status.Code.NOT_FOUND), false));
+        BufferedStreamCommitter committer = committer(service);
+
+        assertThatThrownBy(
+                        () ->
+                                committer.commit(
+                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Failed to flush BigQuery stream");
+        assertThat(service.flushes).hasSize(1);
+    }
+
+    @Test
+    void theMaskedPermissionDeniedIsTerminalUnderCreateNever() {
+        // Nothing in a CREATE_NEVER job creates a table, so the same code can only be a genuine
+        // denial or a table that disappeared. Failing at once beats spending the budget first.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.flushResults.add(maskedAsPermissionDenied("TABLES_UPDATE_DATA"));
+        BufferedStreamCommitter committer = committer(service, CreateDisposition.CREATE_NEVER);
+
+        assertThatThrownBy(
+                        () ->
+                                committer.commit(
+                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Failed to flush BigQuery stream");
+        assertThat(service.flushes).hasSize(1);
+    }
+
+    @Test
+    void anUnendingPropagationWindowStillExhaustsTheBudget() {
+        // The allowance is bounded by the same recovery schedule the transient one is: a genuine
+        // denial under CREATE_IF_NEEDED surfaces late, never not at all.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        for (int i = 0; i < 5; i++) {
+            service.flushResults.add(maskedAsPermissionDenied("TABLES_UPDATE_DATA"));
+        }
+        BufferedStreamCommitter committer = committer(service);
+
+        assertThatThrownBy(
+                        () ->
+                                committer.commit(
+                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("retry budget is exhausted");
+        assertThat(service.flushes).hasSize(3);
     }
 
     @Test

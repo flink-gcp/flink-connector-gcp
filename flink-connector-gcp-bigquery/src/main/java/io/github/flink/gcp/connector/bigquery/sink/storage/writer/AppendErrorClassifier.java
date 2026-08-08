@@ -53,15 +53,16 @@ import java.util.Set;
  *   <li>{@link Kind#TERMINAL} — everything else ({@code INVALID_ARGUMENT}, {@code
  *       PERMISSION_DENIED}, {@code NOT_FOUND}, failures without any status code, ...): retrying
  *       cannot help, the failure must surface and fail the checkpoint. {@code NOT_FOUND} and {@code
- *       PERMISSION_DENIED} are classified terminal here; the writers intercept them beforehand
- *       through {@link #isMissingTable} when table auto-creation applies.
+ *       PERMISSION_DENIED} are classified terminal here; callers intercept them beforehand through
+ *       {@link #isMissingTable} or {@link #isExistenceMasked} when table auto-creation applies.
  * </ul>
  *
- * <p>Orthogonal to the classes above, {@link #isSchemaMismatch}, {@link #requiresWriterRefresh} and
- * {@link #isMissingTable} detect failures the writer intercepts before classification: schema
- * mismatches (repaired by a schema update when enabled), stale-stream-writer failures (repaired by
- * rebuilding the destination's writer) and a destination table that is not there (repaired by
- * creating it, when the disposition allows).
+ * <p>Orthogonal to the classes above, {@link #isSchemaMismatch}, {@link #requiresWriterRefresh},
+ * {@link #isMissingTable} and {@link #isExistenceMasked} detect failures a caller intercepts before
+ * classification: schema mismatches (repaired by a schema update when enabled), stale-stream-writer
+ * failures (repaired by rebuilding the destination's writer) and a destination table that is not
+ * there — which the writers repair by creating it and the committer, holding the narrower verdict,
+ * waits out.
  */
 @Internal
 public final class AppendErrorClassifier {
@@ -148,25 +149,31 @@ public final class AppendErrorClassifier {
     /**
      * Returns whether the failure may mean the destination table is not there — the signal both
      * storage writers repair by creating it under {@link
-     * io.github.flink.gcp.connector.bigquery.sink.CreateDisposition#CREATE_IF_NEEDED}.
+     * io.github.flink.gcp.connector.bigquery.sink.CreateDisposition#CREATE_IF_NEEDED}, and the
+     * committer waits out while a just-created table propagates.
      *
-     * <p>Two status codes, and the second is a measurement rather than a precaution. Opening a
-     * Storage Write API stream against a table that does not exist does <b>not</b> answer {@code
-     * NOT_FOUND} on the real service: it answers {@code PERMISSION_DENIED}, "Permission
-     * 'TABLES_GET' denied on resource '&lt;table&gt;' (or it may not exist)" — existence masked, as
-     * an API that must not let an unauthorised caller probe for table names has to. Measured
-     * 2026-08-06 against bigquery.googleapis.com with credentials the REST API answers "Not found"
-     * for on the same table, so the permission was present and only the table was missing. The
-     * goccy emulator answers {@code NOT_FOUND} (and {@code UNKNOWN} on the default stream), which
-     * is why every emulator test passed while auto-creation had never once fired against the
-     * service.
+     * <p>Two status codes, and the second is a measurement rather than a precaution. Reaching a
+     * table that does not exist does <b>not</b> answer {@code NOT_FOUND} on the real service: it
+     * answers {@code PERMISSION_DENIED}, "Permission '&lt;permission&gt;' denied on resource
+     * '&lt;table&gt;' (or it may not exist)" — existence masked, as an API that must not let an
+     * unauthorised caller probe for table names has to. Three observations, and no rule connects
+     * them: a default-stream append against an absent table said {@code TABLES_GET}, the
+     * propagation window after that writer created the table said {@code TABLES_UPDATE_DATA} (both
+     * 2026-08-06), and {@code CreateWriteStream} against an absent table said {@code
+     * TABLES_UPDATE_DATA} (2026-08-08) — so the permission tracks neither the RPC nor whether the
+     * table is absent, and is not something to match on. All were measured with credentials the
+     * REST API answers "Not found" for on the same table, so the permission was present and only
+     * the table was missing. The goccy emulator answers {@code NOT_FOUND} (and {@code UNKNOWN} on
+     * both the default stream and {@code CreateWriteStream}), which is why every emulator test
+     * passed while auto-creation had never once fired against the service.
      *
      * <p>Status codes rather than the message text: the "(or it may not exist)" wording is the
-     * service's prose and nothing pins it. What the wider rule costs is one table-creation attempt
-     * when the caller really does lack the permission — and that attempt fails naming {@code
-     * bigquery.tables.create}, which tells a reader more than the masked {@code TABLES_GET} did.
-     * Both call sites apply this only under {@code CREATE_IF_NEEDED} and only once per repair, so
-     * the cost is bounded at one wasted REST call.
+     * service's prose and nothing pins it, and the permission it names has now been seen to differ
+     * for the same question. What the wider rule costs is one table-creation attempt when the
+     * caller really does lack the permission — and that attempt fails naming {@code
+     * bigquery.tables.create}, which tells a reader more than the masked permission did. The
+     * writers apply this only under {@code CREATE_IF_NEEDED} and only once per repair, so the cost
+     * there is bounded at one wasted REST call.
      *
      * <p>A failure that names rows is excluded: the SDK copies the response's status code onto a
      * row-detailed exception, so rows plus a code is a verdict about the data, not about the
@@ -178,10 +185,35 @@ public final class AppendErrorClassifier {
      * @return whether the destination table may not exist
      */
     static boolean isMissingTable(Throwable t) {
-        if (findRowLevel(t).isPresent()) {
-            return false;
-        }
-        return hasCode(t, Status.Code.NOT_FOUND) || hasCode(t, Status.Code.PERMISSION_DENIED);
+        return isExistenceMasked(t)
+                || (findRowLevel(t).isEmpty() && hasCode(t, Status.Code.NOT_FOUND));
+    }
+
+    /**
+     * Returns whether the failure is the <em>masked</em> half of {@code isMissingTable} alone: the
+     * {@code PERMISSION_DENIED} the service answers rather than admit a resource is not there.
+     *
+     * <p>It exists for the committer, which must not take the whole verdict, and the reason is the
+     * discipline this classifier's own history teaches rather than a second measurement: <b>widen
+     * only what was observed</b>. Every recorded observation of a table the service will not
+     * confirm is the masked code; {@code NOT_FOUND} is in the wide verdict for the emulator, which
+     * answers it, and for the writers, which recovered on it before any of this was measured.
+     * Extending a commit-time allowance to a code the real service has never been seen to answer
+     * for this condition would be the same unbacked inference that made the wide verdict necessary
+     * — this time in the direction that spends a recovery budget per committable rather than one
+     * that saves a job.
+     *
+     * <p>What sits in that direction, unmeasured, is the reason not to guess: {@code FlushRows}
+     * targets a write stream, streams age out on a seven-day TTL, and a missing stream is terminal
+     * mid-run — but what expiry answers is undocumented and unmeasured here, and a gone stream is
+     * recognised elsewhere in this class by a {@code StorageError} rather than by a status code.
+     * That is an argument for not widening, not a claim about what expiry returns.
+     *
+     * @param t the failure
+     * @return whether the failure is the masked-existence code
+     */
+    public static boolean isExistenceMasked(Throwable t) {
+        return findRowLevel(t).isEmpty() && hasCode(t, Status.Code.PERMISSION_DENIED);
     }
 
     /**
