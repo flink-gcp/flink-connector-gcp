@@ -126,7 +126,7 @@ completes.
 
 ### File loads
 
-Rows are staged as Avro files on Cloud Storage and loaded with BigQuery load jobs, which is free of
+Rows are staged as files on Cloud Storage — Avro by default — and loaded with BigQuery load jobs, which is free of
 streaming-insert cost and exactly-once in both execution modes.
 
 ```java

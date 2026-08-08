@@ -33,6 +33,8 @@ import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -40,10 +42,17 @@ import org.apache.avro.file.DataFileReader;
 import org.apache.avro.file.SeekableByteArrayInput;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
+import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import org.apache.parquet.io.DelegatingSeekableInputStream;
+import org.apache.parquet.io.InputFile;
+import org.apache.parquet.io.SeekableInputStream;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -73,6 +82,26 @@ class FileLoadsWriterTest {
                             TableFieldSchema.newBuilder()
                                     .setName("amount")
                                     .setType(TableFieldSchema.Type.NUMERIC)
+                                    .setMode(TableFieldSchema.Mode.NULLABLE))
+                    .build();
+
+    /** The same shape plus a REPEATED column, whose Parquet encoding is the silent failure. */
+    private static final TableSchema SCHEMA_WITH_REPEATED =
+            SCHEMA.toBuilder()
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("tags")
+                                    .setType(TableFieldSchema.Type.STRING)
+                                    .setMode(TableFieldSchema.Mode.REPEATED))
+                    .build();
+
+    /** The same shape plus a JSON column, which a Parquet load job refuses outright. */
+    private static final TableSchema SCHEMA_WITH_JSON =
+            SCHEMA.toBuilder()
+                    .addFields(
+                            TableFieldSchema.newBuilder()
+                                    .setName("doc")
+                                    .setType(TableFieldSchema.Type.JSON)
                                     .setMode(TableFieldSchema.Mode.NULLABLE))
                     .build();
 
@@ -108,11 +137,16 @@ class FileLoadsWriterTest {
     private static final class TestRowSerializer extends BigQueryProtoSerializer<TestRow> {
         private static final long serialVersionUID = 1L;
 
+        private final TableSchema schema;
         private transient Descriptors.Descriptor descriptor;
+
+        TestRowSerializer(TableSchema schema) {
+            this.schema = schema;
+        }
 
         @Override
         public TableSchema getTableSchema(TableDestination destination) {
-            return SCHEMA;
+            return schema;
         }
 
         @Override
@@ -125,7 +159,7 @@ class FileLoadsWriterTest {
                 try {
                     descriptor =
                             BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                                    SCHEMA);
+                                    schema);
                 } catch (Descriptors.DescriptorValidationException e) {
                     throw new IllegalStateException(e);
                 }
@@ -198,6 +232,11 @@ class FileLoadsWriterTest {
     }
 
     static BigQuerySinkConfig<TestRow> config(FailureHandler<FailedRow> handler) {
+        return config(handler, SCHEMA);
+    }
+
+    static BigQuerySinkConfig<TestRow> config(
+            FailureHandler<FailedRow> handler, TableSchema schema) {
         BigQueryFileLoadsSink<TestRow> sink =
                 (BigQueryFileLoadsSink<TestRow>)
                         BigQuerySink.<TestRow>builder()
@@ -205,7 +244,7 @@ class FileLoadsWriterTest {
                                 .destinationResolver(
                                         (element, context) ->
                                                 TableDestination.of("p", "d", element.table))
-                                .serializer(new TestRowSerializer())
+                                .serializer(new TestRowSerializer(schema))
                                 .failedRowHandler(handler)
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()
@@ -213,6 +252,18 @@ class FileLoadsWriterTest {
                                                 .build())
                                 .build();
         return sink.getConfig();
+    }
+
+    private static FileLoadsWriter<TestRow> writer(
+            BigQuerySinkConfig<TestRow> config, StagingStorage storage, FileLoadsOptions options) {
+        return new FileLoadsWriter<>(
+                config,
+                options,
+                storage,
+                TestSinkWriterMetricGroup.create(),
+                "0123456789abcdef0123456789abcdef",
+                3,
+                1);
     }
 
     private static FileLoadsWriter<TestRow> writer(
@@ -238,6 +289,203 @@ class FileLoadsWriterTest {
             reader.forEach(records::add);
         }
         return records;
+    }
+
+    @Test
+    void stagesParquetWhenTheFormatSelectsIt() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        parquetOptions(ParquetCompression.ZSTD));
+
+        writer.write(new TestRow("t", "a", 1L), CONTEXT);
+        writer.write(new TestRow("t", "b", 2L), CONTEXT);
+        FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
+        writer.close();
+
+        assertThat(committable.getFormat()).isEqualTo(StagingFormat.PARQUET);
+        assertThat(committable.getUri()).endsWith(".parquet");
+        assertThat(committable.getRowCount()).isEqualTo(2);
+        // The container's own magic at both ends. Asserting the committable alone would pass on a
+        // writer that stamped PARQUET and wrote an Avro file; the load job would then fail on the
+        // service, which is the slowest possible place to find out.
+        byte[] staged = storage.getObjects().get(committable.getUri());
+        assertThat(new String(staged, 0, 4, StandardCharsets.US_ASCII)).isEqualTo("PAR1");
+        assertThat(codecOf(staged)).isEqualTo(CompressionCodecName.ZSTD);
+        assertThat(committable.getByteCount()).isEqualTo(staged.length);
+    }
+
+    @Test
+    void stagesUncompressedParquetWhenTheCodecSelectsIt() throws Exception {
+        // The Hadoop-free configuration. It has to be exercised because it takes a different
+        // branch through parquet-hadoop's CodecFactory — the one that does not resolve a codec.
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        parquetOptions(ParquetCompression.NONE));
+
+        writer.write(new TestRow("t", "a", 1L), CONTEXT);
+        FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
+        writer.close();
+
+        assertThat(committable.getFormat()).isEqualTo(StagingFormat.PARQUET);
+        // The codec out of the footer, not the magic bytes: every codec writes PAR1, so magic
+        // alone would pass on a writer that quietly compressed — which is the difference between
+        // needing a Hadoop runtime and not.
+        assertThat(codecOf(storage.getObjects().get(committable.getUri())))
+                .isEqualTo(CompressionCodecName.UNCOMPRESSED);
+    }
+
+    @Test
+    void stagesAvroForADestinationWhoseSchemaNamesAJsonColumn() throws Exception {
+        // Not a preference: a PARQUET load job is refused whenever the provided schema names a
+        // JSON column, whatever the file holds, so a Parquet file here could never be loaded.
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                new FileLoadsWriter<>(
+                        config(FailureHandler.failJob(), SCHEMA_WITH_JSON),
+                        parquetOptions(ParquetCompression.ZSTD),
+                        storage,
+                        TestSinkWriterMetricGroup.create(),
+                        "0123456789abcdef0123456789abcdef",
+                        3,
+                        1);
+
+        writer.write(new TestRow("t", "a", 1L), CONTEXT);
+        FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
+        writer.close();
+
+        assertThat(committable.getFormat()).isEqualTo(StagingFormat.AVRO);
+        assertThat(committable.getUri()).endsWith(".avro");
+    }
+
+    @Test
+    void parquetCarriesAThreeLevelListSoRepeatedColumnsSurviveTheLoad() throws Exception {
+        // The one silent failure this format has. parquet-avro's legacy default is a two-level
+        // list, which BigQuery's enableListInference does not recognise — a REPEATED column then
+        // loads as an empty array and the job reports success. Read back rather than assumed.
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                new FileLoadsWriter<>(
+                        config(FailureHandler.failJob(), SCHEMA_WITH_REPEATED),
+                        parquetOptions(ParquetCompression.ZSTD),
+                        storage,
+                        TestSinkWriterMetricGroup.create(),
+                        "0123456789abcdef0123456789abcdef",
+                        3,
+                        1);
+
+        writer.write(new TestRow("t", "a", 1L), CONTEXT);
+        FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
+        writer.close();
+
+        byte[] staged = storage.getObjects().get(committable.getUri());
+        try (ParquetFileReader reader = ParquetFileReader.open(new BytesInputFile(staged))) {
+            String schema = reader.getFooter().getFileMetaData().getSchema().toString();
+            assertThat(schema).contains("group tags (LIST)").contains("repeated group list");
+        }
+    }
+
+    @Test
+    void parquetRollsAtTheThresholdRatherThanRunningToEndOfInput() throws Exception {
+        // Parquet buffers a whole row group before anything reaches the stream, so the row-group
+        // size has to come from the roll threshold. Left at Parquet's own 128 MiB default the
+        // written byte count stays at zero and this produces one file however much is written.
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .stagingFormat(StagingFormat.PARQUET)
+                                // Not 1: Parquet writes its magic on open, so a 1-byte threshold
+                                // rolls immediately whatever the row-group size is, and would pass
+                                // on a writer that never flushed a row group at all.
+                                .maxStagingFileBytes(8 * 1024)
+                                .build());
+
+        for (int i = 0; i < 20_000; i++) {
+            writer.write(new TestRow("t", "row-" + i, (long) i), CONTEXT);
+        }
+        Collection<FileLoadsCommittable> committables = writer.prepareCommit();
+        writer.close();
+
+        assertThat(committables).hasSizeGreaterThan(1);
+        assertThat(committables).allSatisfy(c -> assertThat(c.getUri()).endsWith(".parquet"));
+    }
+
+    private static CompressionCodecName codecOf(byte[] staged) throws IOException {
+        try (ParquetFileReader reader = ParquetFileReader.open(new BytesInputFile(staged))) {
+            return reader.getFooter().getBlocks().get(0).getColumns().get(0).getCodec();
+        }
+    }
+
+    /** Parquet input over a byte array: the read side of the no-filesystem argument. */
+    private static final class BytesInputFile implements InputFile {
+
+        private final byte[] bytes;
+
+        BytesInputFile(byte[] bytes) {
+            this.bytes = bytes;
+        }
+
+        @Override
+        public long getLength() {
+            return bytes.length;
+        }
+
+        @Override
+        public SeekableInputStream newStream() {
+            return new DelegatingSeekableInputStream(new ByteArrayInputStream(bytes)) {
+                private long pos;
+
+                @Override
+                public long getPos() {
+                    return pos;
+                }
+
+                @Override
+                public void seek(long newPos) throws IOException {
+                    getStream().reset();
+                    long skipped = getStream().skip(newPos);
+                    if (skipped != newPos) {
+                        throw new IOException("Short seek: " + skipped + " of " + newPos);
+                    }
+                    pos = newPos;
+                }
+
+                @Override
+                public int read() throws IOException {
+                    int b = getStream().read();
+                    if (b >= 0) {
+                        pos++;
+                    }
+                    return b;
+                }
+
+                @Override
+                public int read(byte[] b, int off, int len) throws IOException {
+                    int n = getStream().read(b, off, len);
+                    if (n > 0) {
+                        pos += n;
+                    }
+                    return n;
+                }
+            };
+        }
+    }
+
+    private static FileLoadsOptions parquetOptions(ParquetCompression compression) {
+        return FileLoadsOptions.builder()
+                .stagingPath("gs://bucket/prefix")
+                .stagingFormat(StagingFormat.PARQUET)
+                .parquetCompression(compression)
+                .build();
     }
 
     @Test

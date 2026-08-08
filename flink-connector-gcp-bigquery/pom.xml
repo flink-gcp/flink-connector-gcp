@@ -130,6 +130,75 @@ limitations under the License.
             <groupId>org.apache.avro</groupId>
             <artifactId>avro</artifactId>
         </dependency>
+        <!--
+            What a deployment must add beside hadoop-common for a COMPRESSED Parquet staging file,
+            measured by adding them back one at a time until the writer ran. Test scope, because
+            the connector needs none of it unless the user selects Parquet with a codec — and
+            keeping the list here means the test classpath is the demonstration of that minimum
+            rather than prose that can go stale.
+        -->
+        <dependency>
+            <!-- Reading a Parquet file needs more Hadoop than writing one: ParquetFileReader.open
+                 reaches ParquetInputFormat, which extends Hadoop's FileInputFormat. Test scope
+                 only — the connector never reads what it stages — and it buys the assertion that
+                 the staged schema carries a three-level LIST, whose absence would load every
+                 REPEATED column as an empty array with no error. -->
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-mapreduce-client-core</artifactId>
+            <version>${hadoop.version}</version>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop.thirdparty</groupId>
+            <artifactId>hadoop-shaded-guava</artifactId>
+            <version>1.3.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>commons-collections</groupId>
+            <artifactId>commons-collections</artifactId>
+            <version>3.2.2</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-configuration2</artifactId>
+            <version>2.10.1</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The optional Parquet staging path (#284), NOT shipped. `provided` because a
+                 deployment that selects StagingFormat.PARQUET supplies it, and every other
+                 deployment should not carry it: parquet-avro pulls the parquet family and, for any
+                 compression at all, a Hadoop runtime. FileLoadsOptions.build() probes for both on
+                 the client so a missing one fails at graph construction with the artifact named,
+                 rather than on a TaskManager when the first staging file is opened. -->
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-avro</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- Compile-only, and not because the connector calls Hadoop: AvroParquetWriter's own
+                 imports name org.apache.hadoop.conf.Configuration and org.apache.hadoop.fs.Path,
+                 so javac needs them to resolve the builder's overloads. At run time only
+                 ParquetCompression.NONE avoids Hadoop — every codec in parquet-hadoop resolves
+                 through Hadoop's CompressionCodec SPI (measured). -->
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-common</artifactId>
+            <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
         <dependency>
             <!-- The zstd codec FILE_LOADS stages with. Avro declares this `optional`, so nothing
                  brings it transitively and a missing declaration would surface as a

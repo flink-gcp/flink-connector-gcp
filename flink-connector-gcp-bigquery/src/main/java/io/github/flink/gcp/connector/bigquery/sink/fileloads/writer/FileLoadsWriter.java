@@ -21,6 +21,7 @@ import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
+import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
@@ -32,6 +33,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -88,6 +90,8 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
     private final String pathPrefix;
     private final String filePrefix;
     private final long maxStagingFileBytes;
+    private final StagingFormat stagingFormat;
+    private final ParquetCompression parquetCompression;
     private final FileLoadsWriterMetrics metrics;
 
     private final Map<TableDestination, DestinationState> destinations = new HashMap<>();
@@ -123,6 +127,8 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                         + "-"
                         + UUID.randomUUID().toString().substring(0, 8);
         this.maxStagingFileBytes = options.getMaxStagingFileBytes();
+        this.stagingFormat = options.getStagingFormat();
+        this.parquetCompression = options.getParquetCompression();
         this.metrics = new FileLoadsWriterMetrics(metricGroup, options.isPerDestinationMetrics());
         // The map is the task thread's; a reporter thread sampling it can see a size mid-update,
         // which is what "best-effort" means for a gauge over live writer state.
@@ -260,7 +266,8 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                     new DestinationState(
                             descriptor,
                             avroSchema,
-                            new ProtoToAvroConverter(tableSchema, descriptor, avroSchema));
+                            new ProtoToAvroConverter(tableSchema, descriptor, avroSchema),
+                            formatFor(destination, tableSchema));
             destinations.put(destination, state);
         }
         return state;
@@ -276,9 +283,53 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
                         + filePrefix
                         + "-"
                         + state.fileSequence++
-                        + StagingFormat.AVRO.getExtension();
-        return new StagedFileWriter(
-                flinkJobId, destination, uri, state.avroSchema, storage.createObject(uri));
+                        + state.format.getExtension();
+        return StagedFileWriter.open(
+                state.format,
+                parquetCompression,
+                flinkJobId,
+                destination,
+                uri,
+                state.avroSchema,
+                storage.createObject(uri),
+                maxStagingFileBytes);
+    }
+
+    /**
+     * The format this destination stages in: the configured one, unless its schema names a {@code
+     * JSON} column.
+     *
+     * <p>The fallback is a correctness override rather than a preference. A {@code PARQUET} load is
+     * refused at <em>job-configuration</em> level whenever the provided schema names a {@code JSON}
+     * column — whatever the file holds — so a Parquet file for such a destination could never be
+     * loaded at all. Deciding here, where the destination's schema is first resolved, is the only
+     * place that works: with a per-record destination resolver the full set of schemas is not known
+     * when the job graph is built.
+     *
+     * <p>Logged once per destination, because a user who asked for Parquet and silently got Avro
+     * for one table has no other way to find out.
+     */
+    private StagingFormat formatFor(TableDestination destination, TableSchema tableSchema) {
+        if (stagingFormat != StagingFormat.PARQUET || !hasJsonColumn(tableSchema.getFieldsList())) {
+            return stagingFormat;
+        }
+        LOG.info(
+                "Staging {} as Avro rather than Parquet: its schema names a JSON column, which a"
+                        + " Parquet load job rejects whatever the file contains.",
+                destination);
+        return StagingFormat.AVRO;
+    }
+
+    private static boolean hasJsonColumn(List<TableFieldSchema> fields) {
+        for (TableFieldSchema field : fields) {
+            if (field.getType() == TableFieldSchema.Type.JSON) {
+                return true;
+            }
+            if (hasJsonColumn(field.getFieldsList())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Per-destination conversion state and the currently open file, if any. */
@@ -287,16 +338,19 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
         private final Descriptors.Descriptor descriptor;
         private final Schema avroSchema;
         private final ProtoToAvroConverter converter;
+        private final StagingFormat format;
         private StagedFileWriter file;
         private int fileSequence;
 
         DestinationState(
                 Descriptors.Descriptor descriptor,
                 Schema avroSchema,
-                ProtoToAvroConverter converter) {
+                ProtoToAvroConverter converter,
+                StagingFormat format) {
             this.descriptor = descriptor;
             this.avroSchema = avroSchema;
             this.converter = converter;
+            this.format = format;
         }
     }
 }

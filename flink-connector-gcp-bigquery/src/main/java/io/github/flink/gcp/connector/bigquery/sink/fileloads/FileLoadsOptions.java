@@ -118,11 +118,19 @@ public final class FileLoadsOptions implements Serializable {
      */
     public static final long DEFAULT_MAX_STAGING_FILE_BYTES = 16L * 1024 * 1024;
 
+    /** Default for {@link Builder#stagingFormat(StagingFormat)}. */
+    public static final StagingFormat DEFAULT_STAGING_FORMAT = StagingFormat.AVRO;
+
+    /** Default for {@link Builder#parquetCompression(ParquetCompression)}. */
+    public static final ParquetCompression DEFAULT_PARQUET_COMPRESSION = ParquetCompression.ZSTD;
+
     private final String stagingPath;
     @Nullable private final String tempDataset;
     private final WriteDisposition writeDisposition;
     private final Duration minCheckpointInterval;
     private final long maxStagingFileBytes;
+    private final StagingFormat stagingFormat;
+    private final ParquetCompression parquetCompression;
     private final Duration loadJobPollInitialBackoff;
     private final Duration loadJobPollMaxBackoff;
     private final Duration schemaReconcileInitialBackoff;
@@ -141,6 +149,11 @@ public final class FileLoadsOptions implements Serializable {
         this.writeDisposition = builder.writeDisposition;
         this.minCheckpointInterval = builder.minCheckpointInterval;
         this.maxStagingFileBytes = builder.maxStagingFileBytes;
+        this.stagingFormat = builder.stagingFormat;
+        this.parquetCompression =
+                builder.parquetCompression == null
+                        ? DEFAULT_PARQUET_COMPRESSION
+                        : builder.parquetCompression;
         this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
@@ -183,6 +196,19 @@ public final class FileLoadsOptions implements Serializable {
     /** Returns the size at which an open staging file is finished and the next one opened. */
     public long getMaxStagingFileBytes() {
         return maxStagingFileBytes;
+    }
+
+    /**
+     * Returns the format staging files are written in, before the per-destination {@code JSON}
+     * override the writer applies.
+     */
+    public StagingFormat getStagingFormat() {
+        return stagingFormat;
+    }
+
+    /** Returns how Parquet staging files are compressed; meaningless under Avro. */
+    public ParquetCompression getParquetCompression() {
+        return parquetCompression;
     }
 
     /** Returns the first backoff between load- or copy-job completion polls. */
@@ -252,6 +278,8 @@ public final class FileLoadsOptions implements Serializable {
                 && writeDisposition == that.writeDisposition
                 && minCheckpointInterval.equals(that.minCheckpointInterval)
                 && maxStagingFileBytes == that.maxStagingFileBytes
+                && stagingFormat == that.stagingFormat
+                && parquetCompression == that.parquetCompression
                 && loadJobPollInitialBackoff.equals(that.loadJobPollInitialBackoff)
                 && loadJobPollMaxBackoff.equals(that.loadJobPollMaxBackoff)
                 && schemaReconcileInitialBackoff.equals(that.schemaReconcileInitialBackoff)
@@ -268,6 +296,8 @@ public final class FileLoadsOptions implements Serializable {
                 writeDisposition,
                 minCheckpointInterval,
                 maxStagingFileBytes,
+                stagingFormat,
+                parquetCompression,
                 loadJobPollInitialBackoff,
                 loadJobPollMaxBackoff,
                 schemaReconcileInitialBackoff,
@@ -288,6 +318,10 @@ public final class FileLoadsOptions implements Serializable {
                 + minCheckpointInterval
                 + ", maxStagingFileBytes="
                 + maxStagingFileBytes
+                + ", stagingFormat="
+                + stagingFormat
+                + ", parquetCompression="
+                + parquetCompression
                 + ", loadJobPollInitialBackoff="
                 + loadJobPollInitialBackoff
                 + ", loadJobPollMaxBackoff="
@@ -312,6 +346,10 @@ public final class FileLoadsOptions implements Serializable {
         private WriteDisposition writeDisposition = WriteDisposition.WRITE_APPEND;
         private Duration minCheckpointInterval = DEFAULT_MIN_CHECKPOINT_INTERVAL;
         private long maxStagingFileBytes = DEFAULT_MAX_STAGING_FILE_BYTES;
+        private StagingFormat stagingFormat = DEFAULT_STAGING_FORMAT;
+        // Null until set, so build() can tell "explicitly chose the default" from "never
+        // touched it" and reject the option under Avro rather than silently ignoring it.
+        @Nullable private ParquetCompression parquetCompression;
         private Duration loadJobPollInitialBackoff = DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF;
         private Duration loadJobPollMaxBackoff = DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF;
         private Duration schemaReconcileInitialBackoff = DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF;
@@ -415,6 +453,42 @@ public final class FileLoadsOptions implements Serializable {
                     "maxStagingFileBytes must be positive: %s",
                     maxStagingFileBytes);
             this.maxStagingFileBytes = maxStagingFileBytes;
+            return this;
+        }
+
+        /**
+         * Sets the format staging files are written in. Defaults to {@link StagingFormat#AVRO},
+         * which is the recommended value; see {@link StagingFormat#PARQUET} for what choosing the
+         * other one costs.
+         *
+         * <p>Selecting {@code PARQUET} requires {@code org.apache.parquet:parquet-avro} on the
+         * runtime classpath, and — unless {@link ParquetCompression#NONE} is also selected — a
+         * Hadoop runtime, neither of which this connector ships. Both are checked here, on the
+         * client, so a missing dependency fails when the job graph is built rather than on a
+         * TaskManager when the first staging file is opened. A client whose classpath differs from
+         * the cluster's can still defeat that, which is why the docs name the artifacts.
+         *
+         * @param stagingFormat the staging format
+         * @return this builder
+         */
+        public Builder stagingFormat(StagingFormat stagingFormat) {
+            this.stagingFormat =
+                    Preconditions.checkNotNull(stagingFormat, "stagingFormat must not be null");
+            return this;
+        }
+
+        /**
+         * Sets how {@link StagingFormat#PARQUET} staging files are compressed. Defaults to {@link
+         * ParquetCompression#ZSTD}. Rejected when the staging format is {@link StagingFormat#AVRO},
+         * whose codec is not configurable — an ignored option is worse than a rejected one.
+         *
+         * @param parquetCompression the Parquet codec
+         * @return this builder
+         */
+        public Builder parquetCompression(ParquetCompression parquetCompression) {
+            this.parquetCompression =
+                    Preconditions.checkNotNull(
+                            parquetCompression, "parquetCompression must not be null");
             return this;
         }
 
@@ -535,11 +609,56 @@ public final class FileLoadsOptions implements Serializable {
                     loadJobPollMaxBackoff,
                     loadJobPollInitialBackoff);
             Preconditions.checkState(
+                    stagingFormat == StagingFormat.PARQUET || parquetCompression == null,
+                    "parquetCompression is only accepted with stagingFormat(PARQUET): the Avro"
+                            + " staging codec is not configurable.");
+            if (stagingFormat == StagingFormat.PARQUET) {
+                checkParquetOnClasspath(
+                        parquetCompression == null
+                                ? DEFAULT_PARQUET_COMPRESSION
+                                : parquetCompression);
+            }
+            Preconditions.checkState(
                     schemaReconcileMaxBackoff.compareTo(schemaReconcileInitialBackoff) >= 0,
                     "schemaReconcileMaxBackoff must be >= schemaReconcileInitialBackoff: %s < %s",
                     schemaReconcileMaxBackoff,
                     schemaReconcileInitialBackoff);
             return new FileLoadsOptions(this);
+        }
+
+        /**
+         * Fails at graph construction, with the artifact to add, rather than on a TaskManager with
+         * a {@code NoClassDefFoundError} the first time a staging file is opened.
+         *
+         * <p>Two probes, not one: compressed Parquet also needs Hadoop, because every codec in
+         * {@code parquet-hadoop} is resolved through Hadoop's {@code CompressionCodec} SPI — so a
+         * classpath with parquet and no Hadoop works for {@link ParquetCompression#NONE} and fails
+         * for anything else, and the message has to say which of the two is missing.
+         */
+        private static void checkParquetOnClasspath(ParquetCompression compression) {
+            checkClass(
+                    "org.apache.parquet.avro.AvroParquetWriter",
+                    "stagingFormat(PARQUET) needs org.apache.parquet:parquet-avro on the runtime"
+                            + " classpath; this connector does not ship it.");
+            if (compression != ParquetCompression.NONE) {
+                checkClass(
+                        "org.apache.hadoop.conf.Configuration",
+                        "stagingFormat(PARQUET) with parquetCompression("
+                                + compression.name()
+                                + ") needs a Hadoop runtime (org.apache.hadoop:hadoop-common and"
+                                + " its dependencies) on the runtime classpath: every Parquet codec"
+                                + " is resolved through Hadoop's CompressionCodec SPI. Use"
+                                + " parquetCompression(NONE) to stage Parquet without Hadoop, at"
+                                + " the cost of substantially larger staging files.");
+            }
+        }
+
+        private static void checkClass(String className, String message) {
+            try {
+                Class.forName(className, false, FileLoadsOptions.class.getClassLoader());
+            } catch (ClassNotFoundException | LinkageError e) {
+                throw new IllegalStateException(message, e);
+            }
         }
     }
 }

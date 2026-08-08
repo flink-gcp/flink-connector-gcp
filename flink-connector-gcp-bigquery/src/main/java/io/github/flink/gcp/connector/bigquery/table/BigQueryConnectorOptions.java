@@ -25,6 +25,8 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 
 import java.time.Duration;
 import java.util.List;
@@ -473,6 +475,28 @@ public final class BigQueryConnectorOptions {
                                     + " onto the temporary-table plus copy path; lowering it buys"
                                     + " little, because measured load time climbs steeply below"
                                     + " about 8 MiB per file.");
+
+    public static final ConfigOption<StagingFormat> SINK_FILE_LOADS_STAGING_FORMAT =
+            ConfigOptions.key("sink.file-loads.staging-format")
+                    .enumType(StagingFormat.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "The file format rows are staged in before loading. Avro is the default"
+                                    + " and the recommended value; Parquet is opt-in, needs"
+                                    + " dependencies this connector does not ship, cannot carry a"
+                                    + " JSON column (such a destination falls back to Avro), and"
+                                    + " loads several times more slowly below 256 MiB of input per"
+                                    + " load job.");
+
+    public static final ConfigOption<ParquetCompression> SINK_FILE_LOADS_PARQUET_COMPRESSION =
+            ConfigOptions.key("sink.file-loads.parquet-compression")
+                    .enumType(ParquetCompression.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "How Parquet staging files are compressed. Rejected when the staging"
+                                    + " format is Avro, whose codec is not configurable. 'none' is"
+                                    + " the only value that needs no Hadoop runtime, and it stages"
+                                    + " substantially more bytes than Avro does.");
 
     public static final ConfigOption<Duration> SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF =
             ConfigOptions.key("sink.file-loads.load-job-poll.initial-backoff")

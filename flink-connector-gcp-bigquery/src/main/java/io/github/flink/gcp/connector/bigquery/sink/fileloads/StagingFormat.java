@@ -22,26 +22,31 @@ import java.util.Locale;
 
 /**
  * The file format {@link io.github.flink.gcp.connector.bigquery.sink.WriteMethod#FILE_LOADS
- * FILE_LOADS} stages rows in before loading them.
+ * FILE_LOADS} stages rows in before loading them, set by {@code
+ * FileLoadsOptions.Builder#stagingFormat}.
  *
- * <p>Only {@link #AVRO} is produced today; no option selects the other value yet (#284). The type
- * exists because the format has to travel in the committable and drive the load job before anything
- * can write the second format: a committable recovered from state must be loaded as the format its
- * file was <em>actually</em> written in, which configuration read at commit time cannot tell you.
+ * <p><b>{@link #AVRO} is the default and the recommended value.</b> {@link #PARQUET} stages fewer
+ * bytes and loads a large batch faster, but it is not a straight improvement: it needs dependencies
+ * this connector does not ship, it cannot carry a {@code JSON} column at all, and BigQuery loads it
+ * several times more slowly below 256 MiB of total input per load job — the regime a streaming
+ * checkpoint normally sits in. The docs page sets out all three.
+ *
+ * <p>The format travels in each committable, so a file is always loaded as the format it was
+ * actually written in, and load jobs are grouped on it.
  */
 @PublicEvolving
 public enum StagingFormat {
 
-    /** Avro container files. The only format the sink writes today. */
+    /** Avro container files. The default, and the only format with no unshipped dependencies. */
     AVRO(".avro"),
 
     /**
-     * Parquet files.
+     * Parquet files. Opt-in, and worth it mainly for a batch job whose per-destination volume
+     * clears 256 MiB per load job.
      *
-     * <p>Nothing selects this yet — the load path handles it so that the writer can start producing
-     * it without the committable layout changing again. A destination whose schema names a {@code
-     * JSON} column will stage {@link #AVRO} whatever selects it, because a {@code PARQUET} load is
-     * refused at job-configuration level when the provided schema names one.
+     * <p>A destination whose schema names a {@code JSON} column stages {@link #AVRO} whatever this
+     * is set to: a {@code PARQUET} load is refused at job-configuration level when the provided
+     * schema names one, so it is a correctness override rather than a preference.
      */
     PARQUET(".parquet");
 
