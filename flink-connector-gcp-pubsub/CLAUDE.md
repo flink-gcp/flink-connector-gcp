@@ -43,7 +43,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (`docs/adr/0006`).
 - A non-solo `INVALID_ARGUMENT` is parked and confirmed by the isolation pass; only a message
   rejected solo reaches the handler, and a batched report is not counted by the error metrics
-  (`docs/adr/0008`).
+  (`docs/adr/0008`, which also carries `maxConsecutiveRejections`, the #361 bound on a dropping
+  policy's pass: consecutive solo-confirmed rejections, reset by any successful publish, never
+  serializer rejections, and never the recovery budget — that one caps a repair's unproductive
+  attempts).
 - The publisher teardown is two-phase on a daemon thread with a real bound; the deadline runs
   from `start()`; `awaitTermination` runs on the teardown thread; `retryTotalTimeout`/
   `retryMaxAttempts` are rejected beside `enableMessageOrdering(true)` (`docs/adr/0007`).

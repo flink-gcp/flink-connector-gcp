@@ -523,6 +523,15 @@ public final class PubSubConnectorOptions {
                             "The cap on the serialized bytes of unacknowledged publishes per sink"
                                     + " subtask.");
 
+    public static final ConfigOption<Integer> SINK_MAX_CONSECUTIVE_REJECTIONS =
+            ConfigOptions.key("sink.max-consecutive-rejections")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How many consecutive confirmed rejections fail the job under a"
+                                    + " dropping failure handler; any successful publish resets the"
+                                    + " count, and -1 removes the bound.");
+
     public static final ConfigOption<Duration> SINK_PUBLISH_PROGRESS_TIMEOUT =
             ConfigOptions.key("sink.publish-progress-timeout")
                     .durationType()

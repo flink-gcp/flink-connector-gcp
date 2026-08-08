@@ -273,6 +273,33 @@ class BigtableWriterTest {
     }
 
     @Test
+    void aRunAccumulatesAcrossFlushesWithNoSuccessBetween() throws Exception {
+        // "Consecutive" is about successes, not checkpoint intervals: two rejections in one flush
+        // and a third in the next, with nothing applied between them, are one run of three.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().maxConsecutiveRejections(3).build(),
+                        serializer(),
+                        handler);
+        batcher.rejectedRowKeys.add("row-1");
+        batcher.rejectedRowKeys.add("row-2");
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+        writer.flush(false);
+
+        batcher.rejectedRowKeys.add("row-3");
+        writer.write("row-3", TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("maxConsecutiveRejections(3)");
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactly("row-1", "row-2", "row-3");
+    }
+
+    @Test
     void anAppliedMutationResetsTheConsecutiveRejectionCount() throws Exception {
         // One bad record an hour must never accumulate into a failure: with a success between
         // them, two rejections stay below a bound of 2 for the whole run.

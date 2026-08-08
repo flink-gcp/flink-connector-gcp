@@ -57,6 +57,7 @@ class PubSubPublisherOptionsTest {
                 .recoveryMaxAttempts(3)
                 .publishProgressTimeout(Duration.ofSeconds(90))
                 .shutdownTimeout(Duration.ofSeconds(45))
+                .maxConsecutiveRejections(9)
                 .build();
     }
 
@@ -94,9 +95,34 @@ class PubSubPublisherOptionsTest {
         assertThat(defaults.getRecoveryMaxAttempts()).isEqualTo(10);
         assertThat(defaults.getPublishProgressTimeout()).isEqualTo(Duration.ofSeconds(600));
         assertThat(defaults.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(defaults.getMaxConsecutiveRejections()).isEqualTo(100);
         assertThat(defaults.hasBatchingOverrides()).isFalse();
         assertThat(defaults.hasRetryOverrides()).isFalse();
         assertThat(defaults).isEqualTo(PubSubPublisherOptions.builder().build());
+    }
+
+    @Test
+    void theRejectionBoundTakesOnlyPositiveValuesOrTheUnboundedSentinel() {
+        PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
+
+        // Zero has no meaning here: "no rejection tolerated" is 1, and a bound of zero would
+        // silently override the dropping handler the user configured.
+        assertThatThrownBy(() -> builder.maxConsecutiveRejections(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxConsecutiveRejections");
+        assertThatThrownBy(() -> builder.maxConsecutiveRejections(-2))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        builder.maxConsecutiveRejections(PubSubPublisherOptions.UNBOUNDED)
+                                .build()
+                                .getMaxConsecutiveRejections())
+                .isEqualTo(PubSubPublisherOptions.UNBOUNDED);
+        assertThat(
+                        PubSubPublisherOptions.builder()
+                                .maxConsecutiveRejections(5)
+                                .build()
+                                .getMaxConsecutiveRejections())
+                .isEqualTo(5);
     }
 
     @Test

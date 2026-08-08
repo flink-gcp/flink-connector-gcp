@@ -525,12 +525,14 @@ dropping them would leave an empty topic under a green job.
 
 That reasoning does not extend to a serializer that produces an *invalid message* for every
 record — a bug that puts a malformed attribute or an over-long ordering key on all of them.
-Pub/Sub rejects each one individually, the sink cannot tell a systematic rejection from a
-per-message one (the classification is the response's status code, not a judgement about the
-whole stream), and a dropping policy discards the lot silently. Watch
+Pub/Sub rejects each one individually, and every rejection the sink confirms counts toward
+[`maxConsecutiveRejections`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions), so a
+stream the service refuses wholesale fails the job at that bound rather than draining silently —
+the bound is described under [Ordering and a dropping
+policy](#ordering-and-a-dropping-policy) but applies with or without ordering. Watch
 [`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/pubsub" >}}#sink-metrics) rather
-than the job status when running anything other than `failJob()`: it counts every message the
-handler received, so a systematic rejection shows up as a rate rather than as a failure.
+than the job status for everything below the bound: it counts every message the handler
+received, so a rejection run the bound has not ended shows up as a rate.
 
 One thing the classification alone cannot see, and how the sink closes it: `Publish` is a
 **batch** RPC, so an `INVALID_ARGUMENT` is a *request*-level status that the SDK reports against
@@ -542,7 +544,8 @@ republished **one message per request**, each message earns its own verdict, and
 individually rejected ones reach the handler — so `numRecordsSendErrors` counts true rejections,
 not batch fan-out. The cost is one request per message of a failed batch, on the failure path only
 — and the confirming republish is strictly serial, one round trip at a time, so a stream whose
-every message is invalid degrades to one round trip per message while it lasts. (An *oversized* message under the default batching settings never needed this: the SDK
+every message is invalid degrades to one round trip per message until `maxConsecutiveRejections`
+ends it. (An *oversized* message under the default batching settings never needed this: the SDK
 sends an element exceeding `batchRequestByteThreshold` as its own request, so only messages under
 that threshold — attribute violations and the like — ever share a rejection.)
 
@@ -574,13 +577,28 @@ a key whose messages are rejected one after another happens through the same rep
 `recoveryMaxAttempts` budget as a topic-creation republish — but the one-message-per-request
 republish gives every parked message its own verdict within a single attempt, and the key a drop
 pauses is handed back before its next message, so a run of consecutively invalid messages drains
-in one attempt however long it is ([#269]({{< param BookRepo >}}/issues/269)). What the budget
+in one attempt ([#269]({{< param BookRepo >}}/issues/269)). What the budget
 still bounds is a repair making no progress: topic metadata that never propagates, or a key whose
 republishes keep failing without a verdict. When it runs out, the failure message says which
 happened — `kept failing` (a republish that never got through, `after creating the topic` when
 the repair created one) or `could not drain its parked messages within the recovery budget`, with
 the number of messages that were handed to the failure handler during the repair and, when both
 facts hold, the creation too.
+
+**How long a run the sink will drain at all is bounded by
+[`maxConsecutiveRejections`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions)**
+([#361]({{< param BookRepo >}}/issues/361)): a dropping policy is a decision to keep running
+through *anomalous* records, and a stream being refused wholesale is not that — it is broken data
+degraded to one publish per message under a green job — so once that many confirmed rejections
+arrive in a row, with not one successfully published message between them, the job fails with a
+message naming the option, the count and the last rejection's status. Every message rejected up to
+that point — the tripping one included — was routed to the handler first; what a handler had
+durably delivered by then follows the `FailureHandler` contract's own checkpoint-contingent
+guarantee. Any successful publish, to any topic of the writer, resets the count — an occasional
+bad record can never accumulate into a failure — and only rejections the isolation republish has
+*confirmed* count: records the serializer rejects say nothing about the service's view of the
+stream. The `-1` sentinel removes the bound for a pipeline that really does want to trickle
+through arbitrarily bad data.
 
 Dead-letter output is **at-least-once, for failures that recur on replay**: messages are offered
 before the checkpoint covering their originating records completes, so a restart replays those
@@ -761,8 +779,11 @@ are still in the logs, at `WARN` on `BoundedShutdown`.
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
 exactly what reached `failedMessageHandler(...)` — a record the serializer rejected, and a publish
 the service answered `INVALID_ARGUMENT` on its own single-message request — whether the handler then
-dropped the message or failed the job. A serializer bug that makes *every* message invalid is dropped one at a time under a dropping
-policy, and this counter is what shows it while the job stays green.
+dropped the message or failed the job. A rejection run under a dropping policy is dropped one message at a time and shows here as a
+rate, until it reaches
+[`maxConsecutiveRejections`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions) and
+fails the job. A record the *serializer* rejects counts here but never toward that bound — it
+says nothing about the service's view of the stream.
 
 **`topicsCreated` counts repairs, not distinct topics.** A creation that answers `ALREADY_EXISTS`
 — a parallel subtask got there first — is a success, so one new topic is counted once by every

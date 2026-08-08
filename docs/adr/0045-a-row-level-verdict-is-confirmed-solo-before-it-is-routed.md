@@ -73,8 +73,8 @@ checkpoint interval, and it terminates because every submission inside it is sol
   the service's view of the stream. The bound is deliberately not `runIsolationPass()`'s loop
   budget, which is a per-pass invariant tripwire whose message must keep meaning "this connector
   has a bug" — the two failures share no text. Pub/Sub's repair pass has the same unbounded shape
-  under a dropping policy (confirmed structurally, read 2026-08-08); applying this same decision
-  there is [#361]'s remaining half, to be recorded as a revision to ADR-0008 when it lands.
+  under a dropping policy; the same decision is applied there, recorded as a revision to
+  ADR-0008.
 - Pinned offline by `BigtableWriterTest` through a `FakeMutationBatcher` that decides outcomes
   **per request** — a request carrying a rejected row key fails every entry of that request — so
   the pass's behaviour emerges from the fake rather than being scripted; and against the service

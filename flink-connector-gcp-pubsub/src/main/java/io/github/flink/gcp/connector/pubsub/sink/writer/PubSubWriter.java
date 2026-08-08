@@ -104,7 +104,14 @@ import java.util.concurrent.locks.LockSupport;
  * <em>solo</em> — a true per-message verdict — reaches the handler, and its co-batched neighbours
  * are published. Drop-versus-throw semantics, the never-routed backlog argument and the
  * asynchronous capture of a handler failing inside a completion callback are stated once on {@link
- * FailureHandler}; here that capture lands in {@link #asyncError}.
+ * FailureHandler}; here that capture lands in {@link #asyncError}. Under a dropping policy the
+ * pass's one-request-per-message degradation is bounded by {@code
+ * PubSubPublisherOptions.maxConsecutiveRejections} (#361): once that many confirmed rejections
+ * arrive with no successfully published message between them, the stream's data is broken rather
+ * than anomalous, and the writer fails the job instead of isolating it message by message. The
+ * bound is a policy about the stream, accumulated across repairs in {@link #consecutiveRejections};
+ * the recovery budget is a different bound — it caps one repair's unproductive attempts — and the
+ * two failures share no text.
  *
  * <p>Unacknowledged publishes are capped along both dimensions that bound memory: their number
  * ({@code PubSubPublisherOptions.maxInFlightMessages}, default 1000) and their serialized size
@@ -204,6 +211,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private final MailboxExecutor mailboxExecutor;
     private final int maxInFlightMessages;
     private final long maxInFlightBytes;
+    private final int maxConsecutiveRejections;
     private final long publishProgressTimeoutNanos;
     private final long publishProgressWarnAfterNanos;
     private final RetrySchedule recoverySchedule;
@@ -264,6 +272,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * would put a line in the log for each of them.
      */
     private long lastStallWarnNanos;
+
+    /**
+     * Confirmed rejections routed since the last successfully published message; touched only on
+     * the task thread. Every success mail zeroes it, and {@code
+     * PubSubPublisherOptions.maxConsecutiveRejections} — whose javadoc carries the reasoning — is
+     * what it is compared against (#361).
+     */
+    private int consecutiveRejections;
 
     /**
      * First terminal publish failure; set and read only on the task thread (failure callbacks
@@ -330,6 +346,16 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 options.getMaxInFlightBytes() > 0, "maxInFlightBytes must be positive");
         this.maxInFlightMessages = options.getMaxInFlightMessages();
         this.maxInFlightBytes = options.getMaxInFlightBytes();
+        // Re-checked for the same deserialization reason, though the failure mode is milder: a
+        // zero — which an options instance serialized before the field existed carries — would
+        // fail the job on the first confirmed rejection, silently overriding the handler the
+        // user configured, rather than hanging anything.
+        Preconditions.checkArgument(
+                options.getMaxConsecutiveRejections() > 0
+                        || options.getMaxConsecutiveRejections()
+                                == PubSubPublisherOptions.UNBOUNDED,
+                "maxConsecutiveRejections must be positive or -1 (unbounded)");
+        this.maxConsecutiveRejections = options.getMaxConsecutiveRejections();
         // Checked here for the reason the two caps above are: Java deserialization does not run
         // the builder, and a non-positive budget would make every wait expire on its first pass.
         // Null-tolerant on purpose: this field was added under an unchanged serialVersionUID, so
@@ -857,6 +883,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             DestinationState state, PubsubMessage message, Throwable throwable) {
         TopicDestination destination = state.destination;
         metrics.messageFailed(state.metrics);
+        consecutiveRejections++;
         try {
             failedMessageHandler.handle(
                     FailedMessage.of(
@@ -892,6 +919,39 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         if (orderingEnabled && !message.getOrderingKey().isEmpty()) {
             state.keysToResume.add(message.getOrderingKey());
             repairNeeded = true;
+        }
+        // After the routing, not instead of it: the message that tripped the bound really was
+        // refused, and a dead-letter destination missing it would be worse than one holding it —
+        // the same argument as routing beside an existing asyncError. First failure still wins.
+        if (maxConsecutiveRejections != PubSubPublisherOptions.UNBOUNDED
+                && consecutiveRejections >= maxConsecutiveRejections
+                && asyncError == null) {
+            String run =
+                    consecutiveRejections == 1
+                            ? "Pub/Sub topic "
+                                    + destination
+                                    + " refused a message (status "
+                                    + PubSubErrorClassifier.statusCode(throwable)
+                                    + ")"
+                            : "Pub/Sub refused "
+                                    + consecutiveRejections
+                                    + " messages in a row (the last by topic "
+                                    + destination
+                                    + ", with status "
+                                    + PubSubErrorClassifier.statusCode(throwable)
+                                    + ") with none successfully published between them";
+            asyncError =
+                    new IOException(
+                            run
+                                    + ", reaching maxConsecutiveRejections("
+                                    + maxConsecutiveRejections
+                                    + "): the stream's data looks broken rather than anomalous, so"
+                                    + " the job fails instead of isolating it message by message."
+                                    + " Every rejected message, this one included, was routed to"
+                                    + " the configured handler first;"
+                                    + " PubSubPublisherOptions.builder().maxConsecutiveRejections(-1)"
+                                    + " removes this bound.",
+                            throwable);
         }
     }
 
@@ -943,11 +1003,12 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * <b>isolation pass</b>: each message goes out as its own single-message request, flushed and
      * drained individually, so the service answers per message. A message rejected solo is routed
      * to the failure handler by its own drain, and the ordering key that rejection paused is
-     * resumed before the key's next message is republished — so one pass drains an arbitrarily long
-     * run of invalid messages in a single attempt, and the budget keeps bounding
-     * <em>unproductive</em> retrying rather than the length of a poisoned key (#269). Per-key order
-     * holds because the batch is in publish-sequence order and nothing else publishes during a
-     * repair.
+     * resumed before the key's next message is republished — so one pass drains a long run of
+     * invalid messages in a single attempt, and the budget keeps bounding <em>unproductive</em>
+     * retrying rather than the length of a poisoned key (#269). How long a run a pass will drain is
+     * bounded by {@code maxConsecutiveRejections} (#361), not by this budget: past it the drain's
+     * own {@code checkAsyncError} aborts the repair. Per-key order holds because the batch is in
+     * publish-sequence order and nothing else publishes during a repair.
      *
      * <p>A fatal solo failure surfaces from the pass's drain and aborts the repair with the
      * not-yet-republished remainder abandoned — in neither the pending buffer nor in flight. That
@@ -1267,6 +1328,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         @Override
         public void run() {
             releaseInFlight(serializedSize);
+            // A published message is evidence the stream is not wholly broken, whichever request
+            // shape or destination carried it — a solo republish included — so the
+            // consecutive-rejection bound resets on every success.
+            consecutiveRejections = 0;
         }
 
         @Override

@@ -150,11 +150,15 @@ class PubSubWriterFailureHandlerTest {
      * the payload rather than the topic name.
      */
     private PubSubWriter<String> newFixedTopicWriter() {
+        return newFixedTopicWriter(PubSubPublisherOptions.defaults());
+    }
+
+    private PubSubWriter<String> newFixedTopicWriter(PubSubPublisherOptions options) {
         return new PubSubWriter<>(
                 TestSinkConfigs.forResolver(
                         (element, context) -> topic("fixed"),
                         PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
-                        PubSubPublisherOptions.defaults(),
+                        options,
                         handler,
                         CreateDisposition.CREATE_IF_NEEDED),
                 factory,
@@ -408,6 +412,262 @@ class PubSubWriterFailureHandlerTest {
 
         assertThat(handler.handled).isEmpty();
         assertThat(fixedTopicPayloads()).containsExactly("m0", "m1", "m0", "m1");
+    }
+
+    // --- The dropping-policy bound on the isolation pass (#361) ------------------------------
+
+    @Test
+    void failsTheJobOnceConsecutiveConfirmedRejectionsReachTheBound() throws Exception {
+        // #361: a dropping policy keeps the job green through anomalous records, but a stream
+        // refused wholesale is broken data degraded to one solo publish per message — so the
+        // bound fails the job, with every rejected message routed before it does.
+        PubSubWriter<String> writer =
+                newFixedTopicWriter(
+                        PubSubPublisherOptions.builder().maxConsecutiveRejections(2).build());
+        StatusRuntimeException batchReport = invalidArgument();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        // Both solo verdicts reject; the second reaches the bound.
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("maxConsecutiveRejections(2)")
+                .hasMessageContaining("refused 2 messages in a row")
+                .hasMessageContaining("INVALID_ARGUMENT")
+                // The recovery budget's exhaustion reports a repair that could not drain; the
+                // bound reports the stream. An operator must be able to tell them apart.
+                .hasMessageNotContaining("recovery");
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getPubsubMessage().getData().toStringUtf8())
+                .containsExactly("m0", "m1");
+    }
+
+    @Test
+    void aRunAccumulatesAcrossFlushesWithNoSuccessBetween() throws Exception {
+        // "Consecutive" is about successes, not checkpoint intervals: two rejections in one flush
+        // and a third in the next, with nothing published between them, are one run of three.
+        PubSubWriter<String> writer =
+                newFixedTopicWriter(
+                        PubSubPublisherOptions.builder().maxConsecutiveRejections(3).build());
+        StatusRuntimeException firstReport = invalidArgument();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(firstReport));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(firstReport));
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        writer.flush(false);
+
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        writer.write("m2", CONTEXT);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("maxConsecutiveRejections(3)");
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getPubsubMessage().getData().toStringUtf8())
+                .containsExactly("m0", "m1", "m2");
+    }
+
+    @Test
+    void serializerRejectionsDoNotCountTowardTheBound() throws Exception {
+        // A record the serializer rejects says nothing about the service's view of the stream, so
+        // a serializer-failure storm under a small bound stays green — routed, dropped, and never
+        // accumulated.
+        PubSubWriter<String> writer =
+                new PubSubWriter<>(
+                        TestSinkConfigs.forResolver(
+                                (element, context) -> topic("fixed"),
+                                element -> {
+                                    throw new IOException("bad record " + element);
+                                },
+                                PubSubPublisherOptions.builder()
+                                        .maxConsecutiveRejections(2)
+                                        .build(),
+                                handler,
+                                CreateDisposition.CREATE_IF_NEEDED),
+                        factory,
+                        admin,
+                        mailbox,
+                        metrics,
+                        FAST_SCHEDULE);
+
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        writer.write("m2", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(3);
+    }
+
+    @Test
+    void aBoundOfOneFailsOnTheFirstConfirmedRejection() throws Exception {
+        // The strictest legal setting, and the message's singular form.
+        PubSubWriter<String> writer =
+                newFixedTopicWriter(
+                        PubSubPublisherOptions.builder().maxConsecutiveRejections(1).build());
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        writer.write("m0", CONTEXT);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("refused a message (status INVALID_ARGUMENT)")
+                .hasMessageContaining("maxConsecutiveRejections(1)");
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getPubsubMessage().getData().toStringUtf8())
+                .containsExactly("m0");
+    }
+
+    @Test
+    void theBoundTrippingOnAKeyedDropLeavesItsKeyToTheFailedJob() throws Exception {
+        // The ordering interplay: the tripping drop registers its key for a resume the aborted
+        // repair never runs. That is safe — the job is failing, and the restart opens fresh
+        // publishers with no paused keys — but the resume history has to stop where the bound
+        // spoke: the attempt-start resume and the one after the first drop, none after the trip.
+        PubSubWriter<String> writer =
+                newOrderingWriter(
+                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                .withOrderingKey(element -> element.split(":")[0]),
+                        PubSubPublisherOptions.builder()
+                                .enableMessageOrdering(true)
+                                .maxConsecutiveRejections(2)
+                                .build(),
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        FAST_SCHEDULE);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        writer.write("k1:a", CONTEXT);
+        writer.write("k1:b", CONTEXT);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("maxConsecutiveRejections(2)");
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getPubsubMessage().getData().toStringUtf8())
+                .containsExactly("k1:a", "k1:b");
+        assertThat(orderedPublisher().resumedKeys).containsExactly("k1", "k1");
+    }
+
+    @Test
+    void aCollateralSuccessInsideTheIsolationPassResetsTheCount() throws Exception {
+        // The interleaving the pass was designed around: a good message batched between two bad
+        // ones is published by its solo republish, and that success resets the count mid-pass —
+        // two bad messages in one batch are two runs of one, not one run of two.
+        PubSubWriter<String> writer =
+                newFixedTopicWriter(
+                        PubSubPublisherOptions.builder().maxConsecutiveRejections(2).build());
+        StatusRuntimeException batchReport = invalidArgument();
+        for (int i = 0; i < 3; i++) {
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+        }
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        writer.write("m2", CONTEXT);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFuture("id-m1"));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+
+        writer.flush(false);
+
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getPubsubMessage().getData().toStringUtf8())
+                .containsExactly("m0", "m2");
+    }
+
+    @Test
+    void aSuccessZeroesTheCountRatherThanCancellingOneRejection() throws Exception {
+        // Two confirmed rejections, one success, two more: a counter that merely decremented on
+        // success would reach the bound of 3 at the fourth rejection; zeroing keeps every run at
+        // two. "Any successful publish resets the count" means reset, not repayment.
+        PubSubWriter<String> writer =
+                newFixedTopicWriter(
+                        PubSubPublisherOptions.builder().maxConsecutiveRejections(3).build());
+        StatusRuntimeException firstReport = invalidArgument();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(firstReport));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(firstReport));
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        writer.flush(false);
+
+        writer.write("m2", CONTEXT);
+        writer.flush(false);
+
+        StatusRuntimeException secondReport = invalidArgument();
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(secondReport));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(secondReport));
+        writer.write("m3", CONTEXT);
+        writer.write("m4", CONTEXT);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        writer.flush(false);
+
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getPubsubMessage().getData().toStringUtf8())
+                .containsExactly("m0", "m1", "m3", "m4");
+    }
+
+    @Test
+    void theUnboundedSentinelKeepsIsolatingThroughConsecutiveRejections() throws Exception {
+        // -1 restores the unbounded pass for a pipeline that really does want to trickle through
+        // arbitrarily bad data. Discriminating: a sentinel misread as a bound of -1 or 0 would
+        // fail the job on the first confirmed rejection here.
+        PubSubWriter<String> writer =
+                newFixedTopicWriter(
+                        PubSubPublisherOptions.builder()
+                                .maxConsecutiveRejections(PubSubPublisherOptions.UNBOUNDED)
+                                .build());
+        StatusRuntimeException batchReport = invalidArgument();
+        for (int i = 0; i < 3; i++) {
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+        }
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        writer.write("m2", CONTEXT);
+        for (int i = 0; i < 3; i++) {
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        }
+
+        writer.flush(false);
+
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getPubsubMessage().getData().toStringUtf8())
+                .containsExactly("m0", "m1", "m2");
+    }
+
+    @Test
+    void theBoundTrippingMidPassAbandonsTheRestOfThePark() throws Exception {
+        // The throw escapes the pass with messages still parked behind it: neither published nor
+        // routed, which the failed checkpoint covers — the restart replays them. Pins that the
+        // abandoned message is not silently routed after the bound has spoken.
+        PubSubWriter<String> writer =
+                newFixedTopicWriter(
+                        PubSubPublisherOptions.builder().maxConsecutiveRejections(2).build());
+        StatusRuntimeException batchReport = invalidArgument();
+        for (int i = 0; i < 3; i++) {
+            factory.enqueueFuture(ApiFutures.immediateFailedFuture(batchReport));
+        }
+        writer.write("m0", CONTEXT);
+        writer.write("m1", CONTEXT);
+        writer.write("m2", CONTEXT);
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+        factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("maxConsecutiveRejections(2)");
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getPubsubMessage().getData().toStringUtf8())
+                .containsExactly("m0", "m1");
+        assertThat(writer.getParkedMessages()).isEqualTo(1);
     }
 
     @Test

@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0008: A `MESSAGE_LEVEL` verdict is confirmed solo before it is routed
 
 - Status: Accepted
-- Date: 2026-08-05
-- Issues: [#264] (closing [#269] with it), [#303] (the gated pin)
+- Date: 2026-08-05; dropping-policy bound added 2026-08-08 ([#361])
+- Issues: [#264] (closing [#269] with it), [#303] (the gated pin), [#361] (the bound)
 - Modules: pubsub (Bigtable adopted the same design in [#239] — its module record)
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` § Failed-message policy
 
@@ -49,10 +49,20 @@ Decisions not to re-litigate:
 - **Client-side limit validation was declined** as the fix (it covers only the limits we
   encode) and **fail-on-batched-rejection was declined** (it defeats the dropping policy).
 
-[#269] resolved as fallout: a poisoned key drains in one attempt however long the run, budget
-semantics unchanged — what remains is the two-variant exhaustion message (`kept failing …` vs
+[#269] resolved as fallout: a poisoned key drains in one attempt, budget semantics unchanged —
+what remains is the two-variant exhaustion message (`kept failing …` vs
 `could not drain its parked messages within the recovery budget …`, chosen by whether this
 repair handed messages to the handler), each variant pinned by test.
+
+**How long a run the pass will drain at all is bounded by `maxConsecutiveRejections`** ([#361];
+the value is on the reference page — one decision applied to both connectors, Bigtable's half in
+ADR-0045, whose entry carries the declined alternatives): confirmed solo rejections accumulate on
+the writer across repairs and destinations, any successful publish resets the count — one bad
+record an hour can never become a failure — and reaching the bound fails the job with a message
+naming the option, the count and the last rejection's status, after routing the message that
+tripped it. Serializer rejections do not count. The bound is deliberately not the recovery
+budget, which caps one repair's unproductive attempts, and the two failures share no text.
+`sink.max-consecutive-rejections` is the DDL spelling.
 
 ## Consequences
 
@@ -70,3 +80,4 @@ service's rejection granularity.
 [#264]: https://github.com/laughingman7743/flink-connector-gcp/issues/264
 [#269]: https://github.com/laughingman7743/flink-connector-gcp/issues/269
 [#303]: https://github.com/laughingman7743/flink-connector-gcp/issues/303
+[#361]: https://github.com/laughingman7743/flink-connector-gcp/issues/361
