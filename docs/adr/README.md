@@ -74,9 +74,10 @@ ADRs, not 360.
   pull request that lands it: append the issue to `Issues:`, note the revision on the `Date:`
   line (`revised by [#N] (YYYY-MM-DD)`), and update the body — corrections never accrete as
   inline "this said X until..." parentheticals. The file's git history is the fine-grained
-  trail; the supersession chain is only for reversals. A body edit that only folds in facts
-  measured during work the ADR already cites needs no `Date:`-line annotation — `revised by`
-  is reserved for a *new* issue extending the decision.
+  trail; the supersession chain is only for reversals. A body edit that adds supporting facts
+  without extending the decision — a verification recipe, a diagnostic probe, a measurement
+  from related work — needs no `Date:`-line annotation; `revised by` is reserved for an issue
+  that extends the decision itself.
 - The index row keeps its line when a status changes (only the Status cell changes), so a
   supersession chain is visible from the table alone.
 
@@ -133,7 +134,7 @@ Template:
 | [0026](0026-the-protobuf-mapping-is-normative-and-nullable-is-the-default-mode.md) | The protobuf mapping is normative for every serializer, and `NULLABLE` is the default mode | Accepted | 2026-07-26 | [#124](https://github.com/laughingman7743/flink-connector-gcp/issues/124), [#145](https://github.com/laughingman7743/flink-connector-gcp/issues/145) | bigquery |
 | [0027](0027-well-known-types-are-recognised-by-name-and-shape-with-six-constants.md) | Protobuf well-known types are recognised by name *and* shape, with six constants | Accepted | 2026-07-27 | [#147](https://github.com/laughingman7743/flink-connector-gcp/issues/147) | bigquery |
 | [0028](0028-default-stream-tuning-recovery-vs-retry-naming-eviction-and-flush-interval.md) | Default-stream tuning: `recovery*` vs bare `retry*`, eviction, flush interval | Accepted | 2026-07-28 | [#54](https://github.com/laughingman7743/flink-connector-gcp/issues/54), [#198](https://github.com/laughingman7743/flink-connector-gcp/issues/198) | bigquery |
-| [0029](0029-the-builder-takes-two-emulator-endpoints-one-per-transport.md) | The BigQuery builder takes two emulator endpoints, one per transport | Accepted | 2026-08-06 | [#57](https://github.com/laughingman7743/flink-connector-gcp/issues/57), [#287](https://github.com/laughingman7743/flink-connector-gcp/issues/287) | bigquery |
+| [0029](0029-the-builder-takes-two-emulator-endpoints-one-per-transport.md) | The BigQuery builder takes two emulator endpoints, one per transport | Accepted | 2026-08-06 | [#57](https://github.com/laughingman7743/flink-connector-gcp/issues/57), [#287](https://github.com/laughingman7743/flink-connector-gcp/issues/287) | bigquery (contract: every connector's production-path tests) |
 | [0030](0030-a-missing-bigquery-table-does-not-answer-not-found.md) | A missing BigQuery table does not answer `NOT_FOUND` | Accepted | 2026-08-06 | [#289](https://github.com/laughingman7743/flink-connector-gcp/issues/289), [#318](https://github.com/laughingman7743/flink-connector-gcp/issues/318) | bigquery |
 | [0031](0031-the-bigquery-table-layer-maps-onto-the-builder-with-no-format-option.md) | The BigQuery table layer maps onto the builder, with no `format` option | Accepted | 2026-08-06 | [#287](https://github.com/laughingman7743/flink-connector-gcp/issues/287) | bigquery |
 | [0032](0032-the-other-two-write-methods-map-unconditionally-and-the-factory-decides.md) | The other two write methods' mappers build unconditionally; the factory decides | Accepted | 2026-08-06 | [#288](https://github.com/laughingman7743/flink-connector-gcp/issues/288) | bigquery |
@@ -166,4 +167,4 @@ Template:
 | [0060](0060-self-review-is-two-rounds-and-round-two-audits-the-descriptions-claims.md) | Self-review is two rounds with different lenses, and round two audits the description's claims | Accepted | 2026-08-06 | — | all (workflow) |
 | [0061](0061-a-finding-outside-the-issue-is-routed-by-the-user-with-drop-as-a-real-outcome.md) | A finding outside the issue is routed by the user, with drop as a real outcome | Accepted | 2026-08-07 | — | all (workflow) |
 | [0062](0062-milestones-are-releases-and-priority-labels-order-what-breaks.md) | Milestones are releases and priority labels order what breaks inside them | Accepted | 2026-08-07 | — | all (tracker) |
-| [0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md) | Persistent GCP infrastructure is one tofu root module, applied by tfaction from the reviewed plan over WIF | Accepted | 2026-07-29 | [#5](https://github.com/laughingman7743/flink-connector-gcp/issues/5), [#168](https://github.com/laughingman7743/flink-connector-gcp/issues/168), [#170](https://github.com/laughingman7743/flink-connector-gcp/issues/170), [#176](https://github.com/laughingman7743/flink-connector-gcp/issues/176), [#177](https://github.com/laughingman7743/flink-connector-gcp/issues/177) | opentofu |
+| [0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md) | Persistent GCP infrastructure is one tofu root module, applied by tfaction from the reviewed plan over WIF | Accepted | 2026-07-29 | [#5](https://github.com/laughingman7743/flink-connector-gcp/issues/5), [#177](https://github.com/laughingman7743/flink-connector-gcp/issues/177) | opentofu |

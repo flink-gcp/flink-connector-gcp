@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-07-20 ([#63], applied to BigQuery first); the layer and naming rules settled
   2026-07-26 ([#119], [#121], [#125])
-- Issues: [#63], [#119], [#121], [#123], [#125], [#280]
+- Issues: [#63], [#119], [#121], [#125], [#280]
 - Modules: all connector modules
 - Current behavior: root `CLAUDE.md` § Package layout convention (the imperative form)
 
@@ -100,7 +100,9 @@ implicit always-on stream, named throughout that package and the opposite of a b
 ([#125]): `sink.serializer.<format>` per input format (`.proto`, `.avro`, `.json`), each
 holding its facade, its `@PublicEvolving` options object and the `@Internal` types behind
 them — a public-API layer, not merely an internals split, mirroring how the family packages
-keep their options objects. The trigger was [#123] taking the flat package to ten classes with
+keep their options objects. The trigger was PR
+[#123](https://github.com/laughingman7743/flink-connector-gcp/pull/123) taking the flat
+package to ten classes with
 the names already doing the package's job (`Proto*` ×4, `Avro*` ×4). It **passes** the [#119]
 rule rather than contradicting it: two formats existed while the issue that introduced the
 second already planned a third — the exact opposite of Cloud Tasks' `sink.createtask`. Every
@@ -135,7 +137,6 @@ share one FQCN on purpose.
 [#63]: https://github.com/laughingman7743/flink-connector-gcp/issues/63
 [#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
 [#121]: https://github.com/laughingman7743/flink-connector-gcp/issues/121
-[#123]: https://github.com/laughingman7743/flink-connector-gcp/issues/123
 [#125]: https://github.com/laughingman7743/flink-connector-gcp/issues/125
 [#205]: https://github.com/laughingman7743/flink-connector-gcp/issues/205
 [#280]: https://github.com/laughingman7743/flink-connector-gcp/issues/280

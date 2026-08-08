@@ -54,8 +54,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   worktree does not have — run `just worktree-env` once there to symlink the main checkout's
   copy (#156; the same link also carries `just tofu`'s credentials)
 - `just sweep-e2e [--dry-run]` — deletes Bigtable instances an E2E run abandoned (#246).
-  a run whose teardown never executed leaves a one-node instance standing (~**$109** until the
-  next weekly run); `sweep-e2e.yaml` runs this daily, which is what bounds that number. The
+  `AbstractBigtableRealGcpITCase` sweeps at the start of a gated class, but only the weekly
+  E2E workflow schedules one, so a run whose teardown never executed leaves a one-node
+  instance standing (~**$109** until the next weekly run); `sweep-e2e.yaml` runs this daily,
+  which is what bounds that number. The
   instance prefix and the two-hour threshold are **read out of the Java source** (a second copy
   would go stale silently), and both greps plus the gcloud listing are hard errors, because a
   sweep that matches nothing looks exactly like a sweep with nothing to do
@@ -86,7 +88,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   mapped to pages in `scripts/option-docs.toml`, not classes, so a **new** `*Options` class is
   required to appear from the moment it exists. Two allowlists, pointing opposite ways —
   `[exempt]` is a setter with no row, `[extra]` a row with no setter — and **an entry that
-  never fires fails**, as a stale one does in `check-flink-api-tiers.toml`. The pages are
+  never fires fails**, as a stale one does in `flink-api-tiers.toml`. The pages are
   **hand-written, not generated**: their tables group knobs and carry defaults the sources do
   not hold. Its own `verify.yaml` job (ADR-0058). **How to respond to each failure is
   `.claude/skills/curate-option-docs/`.** What the check does *not* do: it compares the set of
@@ -390,8 +392,8 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   (#243; ADR-0058 carries the whole design): a required check that never reports blocks a pull
   request forever, so a `changes` job derives the Maven `-pl` subset via
   `scripts/ci-maven-args.py` instead, a root-only change (`docs/**`, `scripts/**`, the root uv
-  project) builds `-pl .` alone, and a real `paths-ignore` survives on the **push** trigger
-  only. `lint.yaml` is where linters Maven does not run live, a workflow of its own purely for
+  project — minus the two licence-pin files ADR-0058 deliberately keeps out of the class)
+  builds `-pl .` alone, and a real `paths-ignore` survives on the **push** trigger only. `lint.yaml` is where linters Maven does not run live, a workflow of its own purely for
   latency; a push-side paths filter must list **every input to a lint, not just the linted
   files** (`mise.toml` pins the linters, so it is on every such list)
 - **`ci.yaml` is the pull-request orchestrator, and branch protection requires exactly its one
@@ -483,7 +485,8 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   later `flink-sql-connector-gcp-*` inherits are `docs/adr/0015` — read it before adding a
   third; what is specific to a tree (an artifact kept out of the bundle, a relocation only it
   needs) belongs beside that connector, as #290's does
-- `flink-connector-gcp-cloudtasks/CLAUDE.md` — sink design (#23) and implementation (#24)
+- `flink-connector-gcp-cloudtasks/CLAUDE.md` — sink design (#23) and implementation (#24).
+  Migrated to ADRs (`docs/adr/0048`–`0049`)
 - `flink-connector-gcp-bigtable/CLAUDE.md` — sink design and implementation (#33): implement rather
   than adopt or vendor, the four SDK facts the writer rests on (including the client's own blocking
   flow controller and two Google-internal annotations accepted deliberately), the row-level vs fatal
@@ -495,7 +498,7 @@ are the trigger; they are not a summary, and none of them is safe to answer from
 - `flink-connector-gcp-test-utils/CLAUDE.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its
-  reactor-sibling consumers create
+  reactor-sibling consumers create. Migrated to ADRs (`docs/adr/0050`–`0051`)
 - `flink-connector-gcp-base/CLAUDE.md` — the shared main-code module (#61, joined by #37's
   DLQ/metrics as `base.failure`/`base.metrics` and by `base.lifecycle`/`base.rpc`): the failure
   SPI and metric-name conventions (#280), retry loops and
@@ -504,8 +507,9 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   that scope carries. Migrated to ADRs (`docs/adr/0036`–`0040`)
 
 Decisions that span connectors stay here as rules — the package layout convention, the version
-policy, the CI architecture and the licensing rules — with their records in `docs/adr/`
-(`0053`–`0063`). A new connector gets its own module file rather than a section here.
+policy, the CI architecture, the workflow and the infrastructure — with their records in
+`docs/adr/` (`0053`–`0063`); the licensing rules stay here in full, un-migrated. A new
+connector gets its own module file rather than a section here.
 
 ## Cross-connector contracts (rules here; full records in `docs/adr/`)
 

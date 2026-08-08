@@ -17,9 +17,13 @@ limitations under the License.
 # ADR-0063: Persistent GCP infrastructure is one tofu root module, applied by tfaction from the reviewed plan over WIF
 
 - Status: Accepted
-- Date: 2026-07-29 ([#5], [#168]); the apply misconfiguration found and the recovery runbook
-  recorded 2026-08-01 ([#170], [#176]); the GitHub App deferred to go-public ([#177])
-- Issues: [#5], [#168], [#170], [#176], [#177]
+- Date: 2026-07-29 ([#5], landed by PR
+  [#168](https://github.com/laughingman7743/flink-connector-gcp/pull/168)); the apply
+  misconfiguration found and the recovery runbook recorded 2026-08-01 (PRs
+  [#170](https://github.com/laughingman7743/flink-connector-gcp/pull/170) and
+  [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)); the GitHub App
+  deferred to go-public ([#177])
+- Issues: [#5], [#177]
 - Modules: opentofu
 - Current behavior: `opentofu/README.md` (bootstrap, service-agent one-offs, credentials)
 
@@ -39,18 +43,24 @@ limitations under the License.
   `just tofu <args>` is the local equivalent.
 - **Plain `GITHUB_TOKEN`, no GitHub App** — tfaction's push-back features (auto-fix commits,
   follow-up PRs) are unused. The App is deliberately deferred to the dedicated org at
-  go-public time ([#177]; decided with the user on [#176], where a dispatch-triggered
-  fresh-apply workflow was built as an alternative and withdrawn in the App's favour).
+  go-public time ([#177]; decided with the user on PR
+  [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176), where a
+  dispatch-triggered fresh-apply workflow was built as an alternative and withdrawn in the
+  App's favour).
 - **The apply workflow must set `TFACTION_IS_APPLY: "true"`** — tfaction's job_type is
   "terraform" for plan and apply alike, and setup falls back to `terraform_plan_config` (the
-  read-only account) without it. That misconfiguration shipped with [#168] and hid behind
-  no-change applies until [#170]'s first real write, whose 403s were then misdiagnosed twice:
+  read-only account) without it. That misconfiguration shipped with PR
+  [#168](https://github.com/laughingman7743/flink-connector-gcp/pull/168) and hid behind
+  no-change applies until the first real write (PR
+  [#170](https://github.com/laughingman7743/flink-connector-gcp/pull/170)), whose 403s were
+  then misdiagnosed twice:
   a missing service agent was blamed on evidence that never included the authenticated
   principal. **Read the auth step's log first.**
 - **A failed apply is recovered by a follow-up pull request**, never by re-running the apply
   job: the failure bumps the state serial, making the saved plan stale, so a re-run can only
   fail again ("Saved plan is stale") — and tofu cancels unstarted operations on the first
-  error, so assume nothing from the failed apply exists until measured ([#176]).
+  error, so assume nothing from the failed apply exists until measured (PR
+  [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)).
 - **No service account keys, ever.** All CI credentials are short-lived WIF tokens; the
   provider condition pins the immutable repository/owner IDs, and per-account bindings
   restrict the apply account to `push` on `main` and the E2E account to
@@ -66,7 +76,4 @@ limitations under the License.
   `versions.tf` `required_version` (what refuses to run on a skew) — a bump edits both.
 
 [#5]: https://github.com/laughingman7743/flink-connector-gcp/issues/5
-[#168]: https://github.com/laughingman7743/flink-connector-gcp/issues/168
-[#170]: https://github.com/laughingman7743/flink-connector-gcp/issues/170
-[#176]: https://github.com/laughingman7743/flink-connector-gcp/issues/176
 [#177]: https://github.com/laughingman7743/flink-connector-gcp/issues/177

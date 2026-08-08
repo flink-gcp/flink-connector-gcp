@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-06 (groundwork for [#287], under [#57])
 - Issues: [#57], [#287]
-- Modules: bigquery
+- Modules: bigquery (Consequences: a contract for every connector's production-path tests)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Testing
 
 ## Decision
