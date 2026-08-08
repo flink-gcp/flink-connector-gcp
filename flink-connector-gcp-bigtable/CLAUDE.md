@@ -14,6 +14,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   flow controller — keep the writer's caps below it, and `@InternalApi`
   `RowMutationEntry.toProto()`) are checked, not assumed; reread them on a client upgrade
   (`docs/adr/0041`).
+- **The writer's per-record `toProto()` is one of four identical constructions, three of them the
+  client's own, and its cost is measured** — so it is not re-argued as an optimisation without
+  engaging those numbers, and no local fix exists to argue for: the entry exposes neither its key,
+  its mutations nor its size. The lever is upstream (#236, `docs/adr/0041`).
 - **Retries stay in the client**: no `RetrySchedule`, no retry knobs. One fixed table per sink,
   no auto-creation; `TableDestination` sits at the module root and `appProfileId` is a builder
   option, not part of it.
