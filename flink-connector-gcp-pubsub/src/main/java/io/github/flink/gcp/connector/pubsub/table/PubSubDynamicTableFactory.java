@@ -127,6 +127,7 @@ public class PubSubDynamicTableFactory
                         PubSubConnectorOptions.SINK_MESSAGE_ORDERING_ENABLED,
                         PubSubConnectorOptions.SINK_IN_FLIGHT_MAX_MESSAGES,
                         PubSubConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
+                        PubSubConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
                         PubSubConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
                         PubSubConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
                         PubSubConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,

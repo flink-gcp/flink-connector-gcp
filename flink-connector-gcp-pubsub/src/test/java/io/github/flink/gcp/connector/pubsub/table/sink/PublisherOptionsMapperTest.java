@@ -77,6 +77,8 @@ class PublisherOptionsMapperTest {
                 "maxInFlightMessages", PubSubConnectorOptions.SINK_IN_FLIGHT_MAX_MESSAGES);
         SETTER_TO_OPTION.put("maxInFlightBytes", PubSubConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES);
         SETTER_TO_OPTION.put(
+                "maxConsecutiveRejections", PubSubConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS);
+        SETTER_TO_OPTION.put(
                 "publishProgressTimeout", PubSubConnectorOptions.SINK_PUBLISH_PROGRESS_TIMEOUT);
         SETTER_TO_OPTION.put(
                 "recoveryInitialBackoff", PubSubConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF);
@@ -130,6 +132,7 @@ class PublisherOptionsMapperTest {
         options.put("sink.message-ordering.enabled", "true");
         options.put("sink.in-flight.max-messages", "23");
         options.put("sink.in-flight.max-bytes", "5 mb");
+        options.put("sink.max-consecutive-rejections", "7");
         options.put("sink.recovery.initial-backoff", "600 ms");
         options.put("sink.recovery.max-backoff", "20 s");
         options.put("sink.recovery.max-attempts", "6");
@@ -151,6 +154,7 @@ class PublisherOptionsMapperTest {
         assertThat(mapped.isEnableMessageOrdering()).isTrue();
         assertThat(mapped.getMaxInFlightMessages()).isEqualTo(23);
         assertThat(mapped.getMaxInFlightBytes()).isEqualTo(5L * 1024 * 1024);
+        assertThat(mapped.getMaxConsecutiveRejections()).isEqualTo(7);
         assertThat(mapped.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(600));
         assertThat(mapped.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(20));
         assertThat(mapped.getRecoveryMaxAttempts()).isEqualTo(6);

@@ -93,6 +93,7 @@ page, where it also explains why the shutdown budget exists.
 | `recoveryInitialBackoff` | 500 ms | First backoff of a republish — after creating a missing topic, or after resuming an ordering key |
 | `recoveryMaxBackoff` | 10 s | Cap of that backoff, before ±25% jitter |
 | `recoveryMaxAttempts` | 10 | Republish attempts per destination and incident. Bounds a repair making no progress, not the length of a rejected run (see [Ordering and a dropping policy]({{< relref "docs/connectors/datastream/pubsub" >}}#ordering-and-a-dropping-policy)) |
+| `maxConsecutiveRejections` | 100 | Fails the job once this many confirmed rejections arrive in a row with no successful publish between them — the guardrail on a dropping policy's [isolation cost]({{< relref "docs/connectors/datastream/pubsub" >}}#ordering-and-a-dropping-policy). Any success resets the count; `-1` removes the bound |
 
 **Shutdown.**
 

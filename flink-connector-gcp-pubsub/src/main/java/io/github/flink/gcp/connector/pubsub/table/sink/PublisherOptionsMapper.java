@@ -93,6 +93,8 @@ public final class PublisherOptionsMapper {
         config.getOptional(PubSubConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES)
                 .map(MemorySize::getBytes)
                 .ifPresent(builder::maxInFlightBytes);
+        config.getOptional(PubSubConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS)
+                .ifPresent(builder::maxConsecutiveRejections);
 
         config.getOptional(PubSubConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF)
                 .ifPresent(builder::recoveryInitialBackoff);

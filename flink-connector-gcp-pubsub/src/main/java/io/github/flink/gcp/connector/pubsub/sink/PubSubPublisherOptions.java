@@ -53,6 +53,16 @@ public final class PubSubPublisherOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    /**
+     * The default {@link Builder#maxConsecutiveRejections(int)}: enough confirmed rejections in a
+     * row to say the stream's data is broken rather than anomalous, at an isolation cost of about a
+     * hundred solo publishes — one {@code Publish} round trip each — before the job fails.
+     */
+    public static final int DEFAULT_MAX_CONSECUTIVE_REJECTIONS = 100;
+
+    /** {@link Builder#maxConsecutiveRejections(int)} value under which the bound never fires. */
+    public static final int UNBOUNDED = -1;
+
     private static final PubSubPublisherOptions DEFAULTS = builder().build();
 
     @Nullable private final Long batchElementCountThreshold;
@@ -75,6 +85,7 @@ public final class PubSubPublisherOptions implements Serializable {
     private final int recoveryMaxAttempts;
     private final Duration shutdownTimeout;
     private final boolean perDestinationMetrics;
+    private final int maxConsecutiveRejections;
 
     private PubSubPublisherOptions(Builder builder) {
         this.batchElementCountThreshold = builder.batchElementCountThreshold;
@@ -97,6 +108,7 @@ public final class PubSubPublisherOptions implements Serializable {
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
         this.shutdownTimeout = builder.shutdownTimeout;
         this.perDestinationMetrics = builder.perDestinationMetrics;
+        this.maxConsecutiveRejections = builder.maxConsecutiveRejections;
     }
 
     /**
@@ -111,7 +123,9 @@ public final class PubSubPublisherOptions implements Serializable {
     /**
      * Returns the default options: SDK-default batching and retries, ordering disabled, in-flight
      * caps of 1000 messages and 64 MiB, a topic auto-creation recovery budget of 500 ms doubling to
-     * 10 s over 10 attempts, and a 30 s publisher shutdown budget.
+     * 10 s over 10 attempts, a 30 s publisher shutdown budget, and a job failure after {@value
+     * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed rejections under a dropping
+     * policy.
      *
      * @return the default options
      */
@@ -234,6 +248,14 @@ public final class PubSubPublisherOptions implements Serializable {
     }
 
     /**
+     * Returns how many consecutive confirmed rejections fail the job, or {@link #UNBOUNDED} for
+     * none.
+     */
+    public int getMaxConsecutiveRejections() {
+        return maxConsecutiveRejections;
+    }
+
+    /**
      * Returns the topic auto-creation recovery schedule the {@code recovery*} knobs describe.
      * Jittered: every subtask that parked publishes for the same missing topic resumes against the
      * same freshly created topic, so unjittered they would republish in lockstep.
@@ -277,6 +299,7 @@ public final class PubSubPublisherOptions implements Serializable {
         PubSubPublisherOptions that = (PubSubPublisherOptions) o;
         return enableMessageOrdering == that.enableMessageOrdering
                 && perDestinationMetrics == that.perDestinationMetrics
+                && maxConsecutiveRejections == that.maxConsecutiveRejections
                 && maxInFlightMessages == that.maxInFlightMessages
                 && maxInFlightBytes == that.maxInFlightBytes
                 && publishProgressTimeout.equals(that.publishProgressTimeout)
@@ -319,7 +342,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
                 shutdownTimeout,
-                perDestinationMetrics);
+                perDestinationMetrics,
+                maxConsecutiveRejections);
     }
 
     @Override
@@ -364,6 +388,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 + shutdownTimeout
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
+                + ", maxConsecutiveRejections="
+                + maxConsecutiveRejections
                 + "}";
     }
 
@@ -392,6 +418,7 @@ public final class PubSubPublisherOptions implements Serializable {
         private int recoveryMaxAttempts = 10;
         private Duration shutdownTimeout = Duration.ofSeconds(30);
         private boolean perDestinationMetrics;
+        private int maxConsecutiveRejections = DEFAULT_MAX_CONSECUTIVE_REJECTIONS;
 
         private Builder() {}
 
@@ -725,6 +752,37 @@ public final class PubSubPublisherOptions implements Serializable {
          */
         public Builder perDestinationMetrics(boolean perDestinationMetrics) {
             this.perDestinationMetrics = perDestinationMetrics;
+            return this;
+        }
+
+        /**
+         * Sets how many <em>consecutive</em> confirmed rejections fail the job. Defaults to {@value
+         * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS}; {@link #UNBOUNDED} (-1) never fails it.
+         *
+         * <p>This bound only matters beside a dropping {@code failedMessageHandler} — under the
+         * default {@code failJob()} the first confirmed rejection fails the job anyway. A dropping
+         * policy is a decision to keep running through <em>anomalous</em> records, and the repair's
+         * isolation pass pays one solo publish per rejection to isolate each from the good messages
+         * batched with it. When every message is being refused, that is no longer a stream with
+         * anomalies but a broken pipeline degraded to unbatched publishes under a green job — so
+         * once this many confirmed rejections arrive in a row, with not one successfully published
+         * message between them, the job fails with a message naming this option. Any successful
+         * publish resets the count: an occasional bad record can never accumulate into a failure,
+         * however long the job runs.
+         *
+         * <p>Only rejections the isolation pass has <em>confirmed</em> solo count; records the
+         * serializer rejects do not, since they say nothing about the service's view of the stream.
+         * The count is per writer subtask, across its destinations — a success on any topic resets
+         * it.
+         *
+         * @param maxConsecutiveRejections the bound, positive or {@link #UNBOUNDED}
+         * @return this builder
+         */
+        public Builder maxConsecutiveRejections(int maxConsecutiveRejections) {
+            Preconditions.checkArgument(
+                    maxConsecutiveRejections > 0 || maxConsecutiveRejections == UNBOUNDED,
+                    "maxConsecutiveRejections must be positive or -1 (unbounded)");
+            this.maxConsecutiveRejections = maxConsecutiveRejections;
             return this;
         }
 

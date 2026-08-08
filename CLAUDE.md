@@ -348,7 +348,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   root cause is recorded as a comment on the one to work instead, so each keeps its own closure
   record
 - PRs close their issue with `Closes #N`, written **unformatted** — a closing keyword inside a
-  code span is not parsed, the issue silently survives the merge, and nothing reports it. Check
+  code span is not parsed, the issue silently survives the merge, and nothing reports it. The
+  inverse also bites: GitHub parses a closing keyword out of ordinary prose, so a body sentence
+  like "the follow-up PR, which will close #361" closes the issue on merge (PR #389 did exactly
+  that). Name an issue a PR must *not* close without a closing verb directly before `#N`. Check
   `closingIssuesReferences` rather than by eye (`gh api graphql -f
   query='{repository(owner:"laughingman7743",name:"flink-connector-gcp"){pullRequest(number:N)
   {closingIssuesReferences(first:5){nodes{number}}}}}'`)
