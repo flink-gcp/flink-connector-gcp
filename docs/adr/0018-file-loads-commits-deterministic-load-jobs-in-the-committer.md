@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-19 ([#14]); load stage revised 2026-07-20 ([#69]); committer schedules
-  2026-08-01 ([#198]); revised by [#337] (2026-08-08)
-- Issues: [#14], [#69], [#198], [#337]
+  2026-08-01 ([#198]); revised by [#337] (2026-08-08); conflict handler revised by [#380]
+  (2026-08-08)
+- Issues: [#14], [#69], [#198], [#337], [#380]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -72,8 +73,9 @@ limitations under the License.
   therefore left `awaitJob` as an unchecked exception, past the `IOException` the `LoadJobRunner`
   contract promises and past the message the runner composes from the error and its execution
   errors; only a job that was **already** failed when the runner took hold of it reached that
-  message, and `create`'s HTTP-409 handler is the one thing that hands over such a job. Same
-  request, without the throw; do not simplify it back. Two facts the same measurement turned up,
+  message. Two doors hand over such a job: `create`'s own HTTP-409 handler — closed by the
+  [#380] revision below — and the SDK absorber's statusless answer, which nothing can judge
+  until the first poll resolves it. Same request, without the throw; do not simplify it back. Two facts the same measurement turned up,
   both about `BigQueryImpl.create` rather than about this connector: it absorbs an already-exists
   error itself for a non-random job id, re-fetching with `JobOption.fields(STATISTICS)` and
   returning that job when it was created within 24 hours — so the runner's own 409 handler is
@@ -93,9 +95,24 @@ limitations under the License.
   SDK has already retried by the time either is thrown — but the type the SPI declares is now true
   of every path through it. The conflict lookup keeps the 409 as a **suppressed** exception on the
   failure it reports, because the conflict is the half that says the id is already taken.
+- **The HTTP-409 handler judges the job it finds before attaching to it** ([#380]). A failed job
+  id cannot be reused, and `submitOrAttach` spends up to five `-rN` probes making sure it never
+  attaches to a failed job — yet the conflict handler attached to whatever the losing race left
+  behind, so a zombie that had already failed handed the commit a failure predating the attempt
+  and cost one Flink restart (the next attempt's probe found the failed id and moved on; measured
+  self-healing, which is why this waited for [#380] rather than riding [#337]). The handler now
+  hands the conflicting job back to the probe loop, which applies the same finished-with-an-error
+  verdict it applies to a job the probe finds: a live or statusless job is attached to, a failed
+  one is probed past, feeding the same `-rN` warning and the same give-up message. The statusless
+  half is load-bearing: the job the SDK's own already-exists absorber returns carries no status
+  (above), so a null status must read as attachable or every absorbed conflict would burn a
+  retry id. Which is also the revision's limit — a failed zombie behind a statusless answer is
+  still attached to, its stored failure surfacing from the first poll at the same one-restart
+  cost, because no verdict exists to read at attach time.
 
 [#14]: https://github.com/laughingman7743/flink-connector-gcp/issues/14
 [#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
 [#69]: https://github.com/laughingman7743/flink-connector-gcp/issues/69
 [#198]: https://github.com/laughingman7743/flink-connector-gcp/issues/198
 [#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337
+[#380]: https://github.com/laughingman7743/flink-connector-gcp/issues/380

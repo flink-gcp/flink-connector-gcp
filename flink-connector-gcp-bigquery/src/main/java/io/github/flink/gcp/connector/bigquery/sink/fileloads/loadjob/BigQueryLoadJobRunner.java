@@ -171,22 +171,21 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             JobId jobId = toJobId(jobName);
             Job existing = getJob(jobId, "looking for a previous attempt's job");
             if (existing == null) {
-                activeJobs.put(baseJobId, create(jobId, configuration));
+                Job submitted = create(jobId, configuration);
+                JobStatus submittedStatus = submitted.getStatus();
+                if (isFailed(submittedStatus)) {
+                    // create lost its race to a zombie that had itself already failed, whose id
+                    // is as unusable as one the probe above found failed.
+                    lastError = probePastFailedJob(jobName, baseJobId, submittedStatus, probe);
+                    continue;
+                }
+                activeJobs.put(baseJobId, submitted);
                 LOG.info("Submitted BigQuery job {}: {}", jobName, what);
                 return;
             }
             JobStatus status = existing.getStatus();
-            if (status != null
-                    && status.getState() == JobStatus.State.DONE
-                    && status.getError() != null) {
-                // A failed job's id cannot be reused; probe the next deterministic id.
-                lastError = status.getError().toString();
-                LOG.warn(
-                        "BigQuery job {} from a previous attempt failed ({}); probing {}-r{}",
-                        jobName,
-                        lastError,
-                        baseJobId,
-                        probe + 1);
+            if (isFailed(status)) {
+                lastError = probePastFailedJob(jobName, baseJobId, status, probe);
                 continue;
             }
             activeJobs.put(baseJobId, existing);
@@ -203,12 +202,58 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                         + lastError);
     }
 
+    /**
+     * A failed job's id cannot be reused, and attaching to one would fail the commit with a failure
+     * that predates this attempt; only a fresh id can still load the data. Logs the same warning
+     * however the failed job was met — found by the probe, or handed back by {@code create} after a
+     * conflict — and answers the error for {@code lastError}, so the give-up message reports
+     * whichever failed job was met last. Callers have established {@code isFailed(status)}, which
+     * is what makes the error dereference safe.
+     */
+    private static String probePastFailedJob(
+            String jobName, String baseJobId, JobStatus status, int probe) {
+        String error = status.getError().toString();
+        if (probe < MAX_RETRY_PROBES) {
+            LOG.warn(
+                    "BigQuery job {} from a previous attempt failed ({}); probing {}-r{}",
+                    jobName,
+                    error,
+                    baseJobId,
+                    probe + 1);
+        } else {
+            LOG.warn(
+                    "BigQuery job {} from a previous attempt failed ({}), and no retry ids are"
+                            + " left to probe",
+                    jobName,
+                    error);
+        }
+        return error;
+    }
+
+    /**
+     * Whether the job has finished and reports an error — the one state the runner must move past
+     * to a fresh {@code -rN} id, since a failed id can never be reused (see the class javadoc).
+     *
+     * <p>{@code null} is not failed, and that is load-bearing: the job the SDK's own already-exists
+     * absorber returns carries no status at all (it re-fetches with {@code
+     * JobOption.fields(STATISTICS)}, whose required fields exclude the status; measured 2026-08-08
+     * against google-cloud-bigquery 2.68.0, ADR-0018), and such a job must be attached to and
+     * polled rather than probed past.
+     */
+    private static boolean isFailed(@Nullable JobStatus status) {
+        return status != null
+                && status.getState() == JobStatus.State.DONE
+                && status.getError() != null;
+    }
+
     private Job create(JobId jobId, JobConfiguration configuration) throws IOException {
         try {
             return client().create(JobInfo.of(jobId, configuration));
         } catch (BigQueryException e) {
             if (e.getCode() == HttpURLConnection.HTTP_CONFLICT) {
-                // Lost a race against a zombie of a previous attempt; attach to its job.
+                // Lost a race against a zombie of a previous attempt; hand its job back for the
+                // probe loop to judge — a still-usable zombie is attached to, a failed one is
+                // probed past.
                 Job existing;
                 try {
                     existing = client().getJob(jobId);

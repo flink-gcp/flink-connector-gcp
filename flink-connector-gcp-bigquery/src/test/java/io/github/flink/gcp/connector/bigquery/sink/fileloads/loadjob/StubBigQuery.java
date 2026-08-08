@@ -86,10 +86,13 @@ final class StubBigQuery implements BigQuery {
     /** Every {@link TableId} {@code delete} was called with, in order. */
     final List<TableId> deleted = new ArrayList<>();
 
-    /** The status a created job reports. */
-    JobStatus createdStatus = TestJobs.status(JobStatus.State.DONE);
+    /**
+     * The status a created job reports; {@code null} for the statusless job the SDK's own
+     * already-exists absorber hands back (it re-fetches with fields that exclude the status).
+     */
+    @Nullable JobStatus createdStatus = TestJobs.status(JobStatus.State.DONE);
 
-    /** Thrown by {@code create} when set. */
+    /** Thrown by the next {@code create} call when set, and consumed by it: later calls succeed. */
     @Nullable BigQueryException createFailure;
 
     /** Thrown by {@code delete} when set. */
@@ -183,7 +186,9 @@ final class StubBigQuery implements BigQuery {
         noOptions(options);
         created.add(jobInfo);
         if (createFailure != null) {
-            throw createFailure;
+            BigQueryException failure = createFailure;
+            createFailure = null;
+            throw failure;
         }
         return TestJobs.job(this, jobInfo.getJobId(), createdStatus);
     }
