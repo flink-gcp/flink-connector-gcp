@@ -74,5 +74,28 @@ Traps and decisions not to re-derive:
   `serialize` before `getDescriptor`, so that is where the first build happens there. An empty
   schema is rejected outright.
 
+## Consequences
+
+Pursuing a fix upstream means proving the patch both ways — fails without it, passes with it —
+and neither proof needs the 2.1 GB `googleapis/google-cloud-java` monorepo, whose SNAPSHOT-only
+parent chain does not close from a sparse checkout. Two routes, measured 2026-08-06 while
+verifying an upstream `java-pubsub` patch under [#265] (the test cycle is ~13 s):
+
+- **A standalone pom over the upstream sources**: no parent, `libraries-bom` for versions,
+  `sourceDirectory`/`testSourceDirectory` pointed at the checkout, compiler `<includes>` naming
+  only the patched file (every sibling resolves from the released jar) and `<testIncludes>`
+  naming the submitted test and its helpers. Faithful whenever the patched file is
+  byte-identical between the released version and upstream `main` — check that first. The
+  checkout itself can be `--depth 1 --filter=blob:none --sparse` (~60 MB instead of 2.1 GB).
+- **The patched class compiled ahead of the jar**: `javac` the single patched source against an
+  existing project's classpath, then run a reproducer with the output directory first on
+  `-cp` — package-private access to the jar's siblings works because the source declares the
+  same package.
+
+Verify the *fix* with the second route (minutes), the *submitted test* with the first before
+submitting — an unrun upstream test wastes a reviewer's cycle on a repository that requires two
+approvals.
+
 [#66]: https://github.com/laughingman7743/flink-connector-gcp/issues/66
 [#131]: https://github.com/laughingman7743/flink-connector-gcp/issues/131
+[#265]: https://github.com/laughingman7743/flink-connector-gcp/issues/265

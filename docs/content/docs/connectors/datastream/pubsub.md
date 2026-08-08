@@ -1271,6 +1271,16 @@ the emulator settles for non-loss and the real-GCP suite below asserts promptnes
 [#118]({{< param BookRepo >}}/issues/118)), and one reader consuming several subscriptions; they
 also drive the production subscription admin (creation with settings read back, `ALREADY_EXISTS`
 leaving an existing subscription alone, and seek-to-timestamp replaying acknowledged messages).
+
+Two harness rules hold across all of these, both measured
+([#150]({{< param BookRepo >}}/issues/150), [#151]({{< param BookRepo >}}/issues/151)): every
+drain of a running job's output is deadline-bounded, so a shortfall fails at the deadline naming
+what did arrive instead of blocking in `hasNext()` until the build is killed; and a negative
+("no further rows arrive") is never asserted by over-requesting rows or by pulling an empty
+subscription — a synchronous `Pull` against an empty subscription long-polls for about a minute
+before returning nothing — but is made deterministic another way, such as acknowledging the
+whole backlog outside Flink first.
+
 MiniCluster tests drive the source through the public builder over two subscriptions under real
 checkpoints, and through the startup check end-to-end: auto-creating a missing subscription and then
 consuming it, failing the job when creation is not authorised, rejecting an unordered subscription

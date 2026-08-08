@@ -33,6 +33,11 @@ names has to. The goccy emulator answers `NOT_FOUND` (and `UNKNOWN` on the defau
 created a table against the real service**, while every emulator test said it did. Nothing
 caught it because the gated storage-path suites create their tables up front.
 
+The masked message means the text alone cannot tell a permission failure from a missing table.
+The decisive read-only probe is **`bq show <table>` under the *same* ADC**: it answers
+`Not found`, which proves the credentials hold `bigquery.tables.get` and therefore that only
+the table was missing — run it before blaming credentials.
+
 ## Decision
 
 The verdict is `AppendErrorClassifier.isMissingTable`, taking both codes, consumed by

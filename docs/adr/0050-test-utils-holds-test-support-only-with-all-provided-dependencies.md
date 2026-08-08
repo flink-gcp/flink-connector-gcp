@@ -72,9 +72,9 @@ limitations under the License.
   test-double that does belongs in the module that needs it.
 
 [#26]: https://github.com/laughingman7743/flink-connector-gcp/issues/26
+[#27]: https://github.com/laughingman7743/flink-connector-gcp/issues/27
 [#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
 [#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
-[#27]: https://github.com/laughingman7743/flink-connector-gcp/issues/27
 [#181]: https://github.com/laughingman7743/flink-connector-gcp/issues/181
 [#244]: https://github.com/laughingman7743/flink-connector-gcp/issues/244
 [#245]: https://github.com/laughingman7743/flink-connector-gcp/issues/245
