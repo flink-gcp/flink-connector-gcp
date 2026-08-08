@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-19 ([#14]); load stage revised 2026-07-20 ([#69]); committer schedules
-  2026-08-01 ([#198])
-- Issues: [#14], [#69], [#198]
+  2026-08-01 ([#198]); revised by [#337] (2026-08-08)
+- Issues: [#14], [#69], [#198], [#337]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -65,8 +65,37 @@ limitations under the License.
   to avoid. `BigQueryLoadJobRunner` takes its schedule as a constructor argument rather than
   reading the options — it implements the `LoadJobRunner` SPI and must not depend on the
   FILE_LOADS options type.
+- **Completion polling re-fetches the job through `BigQuery#getJob`, never `Job#reload()`**
+  ([#337]). Measured against `google-cloud-bigquery` 2.68.0 (2026-08-08): `Job#reload` is
+  `bigquery.getJob(getJobId())` plus a throw — it raises `BigQueryException` as soon as the job it
+  fetched carries an error, whatever that job's state. Every load that failed *while being polled*
+  therefore left `awaitJob` as an unchecked exception, past the `IOException` the `LoadJobRunner`
+  contract promises and past the message the runner composes from the error and its execution
+  errors; only a job that was **already** failed when the runner took hold of it reached that
+  message, and `create`'s HTTP-409 handler is the one thing that hands over such a job. Same
+  request, without the throw; do not simplify it back. Two facts the same measurement turned up,
+  both about `BigQueryImpl.create` rather than about this connector: it absorbs an already-exists
+  error itself for a non-random job id, re-fetching with `JobOption.fields(STATISTICS)` and
+  returning that job when it was created within 24 hours — so the runner's own 409 handler is
+  reached only past that window, or when the SDK's regex does not match, or when it never consults
+  the regex at all (a null cause or cause message); and the job it absorbs comes back with **no
+  status**, which the polling loop treats as not-yet-done and resolves on the next fetch. What the
+  operator gains: `Job#reload`'s throw built a `BigQueryException(List<BigQueryError>)`, whose
+  message is the *first execution error* and which names **no job id** — and which the SQL uber-jar
+  reports under its relocated class name; the composed `IOException` names the job id that actually
+  ran, which after a probe is not the one the caller passed.
+- **Every `jobs.get` the runner makes answers a failure with `IOException`, naming the job**
+  ([#337]). The three lookups — the probe, the poll, and the one `create` makes after a conflict —
+  went through the client unguarded, so a lookup that failed past the SDK's own retries left
+  `submitOrAttach` and `awaitJob` as an unchecked `BigQueryException`: the same contract hole the
+  polling change closes, reached by a different door, and with the job id in neither the message
+  nor the code. Nothing about the commit's fate changes — both types fail it identically, and the
+  SDK has already retried by the time either is thrown — but the type the SPI declares is now true
+  of every path through it. The conflict lookup keeps the 409 as a **suppressed** exception on the
+  failure it reports, because the conflict is the half that says the id is already taken.
 
 [#14]: https://github.com/laughingman7743/flink-connector-gcp/issues/14
 [#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
 [#69]: https://github.com/laughingman7743/flink-connector-gcp/issues/69
 [#198]: https://github.com/laughingman7743/flink-connector-gcp/issues/198
+[#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337

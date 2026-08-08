@@ -48,7 +48,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - Deterministic job ids + get-then-submit re-attach; loads commit **in the committer** on the
   checkpoint, synchronously; streaming overflow appends sequentially (`docs/adr/0018`). The
-  polling attempt cap stays `Integer.MAX_VALUE` — do not expose it.
+  polling attempt cap stays `Integer.MAX_VALUE` — do not expose it. **`awaitJob` re-fetches
+  through `BigQuery#getJob`, never `Job#reload()`**: the convenience throws `BigQueryException`
+  on a job carrying an error, which routed the ordinary failure past the `IOException` the SPI
+  promises (#337; `docs/adr/0018`). **All three of the runner's `jobs.get` calls go through its
+  `getJob(JobId, String)` helper** for the other half of that contract — a failed lookup must not
+  leave the SPI as the client's unchecked type either — and the conflict lookup keeps the 409 as
+  a suppressed exception. `BigQueryLoadJobRunner`'s unit tests drive it through a scripted
+  `StubBigQuery`, with `Job` values minted by `TestJobs` (`docs/adr/0067`).
 - **The staging format is a real constraint**: Parquet cannot reach a `JSON` column, and "what
   the load job accepts" is answered only by a load job (`docs/adr/0019`). `DATETIME` stages as
   `local-timestamp-micros`; the literal parser keeps `ResolverStyle.STRICT`, which is

@@ -130,7 +130,10 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             Retries.sleep(
                     pollSchedule.backoffMs(attempt++),
                     "Interrupted while waiting for BigQuery job " + jobId);
-            Job reloaded = job.reload();
+            // Deliberately not Job#reload(): the same request, minus its
+            // throw-if-the-job-carries-an-error behaviour, which routed a load that failed while
+            // being polled past the message composed below (ADR-0018). Do not simplify it back.
+            Job reloaded = getJob(job.getJobId(), "polling for completion");
             if (reloaded == null) {
                 throw new IOException(
                         "BigQuery job " + job.getJobId().getJob() + " disappeared while polling.");
@@ -166,7 +169,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
             String jobName = probe == 0 ? baseJobId : baseJobId + "-r" + probe;
             JobId jobId = toJobId(jobName);
-            Job existing = client().getJob(jobId);
+            Job existing = getJob(jobId, "looking for a previous attempt's job");
             if (existing == null) {
                 activeJobs.put(baseJobId, create(jobId, configuration));
                 LOG.info("Submitted BigQuery job {}: {}", jobName, what);
@@ -206,12 +209,46 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         } catch (BigQueryException e) {
             if (e.getCode() == HttpURLConnection.HTTP_CONFLICT) {
                 // Lost a race against a zombie of a previous attempt; attach to its job.
-                Job existing = client().getJob(jobId);
+                Job existing;
+                try {
+                    existing = client().getJob(jobId);
+                } catch (BigQueryException lookupFailure) {
+                    // The conflict is why this lookup happens at all, and it names the one thing
+                    // the lookup failure does not: that the id is already taken.
+                    lookupFailure.addSuppressed(e);
+                    throw new IOException(
+                            "Failed to submit BigQuery job " + jobId.getJob(), lookupFailure);
+                }
                 if (existing != null) {
                     return existing;
                 }
             }
             throw new IOException("Failed to submit BigQuery job " + jobId.getJob(), e);
+        }
+    }
+
+    /**
+     * Looks a job up, as {@link BigQuery#getJob} does, but answering a failed lookup with the
+     * {@link IOException} the {@link LoadJobRunner} contract promises rather than with the client's
+     * unchecked {@link BigQueryException}.
+     *
+     * <p>The SDK has already retried by the time this throws — its own retry settings govern the
+     * call — so a failure here is one the commit cannot recover from either way, and the type is
+     * all that changes. What it buys is the job id in the message: a {@code jobs.get} failure names
+     * the resource in neither the exception's message nor its code.
+     *
+     * @param jobId the job to look up
+     * @param what what the caller was doing, for the failure message
+     * @return the job, or {@code null} if the service reports none under that id
+     * @throws IOException if the lookup fails
+     */
+    @Nullable
+    private Job getJob(JobId jobId, String what) throws IOException {
+        try {
+            return client().getJob(jobId);
+        } catch (BigQueryException e) {
+            throw new IOException(
+                    "Failed to look up BigQuery job " + jobId.getJob() + " while " + what, e);
         }
     }
 

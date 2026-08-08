@@ -1532,7 +1532,9 @@ mode mapping is pinned against real `.proto` fixtures compiled at build time —
 presence shape and the proto2 `required`/`optional` pair, both by default and under
 `deriveRequiredColumns()` — and `ProtoRowConverterTest` pins the value side of the same
 question: an unselected `oneof` branch is left unset, while a presence-less field is written as its
-type default.
+type default. FILE_LOADS' deterministic job ids are pinned at the level below the committer too
+(`BigQueryLoadJobRunnerTest`): which id a restarted attempt probes, which existing job it attaches
+to instead of submitting, and what a load that fails while being polled reports.
 
 **Emulator integration tests** run [goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator)
 in a testcontainer and exercise the Storage Write API gRPC endpoint plus the REST
