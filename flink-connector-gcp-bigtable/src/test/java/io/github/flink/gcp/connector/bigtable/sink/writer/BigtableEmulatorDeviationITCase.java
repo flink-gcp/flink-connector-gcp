@@ -214,13 +214,12 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
                         .failedMutationHandler(handler)
                         .emulatorEndpoint(emulatorEndpoint())
                         .build();
-        MutationBatcher batcher =
+        MutationBatcherFactory factory =
                 new DefaultMutationBatcherFactory(
-                                table, null, options, EmulatorEndpoint.parse(emulatorEndpoint()))
-                        .create();
+                        null, options, EmulatorEndpoint.parse(emulatorEndpoint()));
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(
-                        batcher,
+                        factory,
                         new BigtableTableAdmin(EmulatorEndpoint.parse(emulatorEndpoint())),
                         new FakeMailboxExecutor(),
                         TestSinkWriterMetricGroup.create());

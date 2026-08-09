@@ -39,7 +39,8 @@ repair, not the client's mutation retries.
 
 | Option | Default | What it does |
 |---|---|---|
-| `table` | **required** | The table every mutation is written to. Fixed for the sink's lifetime |
+| `table` | **required**, unless `destinationResolver` is set | Writes every mutation to one fixed table |
+| `destinationResolver` | — | Resolves the table per record. Runs before the serializer; returning `null` fails the job |
 | `serializer` | **required** | Turns a record into a `RowMutationEntry`, or into `null` to skip it |
 | `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through, which is what selects the routing policy and the request priority |
 | `writerOptions` | [defaults](#bigtablewriteroptions) | The batch thresholds and the in-flight bounds |
@@ -49,15 +50,18 @@ repair, not the client's mutation retries.
 | `tableCreateOptions` | — | The [column families and rules](#tablecreateoptions) for the table the sink creates. Required with `CREATE_IF_NEEDED`, rejected with `CREATE_NEVER` |
 
 **The mutation itself is built by the serializer, not configured here.** Row key, column families
-and qualifiers, cell timestamps, deletes — every per-record decision belongs to the
-`BigtableSerializationSchema`, which returns the whole `RowMutationEntry`. The one decision worth
+and qualifiers, cell timestamps, deletes — every per-record decision about the *mutation* belongs to
+the `BigtableSerializationSchema`, which returns the whole `RowMutationEntry`; the table it goes to
+is the resolver's, never the serializer's. The one decision worth
 making deliberately is the cell timestamp, because it is what decides whether a replayed record
 overwrites a cell or adds a version to it; see
 [Delivery guarantees]({{< relref "docs/connectors/datastream/bigtable" >}}#delivery-guarantees-and-state).
 
-**One table per sink.** Unlike the BigQuery and Pub/Sub sinks there is no destination resolver: the
-client's bulk mutation batcher is bound to one table, so per-record tables would mean a pool of
-batchers sharing the in-flight budget. Writing to several tables means several sinks today.
+**A destination costs a batcher.** The client binds a bulk mutation batcher to one table, so the
+writer holds one per table a resolver names, over a client shared by the tables of an instance; an
+idle table's batcher is dropped after `destinationIdleTimeout`. The in-flight bounds below are the
+writer's, summed across destinations rather than split among them. See
+[Per-record destinations]({{< relref "docs/connectors/datastream/bigtable" >}}#per-record-destinations).
 
 ## `BigtableWriterOptions`
 
@@ -73,7 +77,9 @@ setting options at all.
 | `maxConsecutiveRejections` | 100 | Fails the job once this many confirmed rejections arrive in a row with no applied mutation between them — the guardrail on a dropping policy's [isolation cost]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). Any success resets the count; `-1` removes the bound |
 | `recoveryInitialBackoff` | 500 ms | First backoff of the [table auto-creation]({{< relref "docs/connectors/datastream/bigtable" >}}#table-auto-creation) recovery: re-applying mutations after creating a missing table |
 | `recoveryMaxBackoff` | 10 s | Its backoff cap; must be at least the initial backoff |
-| `recoveryMaxAttempts` | 10 | Its attempt cap, after which the job fails with the incident's cause |
+| `recoveryMaxAttempts` | 10 | Its attempt cap, after which the job fails with the incident's cause. One repair covers every table an incident left missing, and shares this budget across them |
+| `destinationIdleTimeout` | 1 h | How long a table may go without mutations before the writer drops its batcher. Swept at the end of a checkpoint's flush; an evicted table rebuilds transparently. To never evict, set a very large duration — up to `Duration.ofNanos(Long.MAX_VALUE)` |
+| `perDestinationMetrics` | `false` | Registers per-table `recordsSend` and `sendErrors` counters beside the writer's totals. Off by default: Flink cannot unregister a metric, so with a resolver every table the job writes to keeps a row in the registry for the task's lifetime. See [Metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#metrics) |
 
 **Raising `maxInFlightMutations` far above its default does not raise the effective bound; it moves
 it.** The client has a flow controller of its own — 1000 entries per channel and 100 MB, and it

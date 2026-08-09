@@ -31,6 +31,7 @@ import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
+import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -116,5 +117,64 @@ class BigtableSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
         RowCell cell = rows.get(0).getCells(FAMILY, "payload").get(0);
         assertThat(cell.getValue().toStringUtf8()).isEqualTo(rows.get(0).getKey().toStringUtf8());
         assertThat(cell.getTimestamp()).isEqualTo(CELL_TIMESTAMP);
+    }
+
+    @Test
+    void streamingJobRoutesEachRecordToTheTableItsResolverNames() throws Exception {
+        // Per-record destinations against the real service (#232). Two tables of one instance, so
+        // the writer holds a batcher each over a client they share — the arrangement the emulator
+        // cannot falsify, since what is at stake is whether a real BigtableDataClient hands out a
+        // working batcher per table and survives both of their teardowns.
+        TableDestination even = createTable("job-even");
+        TableDestination odd = createTable("job-odd");
+
+        Configuration configuration = new Configuration();
+        configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(configuration);
+        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+        env.setParallelism(2);
+        env.enableCheckpointing(1_000);
+
+        DataGeneratorSource<String> source =
+                new DataGeneratorSource<>(
+                        (GeneratorFunction<Long, String>) index -> "record-" + index,
+                        RECORD_COUNT,
+                        RateLimiterStrategy.perSecond(RECORDS_PER_SECOND),
+                        Types.STRING);
+
+        DestinationResolver<String> resolver =
+                (element, context) -> index(element) % 2 == 0 ? even : odd;
+        BigtableSerializationSchema<String> serializer =
+                (element, context) ->
+                        RowMutationEntry.create(element)
+                                .setCell(FAMILY, "payload", CELL_TIMESTAMP, element);
+
+        env.fromSource(source, WatermarkStrategy.noWatermarks(), "records")
+                .sinkTo(
+                        BigtableSink.<String>builder()
+                                .destinationResolver(resolver)
+                                .serializer(serializer)
+                                .build());
+
+        env.execute("bigtable-sink-real-gcp-dynamic-destinations-it");
+
+        Set<String> expectedEven = new LinkedHashSet<>();
+        Set<String> expectedOdd = new LinkedHashSet<>();
+        for (long index = 0; index < RECORD_COUNT; index++) {
+            (index % 2 == 0 ? expectedEven : expectedOdd).add("record-" + index);
+        }
+        assertThat(rowKeys(even)).containsExactlyInAnyOrderElementsOf(expectedEven);
+        assertThat(rowKeys(odd)).containsExactlyInAnyOrderElementsOf(expectedOdd);
+    }
+
+    private static long index(String record) {
+        return Long.parseLong(record.substring("record-".length()));
+    }
+
+    private static List<String> rowKeys(TableDestination table) {
+        return readRows(table).stream()
+                .map(row -> row.getKey().toStringUtf8())
+                .collect(Collectors.toList());
     }
 }

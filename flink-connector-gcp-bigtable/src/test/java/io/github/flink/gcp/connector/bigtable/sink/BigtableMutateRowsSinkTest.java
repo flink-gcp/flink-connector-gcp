@@ -20,13 +20,13 @@ import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import com.google.api.core.ApiFuture;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcher;
+import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcherFactory;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import org.junit.jupiter.api.Test;
 
@@ -44,12 +44,13 @@ class BigtableMutateRowsSinkTest {
             (element, context) -> RowMutationEntry.create(element).setCell("cf", "q", element);
 
     @Test
-    void closesTheHandlerAndTheBatcherWhenTheWriterCannotBeCreated() throws Exception {
+    void closesTheHandlerAndTheFactoryWhenTheWriterCannotBeCreated() throws Exception {
         LifecycleRecordingHandler handler = new LifecycleRecordingHandler();
         // The writer's own precondition is what fails here, after the handler has been opened and
-        // the batcher built. A non-positive in-flight cap is the case that precondition exists
-        // for: the options builder rejects it, and Java deserialization does not run the builder.
-        RecordingMutationBatcher batcher = new RecordingMutationBatcher();
+        // the batcher factory built. A non-positive in-flight cap is the case that precondition
+        // exists for: the options builder rejects it, and Java deserialization does not run the
+        // builder.
+        RecordingMutationBatcherFactory factory = new RecordingMutationBatcherFactory();
         BigtableMutateRowsSink<String> sink =
                 (BigtableMutateRowsSink<String>)
                         BigtableSink.<String>builder()
@@ -63,16 +64,18 @@ class BigtableMutateRowsSinkTest {
                                                 0))
                                 .build();
 
-        assertThatThrownBy(() -> sink.createWriter(new StubWriterInitContext(0), () -> batcher))
+        assertThatThrownBy(() -> sink.createWriter(new StubWriterInitContext(0), factory))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("maxInFlightMutations must be positive");
 
         // No writer exists to close either of them, and a restart would otherwise open one more
-        // handler and one more client per attempt. A recording batcher through the factory seam is
-        // what makes the client half observable at all.
+        // handler and leave one more factory holding whatever it had built per attempt. The
+        // factory holds no client yet at this point — batchers are built on the first record — but
+        // the guard is against what an implementation may hold, not what this one does, and the
+        // injectable factory is what makes it observable at all.
         assertThat(handler.opens).isEqualTo(1);
         assertThat(handler.closes).isEqualTo(1);
-        assertThat(batcher.closes).isEqualTo(1);
+        assertThat(factory.closes).isEqualTo(1);
 
         // defaults() hands out a JVM-wide singleton and setAccessible permits writing its final
         // fields, so forging on it rather than on a fresh instance poisons every later defaults()
@@ -82,18 +85,15 @@ class BigtableMutateRowsSinkTest {
                 .isEqualTo(BigtableWriterOptions.builder().build());
     }
 
-    /** A batcher that records its close, so the client half of the guard is observable. */
-    private static final class RecordingMutationBatcher implements MutationBatcher {
+    /** A factory that records its close, so the client half of the guard is observable. */
+    private static final class RecordingMutationBatcherFactory implements MutationBatcherFactory {
+
+        private static final long serialVersionUID = 1L;
 
         private int closes;
 
         @Override
-        public ApiFuture<Void> add(RowMutationEntry entry) {
-            throw new UnsupportedOperationException("never called");
-        }
-
-        @Override
-        public void sendOutstanding() {
+        public MutationBatcher create(TableDestination destination) {
             throw new UnsupportedOperationException("never called");
         }
 

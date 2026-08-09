@@ -20,7 +20,6 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -37,7 +36,7 @@ public final class BigtableSinkConfig<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final TableDestination destination;
+    private final DestinationResolver<? super T> destinationResolver;
     private final BigtableSerializationSchema<? super T> serializer;
     @Nullable private final String appProfileId;
     private final BigtableWriterOptions writerOptions;
@@ -47,7 +46,7 @@ public final class BigtableSinkConfig<T> implements Serializable {
     @Nullable private final TableCreateOptions tableCreateOptions;
 
     BigtableSinkConfig(
-            TableDestination destination,
+            DestinationResolver<? super T> destinationResolver,
             BigtableSerializationSchema<? super T> serializer,
             @Nullable String appProfileId,
             BigtableWriterOptions writerOptions,
@@ -55,7 +54,7 @@ public final class BigtableSinkConfig<T> implements Serializable {
             @Nullable EmulatorEndpoint emulatorEndpoint,
             CreateDisposition createDisposition,
             @Nullable TableCreateOptions tableCreateOptions) {
-        this.destination = destination;
+        this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.appProfileId = appProfileId;
         this.writerOptions = writerOptions;
@@ -65,9 +64,9 @@ public final class BigtableSinkConfig<T> implements Serializable {
         this.tableCreateOptions = tableCreateOptions;
     }
 
-    /** Returns the table every mutation is written to. */
-    public TableDestination getDestination() {
-        return destination;
+    /** Returns the resolver naming the table each record is written to. */
+    public DestinationResolver<? super T> getDestinationResolver() {
+        return destinationResolver;
     }
 
     /** Returns the record serialization schema. */

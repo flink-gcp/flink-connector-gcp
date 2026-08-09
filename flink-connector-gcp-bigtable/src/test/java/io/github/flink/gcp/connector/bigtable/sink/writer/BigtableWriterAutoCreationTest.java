@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
@@ -55,6 +56,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BigtableWriterAutoCreationTest {
 
     private static final TableDestination TABLE = TableDestination.of("p", "i", "orders");
+    private static final TableDestination OTHER_TABLE = TableDestination.of("p", "i", "events");
 
     private static final TableCreateOptions CREATE_OPTIONS =
             TableCreateOptions.builder().columnFamily("cf").build();
@@ -62,7 +64,8 @@ class BigtableWriterAutoCreationTest {
     /** Backoffs of one millisecond, so the production schedule stays out of the wall clock. */
     private static final RetrySchedule FAST_SCHEDULE = new RetrySchedule(1, 1, 5, 0);
 
-    private final FakeMutationBatcher batcher = new FakeMutationBatcher();
+    private final FakeMutationBatcherFactory factory = new FakeMutationBatcherFactory();
+    private final FakeMutationBatcher batcher = factory.batcherFor(TABLE);
     private final FakeTableAdmin admin = new FakeTableAdmin();
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
     private final TestSinkWriterMetricGroup metricGroup = TestSinkWriterMetricGroup.create();
@@ -91,6 +94,55 @@ class BigtableWriterAutoCreationTest {
         assertThat(metricGroup.counterValue("errorClass", "NOT_FOUND", "errors")).isEqualTo(2);
         assertThat(writer.getParkedMutations()).isZero();
         assertThat(writer.getInFlightMutations()).isZero();
+    }
+
+    @Test
+    void oneRepairEnsuresEveryTableThatReportedItselfMissing() throws Exception {
+        // Each ensure clears only the flag of the table it just ensured, so a repair that ensures
+        // one table and calls the incident closed leaves the other missing and spends its whole
+        // budget. That is what a single "have I ensured yet" flag would do: the tables of one
+        // incident are ensured per table, not per repair.
+        admin.onEnsure = () -> factory.batcherFor(lastEnsured()).tableMissing = false;
+        BigtableWriter<String> writer = multiTableWriter(FailureHandler.failJob());
+        factory.batcherFor(TABLE).tableMissing = true;
+        factory.batcherFor(OTHER_TABLE).tableMissing = true;
+
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(admin.ensured).containsExactly(TABLE, OTHER_TABLE);
+        // One creation schema serves every table the sink creates.
+        assertThat(admin.ensureOptions).containsExactly(CREATE_OPTIONS, CREATE_OPTIONS);
+        assertThat(metricGroup.counterValue("tablesCreated")).isEqualTo(2);
+        assertThat(factory.batcherFor(TABLE).sentRowKeys())
+                .containsExactly(List.of("orders/row-1"), List.of("orders/row-1"));
+        assertThat(factory.batcherFor(OTHER_TABLE).sentRowKeys())
+                .containsExactly(List.of("events/row-2"), List.of("events/row-2"));
+        assertThat(writer.getParkedMutations()).isZero();
+    }
+
+    @Test
+    void anEnsureFailingPartWayThroughLeavesTheTablesItDidNotReachOwed() throws Exception {
+        // Two attempts, so the tables the failed pass did not reach have exactly one attempt left:
+        // a repair that dropped them would spend it re-applying against a table nothing created,
+        // and fail. The budget is what makes the omission visible — it self-heals given enough
+        // attempts, which is precisely why a looser one would not fail on the omission.
+        admin.onEnsure = () -> factory.batcherFor(lastEnsured()).tableMissing = false;
+        admin.ensureFailures.add(new IOException("the admin was unavailable"));
+        BigtableWriter<String> writer =
+                multiTableWriter(FailureHandler.failJob(), new RetrySchedule(1, 1, 2, 0));
+        factory.batcherFor(TABLE).tableMissing = true;
+        factory.batcherFor(OTHER_TABLE).tableMissing = true;
+
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+        writer.flush(false);
+
+        // The first attempt's ensure of the first table threw, so both tables were still owed; the
+        // second attempt ensured both.
+        assertThat(admin.ensured).containsExactly(TABLE, TABLE, OTHER_TABLE);
+        assertThat(writer.getParkedMutations()).isZero();
     }
 
     @Test
@@ -319,6 +371,9 @@ class BigtableWriterAutoCreationTest {
     void theAdminIsClosedEvenWhenTheBatcherCloseThrows() throws Exception {
         batcher.closeFailure = new IllegalStateException("batcher close boom");
         BigtableWriter<String> writer = writer(FailureHandler.failJob());
+        // A batcher exists only for a table a record was routed to, so the failing close this test
+        // is about needs one record first.
+        writer.write("row-1", TestContexts.NO_OP);
 
         assertThatThrownBy(writer::close).isSameAs(batcher.closeFailure);
 
@@ -338,9 +393,50 @@ class BigtableWriterAutoCreationTest {
             FailureHandler<? super FailedMutation> handler,
             CreateDisposition disposition,
             TableCreateOptions createOptions) {
+        return writer(
+                options,
+                handler,
+                disposition,
+                createOptions,
+                (element, context) -> TABLE,
+                FAST_SCHEDULE);
+    }
+
+    /** The table the admin was last asked to ensure, for a hook clearing only that table's flag. */
+    private TableDestination lastEnsured() {
+        return admin.ensured.get(admin.ensured.size() - 1);
+    }
+
+    private BigtableWriter<String> multiTableWriter(
+            FailureHandler<? super FailedMutation> handler) {
+        return multiTableWriter(handler, FAST_SCHEDULE);
+    }
+
+    /**
+     * A writer routing a row key prefixed {@code events/} to {@link #OTHER_TABLE}, everything else
+     * to {@link #TABLE}.
+     */
+    private BigtableWriter<String> multiTableWriter(
+            FailureHandler<? super FailedMutation> handler, RetrySchedule schedule) {
+        return writer(
+                BigtableWriterOptions.defaults(),
+                handler,
+                CreateDisposition.CREATE_IF_NEEDED,
+                CREATE_OPTIONS,
+                (element, context) -> element.startsWith("events/") ? OTHER_TABLE : TABLE,
+                schedule);
+    }
+
+    private BigtableWriter<String> writer(
+            BigtableWriterOptions options,
+            FailureHandler<? super FailedMutation> handler,
+            CreateDisposition disposition,
+            TableCreateOptions createOptions,
+            DestinationResolver<String> resolver,
+            RetrySchedule schedule) {
         BigtableSinkBuilder<String> builder =
                 BigtableSink.<String>builder()
-                        .table(TABLE)
+                        .destinationResolver(resolver)
                         .serializer(
                                 (element, context) ->
                                         RowMutationEntry.create(element)
@@ -353,7 +449,7 @@ class BigtableWriterAutoCreationTest {
         }
         BigtableMutateRowsSink<String> sink = (BigtableMutateRowsSink<String>) builder.build();
         return new BigtableWriter<>(
-                sink.getConfig(), batcher, admin, mailbox, metricGroup, FAST_SCHEDULE);
+                sink.getConfig(), factory, admin, mailbox, metricGroup, schedule, System::nanoTime);
     }
 
     /** A handler that drops every mutation, recording what it saw. */

@@ -39,15 +39,33 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
- * Creates a {@link MutationBatcher} backed by a {@code google-cloud-bigtable} {@link
- * BigtableDataClient}, connecting either to production Bigtable with application-default
+ * Creates {@link MutationBatcher}s backed by {@code google-cloud-bigtable} {@link
+ * BigtableDataClient}s, connecting either to production Bigtable with application-default
  * credentials or to an emulator over a plaintext channel with no credentials.
  *
  * <p>The client's own retry configuration is left alone: it retries {@code MutateRows} per entry
  * for the transient codes already, which is why this sink owns no retry loop.
+ *
+ * <h2>One batcher per table, one client per instance</h2>
+ *
+ * <p>A bulk mutation batcher is bound to one table, so a writer with per-record destinations needs
+ * one per table. A {@link BigtableDataClient} is not: it is built for a (project, instance) pair
+ * and hands out a batcher for any table in it, while holding a channel pool and a background
+ * executor. So the clients are cached per instance and shared by the tables under it, and a
+ * batcher's close releases <em>only</em> the batcher — {@link #close()} is what releases the
+ * clients, once the writer has closed every batcher it created.
+ *
+ * <p>That is why {@code BigtableBatcherAdapter} holds no client, unlike the shape #324 left: a
+ * batcher that closed the client it was built over would tear down every sibling batcher of the
+ * same instance, and since {@link BigtableDataClient} reports nothing about having been closed, the
+ * survivors would fail on their next send rather than at the close that broke them.
  */
 @Internal
 public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
@@ -56,15 +74,23 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
 
     private static final long serialVersionUID = 1L;
 
-    private final TableDestination destination;
     @Nullable private final String appProfileId;
     private final BigtableWriterOptions writerOptions;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
+     * The clients built so far, one per (project, instance), in creation order so a close reports
+     * the first failure of a deterministic sequence.
+     *
+     * <p>Transient and lazily created: the factory is serialized into the job graph, and a client
+     * is runtime state each subtask builds for itself. Touched only from the Flink task thread, as
+     * the SPI requires.
+     */
+    @Nullable private transient Map<String, BigtableDataClient> clients;
+
+    /**
      * Creates the factory.
      *
-     * @param destination the table every mutation is written to
      * @param appProfileId the application profile to route through, or {@code null} for the
      *     instance's default
      * @param writerOptions the writer tuning options, whose batch thresholds are applied to the
@@ -73,62 +99,94 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
      *     for production Bigtable
      */
     public DefaultMutationBatcherFactory(
-            TableDestination destination,
             @Nullable String appProfileId,
             BigtableWriterOptions writerOptions,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
-        this.destination = destination;
         this.appProfileId = appProfileId;
         this.writerOptions = writerOptions;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
     @Override
-    public MutationBatcher create() throws IOException {
-        return create(BigtableDataClient.create(settings()));
+    public MutationBatcher create(TableDestination destination) throws IOException {
+        return create(destination, client(destination));
     }
 
     /**
-     * Wraps a client this factory would otherwise have built itself, taking ownership of it.
+     * Returns the client for the destination's instance, building it on first use.
      *
-     * <p>Package-private so a test can keep hold of that client and assert the adapter released it.
-     * Nothing else can: {@link BigtableDataClient} reports no closed state, so an adapter handed
-     * some other closeable would pass every test that injects its own — while leaking a channel
-     * pool and an executor per writer in production.
+     * <p>Keyed by {@code project/instance} as a plain string, which is unambiguous because {@link
+     * TableDestination} rejects a component containing {@code '/'}.
+     *
+     * <p>Package-private rather than private so a test can assert the sharing directly: two tables
+     * of one instance must get the same client, and a table of another instance must not. Nothing
+     * about a {@link BigtableDataClient} reports which one it is, so identity here is the only
+     * observable — the alternative is the shape #232 exists to avoid, where the first batcher to
+     * close takes its instance's siblings down and no test can see it.
      */
     @VisibleForTesting
-    MutationBatcher create(BigtableDataClient client) {
-        try {
-            // The TargetId overload, not the String one: that one is deprecated. TableId is the
-            // TargetId a table has; authorized views are the other one and are out of scope here.
-            return new BigtableBatcherAdapter(
-                    destination,
-                    client,
-                    client.newBulkMutationBatcher(TableId.of(destination.getTable())));
-        } catch (Throwable e) {
-            // The client is owned here until the adapter takes it over on success.
-            //
-            // Throwable, not RuntimeException: a client's first classload can fail with a
-            // NoClassDefFoundError — as can the lambda linkage the adapter's constructor performs —
-            // which repeats on every restart attempt and would otherwise walk past this guard,
-            // stranding a channel pool and an executor each time. The same guard, for the same
-            // reason, as BigtableMutateRowsSink.createWriter's; precise rethrow keeps the declared
-            // throws clause honest. Through Closers so a failing close is suppressed onto the
-            // failure rather than replacing it — this method's own version of what close() does.
-            Closers.closeAllSuppressing(e, client);
-            throw e;
+    BigtableDataClient client(TableDestination destination) throws IOException {
+        if (clients == null) {
+            clients = new LinkedHashMap<>();
         }
+        String key = destination.getProject() + "/" + destination.getInstance();
+        BigtableDataClient client = clients.get(key);
+        if (client == null) {
+            // Built, then put: a failure leaves no entry, so the next record retries the creation
+            // rather than finding a half-built cache.
+            client = BigtableDataClient.create(settings(destination));
+            clients.put(key, client);
+        }
+        return client;
     }
 
     /**
-     * Builds the client settings this factory would connect with. Separate from {@link #create()},
-     * and visible to the module's tests, because the options-to-settings mapping is otherwise only
-     * observable through the client's behaviour: a threshold that never reaches the client looks
-     * exactly like one that does. The same reasoning put every other connector's options mapping
-     * under a unit test of its own.
+     * Wraps a batcher over a client this factory holds.
+     *
+     * <p>Package-private, and taking the client, so a test can hand in a client it keeps hold of.
+     * Nothing else can: {@link BigtableDataClient} reports no closed state, so a factory whose
+     * close released some other closeable would pass every test that injects its own — while
+     * leaking a channel pool and an executor per instance in production.
      */
     @VisibleForTesting
-    BigtableDataSettings settings() {
+    MutationBatcher create(TableDestination destination, BigtableDataClient client) {
+        // The TargetId overload, not the String one: that one is deprecated. TableId is the
+        // TargetId a table has; authorized views are the other one and are out of scope here.
+        //
+        // No guard closing the client on a failure here, unlike the shape this method had while it
+        // built a client of its own: the client belongs to the cache and to sibling batchers, and
+        // close() releases it whether or not this call succeeded.
+        return new BigtableBatcherAdapter(
+                destination, client.newBulkMutationBatcher(TableId.of(destination.getTable())));
+    }
+
+    /**
+     * Closes every client this factory built. Called by the writer after every batcher has been
+     * closed.
+     *
+     * <p>Through {@link Closers#closeAll} so one client failing to close cannot strand the rest,
+     * and the map is cleared whatever happens: a factory that reported a failure must not hand a
+     * closed client to a later {@link #create(TableDestination)}.
+     */
+    @Override
+    public void close() throws Exception {
+        if (clients == null) {
+            return;
+        }
+        List<AutoCloseable> closeables = new ArrayList<>(clients.values());
+        clients = null;
+        Closers.closeAll(closeables);
+    }
+
+    /**
+     * Builds the client settings this factory connects to the destination's instance with. Separate
+     * from {@link #create(TableDestination)}, and visible to the module's tests, because the
+     * options-to-settings mapping is otherwise only observable through the client's behaviour: a
+     * threshold that never reaches the client looks exactly like one that does. The same reasoning
+     * put every other connector's options mapping under a unit test of its own.
+     */
+    @VisibleForTesting
+    BigtableDataSettings settings(TableDestination destination) {
         BigtableDataSettings.Builder settings = newSettingsBuilder();
         settings.setProjectId(destination.getProject()).setInstanceId(destination.getInstance());
         if (appProfileId != null) {
@@ -216,58 +274,61 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
     }
 
     /**
-     * Adapts the client's bulk mutation {@link Batcher} to the writer-facing interface, and owns
-     * the client's lifetime.
+     * Adapts the client's bulk mutation {@link Batcher} to the writer-facing interface.
      *
-     * <p>The batcher's three operations are held as functional values and the client as a plain
-     * {@link AutoCloseable}, rather than as the two SDK types, <b>because that is the only seam a
-     * test can drive</b> (#324). {@code Batcher} is {@code @InternalExtensionOnly} — the reason
-     * {@link MutationBatcher} exists as this module's own SPI — so a fake must not implement it,
-     * and {@link BigtableDataClient} reports nothing about having been closed and cannot be
-     * subclassed to observe it, its only constructor being package-private. {@link #close()}
-     * carries an invariant worth pinning and, before this shape, had no test at all.
+     * <p>The batcher's four operations are held as functional values, rather than as the SDK type,
+     * <b>because that is the only seam a test can drive</b> (#324). {@code Batcher} is
+     * {@code @InternalExtensionOnly} — the reason {@link MutationBatcher} exists as this module's
+     * own SPI — so a fake must not implement it.
      *
-     * <p>Two vendor constraints, not one, which is why both halves are injected. The batcher's is
-     * the annotation — a fake would be legal Java and an unsupported extension. The client's is
-     * plain unextendability, the same shape as {@code BoundedShutdown}'s in the base module: {@code
-     * Publisher} there is likewise a non-final class whose only constructor is private, so neither
-     * client can be subclassed to observe its own teardown.
+     * <p>It holds no client (#232). The client is shared by every table of an instance and is the
+     * factory's to release; an adapter that closed it would take its siblings down with it.
      */
     @VisibleForTesting
     static final class BigtableBatcherAdapter implements MutationBatcher {
 
         private final TableDestination destination;
-        private final AutoCloseable client;
         private final Function<RowMutationEntry, ApiFuture<Void>> batcherAdd;
         private final Runnable batcherSendOutstanding;
-        private final ThrowingRunnable<Exception> batcherShutdown;
+        private final Runnable batcherShutdown;
+        private final ThrowingRunnable<Exception> batcherClose;
 
         /**
          * The production shape. Kept beside the injectable one, and delegating to it, so that the
-         * three method references binding this adapter to one batcher live inside the class a test
-         * can construct rather than at the {@link #create()} call site, where nothing would reach
-         * them.
+         * four method references binding this adapter to one batcher live inside the class a test
+         * can construct rather than at the {@link #create(TableDestination)} call site, where
+         * nothing would reach them.
+         *
+         * <p>{@code closeAsync} is what {@link #shutdown()} binds to, and gax makes the pair
+         * compose: {@code closeAsync()} sends what is buffered, refuses further mutations and
+         * returns the one future it memoizes, and {@code close()} waits on that same future and
+         * still raises the lifetime report the absorb above expects (measured against gax 2.82.0,
+         * {@code BatcherImpl.closeAsync}/{@code close}). So calling both costs one wait, not two,
+         * and calling only {@code close()} still works.
          */
         BigtableBatcherAdapter(
-                TableDestination destination,
-                AutoCloseable client,
-                Batcher<RowMutationEntry, Void> batcher) {
-            this(destination, client, batcher::add, batcher::sendOutstanding, batcher::close);
+                TableDestination destination, Batcher<RowMutationEntry, Void> batcher) {
+            this(
+                    destination,
+                    batcher::add,
+                    batcher::sendOutstanding,
+                    batcher::closeAsync,
+                    batcher::close);
         }
 
         /** Package-private so a test can script a shutdown that throws; see the class javadoc. */
         @VisibleForTesting
         BigtableBatcherAdapter(
                 TableDestination destination,
-                AutoCloseable client,
                 Function<RowMutationEntry, ApiFuture<Void>> batcherAdd,
                 Runnable batcherSendOutstanding,
-                ThrowingRunnable<Exception> batcherShutdown) {
+                Runnable batcherShutdown,
+                ThrowingRunnable<Exception> batcherClose) {
             this.destination = destination;
-            this.client = client;
             this.batcherAdd = batcherAdd;
             this.batcherSendOutstanding = batcherSendOutstanding;
             this.batcherShutdown = batcherShutdown;
+            this.batcherClose = batcherClose;
         }
 
         @Override
@@ -281,31 +342,18 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
         }
 
         @Override
+        public void shutdown() {
+            batcherShutdown.run();
+        }
+
+        @Override
         public void close() throws Exception {
-            // The shutdown sends what is buffered and waits for it. No timeout: a bounded one would
+            // The close sends what is buffered and waits for it. No timeout: a bounded one would
             // abandon mutations the service may still apply, and the writer's own flush has already
-            // drained everything on the success path.
-            //
-            // Through Closers rather than a try/finally. Both close the client whichever way the
-            // shutdown ends, and both propagate an Error unchanged; the difference is confined to
-            // the case where *both* steps throw. A finally completing abruptly discards the try's
-            // reason outright (JLS 14.20.2 — only try-with-resources suppresses), so the failure
-            // that explains the teardown was lost in favour of the one that followed from it. The
-            // client's close can throw: EnhancedBigtableStub reports a failing context close as an
-            // IllegalStateException.
-            //
-            // Not the same defect as #276 — that one was later resources being abandoned, and it
-            // replaced IOUtils.closeAll rather than any try/finally — but the same primitive, which
-            // reports the first failure and suppresses the rest. What that costs is stated in
-            // closeAll's own javadoc and is real here: the throwable Flink escalates on is the
-            // shutdown's rather than the client's, so a JVM-fatal *client* close arrives suppressed
-            // and unescalated. Accepted deliberately: the shutdown is where gax's own code runs.
+            // drained everything on the success path. shutdown() above is what keeps that unbounded
+            // wait from being paid once per table.
             try {
-                Closers.closeAll(
-                        () ->
-                                shutDownAbsorbingTheLifetimeFailureReport(
-                                        destination, batcherShutdown),
-                        client);
+                shutDownAbsorbingTheLifetimeFailureReport(destination, batcherClose);
             } catch (InterruptedException e) {
                 // gax's wait clears the flag when it throws, and BigtableWriter.close() collects
                 // this through its own Closers.closeAll and carries on to the next entry — the

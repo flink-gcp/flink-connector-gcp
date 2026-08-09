@@ -32,7 +32,7 @@ import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
  * <p>This interface exists rather than the client's {@code Batcher} because that type is
  * {@code @InternalExtensionOnly}: implementing it — which the writer's unit tests must, to exercise
  * failures the emulator cannot produce — is not something its contract allows. It is also narrower,
- * naming only the three operations the writer performs.
+ * naming only the four operations the writer performs.
  *
  * <p>Implementations are used from the Flink task thread only, matching the client batcher's own
  * single-thread contract, and are not thread-safe.
@@ -56,8 +56,24 @@ public interface MutationBatcher extends AutoCloseable {
     void sendOutstanding();
 
     /**
-     * Sends what has accumulated, waits for every outstanding mutation, and shuts the underlying
-     * client down.
+     * Starts the shutdown without waiting for it: sends what has accumulated and refuses further
+     * mutations, so a caller holding several batchers can start every one before waiting on any.
+     *
+     * <p>This exists because {@link #close()} has no bound (see there), and a writer with
+     * per-record destinations holds one batcher per table: closing them one after another costs the
+     * sum of their waits, and a teardown that overruns Flink's {@code task.cancellation.timeout}
+     * turns a cancelling task into a fatal TaskManager error. Calling this first makes those waits
+     * overlap. The Pub/Sub sink's publisher teardown is two-phase for the same reason.
+     *
+     * <p>Idempotent, and calling it is optional: {@link #close()} alone still sends, waits and
+     * releases. Implementations must not report a failure here — the report belongs to {@code
+     * close()}, whose contract below covers it.
+     */
+    void shutdown();
+
+    /**
+     * Sends what has accumulated, waits for every outstanding mutation, and releases what this
+     * batcher holds.
      *
      * <p>An implementation must not report a failure it has already delivered through the future
      * {@link #add} returned for that mutation. The writer consumes every one of those futures and

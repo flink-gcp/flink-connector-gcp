@@ -29,10 +29,12 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
+import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -63,6 +65,67 @@ class BigtableSinkJobITCase extends AbstractBigtableEmulatorITCase {
     void batchJobWritesEveryRecord() throws Exception {
         // Batch has no checkpoints, so everything rides the end-of-input flush.
         runJob(RuntimeExecutionMode.BATCH, "job-batch");
+    }
+
+    @Test
+    void streamingJobRoutesEachRecordToTheTableItsResolverNames() throws Exception {
+        // The production path with per-record destinations (#232): the writer builds a batcher per
+        // table on the task thread, over one client shared by both, and both are torn down by the
+        // job's own close. A unit test drives the pool against fakes; this is what says the real
+        // client hands out a batcher per table and that neither teardown takes the other down.
+        TableDestination even = createTable("job-even");
+        TableDestination odd = createTable("job-odd");
+        String endpoint = emulatorEndpoint();
+
+        Configuration configuration = new Configuration();
+        configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(configuration);
+        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+        env.setParallelism(2);
+        env.enableCheckpointing(1_000);
+
+        DataGeneratorSource<String> source =
+                new DataGeneratorSource<>(
+                        (GeneratorFunction<Long, String>) index -> "record-" + index,
+                        RECORD_COUNT,
+                        RateLimiterStrategy.perSecond(RECORDS_PER_SECOND),
+                        Types.STRING);
+
+        DestinationResolver<String> resolver =
+                (element, context) -> index(element) % 2 == 0 ? even : odd;
+
+        env.fromSource(source, WatermarkStrategy.noWatermarks(), "records")
+                .sinkTo(
+                        BigtableSink.<String>builder()
+                                .destinationResolver(resolver)
+                                .serializer(
+                                        (element, context) ->
+                                                RowMutationEntry.create(element)
+                                                        .setCell(
+                                                                FAMILY, "payload", 1_000L, element))
+                                .emulatorEndpoint(endpoint)
+                                .build());
+
+        env.execute("bigtable-sink-dynamic-destinations-it");
+
+        Set<String> expectedEven = new LinkedHashSet<>();
+        Set<String> expectedOdd = new LinkedHashSet<>();
+        for (long index = 0; index < RECORD_COUNT; index++) {
+            (index % 2 == 0 ? expectedEven : expectedOdd).add("record-" + index);
+        }
+        assertThat(rowKeys(even)).containsExactlyInAnyOrderElementsOf(expectedEven);
+        assertThat(rowKeys(odd)).containsExactlyInAnyOrderElementsOf(expectedOdd);
+    }
+
+    private static long index(String record) {
+        return Long.parseLong(record.substring("record-".length()));
+    }
+
+    private static List<String> rowKeys(TableDestination table) {
+        return readRows(table).stream()
+                .map(row -> row.getKey().toStringUtf8())
+                .collect(Collectors.toList());
     }
 
     private static void runJob(RuntimeExecutionMode mode, String tableId) throws Exception {
@@ -115,10 +178,6 @@ class BigtableSinkJobITCase extends AbstractBigtableEmulatorITCase {
         }
         // Row keys are unique per record, so a duplicate write of one is invisible here — which is
         // the point: at-least-once with an explicit cell timestamp is idempotent.
-        assertThat(
-                        readRows(table).stream()
-                                .map(row -> row.getKey().toStringUtf8())
-                                .collect(Collectors.toList()))
-                .containsExactlyInAnyOrderElementsOf(expected);
+        assertThat(rowKeys(table)).containsExactlyInAnyOrderElementsOf(expected);
     }
 }

@@ -53,7 +53,10 @@ class BigtableSinkBuilderTest {
                         .build();
 
         BigtableSinkConfig<String> config = config(sink);
-        assertThat(config.getDestination()).isEqualTo(TABLE);
+        assertThat(config.getDestinationResolver())
+                .isInstanceOfSatisfying(
+                        FixedDestinationResolver.class,
+                        resolver -> assertThat(resolver.getDestination()).isEqualTo(TABLE));
         assertThat(config.getSerializer()).isSameAs(SERIALIZER);
         assertThat(config.getAppProfileId()).isEqualTo("batch-profile");
         assertThat(config.getWriterOptions()).isSameAs(writerOptions);
@@ -165,13 +168,53 @@ class BigtableSinkBuilderTest {
     }
 
     @Test
-    void requiresATableAndASerializer() {
+    void requiresADestinationAndASerializer() {
         assertThatThrownBy(() -> BigtableSink.<String>builder().serializer(SERIALIZER).build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("table");
+                .hasMessageContaining("table(...) or destinationResolver(...)");
         assertThatThrownBy(() -> BigtableSink.<String>builder().table(TABLE).build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("serializer");
+    }
+
+    @Test
+    void carriesADestinationResolver() {
+        DestinationResolver<String> resolver = (element, context) -> TABLE;
+
+        BigtableSinkConfig<String> config =
+                config(
+                        BigtableSink.<String>builder()
+                                .destinationResolver(resolver)
+                                .serializer(SERIALIZER)
+                                .build());
+
+        assertThat(config.getDestinationResolver()).isSameAs(resolver);
+    }
+
+    @Test
+    void letsTheLastOfTableAndResolverWin() {
+        // The two setters write one field, as the Pub/Sub builder's pair does, so neither has to
+        // be unset before the other can be used.
+        DestinationResolver<String> resolver = (element, context) -> TABLE;
+
+        assertThat(
+                        config(
+                                        BigtableSink.<String>builder()
+                                                .table(TABLE)
+                                                .destinationResolver(resolver)
+                                                .serializer(SERIALIZER)
+                                                .build())
+                                .getDestinationResolver())
+                .isSameAs(resolver);
+        assertThat(
+                        config(
+                                        BigtableSink.<String>builder()
+                                                .destinationResolver(resolver)
+                                                .table(TABLE)
+                                                .serializer(SERIALIZER)
+                                                .build())
+                                .getDestinationResolver())
+                .isInstanceOf(FixedDestinationResolver.class);
     }
 
     @Test
@@ -179,6 +222,8 @@ class BigtableSinkBuilderTest {
         BigtableSinkBuilder<String> builder = BigtableSink.builder();
 
         assertThatThrownBy(() -> builder.table(null)).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> builder.destinationResolver(null))
+                .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> builder.serializer(null)).isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> builder.writerOptions(null))
                 .isInstanceOf(NullPointerException.class);

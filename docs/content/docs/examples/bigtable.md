@@ -48,6 +48,43 @@ BigtableSink.<OrderEvent>builder()
         .build();
 ```
 
+## A table per day, from the record
+
+The resolver names the table; the serializer still builds the whole mutation. Cache the
+destinations, because the resolver runs once per record and `TableDestination` is what the writer
+keys its batcher pool on:
+
+```java
+Map<LocalDate, TableDestination> byDay = new HashMap<>();
+
+BigtableSink.<OrderEvent>builder()
+        .destinationResolver(
+                (event, context) ->
+                        byDay.computeIfAbsent(
+                                event.day(),
+                                day ->
+                                        TableDestination.of(
+                                                "my-project", "my-instance", "orders-" + day)))
+        .serializer(
+                (event, context) ->
+                        RowMutationEntry.create(event.id())
+                                .setCell("cf", "payload", event.timestampMicros(), event.body()))
+        // A day's table stops receiving records once the day rolls over, and its batcher goes with
+        // it after this long. One hour is the default; this job knows its tables turn over faster.
+        .writerOptions(
+                BigtableWriterOptions.builder()
+                        .destinationIdleTimeout(Duration.ofMinutes(15))
+                        .build())
+        .build();
+```
+
+The map is captured by the resolver's closure, so it has to reach the task manager: a `HashMap`
+built where the job is assembled travels fine, an instance field of a class that is not
+serializable does not. Every table the resolver can name must already exist unless the sink is
+opted into [auto-creation]({{< relref "docs/connectors/datastream/bigtable" >}}#table-auto-creation)
+— worth reading first beside a resolver, since one schema serves every table the sink creates and a
+resolver keyed on something unbounded creates one table per value.
+
 ## Skipping records instead of filtering upstream
 
 Returning `null` writes nothing and is not a failure, so a filter whose condition is only known

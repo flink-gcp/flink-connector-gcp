@@ -30,22 +30,21 @@ import javax.annotation.Nullable;
 /**
  * Builder for Bigtable sinks, obtained from {@link BigtableSink#builder()}.
  *
- * <p>Required settings: a table and a serialization schema.
+ * <p>Required settings: a destination — {@link #table(TableDestination)} for one fixed table, or
+ * {@link #destinationResolver(DestinationResolver)} to route per record — and a serialization
+ * schema.
  *
- * <p>The table is fixed for the sink's lifetime, unlike the Pub/Sub and BigQuery sinks' per-record
- * destinations: the client's bulk mutation batcher is bound to one table, so per-record tables
- * would mean a pool of batchers and a share of the in-flight budget for each. That is deferred
- * until there is a use case for it. By default the sink never creates the table either — the table
- * and its column families must exist; {@link #createDisposition(CreateDisposition)} with {@link
+ * <p>By default the sink creates no table: every table it writes to, and the column families the
+ * mutations name, must exist. {@link #createDisposition(CreateDisposition)} with {@link
  * CreateDisposition#CREATE_IF_NEEDED} and {@link #tableCreateOptions(TableCreateOptions)} opts into
- * creating them.
+ * creating them, from one schema that serves every table the sink creates.
  *
  * @param <T> type of the records written by the sink
  */
 @PublicEvolving
 public class BigtableSinkBuilder<T> {
 
-    private TableDestination destination;
+    private DestinationResolver<? super T> destinationResolver;
     private BigtableSerializationSchema<? super T> serializer;
     @Nullable private String appProfileId;
     private BigtableWriterOptions writerOptions = BigtableWriterOptions.defaults();
@@ -57,13 +56,39 @@ public class BigtableSinkBuilder<T> {
     BigtableSinkBuilder() {}
 
     /**
-     * Writes every mutation to the given table.
+     * Writes every mutation to the given table. Sugar for a {@link DestinationResolver} returning
+     * that table for every record; this and {@link #destinationResolver(DestinationResolver)} set
+     * the same field, so the last call wins.
      *
      * @param table the destination table
      * @return this builder
      */
     public BigtableSinkBuilder<T> table(TableDestination table) {
-        this.destination = Preconditions.checkNotNull(table, "table must not be null");
+        this.destinationResolver =
+                new FixedDestinationResolver(
+                        Preconditions.checkNotNull(table, "table must not be null"));
+        return this;
+    }
+
+    /**
+     * Resolves the destination table per record, so one sink writes to many tables. The resolver
+     * runs before the serializer, and its result is what a failed mutation is reported against.
+     *
+     * <p>This and {@link #table(TableDestination)} set the same field, so the last call wins.
+     *
+     * <p>Each distinct table costs a bulk mutation batcher of its own, and beside {@link
+     * CreateDisposition#CREATE_IF_NEEDED} each unseen table is created from the one {@link
+     * #tableCreateOptions(TableCreateOptions)} schema — so a resolver's cardinality decides what
+     * the sink holds, and what it may create.
+     *
+     * @param destinationResolver the resolver
+     * @return this builder
+     */
+    public BigtableSinkBuilder<T> destinationResolver(
+            DestinationResolver<? super T> destinationResolver) {
+        this.destinationResolver =
+                Preconditions.checkNotNull(
+                        destinationResolver, "destinationResolver must not be null");
         return this;
     }
 
@@ -185,7 +210,9 @@ public class BigtableSinkBuilder<T> {
      * @return the sink
      */
     public Sink<T> build() {
-        Preconditions.checkState(destination != null, "A table is required: set table(...).");
+        Preconditions.checkState(
+                destinationResolver != null,
+                "A destination is required: set table(...) or destinationResolver(...).");
         Preconditions.checkState(serializer != null, "A serializer is required.");
         Preconditions.checkState(
                 tableCreateOptions == null || createDisposition != CreateDisposition.CREATE_NEVER,
@@ -201,7 +228,7 @@ public class BigtableSinkBuilder<T> {
                         + " naming them.");
         return new BigtableMutateRowsSink<>(
                 new BigtableSinkConfig<>(
-                        destination,
+                        destinationResolver,
                         serializer,
                         appProfileId,
                         writerOptions,

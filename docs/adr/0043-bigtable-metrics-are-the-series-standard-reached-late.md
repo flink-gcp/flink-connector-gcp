@@ -35,7 +35,9 @@ Five decisions:
 - **No per-destination counters, and so no `perDestinationMetrics` option.** One fixed table per
   sink means `destination.TABLE.*` restates the writer's totals — the same reason [#210] leaves
   them off the buffered-stream path. A batcher pool (ADR-0041's one-table decision) is what
-  would change this.
+  would change this. **Refined by ADR-0074** ([#232]), which is that pool: the option exists, off
+  by default, and a `table(...)` sink is not excepted from it — "one table" is a property of a
+  resolver the writer does not inspect.
 - **`errorClass` counts RPC failures only, never the serializer's.** A serialization failure
   carries no status, so counting it would put every one under `UNCLASSIFIED` beside the RPC
   failures that genuinely carry none. Both sibling sinks draw the line in the same place.
@@ -70,6 +72,7 @@ Five decisions:
 [#33]: https://github.com/laughingman7743/flink-connector-gcp/issues/33
 [#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
 [#210]: https://github.com/laughingman7743/flink-connector-gcp/issues/210
+[#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
 [#234]: https://github.com/laughingman7743/flink-connector-gcp/issues/234
 [#237]: https://github.com/laughingman7743/flink-connector-gcp/issues/237
 [#239]: https://github.com/laughingman7743/flink-connector-gcp/issues/239

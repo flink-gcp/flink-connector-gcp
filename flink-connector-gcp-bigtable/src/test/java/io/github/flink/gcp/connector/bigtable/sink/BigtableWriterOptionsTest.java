@@ -68,6 +68,43 @@ class BigtableWriterOptionsTest {
     }
 
     @Test
+    void theDestinationKnobsCarryTheirValuesAndTheirDefaults() {
+        assertThat(BigtableWriterOptions.defaults().getDestinationIdleTimeout())
+                .isEqualTo(Duration.ofHours(1));
+        assertThat(BigtableWriterOptions.defaults().isPerDestinationMetrics()).isFalse();
+
+        BigtableWriterOptions options =
+                BigtableWriterOptions.builder()
+                        .destinationIdleTimeout(Duration.ofMinutes(15))
+                        .perDestinationMetrics(true)
+                        .build();
+
+        assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(15));
+        assertThat(options.isPerDestinationMetrics()).isTrue();
+        assertThat(options.toString())
+                .contains("destinationIdleTimeout=PT15M", "perDestinationMetrics=true");
+        assertThat(options).isNotEqualTo(BigtableWriterOptions.defaults());
+    }
+
+    @Test
+    void theIdleTimeoutTakesTheLargestDurationANanosecondClockCanExpress() {
+        // Its own documentation offers a very large duration as the way to say "never evict", so
+        // the ceiling is what keeps that instruction from throwing ArithmeticException out of the
+        // writer's constructor on a task manager instead (ADR-0068).
+        Duration expressible = Duration.ofNanos(Long.MAX_VALUE);
+        BigtableWriterOptions.Builder builder = BigtableWriterOptions.builder();
+
+        assertThat(builder.destinationIdleTimeout(expressible).build().getDestinationIdleTimeout())
+                .isEqualTo(expressible);
+        assertThatThrownBy(() -> builder.destinationIdleTimeout(expressible.plusNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> builder.destinationIdleTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> builder.destinationIdleTimeout(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void isValueBased() {
         BigtableWriterOptions options =
                 BigtableWriterOptions.builder().maxInFlightMutations(7).build();

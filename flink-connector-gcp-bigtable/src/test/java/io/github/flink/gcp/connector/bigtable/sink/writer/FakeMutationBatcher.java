@@ -24,6 +24,7 @@ import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
+import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.grpc.Status;
 
 import java.util.ArrayList;
@@ -54,6 +55,15 @@ import java.util.Set;
  */
 final class FakeMutationBatcher implements MutationBatcher {
 
+    /** The table this batcher is bound to, as the real one is. */
+    final TableDestination destination;
+
+    /**
+     * Teardown events of every batcher of one {@link FakeMutationBatcherFactory}, in call order, so
+     * a test can assert the writer starts every shutdown before it waits on any close.
+     */
+    final List<String> events;
+
     final List<RowMutationEntry> entries = new ArrayList<>();
     final List<SettableApiFuture<Void>> futures = new ArrayList<>();
 
@@ -79,6 +89,7 @@ final class FakeMutationBatcher implements MutationBatcher {
     int tableMissingAfterSends = Integer.MAX_VALUE;
 
     int sendOutstandingCalls;
+    int shutdownCalls;
     int closeCalls;
     RuntimeException addFailure;
 
@@ -92,6 +103,16 @@ final class FakeMutationBatcher implements MutationBatcher {
      * Indices added since the last send: the request the next {@link #sendOutstanding()} issues.
      */
     private final List<Integer> accumulated = new ArrayList<>();
+
+    /** A standalone batcher, for a test that drives one table and reads no teardown order. */
+    FakeMutationBatcher(TableDestination destination) {
+        this(destination, new ArrayList<>());
+    }
+
+    FakeMutationBatcher(TableDestination destination, List<String> events) {
+        this.destination = destination;
+        this.events = events;
+    }
 
     @Override
     public ApiFuture<Void> add(RowMutationEntry entry) {
@@ -145,8 +166,15 @@ final class FakeMutationBatcher implements MutationBatcher {
     }
 
     @Override
+    public void shutdown() {
+        shutdownCalls++;
+        events.add("shutdown " + destination.getTable());
+    }
+
+    @Override
     public void close() {
         closeCalls++;
+        events.add("close " + destination.getTable());
         if (closeFailure != null) {
             ExceptionUtils.rethrow(closeFailure);
         }

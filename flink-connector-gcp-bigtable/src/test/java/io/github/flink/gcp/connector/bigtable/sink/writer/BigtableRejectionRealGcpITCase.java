@@ -219,11 +219,10 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
                         .writerOptions(options)
                         .failedMutationHandler(handler)
                         .build();
-        MutationBatcher batcher =
-                new DefaultMutationBatcherFactory(table, null, options, null).create();
+        MutationBatcherFactory factory = new DefaultMutationBatcherFactory(null, options, null);
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(
-                        batcher,
+                        factory,
                         new BigtableTableAdmin(),
                         new FakeMailboxExecutor(),
                         TestSinkWriterMetricGroup.create());
