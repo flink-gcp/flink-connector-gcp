@@ -53,10 +53,12 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 ## `base.options` (`docs/adr/0068`)
 
-- `OptionChecks` holds `checkPositive` and `checkExpressibleInNanos`; both clear the
-  multiple-consumer bar on their own (nine ceiling sites across three modules, thirty-one
-  positivity sites across two). **A new check owes an argument of that shape** — "it is a
-  precondition too" is not one, and this is not a general-purpose precondition library.
+- `OptionChecks` holds `checkPositive`, `checkAtLeastOneMilli`, `checkAtLeastOneMilliOrZero` and
+  `checkExpressibleInNanos`; each clears the multiple-consumer bar on its own (nine ceiling sites
+  across three modules, thirty-one positivity sites across two, thirty-one millisecond-floor sites
+  across four — eleven of them zero-tolerant, across two). **A new check owes an argument of that
+  shape** — "it is a precondition too" is not one, and this is not a general-purpose precondition
+  library.
 - **Every `Duration` positivity message carries the offending value**, which is what settled the
   three shapes the tree had grown for one check. A rejection that names only the knob leaves a
   builder chain setting several durations ambiguous.
@@ -65,6 +67,28 @@ record — context, evidence, declined alternatives — is the named ADR under `
   both calls both. Its message names the ceiling **and the year count**, because
   `Duration.toString()` renders it as an hour count that a SQL user is shown verbatim; tests pin
   the year count, so dropping it fails.
+- `checkAtLeastOneMilli` is the floor for a `Duration` **the connector converts with
+  `toMillis()`**, and that conversion — never the knob's name — is what decides whether a setter
+  needs it: the Pub/Sub source's `shutdownTimeout` carries the floor and the sink's knob of the
+  same name does not, because only one of them truncates (`docs/adr/0068`). Adding one means
+  finding the conversion first, and a sub-millisecond value that is harmless where it lands
+  (a warning threshold, an already-`Math.max(1, …)`-floored park) is left alone. It folds
+  positivity in rather than composing with `checkPositive`, so zero and negative get the floor's
+  message; its parenthetical asserts the granularity, so a site where that is false is a site
+  where the check does not belong.
+- **A value the vendor SDK itself defines is not the floor's to refuse**, which is what
+  `checkAtLeastOneMilliOrZero` is for: **a knob this project only forwards stays settable as the
+  vendor defines it**. Twelve knobs across pubsub and bigquery pass `Duration.ZERO` through,
+  because gax, the Pub/Sub subscriber and the BigQuery Storage writer each document a meaning for
+  it (`docs/adr/0068` carries the table). The floor is what makes that safe rather than what it
+  trades against: the vendor reads these with `toMillis()`, so a *positive* sub-millisecond value
+  would arrive as the sentinel. A `Duration` this project **spends itself** keeps the plain floor —
+  nothing on the other side gives its zero a meaning — so choosing between the two means asking
+  who consumes the value, not how the knob reads. **And a forwarded knob the vendor does not
+  truncate takes neither**: `maxAckExtensionPeriod` is spent as `now().plus(period)` at nanosecond
+  resolution, so it carries a non-negative check at its own setter. The test for which one applies
+  is the message — a floor that would promise millisecond granularity where none applies does not
+  belong there.
 - Numeric (`int`/`long`) positivity checks stay inline in their builders — the helper is
   `Duration`-typed, and Bigtable and Cloud Tasks have no `Duration` positivity check at all.
 

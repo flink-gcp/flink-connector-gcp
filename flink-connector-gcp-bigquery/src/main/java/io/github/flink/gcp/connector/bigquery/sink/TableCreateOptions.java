@@ -212,11 +212,11 @@ public final class TableCreateOptions implements Serializable {
          * Sets the partition expiration; partitions older than this are deleted by BigQuery.
          * Requires time partitioning to be configured.
          *
-         * @param expiration the partition expiration
+         * @param expiration the partition expiration, at least 1 ms
          * @return this builder
          */
         public Builder timePartitioningExpiration(Duration expiration) {
-            OptionChecks.checkPositive(expiration, "expiration");
+            OptionChecks.checkAtLeastOneMilli(expiration, "expiration");
             this.timePartitioningExpirationMs = expiration.toMillis();
             return this;
         }

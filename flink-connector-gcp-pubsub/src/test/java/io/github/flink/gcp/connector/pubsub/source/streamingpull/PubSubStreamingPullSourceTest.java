@@ -73,6 +73,30 @@ class PubSubStreamingPullSourceTest {
                 .contains("PT1M30S");
     }
 
+    /**
+     * A zero extension period became reachable when the knob started forwarding the client
+     * library's own value for "disable auto deadline extension" (ADR-0068). The headroom sentence
+     * cannot describe it — there is no budget to have headroom under — and telling a user to raise
+     * a knob they deliberately zeroed is advice to undo their own configuration, so this state gets
+     * its consequence stated instead.
+     */
+    @Test
+    void aDisabledAckExtensionSaysWhatItCostsRatherThanAskingForHeadroom() {
+        String warning =
+                PubSubStreamingPullSource.ackExtensionHeadroomWarning(
+                        configurationWithInterval(Duration.ofMinutes(1)),
+                        PubSubSubscriberOptions.builder()
+                                .maxAckExtensionPeriod(Duration.ZERO)
+                                .build());
+
+        assertThat(warning)
+                .contains("extension is disabled")
+                .contains("PT1M")
+                .contains("redeliver")
+                .doesNotContain("headroom")
+                .doesNotContain("raise");
+    }
+
     @Test
     void aDisabledCheckpointIntervalDoesNotWarnAboutHeadroom() {
         // Checkpointing disabled cluster-wide is the watchdog's business, not this warning's.

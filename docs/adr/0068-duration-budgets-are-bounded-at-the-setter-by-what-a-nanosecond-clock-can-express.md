@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0068: A `Duration` budget is bounded at the setter by what a nanosecond clock can express
 
 - Status: Accepted
-- Date: 2026-08-08; revised by [#381] (2026-08-08)
-- Issues: [#334], [#321], [#333], [#381]
-- Modules: base (`base.options`, `BoundedShutdown`), pubsub, bigquery
+- Date: 2026-08-08; revised by [#381] (2026-08-08), [#413] (2026-08-09)
+- Issues: [#334], [#321], [#333], [#381], [#413]
+- Modules: base (`base.options`, `BoundedShutdown`), pubsub, cloudtasks, bigtable, bigquery
 - Current behavior: each knob's row in `docs/content/docs/reference/{pubsub,bigquery}.md`
 
 ## Context
@@ -118,6 +118,100 @@ moved there, and both clear the base module's multiple-consumer bar (ADR-0036) o
 ceiling call sites across base, pubsub and bigquery; thirty-one positivity call sites across
 pubsub and bigquery.
 
+**[#413]: the same rule one unit down — a `Duration` spent in milliseconds is bounded below, at the
+setter, at one millisecond.** `OptionChecks.checkAtLeastOneMilli` is the third check, and it
+arrived the way the other two did: as five private copies (pubsub, cloudtasks, bigtable, and
+BigQuery's buffered-stream and FILE_LOADS options) in two message shapes and two mechanics. What
+the copies dropped this time was not the message's readable half but its *coverage*. Grepping for
+the conversion rather than for either wording — the discipline [#381] arrived at — found eleven
+setters that convert a user's value and had no floor at all:
+
+| Knob | What spends it in milliseconds | What a sub-millisecond value did |
+|---|---|---|
+| `BufferedStreamOptions` and `DefaultStreamOptions` `recovery{Initial,Max}Backoff` | `RetrySchedule`, whose constructor requires `initialBackoffMs > 0` | accepted at the setter, `IllegalArgumentException` on a TaskManager as the writer or committer was built |
+| `DefaultStreamOptions.retry{InitialDelay,MaxDelay}` | gax's `ExponentialRetryAlgorithm`, which reads `toMillis()` | a retry loop with no backoff |
+| `DefaultStreamOptions.maxRetryDuration` | the SDK's `ConnectionWorker`, which reads `toMillis()` and treats **zero as unlimited** | the ceiling inverted — a knob set to give up almost at once retries forever |
+| `DefaultStreamOptions.flushInterval` | `registerTimer(now + toMillis())` | a timer re-armed in the past, spinning on the mailbox thread |
+| `TableCreateOptions.timePartitioningExpiration` | the setter itself, into the request's `expirationMs` | a zero expiration nobody asked for |
+| `PubSubSubscriberOptions.awaitAckConfirmation` | `future.get(toMillis(), MILLISECONDS)` | a confirmation timing out before it can arrive |
+| `PubSubSubscriberOptions.shutdownTimeout` | `latch.await(toMillis(), MILLISECONDS)` | a shutdown that waits for nothing |
+
+The two vendor readings were measured from the resolved sources, not inferred: gax 2.82.0's
+`ExponentialRetryAlgorithm.createNextAttempt` (`long newRetryDelay =
+settings.getInitialRetryDelayDuration().toMillis()`), and google-cloud-bigquerystorage 3.30.0's
+`ConnectionWorker` (`maxRetryDuration.toMillis() == 0f || …`, the disjunct that makes zero mean
+"no ceiling" — and the SDK says so itself, on `StreamWriter.Builder.setMaxRetryDuration`: *"You can
+allow unlimited retry by setting the value to be 0."*). Without them the retry knobs read as a
+`Duration`-typed SDK API with no truncation in it, and the sweep would have skipped four setters —
+the `maxRetryDuration` one inverting the user's intent rather than merely ignoring it.
+
+Three conversions were surveyed and deliberately left unfloored, which is what makes this a rule
+rather than a sweep: `FileLoadsOptions.minCheckpointInterval` only feeds a warning threshold,
+`PubSubSubscriberOptions.firstCheckpointTimeout` is already floored by `Math.max(1, …)` where it is
+spent, and the sink's `PubSubPublisherOptions.shutdownTimeout` is spent in nanoseconds and
+truncates nothing.
+
+**The check follows the conversion, not the knob name**, which is the one question this ADR now
+answers two ways and is worth stating rather than leaving to be re-derived. The *ceiling* was given
+to the source's `shutdownTimeout` **because** the sink has a knob of that name — one answer for one
+name. The *floor* is withheld from the sink's for the opposite reason. The difference is that the
+ceiling is uniform and costs nothing, while the floor's message asserts something — "it is applied
+at millisecond granularity" — that is true at every call site it stands on and would be false at
+the sink's. A message that states its own reason is what keeps the asymmetry checkable.
+
+**A value the SDK itself defines is not the floor's to refuse — `checkAtLeastOneMilliOrZero`.**
+A knob this project *forwards* to a vendor setting stays settable as the vendor defines it, and
+four vendor settings this project forwards give `Duration.ZERO` a meaning, each read from the
+resolved sources rather than assumed:
+
+| Vendor setting | What zero means there | Our knobs |
+|---|---|---|
+| `StreamWriter.Builder.setMaxRetryDuration` (bigquerystorage 3.30.0) | *"You can allow unlimited retry by setting the value to be 0"*; `ConnectionWorker` skips the elapsed-time comparison | `maxRetryDuration` ×2 |
+| `RetrySettings.totalTimeout` (gax 2.82.0) | *"the logic will instead use the number of attempts to determine retries"* — and it is gax's own retry default | `retryTotalTimeout` |
+| `RetrySettings.initialRetryDelay` / `maxRetryDelay` (gax 2.82.0) | gax's own retry default; a zero cap clamps every delay to none | `retryInitialDelay` / `retryMaxDelay` ×3 classes |
+| `RetrySettings.initialRpcTimeout` / `maxRpcTimeout` (gax 2.82.0) | *"allows the RPC to continue indefinitely"* | `retryInitialRpcTimeout` / `retryMaxRpcTimeout` |
+| `Subscriber.Builder.setMaxAckExtensionPeriod` (google-cloud-pubsub 1.152.0) | *"A zero duration effectively disables auto deadline extensions"* | `maxAckExtensionPeriod` — **non-negative only, no floor**: see below |
+
+**The floor and the exemption are the same argument, not a compromise between them.** Every one of
+these values is read by the vendor with `toMillis()`, so a *positive* sub-millisecond value would
+arrive as zero and silently become the sentinel — which is how a retry ceiling set to give up
+almost at once became unlimited retry. Refusing it is what keeps zero meaning only what the user
+typed, and it is why five Pub/Sub sink knobs gain a floor here that they never had: `checkPositive`
+let 500 µs through, and gax turned it into "run indefinitely".
+
+Whether zero is legal is therefore a property of the SDK on the other side, never a loosening for
+convenience: a `Duration` this project *spends itself* — a `RetrySchedule` backoff, a
+processing-time flush interval, a bounded `await` — keeps the plain floor, because nothing on the
+other side gives its zero a meaning.
+
+**And a forwarded knob the vendor does not truncate takes neither check**, which is
+`maxAckExtensionPeriod` and was caught by round two rather than by reasoning: the first draft gave
+it the zero-tolerant floor on the assumption that "the SDK reads it in milliseconds too", and
+`MessageDispatcher` spends it as `now().plus(maxAckExtensionPeriod)` — an `Instant` at nanosecond
+resolution, with no `toMillis()` anywhere (google-cloud-pubsub 1.152.0, line 500). A sub-millisecond
+value there is a very short budget, not a zero in disguise, so the floor had nothing to prevent and
+its message — "it is applied at millisecond granularity" — would have asserted something false.
+The knob takes a non-negative check written at its own setter instead. The general form: **the
+message is the test.** A floor whose stated reason is untrue at a call site is a floor that does
+not belong there, and checking the reason is what tells the two apart.
+
+**Where a setter carries both, the ceiling runs before the floor.** Only one does today — the
+Pub/Sub source's `shutdownTimeout` — and the order is not stylistic: the floor converts with
+`toMillis()`, which past about 292 million years throws an `ArithmeticException` naming no knob at
+all, so a floor placed first would answer the most absurd budget with the least useful message and
+undo what this ADR bought. The ceiling rejects everything that could overflow the conversion, which
+is why running it first costs nothing.
+
+**The message carries the reason and the value, and the mechanics fold positivity in.** The two
+copied shapes were `"x must be at least 1 millisecond (it is applied at millisecond granularity)"`
+and `"x must be at least 1 ms: <value>"`; the survivor is their union, on [#381]'s finding that the
+value-carrying form wins. Zero and negative durations fail the floor with its own message rather
+than with positivity's: a user told only "must be positive" sets 500 µs next and is rejected a
+second time, so folding costs one round trip less. And a duration past about 292 million years
+still throws `ArithmeticException` out of `toMillis()` — accidental in all five copies, kept
+deliberately and pinned by a test, because the exception type is odd but the landing site is the
+setter, which is the whole point.
+
 - The ceiling constant had stood in **six files**, with its message written out in eight.
 - Positivity had **two implementations and three message shapes for one check** — `"x must be
   positive"`, `"x must be positive: <value>"` and `"x must be positive, but was <value>"`. That is
@@ -181,8 +275,33 @@ the failure.**
 - The two tests named `theLargestExpressibleBudget…` pin the boundary against a future "hardening"
   of the deadline stamp, not against today's code — the Evidence above is why they cannot be
   aimed at today's code.
+- The floor tightens eleven shipped setters: a sub-millisecond value they used to accept is now
+  refused. Nothing in the tree set one — every such value in the test sources was already a
+  rejection assertion — and the reference pages carry defaults, not floors, so no documented
+  configuration changes. Three connectors' rejection messages gain the offending value and
+  BigQuery's two gain the parenthetical, which is a user-visible wording change taken while the
+  artifacts are unpublished, as [#381]'s was.
+- **What a SQL user is shown**, measured 2026-08-09 through `FactoryMocks.createTableSink` with
+  `sink.default-stream.recovery.initial-backoff = '500 micros'` (a throwaway probe, deleted after
+  the run), as the ceiling's was:
+
+  ```text
+  ValidationException: Unable to create a sink for writing table 'default.default.t1'.
+    caused by IllegalArgumentException: recoveryInitialBackoff must be at least 1 millisecond
+    (it is applied at millisecond granularity): PT0.0005S
+  ```
+
+  So the floor is **not** restated in DDL keys, on the same measurement the ceiling was: the
+  actionable sentence reaches the user in the cause, and `recoveryInitialBackoff` is legible as
+  `…recovery.initial-backoff`, unlike ADR-0007's `retryTotalTimeout`. The probe also settled that
+  the floor is reachable from SQL at all — Flink's duration parser rejects `us` but accepts
+  `micros`, `µs` and `nanos`, so a sub-millisecond value is expressible in a `WITH` clause. The
+  one knob whose builder name `TableCreateOptionsMapper` already judges unactionable in DDL,
+  `timePartitioningExpiration`, is covered by accident rather than by exception: its floor message
+  names `expiration`, which is its option key's own last segment.
 
 [#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
 [#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
 [#334]: https://github.com/laughingman7743/flink-connector-gcp/issues/334
 [#381]: https://github.com/laughingman7743/flink-connector-gcp/issues/381
+[#413]: https://github.com/laughingman7743/flink-connector-gcp/issues/413

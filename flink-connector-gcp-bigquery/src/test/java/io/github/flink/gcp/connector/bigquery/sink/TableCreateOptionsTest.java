@@ -77,6 +77,20 @@ class TableCreateOptionsTest {
                 .hasMessageContaining("requires timePartitioning");
     }
 
+    /**
+     * The setter converts to milliseconds on the spot, so a sub-millisecond expiration used to
+     * reach the create request as a zero — an expiration the user never asked for (ADR-0068).
+     */
+    @Test
+    void rejectsASubMillisecondExpiration() {
+        assertThatThrownBy(
+                        () ->
+                                TableCreateOptions.builder()
+                                        .timePartitioningExpiration(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("expiration must be at least 1 millisecond");
+    }
+
     @Test
     void rejectsTooManyClusteredFields() {
         assertThatThrownBy(

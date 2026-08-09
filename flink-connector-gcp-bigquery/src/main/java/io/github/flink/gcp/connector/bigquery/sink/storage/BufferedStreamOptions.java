@@ -286,11 +286,11 @@ public final class BufferedStreamOptions implements Serializable {
          * table auto-creation, transient append failures, the restore probe). Defaults to {@link
          * #DEFAULT_RECOVERY_INITIAL_BACKOFF}.
          *
-         * @param recoveryInitialBackoff the first backoff
+         * @param recoveryInitialBackoff the first backoff, at least 1 ms
          * @return this builder
          */
         public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
-            OptionChecks.checkPositive(recoveryInitialBackoff, "recoveryInitialBackoff");
+            OptionChecks.checkAtLeastOneMilli(recoveryInitialBackoff, "recoveryInitialBackoff");
             this.recoveryInitialBackoff = recoveryInitialBackoff;
             return this;
         }
@@ -299,11 +299,11 @@ public final class BufferedStreamOptions implements Serializable {
          * Sets the backoff cap of the connector-driven recovery schedule. Must be at least the
          * initial backoff. Defaults to {@link #DEFAULT_RECOVERY_MAX_BACKOFF}.
          *
-         * @param recoveryMaxBackoff the backoff cap
+         * @param recoveryMaxBackoff the backoff cap, at least 1 ms
          * @return this builder
          */
         public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
-            OptionChecks.checkPositive(recoveryMaxBackoff, "recoveryMaxBackoff");
+            OptionChecks.checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
             this.recoveryMaxBackoff = recoveryMaxBackoff;
             return this;
         }
@@ -328,11 +328,18 @@ public final class BufferedStreamOptions implements Serializable {
          * Sets the first delay of the SDK's in-stream retry of retriable append failures. Defaults
          * to {@link #DEFAULT_RETRY_INITIAL_DELAY}.
          *
-         * @param retryInitialDelay the first retry delay
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: no delay
+         * before the first retry, which is gax's own default. A setting this connector forwards to
+         * the SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
+         * instead, because gax reads this with {@code toMillis()} and it would silently become that
+         * zero (ADR-0068).
+         *
+         * @param retryInitialDelay the first retry delay, at least 1 ms or {@code Duration.ZERO}
          * @return this builder
          */
         public Builder retryInitialDelay(Duration retryInitialDelay) {
-            this.retryInitialDelay = checkAtLeastOneMilli(retryInitialDelay, "retryInitialDelay");
+            this.retryInitialDelay =
+                    OptionChecks.checkAtLeastOneMilliOrZero(retryInitialDelay, "retryInitialDelay");
             return this;
         }
 
@@ -356,11 +363,18 @@ public final class BufferedStreamOptions implements Serializable {
          * Caps the delay of the SDK's in-stream retry schedule. Must be at least the initial delay.
          * Defaults to {@link #DEFAULT_RETRY_MAX_DELAY}.
          *
-         * @param retryMaxDelay the delay cap
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: a cap of
+         * zero, which clamps every retry delay to none. A setting this connector forwards to the
+         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
+         * instead, because gax reads this with {@code toMillis()} and it would silently become that
+         * zero (ADR-0068).
+         *
+         * @param retryMaxDelay the delay cap, at least 1 ms or {@code Duration.ZERO}
          * @return this builder
          */
         public Builder retryMaxDelay(Duration retryMaxDelay) {
-            this.retryMaxDelay = checkAtLeastOneMilli(retryMaxDelay, "retryMaxDelay");
+            this.retryMaxDelay =
+                    OptionChecks.checkAtLeastOneMilliOrZero(retryMaxDelay, "retryMaxDelay");
             return this;
         }
 
@@ -384,19 +398,21 @@ public final class BufferedStreamOptions implements Serializable {
          * Sets the SDK's overall ceiling on retrying one retriable in-stream failure, across all
          * attempts. Defaults to {@link #DEFAULT_MAX_RETRY_DURATION}, the SDK's own default.
          *
-         * @param maxRetryDuration the overall retry ceiling
+         * <p><b>{@code Duration.ZERO} means no time limit</b>, which is the SDK's own reading of
+         * the value it is handed rather than anything this connector invents: {@code
+         * StreamWriter.Builder.setMaxRetryDuration} documents it as allowing unlimited retry, and
+         * {@code ConnectionWorker} implements it by skipping the elapsed-time comparison
+         * altogether. An SDK setting this connector merely forwards stays settable as the SDK
+         * defines it.
+         *
+         * @param maxRetryDuration the overall retry ceiling, at least 1 ms — or {@code
+         *     Duration.ZERO} for no limit
          * @return this builder
          */
         public Builder maxRetryDuration(Duration maxRetryDuration) {
-            this.maxRetryDuration = checkAtLeastOneMilli(maxRetryDuration, "maxRetryDuration");
+            OptionChecks.checkAtLeastOneMilliOrZero(maxRetryDuration, "maxRetryDuration");
+            this.maxRetryDuration = maxRetryDuration;
             return this;
-        }
-
-        private static Duration checkAtLeastOneMilli(Duration value, String name) {
-            Preconditions.checkNotNull(value, name + " must not be null");
-            Preconditions.checkArgument(
-                    value.toMillis() > 0, name + " must be at least 1 ms: %s", value);
-            return value;
         }
 
         /**

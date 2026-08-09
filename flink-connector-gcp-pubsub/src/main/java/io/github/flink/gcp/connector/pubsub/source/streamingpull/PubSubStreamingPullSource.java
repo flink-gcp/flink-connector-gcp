@@ -168,6 +168,21 @@ public class PubSubStreamingPullSource<T>
                 options.getMaxAckExtensionPeriod() != null
                         ? options.getMaxAckExtensionPeriod()
                         : DefaultSubscriberFactory.DEFAULT_MAX_ACK_EXTENSION_PERIOD;
+        if (maxAckExtension.isZero()) {
+            // Reachable since the knob started forwarding the client library's own value for
+            // "disable auto deadline extension" (ADR-0068). The headroom sentence would be
+            // nonsense here — there is no budget to have headroom under — and its advice would
+            // tell a user to undo what they deliberately configured, so this state states its
+            // consequence instead.
+            return "Acknowledgement-deadline extension is disabled"
+                    + " (PubSubSubscriberOptions.maxAckExtensionPeriod is zero), so a message's"
+                    + " lease expires at the subscription's own acknowledgement deadline. This"
+                    + " source acknowledges one whole checkpoint after emitting, and the checkpoint"
+                    + " interval is "
+                    + interval
+                    + ", so expect Pub/Sub to redeliver anything not acknowledged within that"
+                    + " deadline.";
+        }
         if (interval.multipliedBy(2).compareTo(maxAckExtension) <= 0) {
             return null;
         }

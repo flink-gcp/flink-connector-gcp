@@ -404,11 +404,11 @@ public final class DefaultStreamOptions implements Serializable {
          * auto-creation, transient append failures past the SDK's own retries, stale-writer
          * refreshes). Defaults to {@link #DEFAULT_RECOVERY_INITIAL_BACKOFF}.
          *
-         * @param recoveryInitialBackoff the first backoff
+         * @param recoveryInitialBackoff the first backoff, at least 1 ms
          * @return this builder
          */
         public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
-            OptionChecks.checkPositive(recoveryInitialBackoff, "recoveryInitialBackoff");
+            OptionChecks.checkAtLeastOneMilli(recoveryInitialBackoff, "recoveryInitialBackoff");
             this.recoveryInitialBackoff = recoveryInitialBackoff;
             return this;
         }
@@ -417,11 +417,11 @@ public final class DefaultStreamOptions implements Serializable {
          * Sets the backoff cap of the connector-driven recovery schedule. Must be at least the
          * initial backoff. Defaults to {@link #DEFAULT_RECOVERY_MAX_BACKOFF}.
          *
-         * @param recoveryMaxBackoff the backoff cap
+         * @param recoveryMaxBackoff the backoff cap, at least 1 ms
          * @return this builder
          */
         public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
-            OptionChecks.checkPositive(recoveryMaxBackoff, "recoveryMaxBackoff");
+            OptionChecks.checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
             this.recoveryMaxBackoff = recoveryMaxBackoff;
             return this;
         }
@@ -450,11 +450,17 @@ public final class DefaultStreamOptions implements Serializable {
          * <p>The connection pool adopts the first writer's SDK retry settings per JVM; see the
          * class javadoc.
          *
-         * @param retryInitialDelay the first retry delay
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: no delay
+         * before the first retry, which is gax's own default. A setting this connector forwards to
+         * the SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
+         * instead, because gax reads this with {@code toMillis()} and it would silently become that
+         * zero (ADR-0068).
+         *
+         * @param retryInitialDelay the first retry delay, at least 1 ms or {@code Duration.ZERO}
          * @return this builder
          */
         public Builder retryInitialDelay(Duration retryInitialDelay) {
-            OptionChecks.checkPositive(retryInitialDelay, "retryInitialDelay");
+            OptionChecks.checkAtLeastOneMilliOrZero(retryInitialDelay, "retryInitialDelay");
             this.retryInitialDelay = retryInitialDelay;
             return this;
         }
@@ -479,11 +485,17 @@ public final class DefaultStreamOptions implements Serializable {
          * Sets the delay cap of the SDK's in-stream retry schedule. Must be at least the initial
          * delay. Defaults to {@link #DEFAULT_RETRY_MAX_DELAY}.
          *
-         * @param retryMaxDelay the delay cap
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: a cap of
+         * zero, which clamps every retry delay to none. A setting this connector forwards to the
+         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
+         * instead, because gax reads this with {@code toMillis()} and it would silently become that
+         * zero (ADR-0068).
+         *
+         * @param retryMaxDelay the delay cap, at least 1 ms or {@code Duration.ZERO}
          * @return this builder
          */
         public Builder retryMaxDelay(Duration retryMaxDelay) {
-            OptionChecks.checkPositive(retryMaxDelay, "retryMaxDelay");
+            OptionChecks.checkAtLeastOneMilliOrZero(retryMaxDelay, "retryMaxDelay");
             this.retryMaxDelay = retryMaxDelay;
             return this;
         }
@@ -508,11 +520,19 @@ public final class DefaultStreamOptions implements Serializable {
          * Sets the SDK's overall ceiling on retrying one retriable in-stream failure, across all
          * attempts. Defaults to {@link #DEFAULT_MAX_RETRY_DURATION}, the SDK's own default.
          *
-         * @param maxRetryDuration the overall retry ceiling
+         * <p><b>{@code Duration.ZERO} means no time limit</b>, which is the SDK's own reading of
+         * the value it is handed rather than anything this connector invents: {@code
+         * StreamWriter.Builder.setMaxRetryDuration} documents it as allowing unlimited retry, and
+         * {@code ConnectionWorker} implements it by skipping the elapsed-time comparison
+         * altogether. An SDK setting this connector merely forwards stays settable as the SDK
+         * defines it.
+         *
+         * @param maxRetryDuration the overall retry ceiling, at least 1 ms — or {@code
+         *     Duration.ZERO} for no limit
          * @return this builder
          */
         public Builder maxRetryDuration(Duration maxRetryDuration) {
-            OptionChecks.checkPositive(maxRetryDuration, "maxRetryDuration");
+            OptionChecks.checkAtLeastOneMilliOrZero(maxRetryDuration, "maxRetryDuration");
             this.maxRetryDuration = maxRetryDuration;
             return this;
         }
@@ -624,11 +644,11 @@ public final class DefaultStreamOptions implements Serializable {
          * unacknowledged indefinitely and be lost on failure. It bounds that window; it does not
          * replace the documented at-least-once guarantee, which requires checkpointing.
          *
-         * @param flushInterval the flush interval
+         * @param flushInterval the flush interval, at least 1 ms
          * @return this builder
          */
         public Builder flushInterval(Duration flushInterval) {
-            OptionChecks.checkPositive(flushInterval, "flushInterval");
+            OptionChecks.checkAtLeastOneMilli(flushInterval, "flushInterval");
             this.flushInterval = flushInterval;
             return this;
         }

@@ -472,24 +472,36 @@ public final class PubSubPublisherOptions implements Serializable {
          * publisher replaces this and {@link #retryMaxAttempts(int)} with an effectively infinite
          * budget, so setting either would promise a bound the publisher does not have.
          *
-         * @param retryTotalTimeout the total timeout, positive
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: retries are
+         * bounded by the attempt count instead of by time. A setting this connector forwards to the
+         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
+         * instead, because gax reads this with {@code toMillis()} and it would silently become that
+         * zero (ADR-0068).
+         *
+         * @param retryTotalTimeout the total timeout, at least 1 ms or {@code Duration.ZERO}
          * @return this builder
          */
         public Builder retryTotalTimeout(Duration retryTotalTimeout) {
             this.retryTotalTimeout =
-                    OptionChecks.checkPositive(retryTotalTimeout, "retryTotalTimeout");
+                    OptionChecks.checkAtLeastOneMilliOrZero(retryTotalTimeout, "retryTotalTimeout");
             return this;
         }
 
         /**
          * Sets the delay before the first publish retry. Optional; defaults to the SDK's delay.
          *
-         * @param retryInitialDelay the initial retry delay, positive
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: no delay
+         * before the first retry, which is gax's own default. A setting this connector forwards to
+         * the SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
+         * instead, because gax reads this with {@code toMillis()} and it would silently become that
+         * zero (ADR-0068).
+         *
+         * @param retryInitialDelay the initial retry delay, at least 1 ms or {@code Duration.ZERO}
          * @return this builder
          */
         public Builder retryInitialDelay(Duration retryInitialDelay) {
             this.retryInitialDelay =
-                    OptionChecks.checkPositive(retryInitialDelay, "retryInitialDelay");
+                    OptionChecks.checkAtLeastOneMilliOrZero(retryInitialDelay, "retryInitialDelay");
             return this;
         }
 
@@ -510,11 +522,18 @@ public final class PubSubPublisherOptions implements Serializable {
         /**
          * Caps the delay between publish retries. Optional; defaults to the SDK's cap.
          *
-         * @param retryMaxDelay the maximum retry delay, positive
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: a cap of
+         * zero, which clamps every retry delay to none. A setting this connector forwards to the
+         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
+         * instead, because gax reads this with {@code toMillis()} and it would silently become that
+         * zero (ADR-0068).
+         *
+         * @param retryMaxDelay the maximum retry delay, at least 1 ms or {@code Duration.ZERO}
          * @return this builder
          */
         public Builder retryMaxDelay(Duration retryMaxDelay) {
-            this.retryMaxDelay = OptionChecks.checkPositive(retryMaxDelay, "retryMaxDelay");
+            this.retryMaxDelay =
+                    OptionChecks.checkAtLeastOneMilliOrZero(retryMaxDelay, "retryMaxDelay");
             return this;
         }
 
@@ -522,12 +541,20 @@ public final class PubSubPublisherOptions implements Serializable {
          * Sets the timeout of the first publish RPC attempt. Optional; defaults to the SDK's
          * timeout.
          *
-         * @param retryInitialRpcTimeout the initial per-RPC timeout, positive
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: the call runs
+         * indefinitely, until the connection itself ends. A setting this connector forwards to the
+         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
+         * instead, because gax reads this with {@code toMillis()} and it would silently become that
+         * zero (ADR-0068).
+         *
+         * @param retryInitialRpcTimeout the initial per-RPC timeout, at least 1 ms or {@code
+         *     Duration.ZERO}
          * @return this builder
          */
         public Builder retryInitialRpcTimeout(Duration retryInitialRpcTimeout) {
             this.retryInitialRpcTimeout =
-                    OptionChecks.checkPositive(retryInitialRpcTimeout, "retryInitialRpcTimeout");
+                    OptionChecks.checkAtLeastOneMilliOrZero(
+                            retryInitialRpcTimeout, "retryInitialRpcTimeout");
             return this;
         }
 
@@ -549,12 +576,20 @@ public final class PubSubPublisherOptions implements Serializable {
         /**
          * Caps the timeout of a publish RPC attempt. Optional; defaults to the SDK's cap.
          *
-         * @param retryMaxRpcTimeout the maximum per-RPC timeout, positive
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what gax means by it: a cap of
+         * zero, which lets every call run indefinitely. A setting this connector forwards to the
+         * SDK stays settable as the SDK defines it; a positive sub-millisecond value is refused
+         * instead, because gax reads this with {@code toMillis()} and it would silently become that
+         * zero (ADR-0068).
+         *
+         * @param retryMaxRpcTimeout the maximum per-RPC timeout, at least 1 ms or {@code
+         *     Duration.ZERO}
          * @return this builder
          */
         public Builder retryMaxRpcTimeout(Duration retryMaxRpcTimeout) {
             this.retryMaxRpcTimeout =
-                    OptionChecks.checkPositive(retryMaxRpcTimeout, "retryMaxRpcTimeout");
+                    OptionChecks.checkAtLeastOneMilliOrZero(
+                            retryMaxRpcTimeout, "retryMaxRpcTimeout");
             return this;
         }
 
@@ -635,24 +670,25 @@ public final class PubSubPublisherOptions implements Serializable {
          * Sets the first backoff of the topic auto-creation recovery (republishing after creating a
          * missing topic). Defaults to 500 ms.
          *
-         * @param recoveryInitialBackoff the first backoff, positive
+         * @param recoveryInitialBackoff the first backoff, at least 1 ms
          * @return this builder
          */
         public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
             this.recoveryInitialBackoff =
-                    checkAtLeastOneMilli(recoveryInitialBackoff, "recoveryInitialBackoff");
+                    OptionChecks.checkAtLeastOneMilli(
+                            recoveryInitialBackoff, "recoveryInitialBackoff");
             return this;
         }
 
         /**
          * Caps the backoff of the topic auto-creation recovery. Defaults to 10 s.
          *
-         * @param recoveryMaxBackoff the backoff cap, positive and at least the initial backoff
+         * @param recoveryMaxBackoff the backoff cap, at least 1 ms and at least the initial backoff
          * @return this builder
          */
         public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
             this.recoveryMaxBackoff =
-                    checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
+                    OptionChecks.checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
             return this;
         }
 
@@ -822,16 +858,6 @@ public final class PubSubPublisherOptions implements Serializable {
                         names);
             }
             return new PubSubPublisherOptions(this);
-        }
-
-        private static Duration checkAtLeastOneMilli(Duration duration, String name) {
-            OptionChecks.checkPositive(duration, name);
-            Preconditions.checkArgument(
-                    duration.toMillis() >= 1,
-                    "%s must be at least 1 millisecond (it is applied at millisecond"
-                            + " granularity)",
-                    name);
-            return duration;
         }
     }
 }

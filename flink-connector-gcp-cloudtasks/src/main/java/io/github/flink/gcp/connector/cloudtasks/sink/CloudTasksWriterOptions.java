@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 
 import java.io.Serializable;
@@ -252,7 +253,7 @@ public final class CloudTasksWriterOptions implements Serializable {
          */
         public Builder retryInitialBackoff(Duration retryInitialBackoff) {
             this.retryInitialBackoff =
-                    checkAtLeastOneMilli(retryInitialBackoff, "retryInitialBackoff");
+                    OptionChecks.checkAtLeastOneMilli(retryInitialBackoff, "retryInitialBackoff");
             return this;
         }
 
@@ -263,7 +264,8 @@ public final class CloudTasksWriterOptions implements Serializable {
          * @return this builder
          */
         public Builder retryMaxBackoff(Duration retryMaxBackoff) {
-            this.retryMaxBackoff = checkAtLeastOneMilli(retryMaxBackoff, "retryMaxBackoff");
+            this.retryMaxBackoff =
+                    OptionChecks.checkAtLeastOneMilli(retryMaxBackoff, "retryMaxBackoff");
             return this;
         }
 
@@ -288,7 +290,8 @@ public final class CloudTasksWriterOptions implements Serializable {
          */
         public Builder notFoundInitialBackoff(Duration notFoundInitialBackoff) {
             this.notFoundInitialBackoff =
-                    checkAtLeastOneMilli(notFoundInitialBackoff, "notFoundInitialBackoff");
+                    OptionChecks.checkAtLeastOneMilli(
+                            notFoundInitialBackoff, "notFoundInitialBackoff");
             return this;
         }
 
@@ -300,7 +303,7 @@ public final class CloudTasksWriterOptions implements Serializable {
          */
         public Builder notFoundMaxBackoff(Duration notFoundMaxBackoff) {
             this.notFoundMaxBackoff =
-                    checkAtLeastOneMilli(notFoundMaxBackoff, "notFoundMaxBackoff");
+                    OptionChecks.checkAtLeastOneMilli(notFoundMaxBackoff, "notFoundMaxBackoff");
             return this;
         }
 
@@ -351,15 +354,6 @@ public final class CloudTasksWriterOptions implements Serializable {
                     notFoundMaxBackoff.compareTo(notFoundInitialBackoff) >= 0,
                     "notFoundMaxBackoff must be at least notFoundInitialBackoff.");
             return new CloudTasksWriterOptions(this);
-        }
-
-        private static Duration checkAtLeastOneMilli(Duration duration, String name) {
-            Preconditions.checkNotNull(duration, "%s must not be null", name);
-            Preconditions.checkArgument(
-                    duration.toMillis() >= 1,
-                    "%s must be at least 1 millisecond (it is applied at millisecond granularity)",
-                    name);
-            return duration;
         }
     }
 }

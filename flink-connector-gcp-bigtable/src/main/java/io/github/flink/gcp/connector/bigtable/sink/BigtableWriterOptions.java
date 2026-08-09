@@ -338,24 +338,25 @@ public final class BigtableWriterOptions implements Serializable {
          * Sets the first backoff of the table auto-creation recovery (re-applying mutations after
          * creating a missing table). Defaults to 500 ms.
          *
-         * @param recoveryInitialBackoff the first backoff, positive
+         * @param recoveryInitialBackoff the first backoff, at least 1 ms
          * @return this builder
          */
         public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
             this.recoveryInitialBackoff =
-                    checkAtLeastOneMilli(recoveryInitialBackoff, "recoveryInitialBackoff");
+                    OptionChecks.checkAtLeastOneMilli(
+                            recoveryInitialBackoff, "recoveryInitialBackoff");
             return this;
         }
 
         /**
          * Caps the backoff of the table auto-creation recovery. Defaults to 10 s.
          *
-         * @param recoveryMaxBackoff the backoff cap, positive and at least the initial backoff
+         * @param recoveryMaxBackoff the backoff cap, at least 1 ms and at least the initial backoff
          * @return this builder
          */
         public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
             this.recoveryMaxBackoff =
-                    checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
+                    OptionChecks.checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
             return this;
         }
 
@@ -382,16 +383,6 @@ public final class BigtableWriterOptions implements Serializable {
                     recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
                     "recoveryMaxBackoff must be at least recoveryInitialBackoff.");
             return new BigtableWriterOptions(this);
-        }
-
-        private static Duration checkAtLeastOneMilli(Duration duration, String name) {
-            OptionChecks.checkPositive(duration, name);
-            Preconditions.checkArgument(
-                    duration.toMillis() >= 1,
-                    "%s must be at least 1 millisecond (it is applied at millisecond"
-                            + " granularity)",
-                    name);
-            return duration;
         }
     }
 }

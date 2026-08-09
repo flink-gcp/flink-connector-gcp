@@ -498,12 +498,13 @@ public final class FileLoadsOptions implements Serializable {
          * notices a finished load sooner at the cost of more {@code jobs.get} calls; raising it
          * does the reverse. There is no attempt cap to configure — see the class javadoc.
          *
-         * @param loadJobPollInitialBackoff the first poll backoff, positive
+         * @param loadJobPollInitialBackoff the first poll backoff, at least 1 ms
          * @return this builder
          */
         public Builder loadJobPollInitialBackoff(Duration loadJobPollInitialBackoff) {
             this.loadJobPollInitialBackoff =
-                    checkAtLeastOneMilli(loadJobPollInitialBackoff, "loadJobPollInitialBackoff");
+                    OptionChecks.checkAtLeastOneMilli(
+                            loadJobPollInitialBackoff, "loadJobPollInitialBackoff");
             return this;
         }
 
@@ -512,12 +513,13 @@ public final class FileLoadsOptions implements Serializable {
          * least the initial backoff. Defaults to {@link
          * FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF}.
          *
-         * @param loadJobPollMaxBackoff the poll backoff cap, positive
+         * @param loadJobPollMaxBackoff the poll backoff cap, at least 1 ms
          * @return this builder
          */
         public Builder loadJobPollMaxBackoff(Duration loadJobPollMaxBackoff) {
             this.loadJobPollMaxBackoff =
-                    checkAtLeastOneMilli(loadJobPollMaxBackoff, "loadJobPollMaxBackoff");
+                    OptionChecks.checkAtLeastOneMilli(
+                            loadJobPollMaxBackoff, "loadJobPollMaxBackoff");
             return this;
         }
 
@@ -525,12 +527,12 @@ public final class FileLoadsOptions implements Serializable {
          * Sets the first backoff after losing an etag race while reconciling a destination table's
          * schema. Defaults to {@link FileLoadsOptions#DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF}.
          *
-         * @param schemaReconcileInitialBackoff the first backoff, positive
+         * @param schemaReconcileInitialBackoff the first backoff, at least 1 ms
          * @return this builder
          */
         public Builder schemaReconcileInitialBackoff(Duration schemaReconcileInitialBackoff) {
             this.schemaReconcileInitialBackoff =
-                    checkAtLeastOneMilli(
+                    OptionChecks.checkAtLeastOneMilli(
                             schemaReconcileInitialBackoff, "schemaReconcileInitialBackoff");
             return this;
         }
@@ -539,12 +541,13 @@ public final class FileLoadsOptions implements Serializable {
          * Caps the backoff of the schema-reconcile budget. Must be at least the initial backoff.
          * Defaults to {@link FileLoadsOptions#DEFAULT_SCHEMA_RECONCILE_MAX_BACKOFF}.
          *
-         * @param schemaReconcileMaxBackoff the backoff cap, positive
+         * @param schemaReconcileMaxBackoff the backoff cap, at least 1 ms
          * @return this builder
          */
         public Builder schemaReconcileMaxBackoff(Duration schemaReconcileMaxBackoff) {
             this.schemaReconcileMaxBackoff =
-                    checkAtLeastOneMilli(schemaReconcileMaxBackoff, "schemaReconcileMaxBackoff");
+                    OptionChecks.checkAtLeastOneMilli(
+                            schemaReconcileMaxBackoff, "schemaReconcileMaxBackoff");
             return this;
         }
 
@@ -581,18 +584,6 @@ public final class FileLoadsOptions implements Serializable {
         public Builder perDestinationMetrics(boolean perDestinationMetrics) {
             this.perDestinationMetrics = perDestinationMetrics;
             return this;
-        }
-
-        /**
-         * These durations reach a {@code RetrySchedule} through {@code toMillis()}, which would
-         * turn a sub-millisecond value into a zero the schedule rejects at first commit rather than
-         * here.
-         */
-        private static Duration checkAtLeastOneMilli(Duration value, String name) {
-            Preconditions.checkNotNull(value, name + " must not be null");
-            Preconditions.checkArgument(
-                    value.toMillis() > 0, name + " must be at least 1 ms: %s", value);
-            return value;
         }
 
         /**
