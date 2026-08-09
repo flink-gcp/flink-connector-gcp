@@ -21,6 +21,8 @@ import org.apache.flink.annotation.Internal;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 
@@ -39,6 +41,8 @@ import org.testcontainers.containers.wait.strategy.Wait;
  */
 @Internal
 public final class BigQueryEmulatorContainers {
+
+    private static final Logger LOG = LoggerFactory.getLogger(BigQueryEmulatorContainers.class);
 
     private static final String IMAGE = "ghcr.io/goccy/bigquery-emulator:0.8.1";
 
@@ -92,8 +96,28 @@ public final class BigQueryEmulatorContainers {
      *
      * <p>Stock is the point in the SQL module, where the connector under test is the relocated copy
      * in the uber-jar: that the two coexist on one classpath is what an uber-jar exists to provide.
+     *
+     * <p>Binding a client to a container is logged here because nothing else records it. Every
+     * module's {@code log4j2-test.properties} sits at {@code rootLogger.level = WARN}, so
+     * testcontainers' own start-up lines never reach a build log, and each harness starts its
+     * container afresh per test class — a REST failure therefore names neither the container it
+     * addressed nor the port it went to. Two harnesses in the connector module run emulators that
+     * differ only by project id, {@code it-project} against {@code itproject}, so a request landing
+     * on the wrong one answers 404 rather than anything that reads as a mix-up (#439).
      */
     public static BigQuery restClient(GenericContainer<?> container, String project) {
+        // The endpoints first: on a container nobody started, getMappedPort says so and
+        // getContainerId returns null, so reading the id first would trade that message for an NPE.
+        String rest = restEndpoint(container);
+        String grpc = grpcEndpoint(container);
+        // Docker's own short form, so the id can be pasted at a `docker` command as it stands.
+        String containerId = container.getContainerId();
+        LOG.info(
+                "BigQuery emulator {} bound for project {}: REST {}, gRPC {}.",
+                containerId.substring(0, Math.min(12, containerId.length())),
+                project,
+                rest,
+                grpc);
         return BigQueryOptions.newBuilder()
                 .setHost("http://" + restEndpoint(container))
                 .setProjectId(project)
