@@ -33,8 +33,9 @@ import java.util.List;
  * (checked against google-cloud-spanner 6.119.0) — so this adds up the values through the public
  * accessors instead, the way Apache Beam's {@code MutationSizeEstimator} has for years. It ignores
  * protobuf framing, column names and the request envelope, so it reads low; the default threshold
- * sits 100 times under Spanner's real 100 MiB request limit, which is the room the estimate is
- * allowed to be wrong in.
+ * sits 100 times under the 100 MiB a batch write request is documented to allow, and ten times
+ * under the 10 MiB it can also be read as allowing (#441). Either way, that gap is the room the
+ * estimate is allowed to be wrong in.
  *
  * <p>A value this estimator cannot size is counted at {@link #UNKNOWN_VALUE_BYTES} rather than
  * rejected — a type the client library adds later, and a {@code Value.untyped(...)}, which carries

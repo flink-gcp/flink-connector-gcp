@@ -36,10 +36,11 @@ the sink was actually built, and all three were:
   `google-cloud-cli:441.0.0-emulators` image the Bigtable and Pub/Sub tests use — its bundled
   Spanner emulator predates the RPC — so the module pins
   `gcr.io/cloud-spanner-emulator/emulator:1.5.56` of its own.
-- **Spanner's commit limits apply to a batch write *request*, not to each mutation group in it**:
-  "the maximum size for a batch write request is the same as the limit for a commit request",
-  which is 80,000 mutations *including index entries* and 100 MiB. So the writer's batch limits
-  are correctness rather than tidiness — the subject of ADR-0077.
+- **A batch write request Spanner refuses is refused as a whole**, so the writer's batch limits are
+  correctness rather than tidiness. Which limit each one defends is narrower than the batch write
+  page's "the maximum size for a batch write request is the same as the limit for a commit request"
+  suggests on its own — that sentence is about size, and the only mutation figure the quotas page
+  gives for this RPC bounds one *mutation group*. ADR-0077 is the subject.
 - **The client library does not retry this RPC at all.** `SpannerStubSettings` configures
   `batchWriteSettings` with `no_retry_0_codes` / `no_retry_0_params`, and the only retry wrapped
   around it in `DatabaseClientImpl.batchWriteAtLeastOnce` is `runWithSessionRetry`, which recovers

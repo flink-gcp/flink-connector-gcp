@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.spanner.sink;
 
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -47,10 +48,13 @@ class SpannerWriterOptionsTest {
     }
 
     @Test
-    void theDefaultCellCapStaysWellUnderSpannersPerRequestLimit() {
+    void theDefaultCellCapStaysWellUnderTheCeilingAKnobMayBeRaisedTo() {
         // The headroom is the point: a table whose indexes the writer could not read is counted
-        // without them, and 16x is what absorbs that. A change here is a change to that argument.
-        assertThat(SpannerWriterOptions.DEFAULT_MAX_BATCH_CELLS * 16).isLessThanOrEqualTo(80_000);
+        // without them, and 16x is what absorbs that. A change to either number is a change to that
+        // argument. Widened to long so that raising the default past Integer.MAX_VALUE / 16 fails
+        // here rather than wrapping negative and passing.
+        assertThat((long) SpannerWriterOptions.DEFAULT_MAX_BATCH_CELLS * 16)
+                .isLessThanOrEqualTo(SpannerWriterOptions.MAX_BATCH_CELLS_LIMIT);
     }
 
     @Test
@@ -73,15 +77,121 @@ class SpannerWriterOptionsTest {
 
     @Test
     void rejectsNonPositiveBatchLimits() {
-        assertThatThrownBy(() -> SpannerWriterOptions.builder().maxBatchCells(0))
+        // Negatives as well as zero: a negative cap clears a ceiling check too, so only the
+        // positivity check stands between it and a writer that flushes an empty batch forever.
+        for (int nonPositive : new int[] {0, -1}) {
+            assertThatThrownBy(() -> SpannerWriterOptions.builder().maxBatchCells(nonPositive))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("maxBatchCells must be positive");
+            assertThatThrownBy(() -> SpannerWriterOptions.builder().maxBatchMutations(nonPositive))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("maxBatchMutations must be positive");
+            assertThatThrownBy(() -> SpannerWriterOptions.builder().maxBatchBytes(nonPositive))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("maxBatchBytes must be positive");
+        }
+    }
+
+    @Test
+    void rejectsBatchLimitsAboveWhatSpannerDocuments() {
+        // Without these a job configured past the byte limit builds fine and dies on a task
+        // manager, one request-level refusal per batch, for a mistake that was visible at
+        // submission. The cell ceiling is the precautionary half — Spanner documents no
+        // request-level mutation count either way. The message is asserted on
+        // "must be at most" rather than the knob name: both checks in each setter name the knob, so
+        // the name alone would let the positivity check satisfy this test — which it does if a
+        // ceiling ever reaches its type's maximum and `+ 1` wraps negative.
+        assertThatThrownBy(
+                        () ->
+                                SpannerWriterOptions.builder()
+                                        .maxBatchCells(
+                                                SpannerWriterOptions.MAX_BATCH_CELLS_LIMIT + 1))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("maxBatchCells");
-        assertThatThrownBy(() -> SpannerWriterOptions.builder().maxBatchMutations(0))
+                .hasMessageContaining("maxBatchCells must be at most");
+        assertThatThrownBy(
+                        () ->
+                                SpannerWriterOptions.builder()
+                                        .maxBatchMutations(
+                                                SpannerWriterOptions.MAX_BATCH_MUTATIONS_LIMIT + 1))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("maxBatchMutations");
-        assertThatThrownBy(() -> SpannerWriterOptions.builder().maxBatchBytes(0))
+                .hasMessageContaining("maxBatchMutations must be at most");
+        assertThatThrownBy(
+                        () ->
+                                SpannerWriterOptions.builder()
+                                        .maxBatchBytes(
+                                                SpannerWriterOptions.MAX_BATCH_BYTES_LIMIT + 1))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("maxBatchBytes");
+                .hasMessageContaining("maxBatchBytes must be at most");
+    }
+
+    @Test
+    void theMutationCeilingIsDerivedFromTheCellOneRatherThanRepeatingIt() {
+        // Every mutation costs at least one cell, so a batch never holds more mutations than cells:
+        // the mutation ceiling *is* the cell ceiling. Pinned as equality rather than as 80,000 so
+        // that raising the cell ceiling carries this one instead of leaving it cutting below what a
+        // batch may legally hold.
+        assertThat(SpannerWriterOptions.MAX_BATCH_MUTATIONS_LIMIT)
+                .isEqualTo(SpannerWriterOptions.MAX_BATCH_CELLS_LIMIT);
+    }
+
+    @Test
+    void acceptsBatchLimitsAtExactlyWhatSpannerDocuments() {
+        // Set through the constants and asserted against the documented figures, so that changing
+        // either constant is changing what this connector claims the documentation says.
+        SpannerWriterOptions options =
+                SpannerWriterOptions.builder()
+                        .maxBatchCells(SpannerWriterOptions.MAX_BATCH_CELLS_LIMIT)
+                        .maxBatchMutations(SpannerWriterOptions.MAX_BATCH_MUTATIONS_LIMIT)
+                        .maxBatchBytes(SpannerWriterOptions.MAX_BATCH_BYTES_LIMIT)
+                        .build();
+
+        assertThat(options.getMaxBatchCells()).isEqualTo(80_000);
+        assertThat(options.getMaxBatchMutations()).isEqualTo(80_000);
+        // 100 MiB, the looser of the two readings of what a batch write request may weigh (#441).
+        assertThat(options.getMaxBatchBytes()).isEqualTo(100L * 1024 * 1024);
+    }
+
+    @Test
+    void warnsWhenTheMutationCapCannotTakeEffect() {
+        // The warning is the whole feature: the configuration works, so nothing else — no
+        // exception, no changed value — would tell a user their mutation cap is inert.
+        try (LogCapture capture = LogCapture.of(SpannerWriterOptions.class)) {
+            SpannerWriterOptions options =
+                    SpannerWriterOptions.builder()
+                            .maxBatchCells(100)
+                            .maxBatchMutations(101)
+                            .build();
+
+            // Accepted unchanged, not clamped — the warning is advice, not a correction.
+            assertThat(options.getMaxBatchMutations()).isEqualTo(101);
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .asString()
+                    .contains("maxBatchMutations is 101")
+                    .contains("maxBatchCells is 100")
+                    .contains("can never take effect");
+        }
+    }
+
+    @Test
+    void theDefaultsDoNotTripTheWarning() {
+        // Load-bearing, and not obvious: initializing this class runs DEFAULTS = builder().build(),
+        // and a task manager holding a deserialized instance has initialized it. So defaults that
+        // satisfied the warn condition would put the line in every task manager's log, for a job
+        // that configured neither knob.
+        assertThat(SpannerWriterOptions.DEFAULT_MAX_BATCH_MUTATIONS)
+                .isLessThanOrEqualTo(SpannerWriterOptions.DEFAULT_MAX_BATCH_CELLS);
+    }
+
+    @Test
+    void doesNotWarnWhenTheMutationCapCanTakeEffect() {
+        // The boundary: equal caps are reachable, since a mutation may cost exactly one cell.
+        try (LogCapture capture = LogCapture.of(SpannerWriterOptions.class)) {
+            SpannerWriterOptions.builder().maxBatchCells(100).maxBatchMutations(100).build();
+            SpannerWriterOptions.builder().build();
+
+            assertThat(capture.getMessages()).isEmpty();
+        }
     }
 
     @Test

@@ -39,8 +39,8 @@ import java.util.List;
 public interface SpannerDatabaseAccess extends AutoCloseable {
 
     /**
-     * Reads how many cells each column of the database costs against Spanner's per-request mutation
-     * limit. Called once, when the writer opens.
+     * Reads how many cells each column of the database costs, counted the way Spanner counts a
+     * mutation. Called once, when the writer opens.
      *
      * @return the weights
      * @throws IOException if the schema cannot be read
