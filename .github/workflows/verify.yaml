@@ -74,6 +74,7 @@ jobs:
       maven_args: ${{ steps.derive.outputs.maven_args }}
       check_notice: ${{ steps.derive.outputs.check_notice }}
       notice_modules: ${{ steps.derive.outputs.notice_modules }}
+      check_notice_sources: ${{ steps.derive.outputs.check_notice_sources }}
     steps:
       # A pull_request checkout is the base-into-head merge commit
       # (refs/pull/N/merge); fetching its two parents as well (depth 2) makes
@@ -167,7 +168,9 @@ jobs:
       # there is nothing to cache, and `cache: pip` without a requirements
       # file fails the step.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        if: needs.changes.outputs.check_notice == 'true'
+        if: >-
+          needs.changes.outputs.check_notice == 'true' ||
+          needs.changes.outputs.check_notice_sources == 'true'
         with:
           python-version: '3.12'
 
@@ -190,6 +193,19 @@ jobs:
           for module in $NOTICE_MODULES; do
             just check-notice "$module"
           done
+
+      # The network-fetching sibling of the offline check above (issue #343):
+      # when the change can move a pinned licence source — a pom (the resolved
+      # versions feed the {version} url templates), the pin file or its
+      # interpreter, a NOTICE — re-fetch every pinned source and require no
+      # drift, so a commit editing a licence text and its pin together is
+      # caught before merge rather than by the weekly notice_sources job. Every
+      # other pull request stays off the network; the weekly job owns the fetch
+      # that needs no change to trigger (a deleted tag, an edited archived
+      # head).
+      - name: Verify the licence pins against their sources
+        if: needs.changes.outputs.check_notice_sources == 'true'
+        run: just check-notice-sources
 
   # This workflow's own verdict, which is what makes its result trustworthy
   # to ci.yaml's gate: a failed job already fails the workflow, but a `build`

@@ -64,8 +64,15 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
-  `scripts/licence-sources.toml`. `update-notice` regenerates after a dependency change;
-  `check-notice` verifies offline in CI. Both take the module as an argument, which is what lets
+  `scripts/licence-sources.toml`. A url source is either version-templated — `{version}` filled
+  from the resolved bundle, so a dependency bump re-fetches the matching tag with no edit to the
+  entry — or declared `version_independent = true` (#343); the toml header carries the scheme.
+  `update-notice` regenerates after a dependency change; `check-notice` verifies offline in CI.
+  Because the offline check never consults the recorded sources, `just check-notice-sources` —
+  regenerate every shaded module with real fetches, then require no drift — runs from verify.yaml
+  when the change touches a licence-source input (a pom, the pin file, a NOTICE; derived in
+  `ci-maven-args.py`) and weekly otherwise, which is what catches an upstream moving under an
+  unchanged repository. `check-notice` and `update-notice` take the module as an argument, which is what lets
   the two SQL uber-jars share them and what a third would reuse unchanged; verify.yaml runs
   `check-notice` over the shaded modules *in the built set* (ADR-0058). **Invoke the licence goal
   through a phase, never as a bare `license:add-third-party`**: a CLI goal invocation selects

@@ -106,6 +106,17 @@ Output, one `$GITHUB_OUTPUT`-style line each:
                           one whose directory carries a NOTICE.template —
                           which is what decides whether verify.yaml runs
                           `just check-notice`.
+  check_notice_sources=true|false   whether the change touches an input that
+                          can move a pinned licence source — a pom.xml (the
+                          resolved versions feed the {version} url templates),
+                          a NOTICE_INPUTS file, a NOTICE.template, or a
+                          checked-in META-INF NOTICE/licences file — which is
+                          what decides whether the build job also runs
+                          `just check-notice-sources`, the network-fetching
+                          sibling of the offline NOTICE check (issue #343).
+                          --full emits false: with no diff there is no
+                          licence-input signal, and the weekly notice_sources
+                          job owns the fetch that needs no change to trigger.
 
 Exit codes: 0 clean, 1 a module pom names an `io.github.flink-gcp` dependency
 that is no reactor module (fix the pom), 2 infrastructure error (unreadable
@@ -164,6 +175,27 @@ ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock"}
 # inputs, which is why check-option-docs.py and flink-api-tiers.toml are
 # absent (their verify.yaml jobs run unconditionally).
 NOTICE_INPUTS = {"scripts/licence-sources.toml", "scripts/check-notice.py"}
+
+
+def moves_a_licence_source(path: str) -> bool:
+    """Can this change move what a pinned licence source serves or resolves to?
+
+    A pom decides the resolved versions the {version} url templates fetch at,
+    NOTICE_INPUTS is the pin file and its interpreter, and the NOTICE.template
+    and checked-in META-INF files are what the re-fetch is compared against. A
+    change touching any of these additionally runs `just check-notice-sources`
+    inside the build job (issue #343); everything else leaves the fetch to the
+    weekly notice_sources job, so ordinary pull requests stay off the network.
+    """
+    return (
+        path.rsplit("/", 1)[-1] == "pom.xml"
+        or path in NOTICE_INPUTS
+        or path.endswith("/NOTICE.template")
+        or (
+            "/src/main/resources/META-INF/" in path
+            and (path.endswith("/NOTICE") or "/META-INF/licenses/" in path)
+        )
+    )
 
 
 def fail(message: str) -> "sys.NoReturn":
@@ -355,11 +387,13 @@ def main() -> None:
             run_build=True,
             maven_args="",
             notice_modules=shaded_modules(modules),
+            check_notice_sources=False,
             reason="--full",
         )
         return
 
     files = changed_files(args)
+    fetch = any(moves_a_licence_source(f.strip().lstrip("/")) for f in files)
     ignored, selected, root_only, everything = classify(files, modules)
     print(
         f"changed: {len(files)} file(s) — {len(ignored)} ignored, "
@@ -373,6 +407,7 @@ def main() -> None:
             run_build=True,
             maven_args="",
             notice_modules=shaded_modules(modules),
+            check_notice_sources=fetch,
             reason=f"full reactor, forced by e.g. {everything[0]}",
         )
         return
@@ -383,6 +418,7 @@ def main() -> None:
             run_build=True,
             maven_args="",
             notice_modules=shaded_modules(modules),
+            check_notice_sources=fetch,
             reason="all modules",
         )
         return
@@ -391,6 +427,7 @@ def main() -> None:
             run_build=False,
             maven_args="",
             notice_modules=[],
+            check_notice_sources=fetch,
             reason="nothing here can affect the Maven build",
         )
         return
@@ -404,6 +441,7 @@ def main() -> None:
         run_build=True,
         maven_args=maven_args,
         notice_modules=shaded_modules(ordered),
+        check_notice_sources=fetch,
         reason=reason,
     )
 
@@ -421,7 +459,12 @@ def shaded_modules(modules: list[str]) -> list[str]:
 
 
 def emit(
-    *, run_build: bool, maven_args: str, notice_modules: list[str], reason: str
+    *,
+    run_build: bool,
+    maven_args: str,
+    notice_modules: list[str],
+    check_notice_sources: bool,
+    reason: str,
 ) -> None:
     print(f"building: {reason}", file=sys.stderr)
     print(f"run_build={'true' if run_build else 'false'}")
@@ -430,6 +473,7 @@ def emit(
     # emptiness test on a module list is the kind of thing that goes wrong quietly.
     print(f"check_notice={'true' if notice_modules else 'false'}")
     print(f"notice_modules={' '.join(notice_modules)}")
+    print(f"check_notice_sources={'true' if check_notice_sources else 'false'}")
 
 
 if __name__ == "__main__":
