@@ -347,7 +347,9 @@ limitations under the License.
                          silently, in the licensing path of two artifacts meant for
                          publication - which is why a change to this block is verified by
                          comparing entry names and CRCs of both built uber-jars against the
-                         previous build, and not by reading the merge.
+                         previous build, and not by reading the merge. The one mistake
+                         measured to be masked today - dropping the filters' append alone -
+                         is recorded in ADR-0015 (#412).
 
                          What stays in the module pom, and why it cannot come here:
 

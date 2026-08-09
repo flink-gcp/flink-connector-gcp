@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0015: Everything bundled in a SQL uber-jar is relocated, and its NOTICE is generated and pinned
 
 - Status: Accepted
-- Date: 2026-07-27, revised by [#352] (2026-08-08) and [#346] (2026-08-09)
+- Date: 2026-07-27, revised by [#352] (2026-08-08), [#346] (2026-08-09) and [#412] (2026-08-09)
 - Issues: [#138] (the first shaded module; what is decided here is inherited, not re-argued, by
   every later `flink-sql-connector-gcp-*` — [#290] paid the sibling cost and records what is
-  specific to its own tree), [#352], [#346]
+  specific to its own tree), [#352], [#346], [#412]
 - Modules: flink-sql-connector-gcp-pubsub (and, by inheritance, every flink-sql-connector-gcp-*)
 - Current behavior: the SQL connector pages and each SQL module's README
 
@@ -163,6 +163,33 @@ mistake there changes what ships, silently, in the licensing path of two artifac
 publication — so the check is not reading the merge but **comparing entry names and CRCs of both
 built uber-jars against the previous build, and accepting only a zero delta**.
 
+**What already fails when that merge breaks — measured 2026-08-09, three deliberate breaks
+([#412]).** Deleting the shared filter list outright, the failure that takes all ten excludes at
+once, cannot ship silently: the packaging suite goes red in both modules. The BigQuery bundle is
+caught twice — `everyBundledPackageIsRelocatedExceptTheDocumentedExemptions` on the restored
+`META-INF/versions/**` tree (jackson-core's real versioned classes among it) and
+`noServiceFileRegistersARelocatedImplementationUnderAnUnrelocatedInterface` on the four restored
+JDK-interface SPI files. The Pub/Sub bundle is caught once, and that catch rests entirely on two
+restored `META-INF/versions/*/module-info.class` entries: its tree carries no other versioned
+class and neither SPI file, so if its dependencies ever stop shipping multi-release jars the net
+is gone there and this decision is due for re-judging. A merge-level failure takes the list as a
+whole, so the six excludes with no assertion of their own — `META-INF/native-image/**`,
+`META-INF/proguard/**`, the three licence-file paths and `META-INF/DEPENDENCIES` — cannot be
+lost by the merge without the guarded four going too, which is why [#412] settled on recording
+this measurement instead of adding a derived-from-the-pom assertion. What that leaves uncovered
+is a hand edit to a single exclude line — deleting the `META-INF/native-image/**` line alone
+shipped its tree in both jars with every test green — and the only guard for that is the
+entry-name/CRC comparison the paragraph above prescribes for changes to this block. Three of
+the ten currently remove nothing at all: no bundled artifact ships a root-level `LICENSE` or
+`LICENSE.txt`, and every `module-info.class` in either tree lives under `META-INF/versions/`,
+so that exclude's work is done by the tree-wide one — which the removes-nothing rule above
+already prices in. And dropping `combine.children="append"` from the root pom's `<filters>`
+alone is masked today: the parent declares the same attribute on its own filter elements, Maven
+keeps the recessive side's combine attribute when the dominant carries none, and the effective
+model came out identical but for its generation timestamp, both jars identical in every entry
+name. That copy of the attribute protects against `flink-connector-parent` dropping theirs, not
+against an edit here.
+
 **One filter list, so the two bundles cannot answer one question two ways.** What it excludes, and
 the one thing it deliberately does not:
 
@@ -282,3 +309,4 @@ bound failures"; and it reaches the trees only through the few artifacts that de
 [#290]: https://github.com/laughingman7743/flink-connector-gcp/issues/290
 [#346]: https://github.com/laughingman7743/flink-connector-gcp/issues/346
 [#352]: https://github.com/laughingman7743/flink-connector-gcp/issues/352
+[#412]: https://github.com/laughingman7743/flink-connector-gcp/issues/412
