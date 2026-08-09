@@ -158,6 +158,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   phase, never bare. Read `docs/adr/0015` before changing any SQL module's pom or adding a
   third module; what is specific to a tree belongs beside that connector (the BigQuery jar's
   record is in its module).
+- **A SQL module's pom carries its `<relocations>`, its surefire `integration-tests` override,
+  `japicmp.skip` and its dependencies — nothing else.** The shade `artifactSet`, `filters` and
+  `transformers`, both `maven-dependency-plugin` executions and the licence execution are in the
+  root pom's `pluginManagement`, so a bundle-shape change reaches both jars at once; a module
+  declares each plugin to switch it on, empty but for the shade one's relocations. That list is
+  the part that must not be shared — a pattern wider than a module's own tree rewrites references
+  nothing can then supply, and a union of the two lists is measured to do exactly that
+  (`docs/adr/0015`). The shade plugin is configured at three levels once you count
+  `flink-connector-parent`, so verify any change to that block by comparing entry names and CRCs
+  of both built uber-jars against the previous build, and accept only a zero delta.
 - NOTICE prose is hand-written in `NOTICE.template`; everything mechanical is generated
   (`just update-notice` / `check-notice`) and licence texts are sha256-pinned in
   `scripts/licence-sources.toml` — curation follows the ladder in

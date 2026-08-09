@@ -154,32 +154,18 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
-                <!-- No <version>: 3.6.1 comes from the connector parent's pluginManagement,
-                     along with the `shade-flink` execution's phase, goal, shadeTestJar,
-                     shadedArtifactAttached and dependency-reduced-pom settings. Reusing that
-                     execution id is what inherits them. -->
+                <!-- Everything but the relocations below - the version, the `shade-flink`
+                     execution's phase and goal, the artifactSet, the filters and the
+                     transformers - comes from the root pom's pluginManagement, which is
+                     where the reasoning for each lives and where a change reaches both SQL
+                     bundles at once. The relocation list is the one part that must stay
+                     per module: it is derived from *this* module's runtime-classpath.txt,
+                     and a pattern wider than this tree would rewrite references nothing can
+                     then supply. -->
                 <executions>
                     <execution>
                         <id>shade-flink</id>
                         <configuration>
-                            <!-- `*:*`: everything on the runtime classpath, which is the
-                                 bundle by definition — Flink is `provided` and test scope never
-                                 reaches shade, so nothing else can match. This replaced an
-                                 enumerated include list whose justifications died one by one,
-                                 each measured: an unlisted new transitive does NOT fail the
-                                 build (it is silently dropped, the worst outcome available),
-                                 and "keeps the NOTICE readable beside it" ended when the NOTICE
-                                 became generated from the resolved tree. With the wildcard a
-                                 new dependency lands in the jar automatically; what still needs
-                                 a human is the licensing gate (`just update-notice`) and, for a
-                                 genuinely new package root, the relocation list — and the
-                                 packaging tests fail with the artifact's name for both. -->
-                            <artifactSet>
-                                <includes>
-                                    <include>*:*</include>
-                                </includes>
-                            </artifactSet>
-
                             <relocations>
                                 <!-- Everything a user's own job could carry a different version
                                      of, with no exception. -->
@@ -305,164 +291,23 @@
                                      together, in both directions: an exemption with no classes
                                      under it fails too. -->
                             </relocations>
-
-                            <!-- MUST append: the parent's plugin-level filters carry the
-                                 log4j/signature/META-INF-maven excludes, and MSHADE-305 means
-                                 merging filters rather than appending them misbehaves. -->
-                            <filters combine.children="append">
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <!-- Bundled jars' own top-level licence files would land on
-                                             top of each other at the jar root. The licences are
-                                             carried deliberately in META-INF/licenses/ instead. -->
-                                        <exclude>LICENSE</exclude>
-                                        <exclude>LICENSE.txt</exclude>
-                                        <exclude>META-INF/LICENSE.txt</exclude>
-                                        <exclude>META-INF/DEPENDENCIES</exclude>
-                                        <exclude>module-info.class</exclude>
-                                        <!-- The whole multi-release tree, not just the
-                                             module-info under it. maven-shade relocates a
-                                             versioned class's *contents* but leaves it at its
-                                             original path, so such a class ships unrelocated
-                                             while its base copy has moved - measured on the
-                                             BigQuery bundle (#290), whose jackson-core brings
-                                             Java 11/17/21/22 variants. This tree has none of
-                                             those today; the exclusion is here so the two SQL
-                                             modules cannot answer the same question two ways,
-                                             and it costs one inert OSGi metadata file. Nothing
-                                             under META-INF/versions runs in either jar in any
-                                             case: an uber-jar's manifest carries no
-                                             `Multi-Release: true`, so the JVM never looks
-                                             there. -->
-                                        <exclude>META-INF/versions/**</exclude>
-                                        <!-- META-INF/LICENSE is deliberately NOT excluded here,
-                                             unlike its .txt sibling above. Shade takes the project
-                                             jar first, so the copy that survives is this project's
-                                             own - measured: byte-identical to the repository root
-                                             LICENSE in both uber-jars, and in every other artifact
-                                             this build produces. Excluding it was tried in #290
-                                             and reverted: it dropped that copy, leaving the two
-                                             jars a user downloads directly as the only ones
-                                             carrying no licence at all, with two NOTICE lines
-                                             pointing at an "accompanying LICENSE file" that was no
-                                             longer there. Apache-2.0 section 4(a) asks for a copy
-                                             of the licence; `theProjectsOwnLicenceIsInTheJar` is
-                                             what holds it. -->
-                                        <!-- Build-tool configuration naming unrelocated classes.
-                                             GraalVM reads META-INF/native-image (35 entries here,
-                                             asserting names this jar does not contain, and one of
-                                             them injects image-global build arguments); R8 and
-                                             ProGuard read META-INF/proguard. Neither runs in a
-                                             Flink deployment, so nothing is lost - what is removed
-                                             is configuration that would be wrong if it ever were
-                                             read. Reinstating them is what native-image support
-                                             would cost, and it would have to relocate them too. -->
-                                        <exclude>META-INF/native-image/**</exclude>
-                                        <exclude>META-INF/proguard/**</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-
-                            <!-- Overrides the parent's, which names the project "Apache Flink".
-                                 Left alone it would stamp ASF provenance onto an artifact this
-                                 project does not publish under the ASF. combine.self="override"
-                                 because the parent declares its <transformers> with
-                                 combine.children="append" — without it we would get both.
-
-                                 The cost of overriding: this list must stay a superset of the
-                                 parent's. It is one today (ServicesResourceTransformer and the
-                                 notice transformer are all it declares), but a transformer added
-                                 in a future flink-connector-parent would not reach this module,
-                                 and nothing would say so. -->
-                            <transformers combine.self="override">
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
-                                    <projectName>GCP Connectors for Apache Flink</projectName>
-                                    <!-- organizationName and inceptionYear are separate from
-                                         projectName and default to the ASF and 2006 — setting
-                                         only the project name still yields "Copyright 2006-2026
-                                         The Apache Software Foundation". Measured, not assumed. -->
-                                    <organizationName>laughingman7743</organizationName>
-                                    <organizationURL>https://github.com/laughingman7743</organizationURL>
-                                    <inceptionYear>2026</inceptionYear>
-                                    <encoding>UTF-8</encoding>
-                                </transformer>
-                            </transformers>
                         </configuration>
                     </execution>
                 </executions>
             </plugin>
 
-            <!-- Resolves each bundled dependency's declared licence into
-                 target/generated-sources/license/THIRD-PARTY.txt, which
-                 scripts/check-notice.py diffs against META-INF/NOTICE. All the
-                 configuration is inherited from the root pom's pluginManagement, so a
-                 sibling SQL module needs exactly this much.
-
-                 Bound to a phase rather than invoked as a bare goal, which was tried
-                 and fails in CI: a goal invocation does not build reactor siblings, so
-                 `-pl` here cannot resolve the connector — not even with `-am` — unless
-                 a previous `install` happened to leave it in the local repository. A
-                 phase builds them. It costs almost nothing to run every time: the goal
-                 reads POMs Maven has already resolved and does not fetch licence texts
-                 (that is `download-licenses`, which this project deliberately does not
-                 use — see scripts/check-notice.py). -->
+            <!-- Configured entirely in the root pom's pluginManagement, which is also where
+                 the reasoning lives; an empty declaration is what switches each on for this
+                 module. Between them they produce the licence report check-notice.py reads and
+                 the runtime tree the packaging tests read. -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>license-maven-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>record-resolved-licences</id>
-                        <phase>generate-test-resources</phase>
-                        <goals>
-                            <goal>add-third-party</goal>
-                        </goals>
-                    </execution>
-                </executions>
             </plugin>
 
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
-                <!-- No <version> here either, but the source differs from the shade plugin's:
-                     this one resolves to 3.1.1 from org.apache:apache:20, the ASF grandparent,
-                     rather than from flink-connector-parent. Pinned there, so reproducible. -->
-                <executions>
-                    <!-- The input to BundledDependenciesNoticeTest: the exact runtime tree
-                         that ends up in the jar, written where a test can read it. This is
-                         what turns a libraries-bom bump that adds a transitive into a build
-                         failure rather than a silently missing class. -->
-                    <execution>
-                        <id>record-runtime-dependencies</id>
-                        <phase>generate-test-resources</phase>
-                        <goals>
-                            <goal>list</goal>
-                        </goals>
-                        <configuration>
-                            <includeScope>runtime</includeScope>
-                            <outputScope>false</outputScope>
-                            <sort>true</sort>
-                            <outputFile>${project.build.directory}/runtime-dependencies.txt</outputFile>
-                        </configuration>
-                    </execution>
-                    <!-- The same tree as file paths, so a test can open each artifact and check
-                         its classes really landed in the uber-jar. The NOTICE diff cannot: it
-                         compares the dependency tree against a text file, and an artifact missing
-                         from artifactSet/includes is present in both of those and absent only
-                         from the jar. -->
-                    <execution>
-                        <id>record-runtime-classpath</id>
-                        <phase>generate-test-resources</phase>
-                        <goals>
-                            <goal>build-classpath</goal>
-                        </goals>
-                        <configuration>
-                            <includeScope>runtime</includeScope>
-                            <outputFile>${project.build.directory}/runtime-classpath.txt</outputFile>
-                        </configuration>
-                    </execution>
-                </executions>
             </plugin>
 
             <plugin>

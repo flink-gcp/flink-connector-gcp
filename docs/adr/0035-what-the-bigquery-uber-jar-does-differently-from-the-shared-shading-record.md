@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0035: What the BigQuery uber-jar does differently from the shared shading record
 
 - Status: Accepted
-- Date: 2026-08-07
-- Issues: [#290] (under [#57]); the inherited general record is ADR-0015
+- Date: 2026-08-07, revised by [#346] (2026-08-09)
+- Issues: [#290] (under [#57]), [#346]; the inherited general record is ADR-0015
 - Modules: flink-sql-connector-gcp-bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`; the module README
 
@@ -50,35 +50,17 @@ own:
   the jar, which no user can then satisfy by putting commons-logging in `lib/`. Two named
   patterns instead. `com.google` is the standing exception, wholesale in both SQL modules, and
   it pays the same cost for `com.google.appengine` — an optional dependency already absent.
-- **Three SPI files are filtered out because their interface is a JDK type**
-  (`javax.xml.stream.XML{Input,Output,Event}Factory`, `java.time.chrono.Chronology`). Only the
-  implementation relocates, so the jar would otherwise register relocated Woodstox as the
-  **JVM's** StAX provider for everything sharing it — and the deployment this artifact is for is
-  Flink's `lib/`, so that is Flink and every job on the TaskManager. Nothing here needs them:
-  Woodstox arrives only because google-cloud-storage brings jackson-dataformat-xml, which falls
-  back to the JDK factory. An SPI whose interface relocates with it (gRPC's providers, Jackson's
-  modules) is unaffected, and the Flink factory SPI is the jar's whole point. Found by review —
-  no assertion in the packaging suite looks at resources.
 - **`org.apache.avro` is relocated, which makes the uber-jar's `AvroRecordSerializer` unusable
   from a DataStream job** — its signature there takes a relocated `IndexedRecord`. Accepted
   rather than exempted: the same trade the Pub/Sub jar makes with `PubsubMessage`, and leaving
   Avro alone would put a second copy beside whatever `flink-avro` a SQL deployment carries. Both
   READMEs and the docs page point a DataStream user at the plain connector jar.
-- **Four `META-INF` paths are excluded from both SQL modules, and `META-INF/LICENSE`
-  deliberately is not.** `META-INF/native-image/**` and `META-INF/proguard/**` are build-tool
-  inputs naming unrelocated classes — GraalVM and R8 read them, a Flink deployment reads
-  neither, and no bundled class reads them at runtime (grepped, not assumed). The two
-  JDK-interface SPI files are above. `META-INF/LICENSE` was excluded with them and **reverted**:
-  shade takes the project jar first, so the surviving copy is this project's own — measured
-  byte-identical to the repository root `LICENSE` — and dropping it left the two jars a user
-  downloads directly as the only artifacts here carrying no licence.
-  `theProjectsOwnLicenceIsInTheJar` holds it now.
-- **`META-INF/versions/**` is excluded from both SQL modules.** maven-shade relocates a
-  versioned class's *contents* and leaves it at its original path, so jackson-core's Java
-  11/17/21/22 variants shipped spelled `com/fasterxml/...` in a jar whose base copies had moved
-  — caught by the packaging test. They are dead weight either way, since an uber-jar's manifest
-  carries no `Multi-Release: true`; the Pub/Sub module takes the same exclusion so the two poms
-  cannot answer one question two ways.
+- **The shade filter list is not this module's**, though three of its entries were found here:
+  the `META-INF/versions/**` exclusion (jackson-core's Java 11/17/21/22 variants, caught by the
+  packaging test), the two JDK-interface SPI files (Woodstox's StAX factories and
+  `java.time.chrono.Chronology`), and the `META-INF/LICENSE` non-exclusion that was reverted out
+  of the list. All three are stated once, in ADR-0015, because a bundle-shape question the two
+  poms could answer two ways is the failure that record exists to prevent.
 - **Arrow, netty and flatbuffers are bundled for a code path this connector never runs** — the
   Storage *Read* API in `google-cloud-bigquerystorage`. Excluding them was weighed and declined:
   it reintroduces the enumerated include list ADR-0015 removed after measuring that an unlisted
@@ -93,5 +75,6 @@ own:
 
 [#26]: https://github.com/laughingman7743/flink-connector-gcp/issues/26
 [#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
+[#346]: https://github.com/laughingman7743/flink-connector-gcp/issues/346
 [#64]: https://github.com/laughingman7743/flink-connector-gcp/issues/64
 [#290]: https://github.com/laughingman7743/flink-connector-gcp/issues/290

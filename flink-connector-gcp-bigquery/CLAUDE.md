@@ -167,8 +167,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   field-without-granularity rejection has no builder backstop and is load-bearing
   (`docs/adr/0033`).
 - The uber-jar inherits `docs/adr/0015`; its own record — the slf4j exclusion, the two named
-  commons relocations, the JDK-interface SPI filters, the relocated Avro trade-off, the
-  `META-INF` exclusions — is `docs/adr/0035`. **Read both before changing this module's pom.**
+  commons relocations, the relocated Avro trade-off, the Arrow/netty weight it accepts — is
+  `docs/adr/0035`. **Read both before changing this module's pom.** The shared half of that pom
+  (shade `artifactSet`/`filters`/`transformers`, the dependency-recording executions, the licence
+  execution) is in the **root pom's `pluginManagement`**, including the `META-INF` exclusions and
+  the JDK-interface SPI filters that were found here; this module's pom carries its
+  `<relocations>`, its surefire override, `japicmp.skip` and its dependencies. A change to the
+  shared block is verified by a zero-delta comparison of both uber-jars' entry names and CRCs.
 
 ## Metrics (`docs/adr/0034`; conventions in the base module's CLAUDE.md)
 
