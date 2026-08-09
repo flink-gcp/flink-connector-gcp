@@ -16,10 +16,13 @@
 
 package io.github.flink.gcp.connector.bigquery.table;
 
+import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
 
 import org.junit.jupiter.api.Test;
@@ -67,6 +70,18 @@ class BigQueryTableWriteMethodsPlanTest {
                 TableEnvironment.create(
                         EnvironmentSettings.newInstance()
                                 .inStreamingMode()
+                                .withConfiguration(configuration)
+                                .build());
+        tEnv.executeSql(ddl);
+        return tEnv;
+    }
+
+    private static TableEnvironment batchTableEnvironmentWith(
+            Configuration configuration, String ddl) {
+        TableEnvironment tEnv =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance()
+                                .inBatchMode()
                                 .withConfiguration(configuration)
                                 .build());
         tEnv.executeSql(ddl);
@@ -143,7 +158,7 @@ class BigQueryTableWriteMethodsPlanTest {
                 .hasStackTraceContaining("emulator-endpoint");
     }
 
-    // The four below are the sinks' own graph-construction rules rather than the factory's, and
+    // The two below are the sinks' own graph-construction rules rather than the factory's, and
     // they are here for a reason the factory tests cannot cover: whether a TableEnvironment's
     // execution.checkpointing.* reaches
     // committables.getExecutionEnvironment().getCheckpointConfig()
@@ -177,14 +192,23 @@ class BigQueryTableWriteMethodsPlanTest {
                                         "gs://bucket/prefix"));
 
         assertThatThrownBy(() -> tEnv.executeSql("INSERT INTO events VALUES ('alice')"))
+                // The factory's interval rule is silent here, and has to be: an absent
+                // interval cannot be compared with a floor, and checkpointing being off is
+                // this message's own subject.
                 .hasStackTraceContaining("requires checkpointing");
     }
 
+    // The FILE_LOADS streaming rules below are the factory's, restated in DDL keys because
+    // BigQueryFileLoadsSink's own messages name WriteDisposition.WRITE_APPEND and
+    // FileLoadsOptions.minCheckpointInterval(...) — vocabulary a SQL user cannot act on. Those
+    // sink rules stay where they are as the DataStream backstop, and BigQueryFileLoadsSinkTopology
+    // Test is what exercises them: both layers read the same values, so on every SQL path where
+    // the factory sees the final one it decides first.
+
     @Test
-    void refusesACheckpointIntervalBelowTheFileLoadsFloor() {
+    void refusesACheckpointIntervalBelowTheFileLoadsFloorByKeyName() {
         // The most likely FILE_LOADS failure in SQL: the connector's floor is two minutes and a
-        // SQL Client checkpoint interval is usually shorter. Proves the interval a
-        // TableEnvironment was configured with is the one the sink reads.
+        // SQL Client checkpoint interval is usually shorter.
         TableEnvironment tEnv =
                 tableEnvironmentWith(
                         checkpointingEvery(Duration.ofSeconds(30)),
@@ -197,12 +221,21 @@ class BigQueryTableWriteMethodsPlanTest {
                                         "gs://bucket/prefix"));
 
         assertThatThrownBy(() -> tEnv.executeSql("INSERT INTO events VALUES ('alice')"))
-                .hasStackTraceContaining("is below the")
-                .hasStackTraceContaining("1,500 load jobs per table per day");
+                .isInstanceOf(ValidationException.class)
+                // A clause only the factory's message carries: the sink says "is below the
+                // FILE_LOADS minimum" and both messages carry the quota sentence, so neither
+                // would tell the two apart.
+                .hasStackTraceContaining("is shorter than the smallest checkpoint interval")
+                // The value, not just the clause. This is the only local assertion that the
+                // interval a TableEnvironment was configured with reaches the *factory* — the
+                // planner builds the StreamExecutionEnvironment whose configuration the session
+                // TableConfig falls back to, and nothing else here pins that.
+                .hasStackTraceContaining("'execution.checkpointing.interval' (30000 ms)")
+                .hasStackTraceContaining("sink.file-loads.min-checkpoint-interval");
     }
 
     @Test
-    void refusesANonAppendWriteDispositionInStreaming() {
+    void refusesANonAppendWriteDispositionInStreamingByKeyName() {
         TableEnvironment tEnv =
                 tableEnvironmentWith(
                         checkpointingEvery(Duration.ofMinutes(5)),
@@ -217,12 +250,94 @@ class BigQueryTableWriteMethodsPlanTest {
                                         "write-truncate"));
 
         assertThatThrownBy(() -> tEnv.executeSql("INSERT INTO events VALUES ('alice')"))
-                .hasStackTraceContaining("the write disposition is WRITE_TRUNCATE");
+                .isInstanceOf(ValidationException.class)
+                // The sink's message says "supports WriteDisposition.WRITE_APPEND only"; this
+                // clause is the factory's alone.
+                .hasStackTraceContaining("cannot be used in streaming execution")
+                // The DDL spelling the user typed, which the sink's message never carries: it
+                // names the Java constant WRITE_TRUNCATE beside WRITE_APPEND deliberately.
+                .hasStackTraceContaining(
+                        "Option 'sink.file-loads.write-disposition' = 'write-truncate'");
+    }
+
+    @Test
+    void acceptsBothStreamingOnlyViolationsInBatchExecution() {
+        // Both rules are streaming's alone — a batch job loads once at end of input, so truncating
+        // is a meaningful write and no checkpoint issues a load job. The table therefore violates
+        // *both*, and the 30 s interval matters as much as the disposition: a session carrying
+        // execution.checkpointing.interval is routine from SQL Client and harmless in batch, so
+        // without it here the mode gate would be pinned for the disposition rule only and moving
+        // the interval rule above the gate would keep the whole suite green.
+        TableEnvironment tEnv =
+                batchTableEnvironmentWith(
+                        checkpointingEvery(Duration.ofSeconds(30)),
+                        "CREATE TABLE events (name STRING) "
+                                + withOptions(
+                                        "file_loads_batch_truncate",
+                                        "sink.write-method",
+                                        "file-loads",
+                                        "sink.file-loads.staging-path",
+                                        "gs://bucket/prefix",
+                                        "sink.file-loads.write-disposition",
+                                        "write-truncate"));
+
+        assertThatCode(() -> tEnv.explainSql("INSERT INTO events VALUES ('alice')"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void acceptsAnIntervalThatExactlyMeetsAFloorTheDdlLowered() {
+        // Two things at once. That the factory compares against the option rather than against a
+        // copy of FileLoadsOptions.DEFAULT_MIN_CHECKPOINT_INTERVAL made in the table layer — this
+        // is the same 30 s the case above refuses. And that the comparison is strict: an interval
+        // equal to the floor is a floor that is met, so a `<` widened to `<=` fails here.
+        TableEnvironment tEnv =
+                tableEnvironmentWith(
+                        checkpointingEvery(Duration.ofSeconds(30)),
+                        "CREATE TABLE events (name STRING) "
+                                + withOptions(
+                                        "file_loads_lowered_floor",
+                                        "sink.write-method",
+                                        "file-loads",
+                                        "sink.file-loads.staging-path",
+                                        "gs://bucket/prefix",
+                                        "sink.file-loads.min-checkpoint-interval",
+                                        "30 s"));
+
+        assertThatCode(() -> tEnv.explainSql("INSERT INTO events VALUES ('alice')"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void anAutomaticExecutionModeIsRefusedByFlinkBeforeAnyFactory() {
+        // Why the factory's mode guard needs no AUTOMATIC branch, measured 2026-08-09 on Flink
+        // 2.2.1 (one run): the Table API refuses that mode itself, in DefaultPlannerFactory, when
+        // the TableEnvironment is created — before any DDL and long before a connector factory.
+        // BigQueryFileLoadsSink keeps its own AUTOMATIC refusal for the DataStream path, which is
+        // where the mode can actually arrive. Should a later Flink accept it here, this fails and
+        // the guard's silent branch becomes reachable and has to be argued.
+        //
+        // A framework assertion in a connector test, deliberately: the fact it pins is a premise
+        // of this connector's code, and nothing in the connector can observe it. The string is
+        // byte-identical in flink-table-planner 1.20.4, 2.2.1 and 2.3.0 — the whole range
+        // verify-flink covers — so it is a premise, not a version-fragile probe.
+        Configuration configuration = new Configuration();
+        configuration.set(ExecutionOptions.RUNTIME_MODE, RuntimeExecutionMode.AUTOMATIC);
+
+        assertThatThrownBy(
+                        () ->
+                                TableEnvironment.create(
+                                        EnvironmentSettings.newInstance()
+                                                .withConfiguration(configuration)
+                                                .build()))
+                .isInstanceOf(TableException.class)
+                .hasStackTraceContaining(
+                        "Unsupported mode 'AUTOMATIC' for 'execution.runtime-mode'");
     }
 
     @Test
     void acceptsAFileLoadsTableWhoseCheckpointIntervalClearsTheFloor() {
-        // The success side, so the three refusals above cannot pass by refusing everything.
+        // The success side, so the refusals above cannot pass by refusing everything.
         TableEnvironment tEnv =
                 tableEnvironmentWith(
                         checkpointingEvery(Duration.ofMinutes(5)),

@@ -163,6 +163,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The buffered/FILE_LOADS mappers build unconditionally, the factory decides by write method —
   not a missing symmetry (`docs/adr/0032`). A rejection restating a builder rule fires on the
   same condition, pinned by a success-side test (the #289 lesson).
+- **The factory reads the *session* configuration in exactly one place** — the two FILE_LOADS
+  streaming rules, gated on `execution.runtime-mode` (#332; `docs/adr/0032`, which carries why
+  that is safe and what was measured to establish it). Consequently the sink's pair is reached
+  from SQL only by a value changed after the plan is built, and
+  `BigQueryFileLoadsSinkTopologyTest` is their ordinary coverage.
+- **`FactoryMocks` builds over an empty `Configuration`, so every `FactoryMocks` test is
+  implicitly streaming.** A factory test therefore cannot round-trip a non-append
+  `write-disposition`, and anything needing a checkpoint interval belongs in
+  `BigQueryTableWriteMethodsPlanTest` against a real `TableEnvironment`.
 - `sink.table-create.*` checks shape, never the clusterable scalar type list; the
   field-without-granularity rejection has no builder backstop and is load-bearing
   (`docs/adr/0033`).
