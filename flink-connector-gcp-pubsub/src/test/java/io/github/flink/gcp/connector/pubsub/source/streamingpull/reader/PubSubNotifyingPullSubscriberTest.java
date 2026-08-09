@@ -59,6 +59,25 @@ class PubSubNotifyingPullSubscriberTest {
     private static final String SPLIT_ID = "0";
     private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(7);
 
+    /**
+     * The fragments the docs WARN table quotes (as {@code … fragment …}) from the four teardown
+     * messages, pinned in full so a reword cannot keep these tests green while silently breaking
+     * the table (#359). Test-local copies, not the production strings: a production constant would
+     * inline here and compare against itself. The {@code doesNotContain} assertions below stay on
+     * shorter literals on purpose — for a negative assertion the shorter substring is the stronger
+     * check.
+     */
+    private static final String QUOTED_ABANDONED_WAIT = "did not finish shutting down within";
+
+    private static final String QUOTED_RE_REPORT =
+            "reported at shutdown the failure it had already reported to the reader";
+
+    private static final String QUOTED_ONLY_REPORT =
+            "failed while shutting down, and this is the only report of it";
+
+    private static final String QUOTED_FAILED_START =
+            "did not shut down cleanly after failing to start";
+
     private final RecordingAckTracker ackTracker = new RecordingAckTracker();
     private final List<String> calls = new ArrayList<>();
 
@@ -145,8 +164,7 @@ class PubSubNotifyingPullSubscriberTest {
                                 // catch three ways, and only this branch may say the reader
                                 // already has the failure. Saying that of a first report would
                                 // send an operator looking for a job failure that is not coming.
-                                assertThat(event.getMessage())
-                                        .contains("had already reported to the reader");
+                                assertThat(event.getMessage()).contains(QUOTED_RE_REPORT);
                                 assertThat(event.getThrowable()).isSameAs(report);
                             });
         }
@@ -183,7 +201,7 @@ class PubSubNotifyingPullSubscriberTest {
                             event -> {
                                 assertThat(event.getMessage()).contains(SUBSCRIPTION.toString());
                                 assertThat(event.getMessage())
-                                        .contains("failed while shutting down")
+                                        .contains(QUOTED_ONLY_REPORT)
                                         .doesNotContain("had already reported to the reader");
                                 // The log is the whole of the report on this branch, so it has to
                                 // carry the throwable as well as say which case it is.
@@ -223,7 +241,7 @@ class PubSubNotifyingPullSubscriberTest {
                     .satisfies(
                             event ->
                                     assertThat(event.getMessage())
-                                            .contains("failed while shutting down")
+                                            .contains(QUOTED_ONLY_REPORT)
                                             .doesNotContain("had already reported to the reader"));
         }
 
@@ -257,7 +275,7 @@ class PubSubNotifyingPullSubscriberTest {
                     .satisfies(
                             event ->
                                     assertThat(event.getMessage())
-                                            .contains("failed while shutting down")
+                                            .contains(QUOTED_ONLY_REPORT)
                                             .doesNotContain("had already reported to the reader"));
         }
 
@@ -286,7 +304,7 @@ class PubSubNotifyingPullSubscriberTest {
                                 // read as either: it reports the budget, which is the knob whose
                                 // value an operator meeting this line has to weigh.
                                 assertThat(event.getMessage())
-                                        .contains("did not finish shutting down")
+                                        .contains(QUOTED_ABANDONED_WAIT)
                                         .contains(SHUTDOWN_TIMEOUT.toString());
                             });
         }
@@ -413,7 +431,7 @@ class PubSubNotifyingPullSubscriberTest {
                     .satisfies(
                             event ->
                                     assertThat(event.getMessage())
-                                            .contains("after failing to start")
+                                            .contains(QUOTED_FAILED_START)
                                             .doesNotContain("were nacked before the wait")
                                             .doesNotContain("had already reported to the reader"));
         }
