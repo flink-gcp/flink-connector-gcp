@@ -74,6 +74,13 @@ import java.util.function.Consumer;
  * this subscriber has already delivered. None of them was reachable before, since the emulator and
  * gated ITCases exercise only a client that works.
  *
+ * <p><b>A fragment of each of the four teardown {@code WARN} messages this class emits is quoted
+ * verbatim in the documentation</b> — the WARN table in {@code
+ * docs/content/docs/connectors/datastream/pubsub.md}'s Testing section — and {@code
+ * PubSubNotifyingPullSubscriberTest} pins those same fragments; rewording a message sweeps the
+ * table — its meaning column too, which no test can pin — in the same change (#359, which measured
+ * this four-phrase surface and declined a checker).
+ *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0),
  * with a caller-supplied data-available signal in place of per-subscriber notification futures.
