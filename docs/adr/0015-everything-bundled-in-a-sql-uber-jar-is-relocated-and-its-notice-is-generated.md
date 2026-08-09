@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0015: Everything bundled in a SQL uber-jar is relocated, and its NOTICE is generated and pinned
 
 - Status: Accepted
-- Date: 2026-07-27, revised by [#352] (2026-08-08)
+- Date: 2026-07-27, revised by [#352] (2026-08-08) and [#346] (2026-08-09)
 - Issues: [#138] (the first shaded module; what is decided here is inherited, not re-argued, by
   every later `flink-sql-connector-gcp-*` — [#290] paid the sibling cost and records what is
-  specific to its own tree), [#352]
+  specific to its own tree), [#352], [#346]
 - Modules: flink-sql-connector-gcp-pubsub (and, by inheritance, every flink-sql-connector-gcp-*)
 - Current behavior: the SQL connector pages and each SQL module's README
 
@@ -94,6 +94,112 @@ transitively is unaffected. ADR-0035 records the exclusion only one tree takes.
   Foundation". Relatedly, the root pom sets `<organization>`: without it the ASF parent's
   remote-resources bundle stamped that same claim into *every* module jar this project builds.
 
+**The half of a SQL module's pom that is not its relocation list lives in the root pom's
+`pluginManagement`, and a module switches it on by declaring the plugin.** The two poms were very
+nearly one: of the Pub/Sub module's 232 non-comment, non-blank lines, **230 also appear** in the
+BigQuery module's 269 once the connector name is normalised (measured 2026-08-09; the count on
+[#339](https://github.com/laughingman7743/flink-connector-gcp/pull/339), 215 of 224 against 253,
+strips comments differently and reaches the same conclusion). The duplication had already been paid
+for: that pull request changed the shade filter list three times — `META-INF/versions/*/`
+`module-info.class` widened to `META-INF/versions/**`, then `META-INF/native-image/**` and
+`META-INF/proguard/**` added — and mirrored each by hand into the second pom it was writing
+alongside (the issue counts a fourth, the `META-INF/LICENSE` exclusion tried and reverted inside
+the same pull request, which its merged diff therefore does not show). Nothing but a comment and a
+reviewer kept the two in step. So `maven-shade-plugin`
+(the `shade-flink` execution's `artifactSet`, `filters` and `transformers`),
+`maven-dependency-plugin` (both recording executions) and `license-maven-plugin` (its execution;
+its configuration was already there) are configured once. A module then declares all three, two of
+them empty and the shade plugin carrying nothing but its own relocations.
+
+**Three things must not follow them, and the first is why this was a change of its own:**
+
+- **`<relocations>`.** A relocation rewrites *references* as well as bundled classes, so a pattern
+  wider than the module's own tree renames names nothing can then supply — the `org.apache.commons`
+  case is ADR-0035's. A union of the two modules' lists would be that same defect, and it is
+  measured rather than argued: the Pub/Sub bundle carries **five references to
+  `com.github.luben.zstd` from four classes** of grpc-netty-shaded's optional Zstd codec, an
+  artifact absent from that tree — and BigQuery relocates `com.github.luben.zstd`, because
+  FILE_LOADS puts it in *its* tree. Under a shared list those become a name private to the Pub/Sub
+  jar, so supplying zstd-jni in `lib/` would stop working, exactly as it does for commons-logging.
+  Five string constants naming `io.netty` are in the same position, one of them inside
+  `NativeLibraryLoader`, whose mangled prefix the netty rename dance above already depends on.
+  Each list stays derived from its own module's `runtime-classpath.txt`.
+- **The surefire `integration-tests` override**, whose `classpathDependencyExcludes` names the
+  module's own connector artifact.
+- **`japicmp.skip`**, which is a property rather than plugin configuration.
+
+**Why the exclude list may be shared when the relocation list may not, since the two look alike
+and the answer is mechanical rather than a judgment.** Three kinds of per-bundle list appear here,
+and what each does when applied to a tree that does not contain the thing it names decides where
+it lives:
+
+| Kind | Applied to a tree without the named thing | Where it lives |
+|---|---|---|
+| **Rewrite** — `<relocations>` | still rewrites *references* to it, into a name private to the jar that nobody can supply | per module |
+| **Permit** — the packaging suite's unrelocated allow list | silently exempts whatever arrives under that root later, weakening the *other* module's check | per module |
+| **Filter** — `<excludes>` | removes nothing; a filter cannot drop an entry that is not there | shared |
+
+The rewrite row is measured above; the permit row is not hypothetical either — the allow list was
+first written as the union over both trees, which took `org/checkerframework/`, a BigQuery-only
+artifact, out of the Pub/Sub module's check, where a `libraries-bom` bump could then have shipped
+it unrelocated. `everyExemptionOnTheAllowListIsInTheJar` exists because of that, and fails an
+entry that never fires. The filter row is measured too: stating the two JDK-interface SPI excludes
+for both bundles changed the Pub/Sub jar by zero entries.
+
+**The boundary that would move an exclude back to a module** is an exclude that is a claim about a
+*tree* rather than about the shape of the artifact: "this bundle must not ship X, and that one
+must". All ten are the second kind — duplicate licence files at the jar root, build-tool
+configuration no Flink deployment reads, a multi-release tree the JVM never looks at, SPI files
+whose interface is a JDK type. The first kind would be a silent removal, so it belongs in the pom
+of the module that owns the claim, next to the relocations.
+
+**The shade plugin is thereby configured at three levels, and the merge between them is
+load-bearing.** `flink-connector-parent` declares `<filters>` and `<transformers>` at *plugin*
+level, both `combine.children="append"`; this repository's root pom declares them at *execution*
+level, with `combine.children="append"` on the filters (MSHADE-305: merging rather than appending
+misbehaves) and `combine.self="override"` on the transformers, without which the ASF notice
+transformer comes back alongside ours; the module adds its relocations to that same execution. A
+mistake there changes what ships, silently, in the licensing path of two artifacts meant for
+publication — so the check is not reading the merge but **comparing entry names and CRCs of both
+built uber-jars against the previous build, and accepting only a zero delta**.
+
+**One filter list, so the two bundles cannot answer one question two ways.** What it excludes, and
+the one thing it deliberately does not:
+
+- `LICENSE`, `LICENSE.txt`, `META-INF/LICENSE.txt`, `META-INF/DEPENDENCIES` and
+  `module-info.class`: bundled jars' own top-level licence files would land on top of each other at
+  the jar root, and the licences are carried in `META-INF/licenses/` instead.
+- `META-INF/versions/**`, the whole multi-release tree rather than just the `module-info` under it.
+  maven-shade relocates a versioned class's *contents* and leaves it at its original path, so
+  jackson-core's Java 11/17/21/22 variants shipped spelled `com/fasterxml/...` in a jar whose base
+  copies had moved — measured on the BigQuery bundle, caught by the packaging test. They are dead
+  weight either way, since an uber-jar's manifest carries no `Multi-Release: true`: the JVM never
+  looks there, and the relocated Java 8 copies are what runs.
+- `META-INF/native-image/**` and `META-INF/proguard/**`, build-tool inputs naming unrelocated
+  classes — 35 entries in the Pub/Sub bundle, 54 in the BigQuery one, and one of them injects
+  image-global build arguments. GraalVM and R8 read them, a Flink deployment reads neither, and no
+  bundled class reads them at runtime (grepped, not assumed). Reinstating them is what native-image
+  support would cost, and it would have to relocate them too.
+- `META-INF/services/javax.xml.stream.*` and `META-INF/services/java.time.chrono.Chronology`,
+  service files whose *interface* is a JDK type, so only the implementation relocates. Left in, a
+  bundle registers its relocated Woodstox as the **JVM's** StAX provider and adds nine chronologies
+  to `Chronology.getAvailableChronologies()` for everything sharing it — and the deployment these
+  artifacts are for is Flink's `lib/`, so that is Flink and every job on the TaskManager, silently
+  changing how unrelated XML is parsed. Only the BigQuery tree carries either (Woodstox arrives
+  because google-cloud-storage brings jackson-dataformat-xml, which falls back to the JDK factory
+  and wraps it), and the Pub/Sub jar contains neither entry — measured 2026-08-09, which is what
+  made stating the exclusion for both a zero-delta change. An SPI whose interface relocates with it
+  (gRPC's providers, Jackson's modules) is unaffected, and the Flink factory SPI is these jars'
+  whole point. The need was found by review rather than by a test, and the test written in response
+  — `noServiceFileRegistersARelocatedImplementationUnderAnUnrelocatedInterface` — is still the only
+  assertion in the packaging suite that looks at resources at all.
+- **`META-INF/LICENSE` is deliberately not excluded.** Shade takes the project jar first, so the
+  surviving copy is this project's own, measured byte-identical to the repository root `LICENSE` in
+  both uber-jars. Excluding it alongside its `.txt` sibling was tried in [#290] and reverted: it
+  left the two jars a user downloads directly as the only artifacts here carrying no licence, with
+  two NOTICE lines pointing at an "accompanying LICENSE file" that was no longer there. Apache-2.0
+  section 4(a) asks for a copy of the licence; `theProjectsOwnLicenceIsInTheJar` holds it.
+
 **The NOTICE's prose is hand-written; everything mechanical is generated and pinned.** The split
 is `NOTICE.template` (module root): human paragraphs plus one `{{Licence}}` placeholder per
 group, which `scripts/check-notice.py --update` fills from what license-maven-plugin resolved —
@@ -139,7 +245,10 @@ pom, its own `NOTICE.template`, a CI step, and `licence-sources.toml` entries fo
 artifacts (the file and its pins are shared, so overlapping dependencies cost nothing twice).
 The estimate held except where it was measured beforehand: the BigQuery bundle resolves **110**
 third-party artifacts against the **114** the connector's own runtime tree shows, and needed
-**four** new pinned texts. No new `licenseMerges`, as predicted.
+**four** new pinned texts. No new `licenseMerges`, as predicted. Paying it twice is what moved the
+shared configuration to the root pom, so a third module's pom is now its dependency block, its
+surefire override, `japicmp.skip` and three plugin declarations of which only the shade one carries
+configuration — its relocations. Everything else it inherits.
 
 **`javax.annotation-api` is referenced by nothing** (measured 2026-08-08, offline): across every
 artifact of both SQL trees as they then stood — 52 and 111, all resolvable from the local
@@ -171,4 +280,5 @@ bound failures"; and it reaches the trees only through the few artifacts that de
 [#26]: https://github.com/laughingman7743/flink-connector-gcp/issues/26
 [#138]: https://github.com/laughingman7743/flink-connector-gcp/issues/138
 [#290]: https://github.com/laughingman7743/flink-connector-gcp/issues/290
+[#346]: https://github.com/laughingman7743/flink-connector-gcp/issues/346
 [#352]: https://github.com/laughingman7743/flink-connector-gcp/issues/352

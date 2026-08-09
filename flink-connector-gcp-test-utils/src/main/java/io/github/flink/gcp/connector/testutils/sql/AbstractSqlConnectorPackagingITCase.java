@@ -271,8 +271,9 @@ public abstract class AbstractSqlConnectorPackagingITCase {
      * Woodstox, whose three {@code javax.xml.stream.*Factory} files made the BigQuery jar the JVM's
      * StAX provider, and threeten-extra's {@code java.time.chrono.Chronology} added nine
      * chronologies to every caller of {@code getAvailableChronologies()}. Both are filtered out in
-     * that module's pom. Nothing else in the packaging suite looks at resources, which is why this
-     * one is here rather than being left to the escaped-classes check.
+     * the root pom's {@code pluginManagement}, which carries the shade configuration every SQL
+     * module shares. Nothing else in the packaging suite looks at resources, which is why this one
+     * is here rather than being left to the escaped-classes check.
      */
     @Test
     void noServiceFileRegistersARelocatedImplementationUnderAnUnrelocatedInterface()
@@ -299,8 +300,8 @@ public abstract class AbstractSqlConnectorPackagingITCase {
                         "service files naming a relocated implementation under an interface this"
                                 + " jar does not own — every JVM sharing a classpath with this jar"
                                 + " would get the bundled copy as its provider. Filter the file out"
-                                + " in the module's shade configuration, or add it above with the"
-                                + " reason it is inert")
+                                + " in the shade configuration the root pom's pluginManagement"
+                                + " carries, or add it above with the reason it is inert")
                 .isEmpty();
     }
 
