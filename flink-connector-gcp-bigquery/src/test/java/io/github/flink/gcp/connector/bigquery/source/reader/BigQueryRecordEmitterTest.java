@@ -23,6 +23,7 @@ import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplitState;
+import io.github.flink.gcp.connector.testutils.CollectingSourceOutput;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -87,7 +88,9 @@ class BigQueryRecordEmitterTest {
         // A BigQuery row carries no event time, so assigning one is the job's decision.
         emitter(row -> "x").emitRecord(TestRows.rows(1).get(0), output, state);
 
-        assertThat(output.timestamps()).isEmpty();
+        // The null is the record's missing timestamp, not the absence of a record: an emptiness
+        // assertion here would also pass if nothing had been emitted at all.
+        assertThat(output.timestamps()).containsExactly((Long) null);
     }
 
     @Test

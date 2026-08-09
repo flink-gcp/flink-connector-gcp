@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
+import io.github.flink.gcp.connector.testutils.CollectingSourceOutput;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

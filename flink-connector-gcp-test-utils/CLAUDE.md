@@ -10,7 +10,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
   shade-scope mediation undisturbed). A type moves in only once it has multiple consumers; no
   forced unification of emulator container fixtures. When the rule fires, move only the half
   the second consumer can use — a helper naming a connector type cannot compile in a SQL
-  module's relocated tests.
+  module's relocated tests, and `TestReaderMetrics` is that case in every source module. **Where the
+  two copies' contracts disagree, take the richer one and rewrite the minority's assertions**
+  (#437); a moved double becomes `@Internal public final`.
 - `testutils.sql` holds `ShadedJar` and the three abstract SQL test bases; the
   unrelocated-package allow-list split is the **intersection**, never the union.
 - **Real-GCP gating annotations never move here** — `scripts/e2e-gated-its.sh` greps the
@@ -27,6 +29,13 @@ record — context, evidence, declined alternatives — is the named ADR under `
   are the point. `TestSinkWriterMetricGroup` / `TestSinkCommitterMetricGroup` are the only
   metric-group harnesses; everything asserts **by registered name**, and the committer names are
   the reporter's (`totalCommittables` …), not the accessor names.
+- `CollectingSourceOutput` is what a `RecordEmitter` is handed, `CollectingReaderOutput` what
+  `pollNext` takes; the second wraps the first and hands every split the same output. Their
+  `timestamps()` is **padded, not sparse** — a record emitted without one appears as `null`, so an
+  assertion tells "one record, no timestamp" from "no record", which an `isEmpty()` cannot. The
+  source-side context fakes stay per connector, but the rule is "**the push-assigned source keeps
+  its own**", not "every source keeps its own" — the pull-assigned pair's fakes differ only by the
+  split type (`docs/adr/0050`).
 - **An assertion names a metric with a string literal, never the class's constant** — constants
   inline at compile time, so a constant-referencing assertion passes for any value. The same
   inlining means a mutant run leaves poisoned classes in `target/`; `clean` before believing a

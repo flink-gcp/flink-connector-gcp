@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
+import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;

@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.source.reader;
+package io.github.flink.gcp.connector.testutils;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.eventtime.Watermark;
 import org.apache.flink.api.connector.source.ReaderOutput;
 import org.apache.flink.api.connector.source.SourceOutput;
@@ -25,12 +26,21 @@ import java.util.List;
 /**
  * {@link ReaderOutput} for tests that drive {@code SourceReaderBase.pollNext(...)}, delegating to
  * one shared {@link CollectingSourceOutput} whatever split a record came from.
+ *
+ * <p>Written here rather than taken from Flink because {@code flink-connector-base}'s test jar is
+ * not a dependency of any module in this repository, and {@link CollectingSourceOutput} is a {@link
+ * SourceOutput} only — which is what a {@code RecordEmitter} is handed, not what {@code pollNext}
+ * takes.
+ *
+ * <p>Every split shares the one output: nothing here is about per-split watermarks, and a test that
+ * needs them should say so by giving each split its own.
  */
-final class CollectingReaderOutput<T> implements ReaderOutput<T> {
+@Internal
+public final class CollectingReaderOutput<T> implements ReaderOutput<T> {
 
     private final CollectingSourceOutput<T> output = new CollectingSourceOutput<>();
 
-    List<T> records() {
+    public List<T> records() {
         return output.records();
     }
 
