@@ -130,6 +130,43 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   gauge-backing counters **before** `Closers.closeAll`; every failure reaching the writer is
   counted except a batched row-level rejection, whose place `parkedMutations` takes.
 
+## Scan source (`docs/adr/0080`)
+
+- **A split is one row-key range and the range is the remaining work**; a checkpoint truncates it
+  to start **exclusively** at the last emitted key. No offset exists to resume at — `ReadRows` takes
+  a range — so progress is measured in rows, never in records, which is what lets the deserializer
+  be collector-shaped where BigQuery's cannot be. A truncated range **may be empty** and the reader
+  finishes such a split **without opening a stream**; the builder rejects an empty *configured*
+  range, and that asymmetry is deliberate.
+- **The split reader's delivered key and the split state's emitted key are two clocks**: reopen from
+  the reader's or the element queue is handed over twice inside one *successful* run; checkpoint the
+  reader's and in-flight rows are dropped.
+- **A cancelled `ServerStream` is indistinguishable from an ended one** — measured: `cancel()` makes
+  the iterator report the end, and a consumer already blocked gets a thrown error instead. The
+  `cancelled` flag decides whether a split finished, never the stream's behaviour.
+- **A restore never re-samples**, and the `planned` flag is not `!pending.isEmpty()`: it guards
+  split-id stability against tablets that moved. `rowKeySamplesTaken` reports the same fact at
+  runtime (`1` fresh, `0` restored).
+- **Overlapping configured ranges are merged, not rejected** — nested prefixes otherwise emit their
+  shared rows twice from one green run. Prefix→range is **always** the SDK's `ByteStringRange.prefix`
+  (all-`0xFF` has no successor). `RowRanges` is the one home for the range algebra, and every range
+  crossing a boundary is **copied**: the vendor type is mutable and its `clone()` is not public API.
+- **No `Query` in the config or the split, and no options object.** The serialization trap the design
+  predicted does **not** reproduce (block-data framing bounds the read) — the reasons that survive
+  are format ownership, unreadability and mutability, so the guard is a reflective field test, not a
+  round-trip. An empty `*Options` class fails `check-option-docs` outright.
+- **`Query.limit()` stays deferred** and the SDK agrees: `shard` refuses a request carrying one. The
+  per-fetch row cap is a correctness floor reachable only through a `@VisibleForTesting` setter.
+- **Retries stay in the client** on this side too: `ReadRowsResumptionStrategy` resumes a broken
+  stream from its last key. A sampling failure **fails the job**; no single-split fallback.
+- **Nothing claims Data Boost was exercised** (#248). The testable statement is that a configured
+  `appProfileId` reaches the wire, and only the gated suite can make it — the emulator ignores
+  profiles.
+- **Split planning is never an emulator test**: the emulator models no tablets (final key plus
+  ~1-in-100 randoms; *no samples at all* for an empty table, measured 2026-08-09 against the pinned
+  image). The gated table is **pre-split**; the failover ITCase scripts both seams, because one
+  split cannot show a reassignment.
+
 ## E2E and emulator (`docs/adr/0044`)
 
 - The gated suite creates an ephemeral instance per gated **class** (`flink-it-<epoch>-<runId>`

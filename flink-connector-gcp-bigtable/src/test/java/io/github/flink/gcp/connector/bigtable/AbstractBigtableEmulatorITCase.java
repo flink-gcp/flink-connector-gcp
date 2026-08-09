@@ -14,17 +14,18 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.sink.writer;
+package io.github.flink.gcp.connector.bigtable;
 
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.cloud.bigtable.data.v2.models.RowMutation;
 import com.google.cloud.bigtable.data.v2.models.TableId;
-import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
@@ -50,27 +51,28 @@ import java.util.List;
  */
 @Testcontainers
 @Timeout(180)
-abstract class AbstractBigtableEmulatorITCase {
+public abstract class AbstractBigtableEmulatorITCase {
 
-    static final String PROJECT = "it-project";
+    protected static final String PROJECT = "it-project";
 
     /** Emulator instances are opaque path segments; no instance has to exist. */
-    static final String INSTANCE = "it-instance";
+    protected static final String INSTANCE = "it-instance";
 
-    static final String FAMILY = "cf";
+    protected static final String FAMILY = "cf";
 
     private static final DockerImageName IMAGE =
             DockerImageName.parse(
                     "gcr.io/google.com/cloudsdktool/google-cloud-cli:441.0.0-emulators");
 
     @Container
-    static final BigtableEmulatorContainer EMULATOR = new BigtableEmulatorContainer(IMAGE);
+    protected static final BigtableEmulatorContainer EMULATOR =
+            new BigtableEmulatorContainer(IMAGE);
 
     private static BigtableTableAdminClient adminClient;
     private static BigtableDataClient dataClient;
 
     @BeforeAll
-    static void startClients() throws IOException {
+    protected static void startClients() throws IOException {
         adminClient =
                 BigtableTableAdminClient.create(
                         BigtableTableAdminSettings.newBuilderForEmulator(
@@ -88,7 +90,7 @@ abstract class AbstractBigtableEmulatorITCase {
     }
 
     @AfterAll
-    static void stopClients() {
+    protected static void stopClients() {
         if (dataClient != null) {
             dataClient.close();
         }
@@ -98,27 +100,50 @@ abstract class AbstractBigtableEmulatorITCase {
     }
 
     /** Returns the emulator endpoint in the {@code host:port} form the sink builder takes. */
-    static String emulatorEndpoint() {
+    protected static String emulatorEndpoint() {
         return EMULATOR.getHost() + ":" + EMULATOR.getEmulatorPort();
     }
 
     /** Creates a table with the shared column family and returns its destination. */
-    static TableDestination createTable(String tableId) {
+    protected static TableDestination createTable(String tableId) {
         adminClient.createTable(CreateTableRequest.of(tableId).addFamily(FAMILY));
         return TableDestination.of(PROJECT, INSTANCE, tableId);
     }
 
     /** Returns the live table description, for asserting what auto-creation actually made. */
-    static com.google.cloud.bigtable.admin.v2.models.Table describeTable(String tableId) {
+    protected static com.google.cloud.bigtable.admin.v2.models.Table describeTable(String tableId) {
         return adminClient.getTable(tableId);
     }
 
     /** Reads every row of the table, in row-key order. */
-    static List<Row> readRows(TableDestination destination) {
+    protected static List<Row> readRows(TableDestination destination) {
         List<Row> rows = new ArrayList<>();
         // The TargetId overload, as the production factory uses: Query.create(String) is
         // deprecated.
         dataClient.readRows(Query.create(TableId.of(destination.getTable()))).forEach(rows::add);
         return rows;
+    }
+
+    /**
+     * Writes one cell per given row key, so a read test has something to find.
+     *
+     * <p>Through the harness's own client rather than through the sink: a source test that seeded
+     * its rows with the sink under test would fail for two reasons at once.
+     *
+     * @param destination the table to write into
+     * @param rowKeys the row keys to write, each with a single cell holding its own key as the
+     *     value
+     */
+    protected static void seedRows(TableDestination destination, String... rowKeys) {
+        for (String rowKey : rowKeys) {
+            dataClient.mutateRow(
+                    RowMutation.create(TableId.of(destination.getTable()), rowKey)
+                            .setCell(FAMILY, "q", rowKey));
+        }
+    }
+
+    /** Returns what the emulator answers {@code SampleRowKeys} with, for the deviation suite. */
+    protected static List<KeyOffset> sampleRowKeys(TableDestination destination) {
+        return dataClient.sampleRowKeys(TableId.of(destination.getTable()));
     }
 }

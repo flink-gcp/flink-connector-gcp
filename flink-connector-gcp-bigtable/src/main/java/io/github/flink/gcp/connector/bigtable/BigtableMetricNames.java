@@ -41,10 +41,19 @@ public final class BigtableMetricNames {
     public static final String IN_FLIGHT_BYTES = "inFlightBytes";
     public static final String PARKED_MUTATIONS = "parkedMutations";
 
+    /** Registered by the sink writer and by the scan source's reader, on their own groups. */
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
     public static final String TABLES_CREATED = "tablesCreated";
     public static final String COLUMN_FAMILIES_ADDED = "columnFamiliesAdded";
+
+    // Registered by the scan source's reader (BigtableSourceReaderMetrics).
+    public static final String ROWS_READ = "rowsRead";
+
+    // Registered by the scan source's split enumerator (BigtableScanSplitEnumerator).
+    public static final String SPLITS_ASSIGNED = "splitsAssigned";
+    public static final String SPLITS_RETURNED = "splitsReturned";
+    public static final String ROW_KEY_SAMPLES_TAKEN = "rowKeySamplesTaken";
 
     private BigtableMetricNames() {}
 }

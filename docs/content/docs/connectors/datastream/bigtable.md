@@ -442,6 +442,129 @@ they say nothing about the service's view of the stream — where a stream the *
 wholesale fails the job at that bound. It counts records rather than batches: a rejection is
 [confirmed against one mutation](#error-handling) before the handler sees it.
 
+## Source
+
+Reads the rows of a table into a `DataStream`.
+
+```java
+Source<Order, ?, ?> source =
+        BigtableSource.<Order>builder()
+                .table(TableDestination.of("my-project", "my-instance", "orders"))
+                .deserializer(myDeserializer)
+                .prefix("2026-08-")
+                .build();
+```
+
+API notes:
+
+- The scan is **bounded**: the configured ranges are read once and the source finishes. That is not
+  the same as batch-only — a bounded source runs inside a streaming pipeline and simply ends, which
+  is what makes reading a Bigtable table and joining it against an unbounded stream work.
+- `table(...)` takes the same `TableDestination` the sink does, and `appProfileId(...)` is a source
+  option for the same reason it is a sink one: it chooses a path to the data, not the data's
+  address.
+- Every option is listed, with its default, in the
+  [configuration reference]({{< relref "docs/reference/bigtable" >}}#bigtablesourcebuilder).
+
+### Splits, ranges and recovery
+
+**A split is one row-key range, and the range is the work that is left.** The enumerator asks
+Bigtable where the table's sections begin (`SampleRowKeys`), cuts each configured range at every
+boundary that falls strictly inside it, and hands the pieces out one per request — a reader asks
+for the next when it finishes one, so a dense range does not hold up a subtask that could be reading
+another.
+
+A checkpoint **truncates** the range to start just past the last row the reader emitted, so a
+restore resumes rather than replays. `ReadRows` has no row offset to resume at, only a range to ask
+for, which is what makes the range and not a count the unit of progress. Delivery is
+**at-least-once**: rows emitted after the last completed checkpoint are read again after a restore.
+
+**Parallelism is the service's decision, not the job's.** The boundaries come from how Bigtable
+stores the table, so a table held in few tablets is read by few subtasks whatever the parallelism —
+the subtasks left without a split finish immediately, and the enumerator logs a warning naming both
+numbers. Splitting more finely than a tablet is not something the read path can do.
+
+A restore does **not** sample the table again. Tablets split and merge while a job runs, so a second
+sampling would name different ranges under the split ids the readers are already holding.
+
+### Push-down: ranges, prefixes and filters
+
+`rowRange(...)` and `prefix(...)` are repeatable and additive; with none set the whole table is
+read. A `prefix` is sugar for the range it describes, converted by the client library so that an
+all-`0xFF` prefix — which has no successor — becomes a range running to the end of the table.
+
+Overlapping ranges are **merged**, not rejected. Two nested prefixes are easy to write by accident,
+and left alone the rows they share would land in two splits read by two subtasks, so a single
+*successful* run would emit them twice. An **empty** range is rejected instead, at `build()`: a
+range that reads nothing under a green job looks exactly like a job with nothing to read.
+
+`filter(...)` takes one `Filters.Filter` and applies it to every split. That is safe by
+construction, and the reason is worth stating: Bigtable's filter language has no row-count limiter —
+its limit and offset filters count cells *within* a row — so nothing expressible through a filter
+can depend on how the key space was divided. Per-cell shaping is all expressible there too: which
+families and qualifiers to return, which timestamp window, how many versions of a cell. A filter is
+also the cheapest thing a scan can carry, since what it excludes never leaves the server.
+
+### Deserialization
+
+`BigtableRowDeserializationSchema<T>` turns a row into **zero or more** records through a
+`Collector`. A Bigtable row is a whole row — many column families, many qualifiers, many timestamped
+cell versions — so fanning one out into a record per qualifier or per cell is a mapping wide-table
+jobs want. Emitting nothing filters the row: it is not a failure, it reaches no handler, and
+`recordsSkipped` is the only thing that reports it.
+
+This differs from the [BigQuery source]({{< relref "docs/connectors/datastream/bigquery" >}}), whose
+deserializer returns at most one record, and the difference is in what a checkpoint resumes from
+rather than in taste: a BigQuery read stream resumes at a *count* of rows handed downstream, so a
+one-to-many mapping would move that count off the rows it counts, while this source resumes at a row
+*key* and a row producing none or five advances the resume point by exactly one row either way.
+
+Records are emitted **without a timestamp**. A Bigtable row has one per cell rather than one per
+row, so any row-level event time would be a choice the connector made on the job's behalf; assign a
+watermark strategy over the records instead.
+
+### Serverless reads with Data Boost
+
+Data Boost is Bigtable's read-only serverless compute, selected **by the application profile** — so
+a job points at it with `appProfileId(...)`, exactly as it would name any other profile. There is
+no separate switch, and there is nothing for the connector to validate: the profile is the
+server-side source of truth, and asking what kind a profile is would need admin permissions a read
+job should not have.
+
+Its eligible methods are `ReadRows`, `SampleRowKeys` and `PingAndWarm` — this source's whole RPC
+set, so both the scan and the split planning behind it are compatible with such a profile.
+
+Three things to know before pointing a job at one.
+
+**Recent writes may not be readable.** Bigtable documents no guarantee for data written less than
+**35 minutes** before the read, so a pipeline that writes with this sink and reads back through a
+Data Boost profile may not see its own recent work. That is a stronger statement than "the read is
+a little stale": the data is not merely old, it may be absent.
+
+**Eligibility is a property of the traffic, not only of the profile**, and a parallel source is
+exactly the shape that can lose it: traffic above **1,000 read requests per second per cluster** is
+reported as *ineligible* rather than rejected, so the symptom is a bill and a metric
+(`data_boost/ineligible_reasons`) rather than an error. Reverse scans are ineligible too; this
+source issues none.
+
+**A Data Boost profile is read-only**, and takes single-cluster routing with no request priority:
+naming one on the sink's `appProfileId` breaks writes.
+
+**This project has not exercised Data Boost.** It needs an Enterprise-edition instance and SPU
+billing; the verification is [#248]({{< param BookRepo >}}/issues/248). What is covered here is that
+a configured `appProfileId` reaches the client, which the gated real-GCP suite asserts.
+
+### Not here yet
+
+- `Query.limit()`, a global row limit. It cannot be partitioned across splits without coordination,
+  and the client library says the same thing from the other side by refusing to shard a query that
+  carries one.
+- Read-ahead and paging knobs. How many rows one fetch hands to the task thread is a fixed internal
+  bound — a correctness floor that lets a checkpoint land inside a long range — rather than a knob,
+  and turning it into one needs a measurement rather than a preference.
+- Change streams: [#35]({{< param BookRepo >}}/issues/35). Table API and SQL:
+  [#217]({{< param BookRepo >}}/issues/217).
+
 ## Metrics
 
 Registered on the sink writer's metric group, one set per subtask:
@@ -516,12 +639,30 @@ futures asynchronously, so any latency this writer could report would measure it
 rather than the service's response time — a missing number beats a wrong one. There is no committer
 either (the sink is single-phase), so Flink's committer metrics do not apply.
 
+### Source metrics
+
+Registered on the source reader's and the split enumerator's metric groups:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `rowsRead` | counter | rows this subtask pulled off a stream |
+| `recordsSkipped` | counter | rows the deserializer emitted no record for |
+| `numRecordsIn` | counter (Flink standard) | records handed downstream. With a one-to-many deserializer this is neither `rowsRead` nor `rowsRead` minus `recordsSkipped` |
+| `splitsAssigned` | counter | splits handed to a reader. On the enumerator, so one set per job |
+| `splitsReturned` | counter | splits a failed reader gave back. On the enumerator |
+| `rowKeySamplesTaken` | counter | `SampleRowKeys` calls, on the enumerator: `1` on a fresh start, `0` after a restore. Anything else means the plan was recomputed, which would renumber the splits the readers hold |
+| `unassignedSplits` | gauge (Flink standard) | splits planned but not yet handed out. On the enumerator |
+
+There is deliberately **no bytes-read counter**. A row does not report its serialized size, and a
+number summed from its keys, qualifiers and values would look exactly like the quantity Bigtable
+bills for while not being it. There is no records-remaining gauge either: the samples estimate bytes
+for a table's sections and say nothing about how many rows are left inside a range.
+
 ## Scope
 
 Not implemented, each with its issue rather than a promise:
 
-- reading — the bounded scan source is [#216]({{< param BookRepo >}}/issues/216) and change streams
-  are [#35]({{< param BookRepo >}}/issues/35);
+- reading a changelog — change streams are [#35]({{< param BookRepo >}}/issues/35);
 - Table API and SQL, including a `RowData` serializer:
   [#217]({{< param BookRepo >}}/issues/217);
 - conditional and read-modify-write mutations (`checkAndMutateRow`, `readModifyWriteRow`). These are
@@ -543,6 +684,21 @@ report of its accumulated entry failures, so anything else propagates, and the c
 left holding a channel when it does. The batcher's operations reach the adapter as functional
 values, because the client library's `Batcher` may not be implemented by a fake — the same reason
 this connector defines its own batcher interface.
+
+The source's coverage is split three ways, because no one level can carry it. **Split planning is a
+unit test**, over a pure function fed sampled boundaries directly: the emulator models no tablets,
+so every plan built against it is one split, and its assertions compare the reconstructed ranges
+rather than counting splits — a planner that loses the tail of a table produces a job that succeeds
+and reads less. **Resume across a failure is a MiniCluster test** over scripted seams rather than
+the emulator, for the same reason: one split cannot show a split being reassigned, and the
+assertion that distinguishes "resumed" from "restarted" is that a reopened range starts past the
+rows already handed over. **The emulator suite** drives the whole assembly through the public
+builder — ranges, prefixes and filters surviving into the query the reader sends — and proves the
+wiring, nothing more.
+
+Real `SampleRowKeys` over a **pre-split table** is the gated suite's, and so is the measurement the
+truncation design leans on: what the service answers a range whose start is exclusive at its own end
+key, which is the state a split reaches after emitting its last row.
 
 Integration tests run against the
 [Bigtable emulator](https://cloud.google.com/bigtable/docs/emulator) in a container, through the
@@ -607,6 +763,20 @@ The status is the deviation that matters. `INTERNAL` is [fatal](#error-handling)
 `INVALID_ARGUMENT` is routed, so an emulator test would conclude "fails the job" for a condition the
 service makes droppable — the wrong lesson, learned cheaply. It is also why the emulator suite
 asserts no rejection except in the class that exists to record these differences.
+
+The read path has its own table, measured 2026-08-09 against the same pinned image:
+
+| Behaviour | Real Bigtable | Emulator |
+|---|---|---|
+| `SampleRowKeys` on a populated table | one boundary per tablet, so a pre-split table samples deterministically | the table's final key plus others at roughly one-in-a-hundred probability, whatever the table holds |
+| `SampleRowKeys` on an empty table | one response carrying the empty end-of-table key | no samples at all |
+| Application profile named on a request | honoured | ignored entirely |
+| Empty row key | rejected | accepted, which is why the connector's range algebra can express progress past one |
+
+The first row is why **split planning is never an emulator test**: every plan built against the
+emulator is effectively one split, so an emulator suite could not tell a working planner from one
+that loses the tail of a table. The third is why a configured `appProfileId` is covered only by the
+gated suite.
 
 ## Provenance and attribution
 

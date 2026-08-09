@@ -24,6 +24,7 @@ import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
+import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;

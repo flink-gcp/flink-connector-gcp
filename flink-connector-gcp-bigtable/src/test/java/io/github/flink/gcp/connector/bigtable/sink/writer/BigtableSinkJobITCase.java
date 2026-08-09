@@ -27,6 +27,7 @@ import org.apache.flink.connector.datagen.source.GeneratorFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
+import io.github.flink.gcp.connector.bigtable.AbstractBigtableEmulatorITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
