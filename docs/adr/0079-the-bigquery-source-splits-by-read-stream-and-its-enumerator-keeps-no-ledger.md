@@ -81,7 +81,9 @@ failed-over job would read it as of two different instants. `readSessionsCreated
 fact at runtime: 1 for a job that started, 0 for one that restored.
 
 **The enumerator keeps no ledger.** No map of subtask to splits — one queue of unassigned splits and
-the `initialized` flag. The Dataproc connector's own change log records a "critical data loss bug in
+the `initialized` flag. (Since [#452] that protocol is
+`base.source.PullAssignmentSplitEnumerator`, shared with the Bigtable scan source and recorded in
+ADR-0083; what stays here is the read session, and the paragraphs below describe both.) The Dataproc connector's own change log records a "critical data loss bug in
 reader split handling", fixed "by signaling no-more-splits per reader and removing completed readers
 from queue" (read 2026-08-09; an earlier draft of this record glossed that as the bug living *in*
 that bookkeeping, which is the opposite of what the entry says). What it establishes is that the
@@ -160,3 +162,4 @@ the Avro-namespace reason above.
 [#391]: https://github.com/laughingman7743/flink-connector-gcp/issues/391
 [#392]: https://github.com/laughingman7743/flink-connector-gcp/issues/392
 [#393]: https://github.com/laughingman7743/flink-connector-gcp/issues/393
+[#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452

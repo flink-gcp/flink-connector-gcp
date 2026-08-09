@@ -185,7 +185,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `<relocations>`, its surefire override, `japicmp.skip` and its dependencies. A change to the
   shared block is verified by a zero-delta comparison of both uber-jars' entry names and CRCs.
 
-## Source (`docs/adr/0079`)
+## Source (`docs/adr/0079`, `0083`)
+
+- **The assignment protocol is the base module's** (`docs/adr/0083`):
+  `BigQueryReadSplitEnumerator` extends `PullAssignmentSplitEnumerator` and supplies the read
+  session — `restore`, the planning call and its report, the counters, its own `snapshotState`.
+  Everything the bullets below say about assignment still holds; it is just no longer written
+  here, so a change to it is a change to both sources and belongs in `flink-connector-gcp-base`.
 
 - **A split is one read stream plus the rows already emitted, and the offset advances once per row
   read — including a skipped one.** Split and split state are two types because two threads touch

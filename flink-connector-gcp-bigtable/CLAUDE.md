@@ -163,7 +163,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   gauge-backing counters **before** `Closers.closeAll`; every failure reaching the writer is
   counted except a batched row-level rejection, whose place `parkedEntries` takes.
 
-## Scan source (`docs/adr/0080`)
+## Scan source (`docs/adr/0080`, `0083`)
+
+- **The assignment protocol is the base module's** (`docs/adr/0083`): `BigtableScanSplitEnumerator`
+  extends `PullAssignmentSplitEnumerator` and supplies the sampling — `restore`, the sampling call,
+  the plan and its report, the counters, its own `snapshotState`. What the bullets below say about
+  assignment still holds; it is just no longer written here, so a change to it changes both sources
+  and belongs in `flink-connector-gcp-base`.
 
 - **A split is one row-key range and the range is the remaining work**; a checkpoint truncates it
   to start **exclusively** at the last emitted key. No offset exists to resume at — `ReadRows` takes

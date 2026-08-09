@@ -584,11 +584,13 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   no forced unification of emulator container fixtures, and the justfile install-list coupling its
   reactor-sibling consumers create. Migrated to ADRs (`docs/adr/0050`–`0051`)
 - `flink-connector-gcp-base/CLAUDE.md` — the shared main-code module (#61, joined by #37's
-  DLQ/metrics as `base.failure`/`base.metrics` and by `base.lifecycle`/`base.rpc`): the failure
-  SPI and metric-name conventions (#280), retry loops and
+  DLQ/metrics as `base.failure`/`base.metrics`, by `base.lifecycle`/`base.rpc`, and by #452's
+  `base.source`): the failure SPI and metric-name conventions (#280), retry loops and
   retryability classification stay per-connector (the evaluated-and-declined `Retries.run`
-  executor is recorded there), compile-scope consumers, and the shading/install-list consequences
-  that scope carries. Migrated to ADRs (`docs/adr/0036`–`0040`)
+  executor is recorded there), the pull-assignment split enumerator every bounded source extends —
+  including why its counters are registered by the connector rather than named to it
+  (`docs/adr/0083`) — compile-scope consumers, and the shading/install-list consequences
+  that scope carries. Migrated to ADRs (`docs/adr/0036`–`0040`, `0083`)
 
 Decisions that span connectors stay here as rules — the package layout convention, the version
 policy, the CI architecture, the workflow and the infrastructure — with their records in
