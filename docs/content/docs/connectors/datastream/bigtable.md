@@ -136,7 +136,8 @@ Creation is **reactive**, the shape the
 admin client is even constructed unless a mutation actually fails with `NOT_FOUND`. When one does,
 the failed mutations are *parked*, the sink ensures the table and its declared families exist —
 idempotently, so parallel subtasks race safely; a lost race falls through to adding whatever
-families are still missing, in one atomic request — and then re-applies the parked mutations,
+families are still missing, in one atomic request, re-reading at most once more per family it
+declares — and then re-applies the parked mutations,
 retrying on a jittered backoff (the
 [`recovery*` knobs]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions): 500 ms
 doubling to 10 s, at most 10 attempts, ±25% jitter so subtasks resuming against the same fresh
@@ -144,7 +145,9 @@ table do not re-apply in lockstep). The repair runs before the next record and i
 `flush()`, so a completed checkpoint never leaves a mutation parked; a repair that exhausts its
 budget fails the job with the incident's cause. A creation that itself fails spends attempts from
 the same budget — the admin client retries neither of its RPCs, so this schedule is what stands
-between one transient admin failure and a restart. Nothing is ever dropped by the repair — a mutation
+between one transient admin failure and a restart, and it is where an ensure whose declared
+families keep vanishing between the read and the addition ends up as well, rather than in a loop
+whose only symptom would be checkpoints that stop completing. Nothing is ever dropped by the repair — a mutation
 is re-applied or the job fails — which is why `NOT_FOUND` may be acted on even when an outage
 status arrives beside it.
 

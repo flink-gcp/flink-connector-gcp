@@ -40,6 +40,8 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -55,12 +57,18 @@ import java.util.stream.Collectors;
  * <p>Creation conflicts ({@code ALREADY_EXISTS}, the table or a family was created concurrently —
  * for example by a parallel subtask) are treated as success and resolved by re-reading: a lost
  * table-creation race falls through to the family reconciliation, and a lost family-addition race
- * re-reads and retries with the remaining absentees. Each extra round requires a fresh concurrent
- * addition of a still-missing family, so the loop terminates unless a third party keeps adding and
- * deleting the very families this sink declares — perpetual external churn, accepted unbounded
- * rather than capped. The reconciliation reads the live families first rather than blindly adding,
- * because one {@code ModifyColumnFamilies} request is atomic — a single already-existing family
- * would fail the genuinely missing ones with it.
+ * re-reads and retries with the remaining absentees. The reconciliation reads the live families
+ * first rather than blindly adding, because one {@code ModifyColumnFamilies} request is atomic — a
+ * single already-existing family would fail the genuinely missing ones with it.
+ *
+ * <p>The reconciliation is self-bounding at the number of families the options declare, plus one: a
+ * round that loses the race leaves strictly fewer of them missing. Spending that budget is a
+ * contradiction rather than a slow ensure — a declared family disappearing between the read and the
+ * modify, or a read not seeing what the modify reports — and it fails rather than looping on,
+ * because a loop with no end stops the task thread and surfaces, if at all, as checkpoints that
+ * stop completing and a task that will not cancel, never as the reconciliation that caused it,
+ * whereas the failure becomes an {@link IOException} the writer's recovery schedule already spends
+ * an attempt on.
  *
  * <p>The client retries neither {@code CreateTable} nor {@code ModifyColumnFamilies} (their
  * retryable-code sets are empty), so a transiently failed ensure fails this call; the writer's
@@ -92,17 +100,12 @@ public class BigtableTableAdmin implements TableAdmin {
     public EnsureResult ensureTable(TableDestination destination, TableCreateOptions options)
             throws IOException {
         try (BigtableTableAdminClient client = newClient(destination)) {
-            try {
-                client.createTable(toCreateTableRequest(destination, options));
-                LOG.info(
-                        "Created Bigtable table {} with column families {}",
-                        destination,
-                        options.getColumnFamilies().keySet());
-                return EnsureResult.created();
-            } catch (AlreadyExistsException e) {
-                LOG.info("Bigtable table {} already exists, not creating it", destination);
-            }
-            return addMissingFamilies(client, destination, options);
+            return ensureWith(
+                    destination,
+                    options,
+                    client::createTable,
+                    tableId -> familyIdsOf(client, tableId),
+                    client::modifyFamilies);
         } catch (RuntimeException e) {
             throw new IOException(
                     "Failed to create Bigtable table "
@@ -113,26 +116,83 @@ public class BigtableTableAdmin implements TableAdmin {
     }
 
     /**
+     * Ensures the table through the three admin operations, taken as functional values rather than
+     * as the client that performs them.
+     *
+     * <p><b>Because that is the only seam a test can drive</b> (#414), the same shape and the same
+     * reason as {@code BigtableBatcherAdapter}'s (ADR-0047). {@link BigtableTableAdminClient} is
+     * final, this repository uses no mocking framework, and the client here is built inside {@link
+     * #ensureTable} and closed with it, so nothing can hand in a scripted one. Nor can the emulator
+     * substitute: what needs driving is a <em>concurrent</em> family addition landing between one
+     * call's read and its modify, and nothing short of interposing on the RPC stream can time it.
+     * Measured on the pre-seam code (2026-08-09): a mutant that returned instead of looping, and
+     * one that looped without re-reading, each survived this module's whole non-gated suite — every
+     * test that reaches this class; the gated real-GCP auto-creation cases are single-threaded and
+     * would not produce the race either.
+     *
+     * <p>The read yields the live family ids rather than the client's {@code Table}: that type has
+     * no public constructor, so a test would have to mint one through its {@code @InternalApi}
+     * {@code fromProto}. What that leaves outside the seam is one projection, which {@code
+     * BigtableTableAdminEmulatorITCase} pins in both directions — its no-op case fails if the read
+     * reports too few families, its amend case if it reports too many. That ITCase is also why the
+     * method references binding this call to a real client are covered, unlike the untested wiring
+     * #321 found: it drives {@link #ensureTable} itself down the creation, the addition and the
+     * no-op path.
+     */
+    @VisibleForTesting
+    static EnsureResult ensureWith(
+            TableDestination destination,
+            TableCreateOptions options,
+            Consumer<CreateTableRequest> createTable,
+            Function<String, Set<String>> readFamilyIds,
+            Consumer<ModifyColumnFamiliesRequest> modifyFamilies) {
+        try {
+            createTable.accept(toCreateTableRequest(destination, options));
+            LOG.info(
+                    "Created Bigtable table {} with column families {}",
+                    destination,
+                    options.getColumnFamilies().keySet());
+            return EnsureResult.created();
+        } catch (AlreadyExistsException e) {
+            LOG.info("Bigtable table {} already exists, not creating it", destination);
+        }
+        return addMissingFamilies(destination, options, readFamilyIds, modifyFamilies);
+    }
+
+    /**
      * Adds the declared families an existing table lacks, in one atomic request per round. A round
      * that loses the race to a parallel subtask ({@code ALREADY_EXISTS}: the atomic request added
      * nothing) re-reads and retries with what is still missing.
+     *
+     * <p>The round budget is the declared family count plus one, which is the exact bound rather
+     * than a chosen cap: a losing round means at least one family this call found missing is now
+     * present, so the missing set shrinks strictly and is a subset of the declared families. At
+     * most that many rounds can lose, and one more either adds the remainder or finds nothing to
+     * add. Spending it is therefore not a slow ensure but a contradiction — see the tripwire's own
+     * message — and it fails rather than spinning, because a loop with no end holds the task thread
+     * and would be reported only as checkpoints that stop completing, while the failure is a retry
+     * the writer's recovery schedule already knows how to spend.
      */
     private static EnsureResult addMissingFamilies(
-            BigtableTableAdminClient client,
             TableDestination destination,
-            TableCreateOptions options) {
-        while (true) {
-            Set<String> existing =
-                    client.getTable(destination.getTable()).getColumnFamilies().stream()
-                            .map(ColumnFamily::getId)
-                            .collect(Collectors.toSet());
+            TableCreateOptions options,
+            Function<String, Set<String>> readFamilyIds,
+            Consumer<ModifyColumnFamiliesRequest> modifyFamilies) {
+        int rounds = options.getColumnFamilies().size() + 1;
+        // Carried out of the loop for the tripwire's message: which families were still absent is
+        // the one thing an operator meeting it can act on, and the last round is the only round
+        // that knows.
+        Set<String> stillMissing = options.getColumnFamilies().keySet();
+        for (int budget = rounds; budget > 0; budget--) {
+            Set<String> existing = readFamilyIds.apply(destination.getTable());
             Map<String, GcRule> missing = new LinkedHashMap<>(options.getColumnFamilies());
             missing.keySet().removeAll(existing);
             if (missing.isEmpty()) {
                 return EnsureResult.familiesAdded(0);
             }
+            stillMissing = missing.keySet();
             try {
-                client.modifyFamilies(toModifyColumnFamiliesRequest(destination, missing));
+                modifyFamilies.accept(toModifyColumnFamiliesRequest(destination, missing));
                 LOG.info(
                         "Added column families {} to Bigtable table {}",
                         missing.keySet(),
@@ -145,6 +205,25 @@ public class BigtableTableAdmin implements TableAdmin {
                         destination);
             }
         }
+        throw new IllegalStateException(
+                "The column families "
+                        + stillMissing
+                        + " declared for Bigtable table "
+                        + destination
+                        + " were still missing after "
+                        + rounds
+                        + " reconciliation rounds, each of which was told the families it was"
+                        + " adding already exist. A round only repeats when a family it read as"
+                        + " missing was added concurrently, so a declared family is being deleted"
+                        + " between the read and the modify, or the read is not seeing what the"
+                        + " modify reports.");
+    }
+
+    /** Reads the ids of the column families the given table currently has. */
+    private static Set<String> familyIdsOf(BigtableTableAdminClient client, String tableId) {
+        return client.getTable(tableId).getColumnFamilies().stream()
+                .map(ColumnFamily::getId)
+                .collect(Collectors.toSet());
     }
 
     /** Translates the create options into the table-creation request. */
