@@ -53,6 +53,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
@@ -63,9 +64,16 @@ import java.util.stream.Collectors;
  * <h2>Threading model</h2>
  *
  * <p>All mutable state — the destination pool, the in-flight counters and the captured asynchronous
- * error — is touched only on the task thread. Mutation completion callbacks do not mutate state
- * directly; they re-dispatch onto the {@link MailboxExecutor}, whose mails run on the task thread
- * inside {@link MailboxExecutor#yield()} calls. This is the model the Pub/Sub sink's writer uses.
+ * error — is touched only on the task thread, with one deliberate exception named below. Mutation
+ * completion callbacks do not mutate state directly; they re-dispatch onto the {@link
+ * MailboxExecutor}, whose mails run on the task thread inside the writer's own waits. This is the
+ * model the Pub/Sub sink's writer uses.
+ *
+ * <p>The exception is {@link #lastCompletionNanos}, stamped by the completion callback on the gax
+ * thread so that a wait can tell a stalled client from a busy task thread. The waits themselves run
+ * {@link MailboxExecutor#tryYield()} and park rather than calling {@link MailboxExecutor#yield()},
+ * which is what lets them notice a stall at all — and which is why they read the interrupt flag
+ * themselves ({@code docs/adr/0078}).
  *
  * <h2>Destinations</h2>
  *
@@ -173,9 +181,10 @@ import java.util.stream.Collectors;
  * single number. At either cap {@link #write} yields to the mailbox until completions bring the
  * counters back down. Admission is checked before a mutation rather than against the mutation's own
  * size, so one larger than the cap is admitted on an empty writer and overshoots it until it
- * completes — deliberate, because {@link MailboxExecutor#yield()} blocks until a mail arrives and
- * no mail can arrive with nothing in flight, so a "does it fit" predicate would be a task hang
- * rather than backpressure.
+ * completes — deliberate, because a wait ends only when a completion arrives and none can with
+ * nothing in flight, so a "does it fit" predicate would be a task hang rather than backpressure. It
+ * would be one whichever way the wait is written: the waits poll rather than block since #431, so
+ * such a predicate now spins forever where it used to block forever.
  *
  * <p>What the writer retains is therefore one cap's worth of in-flight mutations, at most one cap's
  * worth parked, and one accumulator per live batcher — the third term being what per-record
@@ -192,6 +201,32 @@ public class BigtableWriter<T> implements SinkWriter<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigtableWriter.class);
 
+    /**
+     * How long a wait may go without the client answering anything before it says so, and the
+     * default of the injectable one below.
+     *
+     * <p>Derived rather than chosen: the client gives up on a stalled {@code MutateRows} at its own
+     * 10-minute total timeout — measured at 601 s against a black-holed endpoint and 586 s against
+     * a refused one (`docs/adr/0078`) — and this is a tenth of that, the fraction the Pub/Sub sink
+     * warns at within its own budget. There is no knob, because there is no budget here for one to
+     * size: this writer does not fail a stalled wait, and the sink exposes none of the client's
+     * retry settings by policy.
+     */
+    private static final long STALL_WARN_AFTER_NANOS = Duration.ofSeconds(60).toNanos();
+
+    /**
+     * How long a wait parks when the mailbox has nothing to run.
+     *
+     * <p>Set by mail latency, not by the warning: a park is time a completion mail sits
+     * unprocessed, so this is the throughput cost of not using the blocking {@link
+     * MailboxExecutor#yield()}. A warning threshold measured in tens of seconds makes a longer park
+     * look free, and it is not.
+     */
+    private static final long POLL_INTERVAL_NANOS = Duration.ofMillis(1).toNanos();
+
+    /** {@link #awaitMutationProgress} ran a mail rather than finding the mailbox empty. */
+    private static final long RAN_A_MAIL = -1L;
+
     private final BigtableSinkConfig<T> config;
     private final DestinationResolver<? super T> destinationResolver;
     private final MutationBatcherFactory batcherFactory;
@@ -201,6 +236,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     private final long maxInFlightBytes;
     private final int maxConsecutiveRejections;
     private final long destinationIdleTimeoutNanos;
+    private final long stallWarnAfterNanos;
     private final LongSupplier nanoClock;
     private final RetrySchedule recoverySchedule;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
@@ -272,6 +308,33 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     private int consecutiveRejections;
 
     /**
+     * When the client last answered a mutation, successfully or not — the clock a wait measures its
+     * idleness against.
+     *
+     * <p>Stamped in the completion callback, on whichever gax thread runs it, and <b>not</b> when
+     * the resulting mailbox mail runs: what a wait is asking is whether the client is still
+     * answering, and a mail that has been enqueued but not yet dequeued already answers that. Were
+     * it stamped on the task thread instead, a mailbox busy with unrelated work would look like a
+     * stalled client.
+     *
+     * <p>The one field of this writer not confined to the task thread, hence {@code volatile}: a
+     * monotonic timestamp rather than logical state, so a reader wants the freshest value and
+     * nothing is derived from reading it together with anything else. Initialised at construction
+     * so it is always a real clock reading — the zero default is not one, and it is only ever
+     * compared to another reading as a difference.
+     */
+    private volatile long lastCompletionNanos;
+
+    /**
+     * When {@link #warnIfStalled} last spoke; touched only on the task thread. A writer-wide field
+     * rather than a per-wait flag, because a wait is not an incident: the isolation pass drains
+     * once per parked mutation, and a park runs to a whole {@code maxInFlightMutations}, so one
+     * {@code flush()} can make a thousand waits and a per-wait flag would put a line in the log for
+     * each. The Pub/Sub sink declined the same shape for the same reason.
+     */
+    private long lastStallWarnNanos;
+
+    /**
      * First terminal failure; set and read only on the task thread (failure callbacks re-dispatch
      * through the mailbox).
      */
@@ -302,12 +365,14 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                 mailboxExecutor,
                 metricGroup,
                 config.getWriterOptions().toRecoverySchedule(),
-                System::nanoTime);
+                System::nanoTime,
+                STALL_WARN_AFTER_NANOS);
     }
 
     /**
-     * Creates the writer with an explicit recovery schedule and clock, so tests can shrink the
-     * production backoffs out of the wall clock and fast-forward the idle timeout.
+     * Creates the writer with an explicit recovery schedule, clock and stall-warning threshold, so
+     * tests can shrink the production backoffs out of the wall clock, fast-forward the idle timeout
+     * and reach the warning without waiting a minute for it.
      */
     @VisibleForTesting
     BigtableWriter(
@@ -317,7 +382,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             MailboxExecutor mailboxExecutor,
             SinkWriterMetricGroup metricGroup,
             RetrySchedule recoverySchedule,
-            LongSupplier nanoClock) {
+            LongSupplier nanoClock,
+            long stallWarnAfterNanos) {
         this.config = config;
         this.destinationResolver = config.getDestinationResolver();
         this.batcherFactory = batcherFactory;
@@ -327,7 +393,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         this.mailboxExecutor = mailboxExecutor;
         BigtableWriterOptions options = config.getWriterOptions();
         // Checked here, not only on the options builder: a non-positive cap holds the
-        // awaitCapacity predicate with nothing in flight, and yield() blocks until a mail arrives
+        // awaitCapacity predicate with nothing in flight, and no completion can arrive to end it
         // — so it is a silent permanent park, not a rejected configuration. Fail where the
         // invariant is relied on rather than trusting that every options instance came from the
         // builder, which Java deserialization does not run.
@@ -359,6 +425,13 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // the builder: those failures are silent (a permanent park) or misattributed (an NPE
         // inside the repair), where this one is an immediate throw at construction.
         this.destinationIdleTimeoutNanos = options.getDestinationIdleTimeout().toNanos();
+        this.stallWarnAfterNanos = stallWarnAfterNanos;
+        // Both stamped from a real clock reading rather than left at zero, which is not one: the
+        // wait compares them against later readings and only the difference is meaningful. The
+        // warning's is back-dated by its own threshold so the first stall of a writer's life warns
+        // as promptly as the tenth.
+        this.lastCompletionNanos = nanoClock.getAsLong();
+        this.lastStallWarnNanos = this.lastCompletionNanos - stallWarnAfterNanos;
         this.failedMutationHandler = config.getFailedMutationHandler();
         this.metrics = new BigtableWriterMetrics(metricGroup, options.isPerDestinationMetrics());
         this.metrics.bindWriterState(
@@ -847,11 +920,26 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * <p>Both predicates are "at or above the cap", never "would this mutation fit", so an empty
      * writer always admits — see the class documentation for why that is a correctness property and
      * not only accounting.
+     *
+     * <p>A wait that finds the mailbox empty asks every live batcher to send what it is still
+     * accumulating, once. A mutation counts against the caps from the moment the batcher accepts
+     * it, which is before it goes anywhere, so at the cap some of what the wait is waiting for may
+     * still be sitting in an accumulator — and the writer, holding the task thread, cannot add the
+     * mutation that would trip the batcher's own element threshold instead. Without this the
+     * batcher's 1-second delay threshold is a term inside every such wait. Once per wait rather
+     * than per pass: the task thread is blocked, so nothing can join a batch while it waits.
      */
     private void awaitCapacity() throws IOException, InterruptedException {
+        boolean sent = false;
+        long start = nanoClock.getAsLong();
         while (inFlightMutations >= maxInFlightMutations || inFlightBytes >= maxInFlightBytes) {
             checkAsyncError();
-            mailboxExecutor.yield();
+            long idleNanos = awaitMutationProgress(start, "admitting a record");
+            if (idleNanos != RAN_A_MAIL && !sent) {
+                sent = true;
+                sendEveryBatcher();
+            }
+            warnIfStalled(idleNanos, "admitting a record");
         }
         checkAsyncError();
     }
@@ -867,13 +955,100 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      *
      * <p>Keyed on the mutation count alone: a mutation can serialize to few bytes but never to a
      * count of zero, so {@code inFlightBytes == 0} would not imply an empty writer.
+     *
+     * <p>Unlike {@link #awaitCapacity()} this does not send what the batchers are accumulating: its
+     * callers do, immediately before.
      */
     private void drainInFlight() throws IOException, InterruptedException {
+        long start = nanoClock.getAsLong();
         while (inFlightMutations > 0) {
             checkAsyncError();
-            mailboxExecutor.yield();
+            warnIfStalled(
+                    awaitMutationProgress(start, "draining the outstanding mutations"),
+                    "draining the outstanding mutations");
         }
         checkAsyncError();
+    }
+
+    /**
+     * Runs one mailbox mail, or reports how long this wait has gone without the client answering
+     * anything.
+     *
+     * <p>{@link MailboxExecutor#yield()} cannot be used: it blocks until a mail arrives, and a
+     * stalled client sends none, so nothing would ever be measured — which is why this writer's
+     * stall could go unreported for the ten minutes the client takes to give up. {@link
+     * MailboxExecutor#tryYield()} plus a short park is the only shape the interface offers, and
+     * while completions are arriving {@code tryYield} returns {@code true} and nothing parks at
+     * all.
+     *
+     * <p>Two consequences of that swap, both load-bearing. <b>The interrupt flag is read here</b>,
+     * first and on every pass: the blocking {@code yield()} took the mailbox lock interruptibly and
+     * so ended a cancelled wait of its own accord, while {@code tryYield()} does not look at the
+     * flag and {@code LockSupport.parkNanos} returns on interrupt without clearing it — so without
+     * this read a cancelling task would spin here instead of ending, which is the one property this
+     * rewrite could quietly take away. And <b>the idle time is read only once {@code tryYield} has
+     * come back empty</b>: a completion mail queued behind other work is a mutation the client
+     * already answered, so counting the time it waits its turn would report a stall on a healthy
+     * writer.
+     *
+     * <p>Measured against the later of "this wait began" and "the client last answered", or a
+     * writer whose stream went quiet for an hour would report its next wait as an hour-long stall.
+     *
+     * @return the time this wait has gone without progress, or {@link #RAN_A_MAIL} if it ran a mail
+     *     instead — which is what tells the caller the mailbox is empty
+     */
+    private long awaitMutationProgress(long waitStartNanos, String what)
+            throws InterruptedException {
+        if (Thread.interrupted()) {
+            throw new InterruptedException("Interrupted while " + what + " for Bigtable.");
+        }
+        if (mailboxExecutor.tryYield()) {
+            return RAN_A_MAIL;
+        }
+        // Subtraction rather than Math.max: both are clock readings, and their ordering is only
+        // meaningful as a difference — the constructor stamps lastCompletionNanos so neither is
+        // ever the zero default.
+        long idleSinceNanos =
+                lastCompletionNanos - waitStartNanos > 0 ? lastCompletionNanos : waitStartNanos;
+        // Never negative, and so never collides with RAN_A_MAIL: idleSinceNanos is the later of
+        // two readings taken before this one, and the clock does not go backwards.
+        long idleNanos = nanoClock.getAsLong() - idleSinceNanos;
+        LockSupport.parkNanos(POLL_INTERVAL_NANOS);
+        return idleNanos;
+    }
+
+    /**
+     * Says that a wait has stopped making progress, long before anything else would.
+     *
+     * <p>No counter can report this state, because the state <em>is</em> that nothing is resolving:
+     * {@code numRecordsSend} stays flat, and the error counters need not move at all, since a
+     * mutation that never answers is never counted as a failure. Nor does the writer fail — the
+     * client gives up on its own at about ten minutes, and Flink's checkpoint timeout may well fail
+     * the job first with a message that names nothing about Bigtable (measured; {@code
+     * docs/adr/0078}). So this line is the only thing that names the connector while it is
+     * happening.
+     */
+    private void warnIfStalled(long idleNanos, String what) {
+        if (idleNanos == RAN_A_MAIL || idleNanos < stallWarnAfterNanos) {
+            return;
+        }
+        long now = nanoClock.getAsLong();
+        if (now - lastStallWarnNanos < stallWarnAfterNanos) {
+            return;
+        }
+        lastStallWarnNanos = now;
+        LOG.warn(
+                "No Bigtable mutation has been answered for {} while {} ({} mutation(s) in flight"
+                        + " over {} table(s)). The sink is waiting, not failing: the client gives up"
+                        + " on a stalled MutateRows at its own 10-minute total timeout, and Flink's"
+                        + " execution.checkpointing.timeout may fail the job before that with a"
+                        + " message naming nothing about Bigtable. Watch numRecordsSend, which stays"
+                        + " flat for as long as this lasts; the error counters need not move at all,"
+                        + " since a mutation that never answers is never counted as a failure.",
+                Duration.ofNanos(idleNanos),
+                what,
+                inFlightMutations,
+                states.size());
     }
 
     private void checkAsyncError() throws IOException {
@@ -1151,13 +1326,20 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             consecutiveRejections = 0;
         }
 
+        // Both stamp before dispatching, on the gax thread: what a wait measures is whether the
+        // client is still answering, and a failure is an answer. Stamping only successes would let
+        // a client failing everything promptly read as a stall — the mutant that survived the whole
+        // of the Pub/Sub sink's equivalent test class.
+
         @Override
         public void onSuccess(Void result) {
+            lastCompletionNanos = nanoClock.getAsLong();
             mailboxExecutor.execute(this, state.completionDescription);
         }
 
         @Override
         public void onFailure(Throwable throwable) {
+            lastCompletionNanos = nanoClock.getAsLong();
             mailboxExecutor.execute(
                     () -> onMutationFailed(state, entry, serializedSize, soloVerdict, throwable),
                     state.failureDescription);

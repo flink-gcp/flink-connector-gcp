@@ -83,6 +83,26 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   2026-08-08), so the emulator suite drives that repair end-to-end; the missing-**family** leg is
   gated-suite-only (emulator says `INTERNAL`).
 
+## Stalled waits (`docs/adr/0078`)
+
+- **The two mailbox waits report a stall; they do not bound one.** No knob, no sink-side timeout —
+  measured: the client gives up on a stalled `MutateRows` at its own 10-minute total timeout
+  (601 s black hole, 586 s refused), and `yield()` was already interruptible, so neither premise
+  ADR-0052 answers for Pub/Sub holds here. What survives is ten minutes in which no counter moves
+  and Flink's checkpoint timeout may fail the job first, naming nothing about Bigtable.
+- **The report is not separable from the loop**: `yield()` never returns while nothing arrives, so
+  both waits run `tryYield()` + a 1 ms park. Three things that shape carries and a rewrite must
+  keep — **the loop reads `Thread.interrupted()` itself** (`tryYield` does not, `parkNanos` does not
+  clear it; dropping it silently breaks cancellation, the one property the measurement found
+  working); the idle time is read **after** `tryYield` comes back empty, never before; and the park
+  interval is set by mail latency, not by the warning threshold.
+- Progress is stamped on the **gax callback thread**, on failure as well as success — a failure is
+  the client answering. `lastCompletionNanos` is the only field of this writer not confined to the
+  task thread. The warning is rate-limited **writer-wide**, never per wait: one `flush()` can make a
+  whole `maxInFlightMutations` of them.
+- `awaitCapacity()` sends every live batcher once per wait; `drainInFlight()` does not, because its
+  callers send immediately before.
+
 ## Solo confirmation and teardown (`docs/adr/0045`, `0046`, `0047`)
 
 - A `ROW_LEVEL` verdict answering a batched submission is parked and confirmed solo by

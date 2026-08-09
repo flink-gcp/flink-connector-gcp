@@ -278,9 +278,8 @@ are what backpressures the stream: at either cap `write()` yields to the task ma
 completions bring the counters down. Both are needed — a mutation may be megabytes, so a count alone
 bounds no memory. Admission is checked as "below the cap", never as "does this mutation fit", so a
 mutation larger than the byte cap is admitted on an empty writer and overshoots it until it
-completes; that is deliberate, because yielding to the mailbox blocks until a mail arrives and no
-mail can arrive with nothing in flight, which would make a fits-predicate a task hang rather than
-backpressure.
+completes; that is deliberate, because such a wait ends only when a completion arrives and none can
+with nothing in flight, which would make a fits-predicate a task hang rather than backpressure.
 
 **The client's own flow controller is why raising the bounds has a ceiling.** It permits 1000
 entries per channel and 100 MB of accumulated size, and when either is reached it *blocks* the
@@ -294,6 +293,20 @@ Pub/Sub sink removed its SDK flow-control knobs over
 
 There are no rate knobs beyond this. Bigtable's throughput is a property of the instance's nodes and
 of how well the row keys spread across tablets; a sink-side rate limit would not change either.
+
+**A sink whose client has stopped answering says so in the log, and nothing else does.** Both waits
+— the admission gate in `write()` and the drain at a checkpoint — emit a `WARN` naming the
+connector, the wait, the in-flight mutation count and the number of live tables once a minute has
+passed with no mutation answered, repeating no more than once a minute however many waits the writer
+makes. There is no knob and no sink-side timeout, because the client already has one: it gives up on
+a stalled `MutateRows` at its own 10-minute total timeout (measured: 10 min 1 s against an endpoint
+that accepts and never answers, 9 min 46 s against one that refuses the connection). The warning
+exists because of what happens in those ten minutes — no counter moves, since `numRecordsSend` only
+counts what was sent and a mutation that never answers is never counted as a failure — and because
+of what happens at the end of them: with Flink's defaults
+(`execution.checkpointing.timeout` 10 min, `execution.checkpointing.tolerable-failed-checkpoints`
+0) the checkpoint can expire first, failing the job with a message that names nothing about
+Bigtable. See [#431]({{< param BookRepo >}}/issues/431).
 
 ## Error handling
 

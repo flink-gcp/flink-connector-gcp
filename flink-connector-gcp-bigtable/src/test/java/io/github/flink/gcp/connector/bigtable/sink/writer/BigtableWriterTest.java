@@ -58,6 +58,13 @@ class BigtableWriterTest {
     private static final TableDestination TABLE = TableDestination.of("p", "i", "orders");
     private static final TableDestination OTHER_TABLE = TableDestination.of("p", "i", "events");
 
+    /**
+     * A stall-warning threshold no test here reaches: these classes drive the writer's own clock
+     * only through eviction, so a production-sized one would put a warning in no log and a tiny one
+     * would put a warning in every.
+     */
+    private static final long STALL_WARN_AFTER_NANOS = java.time.Duration.ofHours(1).toNanos();
+
     private final FakeMutationBatcherFactory factory = new FakeMutationBatcherFactory();
     private final FakeMutationBatcher batcher = factory.batcherFor(TABLE);
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
@@ -891,7 +898,8 @@ class BigtableWriterTest {
                 mailbox,
                 metricGroup,
                 sink.getConfig().getWriterOptions().toRecoverySchedule(),
-                nanoClock);
+                nanoClock,
+                STALL_WARN_AFTER_NANOS);
     }
 
     private SinkWriter<String> writer(
