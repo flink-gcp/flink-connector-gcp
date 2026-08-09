@@ -101,8 +101,9 @@ somewhere for a scripted contradiction to be an assertion rather than a hang.
 tries them through a `@VisibleForTesting ensureWith(...)`, and only `ensureTable` binds them to a
 real client — because that is the only seam a test can drive ([#414]): the client is final, this
 repository uses no mocking framework, and it is built inside the call and closed with it, so it
-cannot be injected; and no arrangement of a live emulator lands a *concurrent* family addition
-between one call's read and its modify. ADR-0047's shape, one level down from an adapter object
+cannot be injected; and nothing short of interposing on the RPC stream times a *concurrent* family
+addition to land between one call's read and its modify — a live emulator alone cannot, whatever
+it is asked to do. ADR-0047's shape, one level down from an adapter object
 because the client here is per-call. The read seam yields the live family ids rather than the
 client's `Table`, whose only construction is an `@InternalApi fromProto` a test would have to
 reach for; what that leaves outside the seam is one projection the emulator ITCase pins in both

@@ -52,11 +52,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The reconciliation is self-bounding too**, at declared families + 1 — the exact bound its own
   termination argument asserts (a losing round shrinks the missing set strictly), enforced as a
   `for` budget with a tripwire rather than left as a comment (#414). Spending it is a
-  contradiction, not a slow ensure, and it fails into the recovery schedule instead of spinning
-  where no Flink timeout can see it. **Its three admin operations are functional values**, bound
+  contradiction, not a slow ensure, and it fails into the recovery schedule instead of holding the
+  task thread — where the only symptom would be checkpoints that stop completing, never the
+  reconciliation behind them. **Its three admin operations are functional values**, bound
   to a real client only by `ensureTable`: ADR-0047's shape, and the only seam a test can drive —
-  the client is final and per-call, and no live emulator lands a concurrent family addition
-  between one call's read and its modify.
+  the client is final and per-call, and nothing short of interposing on the RPC stream times a
+  concurrent family addition to land between one call's read and its modify.
 - A parked `NOT_FOUND` **is** counted under `errorClass.NOT_FOUND.errors` per entry (no identity
   to confirm — unlike ADR-0043's batched row-level exclusion); `parkedMutations` sums both
   queues; `columnFamiliesAdded` counts additions to a pre-existing table only.
