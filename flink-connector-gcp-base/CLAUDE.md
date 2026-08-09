@@ -50,6 +50,15 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - `EmulatorEndpoint` is the only form an endpoint travels in past the setter; whitespace is
   rejected, never trimmed, and the host splits at the last colon, kept verbatim. Public
   signatures stay `String`.
+- `EmulatorChannels` is split **by who owns the channel**, not by settings type (`docs/adr/0081`):
+  `plaintextProvider` where the client closes its own channel, `openPlaintextChannel` +
+  `fixedProvider` where the caller does — and the ownership difference is load-bearing at three
+  sites, so never unify them. **Always pass an API's own
+  `defaultGrpcTransportProviderBuilder()`**, never a bare one: the API's defaults include the
+  inbound message limit, and losing it fails only on an emulator and only past 4 MiB.
+  `NoCredentialsProvider` stays at each call site — the three builder types share no supertype —
+  and `PubSubTestClients` cannot use any of this, since `base` depends on test-utils and not the
+  reverse.
 
 ## `base.options` (`docs/adr/0068`)
 

@@ -22,8 +22,6 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.GrpcTransportChannel;
-import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
@@ -34,11 +32,11 @@ import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.options.OptionChecks;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -236,13 +234,8 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         Publisher.Builder builder = Publisher.newBuilder(topic.toTopicPath());
         try {
             if (emulatorEndpoint != null) {
-                ownedChannel =
-                        ManagedChannelBuilder.forTarget(emulatorEndpoint.getTarget())
-                                .usePlaintext()
-                                .build();
-                builder.setChannelProvider(
-                                FixedTransportChannelProvider.create(
-                                        GrpcTransportChannel.create(ownedChannel)))
+                ownedChannel = EmulatorChannels.openPlaintextChannel(emulatorEndpoint);
+                builder.setChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
                         .setCredentialsProvider(NoCredentialsProvider.create());
             }
             publisher = builder.build();

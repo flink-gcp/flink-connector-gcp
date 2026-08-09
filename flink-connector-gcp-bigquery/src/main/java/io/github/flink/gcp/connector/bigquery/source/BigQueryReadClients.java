@@ -17,13 +17,13 @@
 package io.github.flink.gcp.connector.bigquery.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadSettings;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.grpc.ManagedChannelBuilder;
 
 import javax.annotation.Nullable;
 
@@ -56,27 +56,34 @@ public final class BigQueryReadClients {
                 : forEmulator(emulatorEndpoint);
     }
 
+    private static BigQueryReadClient forEmulator(EmulatorEndpoint endpoint) throws IOException {
+        return BigQueryReadClient.create(emulatorSettings(endpoint));
+    }
+
     /**
-     * Creates a client talking plaintext to a BigQuery emulator with no credentials.
+     * Builds the settings for a client talking plaintext to a BigQuery emulator with no
+     * credentials.
      *
-     * <p>The endpoint is set on the settings <em>and</em> on an explicit channel provider: the
-     * settings' endpoint alone would still build a TLS channel, which no emulator here terminates.
+     * <p>The transport provider starts from {@link
+     * BigQueryReadSettings#defaultGrpcTransportProviderBuilder()} rather than from a bare one so
+     * that the API's own defaults survive: it raises the maximum inbound message size to {@link
+     * Integer#MAX_VALUE}, and a provider built from scratch would run the emulator path at gRPC's 4
+     * MiB default instead — a {@code RESOURCE_EXHAUSTED} waiting for the first read batch above it.
+     * Nothing sets the endpoint on the settings as well: the provider carries it, and gax pushes
+     * the settings' endpoint onto a provider only when the provider has none.
      *
      * @param endpoint the emulator's gRPC endpoint
-     * @return the client; the caller owns it and must close it
-     * @throws IOException if the client cannot be created
+     * @return the settings
+     * @throws IOException if the settings cannot be built
      */
-    private static BigQueryReadClient forEmulator(EmulatorEndpoint endpoint) throws IOException {
-        String target = endpoint.getTarget();
-        return BigQueryReadClient.create(
-                BigQueryReadSettings.newBuilder()
-                        .setEndpoint(target)
-                        .setCredentialsProvider(NoCredentialsProvider.create())
-                        .setTransportChannelProvider(
-                                InstantiatingGrpcChannelProvider.newBuilder()
-                                        .setEndpoint(target)
-                                        .setChannelConfigurator(ManagedChannelBuilder::usePlaintext)
-                                        .build())
-                        .build());
+    @VisibleForTesting
+    static BigQueryReadSettings emulatorSettings(EmulatorEndpoint endpoint) throws IOException {
+        return BigQueryReadSettings.newBuilder()
+                .setCredentialsProvider(NoCredentialsProvider.create())
+                .setTransportChannelProvider(
+                        EmulatorChannels.plaintextProvider(
+                                BigQueryReadSettings.defaultGrpcTransportProviderBuilder(),
+                                endpoint))
+                .build();
     }
 }

@@ -26,10 +26,10 @@ import com.google.cloud.pubsub.v1.TopicAdminSettings;
 import com.google.pubsub.v1.MessageStoragePolicy;
 import com.google.pubsub.v1.Topic;
 import com.google.pubsub.v1.TopicName;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -138,11 +138,10 @@ public class PubSubTopicAdmin implements TopicAdmin {
                     TopicAdminSettings.newBuilder()
                             .setCredentialsProvider(NoCredentialsProvider.create())
                             .setTransportChannelProvider(
-                                    TopicAdminSettings.defaultGrpcTransportProviderBuilder()
-                                            .setEndpoint(emulatorEndpoint.getTarget())
-                                            .setChannelConfigurator(
-                                                    ManagedChannelBuilder::usePlaintext)
-                                            .build())
+                                    EmulatorChannels.plaintextProvider(
+                                            TopicAdminSettings
+                                                    .defaultGrpcTransportProviderBuilder(),
+                                            emulatorEndpoint))
                             .build());
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Pub/Sub admin client", e);

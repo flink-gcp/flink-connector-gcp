@@ -44,7 +44,14 @@ limitations under the License.
             <artifactId>gax</artifactId>
         </dependency>
         <dependency>
-            <!-- StatusRuntimeException on the status-code extraction path. -->
+            <!-- InstantiatingGrpcChannelProvider and GrpcTransportChannel behind the emulator
+                 channel providers (#438); FixedTransportChannelProvider is in gax above. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax-grpc</artifactId>
+        </dependency>
+        <dependency>
+            <!-- StatusRuntimeException on the status-code extraction path, and
+                 ManagedChannel(Builder) on the emulator channel path. -->
             <groupId>io.grpc</groupId>
             <artifactId>grpc-api</artifactId>
         </dependency>

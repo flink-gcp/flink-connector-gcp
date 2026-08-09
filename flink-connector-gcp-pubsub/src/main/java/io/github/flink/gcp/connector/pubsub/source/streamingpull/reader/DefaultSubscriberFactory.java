@@ -26,11 +26,11 @@ import com.google.cloud.pubsub.v1.MessageReceiverWithAckResponse;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.cloud.pubsub.v1.SubscriberShutdownSettings;
 import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
-import io.grpc.ManagedChannelBuilder;
 
 import javax.annotation.Nullable;
 
@@ -101,10 +101,10 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
             configure(builder, options, orderingMode);
             if (emulatorEndpoint != null) {
                 builder.setChannelProvider(
-                                SubscriberStubSettings.defaultGrpcTransportProviderBuilder()
-                                        .setEndpoint(emulatorEndpoint.getTarget())
-                                        .setChannelConfigurator(ManagedChannelBuilder::usePlaintext)
-                                        .build())
+                                EmulatorChannels.plaintextProvider(
+                                        SubscriberStubSettings
+                                                .defaultGrpcTransportProviderBuilder(),
+                                        emulatorEndpoint))
                         .setCredentialsProvider(NoCredentialsProvider.create());
             }
             return builder.build();
