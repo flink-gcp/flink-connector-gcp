@@ -236,3 +236,77 @@ keeps it cheap. That is also less of a loss than it sounds, because of how much 
 never prove: the emulator supports neither `gs://` load jobs nor a Cloud Storage endpoint, so
 `FILE_LOADS` could not run against it at all, and it reads `TIME`, `DATETIME`, `NUMERIC` and
 `BIGNUMERIC` columns back as unrelated values.
+
+## Reading one column of a large table
+
+The two push-down knobs are applied by BigQuery when the read session is created, so what they
+exclude never leaves it — and the columns you leave out are not scanned, which is what the read is
+charged for.
+
+```java
+Schema readerSchema = new Schema.Parser().parse(
+        "{\"type\":\"record\",\"name\":\"Event\",\"fields\":["
+                + "{\"name\":\"user_id\",\"type\":\"long\"}]}");
+
+Source<GenericRecord, ?, ?> source =
+        BigQuerySource.<GenericRecord>builder()
+                .table(TableDestination.of("my-project", "analytics", "events"))
+                .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+                .selectedFields("user_id")
+                .rowRestriction("event_date = '2026-08-01' AND country = 'JP'")
+                .build();
+```
+
+The reader schema names only the column being read. A row's other columns are dropped by Avro's
+schema resolution before the record is built — and here they never left BigQuery in the first place.
+
+## Reading a public dataset
+
+A read session belongs to a project, and that is the project it is billed to. Reading a table you do
+not own — a public dataset, or another team's — means naming your own project as the payer:
+
+```java
+BigQuerySource.<GenericRecord>builder()
+        .table(TableDestination.of("bigquery-public-data", "samples", "shakespeare"))
+        .parentProject("my-project")
+        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+        .build();
+```
+
+Without `parentProject` the session would be created in `bigquery-public-data`, where you have no
+permission to create one.
+
+## Reading a table as it was
+
+`snapshotTime` reads the table as of an instant, from BigQuery's time-travel window. Two jobs given
+the same instant read the same rows, whatever has been written since — which is what makes a
+re-run reproducible rather than merely repeated.
+
+```java
+BigQuerySource.<GenericRecord>builder()
+        .table(TableDestination.of("my-project", "my_dataset", "accounts"))
+        .snapshotTime(Instant.parse("2026-08-01T00:00:00Z"))
+        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+        .build();
+```
+
+Note that a read session pins its own snapshot at creation regardless, so a job that does *not* set
+this still reads one consistent view of the table — just whichever one existed when it started.
+
+## Asking for more read streams
+
+A read stream is read by one subtask at a time, and a subtask takes the next stream as soon as it
+finishes one. Over-provisioning is therefore how the work spreads evenly: with as many streams as
+subtasks, one slow stream leaves a subtask idle at the end.
+
+```java
+BigQuerySource.<GenericRecord>builder()
+        .table(TableDestination.of("my-project", "my_dataset", "events"))
+        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+        .preferredMinStreamCount(3 * env.getParallelism())
+        .build();
+```
+
+BigQuery decides the actual count and may give fewer — a small table is read by one stream however
+many are asked for. The measured behaviour of both knobs is under
+[Assignment and stream count]({{< relref "docs/connectors/datastream/bigquery" >}}#assignment-and-stream-count).

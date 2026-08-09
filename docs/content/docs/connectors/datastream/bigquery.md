@@ -1444,6 +1444,170 @@ schedules are configurable via `DefaultStreamOptions` (see [Tuning](#tuning)); o
 buffered-stream path the SDK schedule stays fixed and only the writer's own re-append budget is
 configurable, via `BufferedStreamOptions`.
 
+## Source
+
+`BigQuerySource` reads a table through the **Storage Read API** — the same gRPC service the
+`STORAGE_API_*` write methods use, in the other direction. It is a FLIP-27 source and declares
+`Boundedness.BOUNDED`, which is not the same as batch-only: it runs inside a STREAMING pipeline and
+finishes once the table has been read, which is what a dimension-table broadcast join needs. There
+is no runtime-mode guard, unlike `FILE_LOADS` on the sink side.
+
+```java
+Schema schema = new Schema.Parser().parse(
+        "{\"type\":\"record\",\"name\":\"Row\",\"fields\":["
+                + "{\"name\":\"id\",\"type\":\"long\"},"
+                + "{\"name\":\"name\",\"type\":\"string\"}]}");
+
+Source<GenericRecord, ?, ?> source =
+        BigQuerySource.<GenericRecord>builder()
+                .table(TableDestination.of("my-project", "my_dataset", "my_table"))
+                .deserializer(BigQueryRowDeserializer.genericRecord(schema))
+                .build();
+
+env.fromSource(source, WatermarkStrategy.noWatermarks(), "BigQuery");
+```
+
+**Reads through this API cost money**, unlike the sink's `FILE_LOADS` path, which is free. BigQuery
+charges for the bytes *scanned from storage* to serve a read session — "the total number of bytes
+scanned from BigQuery storage to fulfill the request … used to calculate the analysis cost of the
+read operation", in its own words. Because BigQuery stores columns separately, a job that reads a
+wide table to use two of its columns pays for the rest unless it says so with
+[`selectedFields`](#push-down).
+
+### Splits, offsets and recovery
+
+A **split is one `ReadStream` of the read session, plus the number of rows already emitted from it**.
+Restoring re-issues `ReadRows` at that offset, which is the API's own resume mechanism rather than
+anything this connector invents. Three facts hold it together:
+
+- The **read session is created exactly once**, by the enumerator, guarded by a checkpointed flag so
+  a restore adopts the existing session instead of creating a second one. A second session would pin
+  a second snapshot of the table, and a failed-over job would silently read the table as of two
+  different instants. `readSessionsCreated` reports the same fact at runtime.
+- The offset advances **once per row read from the stream**, in the record emitter, including a row
+  the deserializer skipped by returning `null`. It counts rows consumed, not records emitted.
+- A stream's rows arrive in BigQuery's **storage order, not the table's**, and an offset is a
+  position in that order (measured 2026-08-09). Nothing downstream should read order into it.
+
+A checkpoint can be taken between the last row of a stream being emitted and the reader recording
+the stream as finished, which leaves a restored split at exactly the stream's row count — a position
+the proto documents as undefined (*"Requesting a larger offset is undefined"*). Measured
+2026-08-09: BigQuery ends such a read with no rows and no error, and that is the whole of the
+handling — the restored split is opened like any other and reported finished after one empty call.
+Nothing marks such a split in advance, because nothing can: Flink removes a split's state before
+telling the reader the split finished.
+
+### Assignment and stream count
+
+Assignment is **pull-based**: a reader holds one stream at a time and asks for the next as soon as it
+finishes one, so a subtask that draws a small stream goes back for more work instead of idling. That
+is what stands in for the API's `SplitReadStream`, which FLIP-27 has no hook for and this connector
+never calls.
+
+The enumerator keeps no record of which subtask holds which stream: every question such a ledger
+would answer is answered instead by what the enumerator is handed — a request, or a returned stream.
+That is deliberate. The reference implementation this design was drawn from records a *critical data
+loss bug in reader split handling* in its own change log, fixed by signalling no-more-splits per
+reader and removing completed readers from its queue — assignment and completion is where a
+hand-written enumerator goes wrong quietly, and the per-reader half of it is something Flink's
+coordinator already does.
+
+Flink keeps one thing the connector does not: its coordinator suppresses a further request from a
+subtask it has already told there are no more splits, and clears that flag only when the subtask is
+reset. Since a reset is also what returns a failed reader's streams, a returned stream is always
+reachable by the subtask that comes back for it — but a *different* subtask that already finished
+will not pick it up.
+
+How many streams a session has is **BigQuery's decision**, shaped by two knobs. Measured 2026-08-09:
+
+| Request | 910 GB table | 23 GB table | 6 MB table |
+|---|---|---|---|
+| neither knob set | 936 streams | 138 | 1 |
+| `maxStreamCount(3)` | 3 | 3 | 1 |
+| `preferredMinStreamCount(5000)` | 936 | 552 | 1 |
+
+So `maxStreamCount` is a cap that is honoured downwards and **never a floor**: a small table is read
+by a single stream however many are asked for, and capping below the job's parallelism leaves
+subtasks idle. `preferredMinStreamCount` is a best-effort request for more. Asking for more streams
+than there are subtasks is how this source gets its elasticity. A `preferredMinStreamCount` above
+`maxStreamCount` is rejected by the builder, because BigQuery rejects it too.
+
+### Push-down
+
+`selectedFields`, `rowRestriction` and `snapshotTime` are fields of the read session, so BigQuery
+applies them before anything is transferred. What that saves differs between the two:
+`selectedFields` leaves whole columns unscanned, which is what BigQuery charges for;
+`rowRestriction` always saves the transfer, and saves scanning too where the restriction lands on a
+partitioning or clustering column. They are also the seam a later Table API source maps
+`SupportsProjectionPushDown` and `SupportsFilterPushDown` onto
+([#57]({{< param BookRepo >}}/issues/57)).
+
+`snapshotTime` is served from BigQuery's time-travel window, which is seven days by default: an
+instant outside it is rejected when the session is created, with `INVALID_ARGUMENT: time travel
+timestamp exceeds the maximum time travel duration of 168h` (measured 2026-08-09).
+
+### Deserialization
+
+Rows arrive as Avro and are decoded into a `GenericRecord`, which
+`BigQueryRowDeserializer.deserialize(GenericRecord)` converts into one record — or into `null` to
+skip the row, which `recordsSkipped` is the only report of. The SPI is an abstract class rather than
+a functional interface for the reason the sink's serializer is one: it is shipped inside the job
+graph and must be serializable, while an Avro `Schema` is not.
+
+A deserializer may declare a **reader schema**, and the shipped `genericRecord(...)` implementation
+does. Rows are then resolved from the session's schema into it by Avro's schema-resolution rules, so
+the schema you write need not match the table's exactly: naming a subset of the columns with their
+natural types is enough, and the records the source produces then carry the schema you declared —
+which is also the one its `TypeInformation` is derived from. A schema that cannot be parsed fails
+where the job is built, not on a TaskManager once rows flow.
+
+Using `genericRecord(...)` requires **`flink-avro` on the job's classpath**. It is what supplies
+Flink's Avro serializer for `GenericRecord`; without it Flink falls back to Kryo, which cannot
+serialize one at all (measured 2026-08-09). A deserializer converting to your own type needs none of
+this.
+
+Records are emitted **without a timestamp**: a BigQuery row carries no event time the connector could
+know about, so assigning one is the job's decision through a `WatermarkStrategy`.
+
+### Reading against the emulator
+
+`emulatorEndpoint(...)` sends the source's traffic to a local BigQuery emulator over plaintext. The
+source takes **one** endpoint where the sink takes two: it reads the table's schema from the read
+session and makes no REST call at all, so there is no second transport to point anywhere.
+
+The emulator is a convenience, never evidence about the service. Measured against
+goccy/bigquery-emulator 0.8.1 (2026-08-09), its read path differs in four ways that matter:
+
+| The emulator | BigQuery |
+|---|---|
+| rejects `maxStreamCount` above 1 | caps at the requested count, and may return fewer |
+| **ignores `ReadRowsRequest.offset`** and answers every call from row zero | resumes at the offset |
+| answers a whole table in one response block | blocks of up to about 128 MiB |
+| names the Avro schema `<project>.<dataset>`, and expires a session in one hour | `__root__` with no namespace, six hours |
+
+The second is why **no recovery test may be written against the emulator** — a green one would prove
+the opposite of what it claims — and the fourth is why the emulator harness uses a project id
+without a hyphen: a hyphen is not legal in an Avro namespace, so the schema fails to parse before a
+row is decoded. Each deviation is pinned by `BigQueryEmulatorReadDeviationITCase`, so the image bump
+that fixes one fails the build rather than leaving a workaround behind.
+
+### How the source is tested
+
+The offset resume is covered three ways, because no single one of them can carry it: a unit test
+drives two readers across a snapshot against a fake that honours offsets; a MiniCluster job fails
+once part-way through and is asserted to read every row exactly once, having resumed rather than
+started over; and a gated real-GCP case measures that BigQuery resumes where it left off and answers
+a read at the row count with an empty stream.
+
+### Not here yet
+
+Error-handling depth and real-GCP restore coverage are
+[#391]({{< param BookRepo >}}/issues/391); reading the result of a query rather than a table is
+[#392]({{< param BookRepo >}}/issues/392); the Arrow wire format is
+[#393]({{< param BookRepo >}}/issues/393). There is no unbounded or CDC read, and there is no
+planned one: BigQuery has no changelog read primitive, so it could only be a polling emulation
+([#64]({{< param BookRepo >}}/issues/64) records the reasoning).
+
 ## Metrics
 
 Registered on the sink writer's metric group, one set per subtask. The three write methods report
@@ -1564,6 +1728,35 @@ the quota of 1,500 load jobs per table per day that shapes `minCheckpointInterva
 quota and does not appear here. The FILE_LOADS committer runs on **one subtask** (its pre-commit
 topology ends in `global()`), so this counter is the whole job's load-job rate rather than one
 subtask's share.
+
+### Source metrics
+
+Registered on the reader's metric group, one set per subtask, plus three on the enumerator's — which
+is one set for the job, since there is one enumerator.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `numRecordsIn` | counter (Flink standard) | records handed downstream, which is `rowsRead` minus the skipped rows |
+| `rowsRead` | counter | rows decoded from the response blocks this subtask received |
+| `bytesRead` | counter | their serialized bytes as they arrived on the wire. Not the billed quantity — BigQuery charges for bytes *scanned from storage*, which a client cannot see — but it is what says whether a job is moving what you expected |
+| `recordsSkipped` | counter | rows the deserializer skipped by returning `null` — neither emitted nor failed |
+| `splitsAssigned` | counter | read streams handed to a reader, on the enumerator |
+| `splitsReturned` | counter | read streams a failed reader gave back, on the enumerator |
+| `readSessionsCreated` | counter | read sessions created, on the enumerator |
+| `unassignedSplits` | gauge (Flink standard) | read streams not currently held by a reader |
+
+**`readSessionsCreated` is the one to alert on.** It is `1` for a job that started and `0` for one
+that restored an existing session; any other value means the restore guard failed and the job is
+reading a second snapshot of the table.
+
+Counters rather than an assigned-splits gauge, on the enumerator: a gauge would need a ledger of
+which subtask holds what, and not keeping one is the whole design of that enumerator (see
+[Assignment and stream count](#assignment-and-stream-count)). The unassigned side is Flink's own
+gauge, which reads the queue directly and so cannot disagree with it.
+
+`pendingRecords` is deliberately **not** set. The Storage Read API estimates a row count for a whole
+session and reports nothing per stream, so a per-subtask "records behind" figure would be a guess,
+and a wrong lag number is worse than none.
 
 ## Tuning
 

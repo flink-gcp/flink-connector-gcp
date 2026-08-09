@@ -185,6 +185,38 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `<relocations>`, its surefire override, `japicmp.skip` and its dependencies. A change to the
   shared block is verified by a zero-delta comparison of both uber-jars' entry names and CRCs.
 
+## Source (`docs/adr/0079`)
+
+- **A split is one read stream plus the rows already emitted, and the offset advances once per row
+  read — including a skipped one.** Split and split state are two types because two threads touch
+  them. The read session is created once, guarded by a checkpointed flag; `readSessionsCreated`
+  above 1 means that guard failed.
+- **The enumerator keeps no ledger** — no subtask-to-splits map. That absence is the design (the
+  reference implementation's change log records a "critical data loss bug in reader split handling"
+  *fixed by adding* per-reader no-more-splits signalling — so the protocol, not the ledger, is what
+  breaks quietly, and Flink already does the per-reader half), and it is why the
+  enumerator reports counters rather than an assigned-splits gauge. Do not add one. Flink's *own*
+  coordinator does suppress a request from a subtask already told there are no more splits, and
+  clears that only on `subtaskReset` — the same reset that returns the splits — so do not write that
+  a finished reader picks up a returned split.
+- **The terminal-offset case rests on a measurement, not on a lookahead**: BigQuery answers a read at
+  exactly the stream's row count with an empty stream (measured 2026-08-09). The per-record
+  `lastInStream` envelope was designed and declined, and a `finished` flag on the split was
+  implemented and removed — nothing can set it, since Flink drops a split's state before telling the
+  reader it finished.
+- Both stream-count knobs default to `0`. `maxStreamCount` is a cap and **never a floor** — a 6 MB
+  table answers with one stream at `maxStreamCount(8)`, measured — so nothing may promise a count.
+- **One emulator endpoint, not the sink's two** (`docs/adr/0029`): the source makes no REST call.
+  Revisit if it ever grows one.
+- **No recovery test against the emulator**, which ignores `ReadRowsRequest.offset` and answers from
+  row zero; a green test there proves the opposite. The read-path deviations are pinned by
+  `BigQueryEmulatorReadDeviationITCase`, each with a `@Disabled` twin carrying the correct
+  behaviour, and the emulator harness uses a **hyphen-free project id** because the emulator's Avro
+  namespace is `<project>.<dataset>` and a hyphen is illegal in one.
+- The deserializer may declare a reader schema; rows are resolved into it. The shipped
+  `GenericRecord` implementation answers with `GenericRecordAvroTypeInfo`, which is why `flink-avro`
+  is a `provided` dependency — Kryo cannot serialize a `GenericData.Record` at all (measured).
+
 ## Metrics (`docs/adr/0034`; conventions in the base module's CLAUDE.md)
 
 - Three writer metrics classes so no writer registers a metric it cannot increment;

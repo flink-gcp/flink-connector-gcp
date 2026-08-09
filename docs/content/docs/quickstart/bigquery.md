@@ -20,11 +20,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Write a stream to BigQuery
+# Write to and read from BigQuery
 
 Assumes the artifacts and credentials from the
 [Quickstart]({{< relref "docs/quickstart" >}}) index. The whole file, since it is the one worth
 copying verbatim; the other connectors' pages show only the job.
+
+## Write a stream to a table
 
 ```java
 package example;
@@ -84,8 +86,46 @@ object, a `BYTES` column takes an array of byte values rather than base64 — ar
 [BigQuery connector]({{< relref "docs/connectors/datastream/bigquery" >}}) page, along with the
 protobuf and Avro serializers for input that is not JSON.
 
+## Read a table
+
+The other direction is a bounded source over the Storage Read API. It finishes when the table has
+been read, so it works both as a batch input and as the dimension side of a join in a streaming job.
+
+```java
+Schema readerSchema = new Schema.Parser().parse(
+        "{\"type\":\"record\",\"name\":\"Person\",\"fields\":["
+                + "{\"name\":\"id\",\"type\":\"long\"},"
+                + "{\"name\":\"name\",\"type\":\"string\"}]}");
+
+Source<GenericRecord, ?, ?> source =
+        BigQuerySource.<GenericRecord>builder()
+                .table(TableDestination.of("my-project", "my_dataset", "people"))
+                .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+                .selectedFields("id", "name")
+                .rowRestriction("id > 1000")
+                .build();
+
+env.fromSource(source, WatermarkStrategy.noWatermarks(), "BigQuery")
+        .map(row -> row.get("name").toString())
+        .print();
+```
+
+`Schema` here is Avro's, not the REST client's: rows arrive as Avro, and the schema you pass is what
+they are read *into* — naming the columns you want with their natural types is enough, since Avro's
+schema resolution maps the table's schema onto it. Reading `GenericRecord`s needs `flink-avro` on
+the job's classpath.
+
+`selectedFields` and `rowRestriction` are applied by BigQuery before anything is sent, which matters
+for more than speed: **a read through this API is charged for the bytes it scans**, unlike the free
+`FILE_LOADS` write path, and a column you do not select is a column BigQuery does not scan.
+
 ## Next
 
 [BigQuery examples]({{< relref "docs/examples/bigquery" >}}) — a table per day from the event
 timestamp, both exactly-once write methods, and what `tableCreateOptions(...)` decides at creation
 time.
+
+Reading is covered further under
+[Source]({{< relref "docs/connectors/datastream/bigquery" >}}#source) — what a checkpoint carries,
+how many read streams BigQuery actually gives you, and why no recovery test may be written against
+the emulator.

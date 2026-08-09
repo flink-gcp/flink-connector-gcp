@@ -22,7 +22,7 @@ limitations under the License.
 
 # BigQuery options
 
-Every option the BigQuery sink takes. What each one is *for* is on the
+Every option the BigQuery sink and source take. What each one is *for* is on the
 [BigQuery connector]({{< relref "docs/connectors/datastream/bigquery" >}}) page, linked from each
 section; the three forms of the Default column are explained
 [here]({{< relref "docs/reference" >}}#what-a-default-means).
@@ -216,3 +216,22 @@ you supply the schema, so a `REQUIRED` column in it is your own statement. See
 | Option | Default | What it does |
 |---|---|---|
 | `ignoreUnknownFields` | off, an unknown field fails the record | Drops document fields the schema has no column for |
+
+## `BigQuerySource.builder()`
+
+The bounded source over the Storage Read API. What each option is *for*, and what BigQuery actually
+does with the two stream-count knobs, is under
+[Source]({{< relref "docs/connectors/datastream/bigquery" >}}#source).
+
+| Option | Default | What it does |
+|---|---|---|
+| `table` | **required** | The table to read |
+| `deserializer` | **required** | Converts each Avro row into a record, or into `null` to skip it |
+| `parentProject` | the table's own project | The project the read session belongs to and is billed to. Set it to read a table in another project, such as a public dataset |
+| `selectedFields` | every column | The columns to read. Applied by BigQuery when the session is created, so the rest are neither transferred nor scanned — and scanned bytes are what a read is charged for |
+| `rowRestriction` | no filter | A BigQuery filter expression — a `WHERE` clause without the keyword — applied before any row is sent |
+| `snapshotTime` | the table's current contents | Reads the table as of an instant inside BigQuery's time-travel window, seven days by default; an older instant is rejected when the session is created |
+| `maxStreamCount` | `0`, BigQuery decides | An upper bound on the read streams the session gets. A cap and never a floor: a small table is read by one stream however many are asked for |
+| `preferredMinStreamCount` | `0`, no request | How many read streams to ask BigQuery for. Best effort; must not exceed `maxStreamCount` when both are set |
+| `maxRecordsPerFetch` | 10000 | The most rows one fetch hands to the task thread, so a checkpoint can be taken part-way through a response block |
+| `emulatorEndpoint` | — | Sends the source's traffic to a BigQuery emulator at `host:port`, over plaintext and without credentials. One endpoint, not the sink's two: the source makes no REST call |
