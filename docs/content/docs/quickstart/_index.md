@@ -22,7 +22,7 @@ limitations under the License.
 
 # Quickstart
 
-Setup once, then one complete job per connector. This page is everything the three that follow
+Setup once, then one complete job per connector. This page is everything the five that follow
 have in common — getting the artifacts, and getting credentials in front of them.
 
 | | |
@@ -31,6 +31,7 @@ have in common — getting the artifacts, and getting credentials in front of th
 | [Cloud Pub/Sub]({{< relref "docs/quickstart/pubsub" >}}) | Publish to a topic, consume from a subscription, and the same in SQL |
 | [Cloud Tasks]({{< relref "docs/quickstart/cloudtasks" >}}) | Dispatch a stream as HTTP tasks the queue paces |
 | [Bigtable]({{< relref "docs/quickstart/bigtable" >}}) | Write a stream of row mutations into a table |
+| [Spanner]({{< relref "docs/quickstart/spanner" >}}) | Write a stream of mutations into a database's tables |
 
 The connector pages document *what each option does*; these are the shortest path to a job that
 runs. Everything here writes to real Google Cloud — to run without touching a project, see
@@ -84,8 +85,8 @@ That installs `0.1.0-SNAPSHOT` into `~/.m2`, from where an ordinary dependency r
 ```
 
 The other connector artifact ids are `flink-connector-gcp-pubsub`,
-`flink-connector-gcp-cloudtasks` and `flink-connector-gcp-bigtable`. All four are SNAPSHOTs of an
-unreleased project: the coordinates
+`flink-connector-gcp-cloudtasks`, `flink-connector-gcp-bigtable` and
+`flink-connector-gcp-spanner`. All five are SNAPSHOTs of an unreleased project: the coordinates
 and the API behind them change without notice, and this section is rewritten when there is
 something published to point at. The Flink version above is the floor the connectors are compiled
 against, and one build covers the whole 2.x range — a job on 2.3 needs no different artifact.
@@ -132,7 +133,7 @@ Two environment facts a first run trips over:
   both, at the price of a missing destination failing the job instead of being created. The
   Pub/Sub source creates a subscription only when given creation settings, the Bigtable sink
   creates its table only under `CREATE_IF_NEEDED` with a declared schema, and the Cloud Tasks
-  sink never creates its destination at all.
+  and Spanner sinks never create their destinations at all.
 
 What each connector asks for:
 
@@ -143,6 +144,7 @@ What each connector asks for:
 | Pub/Sub source | `pubsub.subscriptions.get` (roles/pubsub.viewer) on every configured subscription for the startup check, plus `create` when auto-creating and `update` when seeking — roles/pubsub.editor covers all three |
 | Cloud Tasks | `cloudtasks.tasks.create` ([roles/cloudtasks.enqueuer](https://cloud.google.com/tasks/docs/secure-queue-configuration)), which binds to a single queue as well as to the project. The sink never creates a queue |
 | Bigtable | `bigtable.tables.mutateRows` ([roles/bigtable.user](https://cloud.google.com/bigtable/docs/access-control)), which binds to a single table as well as to the instance. `createDisposition(CREATE_IF_NEEDED)` additionally needs `bigtable.tables.create` and `bigtable.tables.update`; under the default `CREATE_NEVER` the sink creates neither the table nor its column families |
+| Spanner | `spanner.databases.write` for the mutations, plus `spanner.databases.select` and the read-only-transaction and session permissions the schema read goes through — the sink reads `INFORMATION_SCHEMA` at start-up to weigh mutations against Spanner's per-request limit. [roles/spanner.databaseUser](https://cloud.google.com/spanner/docs/iam) covers all of them |
 
 ## Then
 
