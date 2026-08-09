@@ -15,9 +15,11 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `flink-sql-connector-gcp-*` uber-jars and must be relocated there (`docs/adr/0015`), and it is
   on the justfile `binary-compat`/`e2e` install lists for the reactor-resolution reason
   test-utils is (#181).
-- No compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here touches the
-  1.x/2.x `Sink` API gap. `DefaultFailureHandlerContext.of(WriterInitContext)` is not a
-  counter-example — the type and both methods it reads exist identically in 1.20 and 2.x.
+- No compat source roots (`src/main/java-flink1`/`java-flink2`): nothing here touches a 1.x/2.x
+  API gap — **not only the `Sink` one**, since the roots hold whatever differs across the majors
+  (BigQuery's `CrossVersionCheckpointId` is a `CommittableMessage` accessor, #404).
+  `DefaultFailureHandlerContext.of(WriterInitContext)` is not a counter-example — the type and
+  both methods it reads exist identically in 1.20 and 2.x.
 
 ## `base.failure` (`docs/adr/0036`)
 

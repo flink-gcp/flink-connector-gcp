@@ -60,10 +60,10 @@ Java 11 is not supported even though Flink 2.x declares it, because the build ta
 
 Flink 1.20, the 1.x LTS release, is supported from this same source rather than from a
 dedicated branch: the connectors use only APIs that exist identically in 1.20 and 2.x, apart
-from one compile-only seam selected at build time, so the weekly build compiles the whole
-suite against 1.20 as well. This is source-level support — a jar is compiled per major, and
-the one-artifact claim above spans the 2.x range only. The 1.20 lane is verified on Java 17;
-the Java 21 row above is a 2.x claim.
+from a small seam of per-major source files selected at build time, so the weekly build
+compiles the whole suite against 1.20 as well. This is source-level support — a jar is
+compiled per major, and the one-artifact claim above spans the 2.x range only. The 1.20 lane
+is verified on Java 17; the Java 21 row above is a 2.x claim.
 
 Building for 1.20 means selecting that seam along with the version — `just verify-flink 1.20.4`
 does both, and the raw Maven form is `./mvnw verify -Dflink.version=1.20.4

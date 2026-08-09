@@ -82,10 +82,13 @@ limitations under the License.
              minor bump (see the ignore rule in .github/dependabot.yml). -->
         <flink.version>2.2.1</flink.version>
         <!-- Which per-major source root the connector modules compile
-             (src/main/java-${flink.compat}): the roots hold one tiny CrossVersionSink
-             interface each, absorbing the single API difference between the supported
-             majors — Flink 1.20 still declares the deprecated createWriter(Sink.InitContext)
-             abstract, Flink 2.x removed the type. Building for the 1.x LTS means
+             (src/main/java-${flink.compat}): the roots absorb the two API differences
+             between the supported majors, one small same-FQCN file per root per difference.
+             Every connector has a CrossVersionSink interface — Flink 1.20 still declares the
+             deprecated createWriter(Sink.InitContext) abstract, Flink 2.x removed the type —
+             and flink-connector-gcp-bigquery adds CrossVersionCheckpointId, because the
+             CommittableMessage accessor returning a long checkpoint id is the deprecated one
+             on exactly one of the two majors (issue #404). Building for the 1.x LTS means
              -Dflink.version=<1.20.x> -Dflink.compat=flink1 (the `verify-flink` recipe adds
              the second flag itself for 1.x versions); see the version policy in CLAUDE.md
              and issue #32. -->
