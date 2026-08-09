@@ -17,6 +17,16 @@ name: CI
 #
 # The children keep their own push/workflow_dispatch triggers and their
 # push-side paths filters; those are cost-saving only, protection lives here.
+#
+# This file's *name* is load-bearing outside it — the one consequence of
+# orchestrating that reaches past a workflow file. The plan artifact
+# tofu-apply.yaml downloads belongs to this run, not to the workflow_call child
+# whose job produced it, so tfaction-root.yaml's plan_workflow_name names
+# ci.yaml (that file and ADR-0063 carry the mechanics; issue #444). Two things
+# follow: renaming this file breaks every apply until that setting changes with
+# it, and this workflow must stay pull_request-only — tfaction takes the newest
+# run on the pull request's head branch with no event filter, so a push or
+# workflow_dispatch trigger here could hand the apply a run that never planned.
 on:
   pull_request:
 

@@ -27,10 +27,17 @@ on:
   # tfaction's list-targets is the change detection — at job level, so a
   # pull request touching nothing under tfaction's markers runs only
   # hide-comment and list (seconds, no GCP auth) and the plan job skips on
-  # the empty matrix. tofu-apply.yaml keeps its own paths; a path there that
-  # tfaction's markers do not cover would still produce applies with no
-  # reviewed plan, which is what "keep them in step with tfaction-root.yaml"
-  # now means.
+  # the empty matrix. tofu-apply.yaml keeps its own paths, and what they have
+  # to stay in step with is tfaction's markers rather than this file: a path
+  # the markers cover but that list omits skips the apply for a merge that
+  # *did* have a reviewed plan. The reverse direction is free — a listed path
+  # no marker covers starts the workflow, list-targets returns an empty matrix
+  # and the apply job skips, as it did on the merge of #385.
+  #
+  # Having no runs of its own is also why tfaction-root.yaml's
+  # plan_workflow_name names ci.yaml rather than this file: the plan artifact
+  # belongs to the caller's run, and naming this one made every apply fail with
+  # "No workflow run is found" (issue #444).
   workflow_call:
 
 # No concurrency group here: inside a workflow_call, github.workflow is the

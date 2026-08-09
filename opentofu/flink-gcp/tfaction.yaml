@@ -14,4 +14,12 @@
 #
 # Marks this directory as a tfaction root module; everything it needs is
 # declared globally in /tfaction-root.yaml.
+#
+# This marker is what list-targets searches for, and it selects targets from
+# the pull request's *changed files* alone — there is no rule that a change to
+# /tfaction-root.yaml or to the workflows selects every target, and no label
+# that forces one. So a fix that has to reach the project must change a file in
+# this directory; otherwise no target is found, nothing is planned, and the
+# merge applies nothing (issue #444, whose own fix had to touch this comment
+# for exactly that reason).
 {}

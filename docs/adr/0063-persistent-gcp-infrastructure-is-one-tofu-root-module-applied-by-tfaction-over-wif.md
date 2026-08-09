@@ -22,8 +22,8 @@ limitations under the License.
   misconfiguration found and the recovery runbook recorded 2026-08-01 (PRs
   [#170](https://github.com/laughingman7743/flink-connector-gcp/pull/170) and
   [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)); the GitHub App
-  deferred to go-public ([#177])
-- Issues: [#5], [#177]
+  deferred to go-public ([#177]); the plan lookup repointed at `ci.yaml` 2026-08-09 ([#444])
+- Issues: [#5], [#177], [#444]
 - Modules: opentofu
 - Current behavior: `opentofu/README.md` (bootstrap, service-agent one-offs, credentials)
 
@@ -37,8 +37,9 @@ limitations under the License.
   subscriptions, queues) are created by the tests themselves and never belong here. A new
   connector's API and E2E grants are added in the PR that first needs them, not in advance.
 - **CI is tfaction v2** (`tfaction-root.yaml` at the root): pull requests touching
-  `opentofu/**` get a plan comment (`tofu-plan.yaml`), the merge applies that reviewed plan
-  file from GitHub Artifacts and comments the result (`tofu-apply.yaml`); both resolve the
+  `opentofu/**` get a plan comment from `tofu-plan.yaml`, which since ADR-0059 runs as
+  `ci.yaml`'s `tofu_plan` job; the merge applies that reviewed plan file from GitHub
+  Artifacts and comments the result (`tofu-apply.yaml`); both resolve the
   changed root modules through the shared `tofu-list.yaml`. State locking is the GCS
   backend's native locking. These two workflows are the standing exception to the
   just-recipe rule (ADR-0057): tfaction is itself the named, rerunnable sequence, and
@@ -63,6 +64,28 @@ limitations under the License.
   fail again ("Saved plan is stale") — and tofu cancels unstarted operations on the first
   error, so assume nothing from the failed apply exists until measured (PR
   [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)).
+- **`plan_workflow_name` names the workflow whose *run* owns the plan artifact, which is
+  `ci.yaml`** ([#444]) — not the file the plan steps live in. tfaction passes the string
+  as the `workflow_id` of `listWorkflowRuns`, filtered by the pull request's head branch and
+  `per_page: 1`, requires that single newest run's head SHA to equal the pull request's, and
+  downloads the artifact from *that run id*; a `workflow_call` child has no runs of its own,
+  so its artifacts belong to the caller. Two consequences: `ci.yaml` must stay
+  `pull_request`-only, since there is no event filter and another trigger could make the
+  newest run one that never planned; and renaming `ci.yaml` breaks every apply until this
+  setting changes with it. Moving the plan under the orchestrator (ADR-0059) left the setting
+  naming `tofu-plan.yaml`, which still resolves to a workflow — one with runs, but none since
+  it stopped being triggered directly, and so none on the branch the lookup filters by — so the
+  apply failed with "No workflow run is found". It stayed invisible for three days because nothing
+  touched `opentofu/` in between, and the first change that did merged reviewed, planned and
+  **unapplied**: the `roles/bigquery.readSessionUser` binding of PR
+  [#433](https://github.com/laughingman7743/flink-connector-gcp/pull/433) was in the code and
+  not in the project. **Moving a workflow under an orchestrator can break a lookup that names
+  it, and the break surfaces only on the next change of that kind.**
+- **A recovery pull request must itself change a file under the root module.** tfaction's
+  `list-targets` selects targets from the pull request's changed files alone — a change to
+  `tfaction-root.yaml` or to the workflows selects nothing, and no label forces a target — so a
+  fix to the CI wiring plans nothing, and the apply it was meant to unblock still applies
+  nothing, unless the same pull request touches `opentofu/flink-gcp/**` ([#444]).
 - **No service account keys, ever.** All CI credentials are short-lived WIF tokens; the
   provider condition pins the immutable repository/owner IDs, and per-account bindings
   restrict the apply account to `push` on `main` and the E2E account to
@@ -79,3 +102,4 @@ limitations under the License.
 
 [#5]: https://github.com/laughingman7743/flink-connector-gcp/issues/5
 [#177]: https://github.com/laughingman7743/flink-connector-gcp/issues/177
+[#444]: https://github.com/laughingman7743/flink-connector-gcp/issues/444

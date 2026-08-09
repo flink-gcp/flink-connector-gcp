@@ -14,11 +14,27 @@
 #
 # Global tfaction configuration (https://suzuki-shunsuke.github.io/tfaction/).
 # Root modules are the directories carrying a tfaction.yaml — today only
-# opentofu/flink-gcp. The workflows are .github/workflows/tofu-plan.yaml and
-# tofu-apply.yaml.
+# opentofu/flink-gcp. The plan runs as ci.yaml's tofu_plan job (which calls
+# .github/workflows/tofu-plan.yaml); the apply is tofu-apply.yaml.
 
-# The *file name* of the workflow that plans pull requests.
-plan_workflow_name: tofu-plan.yaml
+# ci.yaml, not tofu-plan.yaml, because this names the *run* that owns the plan
+# artifact rather than the file the plan steps live in: tfaction passes this
+# string as the workflow_id of listWorkflowRuns, and a workflow_call child has
+# no runs of its own — its artifacts belong to the caller's run. Naming
+# tofu-plan.yaml still resolves to a real workflow, and it has runs, but none
+# since it stopped being triggered directly (2026-08-06) and so none on any
+# newer pull request's head branch — which is what the branch-filtered lookup
+# asks for. That empty result is what the apply reports as "No workflow run is
+# found" (issue #444; it cost one merged IAM binding that never reached the
+# project).
+#
+# Two things this keys on, neither of them obvious from the setting's name:
+# ci.yaml must stay pull_request-only, because the lookup takes the single
+# newest run on the pull request's head branch with no event filter, so any
+# other trigger there could hand the apply a run that never planned; and the
+# run it finds must carry the pull request's head SHA, which tfaction checks
+# before downloading.
+plan_workflow_name: ci.yaml
 
 # Not configured because the defaults are what this repository wants, and
 # worth knowing about: dismiss_approval_before_plan is enabled by default —
