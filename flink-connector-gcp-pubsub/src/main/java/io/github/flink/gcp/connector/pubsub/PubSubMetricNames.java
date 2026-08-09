@@ -89,6 +89,28 @@ public final class PubSubMetricNames {
      */
     public static final String SPLITS_PARKED = "splitsParked";
 
+    /**
+     * {@link #PUBLISHER_SHUTDOWNS_ABANDONED}'s counterpart for the source's subscribers, spelled
+     * the same way because it means the same thing — one connector spelling one meaning twice is
+     * what this file exists to hold. Everything that field's javadoc says about the instrument and
+     * the process-wide storage holds here; the count itself is {@link PubSubShutdownResidue}.
+     */
+    public static final String SUBSCRIBER_SHUTDOWNS_ABANDONED = "subscriberShutdownsAbandoned";
+
+    /**
+     * Counts the <em>event</em> a subscriber teardown is the only report of: a failure that reached
+     * the teardown having never been handed to the reader, so no job failure is coming for it
+     * (#351).
+     *
+     * <p>Named for that property rather than for the shutdown, because the shutdown is where it is
+     * <em>observed</em> and not what it is: the same branch catches a streaming failure that landed
+     * after the reader's last pull, which no wording about shutting down would describe. What it
+     * excludes is the opposite case — the client repeating at teardown a failure the reader already
+     * has — which is counted by nothing, the job being already on its way down over that very
+     * failure. The count itself is {@link PubSubShutdownResidue}.
+     */
+    public static final String SUBSCRIBER_FAILURES_UNREPORTED = "subscriberFailuresUnreported";
+
     // Registered by the split enumerator, so these are job-wide rather than per subtask.
     public static final String ASSIGNED_SPLITS = "assignedSplits";
     public static final String UNASSIGNED_READERS = "unassignedReaders";

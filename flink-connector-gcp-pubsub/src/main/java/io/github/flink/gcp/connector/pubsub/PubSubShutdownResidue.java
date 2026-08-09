@@ -33,12 +33,22 @@ import java.util.concurrent.atomic.LongAdder;
  * group is unregistered as its task is cleaned up, in the same instant. Only the next attempt's
  * writer can report what the previous ones left, so the count has to survive between them.
  *
+ * <p><b>Not every count here is a stranded resource.</b> The source's unreported-failure count is a
+ * teardown <em>outcome</em> nothing consumed rather than a thread left running, and it is here for
+ * the reason above: most of its increments happen in a reader's {@code close()}, where a
+ * per-attempt counter is unregistered before a reporter reads it.
+ *
+ * <p><b>Not every increment needs that, and it does not change the answer.</b> Parking a paused
+ * split tears one subscriber down on a job that keeps running, so that increment would be scraped
+ * from a per-attempt counter too. One metric name has one storage, and the increments that would
+ * otherwise be lost are the ones that decide which.
+ *
  * <p><b>Why it lives here and not in {@code BoundedShutdown}.</b> That class is shared main code
  * and client-agnostic; a count held there would be one number for every client it ever serves, and
  * a metric named for one of them would silently include the rest. The nearest such client is not
  * another connector but this connector's own <em>source</em>, whose subscriber teardown has the
- * same shape. Each owner holding its own keeps the names true by construction — a subscriber
- * counter would be a second field here, not a second meaning for this one.
+ * same shape. Each owner holds its own, which keeps the names true by construction: the subscriber
+ * counts below are fields of their own rather than second meanings for the publisher's.
  *
  * <p><b>Read the value with the deployment in mind.</b> It is scoped to whichever class loader
  * loaded this class: a job's own jar gets Flink's per-job loader, so the count is that job's; the
@@ -69,6 +79,23 @@ public final class PubSubShutdownResidue {
      */
     public static final LongAdder DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED = new LongAdder();
 
+    /**
+     * Subscriber teardowns whose wait for termination expired, reported as {@code
+     * PubSubMetricNames#SUBSCRIBER_SHUTDOWNS_ABANDONED} — the source's counterpart to the sink's
+     * first field, and named the same way because it means the same thing. Counts subscriber
+     * teardowns rather than reader closes: a reader owns one subscriber per split, and parking a
+     * paused split closes one on its own.
+     */
+    public static final LongAdder SUBSCRIBER_SHUTDOWNS_ABANDONED = new LongAdder();
+
+    /**
+     * Failures a subscriber's teardown surfaced that nothing else reports, reported as {@code
+     * PubSubMetricNames#SUBSCRIBER_FAILURES_UNREPORTED}. Deliberately not the same field as the one
+     * above: an expired wait is a tuning signal, while this is an incident nothing but a log line
+     * would otherwise record, and one number would bury it under the other.
+     */
+    public static final LongAdder SUBSCRIBER_FAILURES_UNREPORTED = new LongAdder();
+
     private PubSubShutdownResidue() {}
 
     /**
@@ -80,5 +107,7 @@ public final class PubSubShutdownResidue {
     public static void resetForTests() {
         PUBLISHER_SHUTDOWNS_ABANDONED.reset();
         DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED.reset();
+        SUBSCRIBER_SHUTDOWNS_ABANDONED.reset();
+        SUBSCRIBER_FAILURES_UNREPORTED.reset();
     }
 }

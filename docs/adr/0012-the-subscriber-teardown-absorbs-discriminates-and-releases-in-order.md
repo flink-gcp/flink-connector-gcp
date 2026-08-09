@@ -18,11 +18,11 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-05 ([#297]) through 2026-08-07 ([#348], [#349], [#350], [#351], the [#348]
-  cluster)
-- Issues: [#297], [#325], [#348], [#349], [#350], [#351]
+  cluster); revised by [#358] (2026-08-09)
+- Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358]
 - Modules: pubsub (source); the cross-connector re-report contract is ADR-0003
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (source lifecycle,
-  including the four-outcome teardown message table)
+  including the four-outcome teardown message table, and the reader metrics)
 
 ## Context
 
@@ -126,9 +126,58 @@ fields and share only `startOrRelease`.
   **inherits** its creator's daemon flag, so on Flink's task thread it is non-daemon — a
   property of who calls it, not of the SDK setting one. That thread is the SDK's own, so all a
   bounded wait could do is what `awaitTerminated` already does: give up and warn.
+- **Two of the four outcomes are counted, and which two follows from what an operator would do
+  about each** ([#358], paying the evidence this ADR's Consequences deferred). An expired wait is
+  `subscriberShutdownsAbandoned` — spelled the way the sink's `publisherShutdownsAbandoned` is,
+  because it means the same thing; a failure the teardown was the only report of is
+  `subscriberFailuresUnreported`. The sub-decisions, none of them mechanical:
+  - **Not one counter.** A single `subscriberShutdownsUnclean` would bury the incident under the
+    tuning signal — an expired wait says `shutdownTimeout` is too low for the deployment, while
+    the unreported failure is the case [#351] exists to isolate and the only report of it there
+    is. They are read on different days and acted on differently, and a sum answers neither.
+  - **Not four.** The re-report and the failed-start release are each a footnote to a *louder*
+    report of the same incident — a job failure the reader is already raising, and the
+    `IOException` `startOrRelease` is propagating as `stopQuietly()` runs — so a series for either
+    would increment only when something more visible already had. What the failed-start release
+    would otherwise report, stranded resources, [#349] measured the SDK to release itself on three
+    of that path's four routes.
+  - **Counting the failed-start release's timeout into `subscriberShutdownsAbandoned` was
+    declined too**, though by that name it would belong: `stopQuietly()` catches
+    `TimeoutException | RuntimeException` in one branch deliberately, and splitting it to count
+    half would trade the paragraph above for a branch whose two arms say the same sentence.
+  - **The name says the property, not the origin.** `subscriberShutdownFailures` was the obvious
+    spelling and is wrong at the edge: the branch also catches a streaming failure that landed
+    after the reader's last `pullMessages`, which is not a shutdown failure but *is* one nothing
+    consumed. `unreportedSubscriberFailures` reads better in English, and loses on a property of
+    this repository's inventories that is worth stating because it decided a name: **a counter
+    leads with the thing counted, a gauge leads with the state** — `messagesAcked`, `topicsCreated`,
+    `filesStaged`, `tasksDeduplicated` against `pendingAcks`, `parkedSplits`, `inFlightMutations`,
+    `outstandingDeadLetters` — so a counter spelled state-first reads as a gauge. Counted across the
+    four connectors' inventories 2026-08-09: 18 of 18 counters lead with the thing counted, 17 of 18
+    gauges with the state. The exception is `deadLetterFlushMillis`, a duration with no state word
+    available to lead with — its own sibling `longestDeadLetterFlushMillis` has one and uses it.
+  - The storage is what this ADR already predicted — two more `PubSubShutdownResidue` adders, read
+    through the existing `ResidueCounter` so the *instrument* is a counter while the
+    *scope* is the class loader's — and the scope decision is the sink's, unchanged: aggregate by
+    de-duplicating within a TaskManager and then summing. It is stated on the source page by
+    reference rather than restated, which is the shape the dead-letter section already uses.
+    **What the counter counts is subscriber teardowns, not reader closes**: a reader owns one per
+    split, and parking a paused split (ADR-0066) closes one on its own, so a park can increment it
+    with no reader closing. That last case is also the limit of the storage argument, and saying so
+    keeps it honest: a park runs on a job that is still going, so *its* increments would be scraped
+    from an ordinary per-subtask counter. The teardown-time increments are the ones that would be
+    lost, and a metric name has one storage.
 
 ## Evidence
 
+- **A subscriber's `awaitTerminated()` runs at most once per instance**, which is what makes the two
+  counters counts of teardowns rather than of attempts to tear down: `removeSplit` takes the split
+  out of the reader's map before closing it, `PubSubSplitReader.close()` skips a parked split, and
+  `shutdown()`'s idempotence guard does not cover the wait — so the one path that could double-count
+  is a second `close()` on the same instance, which no caller has.
+- The counters need no new test seam: every one of the four outcomes already had a unit test from
+  [#325], [#349] and [#351], and each now asserts the residues — including the two that must stay at
+  zero, which is what makes the non-counts pinned rather than incidental.
 - [#349] was **measured both ways**: from the 1.152.0 sources, and empirically by
   `PubSubSubscriberFailureReleaseITCase` — executors handed to a subscriber whose streaming pull
   fails permanently come back shut down, over repeated attempts. That class tests the *vendor*
@@ -166,11 +215,18 @@ fields and share only `startOrRelease`.
   messages** — `runShutdown()` begins with `stopAllStreamingConnections`, the thing that flushes
   the nacks `nackSplit` just enqueued, so a failure before that flush leaves them to wait out
   the acknowledgement deadline ([#118]'s property).
-- **No residue counter here**, deliberately and not for want of a precedent: a counter
-  incremented during `close()` is never scraped — the reader's metric group is unregistered in
-  the same instant, measured for [#311] — so it would have to be a `PubSubShutdownResidue`
-  `LongAdder` with the same deployment-dependent scope, which is a decision worth its own
-  evidence rather than a rider.
+- **The two counters carry the scope their storage forces**, which is the cost of reporting them at
+  all: a count incremented during `close()` is never scraped — the reader's metric group is
+  unregistered in the same instant, measured for [#311] — so the value a subtask reports is its
+  class loader's total rather than its own, and on a session cluster running the SQL uber-jar from
+  `lib/` it is the TaskManager's across every job. A reader that has seen nothing still reports
+  what earlier attempts left, which is the point, and a resubmitted job reports zero while stranded
+  clients remain, which is the trap. Summing the raw series across subtasks multiplies one JVM's
+  count.
+- **Two of the four outcomes stay reported by a log line alone**, so a deployment that wants them
+  needs a log pipeline that keeps `WARN`. The bet is that neither ever occurs without the louder
+  report beside it; a case where one does — a re-report on a job that somehow survives, say — would
+  be evidence to revisit this, not a gap to fill by symmetry.
 
 [#118]: https://github.com/laughingman7743/flink-connector-gcp/issues/118
 [#265]: https://github.com/laughingman7743/flink-connector-gcp/issues/265
@@ -181,3 +237,4 @@ fields and share only `startOrRelease`.
 [#349]: https://github.com/laughingman7743/flink-connector-gcp/issues/349
 [#350]: https://github.com/laughingman7743/flink-connector-gcp/issues/350
 [#351]: https://github.com/laughingman7743/flink-connector-gcp/issues/351
+[#358]: https://github.com/laughingman7743/flink-connector-gcp/issues/358

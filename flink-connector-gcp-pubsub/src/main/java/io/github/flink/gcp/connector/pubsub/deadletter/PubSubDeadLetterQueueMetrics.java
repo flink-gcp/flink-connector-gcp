@@ -22,9 +22,9 @@ import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.Preconditions;
 
-import io.github.flink.gcp.connector.pubsub.AbandonedShutdownsCounter;
 import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
+import io.github.flink.gcp.connector.pubsub.ResidueCounter;
 
 import java.util.function.IntSupplier;
 
@@ -98,7 +98,7 @@ final class PubSubDeadLetterQueueMetrics {
         // later registration with a warning rather than by failing.
         metricGroup.counter(
                 PubSubMetricNames.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED,
-                new AbandonedShutdownsCounter(
+                new ResidueCounter(
                         PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED));
     }
 

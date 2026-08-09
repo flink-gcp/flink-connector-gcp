@@ -20,8 +20,11 @@ import org.apache.flink.util.ExceptionUtils;
 
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.testutils.LogCapture;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -58,6 +61,21 @@ class PubSubNotifyingPullSubscriberTest {
 
     private final RecordingAckTracker ackTracker = new RecordingAckTracker();
     private final List<String> calls = new ArrayList<>();
+
+    /**
+     * Before and after, so this class can assert absolute counts and still leave the fork as it
+     * found it — the residues are static, and every other class that asserts on one asserts
+     * absolutely too.
+     */
+    @BeforeEach
+    void clearTheResidues() {
+        PubSubShutdownResidue.resetForTests();
+    }
+
+    @AfterEach
+    void clearTheResiduesAgain() {
+        PubSubShutdownResidue.resetForTests();
+    }
 
     @Test
     void aPermanentFailureReachesTheReaderThroughPullMessages() throws Exception {
@@ -132,6 +150,12 @@ class PubSubNotifyingPullSubscriberTest {
                                 assertThat(event.getThrowable()).isSameAs(report);
                             });
         }
+
+        // And nothing is counted (#358): the reader has this failure and the job is going down over
+        // it, so a series here would be a second report of an incident already reported the loudest
+        // way there is. An increment that escaped the else branch below would land on this case.
+        assertThat(abandonedShutdowns()).isZero();
+        assertThat(unreportedFailures()).isZero();
     }
 
     @Test
@@ -166,6 +190,12 @@ class PubSubNotifyingPullSubscriberTest {
                                 assertThat(event.getThrowable()).hasCause(raisedAtShutdown);
                             });
         }
+
+        // This is the branch a metric exists for (#358): nothing else reports this failure, so
+        // without the counter a dashboard cannot show it at all. Counted here and not as an expired
+        // wait — the two mean different things to act on.
+        assertThat(unreportedFailures()).isEqualTo(1);
+        assertThat(abandonedShutdowns()).isZero();
     }
 
     @Test
@@ -196,6 +226,9 @@ class PubSubNotifyingPullSubscriberTest {
                                             .contains("failed while shutting down")
                                             .doesNotContain("had already reported to the reader"));
         }
+
+        assertThat(unreportedFailures()).isEqualTo(1);
+        assertThat(abandonedShutdowns()).isZero();
     }
 
     @Test
@@ -227,6 +260,11 @@ class PubSubNotifyingPullSubscriberTest {
                                             .contains("failed while shutting down")
                                             .doesNotContain("had already reported to the reader"));
         }
+
+        // The counter takes the identity half with it: a check reduced to "something was reported"
+        // would call this unrelated failure a repeat, and the metric would be silent about the one
+        // case it exists for.
+        assertThat(unreportedFailures()).isEqualTo(1);
     }
 
     @Test
@@ -252,6 +290,24 @@ class PubSubNotifyingPullSubscriberTest {
                                         .contains(SHUTDOWN_TIMEOUT.toString());
                             });
         }
+
+        // The tuning signal, counted apart from the incident above (#358): a rate here says
+        // shutdownTimeout is too low for this deployment, which is a different action entirely.
+        assertThat(abandonedShutdowns()).isEqualTo(1);
+        assertThat(unreportedFailures()).isZero();
+    }
+
+    @Test
+    void aCleanTeardownCountsNothing() throws Exception {
+        ScriptedClient client = new ScriptedClient();
+
+        subscriberOf(client).close();
+
+        // The counters report outcomes, so an increment that escaped its catch block would make
+        // every healthy close read on a dashboard exactly like a deployment whose subscribers are
+        // failing to shut down.
+        assertThat(abandonedShutdowns()).isZero();
+        assertThat(unreportedFailures()).isZero();
     }
 
     @Test
@@ -361,6 +417,14 @@ class PubSubNotifyingPullSubscriberTest {
                                             .doesNotContain("were nacked before the wait")
                                             .doesNotContain("had already reported to the reader"));
         }
+
+        // Counted by nothing, deliberately (#358): the start failure asserted above is an
+        // IOException on its way to failing the job, so this release is a footnote to something
+        // already reported rather than a signal of its own. Pinned so that a later change which
+        // reuses awaitTerminated()'s absorb here — the shape stopQuietly() argues against — cannot
+        // start counting it silently.
+        assertThat(abandonedShutdowns()).isZero();
+        assertThat(unreportedFailures()).isZero();
     }
 
     @Test
@@ -435,6 +499,14 @@ class PubSubNotifyingPullSubscriberTest {
         assertThat(subscriber.bufferUsage().messages()).isZero();
         assertThat(subscriber.bufferUsage().bytes()).isZero();
         assertThat(late.isNacked()).isTrue();
+    }
+
+    private static long abandonedShutdowns() {
+        return PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED.sum();
+    }
+
+    private static long unreportedFailures() {
+        return PubSubShutdownResidue.SUBSCRIBER_FAILURES_UNREPORTED.sum();
     }
 
     private static PubsubMessage message(String messageId, String payload) {

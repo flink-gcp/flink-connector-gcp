@@ -933,7 +933,8 @@ completion — which never happens during shutdown — so it would stall every c
 `shutdownTimeout` is configurable, and it bounds a reader's whole close rather than each split's:
 the reader nacks every split's messages and asks every client to stop before it waits on any, so
 the waits overlap however many splits it owns. Keep it under Flink's `source.reader.close.timeout`
-(30 s by default).
+(30 s by default). Whether the value is right for a deployment is what
+[`subscriberShutdownsAbandoned`](#metrics) answers.
 
 **`parallelPullCount` cannot be combined with `orderingMode(PER_KEY)`** — the source builder
 rejects it, for the reason given under [Message ordering](#message-ordering): callback
@@ -1123,6 +1124,8 @@ Registered on the reader and enumerator metric groups:
 | `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
 | `parkedSplits` | gauge | paused splits whose subscriber has been stopped, awaiting a resume |
 | `splitsParked` | counter | times a paused split outgrew its buffer bound and its subscriber was stopped |
+| `subscriberShutdownsAbandoned` | counter | subscriber teardowns whose wait for termination expired. **Not this subtask's, and not this attempt's** — see below |
+| `subscriberFailuresUnreported` | counter | failures a subscriber's teardown was the only report of, so no job failure is coming for them. Process-wide in the same sense as the row above |
 | `assignedSplits` / `unassignedReaders` | gauge (enumerator) | splits handed out; readers that got none |
 | `numRecordsInErrors` | counter (Flink standard) | deserialization failures |
 
@@ -1143,6 +1146,45 @@ failure, so there is no error to observe, only the absence of a confirmation.
 
 `pendingRecordsGauge` is deliberately **not** set. Pub/Sub exposes no backlog through the data
 plane, and a wrong lag number is worse than none.
+
+**The two subscriber-teardown counters report a whole JVM, not the subtask reading them.** Both are
+process-wide totals held for the lifetime of the class loader, for the same reason the sink's
+[`publisherShutdownsAbandoned`](#sink-metrics) is: a count written during a reader's `close()` is
+never scraped, the metric group being unregistered in the same instant. Everything that counter's
+notes say about scope, about how the deployment decides it, and about aggregating across TaskManagers
+holds for these two, with their own names substituted in the PromQL. A reader therefore reports what
+*every* subscriber in its class loader left behind, this attempt's and earlier attempts' alike —
+which is the point, since a teardown giving up is a thing to see across restarts.
+
+One class of increment does not need that scope, and it does not change the answer: parking a paused
+split tears its subscriber down while the job keeps running, so those increments would be scraped
+from an ordinary per-subtask counter too. A metric name has one storage, and the increments that
+would otherwise be invisible are the ones that decide which.
+
+**`subscriberShutdownsAbandoned` counts subscriber teardowns, not reader closes.** A reader owns one
+subscriber per split, so one close can increment it several times; and parking a paused split closes
+that split's subscriber on its own, so a park whose wait expires counts too, with no reader closing at
+all. Read a rising value as `shutdownTimeout` being too low for this deployment — the alternative is
+noticing that failovers have become slow — and keep the raise under Flink's
+`source.reader.close.timeout`.
+
+**`subscriberFailuresUnreported` is the one to alert on, because it is the only report there is.** It
+counts a failure that reached a teardown having never been handed to the reader: raised by the
+teardown itself, or arriving after the last fetch. Either way no job failure is coming for it, so
+without this counter the sole trace is a `WARN`. Nothing is lost — the split's messages were nacked
+before the wait — but the shutdown is what returns them to Pub/Sub, so redelivery may wait out their
+acknowledgement deadline instead of being immediate.
+
+The clearest case is a park. The job is not shutting down at all: a paused split's subscriber is torn
+down, the failure it raises on the way out is absorbed by design (a park closes, and `close()`
+absorbs), and a fresh subscriber opens on resume. So the pipeline runs on, healthy by every other
+measure, having swallowed a failure — and this counter is the only thing that says it happened.
+
+**The teardown's other two outcomes are counted by nothing, deliberately.** A client repeating at
+teardown a failure the reader already has accompanies a job failure already under way over that very
+failure, and a release that follows a *failed start* accompanies the `IOException` that fails the job
+there. Both would be series whose every increment coincides with a louder report; both still log,
+and [Testing](#testing) has the four messages side by side.
 
 ### Delivery guarantees
 
@@ -1295,7 +1337,8 @@ messages meanwhile, and a key is replayed in order rather than reordered.
 
 "At once" is the intent rather than a guarantee: if the client does not terminate within
 `shutdownTimeout` the reader gives up on it with a `WARN`, and its messages then wait out their
-acknowledgement deadline instead.
+acknowledgement deadline instead. A park is a teardown like any other here, so it increments
+[`subscriberShutdownsAbandoned`](#metrics) when it does.
 
 The bound is evaluated once per fetch, so it caps what a split holds between checks rather than what
 its buffer can momentarily reach: a burst delivered between two fetches overshoots it, bounded in
@@ -1458,18 +1501,20 @@ been given; and one that fails *during* the teardown, which nothing else reports
 absorbed rather than raised, and a `WARN` is the whole of their record — but each says which it is,
 because they mean different things to whoever reads the log:
 
-| What the `WARN` says | What it means |
-|---|---|
-| `… did not finish shutting down within …` | The client outlasted `shutdownTimeout`. This split's messages were nacked before the wait, so nothing is lost; the client may keep its channel and threads until the JVM exits — the shutdown it was asked for is still running, and may yet finish. The one line here with an action behind it: raise `shutdownTimeout(...)`, keeping it under `source.reader.close.timeout` |
-| `… reported at shutdown the failure it had already reported to the reader` | Expected on a failing teardown. The reader has that failure and the job is failing on it; this line is not a second problem |
-| `… failed while shutting down, and this is the only report of it` | A failure that arrived after the reader stopped pulling, so no job failure is coming. Messages are not lost, but the shutdown is what returns them to Pub/Sub, so redelivery may wait out the acknowledgement deadline instead of being immediate |
-| `… did not shut down cleanly after failing to start` | The client never ran, so it received nothing and nothing was nacked. The start failure itself is reported separately — and *after* this line, so read on rather than back |
+| What the `WARN` says | Counted by | What it means |
+|---|---|---|
+| `… did not finish shutting down within …` | `subscriberShutdownsAbandoned` | The client outlasted `shutdownTimeout`. This split's messages were nacked before the wait, so nothing is lost; the client may keep its channel and threads until the JVM exits — the shutdown it was asked for is still running, and may yet finish. The one line here with an action behind it: raise `shutdownTimeout(...)`, keeping it under `source.reader.close.timeout` |
+| `… reported at shutdown the failure it had already reported to the reader` | nothing | Expected on a failing teardown. The reader has that failure and the job is failing on it; this line is not a second problem |
+| `… failed while shutting down, and this is the only report of it` | `subscriberFailuresUnreported` | A failure that arrived after the reader stopped pulling, so no job failure is coming. Messages are not lost, but the shutdown is what returns them to Pub/Sub, so redelivery may wait out the acknowledgement deadline instead of being immediate |
+| `… did not shut down cleanly after failing to start` | nothing | The client never ran, so it received nothing and nothing was nacked. The start failure itself is reported separately — and *after* this line, so read on rather than back |
 
-**Nothing counts these.** They are `WARN` and there is no counter or gauge behind any of them, so a
-log pipeline that drops below `ERROR` will not show a crash-looping job emitting one per subscriber
-per restart. Grep is the detector. (The sink's equivalent *is* counted, as
-`publisherShutdownsAbandoned` — the difference is that a counter written during a reader's `close()`
-is never scraped, its metric group being unregistered in the same instant.)
+**Two of the four are counted** ([#358]({{< param BookRepo >}}/issues/358)), because a `WARN` is
+invisible to a log pipeline filtering below `ERROR` and to every dashboard, while a crash-looping job
+emits one of these per subscriber per restart. The two counters are described under
+[Metrics](#metrics) — including why their values are process-wide, which is what a count written
+during a reader's `close()` has to be to be scraped at all. The other two are counted by nothing on
+purpose: each accompanies a louder report of the same incident, the job failure the reader is already
+raising and the start failure that follows the release. For those, grep remains the detector.
 
 One more integration test measures the *client library* rather than this connector
 ([#349]({{< param BookRepo >}}/issues/349)): a subscriber whose streaming pull fails permanently

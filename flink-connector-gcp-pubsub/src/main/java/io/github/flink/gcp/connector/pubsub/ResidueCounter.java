@@ -26,6 +26,10 @@ import java.util.concurrent.atomic.LongAdder;
  * A read-only {@link Counter} view of one {@link PubSubShutdownResidue} adder, so a residue
  * registers as the counter it is rather than as a gauge over a monotonic total.
  *
+ * <p>Named for the storage rather than for one of the things stored, which the four adders it
+ * serves make necessary: a subscriber failure nothing consumed is a teardown outcome and not an
+ * abandoned shutdown, so a name about abandoning would be false at one of the four call sites.
+ *
  * <p>Registering a caller-supplied {@link Counter} is what lets the instrument be right while the
  * storage stays process-wide: the count has to outlive the task (see {@link
  * PubSubShutdownResidue}), and a cumulative count of events is a counter by the naming convention.
@@ -36,7 +40,7 @@ import java.util.concurrent.atomic.LongAdder;
  * it was counting something.
  */
 @Internal
-public final class AbandonedShutdownsCounter implements Counter {
+public final class ResidueCounter implements Counter {
 
     private final LongAdder residue;
 
@@ -45,14 +49,14 @@ public final class AbandonedShutdownsCounter implements Counter {
      *
      * @param residue the adder the teardowns count into
      */
-    public AbandonedShutdownsCounter(LongAdder residue) {
+    public ResidueCounter(LongAdder residue) {
         this.residue = Preconditions.checkNotNull(residue, "residue must not be null");
     }
 
     @Override
     public void inc() {
         throw new UnsupportedOperationException(
-                "An abandoned-shutdown residue is maintained by the teardowns, not here.");
+                "A teardown residue is maintained by the teardown that produces it, not here.");
     }
 
     @Override

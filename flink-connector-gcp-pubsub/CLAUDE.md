@@ -105,6 +105,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   is **handed to a caller** — never replace it with a pre-shutdown snapshot; a paused split is
   still watched via `checkFailure()` from `fetch()` (#348); the failed-start release is kept
   although mostly a no-op (#349); `BoundedShutdown` is deliberately not adopted here.
+- **Two of the teardown's four outcomes are counted, and the other two never will be by symmetry**
+  (#358, `docs/adr/0012`): an expired wait is `subscriberShutdownsAbandoned` — the sink's spelling,
+  because it is the sink's meaning — and a failure the teardown was the only report of is
+  `subscriberFailuresUnreported`, named for that property because the same branch also catches a
+  streaming failure that landed after the reader's last pull. The re-report and the failed-start
+  release stay log-only: each accompanies a louder report of the same incident, which is the
+  argument to engage before adding a third counter. Both counts are `PubSubShutdownResidue` adders
+  read through `ResidueCounter`, registered by `PubSubSourceReaderMetrics` and
+  incremented by nothing there — so **the reader's group reports a class-loader total, not this
+  subtask's**, and a park's close increments them like any other teardown.
 - **A paused split's buffer is bounded by parking its subscriber** (`docs/adr/0066`): past
   `pausedSplitBufferMaxMessages`/`MaxBytes` — either one, each defaulting to **twice** the
   flow-control limit it shadows (one lease-expiry wave is worth a whole window, and a bound at the

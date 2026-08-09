@@ -23,6 +23,8 @@ import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 
 import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
+import io.github.flink.gcp.connector.pubsub.ResidueCounter;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -39,6 +41,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * redelivered. Opt into {@code PubSubSubscriberOptions.awaitAckConfirmation(...)} to make the job
  * fail instead, and watch Cloud Monitoring's {@code subscription/oldest_unacked_message_age} to
  * detect a persistent acknowledgement failure from outside the job.
+ *
+ * <p><b>The two subscriber-teardown counters are the exception to all of that</b> (#358): their
+ * values are process-wide rather than this reader's, and they are registered here without being
+ * incremented here. They have to be for the increments a reader's {@code close()} makes — a counter
+ * written there is unregistered before any reporter reads it, the measurement {@code
+ * PubSubShutdownResidue} carries — though not for a park's, which tears a subscriber down while the
+ * job runs. One name has one storage, so what a reader reports is what every subscriber in the
+ * class loader left behind, this attempt's and earlier attempts' alike.
  *
  * <p>{@code pendingRecordsGauge} is deliberately left unset: Pub/Sub exposes no backlog through the
  * data plane, and a wrong lag number is worse than none.
@@ -87,6 +97,15 @@ public final class PubSubSourceReaderMetrics {
         this.splitsParked =
                 metricGroup.counter(PubSubMetricNames.SPLITS_PARKED, new ThreadSafeSimpleCounter());
         metricGroup.gauge(PubSubMetricNames.PARKED_SPLITS, (Gauge<Integer>) parkedSplits::get);
+        // Registered and never held: nothing here increments them, so a field would only invite a
+        // caller to try — which the counter refuses, its mutators throwing rather than no-opping.
+        // The subscribers count into the adders directly, on the thread running their close().
+        metricGroup.counter(
+                PubSubMetricNames.SUBSCRIBER_SHUTDOWNS_ABANDONED,
+                new ResidueCounter(PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED));
+        metricGroup.counter(
+                PubSubMetricNames.SUBSCRIBER_FAILURES_UNREPORTED,
+                new ResidueCounter(PubSubShutdownResidue.SUBSCRIBER_FAILURES_UNREPORTED));
         // Flink's own standard counter, so a deserialization failure shows up in the same place as
         // every other connector's.
         this.deserializationErrors = metricGroup.getNumRecordsInErrorsCounter();
