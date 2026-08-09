@@ -29,21 +29,38 @@
 # version-exact, publisher-shipped). `url` fetches over HTTPS; a GITHUB_TOKEN
 # env var or `gh auth token` is sent when present, though
 # raw.githubusercontent.com needs neither. Each url entry's note says why that
-# ref is the right one, because none of these five artifacts ships its licence
-# text in any jar (main jar and sources jar both checked), and several
+# ref is the right one, because none of the url-sourced artifacts ships its
+# licence text in any jar (main jar and sources jar both checked), and several
 # POM-declared licence URLs point at HTML pages or bare licence templates
 # without the copyright line.
+#
+# A url is one of exactly two shapes, and check-notice.py rejects any other
+# (issue #343):
+#   - version-templated: `{version}` marks where the release tag carries the
+#     version, and --update fills it with the resolved version of the entry's
+#     artifacts — so a dependency bump re-fetches at the new tag with no edit
+#     here, and the sha256 pin is what stops a text that changed between tags.
+#     `version_strip_prefix` drops a leading segment of the resolved version
+#     first, for a tag scheme that does not carry it (protobuf).
+#   - `version_independent = true`: the ref never moves (an archived
+#     repository's head), declared explicitly because a literal tag-pinned url
+#     is exactly the shape that silently survives a version bump.
+# verify.yaml re-fetches every entry when a change touches a licence-source
+# input, and the weekly notice_sources job does so on schedule — so a pin no
+# longer served as recorded is noticed without waiting for a human --update.
 
 [files."LICENSE.protobuf"]
 artifacts = [
     "com.google.protobuf:protobuf-java",
     "com.google.protobuf:protobuf-java-util",
 ]
-url = "https://raw.githubusercontent.com/protocolbuffers/protobuf/v33.2/LICENSE"
+url = "https://raw.githubusercontent.com/protocolbuffers/protobuf/v{version}/LICENSE"
+version_strip_prefix = "4."
 sha256 = "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d"
-# Tag v33.2 is the release Java artifact 4.33.2 ships from (Java majors are
-# offset by 4). The POM-declared URL is opensource.org, which serves an HTML
-# page.
+# The Java artifacts release from the tag named for the C++ line: Java 4.x
+# ships from tag v<x> (the Java major is offset by 4), which is what the
+# version_strip_prefix encodes. The POM-declared URL is opensource.org, which
+# serves an HTML page.
 
 [files."LICENSE.gax"]
 artifacts = [
@@ -53,6 +70,7 @@ artifacts = [
     "com.google.api:gax-httpjson",
 ]
 url = "https://raw.githubusercontent.com/googleapis/gax-java/master/LICENSE"
+version_independent = true
 sha256 = "f3096c48a05a56e6c4f85ea75d4784fe32954768473eae3c33df6714257fbd4d"
 # The repository the gax artifacts' POMs declare. Archived, hence frozen —
 # which makes it a stable source; no per-version tag exists for these versions
@@ -67,6 +85,7 @@ artifacts = [
     "com.google.auth:google-auth-library-oauth2-http",
 ]
 url = "https://raw.githubusercontent.com/googleapis/google-auth-library-java/master/LICENSE"
+version_independent = true
 sha256 = "b42ab23e81b855c025453a25d1f1eab7387839b0fcbb153921fd858cde4a7c53"
 # The project's repository, archived and frozen; it has no tag for this
 # version (released after the move) and the POM-declared URL is
@@ -74,16 +93,16 @@ sha256 = "b42ab23e81b855c025453a25d1f1eab7387839b0fcbb153921fd858cde4a7c53"
 
 [files."LICENSE.re2j"]
 artifacts = ["com.google.re2j:re2j"]
-url = "https://raw.githubusercontent.com/google/re2j/re2j-1.8/LICENSE"
+url = "https://raw.githubusercontent.com/google/re2j/re2j-{version}/LICENSE"
 sha256 = "26a6133577cc8e48d7c002ac4d4a554786e7c0e1732e10f2db205e5e494c411b"
-# The release tag for the bundled 1.8. The POM-declared URL is
-# golang.org/LICENSE, which serves an HTML page.
+# Release tags are re2j-<version>. The POM-declared URL is golang.org/LICENSE,
+# which serves an HTML page.
 
 [files."LICENSE.animal-sniffer"]
 artifacts = ["org.codehaus.mojo:animal-sniffer-annotations"]
-url = "https://raw.githubusercontent.com/mojohaus/animal-sniffer/animal-sniffer-1.27/LICENSE"
+url = "https://raw.githubusercontent.com/mojohaus/animal-sniffer/animal-sniffer-{version}/LICENSE"
 sha256 = "0d17e86dbd1f3504cfa311e67827e1569ad27bbfff29cc405194e4a2549e9df8"
-# The release tag for the bundled 1.27. The POM-declared URL is spdx.org's
+# Release tags are animal-sniffer-<version>. The POM-declared URL is spdx.org's
 # bare MIT template, which lacks the copyright line.
 
 [files."LICENSE.threetenbp"]
@@ -134,19 +153,19 @@ sha256 = "b3e969d18f690ab8783e4ec77729c9fea85691b8090c550bb3c626dda5e837a7"
 
 [files."LICENSE.zstd-jni"]
 artifacts = ["com.github.luben:zstd-jni"]
-url = "https://raw.githubusercontent.com/luben/zstd-jni/v1.5.7-4/LICENSE"
+url = "https://raw.githubusercontent.com/luben/zstd-jni/v{version}/LICENSE"
 sha256 = "289a6adada5726047b9e68bf607cc44fbbac953bbb4fd29f53ffe75b5cb3e7b1"
-# Tag v1.5.7-4 is the exact bundled version; the jar ships no licence file at
-# all (checked: it carries only classes and the per-platform native libraries).
-# The POM-declared URL is opensource.org, which serves an HTML page and would
-# in any case drop the "Luben Karavelov" copyright line that a BSD licence
+# Release tags are v<version>; the jar ships no licence file at all (checked:
+# it carries only classes and the per-platform native libraries). The
+# POM-declared URL is opensource.org, which serves an HTML page and would in
+# any case drop the "Luben Karavelov" copyright line that a BSD licence
 # requires a redistributor to reproduce.
 
 [files."LICENSE.json-java"]
 artifacts = ["org.json:json"]
-url = "https://raw.githubusercontent.com/stleary/JSON-java/20260719/LICENSE"
+url = "https://raw.githubusercontent.com/stleary/JSON-java/{version}/LICENSE"
 sha256 = "86cc84f1773e3318ba26fd61b3ae508a167df38b361695e105f6e499e7a2736f"
-# The release tag for the bundled 20260719; the jar ships no licence file.
+# Release tags are the bare datestamp version; the jar ships no licence file.
 # The whole text is "Public Domain." - the project relinquished the old JSON
 # License ("The Software shall be used for Good, not Evil"), whose use
 # restriction would have made this dependency a question for the user rather

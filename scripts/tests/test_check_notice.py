@@ -16,7 +16,7 @@
 Synthetic and offline: a module directory in tmp_path carrying its own
 THIRD-PARTY report, template and META-INF tree, with SOURCES monkeypatched onto
 a licence-sources.toml written beside it. The jar-mode tests build real zips on
-a fake runtime classpath; the two url-mode tests monkeypatch urlopen, since
+a fake runtime classpath; the url-mode tests monkeypatch urlopen, since
 fetching is exactly what must not happen here.
 
 What this file is protecting is a licensing obligation, so the assertions are
@@ -78,13 +78,12 @@ def write_sources(path, entries):
         pointer = (
             f'jar = "{entry["jar"]}"' if "jar" in entry else f'url = "{entry["url"]}"'
         )
-        lines += [
-            f'[files."{name}"]',
-            f"artifacts = [{artifacts}]",
-            pointer,
-            f'sha256 = "{entry["sha256"]}"',
-            "",
-        ]
+        lines += [f'[files."{name}"]', f"artifacts = [{artifacts}]", pointer]
+        if "version_strip_prefix" in entry:
+            lines.append(f'version_strip_prefix = "{entry["version_strip_prefix"]}"')
+        if entry.get("version_independent"):
+            lines.append("version_independent = true")
+        lines += [f'sha256 = "{entry["sha256"]}"', ""]
     path.write_text("\n".join(lines))
 
 
@@ -259,18 +258,20 @@ def test_a_restricted_dependency_stops_before_any_notice_work(
 # --- the licence-source index ---
 
 
-def test_one_artifact_under_two_entries_fails(module, check_notice):
+def test_one_artifact_under_two_entries_fails(module, check_notice, capsys):
     write_sources(
         check_notice.SOURCES,
         {
             "LICENSE.a": {
                 "artifacts": ["com.example:shared"],
                 "url": "https://example.invalid/a",
+                "version_independent": True,
                 "sha256": "0" * 64,
             },
             "LICENSE.b": {
                 "artifacts": ["com.example:shared"],
                 "url": "https://example.invalid/b",
+                "version_independent": True,
                 "sha256": "0" * 64,
             },
         },
@@ -278,6 +279,191 @@ def test_one_artifact_under_two_entries_fails(module, check_notice):
     with pytest.raises(SystemExit) as error:
         check_notice.load_sources()
     assert error.value.code == 1
+    assert "appears under both" in capsys.readouterr().err
+
+
+def url_entry(url, **keys):
+    return {"artifacts": ["com.example:lib"], "url": url, "sha256": "0" * 64, **keys}
+
+
+def load_failure(check_notice, capsys, entries) -> str:
+    write_sources(check_notice.SOURCES, entries)
+    with pytest.raises(SystemExit) as error:
+        check_notice.load_sources()
+    assert error.value.code == 1
+    return capsys.readouterr().err
+
+
+def test_a_literal_url_that_declares_nothing_fails(module, check_notice, capsys):
+    # The issue #343 shape: a tag-pinned url that --update happily re-fetches
+    # after the artifact it describes has moved on. The entry has to say which
+    # kind it is.
+    err = load_failure(
+        check_notice,
+        capsys,
+        {"LICENSE.lib": url_entry("https://example.invalid/v1.0/LICENSE")},
+    )
+    assert "neither templates {version} nor declares version_independent" in err
+
+
+def test_a_templated_url_that_also_declares_independence_fails(
+    module, check_notice, capsys
+):
+    err = load_failure(
+        check_notice,
+        capsys,
+        {
+            "LICENSE.lib": url_entry(
+                "https://example.invalid/v{version}/LICENSE",
+                version_independent=True,
+            )
+        },
+    )
+    assert "version-dependent by construction" in err
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        # On a version-independent url, and on a jar source: neither has a
+        # {version} template for the prefix to act on.
+        url_entry(
+            "https://example.invalid/LICENSE",
+            version_independent=True,
+            version_strip_prefix="4.",
+        ),
+        {
+            "artifacts": ["com.example:lib"],
+            "jar": "META-INF/LICENSE",
+            "version_strip_prefix": "4.",
+            "sha256": "0" * 64,
+        },
+    ],
+)
+def test_a_strip_prefix_without_a_template_fails(module, check_notice, capsys, entry):
+    err = load_failure(check_notice, capsys, {"LICENSE.lib": entry})
+    assert "no {version} url template" in err
+
+
+def test_the_two_valid_url_shapes_load(module, check_notice):
+    # The success side, pinned so the validation cannot drift into rejecting
+    # the real file's entries: a strip-prefixed template (protobuf's shape)
+    # and a declared-independent literal (gax's shape) both load.
+    write_sources(
+        check_notice.SOURCES,
+        {
+            "LICENSE.template": {
+                "artifacts": ["com.example:templated"],
+                "url": "https://example.invalid/v{version}/LICENSE",
+                "version_strip_prefix": "4.",
+                "sha256": "0" * 64,
+            },
+            "LICENSE.frozen": {
+                "artifacts": ["com.example:frozen"],
+                "url": "https://example.invalid/master/LICENSE",
+                "version_independent": True,
+                "sha256": "0" * 64,
+            },
+        },
+    )
+    assert set(check_notice.load_sources()) == {"LICENSE.template", "LICENSE.frozen"}
+
+
+def test_an_independence_declaration_on_a_jar_source_fails(
+    module, check_notice, capsys
+):
+    # The flag describes a url's relationship to the artifact version; left on
+    # an entry converted to jar: it would sit dormant and lie about the shape.
+    err = load_failure(
+        check_notice,
+        capsys,
+        {
+            "LICENSE.lib": {
+                "artifacts": ["com.example:lib"],
+                "jar": "META-INF/LICENSE",
+                "version_independent": True,
+                "sha256": "0" * 64,
+            }
+        },
+    )
+    assert "version_independent on a jar source" in err
+
+
+def test_an_unknown_key_fails(module, check_notice, capsys):
+    # version_independent misspelled would otherwise be silently dropped, and
+    # the failure that then fires argues about the wrong thing.
+    write_sources(
+        check_notice.SOURCES,
+        {
+            "LICENSE.lib": url_entry(
+                "https://example.invalid/LICENSE", version_independent=True
+            )
+        },
+    )
+    with check_notice.SOURCES.open("a") as handle:
+        handle.write("version_independant = true\n")
+    with pytest.raises(SystemExit) as error:
+        check_notice.load_sources()
+    assert error.value.code == 1
+    assert "unknown keys ['version_independant']" in capsys.readouterr().err
+
+
+# --- resolving the version a url template fetches at ---
+
+
+def test_a_strip_prefix_drops_the_java_major_offset(check_notice):
+    # protobuf: the Java artifact 4.33.2 releases from tag v33.2.
+    entry = {
+        "artifacts": ["com.google.protobuf:protobuf-java"],
+        "version_strip_prefix": "4.",
+    }
+    resolved = {"com.google.protobuf:protobuf-java:4.33.2": "BSD-3-Clause"}
+    assert check_notice.resolve_url_version("LICENSE.p", entry, resolved) == "33.2"
+
+
+def test_the_version_comes_from_whichever_entry_artifact_is_bundled(check_notice):
+    # A module may bundle only some of an entry's artifacts; the version must
+    # come from the ones it does bundle, not blindly from the first listed.
+    entry = {
+        "artifacts": [
+            "com.google.protobuf:protobuf-java",
+            "com.google.protobuf:protobuf-java-util",
+        ]
+    }
+    resolved = {"com.google.protobuf:protobuf-java-util:4.33.2": "BSD-3-Clause"}
+    assert check_notice.resolve_url_version("LICENSE.p", entry, resolved) == "4.33.2"
+
+
+def test_a_strip_prefix_the_version_does_not_carry_fails(check_notice, capsys):
+    # The day protobuf's Java line moves to 5.x the encoded offset is wrong,
+    # and the answer is a human re-deriving the tag scheme, not v.1.0 fetched.
+    entry = {
+        "artifacts": ["com.google.protobuf:protobuf-java"],
+        "version_strip_prefix": "4.",
+    }
+    resolved = {"com.google.protobuf:protobuf-java:5.1.0": "BSD-3-Clause"}
+    with pytest.raises(SystemExit) as error:
+        check_notice.resolve_url_version("LICENSE.p", entry, resolved)
+    assert error.value.code == 1
+    assert "does not start with" in capsys.readouterr().err
+
+
+def test_two_resolved_versions_under_one_entry_fail(check_notice, capsys):
+    # One shared licence text cannot correspond to two versions at once.
+    entry = {"artifacts": ["com.example:a", "com.example:b"]}
+    resolved = {"com.example:a:1.0": "MIT", "com.example:b:2.0": "MIT"}
+    with pytest.raises(SystemExit) as error:
+        check_notice.resolve_url_version("LICENSE.ab", entry, resolved)
+    assert error.value.code == 1
+    assert "['1.0', '2.0']" in capsys.readouterr().err
+
+
+def test_an_entry_whose_artifacts_are_not_bundled_fails(check_notice, capsys):
+    entry = {"artifacts": ["com.example:lib"]}
+    with pytest.raises(SystemExit) as error:
+        check_notice.resolve_url_version("LICENSE.lib", entry, {"c:other:1.0": "MIT"})
+    assert error.value.code == 1
+    assert "exactly one resolved version" in capsys.readouterr().err
 
 
 # --- rendering the NOTICE ---
@@ -367,7 +553,7 @@ def test_a_jar_entry_is_read_from_the_bundled_artifact(tmp_path, module, check_n
         "jar": "META-INF/LICENSE",
         "sha256": sha256(text),
     }
-    assert check_notice.obtain_text("LICENSE.gax", entry, module) == text
+    assert check_notice.obtain_text("LICENSE.gax", entry, module, {}) == text
 
 
 def test_a_jar_entry_whose_hash_moved_fails(tmp_path, module, check_notice, capsys):
@@ -381,7 +567,7 @@ def test_a_jar_entry_whose_hash_moved_fails(tmp_path, module, check_notice, caps
         "sha256": "0" * 64,
     }
     with pytest.raises(SystemExit) as error:
-        check_notice.obtain_text("LICENSE.lib", entry, module)
+        check_notice.obtain_text("LICENSE.lib", entry, module, {})
     assert error.value.code == 1
     assert "does not match the pin" in capsys.readouterr().err
 
@@ -389,7 +575,7 @@ def test_a_jar_entry_whose_hash_moved_fails(tmp_path, module, check_notice, caps
 def test_a_jar_entry_with_no_classpath_file_fails(module, check_notice):
     entry = {"artifacts": ["com.example:lib"], "jar": "L", "sha256": "0" * 64}
     with pytest.raises(SystemExit) as error:
-        check_notice.obtain_text("LICENSE.lib", entry, module)
+        check_notice.obtain_text("LICENSE.lib", entry, module, {})
     assert error.value.code == 1
 
 
@@ -397,7 +583,7 @@ def test_a_jar_entry_not_on_the_classpath_fails(tmp_path, module, check_notice):
     write_classpath(module, write_jar(tmp_path, "com.example", "other", "1.0", {}))
     entry = {"artifacts": ["com.example:lib"], "jar": "L", "sha256": "0" * 64}
     with pytest.raises(SystemExit) as error:
-        check_notice.obtain_text("LICENSE.lib", entry, module)
+        check_notice.obtain_text("LICENSE.lib", entry, module, {})
     assert error.value.code == 1
 
 
@@ -420,7 +606,7 @@ def test_a_url_entry_is_verified_against_its_pin(module, check_notice, monkeypat
         "url": "https://example.invalid",
         "sha256": sha256(text),
     }
-    assert check_notice.obtain_text("LICENSE.l", entry, module) == text
+    assert check_notice.obtain_text("LICENSE.l", entry, module, {}) == text
 
 
 def test_an_html_response_is_rejected(module, check_notice, monkeypatch, capsys):
@@ -432,7 +618,7 @@ def test_an_html_response_is_rejected(module, check_notice, monkeypatch, capsys)
         "sha256": sha256(body),
     }
     with pytest.raises(SystemExit) as error:
-        check_notice.obtain_text("LICENSE.l", entry, module)
+        check_notice.obtain_text("LICENSE.l", entry, module, {})
     assert error.value.code == 1
     assert "served an HTML page" in capsys.readouterr().err
 
@@ -443,8 +629,31 @@ def test_a_url_whose_content_changed_upstream_is_rejected(
     serve(check_notice, monkeypatch, b"rewritten upstream\n")
     entry = {"artifacts": ["c:l"], "url": "https://example.invalid", "sha256": "0" * 64}
     with pytest.raises(SystemExit) as error:
-        check_notice.obtain_text("LICENSE.l", entry, module)
+        check_notice.obtain_text("LICENSE.l", entry, module, {})
     assert error.value.code == 1
+
+
+def test_a_template_fetches_at_the_resolved_version(module, check_notice, monkeypatch):
+    # The issue #343 fix: a dependency bump changes what the resolved report
+    # says, and the very next --update fetches the new tag with no edit to
+    # licence-sources.toml.
+    text = b"Licence text\n"
+    seen = []
+
+    def urlopen(request, **kwargs):
+        seen.append(request.full_url)
+        return io.BytesIO(text)
+
+    monkeypatch.setattr(check_notice, "github_token", lambda: None)
+    monkeypatch.setattr(check_notice.urllib.request, "urlopen", urlopen)
+    entry = {
+        "artifacts": ["com.google.re2j:re2j"],
+        "url": "https://example.invalid/re2j-{version}/LICENSE",
+        "sha256": sha256(text),
+    }
+    resolved = {"com.google.re2j:re2j:1.9": "Go License"}
+    assert check_notice.obtain_text("LICENSE.re2j", entry, module, resolved) == text
+    assert seen == ["https://example.invalid/re2j-1.9/LICENSE"]
 
 
 # --- the token the fetch sends when it has one ---
@@ -491,7 +700,7 @@ def test_a_token_is_sent_as_a_bearer_header(module, check_notice, monkeypatch):
         "url": "https://example.invalid",
         "sha256": sha256(text),
     }
-    assert check_notice.obtain_text("LICENSE.l", entry, module) == text
+    assert check_notice.obtain_text("LICENSE.l", entry, module, {}) == text
     assert seen[0].get_header("Authorization") == "Bearer a-token"
 
 
@@ -557,6 +766,7 @@ def test_an_entry_no_module_bundles_is_dead(bundle, run, check_notice, capsys):
             "LICENSE.gone": {
                 "artifacts": ["com.example:dropped"],
                 "url": "https://example.invalid/LICENSE",
+                "version_independent": True,
                 "sha256": "0" * 64,
             },
         },
@@ -588,6 +798,7 @@ def test_the_offline_check_does_not_fetch_a_url_entry(
             "LICENSE.gax": {
                 "artifacts": ["com.google.api:gax"],
                 "url": "https://example.invalid/LICENSE",
+                "version_independent": True,
                 "sha256": sha256(LICENCE_TEXT),
             }
         },
@@ -616,6 +827,7 @@ def test_a_placeholder_group_may_contain_spaces(module, run, check_notice):
             "LICENSE.re2j": {
                 "artifacts": ["com.google.re2j:re2j"],
                 "url": "https://example.invalid/LICENSE",
+                "version_independent": True,
                 "sha256": sha256(LICENCE_TEXT),
             }
         },
@@ -697,6 +909,38 @@ def test_update_writes_the_notice_and_the_licence_texts(bundle, run, check_notic
         notice_path(bundle).read_text()
     )
     assert run(bundle) == 0
+
+
+def test_update_fetches_a_templated_url_through_the_resolved_bundle(
+    module, run, check_notice, monkeypatch
+):
+    # The wiring, not just the unit: main() hands obtain_text the resolved
+    # bundle, which is what a {version} template resolves against on --update.
+    text = b"Go licence text\n"
+    seen = []
+
+    def urlopen(request, **kwargs):
+        seen.append(request.full_url)
+        return io.BytesIO(text)
+
+    monkeypatch.setattr(check_notice, "github_token", lambda: None)
+    monkeypatch.setattr(check_notice.urllib.request, "urlopen", urlopen)
+    write_report(module, ("Go License", "com.google.re2j:re2j", "1.9"))
+    write_template(module, "Go License")
+    write_sources(
+        check_notice.SOURCES,
+        {
+            "LICENSE.re2j": {
+                "artifacts": ["com.google.re2j:re2j"],
+                "url": "https://example.invalid/re2j-{version}/LICENSE",
+                "sha256": sha256(text),
+            }
+        },
+    )
+    assert run(module, "--update") == 0
+    assert seen == ["https://example.invalid/re2j-1.9/LICENSE"]
+    licences = module / "src" / "main" / "resources" / "META-INF" / "licenses"
+    assert (licences / "LICENSE.re2j").read_bytes() == text
 
 
 def test_update_removes_a_licence_text_nothing_references(bundle, run, check_notice):

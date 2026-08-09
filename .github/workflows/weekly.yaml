@@ -4,7 +4,7 @@ name: Weekly
 # verify.yaml builds one version for fast feedback (the same split Flink's own
 # externalized connectors use between push_pr.yml and weekly.yml).
 #
-# Five things are checked here:
+# Six things are checked here:
 #   * every supported minor still compiles and passes the suite
 #   * a jar built against the floor still runs on the newest supported minor
 #     without recompiling, which is what lets this project publish one artifact
@@ -14,6 +14,9 @@ name: Weekly
 #   * the next unreleased Flink gets an early warning, so upstream changes are
 #     found before they are released rather than after
 #   * a newly released Flink minor is noticed at all — see new_minor_check
+#   * the pinned licence-text sources still serve the checked-in bytes even
+#     when nothing in the repository changed — verify.yaml re-fetches them
+#     only on a licence-input change — see notice_sources
 on:
   schedule:
     # Sundays. Off the hour, because everything scheduled at :00 lands on the
@@ -212,3 +215,42 @@ jobs:
       # this file, so either way FLINK_CEILING above stays its only home.
       - name: Compare the ceiling against Maven Central
         run: just check-flink-release "$FLINK_CEILING"
+
+  # The offline NOTICE check never consults the recorded licence-text sources,
+  # and verify.yaml re-fetches them only when a change touches a licence-source
+  # input — so an upstream that moves under an unchanged repository (a deleted
+  # tag, an edited archived head) is caught here or nowhere (issue #343). The
+  # header of scripts/check-notice-sources.sh carries the failure modes.
+  #
+  # Independent of the Flink-range jobs above on purpose: a broken upstream
+  # ref must not stop the range from being verified, nor the other way round.
+  notice_sources:
+    if: github.repository_owner == 'laughingman7743'
+    name: Licence sources still serve the pinned texts?
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # Unpinned, and install-action rather than mise: see the note on the same
+      # step in verify.yaml.
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        with:
+          tool: just
+
+      # check-notice.py needs tomllib (Python >= 3.11) — installed deliberately
+      # rather than trusted from the runner image, as in verify.yaml.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Regenerate the NOTICEs from the pinned sources and diff
+        run: just check-notice-sources

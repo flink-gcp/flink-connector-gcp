@@ -1,6 +1,6 @@
 ---
 name: curate-licence-source
-description: Curate a licence text source or licensing decision for a shaded flink-sql-connector-gcp-* module. Use when `just check-notice` / `scripts/check-notice.py` fails with "no entry in licence-sources.toml covers …", "licences the template has no paragraph for", a restricted-licence (GPL/SSPL/non-commercial) error, or when the packaging IT reports a new unrelocated package root. Covers the fallback ladder for obtaining a licence text with defensible provenance, and the decisions that must go to the user.
+description: Curate a licence text source or licensing decision for a shaded flink-sql-connector-gcp-* module. Use when `just check-notice` / `scripts/check-notice.py` fails with "no entry in licence-sources.toml covers …", "licences the template has no paragraph for", "neither templates {version} nor declares version_independent", "does not start with version_strip_prefix", "content hash … does not match the pin", a restricted-licence (GPL/SSPL/non-commercial) error, or when the packaging IT reports a new unrelocated package root, or when `just check-notice-sources` — the weekly notice_sources job or the per-PR licence-pin fetch — goes red. Covers the fallback ladder for obtaining a licence text with defensible provenance, and the decisions that must go to the user.
 ---
 
 # Curate a licence source for a shaded module
@@ -17,7 +17,8 @@ hoc, and replacing them is where this procedure comes from.
 A non-Apache-2.0 artifact needs its licence text pinned. Work down this ladder
 and stop at the first rung that holds. Record the outcome in
 `scripts/licence-sources.toml` (entry: `artifacts`, `jar` or `url`, `sha256`,
-`note` explaining why this rung).
+plus a `#` comment explaining why this rung — a `note` key would be rejected,
+the entry's key set is strict).
 
 1. **The artifact's own jar.** `unzip -Z1 <jar> | grep -iE 'LICEN|COPYING|NOTICE'`
    on the jar from `target/runtime-classpath.txt`. Version-exact and
@@ -27,11 +28,19 @@ and stop at the first rung that holds. Record the outcome in
    `gh api repos/<owner>/<repo>/git/matching-refs/tags/<prefix> --jq '.[].ref'`.
    Tag names are irregular — measured examples: protobuf Java `4.33.2` lives at
    tag `v33.2` (Java majors are offset by 4); re2j 1.8 at `re2j-1.8`;
-   animal-sniffer 1.27 at `animal-sniffer-1.27`.
+   animal-sniffer 1.27 at `animal-sniffer-1.27`. Write the url with a
+   `{version}` placeholder where the tag carries the version
+   (`re2j-{version}`), so a later dependency bump re-fetches at the new tag
+   with no edit to the entry (issue #343); a tag scheme that transforms the
+   version first is encoded with `version_strip_prefix` (protobuf:
+   `v{version}` plus stripping `4.`). check-notice.py rejects a literal
+   tag-pinned url outright.
 3. **The publisher's repository head, only if frozen.** Acceptable when the
    repository is archived (`gh api repos/<o>/<r> --jq .archived` → `true`) or
    provably has no version tags. The note must say which and why — e.g. gax and
-   google-auth-library-java are archived with no tag for the bundled versions.
+   google-auth-library-java are archived with no tag for the bundled versions —
+   and the entry must declare `version_independent = true`: a url without a
+   `{version}` template has to say it is one on purpose.
 4. **There is no rung 4.** A generic template (`opensource.org`, `spdx.org`) is
    not the project's text — the copyright line is part of a BSD or MIT licence.
    If no publisher-provided text can be pinned, the question is whether to use
@@ -45,6 +54,41 @@ inspect the diff, run `just check-notice <module>`.
 POM-declared licence URLs are a *lead*, not an answer: measured across this
 bundle they point at HTML pages (`opensource.org`, `golang.org`), bare
 templates (`spdx.org`), moved repositories, and wrong branches.
+
+## Failure: "url neither templates {version} nor declares version_independent"
+
+The entry has to say which shape it is (issue #343), and the answer comes from
+rung 2/3 evidence, not preference: if the publisher tags releases (resolve
+with `matching-refs` as in rung 2), template the tag with `{version}`; only a
+ref that never moves — an archived repository's head — may declare
+`version_independent = true`, with the note saying why. A live repository
+with no version tags is rung 4 territory: take the dependency itself to the
+user. The mechanical rejections beside this one (both shapes at once, a
+declaration on a `jar` source, an unknown key) need no judgment — the message
+names the edit.
+
+## Failure: the fetch check goes red (sha256 mismatch, fetch error, or drift)
+
+`just check-notice-sources` — the weekly notice_sources job, or the per-PR
+step on a licence-input change — re-fetched a pinned source and something no
+longer holds. This is the human-review moment the pin design deliberately
+stops at; never repin blind:
+
+- **"content hash … does not match the pin"** — fetch the URL yourself and
+  read the diff against the checked-in text. A copyright-line or formatting
+  change from the publisher is a legitimate repin: update `sha256`, run
+  `just update-notice`, commit text and pin together, and say in the PR what
+  changed. A change to the licence *terms* is a user decision, not a repin.
+- **A fetch error (404: deleted or moved tag)** — re-resolve the tag with
+  rung 2 and fix the entry; if the repository vanished, work the ladder from
+  rung 1 again.
+- **"does not start with version_strip_prefix"** — the tag scheme the entry
+  encodes no longer holds (protobuf moving off the Java-major offset is the
+  anticipated case). Re-derive the scheme with `matching-refs`, and update
+  template, prefix and pin together.
+- **A diff with every fetch green** — the checked-in NOTICE/licences are
+  stale relative to the sources; `just update-notice` per module and review
+  what moved.
 
 ## Failure: "licences the template has no paragraph for: [X]"
 

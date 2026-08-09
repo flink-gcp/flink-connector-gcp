@@ -25,7 +25,11 @@ everything mechanical is generated from it:
     scripts/licence-sources.toml, which pins where its licence text comes from
     (the artifact's own jar where it ships one, an https URL otherwise) and the
     sha256 of that text. --update materialises those files; the check verifies
-    the checked-in files still hash to the recorded values.
+    the checked-in files still hash to the recorded values. A url is either
+    version-templated — `{version}` filled with the resolved version of the
+    entry's artifacts, so a dependency bump re-fetches at the new tag with no
+    edit to the entry — or declared `version_independent = true`; the header
+    of licence-sources.toml carries the scheme (issue #343).
 
 Modes:
     check-notice.py <module>            offline check (CI): regenerate the NOTICE
@@ -43,6 +47,13 @@ human reviews, never something silently shipped. HTML responses are rejected
 outright: several POM-declared licence URLs serve web pages, which is how
 unreviewed content would otherwise sneak in. GITHUB_TOKEN (or `gh auth token`)
 is sent when available; raw.githubusercontent.com needs neither.
+
+The offline check never fetches, so the recorded sources would otherwise be
+consulted only when a human happens to run --update. What actually exercises
+the pins is scripts/check-notice-sources.sh — re-run --update against the
+live sources, fail on any drift — from verify.yaml when a change touches a
+licence-source input and from the weekly notice_sources job otherwise
+(issue #343).
 
 Standard library only, deliberately: nothing here justifies a package manager.
 """
@@ -152,10 +163,52 @@ def load_sources() -> dict[str, dict]:
         files = tomllib.load(handle)["files"]
     owners: dict[str, str] = {}
     for name, entry in files.items():
+        # Strict keys: the optional declarations are exactly what a typo would
+        # silently drop, turning a deliberate choice into the shape failure
+        # below with a message that argues about the wrong thing.
+        unknown = set(entry) - {
+            "artifacts",
+            "jar",
+            "url",
+            "sha256",
+            "version_independent",
+            "version_strip_prefix",
+        }
+        if unknown:
+            fail(f"{SOURCES}: {name} has unknown keys {sorted(unknown)}.")
         for ga in entry["artifacts"]:
             if ga in owners:
                 fail(f"{SOURCES}: {ga} appears under both {owners[ga]} and {name}.")
             owners[ga] = name
+        if "url" in entry:
+            templated = "{version}" in entry["url"]
+            if templated and entry.get("version_independent"):
+                fail(
+                    f"{SOURCES}: {name} both templates {{version}} into its url "
+                    f"and declares version_independent = true; a template is "
+                    f"version-dependent by construction. Drop one."
+                )
+            if not templated and not entry.get("version_independent"):
+                fail(
+                    f"{SOURCES}: {name}'s url neither templates {{version}} nor "
+                    f"declares version_independent = true. A literal tag-pinned "
+                    f"url silently survives the version bump of the artifact it "
+                    f"describes (issue #343): put {{version}} where the tag "
+                    f"carries the version, or — only for a ref that never "
+                    f"moves, like an archived repository's head — declare "
+                    f"version_independent = true, with the note saying why."
+                )
+        if "version_strip_prefix" in entry and "{version}" not in entry.get("url", ""):
+            fail(
+                f"{SOURCES}: {name} has version_strip_prefix but no {{version}} "
+                f"url template to apply it to."
+            )
+        if entry.get("version_independent") and "url" not in entry:
+            fail(
+                f"{SOURCES}: {name} declares version_independent on a jar "
+                f"source; the flag describes a url's relationship to the "
+                f"artifact version and means nothing here. Remove it."
+            )
     return files
 
 
@@ -261,7 +314,41 @@ def github_token() -> str | None:
         return None
 
 
-def obtain_text(name: str, entry: dict, module: Path) -> bytes:
+def resolve_url_version(name: str, entry: dict, resolved: dict[str, str]) -> str:
+    """The version a {version} url template fetches at, from the resolved bundle.
+
+    Read across all of the entry's artifacts rather than the first one: the
+    module at hand may bundle only some of them, and two different resolved
+    versions under one entry would mean the shared licence text cannot
+    correspond to both — a failure to surface, not a choice to make silently.
+    """
+    versions = {
+        gav.rsplit(":", 1)[1]
+        for gav in resolved
+        if gav.rsplit(":", 1)[0] in entry["artifacts"]
+    }
+    if len(versions) != 1:
+        fail(
+            f"{name}: expected exactly one resolved version across "
+            f"{entry['artifacts']}, found {sorted(versions)}."
+        )
+    version = versions.pop()
+    prefix = entry.get("version_strip_prefix")
+    if prefix:
+        if not version.startswith(prefix):
+            fail(
+                f"{name}: resolved version {version} does not start with "
+                f"version_strip_prefix '{prefix}'. The tag scheme this entry "
+                f"encodes no longer holds; re-derive it (see the entry's note) "
+                f"before touching the pin."
+            )
+        version = version.removeprefix(prefix)
+    return version
+
+
+def obtain_text(
+    name: str, entry: dict, module: Path, resolved: dict[str, str]
+) -> bytes:
     """Fetch or extract one licence text and verify it against its pinned sha256."""
     if "jar" in entry:
         classpath = module / "target" / "runtime-classpath.txt"
@@ -286,8 +373,11 @@ def obtain_text(name: str, entry: dict, module: Path) -> bytes:
             )
         body = zipfile.ZipFile(jars[0]).read(entry["jar"])
     else:
+        url = entry["url"]
+        if "{version}" in url:
+            url = url.replace("{version}", resolve_url_version(name, entry, resolved))
         request = urllib.request.Request(
-            entry["url"], headers={"User-Agent": "flink-connector-gcp-notice"}
+            url, headers={"User-Agent": "flink-connector-gcp-notice"}
         )
         token = github_token()
         if token:
@@ -295,7 +385,7 @@ def obtain_text(name: str, entry: dict, module: Path) -> bytes:
         body = urllib.request.urlopen(request, timeout=30).read()
         if b"<html" in body[:400].lower() or b"<!doctype" in body[:400].lower():
             fail(
-                f"{name}: {entry['url']} served an HTML page, not a licence text. "
+                f"{name}: {url} served an HTML page, not a licence text. "
                 f"Several POM-declared licence URLs do this; pin a raw text URL."
             )
     digest = hashlib.sha256(body).hexdigest()
@@ -363,7 +453,7 @@ def main() -> int:
         notice.write_text(expected_notice, encoding="utf-8")
         licence_dir.mkdir(parents=True, exist_ok=True)
         for name, entry in relevant.items():
-            (licence_dir / name).write_bytes(obtain_text(name, entry, module))
+            (licence_dir / name).write_bytes(obtain_text(name, entry, module, resolved))
         for stray in licence_dir.iterdir():
             if (
                 stray.is_file()

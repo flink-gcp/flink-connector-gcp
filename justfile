@@ -364,6 +364,19 @@ update-notice module:
     {{ mvn }} -pl {{ module }} -am generate-test-resources
     scripts/check-notice.py --update {{ module }}
 
+# Re-fetches every pinned licence-text source and requires the regenerated
+# NOTICE/licences byte-identical to the checked-in ones — the offline
+# check-notice never consults the recorded sources at all, so this is what
+# notices an upstream text edit or a deleted tag (issue #343). Network by
+# design, which is why it runs from weekly.yaml (the notice_sources job) and
+# from verify.yaml only when the change touches a licence-source input, and is
+# not part of `just lint`: that stays offline, the same rule that keeps
+# check-flink-api-tiers out of it.
+#
+# Do the pinned licence sources still serve what is checked in?
+check-notice-sources:
+    scripts/check-notice-sources.sh
+
 # Classifies every org.apache.flink type the main sources import by its
 # class-level stability annotation, read from the -sources.jars (never class
 # files: a class file's constant pool lists method-level annotations too, the

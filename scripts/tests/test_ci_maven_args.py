@@ -272,6 +272,9 @@ def outputs(result):
 
 
 def test_full_mode_builds_everything(ci_maven_args):
+    # check_notice_sources stays false with no diff: --full has no
+    # licence-input signal, and the weekly notice_sources job owns the fetch
+    # that needs no change to trigger.
     out = outputs(run_cli("--full"))
     assert out == {
         "run_build": "true",
@@ -280,6 +283,7 @@ def test_full_mode_builds_everything(ci_maven_args):
         "notice_modules": (
             "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
         ),
+        "check_notice_sources": "false",
     }
 
 
@@ -358,6 +362,7 @@ def test_root_only_changes_build_the_root_rat_check(ci_maven_args, files):
         "maven_args": "-pl .",
         "check_notice": "false",
         "notice_modules": "",
+        "check_notice_sources": "false",
     }
 
 
@@ -384,7 +389,44 @@ def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
         "notice_modules": (
             "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
         ),
+        "check_notice_sources": "true",
     }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "pom.xml",
+        "flink-connector-gcp-pubsub/pom.xml",
+        "scripts/licence-sources.toml",
+        "scripts/check-notice.py",
+        "flink-sql-connector-gcp-pubsub/NOTICE.template",
+        "flink-sql-connector-gcp-pubsub/src/main/resources/META-INF/NOTICE",
+        "flink-sql-connector-gcp-pubsub/src/main/resources/META-INF/licenses/LICENSE.re2j",
+    ],
+)
+def test_a_licence_source_input_triggers_the_fetch_check(ci_maven_args, path):
+    # Each of the shapes that can move what a pinned source serves or resolves
+    # to (issue #343): a pom feeds the {version} templates, the pin file and
+    # its interpreter decide what is fetched, and the generated files are what
+    # the re-fetch is compared against.
+    out = outputs(run_cli("--files", json.dumps([path])))
+    assert out["check_notice_sources"] == "true"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "flink-connector-gcp-pubsub/src/main/java/X.java",
+        "docs/content/docs/connectors/datastream/pubsub.md",
+        # The repository-root NOTICE is hand-written provenance, not one of the
+        # generated files the fetch is compared against.
+        "NOTICE",
+    ],
+)
+def test_everything_else_stays_off_the_network(ci_maven_args, path):
+    out = outputs(run_cli("--files", json.dumps([path])))
+    assert out["check_notice_sources"] == "false"
 
 
 def test_ignored_only_skips_the_build(ci_maven_args):
@@ -394,6 +436,7 @@ def test_ignored_only_skips_the_build(ci_maven_args):
         "maven_args": "",
         "check_notice": "false",
         "notice_modules": "",
+        "check_notice_sources": "false",
     }
 
 
