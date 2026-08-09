@@ -38,7 +38,7 @@ limitations under the License.
   (`<plural noun><past participle>` — `tablesCreated`, `messagesAcked`, `recordsSkipped`; a
   count with no actor to name is a plain noun phrase — `appendRetries`, `errors`); a **gauge**
   names the *state* it reports (`<adjective or participle><plural noun>` — `openDestinations`,
-  `inFlightMutations`, `pendingAcks`). Read it as a test, not decoration: a name in the wrong
+  `inFlightEntries`, `pendingAcks`). Read it as a test, not decoration: a name in the wrong
   shape reports the wrong kind of quantity to whoever reads the dashboard. [#280] found exactly
   two and renamed both (`stagedFiles`, `checkpointsPendingAck`), so a later addition that does
   not fit is a review finding rather than a precedent. **Flink prescribes nothing here**

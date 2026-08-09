@@ -39,6 +39,39 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   state-independence definition and AIP-194, never the plausibility of what a code names. The
   routing condition takes both halves, reading the chain differently (`docs/adr/0042`).
 
+## Batch knobs, and entries versus mutations (`docs/adr/0082`)
+
+- **Every count this connector exposes counts entries; Bigtable's own limit counts mutations**, and
+  the two are never reconciled here because **the client does it** — `MutateRowsBatchResource`
+  flushes past 100,000 mutations whatever `batchElementCount` says, and `Mutation` refuses to build
+  a single entry that large. So a mutation-counting layer on this side (the Spanner cell-weight
+  shape, `docs/adr/0077`) is duplication, not a gap, and an over-limit `MutateRows` cannot be
+  produced through this sink to be measured. **`BulkMutation` is not a second guard**: its running
+  count is on the `add(ByteString, Mutation)` overload, and the batcher calls
+  `add(RowMutationEntry)`, which counts nothing — so the batch-level invariant rests on that flush
+  alone, which is why `BigtableClientMutationLimitTest` pins it rather than trusting it.
+- The knobs that count are spelled for it: `maxInFlightEntries`, `inFlightEntries`,
+  `parkedEntries`. "Mutation" stays the word for the *thing* — `FailedMutation`, `MutationBatcher`,
+  a mutation the service refused — and "entry" is the word for what is *counted*. A new counter
+  picks by that rule rather than by which reads better.
+- **`batchElementCount` ≤ 19,999 and `batchByteSize` ≤ 100 MiB − 1, at the setter**, with
+  package-private `*_LIMIT` constants and the figure in the `@param` (`OptionChecks`' rule: a
+  public compile-time constant inlines into callers). **Both are one under the client's
+  flow-control budget** (20,000 entries / 100 MiB), written as that subtraction rather than as
+  literals, because `BigtableBatchingCallSettings.Builder.build()` requires each threshold to be
+  *strictly* below its budget and throws otherwise — so a value past either ceiling is not a loose
+  batch but `Failed to create a Bigtable mutation batcher` on a task manager. Neither ceiling is a
+  service figure, and none exists: Bigtable documents no per-request size at all. The pair
+  `DefaultMutationBatcherFactoryTest` (the client accepts them) and `BigtableWriterOptionsTest`
+  (they are these numbers) is what keeps a ceiling one-too-high from shipping.
+- **The in-flight bounds are warned about at `build()`, never capped** — ADR-0077's second shape
+  (refuse the illegal, warn about what cannot take effect as meant). A ceiling would be wrong here:
+  the client's budget is **per client** and the sink holds one per (project, instance), so a
+  multi-instance resolver legitimately exceeds one of them, and nothing at `build()` knows how many
+  instances it will name. The comparison is `>`, measured: gax admits the whole budget and blocks
+  only past it. The defaults must not trip it, or every task manager logs it — pinned by a test,
+  not left to chance.
+
 ## Table auto-creation (`docs/adr/0073`)
 
 - Off by default (`CREATE_NEVER`); `CREATE_IF_NEEDED` requires `tableCreateOptions` with ≥1
@@ -77,7 +110,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the client is final and per-call, and nothing short of interposing on the RPC stream times a
   concurrent family addition to land between one call's read and its modify.
 - A parked `NOT_FOUND` **is** counted under `errorClass.NOT_FOUND.errors` per entry (no identity
-  to confirm — unlike ADR-0043's batched row-level exclusion); `parkedMutations` sums both
+  to confirm — unlike ADR-0043's batched row-level exclusion); `parkedEntries` sums both
   queues; `columnFamiliesAdded` counts additions to a pre-existing table only.
 - The emulator answers a missing **table** with the service-shaped `NOT_FOUND` fan-out (measured
   2026-08-08), so the emulator suite drives that repair end-to-end; the missing-**family** leg is
@@ -99,7 +132,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Progress is stamped on the **gax callback thread**, on failure as well as success — a failure is
   the client answering. `lastCompletionNanos` is the only field of this writer not confined to the
   task thread. The warning is rate-limited **writer-wide**, never per wait: one `flush()` can make a
-  whole `maxInFlightMutations` of them.
+  whole `maxInFlightEntries` of them.
 - `awaitCapacity()` sends every live batcher once per wait; `drainInFlight()` does not, because its
   callers send immediately before.
 
@@ -128,7 +161,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (`docs/adr/0074`, refining `docs/adr/0043`); `errorClass` counts RPC failures only;
   `statusCode` reports the chain's outermost classifiable status; `close()` zeroes the
   gauge-backing counters **before** `Closers.closeAll`; every failure reaching the writer is
-  counted except a batched row-level rejection, whose place `parkedMutations` takes.
+  counted except a batched row-level rejection, whose place `parkedEntries` takes.
 
 ## Scan source (`docs/adr/0080`)
 

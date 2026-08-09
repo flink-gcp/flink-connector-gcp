@@ -71,10 +71,10 @@ setting options at all.
 
 | Option | Default | What it does |
 |---|---|---|
-| `batchElementCount` | *unset ⇒ 100* (the client's threshold) | How many mutations the client accumulates before sending a batch |
-| `batchByteSize` | *unset ⇒ 20 MB* (the client's threshold) | How many bytes of mutations it accumulates before sending a batch |
-| `maxInFlightMutations` | 1000 | Caps unacknowledged mutations. At the cap `write()` yields to the task mailbox |
-| `maxInFlightBytes` | 64 MiB | Caps their serialized size, which is the bound that actually bounds memory |
+| `batchElementCount` | *unset ⇒ 100* (the client's threshold) | How many **entries** — one per record written, whatever each carries — the client accumulates before sending a batch. **At most `19999`** |
+| `batchByteSize` | *unset ⇒ 20 MiB* (the client's threshold) | How many bytes of mutations it accumulates before sending a batch. **At most `104857599`** — one byte under 100 MiB |
+| `maxInFlightEntries` | 1000 | Caps unacknowledged entries. At the cap `write()` yields to the task mailbox. Above `20000` the sink logs a `WARN` — see below |
+| `maxInFlightBytes` | 64 MiB | Caps their serialized size, which is the bound that actually bounds memory. Above 100 MiB the sink logs a `WARN` — see below |
 | `maxConsecutiveRejections` | 100 | Fails the job once this many confirmed rejections arrive in a row with no applied mutation between them — the guardrail on a dropping policy's [isolation cost]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). Any success resets the count; `-1` removes the bound |
 | `recoveryInitialBackoff` | 500 ms | First backoff of the [table auto-creation]({{< relref "docs/connectors/datastream/bigtable" >}}#table-auto-creation) recovery: re-applying mutations after creating a missing table |
 | `recoveryMaxBackoff` | 10 s | Its backoff cap; must be at least the initial backoff |
@@ -82,13 +82,32 @@ setting options at all.
 | `destinationIdleTimeout` | 1 h | How long a table may go without mutations before the writer drops its batcher. Swept at the end of a checkpoint's flush; an evicted table rebuilds transparently. To never evict, set a very large duration — up to `Duration.ofNanos(Long.MAX_VALUE)` |
 | `perDestinationMetrics` | `false` | Registers per-table `recordsSend` and `sendErrors` counters beside the writer's totals. Off by default: Flink cannot unregister a metric, so with a resolver every table the job writes to keeps a row in the registry for the task's lifetime. See [Metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#metrics) |
 
-**Raising `maxInFlightMutations` far above its default does not raise the effective bound; it moves
-it.** The client has a flow controller of its own — 1000 entries per channel and 100 MB, and it
+**Every count in this table counts entries, not mutations.** An entry is one `RowMutationEntry` —
+one record the serializer returned — and it carries as many mutations as the serializer put
+`setCell` calls in it. Bigtable's own documented limit is on *mutations*: no more than 100,000 in a
+batch. The two numbers never have to be reconciled by a job, because the client holds a batch to
+that limit itself, whatever `batchElementCount` says; the measurement and what it retires are under
+[Tuning]({{< relref "docs/connectors/datastream/bigtable" >}}#tuning).
+
+**Raising `maxInFlightEntries` far above its default does not raise the effective bound; it moves
+it.** The client has a flow controller of its own — 20,000 outstanding entries and 100 MiB, and it
 *blocks* the calling thread when either is reached — whose limits its public API does not expose.
 While the sink's own bounds are the tighter pair, a full writer yields to the task mailbox, which is
 what keeps checkpoint barriers moving; past them, the task thread stalls inside the client instead.
 The reasoning is under
 [Tuning]({{< relref "docs/connectors/datastream/bigtable" >}}#tuning).
+
+**Those same two budgets are where the batch thresholds' ceilings come from**, and they are the
+client's rule rather than this connector's: its settings builder requires each threshold to stay
+*strictly* below the matching budget, and refuses to build a client at all otherwise — on the task
+manager, as the writer opens. Hence 19,999 and 100 MiB − 1: one under each.
+
+**The in-flight bounds are warned about rather than capped at those same figures.** Setting either
+above its budget is a working configuration — the client simply becomes the layer that bounds the
+sink — so `build()` logs a `WARN` naming the value and what it costs instead of rejecting it. It is
+not a ceiling because the budget is *per client* and this sink holds one per (project, instance):
+a resolver spreading records over several instances draws on several budgets, and a
+writer-global bound above one of them can be what that job means.
 
 The two batch thresholds are left unset by default rather than restated here, so a client upgrade
 that retunes them is inherited. Lowering `batchElementCount` shortens the delay before a mutation

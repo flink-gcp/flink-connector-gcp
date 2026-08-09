@@ -113,7 +113,7 @@ class BigtableWriterStallTest {
             assertThat(stalls).hasSize(1);
             assertThat(stalls.get(0))
                     .contains("draining the outstanding mutations")
-                    .contains("1 mutation(s) in flight")
+                    .contains("1 entries in flight")
                     .contains("over 1 table(s)")
                     // The rendered idle time is what pins the threshold against the clock rather
                     // than against wall time.
@@ -291,7 +291,7 @@ class BigtableWriterStallTest {
         // after the send: that is what tells "once per wait" from "once per pass", which a wait
         // ending on its first pass cannot.
         BigtableWriter<String> writer =
-                writer(BigtableWriterOptions.builder().maxInFlightMutations(1).build());
+                writer(BigtableWriterOptions.builder().maxInFlightEntries(1).build());
         batcher.autoComplete = false;
         writer.write("row-1", TestContexts.NO_OP);
 

@@ -92,23 +92,23 @@ final class BigtableWriterMetrics {
      * constructor because the writer is built with these metrics and cannot exist yet when they are
      * created.
      *
-     * @param inFlightMutations mutations the service has not acknowledged
+     * @param inFlightEntries entries the service has not acknowledged
      * @param inFlightBytes their serialized size, against {@code maxInFlightBytes}
-     * @param parkedMutations mutations held for the isolation pass or the auto-creation repair
+     * @param parkedEntries entries held for the isolation pass or the auto-creation repair
      */
     void bindWriterState(
-            Gauge<Integer> inFlightMutations,
+            Gauge<Integer> inFlightEntries,
             Gauge<Long> inFlightBytes,
-            Gauge<Integer> parkedMutations) {
-        metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_MUTATIONS, inFlightMutations);
+            Gauge<Integer> parkedEntries) {
+        metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_ENTRIES, inFlightEntries);
         metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
-        // Nothing else reports the parks: a mutation waiting for its solo verdict or for a repair
+        // Nothing else reports the parks: an entry waiting for its solo verdict or for a repair
         // has been released from the in-flight counters and has not reached the failure handler,
         // so between the two it is invisible. Transient rather than a backlog, since both passes
         // empty their park at the next record or the next checkpoint — so a reporter reads how
         // often it catches the writer mid-isolation or mid-repair, which is what the throughput
         // cost of either looks like (#239).
-        metricGroup.gauge(BigtableMetricNames.PARKED_MUTATIONS, parkedMutations);
+        metricGroup.gauge(BigtableMetricNames.PARKED_ENTRIES, parkedEntries);
     }
 
     /**

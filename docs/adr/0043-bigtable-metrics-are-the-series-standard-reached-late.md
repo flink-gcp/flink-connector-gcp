@@ -17,8 +17,10 @@ limitations under the License.
 # ADR-0043: Bigtable metrics are the failure-series standard, reached late
 
 - Status: Accepted
-- Date: 2026-08-03 ([#237], absorbing [#234])
-- Issues: [#237], [#234], [#239]
+- Date: 2026-08-03 ([#237], absorbing [#234]), revised by [#436] (2026-08-10: the two gauges are
+  `inFlightEntries` and `parkedEntries`, having counted entries while naming mutations —
+  `docs/adr/0082` carries the rule that decided it)
+- Issues: [#237], [#234], [#239], [#436]
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Metrics
 
@@ -65,7 +67,7 @@ Five decisions:
   reports one request-level status against every co-batched entry, so counting them all would
   multiply a single incident by the batch size. The isolation pass counts what it confirms,
   which makes both counters report rejected *records* — the Pub/Sub cascade-exclusion argument
-  arriving by the same route — and `parkedMutations` is the gauge that took the excluded
+  arriving by the same route — and `parkedEntries` is the gauge that took the excluded
   reports' place: a parked mutation has left the in-flight counters and has not reached the
   handler, so between the two nothing else reports it at all.
 
@@ -76,3 +78,4 @@ Five decisions:
 [#234]: https://github.com/laughingman7743/flink-connector-gcp/issues/234
 [#237]: https://github.com/laughingman7743/flink-connector-gcp/issues/237
 [#239]: https://github.com/laughingman7743/flink-connector-gcp/issues/239
+[#436]: https://github.com/laughingman7743/flink-connector-gcp/issues/436

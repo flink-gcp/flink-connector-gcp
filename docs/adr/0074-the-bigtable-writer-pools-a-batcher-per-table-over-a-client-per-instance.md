@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0074: The Bigtable writer pools a batcher per table over a client per instance
 
 - Status: Accepted
-- Date: 2026-08-09
-- Issues: [#232]
+- Date: 2026-08-09, revised by [#436] (2026-08-10, the flow controller's figures)
+- Issues: [#232], [#436]
 - Modules: bigtable (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Per-record destinations
 
@@ -76,7 +76,7 @@ channel pool per phantom destination. A resolver returning `null` fails the writ
 reaching the handler: it is a configuration failure, not a bad record, and routing it would let a
 dropping policy write nothing at all under a green job.
 
-**The in-flight budget stays writer-global.** `maxInFlightMutations` and `maxInFlightBytes` bound
+**The in-flight budget stays writer-global.** `maxInFlightEntries` and `maxInFlightBytes` bound
 the *writer's* memory and are summed across destinations, not shared out among them — the answer
 both existing dynamic-destination writers give, and the one this design depends on twice:
 `drainInFlight()` keeps meaning "the writer is empty", which a per-destination split would leave
@@ -109,12 +109,14 @@ ADR-0041's third SDK fact ("keep the writer's caps below the client's blocking f
 the one sharing a client could have invalidated. `EnhancedBigtableStub` holds a single
 `bulkMutationFlowController`, built once from
 `bulkMutateRowsSettings.getDynamicFlowControlSettings()`, and hands **that same instance** to every
-`newMutateRowsBatcher(...)`; its element limit defaults to 1000 outstanding row keys per channel,
+`newMutateRowsBatcher(...)`; its limits default to 20,000 outstanding entries and 100 MiB,
 blocking (`google-cloud-bigtable` 2.80.0, read 2026-08-09 in `EnhancedBigtableStub` and
-`EnhancedBigtableStubSettings`).
+`EnhancedBigtableStubSettings`, the two figures re-read in `ClientOperationSettings` on 2026-08-10
+by [#436] — the "1000 per channel" this paragraph first carried was `bulkReadRowsSettings`'s stale
+javadoc rather than this operation's code, and ADR-0041 records that correction in full).
 
 So sharing subdivides nothing: the batchers of one client draw on one budget, and because the
-writer's caps stayed writer-global, a writer can never have more than `maxInFlightMutations`
+writer's caps stayed writer-global, a writer can never have more than `maxInFlightEntries`
 outstanding on any one client, whatever the table count — exactly the relationship the single-table
 sink had. This is the sharpest argument against splitting the budget per destination: N
 per-destination caps would **sum**, and their sum reaching the client's limit is what moves the
@@ -205,3 +207,4 @@ resolver the writer deliberately does not inspect.
 - **Refcounted client release.** Declined above.
 
 [#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
+[#436]: https://github.com/laughingman7743/flink-connector-gcp/issues/436

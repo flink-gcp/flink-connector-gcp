@@ -173,20 +173,23 @@ import java.util.stream.Collectors;
  * throws — throwing it would re-report every failure this writer had already routed, failing a job
  * the configured policy had kept running (#238).
  *
- * <p>Unacknowledged mutations are capped along both dimensions that bound memory: their number
- * ({@code BigtableWriterOptions.maxInFlightMutations}, default 1000) and their serialized size
- * ({@code BigtableWriterOptions.maxInFlightBytes}, default 64 MiB). Both are the <em>writer's</em>,
+ * <p>Unacknowledged entries are capped along both dimensions that bound memory: their number
+ * ({@code BigtableWriterOptions.maxInFlightEntries}, default 1000) and their serialized size
+ * ({@code BigtableWriterOptions.maxInFlightBytes}, default 64 MiB). Both count <em>entries</em> —
+ * one per record written — rather than the mutations each carries, which is the unit Bigtable's own
+ * 100,000-per-batch limit is stated in; the client holds a batch to that limit itself, so the two
+ * units never have to be reconciled here ({@code docs/adr/0082}). Both are the <em>writer's</em>,
  * summed across every destination rather than shared out among them: that is what keeps {@link
  * #drainInFlight()} meaning "the writer is empty" and keeps the park bound in {@link #write} a
  * single number. At either cap {@link #write} yields to the mailbox until completions bring the
- * counters back down. Admission is checked before a mutation rather than against the mutation's own
+ * counters back down. Admission is checked before an entry rather than against the entry's own
  * size, so one larger than the cap is admitted on an empty writer and overshoots it until it
  * completes — deliberate, because a wait ends only when a completion arrives and none can with
  * nothing in flight, so a "does it fit" predicate would be a task hang rather than backpressure. It
  * would be one whichever way the wait is written: the waits poll rather than block since #431, so
  * such a predicate now spins forever where it used to block forever.
  *
- * <p>What the writer retains is therefore one cap's worth of in-flight mutations, at most one cap's
+ * <p>What the writer retains is therefore one cap's worth of in-flight entries, at most one cap's
  * worth parked, and one accumulator per live batcher — the third term being what per-record
  * destinations added.
  *
@@ -232,7 +235,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     private final MutationBatcherFactory batcherFactory;
     private final TableAdmin tableAdmin;
     private final MailboxExecutor mailboxExecutor;
-    private final int maxInFlightMutations;
+    private final int maxInFlightEntries;
     private final long maxInFlightBytes;
     private final int maxConsecutiveRejections;
     private final long destinationIdleTimeoutNanos;
@@ -251,10 +254,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      */
     private final Map<TableDestination, DestinationState> states = new LinkedHashMap<>();
 
-    /** Number of mutations not yet acknowledged; touched only on the task thread. */
-    private int inFlightMutations;
+    /** Number of entries not yet acknowledged; touched only on the task thread. */
+    private int inFlightEntries;
 
-    /** Serialized size of the mutations not yet acknowledged; touched only on the task thread. */
+    /** Serialized size of the entries not yet acknowledged; touched only on the task thread. */
     private long inFlightBytes;
 
     /**
@@ -328,9 +331,9 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     /**
      * When {@link #warnIfStalled} last spoke; touched only on the task thread. A writer-wide field
      * rather than a per-wait flag, because a wait is not an incident: the isolation pass drains
-     * once per parked mutation, and a park runs to a whole {@code maxInFlightMutations}, so one
-     * {@code flush()} can make a thousand waits and a per-wait flag would put a line in the log for
-     * each. The Pub/Sub sink declined the same shape for the same reason.
+     * once per parked entry, and a park runs to a whole {@code maxInFlightEntries}, so one {@code
+     * flush()} can make a thousand waits and a per-wait flag would put a line in the log for each.
+     * The Pub/Sub sink declined the same shape for the same reason.
      */
     private long lastStallWarnNanos;
 
@@ -398,7 +401,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // invariant is relied on rather than trusting that every options instance came from the
         // builder, which Java deserialization does not run.
         Preconditions.checkArgument(
-                options.getMaxInFlightMutations() > 0, "maxInFlightMutations must be positive");
+                options.getMaxInFlightEntries() > 0, "maxInFlightEntries must be positive");
         Preconditions.checkArgument(
                 options.getMaxInFlightBytes() > 0, "maxInFlightBytes must be positive");
         // Re-checked for the same deserialization reason, though the failure mode is milder: a
@@ -415,7 +418,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                 config.getCreateDisposition() != CreateDisposition.CREATE_IF_NEEDED
                         || config.getTableCreateOptions() != null,
                 "createDisposition is CREATE_IF_NEEDED but tableCreateOptions is null");
-        this.maxInFlightMutations = options.getMaxInFlightMutations();
+        this.maxInFlightEntries = options.getMaxInFlightEntries();
         this.maxInFlightBytes = options.getMaxInFlightBytes();
         this.maxConsecutiveRejections = options.getMaxConsecutiveRejections();
         // The setter bounds this at what a nanosecond clock can express (ADR-0068), which is what
@@ -435,7 +438,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         this.failedMutationHandler = config.getFailedMutationHandler();
         this.metrics = new BigtableWriterMetrics(metricGroup, options.isPerDestinationMetrics());
         this.metrics.bindWriterState(
-                this::getInFlightMutations, this::getInFlightBytes, this::getParkedMutations);
+                this::getInFlightEntries, this::getInFlightBytes, this::getParkedEntries);
     }
 
     @Override
@@ -452,11 +455,11 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         }
         // Before this record is even serialized, and this is what bounds the parks at all: parking
         // happens in completion mails, mails run only inside a yield, and every park releases one
-        // mutation from the in-flight counters — so between two writes at most maxInFlightMutations
-        // can accumulate, across both queues and every destination. Isolating only at the
-        // checkpoint barrier would instead let a stream of rejections pile the whole interval's
-        // worth of mutations into the writer's heap, since a parked mutation is counted by neither
-        // in-flight bound.
+        // entry from the in-flight counters — so between two writes at most maxInFlightEntries can
+        // accumulate, across both queues and every destination. Isolating only at the checkpoint
+        // barrier would instead let a stream of rejections pile the whole interval's worth of
+        // entries into the writer's heap, since a parked entry is counted by neither in-flight
+        // bound.
         if (!pendingIsolation.isEmpty()) {
             runIsolationPass();
         }
@@ -567,7 +570,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         }
         // Counted only once the mutation is accepted: a synchronous throw registers no callback, so
         // nothing would ever release it.
-        inFlightMutations++;
+        inFlightEntries++;
         inFlightBytes += serializedSize;
         if (firstAttempt) {
             metrics.mutationSent(state.metrics, serializedSize);
@@ -660,9 +663,9 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * rather than re-applying against a table nothing created.
      *
      * <p>Re-submissions are exempt from {@link #awaitCapacity()}: the park can never exceed {@code
-     * maxInFlightMutations} (the bound argument in {@link #write}), so re-applying it wholesale
-     * peaks at one cap's worth. An entry that fails {@code INVALID_ARGUMENT} here parks for the
-     * isolation pass, not this loop, which is why the loop keys on its own queue alone.
+     * maxInFlightEntries} (the bound argument in {@link #write}), so re-applying it wholesale peaks
+     * at one cap's worth. An entry that fails {@code INVALID_ARGUMENT} here parks for the isolation
+     * pass, not this loop, which is why the loop keys on its own queue alone.
      *
      * <p>Budget exhaustion names the one condition creation cannot repair: a mutation writing to a
      * family {@code tableCreateOptions} does not declare fails {@code NOT_FOUND} forever, since the
@@ -871,7 +874,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // their in-flight maps. The parks are cleared for the gauge they back and for the heap
         // they hold; the mutations in them are neither applied nor routed, which at-least-once
         // covers — no checkpoint completed with them parked, so the restart replays those records.
-        inFlightMutations = 0;
+        inFlightEntries = 0;
         inFlightBytes = 0;
         pendingIsolation.clear();
         pendingRepair.clear();
@@ -908,31 +911,31 @@ public class BigtableWriter<T> implements SinkWriter<T> {
 
     /** Releases one completed mutation from both in-flight counters. */
     private void releaseInFlight(int serializedSize) {
-        inFlightMutations--;
+        inFlightEntries--;
         inFlightBytes -= serializedSize;
     }
 
     /**
-     * Admission gate for {@link #write}: runs mailbox mails (mutation completions) until both
+     * Admission gate for {@link #write}: runs mailbox mails (entry completions) until both
      * in-flight caps have room, surfacing any captured failure before the caller adds another
-     * mutation.
+     * entry.
      *
-     * <p>Both predicates are "at or above the cap", never "would this mutation fit", so an empty
+     * <p>Both predicates are "at or above the cap", never "would this entry fit", so an empty
      * writer always admits — see the class documentation for why that is a correctness property and
      * not only accounting.
      *
      * <p>A wait that finds the mailbox empty asks every live batcher to send what it is still
-     * accumulating, once. A mutation counts against the caps from the moment the batcher accepts
-     * it, which is before it goes anywhere, so at the cap some of what the wait is waiting for may
+     * accumulating, once. An entry counts against the caps from the moment the batcher accepts it,
+     * which is before it goes anywhere, so at the cap some of what the wait is waiting for may
      * still be sitting in an accumulator — and the writer, holding the task thread, cannot add the
-     * mutation that would trip the batcher's own element threshold instead. Without this the
-     * batcher's 1-second delay threshold is a term inside every such wait. Once per wait rather
-     * than per pass: the task thread is blocked, so nothing can join a batch while it waits.
+     * entry that would trip the batcher's own element threshold instead. Without this the batcher's
+     * 1-second delay threshold is a term inside every such wait. Once per wait rather than per
+     * pass: the task thread is blocked, so nothing can join a batch while it waits.
      */
     private void awaitCapacity() throws IOException, InterruptedException {
         boolean sent = false;
         long start = nanoClock.getAsLong();
-        while (inFlightMutations >= maxInFlightMutations || inFlightBytes >= maxInFlightBytes) {
+        while (inFlightEntries >= maxInFlightEntries || inFlightBytes >= maxInFlightBytes) {
             checkAsyncError();
             long idleNanos = awaitMutationProgress(start, "admitting a record");
             if (idleNanos != RAN_A_MAIL && !sent) {
@@ -945,7 +948,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Runs mailbox mails until <b>no</b> mutation is in flight on any destination, surfacing any
+     * Runs mailbox mails until <b>no</b> entry is in flight on any destination, surfacing any
      * captured failure — including one processed by the final mail — before the caller proceeds.
      *
      * <p>This is a correctness primitive, not backpressure: it must stay independent of the
@@ -953,15 +956,15 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * applied. It is also why the caps stay writer-global: a per-destination split would leave this
      * with no single number to wait on.
      *
-     * <p>Keyed on the mutation count alone: a mutation can serialize to few bytes but never to a
-     * count of zero, so {@code inFlightBytes == 0} would not imply an empty writer.
+     * <p>Keyed on the entry count alone: an entry can serialize to few bytes but never to a count
+     * of zero, so {@code inFlightBytes == 0} would not imply an empty writer.
      *
      * <p>Unlike {@link #awaitCapacity()} this does not send what the batchers are accumulating: its
      * callers do, immediately before.
      */
     private void drainInFlight() throws IOException, InterruptedException {
         long start = nanoClock.getAsLong();
-        while (inFlightMutations > 0) {
+        while (inFlightEntries > 0) {
             checkAsyncError();
             warnIfStalled(
                     awaitMutationProgress(start, "draining the outstanding mutations"),
@@ -1038,7 +1041,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         }
         lastStallWarnNanos = now;
         LOG.warn(
-                "No Bigtable mutation has been answered for {} while {} ({} mutation(s) in flight"
+                "No Bigtable mutation has been answered for {} while {} ({} entries in flight"
                         + " over {} table(s)). The sink is waiting, not failing: the client gives up"
                         + " on a stalled MutateRows at its own 10-minute total timeout, and Flink's"
                         + " execution.checkpointing.timeout may fail the job before that with a"
@@ -1047,7 +1050,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                         + " since a mutation that never answers is never counted as a failure.",
                 Duration.ofNanos(idleNanos),
                 what,
-                inFlightMutations,
+                inFlightEntries,
                 states.size());
     }
 
@@ -1225,8 +1228,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     }
 
     @VisibleForTesting
-    int getInFlightMutations() {
-        return inFlightMutations;
+    int getInFlightEntries() {
+        return inFlightEntries;
     }
 
     @VisibleForTesting
@@ -1235,9 +1238,9 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     }
 
     @VisibleForTesting
-    int getParkedMutations() {
+    int getParkedEntries() {
         // Both queues: the gauge means "held by the writer, counted by neither the in-flight
-        // counters nor the handler", which is as true of a mutation awaiting a repair as of one
+        // counters nor the handler", which is as true of an entry awaiting a repair as of one
         // awaiting its solo verdict. Two int reads and never a walk over the destination map: the
         // reporter thread calls this, and the task thread mutates that map.
         return pendingIsolation.size() + pendingRepair.size();

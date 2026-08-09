@@ -99,8 +99,8 @@ class BigtableWriterAutoCreationTest {
         // Each entry's NOT_FOUND is a real per-entry give-up, counted like any other apply
         // failure; the repair leaves nothing behind.
         assertThat(metricGroup.counterValue("errorClass", "NOT_FOUND", "errors")).isEqualTo(2);
-        assertThat(writer.getParkedMutations()).isZero();
-        assertThat(writer.getInFlightMutations()).isZero();
+        assertThat(writer.getParkedEntries()).isZero();
+        assertThat(writer.getInFlightEntries()).isZero();
     }
 
     @Test
@@ -126,7 +126,7 @@ class BigtableWriterAutoCreationTest {
                 .containsExactly(List.of("orders/row-1"), List.of("orders/row-1"));
         assertThat(factory.batcherFor(OTHER_TABLE).sentRowKeys())
                 .containsExactly(List.of("events/row-2"), List.of("events/row-2"));
-        assertThat(writer.getParkedMutations()).isZero();
+        assertThat(writer.getParkedEntries()).isZero();
     }
 
     @Test
@@ -149,7 +149,7 @@ class BigtableWriterAutoCreationTest {
         // The first attempt's ensure of the first table threw, so both tables were still owed; the
         // second attempt ensured both.
         assertThat(admin.ensured).containsExactly(TABLE, TABLE, OTHER_TABLE);
-        assertThat(writer.getParkedMutations()).isZero();
+        assertThat(writer.getParkedEntries()).isZero();
     }
 
     @Test
@@ -159,7 +159,7 @@ class BigtableWriterAutoCreationTest {
         // writes at all: the failure mails run inside awaitCapacity.
         BigtableWriter<String> writer =
                 writer(
-                        BigtableWriterOptions.builder().maxInFlightMutations(1).build(),
+                        BigtableWriterOptions.builder().maxInFlightEntries(1).build(),
                         FailureHandler.failJob(),
                         CreateDisposition.CREATE_IF_NEEDED,
                         CREATE_OPTIONS);
@@ -173,14 +173,14 @@ class BigtableWriterAutoCreationTest {
         // did not exist when the write began, so the repair belongs to the next call.
         writer.write("row-2", TestContexts.NO_OP);
         assertThat(admin.ensured).isEmpty();
-        assertThat(writer.getParkedMutations()).isEqualTo(1);
+        assertThat(writer.getParkedEntries()).isEqualTo(1);
 
         writer.write("row-3", TestContexts.NO_OP);
 
         // The repair drained row-2 into the park too (still missing until the ensure), then
         // created the table and re-applied both.
         assertThat(admin.ensured).containsExactly(TABLE);
-        assertThat(writer.getParkedMutations()).isZero();
+        assertThat(writer.getParkedEntries()).isZero();
 
         writer.flush(false);
         assertThat(batcher.sentRowKeys())
@@ -227,7 +227,7 @@ class BigtableWriterAutoCreationTest {
 
         assertThat(admin.ensured).hasSize(2);
         assertThat(metricGroup.counterValue("tablesCreated")).isEqualTo(1);
-        assertThat(writer.getParkedMutations()).isZero();
+        assertThat(writer.getParkedEntries()).isZero();
     }
 
     @Test
@@ -248,9 +248,9 @@ class BigtableWriterAutoCreationTest {
         // Abandoned rather than routed: the checkpoint did not complete, so the restart replays
         // the record. A handler that may drop must not see a failure creation could have fixed.
         assertThat(handler.handled).isEmpty();
-        assertThat(writer.getParkedMutations()).isEqualTo(1);
+        assertThat(writer.getParkedEntries()).isEqualTo(1);
         // The reporter-visible gauge covers the repair queue, not only the isolation park.
-        assertThat(metricGroup.<Integer>gaugeValue("parkedMutations")).isEqualTo(1);
+        assertThat(metricGroup.<Integer>gaugeValue("parkedEntries")).isEqualTo(1);
         assertThat(metricGroup.counterValue("tablesCreated")).isZero();
     }
 
@@ -293,7 +293,7 @@ class BigtableWriterAutoCreationTest {
                         List.of("good", "bad"),
                         List.of("good"),
                         List.of("bad"));
-        assertThat(writer.getParkedMutations()).isZero();
+        assertThat(writer.getParkedEntries()).isZero();
     }
 
     @Test
@@ -331,7 +331,7 @@ class BigtableWriterAutoCreationTest {
                         List.of("good", "bad"),
                         List.of("good"),
                         List.of("bad"));
-        assertThat(writer.getParkedMutations()).isZero();
+        assertThat(writer.getParkedEntries()).isZero();
     }
 
     @Test
@@ -352,7 +352,7 @@ class BigtableWriterAutoCreationTest {
                 .hasMessageContaining("createDisposition is CREATE_NEVER");
         assertThat(admin.ensured).isEmpty();
         assertThat(handler.handled).isEmpty();
-        assertThat(writer.getParkedMutations()).isZero();
+        assertThat(writer.getParkedEntries()).isZero();
     }
 
     @Test
@@ -365,11 +365,11 @@ class BigtableWriterAutoCreationTest {
         batcher.tableMissing = true;
         writer.write("row-1", TestContexts.NO_OP);
         assertThatThrownBy(() -> writer.flush(false)).isSameAs(failure);
-        assertThat(writer.getParkedMutations()).isEqualTo(1);
+        assertThat(writer.getParkedEntries()).isEqualTo(1);
 
         writer.close();
 
-        assertThat(writer.getParkedMutations()).isZero();
+        assertThat(writer.getParkedEntries()).isZero();
         assertThat(admin.closeCalls).isEqualTo(1);
         assertThat(batcher.closeCalls).isEqualTo(1);
     }

@@ -33,7 +33,7 @@ surefire JVM, and nothing restores it.
 
 That is what [#316](https://github.com/laughingman7743/flink-connector-gcp/issues/316) was.
 `BigtableMutateRowsSinkTest` forged on `BigtableWriterOptions.defaults()`, so every later
-`defaults()` in the same fork carried `maxInFlightMutations = 0`, and
+`defaults()` in the same fork carried `maxInFlightEntries = 0`, and
 `BigtableWriterMetricsTest`'s 13 tests all died in the writer's precondition — on about one run
 in three, because `default-test` runs `forkCount=4` with no configured `runOrder` and
 `reuseForks` left at surefire's default of `true` (do not go looking for it in a pom; only the

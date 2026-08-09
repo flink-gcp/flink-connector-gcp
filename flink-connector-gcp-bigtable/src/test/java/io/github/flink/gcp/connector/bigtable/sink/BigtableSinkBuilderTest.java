@@ -40,7 +40,7 @@ class BigtableSinkBuilderTest {
     void carriesEverySettingIntoTheSinkConfig() {
         FailureHandler<FailedMutation> handler = mutation -> {};
         BigtableWriterOptions writerOptions =
-                BigtableWriterOptions.builder().maxInFlightMutations(5).build();
+                BigtableWriterOptions.builder().maxInFlightEntries(5).build();
 
         Sink<String> sink =
                 BigtableSink.<String>builder()

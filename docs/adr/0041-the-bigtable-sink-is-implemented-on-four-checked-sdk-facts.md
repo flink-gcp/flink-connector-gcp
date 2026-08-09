@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 (design settled on [#33], which holds the full comparison), revised by [#236]
-  (2026-08-08)
-- Issues: [#33], [#216], [#217], [#232], [#236]
+  (2026-08-08) and by [#436] (2026-08-10, the flow controller's figures)
+- Issues: [#33], [#216], [#217], [#232], [#236], [#436]
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md`
 
@@ -46,14 +46,27 @@ rather than assumed:
   as `TopicPublisher` and `TaskCreator` wrap theirs. It is also why `sendOutstanding()` is
   called rather than `Batcher.flush()`: the blocking one would stall the task thread while the
   completion mails the writer's state is mutated by pile up behind it.
-- The client's bulk-mutation path has a **flow controller of its own** — 1000 entries per
-  channel, 100 MB, `LimitExceededBehavior.Block` — whose static limits its public API does not
+- The client's bulk-mutation path has a **flow controller of its own** — 20,000 outstanding
+  entries, 100 MiB, `LimitExceededBehavior.Block` — whose static limits its public API does not
   expose. So `Batcher.add()` *can* block the task thread, and keeping the writer's own bounds
   below the client's is the only available way to preserve the [#85] property that a full writer
   yields to the mailbox rather than blocking. The defaults (1000 / 64 MiB) do; that is why the
-  reference page documents raising `maxInFlightMutations` as *moving* the bound rather than
+  reference page documents raising `maxInFlightEntries` as *moving* the bound rather than
   raising it, and why exposing the client's flow-control knobs is not the fix (it is the [#85]
-  defect class itself).
+  defect class itself). **Both figures are also what bound the two batch thresholds** ([#436],
+  `docs/adr/0082`): `BigtableBatchingCallSettings.Builder.build()` requires each threshold to stay
+  strictly below the matching budget and throws otherwise, so a threshold past one of them is a
+  client that cannot be built rather than a batch that is too large.
+
+  Both numbers were **read from the code** by [#436], and the pair this ADR carried until then —
+  "1000 entries per channel, 100 MB" — was not: `ClientOperationSettings` sets
+  `maxBulkMutateOutstandingElementCount = 20_000L` flat, with no channel term, and
+  `setMaxOutstandingRequestBytes(100L * 1024 * 1024)`, which is 100 MiB rather than 100 MB
+  (`google-cloud-bigtable` 2.80.0, read 2026-08-10). "1000 outstanding row keys per channel" is
+  the javadoc on `EnhancedBigtableStubSettings.bulkReadRowsSettings()` — a different operation,
+  and stale against its own code, which sets 20,000 there too. Nothing in the conclusion moves
+  and the margin is wider than was claimed; what the correction shows is this ADR's own rule
+  applied to itself, that an SDK fact is read from the code and never from the prose beside it.
 - `RowMutationEntry.toProto()` is `@InternalApi`, and it is the only route to both the byte size
   the in-flight bound counts and the `FailedElement` payload — the entry exposes neither its key
   nor its mutations. Accepted deliberately: nothing mechanical flags it, since
@@ -241,3 +254,4 @@ Concerns the fourth SDK fact only ([#236]); the rest of this ADR's alternatives 
 [#131]: https://github.com/laughingman7743/flink-connector-gcp/issues/131
 [#236]: https://github.com/laughingman7743/flink-connector-gcp/issues/236
 [#400]: https://github.com/laughingman7743/flink-connector-gcp/issues/400
+[#436]: https://github.com/laughingman7743/flink-connector-gcp/issues/436

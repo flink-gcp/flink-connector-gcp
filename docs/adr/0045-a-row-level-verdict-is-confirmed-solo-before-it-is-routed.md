@@ -61,7 +61,7 @@ checkpoint interval, and it terminates because every submission inside it is sol
   `DestinationState` with ADR-0074's per-record destinations ([#232]), which also widens this
   pass's "solo" to mean solo across every batcher. Only the resume clause still stands.
 - **The cost is real and belongs in the documentation**: while isolating, the sink spends
-  roughly one request per record; `parkedMutations` reports it. Measured on PR
+  roughly one request per record; `parkedEntries` reports it. Measured on PR
   [#360](https://github.com/laughingman7743/flink-connector-gcp/pull/360), and narrower than it
   first reads: under the default `failJob()` the pass issues **one** solo request before the
   handler's throw becomes `asyncError` and the pass's own drain rethrows it, so the unbounded

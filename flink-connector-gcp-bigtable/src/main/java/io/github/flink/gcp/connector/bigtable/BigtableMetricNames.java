@@ -36,10 +36,12 @@ import org.apache.flink.annotation.Internal;
 @Internal
 public final class BigtableMetricNames {
 
-    // Registered by the sink writer (BigtableWriterMetrics).
-    public static final String IN_FLIGHT_MUTATIONS = "inFlightMutations";
+    // Registered by the sink writer (BigtableWriterMetrics). The two counts are of entries — one
+    // per record written — rather than of the mutations each carries, and say so, because the
+    // knobs they are read against count entries too and Bigtable's own limit does not.
+    public static final String IN_FLIGHT_ENTRIES = "inFlightEntries";
     public static final String IN_FLIGHT_BYTES = "inFlightBytes";
-    public static final String PARKED_MUTATIONS = "parkedMutations";
+    public static final String PARKED_ENTRIES = "parkedEntries";
 
     /** Registered by the sink writer and by the scan source's reader, on their own groups. */
     public static final String RECORDS_SKIPPED = "recordsSkipped";
