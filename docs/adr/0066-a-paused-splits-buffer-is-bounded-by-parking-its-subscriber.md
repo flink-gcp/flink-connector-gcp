@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0066: A paused split's buffer is bounded by parking its subscriber
 
 - Status: Accepted
-- Date: 2026-08-08, refined 2026-08-09 ([#377])
-- Issues: [#357], [#377]
+- Date: 2026-08-08, refined 2026-08-09 ([#377], [#440])
+- Issues: [#357], [#377], [#440]
 - Modules: pubsub (source)
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (§ Watermark alignment);
   `docs/content/docs/reference/pubsub.md` for the two knobs
@@ -133,9 +133,12 @@ Pub/Sub, two runs) and `PubSubBackpressuredReaderGuardTest`.
 
 - **Pausing is not the condition; a stalled drain is.** An arm that was never paused and never
   fetched reproduced this ADR's own series (50, ~101 at 10.3 s, ~152 at 20.5 s). What the drain rate
-  changes is everything after that: all three arms were *delivered* 151–187 messages over 40 s, and
-  were left holding 151–179 (no drain), 112–154 (1/s) and **zero** (15/s, peaking at 46 in the first
-  delivery). The break-even follows from the permit accounting rather than from the sample — an
+  changes is everything after that: all three arms were *delivered* 151–195 messages over 40 s on
+  one machine, and were left holding 151–179 (no drain), 112–154 (1/s) and **zero** (15/s, peaking
+  at 46 in the first delivery). *How much* is delivered belongs to the runner, not to the connector:
+  on an unrelated commit a CI runner delivered 318, 175 and 300 to the same three arms, the fast one
+  alone given more than any local run's total. What survives across both is the holding, which is
+  the finding ([#440]). The break-even follows from the permit accounting rather than from the sample — an
   acknowledgement only covers what was already drained, so the only drain-independent source of
   permits is expiry — and is `W / (maxAckExtensionPeriod − one lease extension)`: **about 0.28
   messages a second at the production defaults.** The subtracted term is `MessageDispatcher`'s own
@@ -154,7 +157,9 @@ Pub/Sub, two runs) and `PubSubBackpressuredReaderGuardTest`.
   distinct. A redelivered copy is appended beside the one it supersedes while `addPendingAck` nacks
   the superseded handle, returning that delivery's permit, so the channel adds a buffered message at
   no permit cost — which is also why `messagesReceived` is not a delivery total the permit
-  accounting bounds (a draft asserted such a ceiling and CI produced 327 against 250). Two further
+  accounting bounds (a draft asserted such a ceiling and CI produced 327 against 250; a second one
+  barred the fast arm's *drain* at half its requested rate, which is the same claim in another
+  shape, and CI met that bar exactly at 300 against 300 — [#440]). Two further
   consequences: duplicates reach a *running* pipeline rather than only a restart, and the two-wave
   ceiling above is an emulator artifact — the service kept going. On the emulator the same
   measurement reads `messagesNacked` of exactly zero, which is that recorded deviation asserted
@@ -242,3 +247,4 @@ Pub/Sub, two runs) and `PubSubBackpressuredReaderGuardTest`.
 [#356]: https://github.com/laughingman7743/flink-connector-gcp/issues/356
 [#357]: https://github.com/laughingman7743/flink-connector-gcp/issues/357
 [#377]: https://github.com/laughingman7743/flink-connector-gcp/issues/377
+[#440]: https://github.com/laughingman7743/flink-connector-gcp/issues/440
