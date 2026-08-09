@@ -412,8 +412,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * #onMutationFailed} rather than here — so the loop is <b>bounded by the park's size</b> and
      * raises rather than spins if the invariant is ever broken. The failure it converts is the
      * worst one this writer could have: a task thread inside a mailbox loop that no completion can
-     * end is invisible to every timeout Flink has, and returning quietly instead would let a
-     * checkpoint complete over mutations that were neither applied nor routed.
+     * end stops the subtask where nothing Flink reports names the invariant that broke — the
+     * symptoms are checkpoints that stop completing and a subtask that will not cancel, neither of
+     * which points here — and returning quietly instead would let a checkpoint complete over
+     * mutations that were neither applied nor routed.
      *
      * <p>A failure raised here — a fatal status surfaced by a drain, a batcher refusing the
      * submission — abandons the remainder of the park, and the mutation being isolated with it:
