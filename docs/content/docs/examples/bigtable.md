@@ -141,6 +141,60 @@ client's own flow controller then becomes the binding limit, and it blocks the t
 than yielding to the mailbox — see
 [Tuning]({{< relref "docs/connectors/datastream/bigtable" >}}#tuning).
 
+## Reading a key range
+
+A prefix and an explicit range are the same thing said two ways, and both are repeatable:
+
+```java
+BigtableSource.<Order>builder()
+        .table(TableDestination.of("my-project", "my-instance", "orders"))
+        .deserializer(new OrderRows())
+        // Everything under one prefix, plus one range named outright. Overlapping ranges are
+        // merged rather than rejected, so nested prefixes cost nothing but are not read twice.
+        .prefix("2026-08-")
+        .rowRange("archive#2025-", "archive#2026-")
+        .build();
+```
+
+What a checkpoint carries is the range that is **left**: after emitting the row `2026-08-14#9`, the
+split covers `(2026-08-14#9, 2026-09-)`. That is what makes a restore resume rather than replay, and
+it is why the source needs no offset of its own.
+
+## Filtering on the server
+
+What a filter excludes never leaves Bigtable, so it is the cheapest thing a scan can carry — and it
+is where every per-cell decision belongs, since the source has no separate knobs for families,
+qualifiers, timestamps or versions:
+
+```java
+BigtableSource.<Order>builder()
+        .table(TableDestination.of("my-project", "my-instance", "orders"))
+        .deserializer(new OrderRows())
+        .filter(
+                Filters.FILTERS.chain()
+                        .filter(Filters.FILTERS.family().exactMatch("cf"))
+                        .filter(Filters.FILTERS.qualifier().exactMatch("payload"))
+                        // The latest version of each cell only.
+                        .filter(Filters.FILTERS.limit().cellsPerColumn(1)))
+        .build();
+```
+
+## Reading through an application profile
+
+```java
+BigtableSource.<Order>builder()
+        .table(TableDestination.of("my-project", "my-instance", "orders"))
+        .deserializer(new OrderRows())
+        .appProfileId("analytics")
+        .build();
+```
+
+A [Data Boost]({{< relref "docs/connectors/datastream/bigtable" >}}#serverless-reads-with-data-boost)
+profile is named here like any other. Two caveats come with one: its reads can be up to about 35
+minutes stale, so a job that writes with the sink and reads back through it may not see its own
+recent writes; and it is read-only, so the same profile on the sink breaks writes. This project has
+not exercised Data Boost — [#248]({{< param BookRepo >}}/issues/248) is the verification.
+
 ## Running against the emulator
 
 Google's Bigtable emulator ships with the Cloud SDK, and the sink reaches it over a plaintext
@@ -164,7 +218,21 @@ BigtableSink.<OrderEvent>builder()
         .build();
 ```
 
+The source reaches it the same way:
+
+```java
+BigtableSource.<Order>builder()
+        .table(TableDestination.of("my-project", "my-instance", "orders"))
+        .deserializer(new OrderRows())
+        .emulatorEndpoint("localhost:8086")
+        .build();
+```
+
 The project and instance ids are opaque path segments to the emulator; neither has to exist. It
-implements `MutateRows` and the table admin surface, which is enough to develop against — but it
-validates far less than the service does, so a mutation it accepts is not evidence that Bigtable
-would.
+implements `MutateRows`, `ReadRows` and the table admin surface, which is enough to develop against
+— but it validates far less than the service does, so a mutation it accepts is not evidence that
+Bigtable would.
+
+One read-path difference is worth knowing while developing: the emulator models no tablets, so it
+offers almost no split boundaries and a job against it runs on **one** split whatever the
+parallelism. Reading in parallel is something only real Bigtable shows.

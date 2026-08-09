@@ -22,7 +22,7 @@ limitations under the License.
 
 # Bigtable options
 
-Every option the Bigtable sink takes. What each one is *for* is on the
+Every option the Bigtable sink and source take. What each one is *for* is on the
 [Bigtable connector]({{< relref "docs/connectors/datastream/bigtable" >}}) page; the three forms of
 the Default column are explained [here]({{< relref "docs/reference" >}}#what-a-default-means).
 
@@ -33,7 +33,8 @@ the reasoning is under
 [Retries]({{< relref "docs/connectors/datastream/bigtable" >}}#retries-belong-to-the-client). The
 `recovery*` knobs below are not an exception: they budget the sink-owned
 [table auto-creation]({{< relref "docs/connectors/datastream/bigtable" >}}#table-auto-creation)
-repair, not the client's mutation retries.
+repair, not the client's mutation retries. The source owns no retry loop either: the client
+resumes a broken `ReadRows` stream from the last key it saw.
 
 ## `BigtableSink.builder()`
 
@@ -42,7 +43,7 @@ repair, not the client's mutation retries.
 | `table` | **required**, unless `destinationResolver` is set | Writes every mutation to one fixed table |
 | `destinationResolver` | — | Resolves the table per record. Runs before the serializer; returning `null` fails the job |
 | `serializer` | **required** | Turns a record into a `RowMutationEntry`, or into `null` to skip it |
-| `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through, which is what selects the routing policy and the request priority |
+| `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through, which is what selects the routing policy and the request priority. **A Data Boost profile is read-only** — its eligible methods are `ReadRows`, `SampleRowKeys` and `PingAndWarm`, and it carries neither a request priority nor a routing policy of its own — so naming one here breaks writes. The connector cannot tell locally what kind a profile is, which is why this is documented rather than rejected at `build()` |
 | `writerOptions` | [defaults](#bigtablewriteroptions) | The batch thresholds and the in-flight bounds |
 | `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation that terminally fails. Only the two data-shaped failures reach it — see [Error handling]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
@@ -114,3 +115,25 @@ factories mirroring the admin API's shapes: `maxVersions(int)`, `maxAge(Duration
 `union(GcRule.maxVersions(1), GcRule.maxAge(...))` is the usual shape for keeping only the latest
 cell. Validation is shape-only — positivity and arity; the service's own limits are left to
 Bigtable, whose rejection names what it refused.
+
+## `BigtableSource.builder()`
+
+| Option | Default | What it does |
+|---|---|---|
+| `table` | **required** | The table to read |
+| `deserializer` | **required** | Turns a row into zero or more records. Emitting nothing skips the row |
+| `rowRange` | *unset ⇒ the whole table* | Adds a row-key range to read. Repeatable and additive; overlapping ranges are merged, and an empty one is rejected at `build()`. Takes a `ByteStringRange`, or an inclusive start and an exclusive end as `ByteString`s or as UTF-8 text |
+| `prefix` | *unset ⇒ the whole table* | Adds every row whose key starts with a prefix — sugar for the range that prefix describes. Repeatable, and combinable with `rowRange` |
+| `filter` | — | One server-side `Filters.Filter`, applied to every split. What it excludes never leaves the server. Last writer wins; a filter too large for the service is rejected at `build()` |
+| `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through. A [Data Boost]({{< relref "docs/connectors/datastream/bigtable" >}}#serverless-reads-with-data-boost) profile is named here like any other |
+| `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
+
+**There is no row limit, and no read-ahead or paging knobs.** A `Query.limit()` is global to a
+query, so it cannot be partitioned across splits without coordination — the client library refuses
+to shard a query that carries one — and the read-ahead side is a fixed internal bound rather than a
+knob until a measurement asks otherwise. Both are under
+[Not here yet]({{< relref "docs/connectors/datastream/bigtable" >}}#not-here-yet).
+
+**Per-cell shaping is the filter's job, not a knob's.** Which families and qualifiers to return,
+which timestamp window, how many versions of a cell — all of it is expressible through
+`filter(...)`, which is why the source has no separate options for any of it.

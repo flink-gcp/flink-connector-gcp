@@ -20,11 +20,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Write a stream into a Bigtable table
+# Write to and read from a Bigtable table
 
 Assumes the artifacts and credentials from the
 [Quickstart]({{< relref "docs/quickstart" >}}) index, and the imports an IDE resolves from the
 [Java API reference]({{< param ApiDocsURL >}}).
+
+## Write a stream of row mutations
 
 **Create the table and its column family first.** By default the sink creates neither: a table's
 schema is its column families and their garbage-collection policies, which is the part a sink
@@ -79,8 +81,60 @@ be read, not a formality. And the **cell timestamp** is what makes the replay of
 failure an overwrite rather than a second version of the cell; leaving it out lets the server's
 clock decide, and both versions then live until garbage collection removes one.
 
+## Read a table back
+
+The source reads the rows of a key range and finishes. It is bounded, which is not the same as
+batch-only: this job runs in streaming mode and simply ends, which is also what lets a Bigtable
+table be read and joined against an unbounded stream.
+
+```java
+public class ReadOrders {
+
+    public static void main(String[] args) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+        Source<String, ?, ?> source =
+                BigtableSource.<String>builder()
+                        .table(TableDestination.of("my-project", "my-instance", "orders"))
+                        // Zero or more records per row: this one emits the payload of each cell.
+                        .deserializer(
+                                new BigtableRowDeserializationSchema<String>() {
+                                    @Override
+                                    public void deserialize(Row row, Collector<String> out) {
+                                        for (RowCell cell : row.getCells("cf", "payload")) {
+                                            out.collect(
+                                                    row.getKey().toStringUtf8()
+                                                            + " = "
+                                                            + cell.getValue().toStringUtf8());
+                                        }
+                                    }
+
+                                    @Override
+                                    public TypeInformation<String> getProducedType() {
+                                        return TypeInformation.of(String.class);
+                                    }
+                                })
+                        // Only the rows this job needs: a prefix is sugar for the range it
+                        // describes, and what a filter excludes never leaves the server.
+                        .prefix("order#")
+                        .filter(Filters.FILTERS.family().exactMatch("cf"))
+                        .build();
+
+        env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders").print();
+        env.execute("read-orders");
+    }
+}
+```
+
+The job needs `bigtable.tables.readRows` and `bigtable.tables.sampleRowKeys` — `roles/bigtable.reader`
+covers both — and creates nothing.
+
+**How many subtasks read is Bigtable's decision, not the job's.** Splits come from where the service
+says the table's sections begin, so a small table is read by one subtask however high the parallelism
+is set; the others finish immediately.
+
 ## Next
 
 [Bigtable examples]({{< relref "docs/examples/bigtable" >}}) — several mutations per record,
-deletes, a table named per record, dropping bad rows instead of failing, and running against the
-emulator.
+deletes, a table named per record, dropping bad rows instead of failing, reading a key range, and
+running against the emulator.

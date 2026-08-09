@@ -29,7 +29,7 @@ Every option each connector takes, with its default, in one place per connector.
 | [BigQuery]({{< relref "docs/reference/bigquery" >}}) | The sink builder, the three write methods' options objects, table creation and schema updates, and the three serializers' schema options |
 | [Cloud Pub/Sub]({{< relref "docs/reference/pubsub" >}}) | The sink and source builders, publisher and subscriber tuning, topic and subscription creation |
 | [Cloud Tasks]({{< relref "docs/reference/cloudtasks" >}}) | The sink builder and the writer's in-flight cap and retry budgets |
-| [Bigtable]({{< relref "docs/reference/bigtable" >}}) | The sink builder and the writer's batch thresholds and in-flight bounds |
+| [Bigtable]({{< relref "docs/reference/bigtable" >}}) | The sink builder and the writer's batch thresholds and in-flight bounds, and the source builder's ranges, prefixes and filter |
 | [Spanner]({{< relref "docs/reference/spanner" >}}) | The sink builder, the writer's batch limits, commit delay, RPC priority and retry budget |
 
 **These pages answer *what*; the connector pages answer *why*.** A row here gives you the option's

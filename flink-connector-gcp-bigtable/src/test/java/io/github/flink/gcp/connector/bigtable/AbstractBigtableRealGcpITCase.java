@@ -14,20 +14,25 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.sink.writer;
+package io.github.flink.gcp.connector.bigtable;
 
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
+import com.google.cloud.bigtable.admin.v2.models.AppProfile;
+import com.google.cloud.bigtable.admin.v2.models.CreateAppProfileRequest;
 import com.google.cloud.bigtable.admin.v2.models.CreateInstanceRequest;
 import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.admin.v2.models.Instance;
 import com.google.cloud.bigtable.admin.v2.models.StorageType;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.Query;
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.cloud.bigtable.data.v2.models.RowMutation;
 import com.google.cloud.bigtable.data.v2.models.TableId;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -76,15 +81,15 @@ import java.util.List;
  * so hoisting one leaves the other unpaired.
  */
 @Timeout(600)
-abstract class AbstractBigtableRealGcpITCase {
+public abstract class AbstractBigtableRealGcpITCase {
 
     private static final Logger LOG = LoggerFactory.getLogger(AbstractBigtableRealGcpITCase.class);
 
     /** The project the suite runs against; null when the gate is off (the tests then skip). */
-    static final String PROJECT = System.getenv("BIGTABLE_IT_PROJECT");
+    protected static final String PROJECT = System.getenv("BIGTABLE_IT_PROJECT");
 
     /** The column family every table in this suite is created with. */
-    static final String FAMILY = "cf";
+    protected static final String FAMILY = "cf";
 
     /**
      * Identifies an instance as this suite's, for the sweep. Instance ids are 6–33 characters of
@@ -105,7 +110,7 @@ abstract class AbstractBigtableRealGcpITCase {
     private static BigtableDataClient dataClient;
 
     @BeforeAll
-    static void createInstanceAndClients() throws IOException {
+    protected static void createInstanceAndClients() throws IOException {
         instanceAdmin = BigtableInstanceAdminClient.create(PROJECT);
         sweepStaleInstances();
 
@@ -127,7 +132,7 @@ abstract class AbstractBigtableRealGcpITCase {
     }
 
     @AfterAll
-    static void deleteInstanceAndCloseClients() throws Exception {
+    protected static void deleteInstanceAndCloseClients() throws Exception {
         try {
             // The instance goes first, before any client is closed: it is the only part of this
             // fixture that costs money, and a client throwing on close must not be able to skip
@@ -187,25 +192,78 @@ abstract class AbstractBigtableRealGcpITCase {
     }
 
     /** Creates a table with the shared column family and returns its destination. */
-    static TableDestination createTable(String tableId) {
+    protected static TableDestination createTable(String tableId) {
         tableAdmin.createTable(CreateTableRequest.of(tableId).addFamily(FAMILY));
         return TableDestination.of(PROJECT, instanceId, tableId);
     }
 
     /** Returns a destination in the ephemeral instance without creating the table. */
-    static TableDestination tableDestination(String tableId) {
+    protected static TableDestination tableDestination(String tableId) {
         return TableDestination.of(PROJECT, instanceId, tableId);
     }
 
     /** Returns the live table description, for asserting what auto-creation actually made. */
-    static com.google.cloud.bigtable.admin.v2.models.Table describeTable(String tableId) {
+    protected static com.google.cloud.bigtable.admin.v2.models.Table describeTable(String tableId) {
         return tableAdmin.getTable(tableId);
     }
 
     /** Reads every row of the table, in row-key order. */
-    static List<Row> readRows(TableDestination destination) {
+    protected static List<Row> readRows(TableDestination destination) {
         List<Row> rows = new ArrayList<>();
         dataClient.readRows(Query.create(TableId.of(destination.getTable()))).forEach(rows::add);
         return rows;
+    }
+
+    /**
+     * Creates a table already split at the given row keys.
+     *
+     * <p>The single most valuable thing this suite can do that nothing else can: a pre-split table
+     * has real tablets, so {@code SampleRowKeys} answers with one boundary per split point and the
+     * scan source's split planning is exercised against the service. The emulator models no tablets
+     * at all.
+     *
+     * @param tableId the table to create
+     * @param splitKeys the row keys to split the table at
+     * @return the table's destination
+     */
+    protected static TableDestination createTableWithSplits(String tableId, String... splitKeys) {
+        CreateTableRequest request = CreateTableRequest.of(tableId).addFamily(FAMILY);
+        for (String splitKey : splitKeys) {
+            request.addSplit(ByteString.copyFromUtf8(splitKey));
+        }
+        tableAdmin.createTable(request);
+        return TableDestination.of(PROJECT, instanceId, tableId);
+    }
+
+    /** Writes one cell per given row key, so a read test has something to find. */
+    protected static void seedRows(TableDestination destination, String... rowKeys) {
+        for (String rowKey : rowKeys) {
+            dataClient.mutateRow(
+                    RowMutation.create(TableId.of(destination.getTable()), rowKey)
+                            .setCell(FAMILY, "q", rowKey));
+        }
+    }
+
+    /** Returns what the service answers {@code SampleRowKeys} with. */
+    protected static List<KeyOffset> sampleRowKeys(TableDestination destination) {
+        return dataClient.sampleRowKeys(TableId.of(destination.getTable()));
+    }
+
+    /** Reads one range directly, for measuring what the service does with an unusual one. */
+    protected static List<Row> readRange(TableDestination destination, ByteStringRange range) {
+        List<Row> rows = new ArrayList<>();
+        dataClient
+                .readRows(Query.create(TableId.of(destination.getTable())).range(range))
+                .forEach(rows::add);
+        return rows;
+    }
+
+    /** Creates an application profile routing to the instance's only cluster. */
+    protected static void createSingleClusterAppProfile(String appProfileId) {
+        String clusterId = instanceAdmin.listClusters(instanceId).get(0).getId();
+        instanceAdmin.createAppProfile(
+                CreateAppProfileRequest.of(instanceId, appProfileId)
+                        .setRoutingPolicy(AppProfile.SingleClusterRoutingPolicy.of(clusterId))
+                        .setDescription("flink-connector-gcp source integration test"));
     }
 }

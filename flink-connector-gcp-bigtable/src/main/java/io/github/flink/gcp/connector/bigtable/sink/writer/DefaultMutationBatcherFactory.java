@@ -31,6 +31,7 @@ import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.stub.BigtableBatchingCallSettings;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import org.slf4j.Logger;
@@ -184,24 +185,17 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
      * options-to-settings mapping is otherwise only observable through the client's behaviour: a
      * threshold that never reaches the client looks exactly like one that does. The same reasoning
      * put every other connector's options mapping under a unit test of its own.
+     *
+     * <p>Everything both directions of this connector share — the emulator-versus-credentials
+     * branch, the project and instance, the application profile — comes from {@link
+     * BigtableDataClients}. Only the batch thresholds are the sink's own.
      */
     @VisibleForTesting
     BigtableDataSettings settings(TableDestination destination) {
-        BigtableDataSettings.Builder settings = newSettingsBuilder();
-        settings.setProjectId(destination.getProject()).setInstanceId(destination.getInstance());
-        if (appProfileId != null) {
-            settings.setAppProfileId(appProfileId);
-        }
+        BigtableDataSettings.Builder settings =
+                BigtableDataClients.settings(destination, appProfileId, emulatorEndpoint);
         applyBatchThresholds(settings);
         return settings.build();
-    }
-
-    private BigtableDataSettings.Builder newSettingsBuilder() {
-        if (emulatorEndpoint == null) {
-            return BigtableDataSettings.newBuilder();
-        }
-        return BigtableDataSettings.newBuilderForEmulator(
-                emulatorEndpoint.getHost(), emulatorEndpoint.getPort());
     }
 
     /**
