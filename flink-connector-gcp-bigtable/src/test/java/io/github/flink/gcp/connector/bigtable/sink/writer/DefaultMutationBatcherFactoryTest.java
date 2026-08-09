@@ -35,8 +35,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import javax.annotation.Nullable;
-
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
 import java.util.List;
@@ -81,7 +79,7 @@ class DefaultMutationBatcherFactoryTest {
     void carriesTheDestinationAndTheApplicationProfile() {
         BigtableDataSettings settings =
                 factory("batch-profile", BigtableWriterOptions.defaults(), "localhost:8086")
-                        .settings();
+                        .settings(TABLE);
 
         assertThat(settings.getProjectId()).isEqualTo("p");
         assertThat(settings.getInstanceId()).isEqualTo("i");
@@ -119,7 +117,8 @@ class DefaultMutationBatcherFactoryTest {
     @Test
     void pointsTheClientAtTheEmulatorEndpoint() {
         BigtableDataSettings settings =
-                factory(null, BigtableWriterOptions.defaults(), "bigtable.example:9035").settings();
+                factory(null, BigtableWriterOptions.defaults(), "bigtable.example:9035")
+                        .settings(TABLE);
 
         assertThat(settings.getStubSettings().getEndpoint()).isEqualTo("bigtable.example:9035");
         // The emulator mode is the only one that must never present credentials.
@@ -180,53 +179,44 @@ class DefaultMutationBatcherFactoryTest {
     }
 
     @Test
-    void shutsTheBatcherDownBeforeClosingTheClient() throws Exception {
-        List<String> calls = new ArrayList<>();
-
-        new DefaultMutationBatcherFactory.BigtableBatcherAdapter(
-                        TABLE,
-                        () -> calls.add("client"),
-                        entry -> {
-                            throw new AssertionError("add is not part of this test");
-                        },
-                        () -> calls.add("sendOutstanding"),
-                        () -> calls.add("shutdown"))
-                .close();
-
-        // Order, not just occurrence: closing the client first would pull the channel out from
-        // under the wait the shutdown performs.
-        assertThat(calls).containsExactly("shutdown", "client");
-    }
-
-    @Test
-    void closesTheClientEvenWhenTheBatcherShutdownThrows() {
-        // The absorb takes the lifetime report and nothing else, so this is the shape that leaked:
-        // an unexpected close error left the client holding its channel. gax raises this one from
-        // BatcherImpl.close() itself.
-        RecordingClient client = new RecordingClient();
-        IllegalStateException unexpected = new IllegalStateException(GAX_UNEXPECTED_CLOSE);
-
-        assertThatThrownBy(() -> adapter(client, throwing(unexpected)).close())
-                .isSameAs(unexpected);
-
-        assertThat(client.closes).isEqualTo(1);
-    }
-
-    @Test
-    void closesTheClientAndRestoresTheInterruptWhenTheBatchersWaitIsCutShort() {
+    void restoresTheInterruptWhenTheBatchersWaitIsCutShort() {
         // The other exception the absorb does not swallow, and the one a cancelling job produces:
         // Batcher.close() declares InterruptedException for the wait it performs. gax's wait clears
-        // the flag when it throws, and BigtableWriter.close() carries on to the failure handler's
-        // close afterwards, so the restore is what keeps that leg honouring the cancellation.
-        RecordingClient client = new RecordingClient();
+        // the flag when it throws, and BigtableWriter.close() carries on to the factory's and the
+        // failure handler's closes afterwards, so the restore is what keeps those legs honouring
+        // the cancellation.
         InterruptedException interrupted =
                 new InterruptedException("the batcher's wait was cut short");
 
-        assertThatThrownBy(() -> adapter(client, throwing(interrupted)).close())
-                .isSameAs(interrupted);
+        assertThatThrownBy(() -> adapter(throwing(interrupted)).close()).isSameAs(interrupted);
 
-        assertThat(client.closes).isEqualTo(1);
         assertThat(Thread.currentThread().isInterrupted()).isTrue();
+    }
+
+    @Test
+    void startsTheShutdownWithoutWaitingForIt() {
+        // The two-phase teardown BigtableWriter.close() needs (#232): with one batcher per table,
+        // closing them one after another costs the sum of their unbounded waits. gax composes the
+        // pair — closeAsync() memoizes the future close() then waits on — so this pins that the
+        // adapter's shutdown is bound to the non-blocking half and its close to the waiting one.
+        List<String> calls = new ArrayList<>();
+        MutationBatcher adapter =
+                new DefaultMutationBatcherFactory.BigtableBatcherAdapter(
+                        TABLE,
+                        entry -> {
+                            throw new AssertionError("add is not part of this test");
+                        },
+                        () -> {
+                            throw new AssertionError("sendOutstanding is not part of this test");
+                        },
+                        () -> calls.add("shutdown"),
+                        () -> calls.add("close"));
+
+        adapter.shutdown();
+        assertThat(calls).containsExactly("shutdown");
+
+        assertThatCode(adapter::close).doesNotThrowAnyException();
+        assertThat(calls).containsExactly("shutdown", "close");
     }
 
     @Test
@@ -238,53 +228,26 @@ class DefaultMutationBatcherFactoryTest {
         // Through LogCapture (#323, which landed while this was in review) rather than on the
         // swallow alone: a close() that caught the report itself would swallow it just as quietly,
         // and the warning is what tells the two apart — it is emitted by the shared helper, so
-        // seeing it here is what makes this a routing assertion. Plus the half no other test
-        // states: an absorbed report still releases the client.
-        RecordingClient client = new RecordingClient();
+        // seeing it here is what makes this a routing assertion.
         BatchingException report = lifetimeFailureReport();
 
         try (LogCapture capture = LogCapture.of(DefaultMutationBatcherFactory.class)) {
-            assertThatCode(() -> adapter(client, throwing(report)).close())
-                    .doesNotThrowAnyException();
+            assertThatCode(() -> adapter(throwing(report)).close()).doesNotThrowAnyException();
 
             assertThat(capture.getEvents())
                     .singleElement()
                     .satisfies(event -> assertThat(event.getThrowable()).isSameAs(report));
         }
-        assertThat(client.closes).isEqualTo(1);
     }
 
     @Test
-    void closesTheClientEvenWhenTheBatcherShutdownThrowsAnError() {
-        // This is a new call site of Closers, and #276's reason for it applies here: the
-        // IOUtils.closeAll(..., Exception.class) form rethrows an Error from inside its own loop,
-        // abandoning the client, and the Throwable.class form collects it as new Exception(e),
-        // losing the type. (Flink halts the JVM only on its own fatal set, which this Error is
-        // deliberately not in — the type still has to survive for the caller to act on.)
-        RecordingClient client = new RecordingClient();
+    void letsAnErrorFromTheBatcherShutdownThroughAsItself() {
+        // Flink halts the JVM only on its own fatal set, which this Error is deliberately not in —
+        // the type still has to survive for BigtableWriter.close()'s Closers list to act on it
+        // (#276).
         NoClassDefFoundError blewUp = new NoClassDefFoundError("batcher shutdown blew up");
 
-        assertThatThrownBy(() -> adapter(client, throwing(blewUp)).close()).isSameAs(blewUp);
-
-        assertThat(client.closes).isEqualTo(1);
-    }
-
-    @Test
-    void reportsTheShutdownFailureWithTheClientCloseFailureSuppressed() {
-        // A try/finally reports the client's failure and discards the shutdown's outright, which is
-        // the one that says why the teardown went wrong; the client's close then failing is the
-        // consequence, not the cause. EnhancedBigtableStub really does report a failing context
-        // close this way, so the pair is reachable. #276 fixed this shape at nine other call sites.
-        RecordingClient client = new RecordingClient();
-        client.failure = new IllegalStateException("failed to close client context");
-        IllegalStateException unexpected = new IllegalStateException(GAX_UNEXPECTED_CLOSE);
-
-        assertThatThrownBy(() -> adapter(client, throwing(unexpected)).close())
-                .isSameAs(unexpected)
-                .satisfies(
-                        reported ->
-                                assertThat(reported.getSuppressed())
-                                        .containsExactly(client.failure));
+        assertThatThrownBy(() -> adapter(throwing(blewUp)).close()).isSameAs(blewUp);
     }
 
     @Test
@@ -300,11 +263,11 @@ class DefaultMutationBatcherFactoryTest {
         MutationBatcher adapter =
                 new DefaultMutationBatcherFactory.BigtableBatcherAdapter(
                         TABLE,
-                        new RecordingClient(),
                         entry -> {
                             throw new AssertionError("add is not part of this test");
                         },
                         () -> calls.add("sendOutstanding"),
+                        () -> {},
                         () -> {});
 
         adapter.sendOutstanding();
@@ -322,7 +285,6 @@ class DefaultMutationBatcherFactoryTest {
         MutationBatcher adapter =
                 new DefaultMutationBatcherFactory.BigtableBatcherAdapter(
                         TABLE,
-                        new RecordingClient(),
                         submitted -> {
                             added.add(submitted);
                             return batcherFuture;
@@ -330,6 +292,7 @@ class DefaultMutationBatcherFactoryTest {
                         () -> {
                             throw new AssertionError("sendOutstanding is not part of this test");
                         },
+                        () -> {},
                         () -> {});
 
         // The identity matters: the writer registers its completion callback on what comes back,
@@ -349,62 +312,79 @@ class DefaultMutationBatcherFactoryTest {
         // BatcherImpl.add's precondition reads closeFuture, which closeAsync() sets just as
         // close() does. So binding the shutdown to closeAsync(), or to close(Duration.ZERO),
         // would survive this — the "no timeout" decision in the adapter is documented and unpinned.
-        MutationBatcher batcher =
-                factory(null, BigtableWriterOptions.defaults(), "localhost:1").create();
+        DefaultMutationBatcherFactory factory =
+                factory(null, BigtableWriterOptions.defaults(), "localhost:1");
+        MutationBatcher batcher = factory.create(TABLE);
 
         batcher.close();
 
         assertThatThrownBy(() -> batcher.add(entry("row-1")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("closed batcher");
+        factory.close();
     }
 
     @Test
-    void closesTheClientTheFactoryBuiltTheBatcherOver() throws Exception {
-        // The other half of that wiring, and the half that leaks in production: an adapter handed
-        // any other closeable passes every test above, since those inject their own client. The
-        // client's own close is unobservable — hence the seam — so the observable is a consequence
-        // of it: BigtableClientContext.close() shuts down the background executor, and gax
-        // schedules a batcher's delay-threshold push on exactly that executor. Measured, and SDK
-        // internals rather than a documented contract, so a client upgrade may need this reread.
+    void sharesOneClientAcrossTheTablesOfAnInstanceAndBuildsOnePerInstance() throws Exception {
+        // The decision #232 rests on: a client holds a channel pool and a background executor and
+        // serves any table of its (project, instance), so per-table clients would multiply both.
+        // Identity is the only observable — a BigtableDataClient reports nothing about itself —
+        // which is why the cache lookup is reachable from a test at all.
         DefaultMutationBatcherFactory factory =
                 factory(null, BigtableWriterOptions.defaults(), "localhost:1");
-        BigtableDataClient client = BigtableDataClient.create(factory.settings());
 
-        factory.create(client).close();
+        try {
+            BigtableDataClient orders = factory.client(TABLE);
 
-        assertThatThrownBy(() -> client.newBulkMutationBatcher(TableId.of("orders")))
-                .isInstanceOf(RejectedExecutionException.class);
-    }
-
-    /** Records the closes the adapter performs, and optionally fails them. */
-    private static final class RecordingClient implements AutoCloseable {
-
-        private int closes;
-        @Nullable private RuntimeException failure;
-
-        @Override
-        public void close() {
-            closes++;
-            if (failure != null) {
-                throw failure;
-            }
+            assertThat(factory.client(TableDestination.of("p", "i", "events"))).isSameAs(orders);
+            assertThat(factory.client(TableDestination.of("p", "other", "orders")))
+                    .isNotSameAs(orders);
+            assertThat(factory.client(TableDestination.of("other", "i", "orders")))
+                    .isNotSameAs(orders);
+        } finally {
+            factory.close();
         }
     }
 
-    /** An adapter whose shutdown is scripted and whose other two operations are out of scope. */
-    private static MutationBatcher adapter(
-            AutoCloseable client, ThrowingRunnable<Exception> shutdown) {
+    @Test
+    void closesEveryClientItBuiltAndForgetsThem() throws Exception {
+        // The half that leaks in production, and the reason the adapter holds no client at all: a
+        // batcher closing the client it was built over would take its instance's siblings down
+        // with it. The client's own close is unobservable — hence this consequence of it:
+        // BigtableClientContext.close() shuts down the background executor, and gax schedules a
+        // batcher's delay-threshold push on exactly that executor. Measured, and SDK internals
+        // rather than a documented contract, so a client upgrade may need this reread.
+        DefaultMutationBatcherFactory factory =
+                factory(null, BigtableWriterOptions.defaults(), "localhost:1");
+        BigtableDataClient client = factory.client(TABLE);
+
+        factory.close();
+
+        assertThatThrownBy(() -> client.newBulkMutationBatcher(TableId.of("orders")))
+                .isInstanceOf(RejectedExecutionException.class);
+        // Forgotten, not merely closed: a second close must not report a client it already
+        // released, and a later create must build a fresh one rather than hand out a dead cache
+        // entry.
+        assertThatCode(factory::close).doesNotThrowAnyException();
+        BigtableDataClient rebuilt = factory.client(TABLE);
+        assertThat(rebuilt).isNotSameAs(client);
+        factory.close();
+    }
+
+    /** An adapter whose close is scripted and whose other operations are out of scope. */
+    private static MutationBatcher adapter(ThrowingRunnable<Exception> close) {
         return new DefaultMutationBatcherFactory.BigtableBatcherAdapter(
                 TABLE,
-                client,
                 entry -> {
                     throw new AssertionError("add is not part of this test");
                 },
                 () -> {
                     throw new AssertionError("sendOutstanding is not part of this test");
                 },
-                shutdown);
+                () -> {
+                    throw new AssertionError("shutdown is not part of this test");
+                },
+                close);
     }
 
     /**
@@ -439,7 +419,7 @@ class DefaultMutationBatcherFactoryTest {
 
     private static BatchingSettings batchingSettings(BigtableWriterOptions options) {
         return factory(null, options, "localhost:8086")
-                .settings()
+                .settings(TABLE)
                 .getStubSettings()
                 .bulkMutateRowsSettings()
                 .getBatchingSettings();
@@ -448,6 +428,6 @@ class DefaultMutationBatcherFactoryTest {
     private static DefaultMutationBatcherFactory factory(
             String appProfileId, BigtableWriterOptions options, String emulatorEndpoint) {
         return new DefaultMutationBatcherFactory(
-                TABLE, appProfileId, options, EmulatorEndpoint.parse(emulatorEndpoint));
+                appProfileId, options, EmulatorEndpoint.parse(emulatorEndpoint));
     }
 }

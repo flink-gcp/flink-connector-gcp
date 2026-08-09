@@ -25,7 +25,6 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
-import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkConfig;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
@@ -34,10 +33,14 @@ import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,8 +56,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BigtableWriterTest {
 
     private static final TableDestination TABLE = TableDestination.of("p", "i", "orders");
+    private static final TableDestination OTHER_TABLE = TableDestination.of("p", "i", "events");
 
-    private final FakeMutationBatcher batcher = new FakeMutationBatcher();
+    private final FakeMutationBatcherFactory factory = new FakeMutationBatcherFactory();
+    private final FakeMutationBatcher batcher = factory.batcherFor(TABLE);
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
     private final TestSinkWriterMetricGroup metricGroup = TestSinkWriterMetricGroup.create();
 
@@ -528,30 +533,316 @@ class BigtableWriterTest {
     }
 
     @Test
+    void routesEachRecordToItsOwnTablesBatcher() throws Exception {
+        SinkWriter<String> writer = multiTableWriter(failJob());
+
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+        writer.write("orders/row-3", TestContexts.NO_OP);
+
+        assertThat(factory.created).containsExactly(TABLE, OTHER_TABLE);
+        assertThat(factory.batcherFor(TABLE).entries)
+                .extracting(BigtableWriterTest::rowKey)
+                .containsExactly("orders/row-1", "orders/row-3");
+        assertThat(factory.batcherFor(OTHER_TABLE).entries)
+                .extracting(BigtableWriterTest::rowKey)
+                .containsExactly("events/row-2");
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS, threadMode = ThreadMode.SEPARATE_THREAD)
+    void sendsEveryLiveBatcherBeforeIsolatingAPark() throws Exception {
+        // The pass's opening sendOutstanding covers every batcher, not only the ones holding parked
+        // work — and this has to be driven from write(), because flush() sends every batcher itself
+        // just before calling the pass and would mask a pass that sent only one.
+        //
+        // Missing a batcher fails two ways, neither naming the cause: the entry still sitting in
+        // its accumulator is counted in flight with no request carrying it, so the drain never
+        // reaches zero and the task thread parks inside yield() forever — hence a timeout that can
+        // interrupt a blocked take(), since the class-level SAME_THREAD one cannot — or gax's delay
+        // timer sends it as a batch of its own, whose rejection parks after the pass took its
+        // budget and trips the tripwire on a healthy stream.
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                multiTableWriter(
+                        BigtableWriterOptions.builder().maxInFlightMutations(1).build(),
+                        handler,
+                        System::nanoTime);
+        factory.batcherFor(TABLE).rejectedRowKeys.add("orders/row-1");
+
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        // The service refuses it; the failure mail is queued but has not run.
+        factory.batcherFor(TABLE).sendOutstanding();
+        // A cap of one makes this write yield, which runs that mail and parks row-1 — and leaves
+        // this record accumulated, unsent, on the *other* table's batcher.
+        writer.write("events/row-2", TestContexts.NO_OP);
+        // Now the park is non-empty, so this write opens with the isolation pass while another
+        // table holds an entry no request has carried.
+        writer.write("orders/row-3", TestContexts.NO_OP);
+
+        assertThat(factory.batcherFor(OTHER_TABLE).sentRowKeys())
+                .containsExactly(List.of("events/row-2"));
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactly("orders/row-1");
+        assertThat(parked(writer)).isZero();
+    }
+
+    @Test
+    void keepsATableIdleForExactlyTheTimeout() throws Exception {
+        // "Idle beyond the timeout", not "at" it — the boundary the sweep's comparison decides, and
+        // the same direction BigQuery's sweep takes.
+        MutableClock clock = new MutableClock();
+        SinkWriter<String> writer =
+                multiTableWriter(
+                        BigtableWriterOptions.builder()
+                                .destinationIdleTimeout(Duration.ofMinutes(10))
+                                .build(),
+                        failJob(),
+                        clock);
+        writer.write("orders/row-1", TestContexts.NO_OP);
+
+        clock.advance(Duration.ofMinutes(10));
+        writer.flush(false);
+        assertThat(factory.batcherFor(TABLE).closeCalls).isZero();
+
+        clock.advance(Duration.ofNanos(1));
+        writer.flush(false);
+        assertThat(factory.batcherFor(TABLE).closeCalls).isEqualTo(1);
+    }
+
+    @Test
+    void isolatesEachParkedMutationAgainstItsOwnTable() throws Exception {
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer = multiTableWriter(handler);
+        factory.batcherFor(TABLE).rejectedRowKeys.add("orders/row-1");
+        factory.batcherFor(OTHER_TABLE).rejectedRowKeys.add("events/row-3");
+
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("orders/row-2", TestContexts.NO_OP);
+        writer.write("events/row-3", TestContexts.NO_OP);
+        writer.flush(false);
+
+        // Each solo re-submission goes to the batcher of its own table: the batched request, then
+        // the two of that table's mutations alone.
+        assertThat(factory.batcherFor(TABLE).sentRowKeys())
+                .containsExactly(
+                        List.of("orders/row-1", "orders/row-2"),
+                        List.of("orders/row-1"),
+                        List.of("orders/row-2"));
+        assertThat(factory.batcherFor(OTHER_TABLE).sentRowKeys())
+                .containsExactly(List.of("events/row-3"), List.of("events/row-3"));
+        assertThat(handler.handled)
+                .extracting(failed -> failed.getRowKey().toStringUtf8())
+                .containsExactlyInAnyOrder("orders/row-1", "events/row-3");
+        // Each failed mutation names the table it was headed for, not the sink's first one.
+        assertThat(handler.handled)
+                .extracting(FailedMutation::getDestination)
+                .containsExactlyInAnyOrder(TABLE, OTHER_TABLE);
+    }
+
+    @Test
+    void countsInFlightMutationsAcrossEveryTableAtOnce() throws Exception {
+        // The in-flight caps are the writer's, summed over every destination rather than shared out
+        // among them. Two consequences rest on that and nothing else states them: drainInFlight()
+        // means "the writer is empty" — a per-destination split would leave it no single number to
+        // wait on — and the park bound in write() stays one number rather than a sum of caps.
+        SinkWriter<String> writer = multiTableWriter(failJob());
+
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+
+        assertThat(inFlight(writer)).isEqualTo(2);
+        assertThat(inFlightBytes(writer))
+                .isEqualTo(serializedSize("orders/row-1") + serializedSize("events/row-2"));
+    }
+
+    @Test
+    void opensNoBatcherForARecordTheSerializerSkipsOrRejects() throws Exception {
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.defaults(),
+                        (element, context) -> {
+                            if (element.equals("skip-me")) {
+                                return null;
+                            }
+                            throw new IOException("no mutation for " + element);
+                        },
+                        handler);
+
+        writer.write("skip-me", TestContexts.NO_OP);
+        writer.write("row-1", TestContexts.NO_OP);
+
+        // Neither record reaches a table, and a batcher is a channel's worth of resources: a
+        // serializer skipping every record must not open one per phantom destination.
+        assertThat(factory.created).isEmpty();
+        // The rejected one still names where it was headed, which is why the resolve runs before
+        // the serializer rather than after it.
+        assertThat(handler.handled)
+                .extracting(FailedMutation::getDestination)
+                .containsExactly(TABLE);
+    }
+
+    @Test
+    void failsTheWriteWhenTheResolverReturnsNull() {
+        BigtableMutateRowsSink<String> sink =
+                (BigtableMutateRowsSink<String>)
+                        BigtableSink.<String>builder()
+                                .destinationResolver((element, context) -> null)
+                                .serializer(serializer())
+                                // A dropping handler is the discriminator: a resolver returning
+                                // null is a configuration failure, not a bad record, so it must
+                                // fail the job rather than let a dropping policy write nothing at
+                                // all under a green job.
+                                .failedMutationHandler(new RecordingHandler())
+                                .build();
+        SinkWriter<String> writer =
+                sink.createWriter(factory, new FakeTableAdmin(), mailbox, metricGroup);
+
+        assertThatThrownBy(() -> writer.write("row-1", TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("resolver returned null");
+    }
+
+    @Test
+    void failsTheWriteWhenABatcherCannotBeCreatedAndRetriesOnTheNextRecord() throws Exception {
+        // A client that cannot be built is a configuration or credentials failure, not a bad
+        // record, so it reaches the caller rather than the failure handler. And it leaves no
+        // half-populated state: the next record routed to that table tries again.
+        SinkWriter<String> writer =
+                writer(BigtableWriterOptions.defaults(), serializer(), failJob());
+        factory.createFailures.add(new IOException("no credentials"));
+
+        assertThatThrownBy(() -> writer.write("row-1", TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("p.i.orders");
+
+        writer.write("row-2", TestContexts.NO_OP);
+        assertThat(factory.created).containsExactly(TABLE);
+        assertThat(batcher.entries).extracting(BigtableWriterTest::rowKey).containsExactly("row-2");
+    }
+
+    @Test
+    void evictsATableIdleBeyondTheTimeoutAndRebuildsItOnTheNextRecord() throws Exception {
+        MutableClock clock = new MutableClock();
+        SinkWriter<String> writer =
+                multiTableWriter(
+                        BigtableWriterOptions.builder()
+                                .destinationIdleTimeout(Duration.ofMinutes(10))
+                                .build(),
+                        failJob(),
+                        clock);
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+        writer.flush(false);
+
+        // Past the timeout for the first table only: the second is written again just before the
+        // sweep, so the sweep has to discriminate rather than drop everything it walks.
+        clock.advance(Duration.ofMinutes(11));
+        writer.write("events/row-3", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(factory.batcherFor(TABLE).closeCalls).isEqualTo(1);
+        assertThat(factory.batcherFor(OTHER_TABLE).closeCalls).isZero();
+        // The client behind it is not closed with it: it belongs to the factory and to the tables
+        // of the same instance that are still live.
+        assertThat(factory.closeCalls).isZero();
+
+        writer.write("orders/row-4", TestContexts.NO_OP);
+        assertThat(factory.created).containsExactly(TABLE, OTHER_TABLE, TABLE);
+    }
+
+    @Test
+    void evictsNothingAtEndOfInput() throws Exception {
+        // The final flush is followed by close(), which releases everything anyway; evicting there
+        // would be a batcher close inside a flush for no benefit.
+        MutableClock clock = new MutableClock();
+        SinkWriter<String> writer =
+                multiTableWriter(
+                        BigtableWriterOptions.builder()
+                                .destinationIdleTimeout(Duration.ofMinutes(10))
+                                .build(),
+                        failJob(),
+                        clock);
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        clock.advance(Duration.ofMinutes(11));
+
+        writer.flush(true);
+
+        assertThat(factory.batcherFor(TABLE).closeCalls).isZero();
+    }
+
+    @Test
     void closesTheBatcherAndTheHandlerTogether() throws Exception {
         RecordingHandler handler = new RecordingHandler();
         SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
+        // A batcher exists only for a table a record was routed to; a writer that wrote nothing
+        // holds none, and closes none.
+        writer.write("row-1", TestContexts.NO_OP);
 
         writer.close();
 
         assertThat(batcher.closeCalls).isEqualTo(1);
         assertThat(handler.closes).isEqualTo(1);
+        assertThat(factory.closeCalls).isEqualTo(1);
     }
 
     @Test
-    void closesTheHandlerEvenWhenTheBatcherShutdownThrowsAnError() {
+    void closesEveryBatcherOfEveryTableAndTheFactoryAfterThem() throws Exception {
+        // Two properties in one teardown, neither reachable with one table. Every shutdown runs
+        // before any close, so the unbounded waits overlap rather than costing one per table —
+        // sequential ones exceed Flink's task.cancellation.timeout and turn a cancelling task into
+        // a fatal TaskManager error. And the factory, which holds the client the batchers were
+        // built over, is released after every one of them: released first, a batcher's shutdown
+        // would be sending through a dead channel.
+        SinkWriter<String> writer = multiTableWriter(failJob());
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+
+        writer.close();
+
+        assertThat(factory.events)
+                .containsExactly(
+                        "shutdown orders",
+                        "shutdown events",
+                        "close orders",
+                        "close events",
+                        "factory");
+    }
+
+    @Test
+    void closesEveryOtherBatcherWhenOneCloseThrows() throws Exception {
+        // One list through Closers, never a loop and then a call (#297): a batcher failing to
+        // close must not strand the ones after it, nor the factory holding their client.
+        SinkWriter<String> writer = multiTableWriter(failJob());
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+        IllegalStateException failure = new IllegalStateException("orders close blew up");
+        factory.batcherFor(TABLE).closeFailure = failure;
+
+        assertThatThrownBy(writer::close).isSameAs(failure);
+
+        assertThat(factory.batcherFor(OTHER_TABLE).closeCalls).isEqualTo(1);
+        assertThat(factory.closeCalls).isEqualTo(1);
+    }
+
+    @Test
+    void closesTheHandlerEvenWhenTheBatcherShutdownThrowsAnError() throws Exception {
         // #276: the handler is last, and Flink's IOUtils.closeAll rethrew an Error from inside its
         // loop, leaving it open — since #211 it can own an SDK publisher and a gRPC channel. That
         // the Error reaches the caller as an Error is the other half: Flink halts the JVM on a
         // fatal one, and only if it arrives unwrapped.
         RecordingHandler handler = new RecordingHandler();
         SinkWriter<String> writer = writer(BigtableWriterOptions.defaults(), serializer(), handler);
+        writer.write("row-1", TestContexts.NO_OP);
         batcher.closeFailure = new NoClassDefFoundError("batcher shutdown blew up");
 
         assertThatThrownBy(writer::close)
                 .isInstanceOf(NoClassDefFoundError.class)
                 .hasMessage("batcher shutdown blew up");
         assertThat(handler.closes).isEqualTo(1);
+        assertThat(factory.closeCalls).isEqualTo(1);
     }
 
     @Test
@@ -571,6 +862,38 @@ class BigtableWriterTest {
         return writer(options, serializer(), failJob());
     }
 
+    private SinkWriter<String> multiTableWriter(FailureHandler<? super FailedMutation> handler) {
+        return multiTableWriter(BigtableWriterOptions.defaults(), handler, System::nanoTime);
+    }
+
+    /**
+     * A writer routing a row key prefixed {@code events/} to {@link #OTHER_TABLE}, everything else
+     * to {@link #TABLE}.
+     */
+    private SinkWriter<String> multiTableWriter(
+            BigtableWriterOptions options,
+            FailureHandler<? super FailedMutation> handler,
+            LongSupplier nanoClock) {
+        BigtableMutateRowsSink<String> sink =
+                (BigtableMutateRowsSink<String>)
+                        BigtableSink.<String>builder()
+                                .destinationResolver(
+                                        (element, context) ->
+                                                element.startsWith("events/") ? OTHER_TABLE : TABLE)
+                                .serializer(serializer())
+                                .writerOptions(options)
+                                .failedMutationHandler(handler)
+                                .build();
+        return new BigtableWriter<>(
+                sink.getConfig(),
+                factory,
+                new FakeTableAdmin(),
+                mailbox,
+                metricGroup,
+                sink.getConfig().getWriterOptions().toRecoverySchedule(),
+                nanoClock);
+    }
+
     private SinkWriter<String> writer(
             BigtableWriterOptions options,
             BigtableSerializationSchema<String> serializer,
@@ -583,9 +906,7 @@ class BigtableWriterTest {
                                 .writerOptions(options)
                                 .failedMutationHandler(handler)
                                 .build();
-        BigtableSinkConfig<String> config = sink.getConfig();
-        assertThat(config.getDestination()).isEqualTo(TABLE);
-        return sink.createWriter(batcher, new FakeTableAdmin(), mailbox, metricGroup);
+        return sink.createWriter(factory, new FakeTableAdmin(), mailbox, metricGroup);
     }
 
     private static BigtableSerializationSchema<String> serializer() {
@@ -617,6 +938,25 @@ class BigtableWriterTest {
     @SuppressWarnings("unchecked")
     private static int parked(SinkWriter<String> writer) {
         return ((BigtableWriter<String>) writer).getParkedMutations();
+    }
+
+    private static String rowKey(RowMutationEntry entry) {
+        return entry.toProto().getRowKey().toStringUtf8();
+    }
+
+    /** A nanosecond clock a test advances by hand, for the idle-eviction sweep. */
+    private static final class MutableClock implements LongSupplier {
+
+        private long nanos;
+
+        @Override
+        public long getAsLong() {
+            return nanos;
+        }
+
+        void advance(Duration by) {
+            nanos += by.toNanos();
+        }
     }
 
     /** A handler that drops every mutation, recording what it saw and its lifecycle calls. */

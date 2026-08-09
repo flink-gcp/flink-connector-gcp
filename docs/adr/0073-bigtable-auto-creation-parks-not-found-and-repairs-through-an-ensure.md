@@ -53,14 +53,17 @@ Measured before the design was committed (2026-08-08, `google-cloud-cli:441.0.0-
 
 ## Decision
 
-**The repair is the Pub/Sub sink's reactive shape, single-destination.** A mutation failing
+**The repair is the Pub/Sub sink's reactive shape, single-destination** (multi-destination since
+ADR-0074, [#232]: `tableMissing` became a set, one repair ensures every table parked at the time,
+and its budget is shared across them)**.** A mutation failing
 `NOT_FOUND` under `CREATE_IF_NEEDED` is parked into a second queue (`pendingRepair`), and
 `runRepair()` — from the next `write()` and inside `flush()` — drains the writer, ensures the
 table and its declared families exist, re-applies the parked batch exempt from the capacity check
 (a park cannot exceed `maxInFlightMutations`), and retries on the jittered recovery schedule until
-the batch lands or the budget is spent. No `repairNeeded` flag: with one fixed table and no
-ordering keys, nothing can owe a repair with an empty queue, so the queue's non-emptiness is the
-trigger.
+the batch lands or the budget is spent. No `repairNeeded` flag: with no ordering keys, nothing can
+owe a repair with an empty queue, so the queue's non-emptiness is the trigger. (That conclusion
+rested on two premises when it was written; ADR-0074 removed the fixed table, and the *no ordering
+keys* half carries it alone.)
 
 **Creation needs a schema object, not a flag.** `createDisposition(CREATE_IF_NEEDED)` requires
 `tableCreateOptions(...)` naming at least one column family, and the reverse combination —
@@ -116,7 +119,7 @@ ADR-0042 puts first for routing: `PubSubErrorClassifier`'s precedence, adopted b
 `CREATE_NEVER` the outcome is a job failure with the disposition named either way. Unlike Pub/Sub
 (ADR-0006), **the disposition gates the parking itself**: there is no cascade or ordering-key
 reason to park under `CREATE_NEVER` here. `tableMissing` still carries the repair's reason,
-consumed per attempt — ADR-0006(b)'s shape — so a later incident cannot inherit an earlier
+consumed per attempt (per table since ADR-0074) — ADR-0006(b)'s shape — so a later incident cannot inherit an earlier
 repair's answer; once the ensure has succeeded it is not repeated within the repair, and an ensure
 that *fails* spends an attempt from the recovery schedule rather than the job, because the admin
 client retries neither of its RPCs and this loop is the only retry layer a transient admin
@@ -168,6 +171,7 @@ same way.
   `onEnsure` hook clears the fake's missing state so repair convergence emerges from the ensure
   rather than being scripted turn by turn.
 
+[#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
 [#233]: https://github.com/laughingman7743/flink-connector-gcp/issues/233
 [#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
 [#414]: https://github.com/laughingman7743/flink-connector-gcp/issues/414

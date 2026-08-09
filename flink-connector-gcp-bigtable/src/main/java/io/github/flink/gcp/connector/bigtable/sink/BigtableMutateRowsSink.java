@@ -29,7 +29,6 @@ import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigtable.sink.writer.BigtableWriter;
 import io.github.flink.gcp.connector.bigtable.sink.writer.DefaultMutationBatcherFactory;
-import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcher;
 import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcherFactory;
 
 import java.io.IOException;
@@ -66,7 +65,6 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
         return createWriter(
                 context,
                 new DefaultMutationBatcherFactory(
-                        config.getDestination(),
                         config.getAppProfileId(),
                         config.getWriterOptions(),
                         config.getEmulatorEndpoint()));
@@ -76,9 +74,9 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
      * The production path, against an injectable factory.
      *
      * <p>The seam exists for one assertion the sink cannot otherwise make observable: that a failed
-     * creation releases the {@link MutationBatcher} it had already built, and not only the failure
-     * handler. The production overload above is what a job calls, and it is one call, so the two
-     * cannot drift.
+     * creation releases the {@link MutationBatcherFactory} it had already built, and not only the
+     * failure handler. The production overload above is what a job calls, and it is one call, so
+     * the two cannot drift.
      */
     @VisibleForTesting
     SinkWriter<T> createWriter(WriterInitContext context, MutationBatcherFactory factory)
@@ -93,45 +91,42 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
             throw new IOException("Failed to open the Bigtable serialization schema.", e);
         }
         config.getFailedMutationHandler().open(DefaultFailureHandlerContext.of(context));
-        MutationBatcher batcher = null;
-        // Constructed unconditionally, whatever the disposition: it holds no client — the client
-        // inside it is per-call and built only when a repair actually creates something — so this
-        // is an object allocation, not a connection.
+        // Both constructed unconditionally, and neither opens a connection: the factory builds a
+        // client per instance on the first record routed there, and the admin's client is per-call,
+        // built only when a repair actually creates something.
         TableAdmin tableAdmin = new BigtableTableAdmin(config.getEmulatorEndpoint());
         try {
-            batcher = factory.create();
             return createWriter(
-                    batcher, tableAdmin, context.getMailboxExecutor(), context.metricGroup());
+                    factory, tableAdmin, context.getMailboxExecutor(), context.metricGroup());
         } catch (Throwable e) {
             // Nothing downstream will ever close these: no writer exists to do it, and the failure
             // handler's contract promises a close on the failure path too — a restart would
             // otherwise open one more per attempt. All are released, because the writer's
-            // constructor can fail after the client was built (its precondition on a deserialized
-            // options object is exactly that case), which would otherwise leak the client. The
-            // admin's close releases nothing today, but the guard is against what an
-            // implementation may hold, not what this one does.
+            // constructor can fail (its precondition on a deserialized options object is exactly
+            // that case). Neither the factory nor the admin holds anything yet at this point, but
+            // the guard is against what an implementation may hold, not what this one does.
             //
             // Throwable, not Exception: a client's first classload can fail with a
             // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past
             // this guard. Precise rethrow keeps the declared throws clause honest, and it also
             // means a checked exception added to anything above stays covered.
             Closers.closeAllSuppressing(
-                    e, batcher, tableAdmin, config.getFailedMutationHandler()::close);
+                    e, factory, tableAdmin, config.getFailedMutationHandler()::close);
             throw e;
         }
     }
 
     /**
-     * Creates the writer against an injected batcher and table admin. Deliberately does <b>not</b>
-     * open the failure handler — that belongs to the production path above, so writer tests
-     * injecting fakes need no {@link WriterInitContext}.
+     * Creates the writer against an injected batcher factory and table admin. Deliberately does
+     * <b>not</b> open the failure handler — that belongs to the production path above, so writer
+     * tests injecting fakes need no {@link WriterInitContext}.
      */
     @VisibleForTesting
     public SinkWriter<T> createWriter(
-            MutationBatcher batcher,
+            MutationBatcherFactory factory,
             TableAdmin tableAdmin,
             MailboxExecutor mailboxExecutor,
             SinkWriterMetricGroup metricGroup) {
-        return new BigtableWriter<>(config, batcher, tableAdmin, mailboxExecutor, metricGroup);
+        return new BigtableWriter<>(config, factory, tableAdmin, mailboxExecutor, metricGroup);
     }
 }

@@ -5,7 +5,7 @@ Module-scoped guidance, loaded when Claude works in this module. Repository-wide
 This file holds the rules a session must follow; each decision's record — context, evidence,
 declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
-## Sink design (`docs/adr/0041`, `0042`)
+## Sink design (`docs/adr/0041`, `0042`, `0074`)
 
 - Implemented, never adopted or vendored; the serializer SPI keeps
   `BaseRowMutationSerializer`'s shape, and null = skip is `docs/adr/0001`'s contract.
@@ -13,16 +13,28 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the `MutationBatcher` SPI and `sendOutstanding()` over `flush()`, the client's own blocking
   flow controller — keep the writer's caps below it, and `@InternalApi`
   `RowMutationEntry.toProto()`) are checked, not assumed; reread them on a client upgrade
-  (`docs/adr/0041`).
+  (`docs/adr/0041`). Two more, measured by `docs/adr/0074`: that flow controller is **one per
+  client**, shared by every batcher of an instance, so sharing a client subdivides nothing and the
+  writer-global caps still bind first; and `Batcher.closeAsync()` memoizes the future `close()`
+  waits on, which is what makes the two-phase teardown cost one wait rather than one per table.
 - **The writer's per-record `toProto()` is one of four identical constructions, three of them the
   client's own, and its cost is measured** — so it is not re-argued as an optimisation without
   engaging those numbers, and no local fix exists to argue for: the entry exposes neither its key,
   its mutations nor its size. The lever is upstream (#236, `docs/adr/0041`).
 - **Retries stay in the client**: no retry knobs for what the client retries. The `recovery*`
   knobs are not that — they budget the sink-owned auto-creation repair (`docs/adr/0073`), the
-  same `recovery*`-vs-`retry*` line the BigQuery options draw. One fixed table per sink;
-  `TableDestination` sits at the module root and `appProfileId` is a builder option, not part of
-  it.
+  same `recovery*`-vs-`retry*` line the BigQuery options draw. `TableDestination` sits at the
+  module root and `appProfileId` is a builder option, not part of it.
+- **Per-record destinations are a batcher pool over a client per (project, instance)**
+  (`docs/adr/0074`): `table(...)` is sugar for a `FixedDestinationResolver` and the two setters are
+  last-writer-wins; **resolve runs before serialize** (`FailedMutation` checkNotNulls its
+  destination) with the null-skip still ahead of the pool; a `null` destination fails the write and
+  is never routed; **no `instanceof` fast path**. The in-flight bounds stay **writer-global** —
+  that is what keeps `drainInFlight()` meaning "the writer is empty" and the park bound one number.
+  The adapter holds **no client**: the factory owns and closes them, or the first batcher to close
+  kills its instance's siblings invisibly. `close()` is one `Closers` list, every `shutdown()`
+  before any `close()`; the isolation pass's opening `sendOutstanding()` covers **every** live
+  batcher, and missing one either hangs the task thread or trips the tripwire on a healthy stream.
 - **`INVALID_ARGUMENT` alone is routed, `FAILED_PRECONDITION` deliberately not** — cite gRPC's
   state-independence definition and AIP-194, never the plausibility of what a code names. The
   routing condition takes both halves, reading the chain differently (`docs/adr/0042`).
@@ -43,7 +55,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Repair before isolation, and the two queues never drain each other**: a solo `NOT_FOUND`
   from the isolation pass migrates to `pendingRepair` (the tripwire invariant survives verbatim);
   a repair's re-application can park entries for isolation. `flush()` loops over both passes;
-  each is self-bounding. No `repairNeeded` flag — queue non-emptiness is the trigger.
+  each is self-bounding. No `repairNeeded` flag — queue non-emptiness is the trigger, and since
+  `docs/adr/0074` that conclusion rests on *no ordering keys* alone, not on one fixed table.
+- **One repair covers every table an incident left missing**, and `ensuredThisRepair` is a **set**
+  — a boolean creates the first and silently skips the rest, then dies naming undeclared column
+  families (`docs/adr/0074`). A failing ensure re-arms the failed table *and every one it did not
+  reach*. One `TableCreateOptions` serves every table; the budget is shared across them, so an
+  unrepairable table abandons the others' parked work.
 - `ensureTable` is idempotent and **add-only**: `CreateTable` first, on `ALREADY_EXISTS`
   reconcile by reading live families and adding only the absentees in one atomic request (a
   blind add of one existing family fails the rest with it); an existing family's GC rule is
@@ -85,7 +103,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Metrics (`docs/adr/0043`; conventions in the base module's CLAUDE.md)
 
-- No per-destination counters (one fixed table); `errorClass` counts RPC failures only;
+- Per-destination counters behind `perDestinationMetrics`, default off, and a `table(...)` sink is
+  **not** excepted — "one table" is a property of a resolver the writer does not inspect
+  (`docs/adr/0074`, refining `docs/adr/0043`); `errorClass` counts RPC failures only;
   `statusCode` reports the chain's outermost classifiable status; `close()` zeroes the
   gauge-backing counters **before** `Closers.closeAll`; every failure reaching the writer is
   counted except a batched row-level rejection, whose place `parkedMutations` takes.

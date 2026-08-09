@@ -82,4 +82,5 @@ clock decide, and both versions then live until garbage collection removes one.
 ## Next
 
 [Bigtable examples]({{< relref "docs/examples/bigtable" >}}) — several mutations per record,
-deletes, dropping bad rows instead of failing, and running against the emulator.
+deletes, a table named per record, dropping bad rows instead of failing, and running against the
+emulator.

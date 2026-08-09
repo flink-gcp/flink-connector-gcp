@@ -52,8 +52,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BigtableWriterMetricsTest {
 
     private static final TableDestination TABLE = TableDestination.of("p", "i", "orders");
+    private static final TableDestination OTHER_TABLE = TableDestination.of("p", "i", "events");
 
-    private final FakeMutationBatcher batcher = new FakeMutationBatcher();
+    private final FakeMutationBatcherFactory factory = new FakeMutationBatcherFactory();
+    private final FakeMutationBatcher batcher = factory.batcherFor(TABLE);
     private final FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
     private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
 
@@ -299,15 +301,43 @@ class BigtableWriterMetricsTest {
     }
 
     @Test
-    void registersNoPerDestinationCountersForItsOneFixedTable() throws Exception {
+    void registersNoPerDestinationCountersByDefault() throws Exception {
         SinkWriter<String> writer = writer(serializer(), dropping());
         writer.write("row-1", TestContexts.NO_OP);
 
-        // A sink writes one table, so destination.TABLE.* could only restate the writer's totals.
-        // The name is the one DestinationMetrics would use, which for this sink is the only table
-        // it has: TableDestination.toString() is "p.i.orders".
+        // perDestinationMetrics defaults to false, and Flink cannot unregister a metric: with
+        // per-record destinations the table set is unbounded. The name is the one
+        // DestinationMetrics would use: TableDestination.toString() is "p.i.orders".
         assertThat(metrics.hasMetric("destination", TABLE.toString(), "recordsSend")).isFalse();
         assertThat(metrics.hasMetric("destination", TABLE.toString(), "sendErrors")).isFalse();
+    }
+
+    @Test
+    void registersPerDestinationCountersPerTableWhenSwitchedOn() throws Exception {
+        SinkWriter<String> writer = multiTableWriter(perDestinationMetrics());
+
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("orders/row-2", TestContexts.NO_OP);
+        writer.write("events/row-3", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(counter("destination", TABLE.toString(), "recordsSend")).isEqualTo(2);
+        assertThat(counter("destination", OTHER_TABLE.toString(), "recordsSend")).isEqualTo(1);
+        assertThat(counter("numRecordsSend")).isEqualTo(3);
+    }
+
+    @Test
+    void countsAConfirmedRejectionAgainstItsOwnTable() throws Exception {
+        SinkWriter<String> writer = multiTableWriter(perDestinationMetrics());
+        factory.batcherFor(OTHER_TABLE).rejectedRowKeys.add("events/row-2");
+
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(counter("destination", OTHER_TABLE.toString(), "sendErrors")).isEqualTo(1);
+        assertThat(counter("destination", TABLE.toString(), "sendErrors")).isZero();
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
     }
 
     @Test
@@ -348,7 +378,29 @@ class BigtableWriterMetricsTest {
                                 .writerOptions(BigtableWriterOptions.defaults())
                                 .failedMutationHandler(handler)
                                 .build();
-        return sink.createWriter(batcher, new FakeTableAdmin(), mailbox, metrics);
+        return sink.createWriter(factory, new FakeTableAdmin(), mailbox, metrics);
+    }
+
+    private static BigtableWriterOptions perDestinationMetrics() {
+        return BigtableWriterOptions.builder().perDestinationMetrics(true).build();
+    }
+
+    /**
+     * A writer routing a row key prefixed {@code events/} to {@link #OTHER_TABLE}, everything else
+     * to {@link #TABLE}.
+     */
+    private SinkWriter<String> multiTableWriter(BigtableWriterOptions options) {
+        BigtableMutateRowsSink<String> sink =
+                (BigtableMutateRowsSink<String>)
+                        BigtableSink.<String>builder()
+                                .destinationResolver(
+                                        (element, context) ->
+                                                element.startsWith("events/") ? OTHER_TABLE : TABLE)
+                                .serializer(serializer())
+                                .writerOptions(options)
+                                .failedMutationHandler(dropping())
+                                .build();
+        return sink.createWriter(factory, new FakeTableAdmin(), mailbox, metrics);
     }
 
     private static BigtableSerializationSchema<String> serializer() {

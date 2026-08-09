@@ -22,7 +22,8 @@ limitations under the License.
 
 # Bigtable Connector
 
-Writes a DataStream into a Cloud Bigtable table, one row mutation per record, at-least-once. Every
+Writes a DataStream into Cloud Bigtable, one row mutation per record, at-least-once, into a
+fixed table or one each record names. Every
 option is in the [Bigtable reference]({{< relref "docs/reference/bigtable" >}}); the runnable job is
 the [quickstart]({{< relref "docs/quickstart/bigtable" >}}); implementation status is the table in
 the module
@@ -93,20 +94,56 @@ Bigtable. The setter parses it into the host and port the client's emulator sett
 malformed value is rejected at `build()` on the client rather than when the writer builds its client
 on a task manager ([#235]({{< param BookRepo >}}/issues/235)).
 
-## One table per sink
+## Per-record destinations
 
-The table is fixed at build time. This is the one place the Bigtable sink is narrower than its
-siblings, which both take per-record destinations, and the reason is in the client: a bulk mutation
-batcher is bound to one table, so per-record tables would mean a pool of batchers, a share of the
-in-flight budget for each, and an eviction policy for the tail. Writing to several tables means
-several sinks today; a batcher pool waits for a use case
-([#232]({{< param BookRepo >}}/issues/232) records the deferral).
+`table(...)` writes every record to one table. `destinationResolver(...)` names the table per
+record instead, so one sink writes to many — a table per tenant, a table per day — the same shape
+the BigQuery, Pub/Sub and Cloud Tasks sinks take. The two setters write the same field, so the last
+one wins, and one of them is required.
+
+```java
+Sink<OrderEvent> sink =
+        BigtableSink.<OrderEvent>builder()
+                .destinationResolver(
+                        (event, context) ->
+                                TableDestination.of("my-project", "my-instance",
+                                        "orders-" + event.day()))
+                .serializer(...)
+                .build();
+```
+
+The resolver runs once per record, **before** the serializer, so a record the serializer then
+rejects is still reported against the table it was headed for. It must be cheap and deterministic,
+and it should return cached `TableDestination` instances when destinations repeat — a small
+`Map.computeIfAbsent` keyed on the varying part is enough. Returning `null` fails the job: a
+resolver that cannot name a table is a configuration error, not a bad record, so it is never handed
+to the [failed-mutation policy](#failed-mutation-policy).
+
+What a destination costs is a **bulk mutation batcher of its own**, because the client binds one to
+one table. Under those batchers the sink keeps one client per (project, instance), shared by every
+table of that instance, so a resolver spreading records over many tables of one instance multiplies
+batchers rather than channel pools. A batcher is dropped once its table has gone
+`writerOptions(...).destinationIdleTimeout(...)` without a mutation — one hour by default, swept at
+the end of a checkpoint's flush when the batcher is already empty — and rebuilt transparently if
+that table is written to again. So a resolver's *cardinality* is a sink resource decision, not only
+a routing one.
+
+The in-flight bounds are the writer's, summed across every destination rather than split among
+them: `maxInFlightMutations` and `maxInFlightBytes` mean the same thing whether the sink writes one
+table or fifty. What grows with the destination count is one accumulator per live batcher, on top
+of those bounds.
 
 By default the sink never **creates** a table or a column family, so both must exist. Opting into
 [auto-creation](#table-auto-creation) requires declaring the schema, not only permitting the
 creation ([#233]({{< param BookRepo >}}/issues/233)): a Bigtable table's schema is its column
 families and their garbage-collection policies, which is exactly the part a sink cannot guess — and
 unlike a topic, a table created bare would reject every mutation.
+
+**Auto-creation beside a resolver is a different risk profile** from auto-creation of one fixed
+table. One schema serves every table the sink creates — a resolver names tables, not schemas — and
+a resolver that computes a table id from record data can invent one table per record, each an admin
+RPC against an instance-level table limit. Prefer a resolver whose range you can state, and keep
+`CREATE_NEVER` where you cannot.
 
 ## Table auto-creation
 
@@ -408,6 +445,7 @@ Registered on the sink writer's metric group, one set per subtask:
 | `errorClass.CODE.errors` | counter | failed mutations by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `tablesCreated` | counter | tables the [auto-creation repair](#table-auto-creation) created, declared families included |
 | `columnFamiliesAdded` | counter | families the repair added to an already-existing table |
+| `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
 
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
 exactly what reached `failedMutationHandler(...)` — a record the serializer rejected, and a mutation
@@ -451,10 +489,14 @@ counted by the write that admitted it. The
 consequence is the same one the other pages state — `numBytesSend` is payload volume rather than
 wire volume, since a mutation the client retried three times moved three times its size.
 
-There are **no per-destination counters**. A sink writes [one fixed table](#one-table-per-sink), so
-`destination.TABLE.*` could only restate the totals above; the connectors with dynamic destinations
-carry that pair behind a `perDestinationMetrics` option, and this one has no option because it has
-nothing to distinguish.
+**`perDestinationMetrics` is off by default, and should stay off for a resolver whose destinations
+are many.** Flink cannot unregister a metric, so every table the job has ever written to keeps its
+counters for the lifetime of the task — and, for the same reason, a table whose batcher was
+[evicted](#per-record-destinations) and later rebuilt resumes its old counters rather than
+restarting at zero. Switch it on when the table set is small and known; the option is in
+[`BigtableWriterOptions`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions). A sink
+built with `table(...)` is not excepted: the writer does not inspect the resolver, so there the two
+counters simply restate the totals above.
 
 `currentSendTime` is deliberately **not** set: the client batches mutations and completes their
 futures asynchronously, so any latency this writer could report would measure its own bookkeeping
@@ -469,8 +511,6 @@ Not implemented, each with its issue rather than a promise:
   are [#35]({{< param BookRepo >}}/issues/35);
 - Table API and SQL, including a `RowData` serializer:
   [#217]({{< param BookRepo >}}/issues/217);
-- per-record table destinations, deferred [above](#one-table-per-sink)
-  ([#232]({{< param BookRepo >}}/issues/232));
 - conditional and read-modify-write mutations (`checkAndMutateRow`, `readModifyWriteRow`). These are
   request-response primitives rather than a write path a sink batches: each is one RPC whose result
   the caller is expected to read, and neither participates in `MutateRows`.

@@ -77,7 +77,10 @@ Further design decisions of the same cluster:
   A disposition-only auto-creation is a poorer fit here than in the Pub/Sub sink: a table's
   schema *is* its column families and their garbage-collection policies, which a sink cannot
   guess. Refined by ADR-0073 ([#233]): opt-in creation exists, gated on the user declaring that
-  schema, with `CREATE_NEVER` still the default.
+  schema, with `CREATE_NEVER` still the default. **Reversed for the destination half by
+  ADR-0074** ([#232]): the pool exists, over a client shared per (project, instance) — and of the
+  three costs predicted here, the budget share is the one that was *not* paid, since the bounds
+  stayed writer-global.
 - **`TableDestination` sits at the module root, not under `sink`.** The root layout rule puts
   destination types in `sink`; this deviates because [#216]'s source facade takes the same
   value, and moving it later would churn every importer. `appProfileId` is deliberately *not*

@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
@@ -84,14 +85,60 @@ class BigtableAutoCreationITCase extends AbstractBigtableEmulatorITCase {
         }
     }
 
+    @Test
+    void createIfNeededCreatesEveryTableOneIncidentLeftMissing() throws Exception {
+        // One repair covers every table parked at the time, and ensures each of them — the case a
+        // single "have I created yet" flag would get wrong by creating the first and spending the
+        // budget on the second (#232). One creation schema serves both, which is the other half
+        // this states: a resolver names tables, not schemas.
+        TableDestination even = TableDestination.of(PROJECT, INSTANCE, "auto-created-even");
+        TableDestination odd = TableDestination.of(PROJECT, INSTANCE, "auto-created-odd");
+        TableCreateOptions createOptions =
+                TableCreateOptions.builder().columnFamily(FAMILY, GcRule.maxVersions(1)).build();
+        SinkWriter<String> writer =
+                writer(
+                        (element, context) ->
+                                Integer.parseInt(element.substring("row-".length())) % 2 == 0
+                                        ? even
+                                        : odd,
+                        createOptions);
+
+        try {
+            writer.write("row-1", TestContexts.NO_OP);
+            writer.write("row-2", TestContexts.NO_OP);
+            writer.flush(false);
+
+            assertThat(readRows(even))
+                    .extracting(row -> row.getKey().toStringUtf8())
+                    .containsExactly("row-2");
+            assertThat(readRows(odd))
+                    .extracting(row -> row.getKey().toStringUtf8())
+                    .containsExactly("row-1");
+            assertThat(describeTable("auto-created-even").getColumnFamilies())
+                    .extracting(ColumnFamily::getId)
+                    .containsExactly(FAMILY);
+            assertThat(describeTable("auto-created-odd").getColumnFamilies())
+                    .extracting(ColumnFamily::getId)
+                    .containsExactly(FAMILY);
+        } finally {
+            writer.close();
+        }
+    }
+
     /** Builds a CREATE_IF_NEEDED writer through the production factory and admin. */
-    @SuppressWarnings("unchecked")
     private static SinkWriter<String> writer(
             TableDestination table, TableCreateOptions createOptions) throws Exception {
+        return writer((element, context) -> table, createOptions);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static SinkWriter<String> writer(
+            DestinationResolver<String> resolver, TableCreateOptions createOptions)
+            throws Exception {
         BigtableWriterOptions options = BigtableWriterOptions.defaults();
         Sink<String> sink =
                 BigtableSink.<String>builder()
-                        .table(table)
+                        .destinationResolver(resolver)
                         .serializer(
                                 (element, context) ->
                                         RowMutationEntry.create(element)
@@ -101,13 +148,12 @@ class BigtableAutoCreationITCase extends AbstractBigtableEmulatorITCase {
                         .tableCreateOptions(createOptions)
                         .emulatorEndpoint(emulatorEndpoint())
                         .build();
-        MutationBatcher batcher =
+        MutationBatcherFactory factory =
                 new DefaultMutationBatcherFactory(
-                                table, null, options, EmulatorEndpoint.parse(emulatorEndpoint()))
-                        .create();
+                        null, options, EmulatorEndpoint.parse(emulatorEndpoint()));
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(
-                        batcher,
+                        factory,
                         new BigtableTableAdmin(EmulatorEndpoint.parse(emulatorEndpoint())),
                         new FakeMailboxExecutor(),
                         TestSinkWriterMetricGroup.create());

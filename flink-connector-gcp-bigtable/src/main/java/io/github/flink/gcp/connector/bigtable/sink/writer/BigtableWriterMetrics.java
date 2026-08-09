@@ -22,8 +22,10 @@ import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
 import com.google.api.gax.rpc.StatusCode;
+import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
+import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import javax.annotation.Nullable;
 
@@ -42,9 +44,12 @@ import javax.annotation.Nullable;
  * codes is <em>not</em> this connector's retry volume, which is the one place a dashboard reading
  * all four connectors alike would be misled.
  *
- * <p>There are no per-destination counters: a sink writes one fixed table, so {@code
- * destination.TABLE.*} would be a constant restatement of the writer's own totals. Registering a
- * metric that can never distinguish anything is what the series avoids elsewhere too.
+ * <p>Per-destination counters exist since the sink gained per-record tables (#232), behind {@code
+ * BigtableWriterOptions.perDestinationMetrics} and off by default — {@link DestinationMetrics}
+ * carries why the switch has to exist at all. A sink built with {@code table(...)} writes one
+ * table, where they can only restate the totals; switching them on there is the user's call, and
+ * the writer makes no exception for it, because "one table" is a property of a resolver the writer
+ * does not inspect.
  *
  * <p>{@code currentSendTime} is deliberately left unset: the client batches mutations and completes
  * their futures asynchronously, so any latency this writer could report would measure its own
@@ -61,15 +66,18 @@ final class BigtableWriterMetrics {
     private final Counter tablesCreated;
     private final Counter columnFamiliesAdded;
     private final ErrorClassCounters errorClasses;
+    private final DestinationMetrics destinations;
 
     /**
      * Registers the writer's counters. The auto-creation pair is registered whatever the create
      * disposition, so a dashboard reads a zero rather than a hole under {@code CREATE_NEVER}.
      *
      * @param metricGroup the writer's metric group
+     * @param perDestinationMetrics whether to register per-table counters beside the totals
      */
-    BigtableWriterMetrics(SinkWriterMetricGroup metricGroup) {
+    BigtableWriterMetrics(SinkWriterMetricGroup metricGroup, boolean perDestinationMetrics) {
         this.metricGroup = metricGroup;
+        this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics);
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
@@ -104,23 +112,42 @@ final class BigtableWriterMetrics {
     }
 
     /**
+     * Returns the per-table counters, a no-op handle unless {@code perDestinationMetrics} is on.
+     * Resolved once per destination and cached by the writer's per-destination state, so the
+     * table's name is composed once rather than per record.
+     *
+     * @param destination the table
+     * @return the table's counters
+     */
+    DestinationMetrics.Counters forTable(TableDestination destination) {
+        // toString(), which is project.instance.table — how the docs page spells a destination, and
+        // the same choice the BigQuery writers make.
+        return destinations.forDestination(destination.toString());
+    }
+
+    /**
      * Counts one record handed to the client library for application. Called on a record's first
      * submission only — see the class documentation for why the isolation pass's re-submission is
      * not a second send.
      *
+     * @param table the destination's counters, from {@link #forTable}
      * @param serializedSize the mutation's serialized size
      */
-    void mutationSent(int serializedSize) {
+    void mutationSent(DestinationMetrics.Counters table, int serializedSize) {
         numRecordsSend.inc();
         numBytesSend.inc(serializedSize);
+        table.recordSent();
     }
 
     /**
      * Counts one record routed to the failure handler, whether the serializer rejected it or the
      * service refused the mutation, and whether the handler then dropped it or failed the job.
+     *
+     * @param table the destination's counters, from {@link #forTable}
      */
-    void mutationFailed() {
+    void mutationFailed(DestinationMetrics.Counters table) {
         numRecordsSendErrors.inc();
+        table.sendFailed();
     }
 
     /**
@@ -130,6 +157,11 @@ final class BigtableWriterMetrics {
      * record never became one. It is neither a send nor a failure, and nothing else in the writer
      * reports it — without this counter a serializer skipping every record is indistinguishable
      * from a stream that carried none, which is the one way the skip contract can hide a bug.
+     *
+     * <p>Takes no per-table handle, unlike the two above and for the reason both sibling sinks
+     * give: the serializer is handed the record alone, so its decision cannot depend on the
+     * destination, and attributing a skip to the table the record would have gone to would read as
+     * a property of that table.
      */
     void recordSkipped() {
         recordsSkipped.inc();

@@ -55,6 +55,13 @@ import java.util.Objects;
  * moves the effective bound into the client, where it stalls the task thread rather than
  * backpressuring the stream.
  *
+ * <p>Per-record destinations do not change that relationship, and the reason is measured rather
+ * than assumed: the client's flow controller is one per <em>client</em> — {@code
+ * EnhancedBigtableStub} builds a single {@code bulkMutationFlowController} and hands the same
+ * instance to every batcher it creates — so the tables of one instance draw on one budget, and
+ * these caps, being the writer's rather than each destination's, still bind first however many
+ * tables the sink writes to.
+ *
  * <p>Instances are immutable and serializable.
  */
 @PublicEvolving
@@ -72,6 +79,14 @@ public final class BigtableWriterOptions implements Serializable {
     /** {@link Builder#maxConsecutiveRejections(int)} value under which the bound never fires. */
     public static final int UNBOUNDED = -1;
 
+    /**
+     * Default for {@link Builder#destinationIdleTimeout(Duration)}: one hour. Coarse on purpose —
+     * eviction is memory hygiene for long-lived jobs with per-record destinations (for example
+     * date-suffixed tables), and an evicted table that receives a mutation again just rebuilds its
+     * batcher once.
+     */
+    public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofHours(1);
+
     private static final BigtableWriterOptions DEFAULTS = builder().build();
 
     @Nullable private final Long batchElementCount;
@@ -82,6 +97,8 @@ public final class BigtableWriterOptions implements Serializable {
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
+    private final Duration destinationIdleTimeout;
+    private final boolean perDestinationMetrics;
 
     private BigtableWriterOptions(Builder builder) {
         this.batchElementCount = builder.batchElementCount;
@@ -92,6 +109,8 @@ public final class BigtableWriterOptions implements Serializable {
         this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
+        this.destinationIdleTimeout = builder.destinationIdleTimeout;
+        this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
     /**
@@ -107,8 +126,9 @@ public final class BigtableWriterOptions implements Serializable {
      * Returns the default options: the client's own batch thresholds, at most 1000 unacknowledged
      * mutations, at most 64 MiB of them, a job failure after {@value
      * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed rejections under a dropping
-     * policy, and a table auto-creation recovery budget of 500 ms doubling to 10 s over at most 10
-     * attempts.
+     * policy, a table auto-creation recovery budget of 500 ms doubling to 10 s over at most 10
+     * attempts, an idle table's batcher dropped after {@link #DEFAULT_DESTINATION_IDLE_TIMEOUT},
+     * and no per-table counters.
      *
      * @return the default options
      */
@@ -161,6 +181,16 @@ public final class BigtableWriterOptions implements Serializable {
         return recoveryMaxAttempts;
     }
 
+    /** Returns how long a table may go without mutations before the writer drops its batcher. */
+    public Duration getDestinationIdleTimeout() {
+        return destinationIdleTimeout;
+    }
+
+    /** Returns whether per-table counters are registered beside the writer's totals. */
+    public boolean isPerDestinationMetrics() {
+        return perDestinationMetrics;
+    }
+
     /**
      * Returns the table auto-creation recovery schedule the {@code recovery*} knobs describe.
      * Jittered: every subtask that parked mutations for the same missing table resumes against the
@@ -188,10 +218,12 @@ public final class BigtableWriterOptions implements Serializable {
                 && maxInFlightBytes == that.maxInFlightBytes
                 && maxConsecutiveRejections == that.maxConsecutiveRejections
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
+                && perDestinationMetrics == that.perDestinationMetrics
                 && Objects.equals(batchElementCount, that.batchElementCount)
                 && Objects.equals(batchByteSize, that.batchByteSize)
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
-                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff);
+                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
+                && destinationIdleTimeout.equals(that.destinationIdleTimeout);
     }
 
     @Override
@@ -204,7 +236,9 @@ public final class BigtableWriterOptions implements Serializable {
                 maxConsecutiveRejections,
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
-                recoveryMaxAttempts);
+                recoveryMaxAttempts,
+                destinationIdleTimeout,
+                perDestinationMetrics);
     }
 
     @Override
@@ -225,6 +259,10 @@ public final class BigtableWriterOptions implements Serializable {
                 + recoveryMaxBackoff
                 + ", recoveryMaxAttempts="
                 + recoveryMaxAttempts
+                + ", destinationIdleTimeout="
+                + destinationIdleTimeout
+                + ", perDestinationMetrics="
+                + perDestinationMetrics
                 + "}";
     }
 
@@ -240,6 +278,8 @@ public final class BigtableWriterOptions implements Serializable {
         private Duration recoveryInitialBackoff = Duration.ofMillis(500);
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
         private int recoveryMaxAttempts = 10;
+        private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
+        private boolean perDestinationMetrics;
 
         private Builder() {}
 
@@ -370,6 +410,55 @@ public final class BigtableWriterOptions implements Serializable {
             Preconditions.checkArgument(
                     recoveryMaxAttempts > 0, "recoveryMaxAttempts must be positive");
             this.recoveryMaxAttempts = recoveryMaxAttempts;
+            return this;
+        }
+
+        /**
+         * Sets how long a table may go without mutations before the writer closes and drops its
+         * batcher. Eviction is memory hygiene for long-lived jobs with per-record destinations (for
+         * example date-suffixed tables), whose per-table state otherwise grows without bound;
+         * correctness is unaffected, and a table that receives a mutation again after eviction
+         * rebuilds its batcher transparently. The sweep runs at the end of each successful flush,
+         * when nothing is parked or in flight. Defaults to {@link
+         * #DEFAULT_DESTINATION_IDLE_TIMEOUT}; to never evict, set a very large duration — up to
+         * {@code Duration.ofNanos(Long.MAX_VALUE)}, about 292 years, which is as long as the
+         * writer's nanosecond clock can express.
+         *
+         * <p>A client is not evicted with the table: the sink holds one per (project, instance),
+         * shared by that instance's tables, and it is released when the sink closes.
+         *
+         * @param destinationIdleTimeout the idle timeout, positive and at most {@code
+         *     Duration.ofNanos(Long.MAX_VALUE)}
+         * @return this builder
+         */
+        public Builder destinationIdleTimeout(Duration destinationIdleTimeout) {
+            OptionChecks.checkPositive(destinationIdleTimeout, "destinationIdleTimeout");
+            // This knob's own documentation offers a very large duration as the way to say "never
+            // evict", so the ceiling is what keeps that instruction from throwing
+            // ArithmeticException from the writer's constructor on a TaskManager, failing the job
+            // as it starts rather than here (ADR-0068).
+            this.destinationIdleTimeout =
+                    OptionChecks.checkExpressibleInNanos(
+                            destinationIdleTimeout, "destinationIdleTimeout");
+            return this;
+        }
+
+        /**
+         * Registers per-table {@code recordsSend} and {@code sendErrors} counters beside the
+         * writer's totals. Defaults to {@code false}.
+         *
+         * <p>Off by default because Flink cannot unregister a metric: with per-record destinations
+         * the table set is unbounded, so every table the job ever writes to keeps a row in the
+         * metric registry for the lifetime of the task — including one whose batcher {@link
+         * #destinationIdleTimeout(Duration)} has since evicted. Counters survive eviction: a table
+         * seen again resumes its own totals. Switch it on for a sink whose tables are few and
+         * known.
+         *
+         * @param perDestinationMetrics whether to register per-table counters
+         * @return this builder
+         */
+        public Builder perDestinationMetrics(boolean perDestinationMetrics) {
+            this.perDestinationMetrics = perDestinationMetrics;
             return this;
         }
 
