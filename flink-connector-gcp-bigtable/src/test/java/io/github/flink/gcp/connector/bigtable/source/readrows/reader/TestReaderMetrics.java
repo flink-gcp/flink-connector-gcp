@@ -35,6 +35,11 @@ final class TestReaderMetrics {
         this.metrics = new BigtableSourceReaderMetrics(metricGroup);
     }
 
+    /** The group the metrics registered on, for a reader context that has to hand one back. */
+    SourceReaderMetricGroup metricGroup() {
+        return metricGroup;
+    }
+
     BigtableSourceReaderMetrics metrics() {
         return metrics;
     }

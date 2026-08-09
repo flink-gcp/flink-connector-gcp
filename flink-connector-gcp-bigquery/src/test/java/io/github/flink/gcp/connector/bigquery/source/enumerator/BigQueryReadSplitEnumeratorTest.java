@@ -21,6 +21,7 @@ import org.apache.flink.util.FlinkRuntimeException;
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.TestSources;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -44,7 +45,8 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void createsTheSessionExactlyOnceOnAFreshStart() throws Exception {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(2);
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
 
         try (BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null)) {
             enumerator.start();
@@ -60,7 +62,8 @@ class BigQueryReadSplitEnumeratorTest {
         // The guard the whole design rests on: a second session would pin a second snapshot of the
         // table, so a failed-over job would read it as of two different instants.
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(2);
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
         BigQueryReadEnumeratorState restored =
                 new BigQueryReadEnumeratorState(
                         true,
@@ -81,7 +84,8 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void checkpointsNoSplitBeforeTheSessionExists() throws Exception {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(2);
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
 
         try (BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null)) {
             enumerator.start();
@@ -98,7 +102,8 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void handsOutOneSplitPerRequest() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
         try (BigQueryReadSplitEnumerator enumerator = started(context, 3)) {
             context.registerReader(0);
 
@@ -113,7 +118,8 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void servesTheRequestsThatArrivedBeforeTheSessionExisted() throws Exception {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(2);
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
 
         try (BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null)) {
             enumerator.start();
@@ -133,7 +139,8 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void skipsARequesterThatFailedWhileItWaited() throws Exception {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(2);
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
 
         try (BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null)) {
             enumerator.start();
@@ -152,7 +159,8 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void tellsARequesterThereAreNoMoreSplitsOnceTheQueueIsEmpty() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
         try (BigQueryReadSplitEnumerator enumerator = started(context, 1)) {
             context.registerReader(0);
             context.registerReader(1);
@@ -171,7 +179,8 @@ class BigQueryReadSplitEnumeratorTest {
         // assignable to whoever asks next. (Flink's coordinator does keep such a flag and clears it
         // when the subtask is reset — the reset that also returns the splits — so this enumerator's
         // job is only to not add a second, staler copy of the same fact.)
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
         try (BigQueryReadSplitEnumerator enumerator = started(context, 1)) {
             context.registerReader(0);
             context.registerReader(1);
@@ -190,7 +199,8 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void returnsSplitsToTheQueueAndAssignsNothingItself() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
         try (BigQueryReadSplitEnumerator enumerator = started(context, 2)) {
             context.registerReader(0);
             enumerator.handleSplitRequest(0, "localhost");
@@ -206,7 +216,8 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void keepsEveryStreamInExactlyOnePlaceAcrossFailoverAndReassignment() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
         try (BigQueryReadSplitEnumerator enumerator = started(context, 4)) {
             context.registerReader(0);
             context.registerReader(1);
@@ -244,7 +255,8 @@ class BigQueryReadSplitEnumeratorTest {
     void failsTheJobWhenTheSessionCannotBeCreated() throws Exception {
         ScriptedReadSessionCreator creator =
                 ScriptedReadSessionCreator.failing(new IllegalStateException("denied"));
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(1);
 
         try (BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null)) {
             enumerator.start();
@@ -261,7 +273,8 @@ class BigQueryReadSplitEnumeratorTest {
         // Failing the job during our own teardown would turn a clean cancellation into a failure.
         ScriptedReadSessionCreator creator =
                 ScriptedReadSessionCreator.failing(new IllegalStateException("denied"));
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(1);
         BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null);
         enumerator.start();
 
@@ -273,7 +286,8 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void reportsTheUnassignedSplitsToFlinksOwnGauge() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<BigQueryReadStreamSplit>(2);
         try (BigQueryReadSplitEnumerator enumerator = started(context, 3)) {
             context.registerReader(0);
             enumerator.handleSplitRequest(0, "localhost");
@@ -288,7 +302,7 @@ class BigQueryReadSplitEnumeratorTest {
     }
 
     private static BigQueryReadSplitEnumerator enumerator(
-            FakeSplitEnumeratorContext context,
+            FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context,
             ScriptedReadSessionCreator creator,
             BigQueryReadEnumeratorState restored) {
         return new BigQueryReadSplitEnumerator(context, TestSources.config(), creator, restored);
@@ -296,7 +310,7 @@ class BigQueryReadSplitEnumeratorTest {
 
     /** An enumerator whose session has been created, with the given number of streams. */
     private static BigQueryReadSplitEnumerator started(
-            FakeSplitEnumeratorContext context, int streamCount) {
+            FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context, int streamCount) {
         BigQueryReadSplitEnumerator enumerator =
                 enumerator(context, ScriptedReadSessionCreator.withStreams(streamCount), null);
         enumerator.start();

@@ -33,9 +33,12 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `pollNext` takes; the second wraps the first and hands every split the same output. Their
   `timestamps()` is **padded, not sparse** — a record emitted without one appears as `null`, so an
   assertion tells "one record, no timestamp" from "no record", which an `isEmpty()` cannot. The
-  source-side context fakes stay per connector, but the rule is "**the push-assigned source keeps
-  its own**", not "every source keeps its own" — the pull-assigned pair's fakes differ only by the
-  split type (`docs/adr/0050`).
+  source-side context fakes split by **assignment direction**: `FakeSplitEnumeratorContext<SplitT>`
+  and `FakeSourceReaderContext` here serve the *pull*-assigned sources, and Pub/Sub keeps its own
+  because it is push-assigned and its coordinator-facing methods throw. That the shared pair cannot
+  serve a push-assigned source is the point (`docs/adr/0050`). The reader context **takes** a metric
+  group rather than building one — building it would put flink-runtime's unannotated
+  `InternalSourceReaderMetricGroup` into this module's tier audit.
 - **An assertion names a metric with a string literal, never the class's constant** — constants
   inline at compile time, so a constant-referencing assertion passes for any value. The same
   inlining means a mutant run leaves poisoned classes in `target/`; `clean` before believing a

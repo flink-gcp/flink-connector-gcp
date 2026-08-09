@@ -24,6 +24,7 @@ import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.TestSources;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
+import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -52,13 +53,14 @@ class BigtableScanSplitEnumeratorTest {
     }
 
     private BigtableScanSplitEnumerator enumerator(
-            FakeSplitEnumeratorContext context, ScriptedRowKeySampler sampler) {
+            FakeSplitEnumeratorContext<RowRangeSplit> context, ScriptedRowKeySampler sampler) {
         return new BigtableScanSplitEnumerator(context, configWith(sampler), null);
     }
 
     @Test
     void samplesOnceAndHandsOutOneSplitPerRequest() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(2);
         ScriptedRowKeySampler sampler =
                 ScriptedRowKeySampler.answering(sample("m", 100), sample("t", 200));
         BigtableScanSplitEnumerator enumerator = enumerator(context, sampler);
@@ -78,7 +80,8 @@ class BigtableScanSplitEnumeratorTest {
 
     @Test
     void parksRequestsThatArriveBeforeThePlanAndServesThemInOrder() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(2);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(context, ScriptedRowKeySampler.answering(sample("m", 100)));
         context.registerReader(0);
@@ -97,7 +100,8 @@ class BigtableScanSplitEnumeratorTest {
 
     @Test
     void finishesASubtaskThereIsNoSplitLeftFor() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(2);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(context, ScriptedRowKeySampler.answering());
         context.registerReader(0);
@@ -117,7 +121,8 @@ class BigtableScanSplitEnumeratorTest {
 
     @Test
     void skipsARequestFromASubtaskThatWentAwayWhileItWasParked() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(2);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(2);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(context, ScriptedRowKeySampler.answering(sample("m", 100)));
         context.registerReader(0);
@@ -136,7 +141,8 @@ class BigtableScanSplitEnumeratorTest {
 
     @Test
     void reassignsSplitsAFailedReaderReturned() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(context, ScriptedRowKeySampler.answering(sample("m", 100)));
         context.registerReader(0);
@@ -160,7 +166,8 @@ class BigtableScanSplitEnumeratorTest {
 
     @Test
     void assignsEveryPlannedSplitExactlyOnce() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(
                         context,
@@ -185,7 +192,8 @@ class BigtableScanSplitEnumeratorTest {
     void aRestoredEnumeratorDoesNotSampleAgain() throws Exception {
         // The invariant that keeps split ids meaning what the readers think they mean: tablets
         // split while a job runs, so a second sampling would renumber everything.
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         ScriptedRowKeySampler sampler = ScriptedRowKeySampler.answering(sample("m", 100));
         BigtableScanEnumeratorState restored =
                 new BigtableScanEnumeratorState(
@@ -215,7 +223,8 @@ class BigtableScanSplitEnumeratorTest {
     void aRestoredEnumeratorWithAnEmptyPlanDoesNotSampleEither() throws Exception {
         // "Planned" is not the same statement as "there is something pending": a plan fully handed
         // out must not be recomputed.
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         ScriptedRowKeySampler sampler = ScriptedRowKeySampler.answering(sample("m", 100));
         BigtableScanSplitEnumerator enumerator =
                 new BigtableScanSplitEnumerator(
@@ -235,7 +244,8 @@ class BigtableScanSplitEnumeratorTest {
 
     @Test
     void failsTheJobWhenSamplingFails() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(
                         context,
@@ -254,7 +264,8 @@ class BigtableScanSplitEnumeratorTest {
     @Test
     void staysQuietWhenSamplingCompletesAfterTheEnumeratorWasClosed() throws Exception {
         // A teardown must not turn a cancellation into a job failure.
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(
                         context,
@@ -271,7 +282,8 @@ class BigtableScanSplitEnumeratorTest {
     void plansNothingWhenSamplingSucceedsAfterTheEnumeratorWasClosed() throws Exception {
         // The other half of the same guard: a successful sample landing after teardown must not
         // plan splits and serve them into a context that is being torn down.
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(context, ScriptedRowKeySampler.answering(sample("m", 100)));
         context.registerReader(0);
@@ -287,7 +299,8 @@ class BigtableScanSplitEnumeratorTest {
 
     @Test
     void closesTheSamplerItOwns() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         ScriptedRowKeySampler sampler = ScriptedRowKeySampler.answering();
         BigtableScanSplitEnumerator enumerator = enumerator(context, sampler);
 
@@ -299,7 +312,8 @@ class BigtableScanSplitEnumeratorTest {
 
     @Test
     void reportsWhatItAssignedReturnedAndSampled() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(context, ScriptedRowKeySampler.answering(sample("m", 100)));
         context.registerReader(0);
@@ -320,7 +334,8 @@ class BigtableScanSplitEnumeratorTest {
 
     @Test
     void checkpointsThePlanAndWhatIsLeftOfIt() throws Exception {
-        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSplitEnumeratorContext<RowRangeSplit> context =
+                new FakeSplitEnumeratorContext<RowRangeSplit>(1);
         BigtableScanSplitEnumerator enumerator =
                 enumerator(context, ScriptedRowKeySampler.answering(sample("m", 100)));
         context.registerReader(0);

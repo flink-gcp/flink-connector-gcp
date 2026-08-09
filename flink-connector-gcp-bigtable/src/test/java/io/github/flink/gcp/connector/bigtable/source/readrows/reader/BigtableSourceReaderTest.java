@@ -24,6 +24,7 @@ import com.google.cloud.bigtable.data.v2.models.Row;
 import io.github.flink.gcp.connector.bigtable.source.TestSources;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplitState;
+import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -38,7 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BigtableSourceReaderTest {
 
     private final TestReaderMetrics metrics = new TestReaderMetrics();
-    private final FakeSourceReaderContext context = new FakeSourceReaderContext();
+    private final FakeSourceReaderContext context =
+            new FakeSourceReaderContext(metrics.metricGroup());
 
     @AfterEach
     void forgetScriptedTables() {
