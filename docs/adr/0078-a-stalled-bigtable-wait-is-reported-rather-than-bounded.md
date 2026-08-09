@@ -110,12 +110,12 @@ clock.
 
 **The warning is rate-limited writer-wide**, by `lastStallWarnNanos`, back-dated at construction so
 the first stall of a writer's life warns as promptly as the tenth. Not a per-wait flag: the
-isolation pass drains once per parked mutation and a park runs to a whole `maxInFlightMutations`, so
+isolation pass drains once per parked mutation and a park runs to a whole `maxInFlightEntries`, so
 one `flush()` can make a thousand waits. ADR-0052 declined the same shape for a weaker version of
 the same reason.
 
 **The message carries what the measurement bought**: the idle duration, which wait it is, the
-in-flight mutation count, the live destination count (ADR-0074), and the two facts an operator
+in-flight entry count, the live destination count (ADR-0074), and the two facts an operator
 cannot otherwise know — that the client gives up on its own at about ten minutes, and that Flink's
 checkpoint timeout may fail the job first with a message naming nothing about Bigtable.
 
@@ -151,7 +151,7 @@ callers send immediately before.
   idle time would be scraped by a reporter that is not the thing an operator reads when a job stops
   checkpointing, and would not name the connector in the place they are looking.
 - **Documenting the diagnosis instead of emitting anything** — a "if checkpoints stop completing,
-  look at `inFlightMutations`" paragraph, at zero code. Declined: it helps only a reader who already
+  look at `inFlightEntries`" paragraph, at zero code. Declined: it helps only a reader who already
   suspects this connector, which is precisely what the measured failure mode denies them.
 
 [#431]: https://github.com/laughingman7743/flink-connector-gcp/issues/431

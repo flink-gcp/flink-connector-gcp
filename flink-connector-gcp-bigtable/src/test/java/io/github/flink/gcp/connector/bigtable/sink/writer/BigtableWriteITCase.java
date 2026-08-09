@@ -103,7 +103,7 @@ class BigtableWriteITCase extends AbstractBigtableEmulatorITCase {
     }
 
     @Test
-    void appliesMoreMutationsThanTheInFlightCapAdmitsAtOnce() throws Exception {
+    void appliesMoreEntriesThanTheInFlightCapAdmitsAtOnce() throws Exception {
         TableDestination table = createTable("backpressures");
         // Below the batch threshold as well, so completions really do have to arrive before the
         // writer may admit more: this is the path where write() yields to the mailbox.
@@ -111,7 +111,7 @@ class BigtableWriteITCase extends AbstractBigtableEmulatorITCase {
                 writer(
                         table,
                         BigtableWriterOptions.builder()
-                                .maxInFlightMutations(4)
+                                .maxInFlightEntries(4)
                                 .batchElementCount(2)
                                 .build(),
                         SERIALIZER);

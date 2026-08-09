@@ -470,7 +470,7 @@ class BigtableWriterTest {
     @Test
     void yieldsToTheMailboxAtTheMutationCap() throws Exception {
         SinkWriter<String> writer =
-                writer(BigtableWriterOptions.builder().maxInFlightMutations(2).build());
+                writer(BigtableWriterOptions.builder().maxInFlightEntries(2).build());
         writer.write("row-1", TestContexts.NO_OP);
         writer.write("row-2", TestContexts.NO_OP);
 
@@ -572,7 +572,7 @@ class BigtableWriterTest {
         RecordingHandler handler = new RecordingHandler();
         SinkWriter<String> writer =
                 multiTableWriter(
-                        BigtableWriterOptions.builder().maxInFlightMutations(1).build(),
+                        BigtableWriterOptions.builder().maxInFlightEntries(1).build(),
                         handler,
                         System::nanoTime);
         factory.batcherFor(TABLE).rejectedRowKeys.add("orders/row-1");
@@ -649,7 +649,7 @@ class BigtableWriterTest {
     }
 
     @Test
-    void countsInFlightMutationsAcrossEveryTableAtOnce() throws Exception {
+    void countsInFlightEntriesAcrossEveryTableAtOnce() throws Exception {
         // The in-flight caps are the writer's, summed over every destination rather than shared out
         // among them. Two consequences rest on that and nothing else states them: drainInFlight()
         // means "the writer is empty" — a per-destination split would leave it no single number to
@@ -935,7 +935,7 @@ class BigtableWriterTest {
 
     @SuppressWarnings("unchecked")
     private static int inFlight(SinkWriter<String> writer) {
-        return ((BigtableWriter<String>) writer).getInFlightMutations();
+        return ((BigtableWriter<String>) writer).getInFlightEntries();
     }
 
     @SuppressWarnings("unchecked")
@@ -945,7 +945,7 @@ class BigtableWriterTest {
 
     @SuppressWarnings("unchecked")
     private static int parked(SinkWriter<String> writer) {
-        return ((BigtableWriter<String>) writer).getParkedMutations();
+        return ((BigtableWriter<String>) writer).getParkedEntries();
     }
 
     private static String rowKey(RowMutationEntry entry) {

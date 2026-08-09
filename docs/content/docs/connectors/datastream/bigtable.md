@@ -129,7 +129,7 @@ that table is written to again. So a resolver's *cardinality* is a sink resource
 a routing one.
 
 The in-flight bounds are the writer's, summed across every destination rather than split among
-them: `maxInFlightMutations` and `maxInFlightBytes` mean the same thing whether the sink writes one
+them: `maxInFlightEntries` and `maxInFlightBytes` mean the same thing whether the sink writes one
 table or fifty. What grows with the destination count is one accumulator per live batcher, on top
 of those bounds.
 
@@ -268,35 +268,69 @@ classified and either routed or fatal — never retried again.
 Two pairs of knobs, doing different jobs, both on
 [`BigtableWriterOptions`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions).
 
+**Every count among them counts entries, not mutations.** An entry is one `RowMutationEntry` — one
+record the serializer returned — and it carries as many mutations as the serializer put `setCell`
+calls in it, so a job writing ten cells per record puts ten mutations behind each unit these knobs
+count. Bigtable's own documented limit is stated in the other unit: no more than
+[100,000 mutations](https://cloud.google.com/bigtable/quotas) in a batch. **The two never have to be
+reconciled by a job**, because the client enforces the mutation limit itself and unconditionally: it
+flushes the accumulated batch as soon as one more entry would carry it past 100,000 mutations,
+whatever `batchElementCount` says, and refuses to build a single entry carrying more than that on
+its own. So no setting of these knobs produces an over-limit request (read from
+google-cloud-bigtable 2.80.0 on 2026-08-10, and pinned by a test so that a client upgrade moving
+either fact goes red).
+
 **The batch thresholds** (`batchElementCount`, `batchByteSize`) are handed to the client and decide
 when it sends a batch. Both are unset by default, which leaves the client's own values (100
-mutations, 20 MB, and a one-second timer) in place — recorded in the reference for sizing rather
-than restated in this project's code, so a client upgrade that retunes them is inherited.
+entries, 20 MiB, and a one-second timer) in place — recorded in the reference for sizing rather
+than restated in this project's code, so a client upgrade that retunes them is inherited. A batch
+goes out on whichever of five conditions arrives first: those two, the one-second timer, the
+client's 100,000-mutation guard, and a full writer sending every batcher. Any claim of the form
+"setting `batchElementCount` to *N* makes batches of *N*" has to name the condition that *binds*,
+or it is false — no batch ever holds more than `maxInFlightEntries` entries whatever this knob
+says, because an entry counts as unacknowledged from the moment the batcher accepts it, so what a
+batcher is still accumulating is part of a total the writer stops admitting past.
 
-**The in-flight bounds** (`maxInFlightMutations`, `maxInFlightBytes`) are the writer's own, and they
+**The in-flight bounds** (`maxInFlightEntries`, `maxInFlightBytes`) are the writer's own, and they
 are what backpressures the stream: at either cap `write()` yields to the task mailbox until
-completions bring the counters down. Both are needed — a mutation may be megabytes, so a count alone
-bounds no memory. Admission is checked as "below the cap", never as "does this mutation fit", so a
-mutation larger than the byte cap is admitted on an empty writer and overshoots it until it
+completions bring the counters down. Both are needed — an entry may be megabytes, so a count alone
+bounds no memory. Admission is checked as "below the cap", never as "does this entry fit", so an
+entry larger than the byte cap is admitted on an empty writer and overshoots it until it
 completes; that is deliberate, because such a wait ends only when a completion arrives and none can
 with nothing in flight, which would make a fits-predicate a task hang rather than backpressure.
 
-**The client's own flow controller is why raising the bounds has a ceiling.** It permits 1000
-entries per channel and 100 MB of accumulated size, and when either is reached it *blocks* the
+**The client's own flow controller is why raising the bounds has a ceiling.** It permits 20,000
+outstanding entries and 100 MiB of accumulated size, and when either is reached it *blocks* the
 calling thread — which is Flink's task thread, the one that has to stay free to run mailbox mails
 and checkpoint barriers. Its static limits are not settable through the client's public API (only
 latency-based throttling can be turned on and off), so the sink's answer is to keep its own bounds
-below them: the defaults are, and a much larger `maxInFlightMutations` simply moves the effective
+below them: the defaults are, and a much larger `maxInFlightEntries` simply moves the effective
 bound into the client, where it stalls instead of backpressuring. This is the same defect class the
 Pub/Sub sink removed its SDK flow-control knobs over
 ([#85]({{< param BookRepo >}}/issues/85)).
+
+**It is also where the batch thresholds' ceilings come from — 19,999 entries and 100 MiB − 1
+byte.** The client's settings builder requires each threshold to stay *strictly* below the matching
+flow-control budget and refuses to build a client at all otherwise, so a job configured past either
+one does not get a bigger batch; it dies on the task manager as the writer opens, reported as
+`Failed to create a Bigtable mutation batcher`. Rejecting those values at the setter is what turns
+that into a message at submission ([#436]({{< param BookRepo >}}/issues/436)).
+
+**The in-flight bounds are warned about at the same two figures, not capped.** An
+`maxInFlightEntries` above 20,000 or a `maxInFlightBytes` above 100 MiB still describes a working
+job — what changes is which layer bounds it — so `build()` logs a `WARN` naming the value and the
+cost rather than refusing it. Refusing would be wrong: that budget is per *client*, and this sink
+holds one per (project, instance), so a resolver spreading records over several instances draws on
+several budgets and can legitimately want a writer-global bound above one of them. Nothing at
+`build()` knows how many instances a resolver will name, which is exactly why this one is advice
+and the batch thresholds' ceilings are not.
 
 There are no rate knobs beyond this. Bigtable's throughput is a property of the instance's nodes and
 of how well the row keys spread across tablets; a sink-side rate limit would not change either.
 
 **A sink whose client has stopped answering says so in the log, and nothing else does.** Both waits
 — the admission gate in `write()` and the drain at a checkpoint — emit a `WARN` naming the
-connector, the wait, the in-flight mutation count and the number of live tables once a minute has
+connector, the wait, the in-flight entry count and the number of live tables once a minute has
 passed with no mutation answered, repeating no more than once a minute however many waits the writer
 makes. There is no knob and no sink-side timeout, because the client already has one: it gives up on
 a stalled `MutateRows` at its own 10-minute total timeout (measured: 10 min 1 s against an endpoint
@@ -347,7 +381,7 @@ request, so the service answers it alone. One that succeeds was collateral damag
 applied; one rejected again is the mutation the service really refused, and only that one reaches
 the handler. The pass runs before every checkpoint completes and again as soon as the next record is
 written, so nothing waits in the park across a checkpoint —
-[`parkedMutations`](#metrics) is what reports its depth.
+[`parkedEntries`](#metrics) is what reports its depth.
 
 The cost is a real one and worth planning for: while isolating, the sink spends roughly one request
 per record, so a stream with frequent rejections loses the batching it normally gets. That is the
@@ -575,9 +609,9 @@ Registered on the sink writer's metric group, one set per subtask:
 | `numBytesSend` | counter (Flink standard) | their serialized size |
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-mutation handler |
 | `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed |
-| `inFlightMutations` | gauge | mutations the service has not acknowledged, against `maxInFlightMutations` |
+| `inFlightEntries` | gauge | entries the service has not acknowledged, against `maxInFlightEntries` |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
-| `parkedMutations` | gauge | mutations held for [the isolation pass](#error-handling) or the [auto-creation repair](#table-auto-creation) |
+| `parkedEntries` | gauge | entries held for [the isolation pass](#error-handling) or the [auto-creation repair](#table-auto-creation) |
 | `errorClass.CODE.errors` | counter | failed mutations by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `tablesCreated` | counter | tables the [auto-creation repair](#table-auto-creation) created, declared families included |
 | `columnFamiliesAdded` | counter | families the repair added to an already-existing table |
@@ -589,11 +623,11 @@ the service answered `INVALID_ARGUMENT` — whether the handler then dropped it 
 serializer bug that makes *every* record invalid is dropped one at a time under a dropping policy,
 and this counter is what shows it while the job stays green.
 
-**`parkedMutations` is what to watch beside it.** As
+**`parkedEntries` is what to watch beside it.** As
 [the error-handling section](#error-handling) describes, a row-level rejection reported against a
 whole batch is held for the isolation pass rather than routed, and a `NOT_FOUND` under
 `CREATE_IF_NEEDED` is held for the repair; this gauge is the only thing that reports those
-mutations: they have already left `inFlightMutations` and have not yet reached the handler. It is a
+entries: they have already left `inFlightEntries` and have not yet reached the handler. It is a
 *transient* reading rather than a backlog — both passes empty their park at the next record or the
 next checkpoint, whichever comes first — so what a dashboard shows is how often a sample catches
 the writer mid-isolation or mid-repair. Frequent non-zero samples mean the sink is spending its

@@ -59,7 +59,7 @@ and its budget is shared across them)**.** A mutation failing
 `NOT_FOUND` under `CREATE_IF_NEEDED` is parked into a second queue (`pendingRepair`), and
 `runRepair()` — from the next `write()` and inside `flush()` — drains the writer, ensures the
 table and its declared families exist, re-applies the parked batch exempt from the capacity check
-(a park cannot exceed `maxInFlightMutations`), and retries on the jittered recovery schedule until
+(a park cannot exceed `maxInFlightEntries`), and retries on the jittered recovery schedule until
 the batch lands or the budget is spent. No `repairNeeded` flag: with no ordering keys, nothing can
 owe a repair with an empty queue, so the queue's non-emptiness is the trigger. (That conclusion
 rested on two premises when it was written; ADR-0074 removed the fixed table, and the *no ordering
@@ -145,7 +145,7 @@ RPC retries the client owns, and these knobs budget a sink-owned repair — the 
 **Metrics**: `tablesCreated` counts created tables (their declared families ride along);
 `columnFamiliesAdded` counts only families added to a pre-existing table — first contact and
 schema drift are different signals to an operator. Both register whatever the disposition.
-`parkedMutations` sums both queues (its meaning — held by the writer, in neither the in-flight
+`parkedEntries` sums both queues (its meaning — held by the writer, in neither the in-flight
 counters nor the handler — is true of both). A parked `NOT_FOUND` **is** counted under
 `errorClass.NOT_FOUND.errors` per entry, unlike a parked row-level report (ADR-0043's exclusion):
 a missing table leaves no identity to confirm, and Pub/Sub counts its parked `NOT_FOUND`s the

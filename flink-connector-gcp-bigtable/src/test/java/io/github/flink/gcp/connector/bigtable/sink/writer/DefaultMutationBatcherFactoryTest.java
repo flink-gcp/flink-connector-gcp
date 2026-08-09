@@ -100,6 +100,27 @@ class DefaultMutationBatcherFactoryTest {
     }
 
     @Test
+    void theClientAcceptsBatchThresholdsAtExactlyTheirCeilings() {
+        // The other half of BigtableWriterOptionsTest's ceiling pair, and the half that decides
+        // whether those ceilings are the right numbers at all: the client's own settings builder
+        // requires each threshold to stay *strictly* below the matching flow-control budget
+        // (BigtableBatchingCallSettings.Builder.build), and throws when it does not — on the task
+        // manager, as the writer opens, reported as "Failed to create a Bigtable mutation
+        // batcher". So a ceiling one too high is not a loose guardrail but a broken one, and this
+        // is what fails if the client's budgets move under us. The figures are literals because
+        // the constants naming them are package-private one package up (public to nothing, by the
+        // inlining rule); BigtableWriterOptionsTest asserts the constants *are* these numbers, so
+        // moving one without coming here fails there.
+        BigtableWriterOptions atTheCeilings =
+                BigtableWriterOptions.builder()
+                        .batchElementCount(19_999)
+                        .batchByteSize(100L * 1024 * 1024 - 1)
+                        .build();
+
+        assertThatCode(() -> batchingSettings(atTheCeilings)).doesNotThrowAnyException();
+    }
+
+    @Test
     void leavesEachUnsetThresholdAtTheClientsOwn() {
         BatchingSettings clientDefaults = batchingSettings(BigtableWriterOptions.defaults());
         // Only one of the two is set, so the other has to keep the client's value rather than be

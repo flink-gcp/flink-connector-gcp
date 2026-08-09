@@ -16,7 +16,10 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import com.google.api.gax.batching.FlowControlSettings;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -31,11 +34,11 @@ class BigtableWriterOptionsTest {
     void defaultsLeaveTheBatchThresholdsToTheClient() {
         BigtableWriterOptions options = BigtableWriterOptions.defaults();
 
-        // Null rather than a restatement of the client's 100 / 20 MB: an unset threshold has to
+        // Null rather than a restatement of the client's 100 / 20 MiB: an unset threshold has to
         // stay unset all the way to the settings builder, or a client retune would be overridden.
         assertThat(options.getBatchElementCount()).isNull();
         assertThat(options.getBatchByteSize()).isNull();
-        assertThat(options.getMaxInFlightMutations()).isEqualTo(1000);
+        assertThat(options.getMaxInFlightEntries()).isEqualTo(1000);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(64L * 1024 * 1024);
         assertThat(options.getMaxConsecutiveRejections()).isEqualTo(100);
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(500));
@@ -50,20 +53,20 @@ class BigtableWriterOptionsTest {
                 BigtableWriterOptions.builder()
                         .batchElementCount(50)
                         .batchByteSize(1024)
-                        .maxInFlightMutations(7)
+                        .maxInFlightEntries(7)
                         .maxInFlightBytes(4096)
                         .maxConsecutiveRejections(5)
                         .build();
 
         assertThat(options.getBatchElementCount()).isEqualTo(50L);
         assertThat(options.getBatchByteSize()).isEqualTo(1024L);
-        assertThat(options.getMaxInFlightMutations()).isEqualTo(7);
+        assertThat(options.getMaxInFlightEntries()).isEqualTo(7);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(4096L);
         assertThat(options.getMaxConsecutiveRejections()).isEqualTo(5);
         assertThat(options.toString())
                 .contains(
                         "batchElementCount=50",
-                        "maxInFlightMutations=7",
+                        "maxInFlightEntries=7",
                         "maxConsecutiveRejections=5");
     }
 
@@ -107,15 +110,15 @@ class BigtableWriterOptionsTest {
     @Test
     void isValueBased() {
         BigtableWriterOptions options =
-                BigtableWriterOptions.builder().maxInFlightMutations(7).build();
+                BigtableWriterOptions.builder().maxInFlightEntries(7).build();
 
         assertThat(options)
-                .isEqualTo(BigtableWriterOptions.builder().maxInFlightMutations(7).build())
-                .hasSameHashCodeAs(BigtableWriterOptions.builder().maxInFlightMutations(7).build())
+                .isEqualTo(BigtableWriterOptions.builder().maxInFlightEntries(7).build())
+                .hasSameHashCodeAs(BigtableWriterOptions.builder().maxInFlightEntries(7).build())
                 .isNotEqualTo(BigtableWriterOptions.defaults())
                 .isNotEqualTo(
                         BigtableWriterOptions.builder()
-                                .maxInFlightMutations(7)
+                                .maxInFlightEntries(7)
                                 .batchElementCount(50)
                                 .build());
     }
@@ -128,10 +131,129 @@ class BigtableWriterOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> builder.batchByteSize(0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> builder.maxInFlightMutations(0))
+        assertThatThrownBy(() -> builder.maxInFlightEntries(0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> builder.maxInFlightBytes(-1))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsBatchThresholdsTheClientWouldRefuseToBuildAClientFor() {
+        // Without these a job configured past either ceiling submits fine and then dies on a task
+        // manager as the writer opens: the client's own settings builder requires each threshold
+        // to stay strictly below the matching flow-control budget and throws otherwise, so what
+        // the job gets is "Failed to create a Bigtable mutation batcher" rather than a big batch.
+        // Asserted on "must be at most" rather than on the knob name: both checks in each setter
+        // name the knob, so the name alone would be satisfied by the positivity check. The figures
+        // are asserted too, because the message is the whole of what the user gets at submission
+        // and an unfilled placeholder would still carry the prefix.
+        assertThatThrownBy(
+                        () ->
+                                BigtableWriterOptions.builder()
+                                        .batchElementCount(
+                                                BigtableWriterOptions.MAX_BATCH_ELEMENT_COUNT_LIMIT
+                                                        + 1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("batchElementCount must be at most 19999")
+                .hasMessageContaining("20000 entries");
+        assertThatThrownBy(
+                        () ->
+                                BigtableWriterOptions.builder()
+                                        .batchByteSize(
+                                                BigtableWriterOptions.MAX_BATCH_BYTE_SIZE_LIMIT
+                                                        + 1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("batchByteSize must be at most 104857599")
+                .hasMessageContaining("104857600 bytes (100 MiB)");
+    }
+
+    @Test
+    void acceptsBatchThresholdsAtExactlyTheirCeilings() {
+        // Set through the constants and asserted against the figures they stand for, so that
+        // changing either constant is changing what this connector claims about the client: one
+        // under the 20,000 entries and one byte under the 100 MiB its flow controller admits.
+        // DefaultMutationBatcherFactoryTest is the other half — that the client really does accept
+        // a threshold at exactly these values.
+        BigtableWriterOptions options =
+                BigtableWriterOptions.builder()
+                        .batchElementCount(BigtableWriterOptions.MAX_BATCH_ELEMENT_COUNT_LIMIT)
+                        .batchByteSize(BigtableWriterOptions.MAX_BATCH_BYTE_SIZE_LIMIT)
+                        .build();
+
+        assertThat(options.getBatchElementCount()).isEqualTo(19_999L);
+        assertThat(options.getBatchByteSize()).isEqualTo(100L * 1024 * 1024 - 1);
+    }
+
+    @Test
+    void bothCeilingsAreOneUnderTheClientsOwnFlowControlBudgets() {
+        // The derivation, asserted against the client rather than against a number written twice:
+        // its settings builder requires each batch threshold to stay *strictly* below the matching
+        // budget, so one under is the largest value a client can be built with. Reading the budgets
+        // from the SDK is what makes a client release that moves either one fail here — and what
+        // catches a ceiling raised by one, which the reject/accept pair above cannot see, since it
+        // is written in terms of the same constants.
+        FlowControlSettings flowControl =
+                BigtableDataSettings.newBuilderForEmulator("localhost", 1)
+                        .setProjectId("p")
+                        .setInstanceId("i")
+                        .stubSettings()
+                        .bulkMutateRowsSettings()
+                        .getBatchingSettings()
+                        .getFlowControlSettings();
+
+        assertThat(BigtableWriterOptions.MAX_BATCH_ELEMENT_COUNT_LIMIT)
+                .isEqualTo(flowControl.getMaxOutstandingElementCount() - 1);
+        assertThat(BigtableWriterOptions.MAX_BATCH_BYTE_SIZE_LIMIT)
+                .isEqualTo(flowControl.getMaxOutstandingRequestBytes() - 1);
+    }
+
+    @Test
+    void warnsWhenAnInFlightBoundIsAboveTheClientsOwnBudget() {
+        // The warning is the whole feature: past the client's budget the configuration still
+        // works — it is the client that bounds the sink, blocking the task thread — so nothing
+        // else, no exception and no changed value, would tell a user their bound is inert.
+        try (LogCapture capture = LogCapture.of(BigtableWriterOptions.class)) {
+            BigtableWriterOptions options =
+                    BigtableWriterOptions.builder()
+                            .maxInFlightEntries(20_001)
+                            .maxInFlightBytes(100L * 1024 * 1024 + 1)
+                            .build();
+
+            // Accepted unchanged, not clamped — the warning is advice, not a correction, because
+            // a resolver spreading records over several instances draws on several budgets.
+            assertThat(options.getMaxInFlightEntries()).isEqualTo(20_001);
+            assertThat(capture.getMessages())
+                    .hasSize(2)
+                    .anySatisfy(
+                            message ->
+                                    assertThat(message)
+                                            .contains("maxInFlightEntries is 20001")
+                                            .contains("20000 entries")
+                                            .contains("blocks* the task thread"))
+                    .anySatisfy(
+                            message ->
+                                    assertThat(message)
+                                            .contains("maxInFlightBytes is 104857601")
+                                            .contains("104857600 bytes (100 MiB)"));
+        }
+    }
+
+    @Test
+    void doesNotWarnAtOrBelowTheClientsOwnBudget() {
+        // The boundary is exact and worth pinning: the client admits its whole budget and blocks
+        // on the request past it, so a bound *equal* to the budget still binds first. The
+        // defaults are built here too — initializing this class runs DEFAULTS = builder().build(),
+        // so defaults that tripped the warning would put both lines in every task manager's log
+        // for a job that configured neither knob.
+        try (LogCapture capture = LogCapture.of(BigtableWriterOptions.class)) {
+            BigtableWriterOptions.builder()
+                    .maxInFlightEntries(20_000)
+                    .maxInFlightBytes(100L * 1024 * 1024)
+                    .build();
+            BigtableWriterOptions.builder().build();
+
+            assertThat(capture.getMessages()).isEmpty();
+        }
     }
 
     @Test

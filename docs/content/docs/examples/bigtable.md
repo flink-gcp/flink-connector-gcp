@@ -120,7 +120,7 @@ it from a row key.
 
 ## Bounding memory on large mutations
 
-The default byte bound is 64 MiB of unacknowledged mutations. A pipeline whose rows are large — or
+The default byte bound is 64 MiB of unacknowledged entries. A pipeline whose rows are large — or
 one running many subtasks per TaskManager — sets it explicitly, and lowering the batch element count
 shortens the delay before a mutation reaches the service at low volume:
 
@@ -136,7 +136,7 @@ BigtableSink.<OrderEvent>builder()
         .build();
 ```
 
-Raising `maxInFlightMutations` well past its default is the one direction that does not help: the
+Raising `maxInFlightEntries` well past its default is the one direction that does not help: the
 client's own flow controller then becomes the binding limit, and it blocks the task thread rather
 than yielding to the mailbox — see
 [Tuning]({{< relref "docs/connectors/datastream/bigtable" >}}#tuning).

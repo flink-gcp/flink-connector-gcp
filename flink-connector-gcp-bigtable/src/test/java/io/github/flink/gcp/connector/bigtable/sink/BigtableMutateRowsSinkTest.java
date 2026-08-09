@@ -60,13 +60,13 @@ class BigtableMutateRowsSinkTest {
                                 .writerOptions(
                                         forged(
                                                 BigtableWriterOptions.builder().build(),
-                                                "maxInFlightMutations",
+                                                "maxInFlightEntries",
                                                 0))
                                 .build();
 
         assertThatThrownBy(() -> sink.createWriter(new StubWriterInitContext(0), factory))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("maxInFlightMutations must be positive");
+                .hasMessage("maxInFlightEntries must be positive");
 
         // No writer exists to close either of them, and a restart would otherwise open one more
         // handler and leave one more factory holding whatever it had built per attempt. The

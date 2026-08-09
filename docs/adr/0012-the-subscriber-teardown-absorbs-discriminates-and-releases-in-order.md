@@ -151,7 +151,7 @@ fields and share only `startOrRelease`.
     consumed. `unreportedSubscriberFailures` reads better in English, and loses on a property of
     this repository's inventories that is worth stating because it decided a name: **a counter
     leads with the thing counted, a gauge leads with the state** — `messagesAcked`, `topicsCreated`,
-    `filesStaged`, `tasksDeduplicated` against `pendingAcks`, `parkedSplits`, `inFlightMutations`,
+    `filesStaged`, `tasksDeduplicated` against `pendingAcks`, `parkedSplits`, `inFlightEntries`,
     `outstandingDeadLetters` — so a counter spelled state-first reads as a gauge. Counted across the
     four connectors' inventories 2026-08-09: 18 of 18 counters lead with the thing counted, 17 of 18
     gauges with the state. The exception is `deadLetterFlushMillis`, a duration with no state word

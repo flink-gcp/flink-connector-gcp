@@ -242,14 +242,14 @@ class BigtableWriterMetricsTest {
     }
 
     @Test
-    void gaugesReportTheMutationsAndBytesInFlight() throws Exception {
+    void gaugesReportTheEntriesAndBytesInFlight() throws Exception {
         SinkWriter<String> writer = writer(serializer(), dropping());
 
         writer.write("row-1", TestContexts.NO_OP);
         writer.write("row-2", TestContexts.NO_OP);
 
         long bytes = serializedSize("row-1") + serializedSize("row-2");
-        assertThat(metrics.<Integer>gaugeValue("inFlightMutations")).isEqualTo(2);
+        assertThat(metrics.<Integer>gaugeValue("inFlightEntries")).isEqualTo(2);
         assertThat(metrics.<Long>gaugeValue("inFlightBytes")).isEqualTo(bytes);
         // The two must not be the same number, or a gauge bound to the wrong field would pass.
         assertThat(bytes).isNotEqualTo(2L);
@@ -258,12 +258,12 @@ class BigtableWriterMetricsTest {
         batcher.succeed(1);
         mailbox.drain();
 
-        assertThat(metrics.<Integer>gaugeValue("inFlightMutations")).isZero();
+        assertThat(metrics.<Integer>gaugeValue("inFlightEntries")).isZero();
         assertThat(metrics.<Long>gaugeValue("inFlightBytes")).isZero();
     }
 
     @Test
-    void stopsReportingInFlightMutationsOnceTheWriterIsClosedMidFlight() throws Exception {
+    void stopsReportingInFlightEntriesOnceTheWriterIsClosedMidFlight() throws Exception {
         SinkWriter<String> writer = writer(serializer(), dropping());
         writer.write("row-1", TestContexts.NO_OP);
         writer.write("row-2", TestContexts.NO_OP);
@@ -274,13 +274,13 @@ class BigtableWriterMetricsTest {
         // that is finished must not report work it will never wait for.
         writer.close();
 
-        assertThat(metrics.<Integer>gaugeValue("inFlightMutations")).isZero();
+        assertThat(metrics.<Integer>gaugeValue("inFlightEntries")).isZero();
         assertThat(metrics.<Long>gaugeValue("inFlightBytes")).isZero();
-        assertThat(metrics.<Integer>gaugeValue("parkedMutations")).isZero();
+        assertThat(metrics.<Integer>gaugeValue("parkedEntries")).isZero();
     }
 
     @Test
-    void reportsTheMutationsHeldForTheIsolationPass() throws Exception {
+    void reportsTheEntriesHeldForTheIsolationPass() throws Exception {
         SinkWriter<String> writer = writer(serializer(), dropping());
         writer.write("row-1", TestContexts.NO_OP);
         writer.write("row-2", TestContexts.NO_OP);
@@ -291,13 +291,13 @@ class BigtableWriterMetricsTest {
         batcher.fail(1, StatusCode.Code.INVALID_ARGUMENT);
         mailbox.drain();
 
-        assertThat(metrics.<Integer>gaugeValue("parkedMutations")).isEqualTo(2);
-        assertThat(metrics.<Integer>gaugeValue("inFlightMutations")).isZero();
+        assertThat(metrics.<Integer>gaugeValue("parkedEntries")).isEqualTo(2);
+        assertThat(metrics.<Integer>gaugeValue("inFlightEntries")).isZero();
         assertThat(counter("numRecordsSendErrors")).isZero();
 
         writer.flush(false);
 
-        assertThat(metrics.<Integer>gaugeValue("parkedMutations")).isZero();
+        assertThat(metrics.<Integer>gaugeValue("parkedEntries")).isZero();
     }
 
     @Test
