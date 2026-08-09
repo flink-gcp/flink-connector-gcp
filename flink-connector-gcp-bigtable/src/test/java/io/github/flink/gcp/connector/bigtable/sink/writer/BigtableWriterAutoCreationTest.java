@@ -58,6 +58,13 @@ class BigtableWriterAutoCreationTest {
     private static final TableDestination TABLE = TableDestination.of("p", "i", "orders");
     private static final TableDestination OTHER_TABLE = TableDestination.of("p", "i", "events");
 
+    /**
+     * A stall-warning threshold no test here reaches: these classes drive the writer's own clock
+     * only through eviction, so a production-sized one would put a warning in no log and a tiny one
+     * would put a warning in every.
+     */
+    private static final long STALL_WARN_AFTER_NANOS = java.time.Duration.ofHours(1).toNanos();
+
     private static final TableCreateOptions CREATE_OPTIONS =
             TableCreateOptions.builder().columnFamily("cf").build();
 
@@ -449,7 +456,14 @@ class BigtableWriterAutoCreationTest {
         }
         BigtableMutateRowsSink<String> sink = (BigtableMutateRowsSink<String>) builder.build();
         return new BigtableWriter<>(
-                sink.getConfig(), factory, admin, mailbox, metricGroup, schedule, System::nanoTime);
+                sink.getConfig(),
+                factory,
+                admin,
+                mailbox,
+                metricGroup,
+                schedule,
+                System::nanoTime,
+                STALL_WARN_AFTER_NANOS);
     }
 
     /** A handler that drops every mutation, recording what it saw. */
