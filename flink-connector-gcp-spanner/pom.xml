@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Copyright 2026 laughingman7743
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"
+         xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.flink-gcp</groupId>
+        <artifactId>flink-connector-gcp-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>flink-connector-gcp-spanner</artifactId>
+    <name>Flink Connectors GCP : Spanner</name>
+    <packaging>jar</packaging>
+
+    <dependencies>
+        <!-- Flink (provided at runtime by the Flink cluster) -->
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-core</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-streaming-java</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-base</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Shared connector infrastructure: the failure-handler SPI (#37), the retry
+             schedule (#61), the option checks (#381) and the emulator endpoint. -->
+        <dependency>
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-base</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Google Cloud (versions managed by the libraries BOM) -->
+        <dependency>
+            <!-- The Spanner client. Its Mutation is the serialization schema's return type,
+                 and so part of this module's public API surface; MutationGroup, Dialect and
+                 DatabaseClient.batchWriteAtLeastOnce are the write path; the database admin
+                 client is what the emulator tests create databases with. -->
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-spanner</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Direct dependency: BatchWriteResponse is what batchWriteAtLeastOnce streams
+                 back, and the writer reads its group indexes and per-group status off it —
+                 the client library exposes no wrapper for either. Version managed by the
+                 libraries BOM. -->
+            <groupId>com.google.api.grpc</groupId>
+            <artifactId>proto-google-cloud-spanner-v1</artifactId>
+        </dependency>
+        <dependency>
+            <!-- com.google.rpc.Status on a BatchWriteResponse, and ByteString on the
+                 failed-mutation payload. Version managed by the libraries BOM. -->
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Direct dependency: com.google.rpc.Status is generated into this artifact,
+                 not into protobuf-java. Version managed by the libraries BOM. -->
+            <groupId>com.google.api.grpc</groupId>
+            <artifactId>proto-google-common-protos</artifactId>
+        </dependency>
+        <dependency>
+            <!-- StatusCode for the writer's failure classification, and the ServerStream
+                 batchWriteAtLeastOnce returns. Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax</artifactId>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <!-- Shared test utilities (#27). -->
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-test-utils</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- MetricListener, reached through test-utils' TestSinkWriterMetricGroup: that
+                 module declares flink-test-utils at provided scope, which is non-transitive
+                 by design, so every module using the shared writer stubs declares it too. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-test-utils</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Building the gax exceptions the writer tests script, which need a transport
+                 status code. Test scope, since no main source touches gRPC directly; test-scope
+                 declarations are not transitive, so this cannot demote the artifact out of a
+                 future SQL uber-jar the way one in the *shaded* module's pom would.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax-grpc</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The raw StatusRuntimeException path of the error classifier. Test scope, as
+                 gax-grpc above. Version managed by the libraries BOM. -->
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- SpannerEmulatorContainer. -->
+            <groupId>org.testcontainers</groupId>
+            <artifactId>gcloud</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Local executor backing the MiniCluster job integration tests. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-clients</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Rate-limited source spanning checkpoints in the job integration tests. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-datagen</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

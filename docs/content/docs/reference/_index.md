@@ -30,6 +30,7 @@ Every option each connector takes, with its default, in one place per connector.
 | [Cloud Pub/Sub]({{< relref "docs/reference/pubsub" >}}) | The sink and source builders, publisher and subscriber tuning, topic and subscription creation |
 | [Cloud Tasks]({{< relref "docs/reference/cloudtasks" >}}) | The sink builder and the writer's in-flight cap and retry budgets |
 | [Bigtable]({{< relref "docs/reference/bigtable" >}}) | The sink builder and the writer's batch thresholds and in-flight bounds |
+| [Spanner]({{< relref "docs/reference/spanner" >}}) | The sink builder, the writer's batch limits, commit delay, RPC priority and retry budget |
 
 **These pages answer *what*; the connector pages answer *why*.** A row here gives you the option's
 name, its default and one line on what it does. The reasoning behind a default — why

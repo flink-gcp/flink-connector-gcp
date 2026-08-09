@@ -1,0 +1,77 @@
+---
+title: Spanner
+type: docs
+weight: 50
+---
+
+<!--
+Copyright 2026 laughingman7743
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+# Spanner options
+
+Every option the Spanner sink takes. What each one is *for* is on the
+[Spanner connector]({{< relref "docs/connectors/datastream/spanner" >}}) page; the three forms of
+the Default column are explained [here]({{< relref "docs/reference" >}}#what-a-default-means).
+
+Unlike the [Bigtable]({{< relref "docs/reference/bigtable" >}}) sink, this one **does** take retry
+knobs, and they are not decoration: the Spanner client library does not retry the batch write RPC
+at all, so the sink owns the whole retry loop. See
+[Retries]({{< relref "docs/connectors/datastream/spanner" >}}#retries-belong-to-the-sink).
+
+## `SpannerSink.builder()`
+
+| Option | Default | What it does |
+|---|---|---|
+| `database` | **required** | The database every mutation is written to. Which *table* is not configured here — the mutation the serializer returns names its own |
+| `serializer` | **required** | Turns a record into a `Mutation`, or into `null` to skip it |
+| `writerOptions` | [defaults](#spannerwriteroptions) | The batch limits, the request scheduling and the retry budget |
+| `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation the service terminally refused. See [Error handling]({{< relref "docs/connectors/datastream/spanner" >}}#error-handling) for the two statuses that reach it |
+| `constraintViolationPolicy` | `FAIL_JOB` | What happens to a mutation refused for violating a constraint. `ROUTE_TO_FAILURE_HANDLER` hands it to `failedMutationHandler` instead, so that handler then decides between failing, dropping and dead-lettering. See [Error handling]({{< relref "docs/connectors/datastream/spanner" >}}#error-handling) |
+| `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator. Setting it also stops the client looking for credentials |
+
+## `SpannerWriterOptions`
+
+Built with `SpannerWriterOptions.builder()`, passed to `writerOptions(...)`. Every knob is
+defaulted, so `SpannerWriterOptions.defaults()` is the same as not setting options at all.
+
+### Batch limits
+
+Spanner applies its commit limits to a batch write **request**, not to each mutation in it — 80,000
+mutations including index entries, and 100 MiB. These three keep the writer under those.
+
+| Option | Default | What it does |
+|---|---|---|
+| `maxBatchCells` | `5000` | Caps the mutation *cells* in one request. A written column costs one cell for the table plus one for every secondary index containing it, so this is **not** a column count — raising it toward 80,000 removes the headroom that keeps an unread schema safe |
+| `maxBatchMutations` | `500` | Caps the mutations in one request |
+| `maxBatchBytes` | `1048576` (1 MiB) | Caps the *estimated* size of one request. Estimated, not measured: the client library exposes no way to size a `Mutation` as it goes on the wire |
+
+### Request scheduling
+
+| Option | Default | What it does |
+|---|---|---|
+| `maxCommitDelay` | *unset ⇒ the service's own handling* | How long Spanner may delay a commit to group it with others, trading latency for throughput. Between zero and 500 ms, which is what the service accepts. Not rounded to milliseconds — the client forwards seconds and nanoseconds unchanged |
+| `rpcPriority` | *unset ⇒ `HIGH`* | `LOW`, `MEDIUM` or `HIGH`. Spanner treats an unspecified priority as `HIGH`, so `MEDIUM` is a step down from the default rather than a restatement of it. `LOW` is what a backfill that must not disturb serving traffic wants |
+
+### Retry budget
+
+Spent on transient failures only, and on the mutations that are still undecided rather than on the
+whole batch.
+
+| Option | Default | What it does |
+|---|---|---|
+| `retryInitialBackoff` | `500ms` | The first backoff, at least 1 ms |
+| `retryMaxBackoff` | `10s` | The backoff cap, at least `retryInitialBackoff` |
+| `retryMaxAttempts` | `10` | Attempts before the job fails. Exhausting the budget fails the job — a sink cannot drop what the service never refused. Note the wall-clock worst case: the client library gives a batch write a one-hour total timeout and this sink sets no deadline of its own, so a wedged request blocks the task thread — and therefore checkpointing — for up to an hour per attempt |

@@ -33,8 +33,9 @@ page, linked from each section.
 | [Cloud Pub/Sub]({{< relref "docs/examples/pubsub" >}}) | A topic per record, topic and subscription auto-creation, the emulator |
 | [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Sharding across queues, the emulator |
 | [Bigtable]({{< relref "docs/examples/bigtable" >}}) | Several mutations per record, a table per day, skipping records, dropping bad rows, the emulator |
+| [Spanner]({{< relref "docs/examples/spanner" >}}) | Several tables from one stream, deletes, skipping records, dropping refused mutations, tuning the batch, the emulator |
 
-Two things cut across most of them, and are stated once here rather than four times.
+Two things cut across most of them, and are stated once here rather than five times.
 
 ## Dynamic per-record destinations share one shape
 
@@ -43,6 +44,8 @@ The BigQuery, Pub/Sub and Cloud Tasks sinks resolve their destination per record
 fans out across tables, topics or queues, and what changes between them is only the destination
 type. The Bigtable sink joined them with [#232]({{< param BookRepo >}}/issues/232), where a
 destination costs a batcher rather than only a map entry — its page says what that means.
+The Spanner sink is the one that does not: it is fixed to a database, and takes each
+write's table from the mutation its serializer returns rather than from a resolver.
 
 **The resolver runs once per record on the write path.** That is the constraint every example is
 built around: it must be cheap, deterministic, and it should hand back cached destination instances

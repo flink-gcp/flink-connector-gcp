@@ -4,8 +4,8 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## Project overview
 
-GCP connectors for Apache Flink: BigQuery, Cloud Pub/Sub, Cloud Tasks and Bigtable (Spanner
-planned). Independent OSS project — not affiliated with the Apache Software Foundation or Google.
+GCP connectors for Apache Flink: BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable and Spanner.
+Independent OSS project — not affiliated with the Apache Software Foundation or Google.
 Maven multi-module build based on `org.apache.flink:flink-connector-parent`, with Google Cloud
 dependencies managed through `com.google.cloud:libraries-bom`.
 
@@ -569,6 +569,11 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   (#218): the ephemeral per-class instance and its sweep, what real Bigtable
   answers each rejection with, and the emulator deviation table those measurements produced.
   Migrated to ADRs (`docs/adr/0041`–`0047`, `0073`)
+- `flink-connector-gcp-spanner/CLAUDE.md` — the Mutation-based at-least-once sink (#220): why
+  `batchWriteAtLeastOnce` rather than a commit, the retry loop the connector owns because the
+  client library retries this RPC not at all, index-aware mutation-cell weights read from
+  `INFORMATION_SCHEMA`, which statuses are routed and which are retried, and both dialects.
+  Recorded in ADRs (`docs/adr/0075`–`0077`)
 - `flink-connector-gcp-test-utils/CLAUDE.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its

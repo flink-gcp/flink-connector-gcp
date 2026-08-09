@@ -37,8 +37,8 @@
 # Modules are mapped, not individual classes, on purpose: a module's whole
 # `*MetricNames` inventory is then required to appear on that page from the
 # moment a name joins it. A module that registers metrics and has no entry
-# here fails too, which is what catches the next connector (Spanner, #36) the
-# moment it registers its first metric.
+# here fails too, which is what catches a new connector the moment it
+# registers its first metric.
 
 # Connector metrics: every name the module's *MetricNames inventory declares
 # must be named in a table whose first column header is exactly `Metric` on
@@ -61,6 +61,10 @@ page = "docs/content/docs/connectors/datastream/cloudtasks.md"
 [[connectors]]
 module = "flink-connector-gcp-bigtable"
 page = "docs/content/docs/connectors/datastream/bigtable.md"
+
+[[connectors]]
+module = "flink-connector-gcp-spanner"
+page = "docs/content/docs/connectors/datastream/spanner.md"
 
 # The base module's subgroup registrars: each opens one addGroup segment and
 # registers fixed leaves under it on a connector's behalf, so the pages write

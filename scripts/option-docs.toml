@@ -74,6 +74,10 @@ page = "docs/content/docs/reference/cloudtasks.md"
 module = "flink-connector-gcp-bigtable"
 page = "docs/content/docs/reference/bigtable.md"
 
+[[builders]]
+module = "flink-connector-gcp-spanner"
+page = "docs/content/docs/reference/spanner.md"
+
 # The Table API surface is real ConfigOptions rather than builder setters, and
 # is documented beside the DDL it is used from rather than beside the builders
 # it maps onto — the mapping is the thing worth reading there.

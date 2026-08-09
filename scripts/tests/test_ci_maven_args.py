@@ -36,6 +36,7 @@ MODULES = [
     "flink-sql-connector-gcp-pubsub",
     "flink-connector-gcp-cloudtasks",
     "flink-connector-gcp-bigtable",
+    "flink-connector-gcp-spanner",
 ]
 
 POM = """<?xml version="1.0" encoding="UTF-8"?>
