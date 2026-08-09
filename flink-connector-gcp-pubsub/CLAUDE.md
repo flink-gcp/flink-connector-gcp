@@ -130,6 +130,26 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   defaults are read live from `Subscriber.Builder.getDefaultFlowControlSettings()` — never
   mirrored, unlike `maxAckExtensionPeriod`'s, whose SDK constant is package-private. What this
   costs is that #348 does not hold while a split is parked.
+- **Backpressure was measured, and the measurement narrowed the fear rather than confirming it**
+  (#377; the second Evidence block of `docs/adr/0066`). A *slow* downstream frees an element-queue
+  slot per batch and each slot lets exactly one more `fetch()` run, so the guards there are delayed
+  by one drain interval, not skipped; only a downstream that has stopped outright freezes the loop,
+  and there the mailbox is not polling either — `pollNext` is the only path a fetcher's failure has
+  to the job — so a guard on another thread would report nothing sooner. Hence **gauges and no
+  second bound**: `bufferedMessages`/`bufferedBytes` sum `bufferUsage()` over a registry
+  `PubSubSourceReaderMetrics` owns, so they cannot come to disagree with the number the #357 bound
+  reads, and a stale entry cannot corrupt them (a `shutdown()` empties the buffer). Whether the
+  buffer *grows* is decided by the drain rate against
+  `W / (maxAckExtensionPeriod − one lease extension)`, where the second term is the client's own
+  adaptive `messageDeadlineSeconds` and **not** the subscription's ack deadline — an ack only
+  covers what was already drained, so
+  expiry is the only drain-independent source of permits — but that is a rate of the right order,
+  **not a bound on `messagesReceived`**, because a supersede returns the permit it took (a draft
+  asserted such a ceiling and CI produced 327 against 250). Two facts to keep: the buffer is not the
+  reader's footprint (a frozen loop held 3999 messages in the element queue, invisible to
+  `bufferUsage()` and so to the bound), and on the real service **most of what a backpressured split
+  is handed is redelivery churn** — 215 and 338 supersedes out of 369 and 462 deliveries, against
+  exactly zero on the emulator, which never redelivers.
 - The real-GCP gated suite (#82) is the **only** coverage of ordered dispatch, dead-letter
   forwarding, ordered seek, create-option persistence, nack-redelivery promptness and the
   permission-denied message texts. Gating annotations go on every concrete class, never the

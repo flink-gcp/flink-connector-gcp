@@ -55,9 +55,18 @@ final class TestReaderMetrics {
                 .getCount();
     }
 
-    int gauge(String name) {
-        return listener.<Integer>getGauge(name)
+    /**
+     * Reads a gauge by its registered name.
+     *
+     * <p>Typed {@code long} rather than to the gauge's own value type: the reader registers both
+     * {@code Gauge<Integer>} (counts of splits) and {@code Gauge<Long>} (buffer sizes, which do not
+     * fit an int in bytes), and one accessor reading both as a number keeps a test from having to
+     * know which.
+     */
+    long gauge(String name) {
+        return listener.<Number>getGauge(name)
                 .orElseThrow(() -> new AssertionError("No gauge named " + name + " registered."))
-                .getValue();
+                .getValue()
+                .longValue();
     }
 }

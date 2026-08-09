@@ -26,7 +26,10 @@ import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.ResidueCounter;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.ToLongFunction;
 
 /**
  * The reader's Pub/Sub-specific metrics.
@@ -76,6 +79,22 @@ public final class PubSubSourceReaderMetrics {
     private final AtomicInteger parkedSplits = new AtomicInteger();
 
     /**
+     * The subscribers the two buffer gauges sum over, keyed by split id.
+     *
+     * <p>A registry rather than a shadow tally, so the gauges cannot come to disagree with the
+     * number the paused-split bound is evaluated against: both read the same {@link
+     * NotifyingPullSubscriber#bufferUsage()}. It also means an entry that outlives its subscriber
+     * cannot corrupt the value — {@code shutdown()} empties the buffer, so a stale entry reports
+     * zero — and re-registering under the same split id is what a reopen after a park does.
+     *
+     * <p>Here rather than in the split reader for {@link #parkedSplits}'s reasons: a fetcher may be
+     * rebuilt over a reader's life, and the metric reporter reads this from a thread of its own
+     * while the fetcher thread writes it.
+     */
+    private final Map<String, NotifyingPullSubscriber> bufferedSubscribers =
+            new ConcurrentHashMap<>();
+
+    /**
      * Registers the counters on the reader's metric group.
      *
      * @param metricGroup the reader metric group
@@ -97,6 +116,12 @@ public final class PubSubSourceReaderMetrics {
         this.splitsParked =
                 metricGroup.counter(PubSubMetricNames.SPLITS_PARKED, new ThreadSafeSimpleCounter());
         metricGroup.gauge(PubSubMetricNames.PARKED_SPLITS, (Gauge<Integer>) parkedSplits::get);
+        metricGroup.gauge(
+                PubSubMetricNames.BUFFERED_MESSAGES,
+                (Gauge<Long>) () -> sumBuffers(BufferUsage::messages));
+        metricGroup.gauge(
+                PubSubMetricNames.BUFFERED_BYTES,
+                (Gauge<Long>) () -> sumBuffers(BufferUsage::bytes));
         // Registered and never held: nothing here increments them, so a field would only invite a
         // caller to try — which the counter refuses, its mutators throwing rather than no-opping.
         // The subscribers count into the adders directly, on the thread running their close().
@@ -168,5 +193,32 @@ public final class PubSubSourceReaderMetrics {
     /** Records that a parked split has a subscriber again, or has gone away. */
     public void splitUnparked() {
         parkedSplits.decrementAndGet();
+    }
+
+    /**
+     * Adds a split's subscriber to what the buffer gauges sum.
+     *
+     * @param splitId the split the subscriber serves
+     * @param subscriber the subscriber whose buffer to include
+     */
+    public void subscriberOpened(String splitId, NotifyingPullSubscriber subscriber) {
+        bufferedSubscribers.put(splitId, subscriber);
+    }
+
+    /**
+     * Drops a split's subscriber from what the buffer gauges sum.
+     *
+     * @param splitId the split whose subscriber has gone away
+     */
+    public void subscriberClosed(String splitId) {
+        bufferedSubscribers.remove(splitId);
+    }
+
+    private long sumBuffers(ToLongFunction<BufferUsage> dimension) {
+        long total = 0;
+        for (NotifyingPullSubscriber subscriber : bufferedSubscribers.values()) {
+            total += dimension.applyAsLong(subscriber.bufferUsage());
+        }
+        return total;
     }
 }

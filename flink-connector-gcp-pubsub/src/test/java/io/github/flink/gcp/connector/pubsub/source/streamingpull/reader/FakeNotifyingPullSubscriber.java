@@ -30,7 +30,14 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 
-/** Scriptable {@link NotifyingPullSubscriber} standing in for a real streaming-pull client. */
+/**
+ * Scriptable {@link NotifyingPullSubscriber} standing in for a real streaming-pull client.
+ *
+ * <p>Everything touching the buffer is {@code synchronized}, as the production subscriber's is: the
+ * SPI requires {@link #bufferUsage()} to be safe from any thread, and a fake that read the deque
+ * unguarded would let a test sampling the buffer gauges while a fetcher drains fail inside {@code
+ * ArrayDeque} rather than on an assertion.
+ */
 final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
 
     private final Runnable dataAvailableSignal;
@@ -58,7 +65,7 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     /** Buffers a message as the client library would, and wakes a blocked fetch. */
-    void deliver(PubsubMessage... delivered) {
+    synchronized void deliver(PubsubMessage... delivered) {
         Collections.addAll(messages, delivered);
         dataAvailableSignal.run();
     }
@@ -71,7 +78,7 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
      * includes protobuf's own framing: a test that needs a byte bound the buffer crosses should
      * derive the bound from what was actually delivered, not from a number it hoped for.
      */
-    long deliverSized(int count, int payloadBytes) {
+    synchronized long deliverSized(int count, int payloadBytes) {
         String payload = String.join("", Collections.nCopies(payloadBytes, "x"));
         long delivered = 0;
         for (int index = 0; index < count; index++) {
@@ -130,7 +137,7 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     @Override
-    public List<PubsubMessage> pullMessages(int maxMessages) throws IOException {
+    public synchronized List<PubsubMessage> pullMessages(int maxMessages) throws IOException {
         checkFailure();
         List<PubsubMessage> drained = new ArrayList<>();
         while (drained.size() < maxMessages && !messages.isEmpty()) {
@@ -147,7 +154,7 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     @Override
-    public BufferUsage bufferUsage() {
+    public synchronized BufferUsage bufferUsage() {
         long bytes = 0;
         for (PubsubMessage message : messages) {
             bytes += message.getSerializedSize();
@@ -156,7 +163,7 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
     }
 
     @Override
-    public void shutdown() {
+    public synchronized void shutdown() {
         if (shutdownRequested) {
             return;
         }

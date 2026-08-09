@@ -75,6 +75,11 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
      * that refused a message would have to block a client-library thread or nack it, which are the
      * two things the implementation's design rules out (see {@link PubSubNotifyingPullSubscriber}).
      *
+     * <p><b>Unlike the rest of this interface, this must be safe to call from any thread.</b> The
+     * reader calls it on the fetcher thread, and the {@code bufferedMessages} and {@code
+     * bufferedBytes} gauges call it on whatever thread the metric reporter runs on — while the
+     * client library is appending to the same buffer on one of its own.
+     *
      * @return the buffered messages and their total serialized size
      */
     BufferUsage bufferUsage();

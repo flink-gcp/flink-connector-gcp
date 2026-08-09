@@ -180,6 +180,19 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
                 throws IOException;
     }
 
+    /**
+     * Drains every unpaused split once and evaluates the reader's three guards.
+     *
+     * <p><b>How often this runs is Flink's to decide, and under backpressure it is the drain
+     * rate</b> (#377, measured by {@code PubSubBackpressuredReaderGuardTest}). {@code FetchTask}
+     * keeps the batch it could not hand over and skips this method while it holds one, so a
+     * downstream that is merely slow delays each guard by one element-queue slot, while one that
+     * has stopped outright stops them entirely. Placing a guard on a thread of its own would not
+     * help the second case: the same stall means {@code pollNext} is not being called, and it is
+     * the only path a fetcher's recorded failure has to the job. What that case gets instead is
+     * {@code bufferedMessages} and {@code bufferedBytes}, which a metric reporter reads whatever
+     * this loop is doing.
+     */
     @Override
     public RecordsWithSplitIds<PubsubMessage> fetch() throws IOException {
         CompletableFuture<Void> signal = armSignal();
@@ -308,6 +321,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             // holding a half-closed client it would go on to drain or close a second time.
             assigned.subscriber = null;
             metrics.splitParked();
+            metrics.subscriberClosed(entry.getKey());
             // The failure check first, and this is its last chance: after the park there is no
             // client for checkPausedSplitsForFailure to watch, and close() absorbs the client's own
             // report of it (#325).
@@ -359,7 +373,12 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
 
     private NotifyingPullSubscriber openSubscriber(SubscriptionSplit split) {
         try {
-            return subscriberOpener.open(split, this::signalDataAvailable);
+            NotifyingPullSubscriber subscriber =
+                    subscriberOpener.open(split, this::signalDataAvailable);
+            // The one place a subscriber is created, so the one place the buffer gauges have to
+            // hear about it; a reopen after a park re-registers under the same split id.
+            metrics.subscriberOpened(split.splitId(), subscriber);
+            return subscriber;
         } catch (IOException e) {
             throw new RuntimeException(
                     "Failed to open the Pub/Sub subscriber for split " + split.splitId(), e);
@@ -372,6 +391,10 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
         if (assigned == null) {
             return;
         }
+        // Below the guard, not above it: the registry is shared with every split reader this
+        // reader's supplier makes, so evicting on a removal this one does not own would drop
+        // another's live subscriber from the gauges with nothing to say so.
+        metrics.subscriberClosed(split.splitId());
         if (assigned.isParked()) {
             // Nothing to close and nothing to nack: parking already did both. The count still has
             // to be given back, or the gauge keeps reporting a split that no longer exists.
@@ -481,10 +504,14 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             // Give the parked count back before dropping the splits, as removeSplit does: the
             // gauge lives in the reader's metrics because it outlives this object, so a reader
             // closing while it holds parked splits would leave it reporting splits that are gone.
-            for (AssignedSplit assigned : splits.values()) {
-                if (assigned.isParked()) {
+            for (Map.Entry<String, AssignedSplit> entry : splits.entrySet()) {
+                if (entry.getValue().isParked()) {
                     metrics.splitUnparked();
                 }
+                // The buffer gauges would report zero for these anyway — shutdown() empties a
+                // subscriber's buffer — but the metrics outlive this reader, so leaving them
+                // registered would leave it holding clients a closed reader no longer owns.
+                metrics.subscriberClosed(entry.getKey());
             }
             splits.clear();
             pausedSplits.clear();

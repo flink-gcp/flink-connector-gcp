@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0066: A paused split's buffer is bounded by parking its subscriber
 
 - Status: Accepted
-- Date: 2026-08-08
-- Issues: [#357]
+- Date: 2026-08-08, refined 2026-08-09 ([#377])
+- Issues: [#357], [#377]
 - Modules: pubsub (source)
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (§ Watermark alignment);
   `docs/content/docs/reference/pubsub.md` for the two knobs
@@ -127,6 +127,53 @@ ack deadline 10 s, 400-message backlog.
   window the growth stopped dead after a single wave (10 → 21, then flat for 110 s over two runs)
   where 50 repeats on schedule — which is why the committed test uses 50.
 
+Measured 2026-08-09 for [#377] by `PubSubBackpressuredSplitBufferITCase` (emulator, six runs, same
+constants, three arms drained concurrently), `PubSubBackpressuredSplitBufferRealGcpITCase` (real
+Pub/Sub, two runs) and `PubSubBackpressuredReaderGuardTest`.
+
+- **Pausing is not the condition; a stalled drain is.** An arm that was never paused and never
+  fetched reproduced this ADR's own series (50, ~101 at 10.3 s, ~152 at 20.5 s). What the drain rate
+  changes is everything after that: all three arms were *delivered* 151–187 messages over 40 s, and
+  were left holding 151–179 (no drain), 112–154 (1/s) and **zero** (15/s, peaking at 46 in the first
+  delivery). The break-even follows from the permit accounting rather than from the sample — an
+  acknowledgement only covers what was already drained, so the only drain-independent source of
+  permits is expiry — and is `W / (maxAckExtensionPeriod − one lease extension)`: **about 0.28
+  messages a second at the production defaults.** The subtracted term is `MessageDispatcher`'s own
+  `messageDeadlineSeconds`, which starts at `Subscriber.MIN_STREAM_ACK_DEADLINE` (10 s) and is
+  recomputed from a percentile of observed acknowledgement latency, bounded by
+  `minDurationPerAckExtension`/`maxDurationPerAckExtension` — **not** the subscription's
+  `ackDeadlineSeconds`, which the two coincide with only because the test sets both to 10 s. That
+  it adapts is also why the observed refill varied between arms (3.9–8.2 messages a second where
+  the formula says 5), so the break-even is an order of magnitude, not a constant. Any job making real progress is above it, which is what
+  narrows the backpressure case to a downstream that has stopped altogether.
+- **The redelivery channel is real, it dominates, and the emulator's silence hid it.** Against the
+  service, an arm draining 1/s over 90 s was delivered 369 and 462 messages while holding 279 and
+  371 — and **215 and 338 of those deliveries were supersedes**, a redelivered copy of a message the
+  connector was still holding. So the majority of what a backpressured split is handed, and of what
+  its buffer then carries, is churn rather than new data. Of its 90 drained messages only 74 were
+  distinct. A redelivered copy is appended beside the one it supersedes while `addPendingAck` nacks
+  the superseded handle, returning that delivery's permit, so the channel adds a buffered message at
+  no permit cost — which is also why `messagesReceived` is not a delivery total the permit
+  accounting bounds (a draft asserted such a ceiling and CI produced 327 against 250). Two further
+  consequences: duplicates reach a *running* pipeline rather than only a restart, and the two-wave
+  ceiling above is an emulator artifact — the service kept going. On the emulator the same
+  measurement reads `messagesNacked` of exactly zero, which is that recorded deviation asserted
+  rather than assumed.
+- **Only a full stall blinds the guards, and there nothing could report anyway.** From a frozen
+  loop, one poll frees one element-queue slot, lets one `put` through and runs `fetch()` once — the
+  detector fired on that fetch in both runs. So ordinary backpressure delays a guard by one drain
+  interval. Under a *full* stall the task thread is not calling `pollNext` either, and `pollNext` is
+  the only path a fetcher's recorded failure has to the job (`SourceReaderBase` calls
+  `checkErrors()` at two places, both under it), so evaluating the guards on another thread would
+  buy no earlier report. That is why [#377] added observability and no second bound.
+- **The buffer is not the reader's whole footprint.** A frozen loop at `maxRecordsPerFetch` 1000 and
+  an element-queue capacity of 2 had pulled 4000 messages, emitted 1, and was holding **3999** in
+  the element queue, the current fetch and the batch it could not hand over. `bufferUsage()` sees
+  none of it, so the bound above is evaluated against a number that understates the reader by up to
+  `(capacity + 2) × maxRecordsPerFetch × splits` — the queue, plus those last two, which is where
+  the fourth batch in the measurement comes from, and each of the three holds one drain of every
+  assigned split rather than of one.
+
 ## Alternatives declined
 
 - **Fail the job at a threshold.** Smallest change, keeps ADR-0012's watching trivially intact,
@@ -180,12 +227,18 @@ ack deadline 10 s, 400-message backlog.
   no checkpoint coming, and a parked reader holds none — but it is a narrower guard than before.
 - **`pendingAcks` stops being the alerting signal** the docs named for this: it climbs and then
   falls at each park. `parkedSplits` replaces it there.
-- The same lapse reaches a split held back by sustained downstream **backpressure**, and a
-  reader-driven park cannot see it: `FetchTask` blocks in `elementsQueue.put` (capacity 2), so
-  `fetch()` is not entered and no guard placed there runs — which is equally true of today's
-  paused-split failure check and `MissingCheckpointDetector`. Out of scope here and stated on the
-  method rather than implied away.
+- The same lapse reaches a split held back by sustained downstream **backpressure**, where a
+  reader-driven park cannot see it: `FetchTask` keeps its `lastRecords` until `elementsQueue.put`
+  succeeds (capacity 2) and skips `fetch()` while it holds one, so no guard placed there runs —
+  equally true of the paused-split failure check and `MissingCheckpointDetector`. Filed as [#377]
+  and **measured there** (the second Evidence block above), which narrowed it in one direction and
+  widened it in another: only a downstream that has stopped altogether reaches the state, and there
+  no thread could report a failure any sooner, but the reader's footprint turned out larger than
+  this bound sees and the service's redelivery adds to it. The response was observability rather
+  than a second bound — `bufferedMessages` and `bufferedBytes`, summed over the subtask's
+  subscribers and read by the metric reporter's own thread, which a frozen fetch loop does not stop.
 
 [#348]: https://github.com/laughingman7743/flink-connector-gcp/issues/348
 [#356]: https://github.com/laughingman7743/flink-connector-gcp/issues/356
 [#357]: https://github.com/laughingman7743/flink-connector-gcp/issues/357
+[#377]: https://github.com/laughingman7743/flink-connector-gcp/issues/377
