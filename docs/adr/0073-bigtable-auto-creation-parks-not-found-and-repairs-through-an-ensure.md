@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0073: Bigtable auto-creation parks `NOT_FOUND` and repairs through an ensure
 
 - Status: Accepted
-- Date: 2026-08-09 (emulator behaviour measured 2026-08-08)
-- Issues: [#233]
+- Date: 2026-08-09 (emulator behaviour measured 2026-08-08; reconciliation bound refined by [#414])
+- Issues: [#233], [#414]
 - Modules: bigtable (`sink`, `sink.tables`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Table auto-creation
 
@@ -76,11 +76,38 @@ BigQuery precedent; implementation short-lived-client-per-call, the `PubSubTopic
 tries `CreateTable` first — one RPC on the common path — and on `ALREADY_EXISTS` reconciles:
 reads the live families, adds only the declared absentees in **one atomic**
 `ModifyColumnFamiliesRequest` (a blind add of one existing family would fail the genuinely missing
-ones with it), and on a lost family race re-reads and retries the remainder — each extra round
-needs a fresh concurrent addition of a still-missing family, so the loop is unbounded only under
-perpetual external add/delete churn of the declared families, accepted rather than capped. An
+ones with it), and on a lost family race re-reads and retries the remainder. An
 existing family's rule is never compared or updated —
 creation-only, per family, the `TopicCreateOptions` semantics carried down one level.
+
+**The reconciliation is bounded by what its own termination argument asserts** ([#414], refining
+this ADR's original "unbounded under perpetual external churn, accepted rather than capped"). A
+losing round means at least one family that round read as missing is now present, so the missing
+set shrinks strictly and is a subset of the declared families: at most that many rounds can lose,
+and one more either adds the remainder or finds nothing to add. `declared + 1` is therefore the
+exact bound rather than a chosen cap, and spending it is not a slow ensure but a contradiction —
+a declared family being deleted between the read and the modify, or a read not seeing what the
+modify reports. Three reasons the argument moved from a comment to a `for` budget with a tripwire,
+the shape ADR-0045's isolation pass already uses: the loop was the one pass in this design that
+was not self-bounding, which is what the `flush()` paragraph below assumes of every pass; a loop
+with no end holds the task thread and would be reported only as checkpoints that stop completing
+and a task that will not cancel, never as the reconciliation behind them, whereas the tripwire's
+`IllegalStateException` becomes the `IOException` the recovery schedule already spends an attempt
+on, backoff and all — where the loop itself re-issued admin RPCs with no backoff between rounds;
+and the bound is what made the round behaviour testable at all — the seam below has to stop
+somewhere for a scripted contradiction to be an assertion rather than a hang.
+
+**The ensure's three admin operations are taken as functional values** — `BigtableTableAdmin`
+tries them through a `@VisibleForTesting ensureWith(...)`, and only `ensureTable` binds them to a
+real client — because that is the only seam a test can drive ([#414]): the client is final, this
+repository uses no mocking framework, and it is built inside the call and closed with it, so it
+cannot be injected; and no arrangement of a live emulator lands a *concurrent* family addition
+between one call's read and its modify. ADR-0047's shape, one level down from an adapter object
+because the client here is per-call. The read seam yields the live family ids rather than the
+client's `Table`, whose only construction is an `@InternalApi fromProto` a test would have to
+reach for; what that leaves outside the seam is one projection the emulator ITCase pins in both
+directions, and the same ITCase covers the method references — this is not [#321]'s untested
+wiring, since it drives `ensureTable` itself down the creation, addition and no-op paths.
 
 **`NOT_FOUND` outranks everything in the classifier**, including the transient-anywhere check that
 ADR-0042 puts first for routing: `PubSubErrorClassifier`'s precedence, adopted because acting on
@@ -141,3 +168,5 @@ same way.
   rather than being scripted turn by turn.
 
 [#233]: https://github.com/laughingman7743/flink-connector-gcp/issues/233
+[#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
+[#414]: https://github.com/laughingman7743/flink-connector-gcp/issues/414
