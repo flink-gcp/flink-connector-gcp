@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-26/27 ([#135], [#136], [#137], settled under [#47]); sink creation settings
-  2026-07-27 ([#153])
+  2026-07-27 ([#153]); [#140] closed as not needed 2026-08-09
 - Issues: [#47] (split into [#135]–[#138]), [#139], [#140], [#143], [#152], [#153]
 - Modules: pubsub (`table`, `table.sink`, `table.source`)
 - Current behavior: `docs/content/docs/connectors/table/pubsub.md`
@@ -55,7 +55,8 @@ which is what keeps that true once the key names are grouped (`sink.batching.*`,
   cannot express a retraction; and an `ordering-key` column without
   `sink.message-ordering.enabled` is rejected in `applyWritableMetadata`, since the writer would
   otherwise fail on the first record. Credentials stay ADC-only ([#139]) and dynamic per-record
-  topics stay out ([#140]) — both cut from [#47] deliberately.
+  topics stay out ([#140], closed as not needed: a `STATEMENT SET` of `INSERT`s covers the SQL
+  fan-out case with topics known at plan time) — both cut from [#47] deliberately.
 - **Package layout**: `table` holds the `@PublicEvolving` options class and the factory,
   `table.sink`/`table.source` the `@Internal` implementation — a deliberate departure from
   Kafka, which keeps its whole table layer flat; the root layout rule (public API at the package

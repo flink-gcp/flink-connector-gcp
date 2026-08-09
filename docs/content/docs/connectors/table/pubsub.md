@@ -470,8 +470,13 @@ record would allocate an intermediate map only to copy it into the builder; the 
 holds the row's `MapData` and writes from it.
 
 **Dynamic per-record topics are not exposed.** `DestinationResolver` makes them possible and Kafka
-offers a `topic` metadata column, but the table sink writes to the one topic its DDL names; see
-[#140]({{< param BookRepo >}}/issues/140).
+offers a `topic` metadata column, but the table sink writes to the one topic its DDL names: a SQL
+job routes one source to several topics with multiple `INSERT` statements in a `STATEMENT SET`,
+branching on `WHERE` clauses, which covers the fan-out case with topics known at plan time
+([#140]({{< param BookRepo >}}/issues/140), closed as not needed — a use case `INSERT` branching
+cannot cover gets a new issue referencing it). A topic genuinely computed from record data, unknown
+at plan time, stays a [DataStream sink]({{< relref "docs/connectors/datastream/pubsub" >}}) job,
+through `destinationResolver(...)`.
 
 **Three setters do not fit one option each, and the DDL bends rather than the DataStream API.**
 `startPosition(...)` takes a mode and, for one mode, an instant; `neverExpire()` takes no argument
