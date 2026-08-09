@@ -31,10 +31,10 @@ import com.google.pubsub.v1.DeadLetterPolicy;
 import com.google.pubsub.v1.ExpirationPolicy;
 import com.google.pubsub.v1.SeekRequest;
 import com.google.pubsub.v1.Subscription;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
-import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -295,11 +295,10 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                     SubscriptionAdminSettings.newBuilder()
                             .setCredentialsProvider(NoCredentialsProvider.create())
                             .setTransportChannelProvider(
-                                    SubscriptionAdminSettings.defaultGrpcTransportProviderBuilder()
-                                            .setEndpoint(emulatorEndpoint.getTarget())
-                                            .setChannelConfigurator(
-                                                    ManagedChannelBuilder::usePlaintext)
-                                            .build())
+                                    EmulatorChannels.plaintextProvider(
+                                            SubscriptionAdminSettings
+                                                    .defaultGrpcTransportProviderBuilder(),
+                                            emulatorEndpoint))
                             .build());
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Pub/Sub subscription admin client", e);

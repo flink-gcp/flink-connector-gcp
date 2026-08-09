@@ -22,18 +22,16 @@ import org.apache.flink.annotation.VisibleForTesting;
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.batching.BatchingSettings;
 import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.retrying.RetrySettings;
-import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 
 import javax.annotation.Nullable;
 
@@ -103,13 +101,8 @@ public final class DefaultPublisherFactory implements PublisherFactory {
         ManagedChannel ownedChannel = null;
         try {
             if (emulatorEndpoint != null) {
-                ownedChannel =
-                        ManagedChannelBuilder.forTarget(emulatorEndpoint.getTarget())
-                                .usePlaintext()
-                                .build();
-                builder.setChannelProvider(
-                                FixedTransportChannelProvider.create(
-                                        GrpcTransportChannel.create(ownedChannel)))
+                ownedChannel = EmulatorChannels.openPlaintextChannel(emulatorEndpoint);
+                builder.setChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
                         .setCredentialsProvider(NoCredentialsProvider.create());
             }
             configure(builder, options);

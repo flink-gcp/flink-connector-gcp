@@ -20,16 +20,14 @@ import org.apache.flink.annotation.Internal;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.GrpcTransportChannel;
-import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.api.gax.rpc.UnaryCallable;
 import com.google.cloud.tasks.v2.CloudTasksClient;
 import com.google.cloud.tasks.v2.CloudTasksSettings;
 import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,13 +78,8 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
         try {
             CloudTasksSettings.Builder settings = CloudTasksSettings.newBuilder();
             if (emulatorEndpoint != null) {
-                ownedChannel =
-                        ManagedChannelBuilder.forTarget(emulatorEndpoint.getTarget())
-                                .usePlaintext()
-                                .build();
-                settings.setTransportChannelProvider(
-                                FixedTransportChannelProvider.create(
-                                        GrpcTransportChannel.create(ownedChannel)))
+                ownedChannel = EmulatorChannels.openPlaintextChannel(emulatorEndpoint);
+                settings.setTransportChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
                         .setCredentialsProvider(NoCredentialsProvider.create());
             }
             return new CloudTasksClientAdapter(

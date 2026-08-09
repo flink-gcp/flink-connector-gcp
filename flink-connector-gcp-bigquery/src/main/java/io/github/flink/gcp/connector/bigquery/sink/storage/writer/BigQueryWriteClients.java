@@ -17,13 +17,13 @@
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.grpc.ManagedChannelBuilder;
 
 import java.io.IOException;
 
@@ -42,24 +42,36 @@ final class BigQueryWriteClients {
     /**
      * Creates a client talking plaintext to a BigQuery emulator with no credentials.
      *
-     * <p>The endpoint is set on the settings <em>and</em> on an explicit channel provider: the
-     * settings' endpoint alone would still build a TLS channel, which no emulator here terminates.
-     *
      * @param endpoint the emulator's gRPC endpoint
      * @return the client; the caller owns it and must close it
      * @throws IOException if the client cannot be created
      */
     static BigQueryWriteClient forEmulator(EmulatorEndpoint endpoint) throws IOException {
-        String target = endpoint.getTarget();
-        return BigQueryWriteClient.create(
-                BigQueryWriteSettings.newBuilder()
-                        .setEndpoint(target)
-                        .setCredentialsProvider(NoCredentialsProvider.create())
-                        .setTransportChannelProvider(
-                                InstantiatingGrpcChannelProvider.newBuilder()
-                                        .setEndpoint(target)
-                                        .setChannelConfigurator(ManagedChannelBuilder::usePlaintext)
-                                        .build())
-                        .build());
+        return BigQueryWriteClient.create(emulatorSettings(endpoint));
+    }
+
+    /**
+     * Builds the settings behind {@link #forEmulator}.
+     *
+     * <p>The transport provider starts from {@link
+     * BigQueryWriteSettings#defaultGrpcTransportProviderBuilder()} rather than from a bare one so
+     * that the API's own defaults survive: it raises the maximum inbound message size to {@link
+     * Integer#MAX_VALUE}, and a provider built from scratch would run the emulator path at gRPC's 4
+     * MiB default instead. Nothing sets the endpoint on the settings as well: the provider carries
+     * it, and gax pushes the settings' endpoint onto a provider only when the provider has none.
+     *
+     * @param endpoint the emulator's gRPC endpoint
+     * @return the settings
+     * @throws IOException if the settings cannot be built
+     */
+    @VisibleForTesting
+    static BigQueryWriteSettings emulatorSettings(EmulatorEndpoint endpoint) throws IOException {
+        return BigQueryWriteSettings.newBuilder()
+                .setCredentialsProvider(NoCredentialsProvider.create())
+                .setTransportChannelProvider(
+                        EmulatorChannels.plaintextProvider(
+                                BigQueryWriteSettings.defaultGrpcTransportProviderBuilder(),
+                                endpoint))
+                .build();
     }
 }
