@@ -63,6 +63,21 @@ final class FakeMutationBatcher implements MutationBatcher {
     /** Row keys the service refuses; a request carrying one is rejected whole. */
     final Set<String> rejectedRowKeys = new HashSet<>();
 
+    /**
+     * While set, every sent request fails all its entries with {@code NOT_FOUND} — the
+     * request-level fan-out a missing table produces (one RPC-level status reported against each
+     * entry of the batch). Cleared by the test, typically from a {@code FakeTableAdmin#onEnsure}
+     * hook, so repair convergence emerges from the ensure rather than being scripted turn by turn.
+     */
+    boolean tableMissing;
+
+    /**
+     * Requests after this many sends fail as {@link #tableMissing} does — for the case where the
+     * table vanishes <em>mid-flush</em>, which no test code can inject between two sends of one
+     * writer call. {@link Integer#MAX_VALUE} (the default) never triggers.
+     */
+    int tableMissingAfterSends = Integer.MAX_VALUE;
+
     int sendOutstandingCalls;
     int closeCalls;
     RuntimeException addFailure;
@@ -106,8 +121,16 @@ final class FakeMutationBatcher implements MutationBatcher {
         }
         boolean rejected =
                 batch.stream().anyMatch(index -> rejectedRowKeys.contains(rowKey(index)));
+        boolean missing = tableMissing || sentBatches.size() > tableMissingAfterSends;
         for (int index : batch) {
-            if (rejected) {
+            if (missing) {
+                futures.get(index)
+                        .setException(
+                                apiException(
+                                        StatusCode.Code.NOT_FOUND,
+                                        new RuntimeException(
+                                                "scripted missing table for " + rowKey(index))));
+            } else if (rejected) {
                 futures.get(index)
                         .setException(
                                 apiException(

@@ -71,11 +71,13 @@ Further design decisions of the same cluster:
   (`DEADLINE_EXCEEDED`, `UNAVAILABLE`, 10 ms doubling to 1 min, 10 min total). The exact
   opposite of Cloud Tasks, whose generated client retries `CreateTask` on nothing; the
   difference is in the clients, so neither is a precedent for the other.
-- **One fixed table per sink, and no auto-creation.** A batcher is bound to one table, so
-  per-record destinations would mean a batcher pool, a share of the in-flight budget each and an
-  eviction policy — deferred until there is demand ([#232] records the deferral). Auto-creation
-  is a poorer fit here than in the Pub/Sub sink: a table's schema *is* its column families and
-  their garbage-collection policies, which a sink cannot guess.
+- **One fixed table per sink, and no auto-creation by default.** A batcher is bound to one
+  table, so per-record destinations would mean a batcher pool, a share of the in-flight budget
+  each and an eviction policy — deferred until there is demand ([#232] records the deferral).
+  A disposition-only auto-creation is a poorer fit here than in the Pub/Sub sink: a table's
+  schema *is* its column families and their garbage-collection policies, which a sink cannot
+  guess. Refined by ADR-0073 ([#233]): opt-in creation exists, gated on the user declaring that
+  schema, with `CREATE_NEVER` still the default.
 - **`TableDestination` sits at the module root, not under `sink`.** The root layout rule puts
   destination types in `sink`; this deviates because [#216]'s source facade takes the same
   value, and moving it later would churn every importer. `appProfileId` is deliberately *not*
@@ -232,6 +234,7 @@ Concerns the fourth SDK fact only ([#236]); the rest of this ADR's alternatives 
 [#216]: https://github.com/laughingman7743/flink-connector-gcp/issues/216
 [#217]: https://github.com/laughingman7743/flink-connector-gcp/issues/217
 [#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
+[#233]: https://github.com/laughingman7743/flink-connector-gcp/issues/233
 [#131]: https://github.com/laughingman7743/flink-connector-gcp/issues/131
 [#236]: https://github.com/laughingman7743/flink-connector-gcp/issues/236
 [#400]: https://github.com/laughingman7743/flink-connector-gcp/issues/400

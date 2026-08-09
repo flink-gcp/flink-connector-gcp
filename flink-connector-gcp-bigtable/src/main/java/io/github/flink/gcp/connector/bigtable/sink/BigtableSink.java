@@ -31,8 +31,10 @@ import org.apache.flink.annotation.PublicEvolving;
  * completed checkpoint means every record up to the barrier was either applied, skipped by the
  * serializer, or handed to that handler.
  *
- * <p>The sink writes to one fixed table and never creates it: the table and its column families
- * must exist.
+ * <p>The sink writes to one fixed table. By default it never creates the table — it and its column
+ * families must exist; {@link BigtableSinkBuilder#createDisposition(CreateDisposition)} with {@link
+ * CreateDisposition#CREATE_IF_NEEDED} and {@link
+ * BigtableSinkBuilder#tableCreateOptions(TableCreateOptions)} opts into creating them.
  *
  * <p>Example:
  *

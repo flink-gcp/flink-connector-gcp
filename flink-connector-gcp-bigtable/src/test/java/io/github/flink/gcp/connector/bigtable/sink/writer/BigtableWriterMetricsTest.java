@@ -317,6 +317,18 @@ class BigtableWriterMetricsTest {
         assertThat(metrics.getCurrentSendTimeGauge()).isNull();
     }
 
+    @Test
+    void registersTheAutoCreationCountersWhateverTheDisposition() {
+        // The helper builds a CREATE_NEVER sink, which is the point: a dashboard reads a zero
+        // rather than a hole when auto-creation is off.
+        writer(serializer(), dropping());
+
+        assertThat(metrics.hasMetric("tablesCreated")).isTrue();
+        assertThat(metrics.hasMetric("columnFamiliesAdded")).isTrue();
+        assertThat(counter("tablesCreated")).isZero();
+        assertThat(counter("columnFamiliesAdded")).isZero();
+    }
+
     private long counter(String... identifier) {
         return metrics.counterValue(identifier);
     }
@@ -336,7 +348,7 @@ class BigtableWriterMetricsTest {
                                 .writerOptions(BigtableWriterOptions.defaults())
                                 .failedMutationHandler(handler)
                                 .build();
-        return sink.createWriter(batcher, mailbox, metrics);
+        return sink.createWriter(batcher, new FakeTableAdmin(), mailbox, metrics);
     }
 
     private static BigtableSerializationSchema<String> serializer() {

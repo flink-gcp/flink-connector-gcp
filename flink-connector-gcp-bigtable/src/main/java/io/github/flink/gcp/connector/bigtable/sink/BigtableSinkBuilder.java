@@ -35,8 +35,10 @@ import javax.annotation.Nullable;
  * <p>The table is fixed for the sink's lifetime, unlike the Pub/Sub and BigQuery sinks' per-record
  * destinations: the client's bulk mutation batcher is bound to one table, so per-record tables
  * would mean a pool of batchers and a share of the in-flight budget for each. That is deferred
- * until there is a use case for it, and the sink never creates the table either — the table and its
- * column families must exist.
+ * until there is a use case for it. By default the sink never creates the table either — the table
+ * and its column families must exist; {@link #createDisposition(CreateDisposition)} with {@link
+ * CreateDisposition#CREATE_IF_NEEDED} and {@link #tableCreateOptions(TableCreateOptions)} opts into
+ * creating them.
  *
  * @param <T> type of the records written by the sink
  */
@@ -49,6 +51,8 @@ public class BigtableSinkBuilder<T> {
     private BigtableWriterOptions writerOptions = BigtableWriterOptions.defaults();
     private FailureHandler<? super FailedMutation> failedMutationHandler = FailureHandler.failJob();
     @Nullable private EmulatorEndpoint emulatorEndpoint;
+    private CreateDisposition createDisposition = CreateDisposition.CREATE_NEVER;
+    @Nullable private TableCreateOptions tableCreateOptions;
 
     BigtableSinkBuilder() {}
 
@@ -143,6 +147,39 @@ public class BigtableSinkBuilder<T> {
     }
 
     /**
+     * Sets whether the sink may create the destination table when a mutation finds it — or one of
+     * its column families — missing. Defaults to {@link CreateDisposition#CREATE_NEVER}, under
+     * which the table and its families must exist.
+     *
+     * <p>{@link CreateDisposition#CREATE_IF_NEEDED} requires {@link
+     * #tableCreateOptions(TableCreateOptions)}: a Bigtable table's schema is its column families
+     * and their garbage-collection policies, which the sink cannot guess.
+     *
+     * @param createDisposition the disposition
+     * @return this builder
+     */
+    public BigtableSinkBuilder<T> createDisposition(CreateDisposition createDisposition) {
+        this.createDisposition =
+                Preconditions.checkNotNull(createDisposition, "createDisposition must not be null");
+        return this;
+    }
+
+    /**
+     * Sets the column families — and, per family, an optional garbage-collection rule — for the
+     * table the sink creates under {@link CreateDisposition#CREATE_IF_NEEDED}. Creation only: an
+     * existing table is used as it is, except that families declared here which it lacks are added.
+     *
+     * @param tableCreateOptions the creation settings
+     * @return this builder
+     */
+    public BigtableSinkBuilder<T> tableCreateOptions(TableCreateOptions tableCreateOptions) {
+        this.tableCreateOptions =
+                Preconditions.checkNotNull(
+                        tableCreateOptions, "tableCreateOptions must not be null");
+        return this;
+    }
+
+    /**
      * Builds the sink.
      *
      * @return the sink
@@ -150,6 +187,18 @@ public class BigtableSinkBuilder<T> {
     public Sink<T> build() {
         Preconditions.checkState(destination != null, "A table is required: set table(...).");
         Preconditions.checkState(serializer != null, "A serializer is required.");
+        Preconditions.checkState(
+                tableCreateOptions == null || createDisposition != CreateDisposition.CREATE_NEVER,
+                "tableCreateOptions(...) configures a table the sink creates, but"
+                        + " createDisposition(CREATE_NEVER) never creates one. Remove the options"
+                        + " or use CREATE_IF_NEEDED.");
+        Preconditions.checkState(
+                createDisposition != CreateDisposition.CREATE_IF_NEEDED
+                        || tableCreateOptions != null,
+                "createDisposition(CREATE_IF_NEEDED) creates the table from its creation"
+                        + " settings, but none are set. A Bigtable table's schema is its column"
+                        + " families, which the sink cannot guess: set tableCreateOptions(...)"
+                        + " naming them.");
         return new BigtableMutateRowsSink<>(
                 new BigtableSinkConfig<>(
                         destination,
@@ -157,6 +206,8 @@ public class BigtableSinkBuilder<T> {
                         appProfileId,
                         writerOptions,
                         failedMutationHandler,
-                        emulatorEndpoint));
+                        emulatorEndpoint,
+                        createDisposition,
+                        tableCreateOptions));
     }
 }

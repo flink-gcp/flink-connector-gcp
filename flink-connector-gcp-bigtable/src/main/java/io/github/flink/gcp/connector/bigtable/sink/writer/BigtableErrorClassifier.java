@@ -31,17 +31,24 @@ import java.util.Set;
  * Classifies failed row mutations into the classes the writer routes on.
  *
  * <ul>
+ *   <li>{@link Kind#TABLE_NOT_FOUND} — the table or one of its column families does not exist
+ *       ({@code NOT_FOUND}). Checked <em>first</em>, ahead of the transient precedence: a {@code
+ *       NOT_FOUND} chain that also carries a transient status is still the missing-table failure,
+ *       and acting on it is safe where a drop would not be — the writer either repairs it by
+ *       idempotent creation and re-applies the mutation (under {@code CREATE_IF_NEEDED}), or fails
+ *       the job (under {@code CREATE_NEVER}, since a missing table fails every record alike);
+ *       nothing is discarded either way. {@code PubSubErrorClassifier} orders its {@code
+ *       TOPIC_NOT_FOUND} the same way.
  *   <li>{@link Kind#ROW_LEVEL} — the service rejected this mutation as invalid ({@code
  *       INVALID_ARGUMENT}: over the size limit for a cell or a row, more mutations than one row
  *       accepts, a malformed qualifier). Applying the same mutation again cannot succeed and the
  *       other entries of its batch are unaffected, so it is routed to the configured failure
  *       handler.
- *   <li>{@link Kind#FATAL} — everything else. That includes {@code NOT_FOUND} (a missing table or
- *       column family), {@code PERMISSION_DENIED} and {@code UNAUTHENTICATED}, which are
- *       configuration-shaped and would fail every record alike; failures the client's own per-entry
- *       retries gave up on ({@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED}, {@code ABORTED}, {@code
- *       RESOURCE_EXHAUSTED}); and failures carrying no status at all. These fail the ongoing write
- *       or checkpoint.
+ *   <li>{@link Kind#FATAL} — everything else. That includes {@code PERMISSION_DENIED} and {@code
+ *       UNAUTHENTICATED}, which are configuration-shaped and would fail every record alike;
+ *       failures the client's own per-entry retries gave up on ({@code UNAVAILABLE}, {@code
+ *       DEADLINE_EXCEEDED}, {@code ABORTED}, {@code RESOURCE_EXHAUSTED}); and failures carrying no
+ *       status at all. These fail the ongoing write or checkpoint.
  * </ul>
  *
  * <p><b>Only a status that is unrecoverable by definition may be routed</b>, because the handler
@@ -71,6 +78,7 @@ final class BigtableErrorClassifier {
 
     /** The classes a failed mutation falls into. */
     enum Kind {
+        TABLE_NOT_FOUND,
         ROW_LEVEL,
         FATAL
     }
@@ -103,6 +111,9 @@ final class BigtableErrorClassifier {
      * @return the error class
      */
     static Kind classify(Throwable throwable) {
+        if (firstMatching(throwable, EnumSet.of(StatusCode.Code.NOT_FOUND)) != null) {
+            return Kind.TABLE_NOT_FOUND;
+        }
         if (firstMatching(throwable, TRANSIENT_CODES) != null) {
             return Kind.FATAL;
         }

@@ -102,10 +102,76 @@ in-flight budget for each, and an eviction policy for the tail. Writing to sever
 several sinks today; a batcher pool waits for a use case
 ([#232]({{< param BookRepo >}}/issues/232) records the deferral).
 
-The sink also never **creates** a table or a column family, so both must exist
-([#233]({{< param BookRepo >}}/issues/233)). That is a smaller decision than it is for the Pub/Sub
-sink, where auto-creation is a real feature: a Bigtable table's schema is its column families and
-their garbage-collection policies, which is exactly the part a sink cannot guess.
+By default the sink never **creates** a table or a column family, so both must exist. Opting into
+[auto-creation](#table-auto-creation) requires declaring the schema, not only permitting the
+creation ([#233]({{< param BookRepo >}}/issues/233)): a Bigtable table's schema is its column
+families and their garbage-collection policies, which is exactly the part a sink cannot guess — and
+unlike a topic, a table created bare would reject every mutation.
+
+## Table auto-creation
+
+Off by default. `createDisposition(CREATE_IF_NEEDED)` opts in, and requires
+[`tableCreateOptions(...)`]({{< relref "docs/reference/bigtable" >}}#tablecreateoptions) naming at
+least one column family — the disposition says the sink *may* create, the options say *what*, and
+the builder rejects each without the other:
+
+```java
+BigtableSink.<OrderEvent>builder()
+        .table(TableDestination.of("my-project", "my-instance", "orders"))
+        .serializer(new OrderEventMutations())
+        .createDisposition(CreateDisposition.CREATE_IF_NEEDED)
+        .tableCreateOptions(
+                TableCreateOptions.builder()
+                        .columnFamily(
+                                "cf",
+                                GcRule.union(
+                                        GcRule.maxVersions(1),
+                                        GcRule.maxAge(Duration.ofDays(30))))
+                        .build())
+        .build();
+```
+
+Creation is **reactive**, the shape the
+[Pub/Sub sink]({{< relref "docs/connectors/datastream/pubsub" >}}#topic-auto-creation) uses: no
+admin client is even constructed unless a mutation actually fails with `NOT_FOUND`. When one does,
+the failed mutations are *parked*, the sink ensures the table and its declared families exist —
+idempotently, so parallel subtasks race safely; a lost race falls through to adding whatever
+families are still missing, in one atomic request — and then re-applies the parked mutations,
+retrying on a jittered backoff (the
+[`recovery*` knobs]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions): 500 ms
+doubling to 10 s, at most 10 attempts, ±25% jitter so subtasks resuming against the same fresh
+table do not re-apply in lockstep). The repair runs before the next record and inside every
+`flush()`, so a completed checkpoint never leaves a mutation parked; a repair that exhausts its
+budget fails the job with the incident's cause. A creation that itself fails spends attempts from
+the same budget — the admin client retries neither of its RPCs, so this schedule is what stands
+between one transient admin failure and a restart. Nothing is ever dropped by the repair — a mutation
+is re-applied or the job fails — which is why `NOT_FOUND` may be acted on even when an outage
+status arrives beside it.
+
+**Creation only, per family.** An existing table is used as it is; the families declared in the
+options that it lacks are added, with their rules, and an existing family's garbage-collection
+rule is neither compared nor updated. The one condition creation cannot repair is a mutation
+naming a family the options do not declare — it keeps failing `NOT_FOUND` until the recovery
+budget is spent, and the failure message says so.
+
+**The garbage-collection rule is the decision that matters.** This sink is at-least-once: a replay
+whose serializer sets no explicit cell timestamps writes duplicate cell versions, and the family's
+rule is what decides whether those accumulate forever. A family declared without a rule keeps
+Bigtable's default of collecting nothing;
+`GcRule.union(GcRule.maxVersions(1), GcRule.maxAge(...))` is the usual shape for keeping only the
+latest cell. The [reference]({{< relref "docs/reference/bigtable" >}}#tablecreateoptions) lists the
+four rule shapes.
+
+Under the default `CREATE_NEVER` a `NOT_FOUND` stays **fatal** — a missing table fails every
+record alike, so it must never reach a handler that may drop records — and the failure names the
+disposition, so the reader meeting it learns the knob that changes it. Auto-creation needs the
+`bigtable.tables.create` and `bigtable.tables.update` permissions (`roles/bigtable.admin` carries
+both) on top of the data-plane role; a job whose table exists never exercises them.
+
+Two caveats. The repair happens inside `write()`/`flush()`, so an incident's backoff extends
+checkpoint duration by up to the recovery budget — about a minute at the defaults. And the sink
+creates tables, never instances — provisioning an instance is capacity planning, not schema — so a
+job pointed at a missing instance fails when the repair's own creation is refused.
 
 ## Delivery guarantees and state
 
@@ -197,10 +263,11 @@ mailbox, so the writer's state is touched from one thread only — and routed by
 | Class | Examples | Behavior |
 |---|---|---|
 | Row-level | `INVALID_ARGUMENT` — a cell timestamp that is not a multiple of 1000, an empty row key | Routed to the configured [failed-mutation handler](#failed-mutation-policy) once confirmed against the one mutation (below); applying the same mutation again could not succeed |
-| Fatal | `NOT_FOUND` (a missing table or column family), `PERMISSION_DENIED`, `UNAUTHENTICATED`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`; an outage the client's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `ABORTED`, `RESOURCE_EXHAUSTED`); failures carrying no status at all | Fail the ongoing write or checkpoint |
+| Missing table | `NOT_FOUND` — the table or one of its column families does not exist | [Repaired](#table-auto-creation) under `CREATE_IF_NEEDED`; fatal under the default `CREATE_NEVER`, with the disposition named in the failure |
+| Fatal | `PERMISSION_DENIED`, `UNAUTHENTICATED`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`; an outage the client's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `ABORTED`, `RESOURCE_EXHAUSTED`); failures carrying no status at all | Fail the ongoing write or checkpoint |
 
-Those two examples are the ones measured against the service, and they are the whole list this page
-will vouch for — see [what the gated suite measures](#testing). Two conditions that read like
+The row-level examples are the ones measured against the service, and they are the whole list this
+page will vouch for — see [what the gated suite measures](#testing). Two conditions that read like
 `INVALID_ARGUMENT` candidates are not: an entry carrying more than 100,000 mutations, or more than
 200 MiB of them, is rejected by the **client**, before any RPC, so it arrives as a serialization
 failure rather than as a service rejection (see
@@ -211,7 +278,9 @@ as it covers `setCell`.
 The split's purpose is that a *dropping* handler never sees a condition. An outage would otherwise
 bleed the stream one mutation at a time instead of backpressuring it, and a missing column family —
 which fails every record alike — would empty the whole stream into the dead-letter destination under
-a green job.
+a green job. `NOT_FOUND` is checked ahead of everything else in the chain, because acting on it is
+safe where a drop would not be: the [repair](#table-auto-creation) re-applies and never discards,
+and under `CREATE_NEVER` the outcome is a job failure either way.
 
 **A rejection is confirmed against one mutation before it is routed.** Bigtable may reject a whole
 `MutateRows` request rather than the entry that provoked it, and the client then fails every entry of
@@ -332,8 +401,10 @@ Registered on the sink writer's metric group, one set per subtask:
 | `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed |
 | `inFlightMutations` | gauge | mutations the service has not acknowledged, against `maxInFlightMutations` |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
-| `parkedMutations` | gauge | mutations held for [the isolation pass](#error-handling), awaiting a verdict of their own |
+| `parkedMutations` | gauge | mutations held for [the isolation pass](#error-handling) or the [auto-creation repair](#table-auto-creation) |
 | `errorClass.CODE.errors` | counter | failed mutations by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
+| `tablesCreated` | counter | tables the [auto-creation repair](#table-auto-creation) created, declared families included |
+| `columnFamiliesAdded` | counter | families the repair added to an already-existing table |
 
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
 exactly what reached `failedMutationHandler(...)` — a record the serializer rejected, and a mutation
@@ -343,14 +414,24 @@ and this counter is what shows it while the job stays green.
 
 **`parkedMutations` is what to watch beside it.** As
 [the error-handling section](#error-handling) describes, a row-level rejection reported against a
-whole batch is held for the isolation pass rather than routed, and this gauge is the only thing that
-reports those mutations: they have already left `inFlightMutations` and have not yet reached the
-handler. It is a *transient* reading rather than a backlog — the pass empties the park at the next
-record or the next checkpoint, whichever comes first — so what a dashboard shows is how often a
-sample catches the writer mid-isolation. Frequent non-zero samples mean the sink is spending its
-requests one entry at a time, which is the throughput cost of the pass. A batched rejection is
+whole batch is held for the isolation pass rather than routed, and a `NOT_FOUND` under
+`CREATE_IF_NEEDED` is held for the repair; this gauge is the only thing that reports those
+mutations: they have already left `inFlightMutations` and have not yet reached the handler. It is a
+*transient* reading rather than a backlog — both passes empty their park at the next record or the
+next checkpoint, whichever comes first — so what a dashboard shows is how often a sample catches
+the writer mid-isolation or mid-repair. Frequent non-zero samples mean the sink is spending its
+requests one entry at a time, or waiting out a recovery backoff. A batched rejection is
 deliberately *not* counted under `errorClass.INVALID_ARGUMENT.errors`, so that counter reports
-records the service refused rather than the batch sizes they travelled in.
+records the service refused rather than the batch sizes they travelled in; a parked `NOT_FOUND`
+**is** counted under `errorClass.NOT_FOUND.errors`, per entry, because a missing table leaves no
+identity to confirm — every entry genuinely failed on it, and each failed re-application during a
+repair is a further give-up.
+
+**`tablesCreated` and `columnFamiliesAdded` split first contact from schema drift.** A created
+table's families ride along in `tablesCreated`; `columnFamiliesAdded` counts only families the
+repair added to a table that already existed — the signal that what a job declares and what the
+table holds had drifted apart. Both are registered whatever the disposition, so a `CREATE_NEVER`
+dashboard reads zeroes rather than holes.
 
 **`errorClass` does not measure retry volume here, unlike the Cloud Tasks sink.** That connector
 owns its retries, so the sum over its transient codes *is* its retry count; this one leaves retrying
@@ -385,7 +466,8 @@ Not implemented, each with its issue rather than a promise:
   are [#35]({{< param BookRepo >}}/issues/35);
 - Table API and SQL, including a `RowData` serializer:
   [#217]({{< param BookRepo >}}/issues/217);
-- per-record table destinations and table or column-family auto-creation, both deferred above;
+- per-record table destinations, deferred [above](#one-table-per-sink)
+  ([#232]({{< param BookRepo >}}/issues/232));
 - conditional and read-modify-write mutations (`checkAndMutateRow`, `readModifyWriteRow`). These are
   request-response primitives rather than a write path a sink batches: each is one RPC whose result
   the caller is expected to read, and neither participates in `MutateRows`.
@@ -434,10 +516,16 @@ between you and a new instance. Two things only this suite can show:
   covers it.
 - **Which status Bigtable rejects a mutation with**, and therefore which side of the
   [row-level/fatal boundary](#error-handling) each rejection lands on. This is where the two
-  `INVALID_ARGUMENT` examples in that table come from, where the fatal `NOT_FOUND` of a missing
-  column family is pinned, and where the batch-wide rejection that the isolation pass answers was
-  both found and, since [#239]({{< param BookRepo >}}/issues/239), verified to be answered: a good
-  record written beside a bad one is applied, and only the bad one is routed.
+  `INVALID_ARGUMENT` examples in that table come from, where the `NOT_FOUND` of a missing table
+  and of a missing column family are pinned, and where the batch-wide rejection that the isolation
+  pass answers was both found and, since [#239]({{< param BookRepo >}}/issues/239), verified to be
+  answered: a good record written beside a bad one is applied, and only the bad one is routed.
+- **The missing-family leg of [auto-creation](#table-auto-creation)**, which the emulator cannot
+  drive at all (it answers `INTERNAL` where the service says `NOT_FOUND` — the table below), and
+  the repair against real metadata propagation: a family the options declare but an existing table
+  lacks is added through the write path, and an existing family's garbage-collection rule survives
+  the repair untouched. The missing-*table* leg runs against the emulator too, whose `NOT_FOUND`
+  matches the service's.
 
 There is no persistent instance to run it against: a one-node instance is a standing cost of roughly
 $470 a month, so each gated class **creates an instance and deletes it afterwards**, and a run that
@@ -447,15 +535,17 @@ instance, only the API enablement and the grant.
 
 ### Where the emulator differs from the service
 
-Measured 2026-08-02, against the pinned `google-cloud-cli:441.0.0-emulators` image and real Bigtable
-in `us-central1`, for the same three inputs. Every row is asserted from both sides, so an emulator
-image bump has to state what it changed rather than making this table quietly wrong.
+Measured 2026-08-02 (the missing-table row 2026-08-09), against the pinned
+`google-cloud-cli:441.0.0-emulators` image and real Bigtable in `us-central1`, for the same inputs
+on both sides. Every row is asserted from both sides, so an emulator image bump has to state what
+it changed rather than making this table quietly wrong.
 
 | Input | Real Bigtable | Emulator |
 |---|---|---|
 | Cell timestamp not a multiple of 1000 | `INVALID_ARGUMENT`, the whole request rejected: every entry of the batch routed to the handler, nothing written | `INTERNAL` ("invalid timestamp 1234"), the offending entry only — the rest of the batch is written |
 | Empty row key | `INVALID_ARGUMENT`, "Row keys must be non-empty" | **Accepted.** The row it stores then breaks the client's own read state machine ("rowKey missing"), a state the service cannot reach |
 | Mutation naming a column family the table does not have | `NOT_FOUND`, reported for **every** entry of the batch, nothing written | `INTERNAL` ("unknown family"), the offending entry only |
+| Mutation against a table that does not exist | `NOT_FOUND`, for every entry — worded "No tables found for instance …" against an instance holding no tables | `NOT_FOUND` ("table ... not found") — the one rejection the emulator answers with the service's status, which is what lets the emulator suite drive the [auto-creation](#table-auto-creation) repair end-to-end; only the wording differs, and the sink classifies by status alone |
 
 The status is the deviation that matters. `INTERNAL` is [fatal](#error-handling) to this sink while
 `INVALID_ARGUMENT` is routed, so an emulator test would conclude "fails the job" for a condition the

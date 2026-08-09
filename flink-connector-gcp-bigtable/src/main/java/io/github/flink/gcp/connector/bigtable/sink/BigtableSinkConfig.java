@@ -43,6 +43,8 @@ public final class BigtableSinkConfig<T> implements Serializable {
     private final BigtableWriterOptions writerOptions;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final CreateDisposition createDisposition;
+    @Nullable private final TableCreateOptions tableCreateOptions;
 
     BigtableSinkConfig(
             TableDestination destination,
@@ -50,13 +52,17 @@ public final class BigtableSinkConfig<T> implements Serializable {
             @Nullable String appProfileId,
             BigtableWriterOptions writerOptions,
             FailureHandler<? super FailedMutation> failedMutationHandler,
-            @Nullable EmulatorEndpoint emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            CreateDisposition createDisposition,
+            @Nullable TableCreateOptions tableCreateOptions) {
         this.destination = destination;
         this.serializer = serializer;
         this.appProfileId = appProfileId;
         this.writerOptions = writerOptions;
         this.failedMutationHandler = failedMutationHandler;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.createDisposition = createDisposition;
+        this.tableCreateOptions = tableCreateOptions;
     }
 
     /** Returns the table every mutation is written to. */
@@ -92,5 +98,19 @@ public final class BigtableSinkConfig<T> implements Serializable {
     @Nullable
     public EmulatorEndpoint getEmulatorEndpoint() {
         return emulatorEndpoint;
+    }
+
+    /** Returns whether the sink may create a missing table. */
+    public CreateDisposition getCreateDisposition() {
+        return createDisposition;
+    }
+
+    /**
+     * Returns the settings for the table the sink creates, or {@code null} under {@link
+     * CreateDisposition#CREATE_NEVER} — the builder rejects every other combination.
+     */
+    @Nullable
+    public TableCreateOptions getTableCreateOptions() {
+        return tableCreateOptions;
     }
 }

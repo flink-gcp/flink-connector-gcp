@@ -585,7 +585,7 @@ class BigtableWriterTest {
                                 .build();
         BigtableSinkConfig<String> config = sink.getConfig();
         assertThat(config.getDestination()).isEqualTo(TABLE);
-        return sink.createWriter(batcher, mailbox, metricGroup);
+        return sink.createWriter(batcher, new FakeTableAdmin(), mailbox, metricGroup);
     }
 
     private static BigtableSerializationSchema<String> serializer() {

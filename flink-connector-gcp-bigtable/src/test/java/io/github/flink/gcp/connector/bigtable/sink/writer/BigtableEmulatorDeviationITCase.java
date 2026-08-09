@@ -29,6 +29,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
+import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -130,6 +131,42 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
     }
 
     @Test
+    void answersNotFoundToAMissingTable() throws Exception {
+        // Not a deviation but pinned like one, because the auto-creation repair is built on this
+        // status: the emulator answers a missing table with NOT_FOUND fanned request-level over
+        // every entry (measured 2026-08-08), which is why BigtableAutoCreationITCase can drive
+        // the repair end-to-end while the missing-family case above cannot be. An image bump
+        // that changes this answer must declare it here. What this test can pin is the status:
+        // under CREATE_NEVER the first NOT_FOUND mail becomes the job failure and the drain stops
+        // at it, so the per-entry fan-out is pinned by the repair tests instead — an entry
+        // answered anything else would fail BigtableAutoCreationITCase's flush. Real Bigtable's
+        // answer is pinned by BigtableAutoCreationRealGcpITCase.
+        TableDestination table = TableDestination.of(PROJECT, INSTANCE, "deviation-missing-table");
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        table,
+                        handler,
+                        (element, context) ->
+                                RowMutationEntry.create(element)
+                                        .setCell(FAMILY, "payload", 1_000L, "v"));
+
+        try {
+            writer.write(GOOD, TestContexts.NO_OP);
+            writer.write("bad", TestContexts.NO_OP);
+
+            // Fatal under the default CREATE_NEVER, with the disposition named; nothing routed.
+            assertThatThrownBy(() -> writer.flush(false))
+                    .hasMessageContaining("createDisposition is CREATE_NEVER")
+                    .hasStackTraceContaining("NOT_FOUND")
+                    .hasStackTraceContaining("not found");
+            assertThat(handler.handled).isEmpty();
+        } finally {
+            writer.close();
+        }
+    }
+
+    @Test
     void answersInternalRatherThanNotFoundToAnUnknownColumnFamily() throws Exception {
         // Real Bigtable: NOT_FOUND, and it fails the good entry of the batch too, so nothing is
         // written. Here: INTERNAL, the offending entry only, and the good row lands.
@@ -183,7 +220,10 @@ class BigtableEmulatorDeviationITCase extends AbstractBigtableEmulatorITCase {
                         .create();
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(
-                        batcher, new FakeMailboxExecutor(), TestSinkWriterMetricGroup.create());
+                        batcher,
+                        new BigtableTableAdmin(EmulatorEndpoint.parse(emulatorEndpoint())),
+                        new FakeMailboxExecutor(),
+                        TestSinkWriterMetricGroup.create());
     }
 
     /** A handler that drops every mutation, recording what it saw. */

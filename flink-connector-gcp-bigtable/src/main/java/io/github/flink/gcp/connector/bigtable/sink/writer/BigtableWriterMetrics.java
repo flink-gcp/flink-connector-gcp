@@ -58,10 +58,13 @@ final class BigtableWriterMetrics {
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
     private final Counter recordsSkipped;
+    private final Counter tablesCreated;
+    private final Counter columnFamiliesAdded;
     private final ErrorClassCounters errorClasses;
 
     /**
-     * Registers the writer's counters.
+     * Registers the writer's counters. The auto-creation pair is registered whatever the create
+     * disposition, so a dashboard reads a zero rather than a hole under {@code CREATE_NEVER}.
      *
      * @param metricGroup the writer's metric group
      */
@@ -71,6 +74,8 @@ final class BigtableWriterMetrics {
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
         this.recordsSkipped = metricGroup.counter(BigtableMetricNames.RECORDS_SKIPPED);
+        this.tablesCreated = metricGroup.counter(BigtableMetricNames.TABLES_CREATED);
+        this.columnFamiliesAdded = metricGroup.counter(BigtableMetricNames.COLUMN_FAMILIES_ADDED);
         this.errorClasses = new ErrorClassCounters(metricGroup);
     }
 
@@ -81,7 +86,7 @@ final class BigtableWriterMetrics {
      *
      * @param inFlightMutations mutations the service has not acknowledged
      * @param inFlightBytes their serialized size, against {@code maxInFlightBytes}
-     * @param parkedMutations mutations held for the isolation pass
+     * @param parkedMutations mutations held for the isolation pass or the auto-creation repair
      */
     void bindWriterState(
             Gauge<Integer> inFlightMutations,
@@ -89,11 +94,12 @@ final class BigtableWriterMetrics {
             Gauge<Integer> parkedMutations) {
         metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_MUTATIONS, inFlightMutations);
         metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
-        // Nothing else reports the park: a mutation waiting for its solo verdict has been released
-        // from the in-flight counters and has not reached the failure handler, so between the two
-        // it is invisible. Transient rather than a backlog, since the pass empties the park at the
-        // next record or the next checkpoint — so a reporter reads how often it catches the writer
-        // mid-isolation, which is what the throughput cost of the pass looks like (#239).
+        // Nothing else reports the parks: a mutation waiting for its solo verdict or for a repair
+        // has been released from the in-flight counters and has not reached the failure handler,
+        // so between the two it is invisible. Transient rather than a backlog, since both passes
+        // empty their park at the next record or the next checkpoint — so a reporter reads how
+        // often it catches the writer mid-isolation or mid-repair, which is what the throughput
+        // cost of either looks like (#239).
         metricGroup.gauge(BigtableMetricNames.PARKED_MUTATIONS, parkedMutations);
     }
 
@@ -127,6 +133,25 @@ final class BigtableWriterMetrics {
      */
     void recordSkipped() {
         recordsSkipped.inc();
+    }
+
+    /**
+     * Counts the destination table created by an auto-creation repair, its declared column families
+     * included — a created table's families are part of the creation, not additions.
+     */
+    void tableCreated() {
+        tablesCreated.inc();
+    }
+
+    /**
+     * Counts column families an auto-creation repair added to an <em>already-existing</em> table.
+     * Kept apart from {@link #tableCreated()} because the two mean different things to an operator:
+     * a created table is first contact, an amended one is schema drift repaired.
+     *
+     * @param count how many families the repair added
+     */
+    void columnFamiliesAdded(int count) {
+        columnFamiliesAdded.inc(count);
     }
 
     /**

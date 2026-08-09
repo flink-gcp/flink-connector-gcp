@@ -11,6 +11,7 @@ bulk `MutateRows` batcher into one fixed table.
 | DataStream bounded scan source | Planned ([#216](https://github.com/laughingman7743/flink-connector-gcp/issues/216)) |
 | Table API / SQL support | Planned ([#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217)) |
 | Gated real-GCP integration tests | Implemented ([#218](https://github.com/laughingman7743/flink-connector-gcp/issues/218)) |
+| Table and column-family auto-creation (`CREATE_IF_NEEDED`) | Implemented ([#233](https://github.com/laughingman7743/flink-connector-gcp/issues/233)) |
 | Change streams source | Planned ([#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35)) |
 
 ```java

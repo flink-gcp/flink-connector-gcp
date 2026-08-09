@@ -58,7 +58,8 @@ limitations under the License.
         <dependency>
             <!-- The data client, its RowMutationEntry — which is the serialization schema's
                  return type, and so part of this module's public API surface — and the
-                 admin client the emulator tests create tables with. -->
+                 admin client, which table auto-creation creates through and the emulator
+                 tests create tables with. -->
             <groupId>com.google.cloud</groupId>
             <artifactId>google-cloud-bigtable</artifactId>
         </dependency>

@@ -43,5 +43,8 @@ public final class BigtableMetricNames {
 
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
+    public static final String TABLES_CREATED = "tablesCreated";
+    public static final String COLUMN_FAMILIES_ADDED = "columnFamiliesAdded";
+
     private BigtableMetricNames() {}
 }

@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
+import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -152,6 +153,9 @@ class BigtableWriteITCase extends AbstractBigtableEmulatorITCase {
                         .create();
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(
-                        batcher, new FakeMailboxExecutor(), TestSinkWriterMetricGroup.create());
+                        batcher,
+                        new BigtableTableAdmin(EmulatorEndpoint.parse(emulatorEndpoint())),
+                        new FakeMailboxExecutor(),
+                        TestSinkWriterMetricGroup.create());
     }
 }

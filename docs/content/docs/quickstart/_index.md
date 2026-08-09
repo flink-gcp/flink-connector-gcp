@@ -130,8 +130,9 @@ Two environment facts a first run trips over:
 - **The BigQuery sink and the Pub/Sub sink need permission to *create* their destination**, since
   that is what they do by default. `createDisposition(CREATE_NEVER)` drops the requirement on
   both, at the price of a missing destination failing the job instead of being created. The
-  Pub/Sub source creates a subscription only when given creation settings, and the Cloud Tasks and
-  Bigtable sinks never create their destination at all.
+  Pub/Sub source creates a subscription only when given creation settings, the Bigtable sink
+  creates its table only under `CREATE_IF_NEEDED` with a declared schema, and the Cloud Tasks
+  sink never creates its destination at all.
 
 What each connector asks for:
 
@@ -141,7 +142,7 @@ What each connector asks for:
 | Pub/Sub sink | `pubsub.topics.publish`, plus `pubsub.topics.create` (roles/pubsub.editor) when topic auto-creation may trigger |
 | Pub/Sub source | `pubsub.subscriptions.get` (roles/pubsub.viewer) on every configured subscription for the startup check, plus `create` when auto-creating and `update` when seeking — roles/pubsub.editor covers all three |
 | Cloud Tasks | `cloudtasks.tasks.create` ([roles/cloudtasks.enqueuer](https://cloud.google.com/tasks/docs/secure-queue-configuration)), which binds to a single queue as well as to the project. The sink never creates a queue |
-| Bigtable | `bigtable.tables.mutateRows` ([roles/bigtable.user](https://cloud.google.com/bigtable/docs/access-control)), which binds to a single table as well as to the instance. The sink creates neither the table nor its column families |
+| Bigtable | `bigtable.tables.mutateRows` ([roles/bigtable.user](https://cloud.google.com/bigtable/docs/access-control)), which binds to a single table as well as to the instance. `createDisposition(CREATE_IF_NEEDED)` additionally needs `bigtable.tables.create` and `bigtable.tables.update`; under the default `CREATE_NEVER` the sink creates neither the table nor its column families |
 
 ## Then
 

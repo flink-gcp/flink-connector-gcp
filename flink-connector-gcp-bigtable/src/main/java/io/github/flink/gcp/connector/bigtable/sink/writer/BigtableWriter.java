@@ -30,10 +30,15 @@ import com.google.api.core.ApiFutures;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkConfig;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
+import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -103,6 +108,22 @@ import java.util.Deque;
  * own loop budget is a per-pass invariant tripwire, and the two failures deliberately share no
  * message.
  *
+ * <h2>Table auto-creation</h2>
+ *
+ * <p>Under {@code CreateDisposition.CREATE_IF_NEEDED} a mutation failing {@code NOT_FOUND} — the
+ * table or one of its column families does not exist — is <em>parked</em> into {@link
+ * #pendingRepair} rather than failing the job, and {@link #runRepair()} repairs the incident from
+ * the next {@link #write} or {@link #flush(boolean)}: it drains the writer, ensures the table and
+ * its declared families exist through the {@link TableAdmin}, re-applies the parked mutations, and
+ * retries on a jittered backoff schedule until they land or {@code
+ * BigtableWriterOptions.recoveryMaxAttempts} is spent. The disposition gates the <em>parking</em>,
+ * unlike the Pub/Sub writer's (where a cascade behind a dropped ordered message must be parked
+ * whatever the disposition): this writer has no ordering keys and no cascades, so under {@code
+ * CREATE_NEVER} a {@code NOT_FOUND} is simply fatal, with the disposition named in the failure.
+ * {@link #tableMissing} carries the repair's reason — set only where a {@code NOT_FOUND} is parked,
+ * consumed per attempt, so the admin is called only for a failure that actually said the table was
+ * missing, and not again once its ensure has succeeded.
+ *
  * <p>A failure that first surfaces during {@link #close()} reaches neither the handler nor {@link
  * #asyncError}: Flink quiesces the task mailbox before it closes operators, so a completion
  * callback's re-dispatch is rejected from there on. The batcher reports such a failure only inside
@@ -128,13 +149,17 @@ import java.util.Deque;
 @Internal
 public class BigtableWriter<T> implements SinkWriter<T> {
 
+    private static final Logger LOG = LoggerFactory.getLogger(BigtableWriter.class);
+
     private final BigtableSinkConfig<T> config;
     private final TableDestination destination;
     private final MutationBatcher batcher;
+    private final TableAdmin tableAdmin;
     private final MailboxExecutor mailboxExecutor;
     private final int maxInFlightMutations;
     private final long maxInFlightBytes;
     private final int maxConsecutiveRejections;
+    private final RetrySchedule recoverySchedule;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
     private final BigtableWriterMetrics metrics;
 
@@ -158,6 +183,32 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     private final Deque<ParkedMutation> pendingIsolation = new ArrayDeque<>();
 
     /**
+     * Mutations that failed {@code NOT_FOUND} under {@code CREATE_IF_NEEDED}, awaiting the repair
+     * that creates what is missing and re-applies them. Touched only on the task thread.
+     *
+     * <p>Its non-emptiness is the repair trigger itself — the Pub/Sub writer's separate {@code
+     * repairNeeded} flag exists for a repair with nothing parked (a dropped ordered message's
+     * paused key), which one fixed table and no ordering keys cannot produce.
+     */
+    private final Deque<ParkedMutation> pendingRepair = new ArrayDeque<>();
+
+    /**
+     * Whether a parked {@code NOT_FOUND} said the table (or a family) is missing since the repair
+     * last checked. The only thing that makes {@link #runRepair()} call the admin: everything else
+     * the repair does — re-applying the parked batch on a backoff — is needed whatever parked it,
+     * and a repair that has not seen a {@code NOT_FOUND} must not issue a creation. Touched only on
+     * the task thread.
+     */
+    private boolean tableMissing;
+
+    /**
+     * The failure that parked the current repair's mutations, carried so a repair that exhausts its
+     * budget can name what actually went wrong; nulled when a repair completes so it cannot be
+     * reported as some later incident's cause. Touched only on the task thread.
+     */
+    private Throwable repairCause;
+
+    /**
      * Confirmed rejections routed since the last successfully applied mutation; touched only on the
      * task thread. Every success mail zeroes it, and {@code
      * BigtableWriterOptions.maxConsecutiveRejections} — whose javadoc carries the reasoning — is
@@ -176,6 +227,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      *
      * @param config the sink configuration
      * @param batcher the mutation batcher; closed with the writer
+     * @param tableAdmin the table admin the auto-creation repair creates through; closed with the
+     *     writer
      * @param mailboxExecutor the task mailbox, used to run mutation completions on the task thread
      * @param metricGroup the writer's metric group, which {@link BigtableWriterMetrics} registers
      *     this sink's counters and gauges on
@@ -183,11 +236,35 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     public BigtableWriter(
             BigtableSinkConfig<T> config,
             MutationBatcher batcher,
+            TableAdmin tableAdmin,
             MailboxExecutor mailboxExecutor,
             SinkWriterMetricGroup metricGroup) {
+        this(
+                config,
+                batcher,
+                tableAdmin,
+                mailboxExecutor,
+                metricGroup,
+                config.getWriterOptions().toRecoverySchedule());
+    }
+
+    /**
+     * Creates the writer with an explicit recovery schedule, so tests can shrink the production
+     * backoffs out of the wall clock.
+     */
+    @VisibleForTesting
+    BigtableWriter(
+            BigtableSinkConfig<T> config,
+            MutationBatcher batcher,
+            TableAdmin tableAdmin,
+            MailboxExecutor mailboxExecutor,
+            SinkWriterMetricGroup metricGroup,
+            RetrySchedule recoverySchedule) {
         this.config = config;
         this.destination = config.getDestination();
         this.batcher = batcher;
+        this.tableAdmin = tableAdmin;
+        this.recoverySchedule = recoverySchedule;
         this.mailboxExecutor = mailboxExecutor;
         BigtableWriterOptions options = config.getWriterOptions();
         // Checked here, not only on the options builder: a non-positive cap holds the
@@ -206,6 +283,13 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                 options.getMaxConsecutiveRejections() > 0
                         || options.getMaxConsecutiveRejections() == BigtableWriterOptions.UNBOUNDED,
                 "maxConsecutiveRejections must be positive or -1 (unbounded)");
+        // The builder's cross-check, re-stated for the same deserialization reason. Failing here
+        // beats the alternative — an NPE inside the repair, at the first moment a table actually
+        // goes missing, attributed to the creation rather than to the configuration.
+        Preconditions.checkArgument(
+                config.getCreateDisposition() != CreateDisposition.CREATE_IF_NEEDED
+                        || config.getTableCreateOptions() != null,
+                "createDisposition is CREATE_IF_NEEDED but tableCreateOptions is null");
         this.maxInFlightMutations = options.getMaxInFlightMutations();
         this.maxInFlightBytes = options.getMaxInFlightBytes();
         this.maxConsecutiveRejections = options.getMaxConsecutiveRejections();
@@ -220,12 +304,21 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     @Override
     public void write(T element, Context context) throws IOException, InterruptedException {
         checkAsyncError();
-        // Before this record is even serialized, and this is what bounds the park at all: parking
+        // The repair runs before the isolation pass, and the order is load-bearing both ways: the
+        // pass submits solo requests, and against a still-missing table each would fail NOT_FOUND
+        // and migrate to the repair queue at a cost of one round trip apiece — repairing first
+        // restores the table they need. And a repair's own re-submissions can park
+        // INVALID_ARGUMENT entries for isolation, which the pass right after it then confirms.
+        // Neither loop drains the other's queue.
+        if (!pendingRepair.isEmpty()) {
+            runRepair();
+        }
+        // Before this record is even serialized, and this is what bounds the parks at all: parking
         // happens in completion mails, mails run only inside a yield, and every park releases one
         // mutation from the in-flight counters — so between two writes at most maxInFlightMutations
-        // can accumulate. Isolating only at the checkpoint barrier would instead let a stream of
-        // rejections pile the whole interval's worth of mutations into the writer's heap, since a
-        // parked mutation is counted by neither in-flight bound.
+        // can accumulate, across both queues. Isolating only at the checkpoint barrier would
+        // instead let a stream of rejections pile the whole interval's worth of mutations into the
+        // writer's heap, since a parked mutation is counted by neither in-flight bound.
         if (!pendingIsolation.isEmpty()) {
             runIsolationPass();
         }
@@ -310,8 +403,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      *
      * <p>Consumed with {@code poll()} rather than iterated: the opening drain runs completion mails
      * that may park further mutations, and those are picked up by this same loop. Nothing parks
-     * during the per-mutation drains, since the only submission in flight there is solo and a solo
-     * verdict is routed rather than parked.
+     * <em>for isolation</em> during the per-mutation drains: the only submission in flight there is
+     * solo, and a solo verdict is routed, made fatal, or — a {@code NOT_FOUND} under {@code
+     * CREATE_IF_NEEDED}, the table vanishing mid-pass — migrated to {@link #pendingRepair}, never
+     * parked for isolation again.
      *
      * <p>That last sentence is the loop's termination argument, and it lives in {@link
      * #onMutationFailed} rather than here — so the loop is <b>bounded by the park's size</b> and
@@ -346,21 +441,140 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         }
     }
 
+    /**
+     * Repairs a missing-table incident: ensures the table and its declared families exist, then
+     * re-applies the parked mutations, retrying on the jittered recovery schedule until they land
+     * or the budget is spent.
+     *
+     * <p>The opening drain is what makes re-parked failures attributable to the re-submissions —
+     * and, before anything is re-applied, what surfaces a fatal root through {@code
+     * checkAsyncError} so a cascade of one is never re-applied over it. Once the ensure has
+     * succeeded it is not repeated within the repair, but the decision is re-taken per attempt off
+     * {@link #tableMissing}: a batch parked while the creation was still propagating re-parks with
+     * the flag set again, and the flag consumed here is what keeps a later incident from inheriting
+     * this repair's answer. An ensure that <em>fails</em> spends an attempt from the same schedule
+     * instead of failing the job: the admin client retries neither of its RPCs, so this loop is the
+     * only thing standing between one transient admin failure and a restart — and with the budget
+     * spent, the ensure's own failure is what surfaces.
+     *
+     * <p>Re-submissions are exempt from {@link #awaitCapacity()}: the park can never exceed {@code
+     * maxInFlightMutations} (the bound argument in {@link #write}), so re-applying it wholesale
+     * peaks at one cap's worth. An entry that fails {@code INVALID_ARGUMENT} here parks for the
+     * isolation pass, not this loop, which is why the loop keys on its own queue alone.
+     *
+     * <p>Budget exhaustion names the one condition creation cannot repair: a mutation writing to a
+     * family {@code tableCreateOptions} does not declare fails {@code NOT_FOUND} forever, since the
+     * sink creates only the declared families.
+     */
+    private void runRepair() throws IOException, InterruptedException {
+        batcher.sendOutstanding();
+        drainInFlight();
+        boolean ensured = false;
+        for (int attempt = 1; ; attempt++) {
+            if (tableMissing) {
+                tableMissing = false;
+                if (!ensured) {
+                    LOG.info(
+                            "A mutation of Bigtable table {} failed because the table or a column"
+                                    + " family does not exist; creating what is missing"
+                                    + " (CREATE_IF_NEEDED).",
+                            destination);
+                    TableAdmin.EnsureResult result;
+                    try {
+                        result =
+                                tableAdmin.ensureTable(destination, config.getTableCreateOptions());
+                    } catch (IOException e) {
+                        if (attempt >= recoverySchedule.maxAttempts()) {
+                            throw e;
+                        }
+                        // The creation is still owed: re-arm the flag the next attempt consumes.
+                        tableMissing = true;
+                        long ensureBackoffMs = recoverySchedule.backoffMs(attempt);
+                        LOG.info(
+                                "Creating Bigtable table {} or its column families failed (attempt"
+                                        + " {} of {}); retrying in {} ms.",
+                                destination,
+                                attempt,
+                                recoverySchedule.maxAttempts(),
+                                ensureBackoffMs,
+                                e);
+                        Thread.sleep(ensureBackoffMs);
+                        continue;
+                    }
+                    ensured = true;
+                    if (result.tableCreated()) {
+                        metrics.tableCreated();
+                    }
+                    if (result.columnFamiliesAdded() > 0) {
+                        metrics.columnFamiliesAdded(result.columnFamiliesAdded());
+                    }
+                }
+            }
+            for (int budget = pendingRepair.size(); budget > 0; budget--) {
+                ParkedMutation parked = pendingRepair.poll();
+                submit(parked.entry, parked.serializedSize, false, false);
+            }
+            batcher.sendOutstanding();
+            drainInFlight();
+            if (pendingRepair.isEmpty()) {
+                repairCause = null;
+                return;
+            }
+            if (attempt >= recoverySchedule.maxAttempts()) {
+                throw new IOException(
+                        "Re-applying mutations to Bigtable table "
+                                + destination
+                                + " kept failing after creating the table and its declared column"
+                                + " families ("
+                                + attempt
+                                + " attempt(s)); "
+                                + pendingRepair.size()
+                                + " mutation(s) are still failing. A mutation naming a column"
+                                + " family absent from tableCreateOptions cannot be repaired: the"
+                                + " sink creates only the declared families.",
+                        repairCause);
+            }
+            long backoffMs = recoverySchedule.backoffMs(attempt);
+            LOG.info(
+                    "Re-applying {} mutation(s) to Bigtable table {} still failed (attempt {} of"
+                            + " {}); retrying in {} ms.",
+                    pendingRepair.size(),
+                    destination,
+                    attempt,
+                    recoverySchedule.maxAttempts(),
+                    backoffMs);
+            Thread.sleep(backoffMs);
+        }
+    }
+
     @Override
     public void flush(boolean endOfInput) throws IOException, InterruptedException {
         checkAsyncError();
-        // sendOutstanding rather than the batcher's own blocking flush: waiting has to happen on
-        // the mailbox, or the completion mails this writer's state is mutated by would pile up
-        // behind a blocked task thread.
-        batcher.sendOutstanding();
-        drainInFlight();
-        // The handler's flush comes last, and the two steps before it are what it must not run
-        // ahead of: the drain is what discovers this checkpoint's failures, and the pass is what
-        // turns the batched ones among them into dead letters. Flushing earlier would checkpoint
-        // past a dead letter one of them was about to produce.
-        if (!pendingIsolation.isEmpty()) {
-            runIsolationPass();
-        }
+        // One loop iteration with nothing parked is the plain flush; the loop is what makes "a
+        // completed checkpoint leaves nothing parked" true, since the isolation pass's solos can
+        // migrate mutations to the repair queue and a repair's re-submissions can park for
+        // isolation. It terminates because both passes are self-bounding — the repair by its
+        // recovery schedule, the pass by its park size with every entry applied, routed or
+        // migrated — so an iteration ends with both queues empty unless the outside world changed
+        // between the passes (the table deleted again), and each such external incident is itself
+        // bounded by a fresh recovery budget.
+        do {
+            if (!pendingRepair.isEmpty()) {
+                runRepair();
+            }
+            // sendOutstanding rather than the batcher's own blocking flush: waiting has to happen
+            // on the mailbox, or the completion mails this writer's state is mutated by would pile
+            // up behind a blocked task thread.
+            batcher.sendOutstanding();
+            drainInFlight();
+            // The handler's flush comes last, and the steps before it are what it must not run
+            // ahead of: the drain is what discovers this checkpoint's failures, and the pass is
+            // what turns the batched ones among them into dead letters. Flushing earlier would
+            // checkpoint past a dead letter one of them was about to produce.
+            if (!pendingIsolation.isEmpty()) {
+                runIsolationPass();
+            }
+        } while (!pendingRepair.isEmpty() || !pendingIsolation.isEmpty());
         failedMutationHandler.flush();
     }
 
@@ -379,15 +593,18 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // close — and a mid-flight teardown is precisely when both this clear and those failures
         // happen, so a clear placed after the call would be skipped exactly when it is needed.
         // Same reason PubSubWriter.close() zeroes its parked count and the BigQuery writers clear
-        // their in-flight maps. The park is cleared for the gauge it backs and for the heap it
-        // holds; the mutations in it are neither applied nor routed, which at-least-once covers —
-        // no checkpoint completed with them parked, so the restart replays those records.
+        // their in-flight maps. The parks are cleared for the gauge they back and for the heap
+        // they hold; the mutations in them are neither applied nor routed, which at-least-once
+        // covers — no checkpoint completed with them parked, so the restart replays those records.
         inFlightMutations = 0;
         inFlightBytes = 0;
         pendingIsolation.clear();
-        // Through Closers.closeAll, so the handler is closed even when the batcher's shutdown
-        // throws: the lifecycle contract promises close on the failure path too.
-        Closers.closeAll(batcher, failedMutationHandler::close);
+        pendingRepair.clear();
+        tableMissing = false;
+        repairCause = null;
+        // Through Closers.closeAll, so each close runs even when an earlier one throws: the
+        // lifecycle contract promises close on the failure path too.
+        Closers.closeAll(batcher, tableAdmin, failedMutationHandler::close);
     }
 
     /** Releases one completed mutation from both in-flight counters. */
@@ -459,15 +676,47 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // after the first: the client has already spent its own retries, so each is a distinct
         // give-up rather than an attempt. Which means the sum over the transient codes is not this
         // connector's retry volume, unlike the Cloud Tasks sink's — the retries it would measure
-        // are inside the SDK and never surface here.
+        // are inside the SDK and never surface here. A NOT_FOUND parked for repair below is
+        // counted too, unlike a parked row-level report: the table's absence fails every entry
+        // alike, so there is no identity left to confirm, and each re-application that fails again
+        // is a fresh give-up. The Pub/Sub writer counts its parked NOT_FOUNDs the same way.
         metrics.applyFailure(BigtableErrorClassifier.statusCode(throwable));
+        if (kind == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND && repairsTables()) {
+            pendingRepair.add(new ParkedMutation(entry, serializedSize));
+            // The only thing that makes the repair call the admin. Re-applying the parked batch is
+            // needed whatever parked it, and a repair that has not seen a NOT_FOUND must not
+            // issue a creation.
+            tableMissing = true;
+            repairCause = throwable;
+            return;
+        }
         if (kind == BigtableErrorClassifier.Kind.ROW_LEVEL) {
             routeFailedMutation(entry, throwable);
         } else if (asyncError == null) {
-            asyncError =
-                    new IOException(
-                            "A mutation of Bigtable table " + destination + " failed.", throwable);
+            asyncError = wrapMutationFailure(kind, throwable);
         }
+    }
+
+    /** Whether the sink may repair a missing table by creating it. */
+    private boolean repairsTables() {
+        return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED;
+    }
+
+    /**
+     * Wraps a fatal mutation failure. A {@code NOT_FOUND} reaching this under {@code CREATE_NEVER}
+     * names the disposition, so the reader meeting the failure learns the knob that changes it
+     * rather than only the missing table.
+     */
+    private IOException wrapMutationFailure(
+            BigtableErrorClassifier.Kind kind, Throwable throwable) {
+        String reason =
+                kind == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND
+                        ? " because the table or one of its column families does not exist and"
+                                + " createDisposition is CREATE_NEVER"
+                        : "";
+        return new IOException(
+                "A mutation of Bigtable table " + destination + " failed" + reason + ".",
+                throwable);
     }
 
     /**
@@ -557,7 +806,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
 
     @VisibleForTesting
     int getParkedMutations() {
-        return pendingIsolation.size();
+        // Both queues: the gauge means "held by the writer, counted by neither the in-flight
+        // counters nor the handler", which is as true of a mutation awaiting a repair as of one
+        // awaiting its solo verdict.
+        return pendingIsolation.size() + pendingRepair.size();
     }
 
     /** A mutation held for the isolation pass, with the size both in-flight counters release by. */
