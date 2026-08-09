@@ -23,6 +23,8 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.lang.reflect.Proxy;
 
@@ -46,16 +48,22 @@ class FileLoadsCheckpointStamperTest {
                 StagingFormat.AVRO);
     }
 
-    @Test
-    void stampsTheCheckpointIdOntoCommittables() {
+    /**
+     * Two ids rather than one because the value is read back through {@link
+     * CrossVersionCheckpointId}, which is this project's own code: against a single case, a seam
+     * answering the constant {@code 7} would pass.
+     */
+    @ParameterizedTest
+    @ValueSource(longs = {7L, 11L})
+    void stampsTheCheckpointIdOntoCommittables(long checkpointId) {
         CommittableMessage<FileLoadsCommittable> out =
-                stamper.map(new CommittableWithLineage<>(file("a"), 7L, 3));
+                stamper.map(new CommittableWithLineage<>(file("a"), checkpointId, 3));
 
         CommittableWithLineage<FileLoadsCommittable> lineage =
                 (CommittableWithLineage<FileLoadsCommittable>) out;
-        assertThat(lineage.getCheckpointIdOrEOI()).isEqualTo(7L);
+        assertThat(CrossVersionCheckpointId.of(lineage)).isEqualTo(checkpointId);
         assertThat(lineage.getSubtaskId()).isEqualTo(3);
-        assertThat(lineage.getCommittable().getCheckpointId()).isEqualTo(7L);
+        assertThat(lineage.getCommittable().getCheckpointId()).isEqualTo(checkpointId);
         assertThat(lineage.getCommittable().getUri()).isEqualTo("gs://bucket/prefix/a.avro");
         assertThat(lineage.getCommittable().getFlinkJobId()).isEqualTo(FLINK_JOB_ID);
     }

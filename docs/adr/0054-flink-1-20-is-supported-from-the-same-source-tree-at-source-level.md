@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-01 ([#32], reversing the branch plan the issue was opened for — measured, not
-  assumed)
-- Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there)
+  assumed); revised by [#404] (2026-08-09)
+- Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404]
 - Modules: all connectors
 - Current behavior: `docs/content/_index.md` supported-versions table, `README.md` § Build
 
@@ -41,9 +41,16 @@ modules.** The whole measured delta is two items:
   (default `flink2`; `just verify-flink 1.20.x` adds `-Dflink.compat=flink1` itself). The two
   variants share one FQCN on purpose, so every sink implements the same name whichever major
   it compiles against.
-- **`CommittableMessage.getCheckpointId()` changed its return type across the majors.** Dodged
-  by calling `getCheckpointIdOrEOI()`, present in both and deprecated on 2.x; if a 2.x minor
-  removes it, that call is the line to revisit.
+- **`CommittableMessage`'s checkpoint-id accessors swapped roles across the majors.** Absorbed
+  by the same seam: `CrossVersionCheckpointId` in each compat root, one static `of` reading a
+  `CommittableWithLineage`, called by BigQuery's `FileLoadsCheckpointStamper` ([#404]).
+
+**Both deltas live in the seam, and neither leaves a deprecated call in shared source.** The
+seam is therefore not one interface per module but a small set of same-FQCN files, and not
+every one of them is compile-only — `CrossVersionCheckpointId.of` runs for every lineage-carrying
+message the FILE_LOADS pre-commit stage maps. A compat-root file also need not sit at a module's `sink`
+root: this one is package-private next to its only caller, which ADR-0055's skeleton allows for
+an implementation type.
 
 **This is source-level support.** The weekly `lts` row compiles and tests everything at
 `FLINK_LTS`, a jar is compiled per major, and no cross-major binary claim is made — the
@@ -58,13 +65,58 @@ The 1.20 bridge default is compile-only: 1.20's runtime always creates writers t
 `createWriter(WriterInitContext)`, measured by the whole suite running green on 1.20.4 with
 the bridge method throwing.
 
+The checkpoint-id accessors, read off the shipped artifacts on 2026-08-09 — `javap -v` on
+`flink-streaming-java:1.20.4` and on `flink-runtime` 2.3.0 and 2.4-SNAPSHOT (`-v`, because the
+deprecation state is a method attribute the default output omits), and the sources jar of
+`flink-runtime:2.2.1`, which the type moved to on 2.x:
+
+| | `getCheckpointId()` | `getCheckpointIdOrEOI()` |
+|---|---|---|
+| 1.20.4 | `OptionalLong`, `@Deprecated`, default | `long`, `@Deprecated`, **abstract** |
+| 2.2.1 / 2.3.0 / 2.4-SNAPSHOT | `long`, not deprecated, abstract | `long`, **`@Deprecated(forRemoval = true)`**, default |
+
+1.20's `CommittableWithLineage` does not declare `getCheckpointId()` at all — it inherits the
+`OptionalLong` default — so shared source has no spelling that is both non-deprecated on 2.x
+and `long` on 1.20.
+
+**Splitting the call changed no value on either major**, which is what makes it a guardrail
+rather than a behaviour change: on 2.x `getCheckpointIdOrEOI()`'s entire body is `return
+getCheckpointId();`, and on 1.20 it is the method `CommittableWithLineage` implements, so each
+root calls what the one shared line called. Calling the 2.x-deprecated one from shared source
+was the original choice;
+it made a scheduled removal into a compile break that would land on the day the supported range
+moves, which is a deliberate act rather than a good time to discover an unrelated fix. Flink
+has not executed the removal — the sibling `EOI` constant's javadoc names Flink 2.2 as its
+target and the method is still present in 2.4-SNAPSHOT — so nothing was broken when this was
+changed.
+
+**Whether a `forRemoval` call has come back is a question javac already answers**, which is why
+there is no checker for it:
+
+```sh
+MAVEN_OPTS="-Duser.language=en -Duser.country=US" \
+  ./mvnw -ntp clean test-compile -Dmaven.compiler.showDeprecation=true 2>&1 \
+  | grep 'marked for removal'
+```
+
+The locale pin is load-bearing rather than tidiness: javac localises the message, so on a
+Japanese JVM the same call site reads `削除用にマークされています` and an English `grep` finds
+nothing — a silent false negative that looks exactly like a clean tree. Keep an eye on the other
+`has been deprecated` lines as the control: if they vanish too, the probe stopped firing rather
+than the tree becoming clean. Measured 2026-08-09 on the default (2.x) lane: two hits before this
+change (`FileLoadsCheckpointStamper` and its test, both `getCheckpointIdOrEOI()`), none after,
+with four unrelated `has been deprecated` lines still reported either way. The `java-flink1`
+call is outside this probe's reach twice over — it is not compiled on the 2.x lane, and it
+carries `@SuppressWarnings("deprecation")` — which is the intent, not a gap: 1.20 is frozen.
+
 ## Alternatives declined
 
 - **A support branch with backports** — the plan [#32] was opened for. Reversed on the
   measurement above: a two-item delta does not justify a second branch's standing merge cost.
-- **A Dataproc-style per-version module split** — buys isolation the two ~15-line interface
-  variants already provide.
+- **A Dataproc-style per-version module split** — buys isolation the handful of same-FQCN
+  compat files, none of them longer than an interface stub, already provides.
 
 [#29]: https://github.com/laughingman7743/flink-connector-gcp/issues/29
 [#32]: https://github.com/laughingman7743/flink-connector-gcp/issues/32
 [#39]: https://github.com/laughingman7743/flink-connector-gcp/issues/39
+[#404]: https://github.com/laughingman7743/flink-connector-gcp/issues/404
