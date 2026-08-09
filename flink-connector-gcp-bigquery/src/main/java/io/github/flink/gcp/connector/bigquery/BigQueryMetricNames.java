@@ -55,8 +55,24 @@ public final class BigQueryMetricNames {
     // Registered by the default-stream and FILE_LOADS writers, which hold per-destination state.
     public static final String OPEN_DESTINATIONS = "openDestinations";
 
-    // Registered by all three writers.
+    // Registered by all three writers and by the source's reader, which all report a record their
+    // serializer or deserializer returned null for.
     public static final String RECORDS_SKIPPED = "recordsSkipped";
+
+    // Registered by the source's reader (BigQuerySourceReaderMetrics). Rows and bytes are what the
+    // Storage Read API bills, so these are the two numbers a cost question is answered with;
+    // rowsRead differs from Flink's own numRecordsIn by exactly the skipped rows.
+    public static final String ROWS_READ = "rowsRead";
+    public static final String BYTES_READ = "bytesRead";
+
+    // Registered by the source's split enumerator. Counters rather than an assigned-splits gauge:
+    // a gauge would need a ledger of which subtask holds what, and not keeping one is the whole
+    // design of that enumerator. readSessionsCreated is 1 for a job that started and 0 for one that
+    // restored an existing session; any other value means the restore guard failed and the job is
+    // reading a second snapshot of the table.
+    public static final String SPLITS_ASSIGNED = "splitsAssigned";
+    public static final String SPLITS_RETURNED = "splitsReturned";
+    public static final String READ_SESSIONS_CREATED = "readSessionsCreated";
 
     private BigQueryMetricNames() {}
 }

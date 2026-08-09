@@ -55,6 +55,18 @@ limitations under the License.
             <artifactId>flink-table-common</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <!-- One type: GenericRecordAvroTypeInfo, which is what the source's GenericRecord
+                 deserializer answers getProducedType() with. Without it Flink types GenericRecord
+                 as a generic type backed by Kryo, and Kryo cannot serialize one at all - it fails
+                 on the record's own schema (measured 2026-08-09). Provided rather than compile
+                 because a job reading GenericRecords needs flink-avro on its classpath either
+                 way, and bundling a second copy beside the deployment's own is what the SQL
+                 uber-jar exists to prevent. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-avro</artifactId>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Shared connector infrastructure: the retry schedule and status-code
              extraction (#61). -->

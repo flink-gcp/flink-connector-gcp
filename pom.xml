@@ -197,6 +197,14 @@ limitations under the License.
                 <artifactId>flink-connector-datagen</artifactId>
                 <version>${flink.version}</version>
             </dependency>
+            <dependency>
+                <!-- Flink's Avro format. A connector reading Avro records needs exactly one type
+                     from it, GenericRecordAvroTypeInfo, which is what makes a GenericRecord
+                     serializable to Flink; see the BigQuery module's own dependency comment. -->
+                <groupId>org.apache.flink</groupId>
+                <artifactId>flink-avro</artifactId>
+                <version>${flink.version}</version>
+            </dependency>
 
             <!-- Table API / SQL. Only flink-table-common is a compile dependency of a
                  connector: it carries the factory SPI, the ability interfaces and the

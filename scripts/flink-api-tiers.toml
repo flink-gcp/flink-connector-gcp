@@ -47,6 +47,8 @@
 # test-utils module's sink metric-group harness sits on — that module keeps its
 # helpers in src/main/java so siblings can consume the plain jar at test scope,
 # which is exactly why they are audited here like any other main source.
+# flink-avro owns GenericRecordAvroTypeInfo, the one type the BigQuery source's
+# GenericRecord deserializer needs (issue #390).
 artifacts = [
     "flink-annotations",
     "flink-core",
@@ -56,6 +58,7 @@ artifacts = [
     "flink-connector-base",
     "flink-table-common",
     "flink-test-utils",
+    "flink-avro",
 ]
 
 # ---------------------------------------------------------------------------
@@ -144,6 +147,18 @@ ByteArrayInputStream — which is what the kafka connector's serializers use."""
 reason = """
 Write-side twin of DataInputDeserializer in the same serializers; same
 rationale and same fallback."""
+
+[unannotated."org.apache.flink.formats.avro.typeutils.GenericRecordAvroTypeInfo"]
+reason = """
+What the BigQuery source's GenericRecord deserializer answers getProducedType()
+with, and the only type it uses from flink-avro (issue #390). Not decoration:
+TypeInformation.of(GenericRecord.class) is a generic type backed by Kryo, and
+Kryo cannot serialize a GenericData.Record at all — it throws on the record's
+own schema (measured 2026-08-09 against Flink 2.2 and Avro 1.12.1). The
+fallback, if this type ever moves, is a TypeInformation and TypeSerializer of
+our own over Avro's GenericDatumWriter/Reader, which is what flink-avro's
+AvroSerializer already is; the state-compatibility contract is what makes that
+a poor trade today."""
 
 [unannotated."org.apache.flink.runtime.metrics.groups.ProxyMetricGroup"]
 reason = """

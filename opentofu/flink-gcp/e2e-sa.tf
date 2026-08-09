@@ -29,6 +29,12 @@ resource "google_project_iam_member" "e2e" {
   for_each = toset([
     # Load and query jobs; table data access is granted on the dataset below.
     "roles/bigquery.jobUser",
+    # The BigQuery source's gated suite (#390) creates Storage Read API
+    # sessions. bigquery.readsessions.create is a project-level permission, so
+    # neither jobUser nor the dataset-scoped dataEditor below carries it, and
+    # this is the narrowest predefined role that does. Reading the rows still
+    # needs the dataset grant, so this binding alone opens no data.
+    "roles/bigquery.readSessionUser",
     # Admin rather than roles/bigtable.user, and the widest grant in this list:
     # the Bigtable suite (#218) creates and deletes an ephemeral instance per
     # gated test class, and no *predefined* role narrower than admin can create

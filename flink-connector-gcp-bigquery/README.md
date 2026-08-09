@@ -1,6 +1,7 @@
 # flink-connector-gcp-bigquery
 
-BigQuery sink for Apache Flink with a unified, `BigQueryIO`-style write API.
+BigQuery connectors for Apache Flink: a sink with a unified, `BigQueryIO`-style write API, and a
+bounded source over the Storage Read API.
 
 One builder dispatches to a write-method implementation at job-graph construction time:
 
@@ -25,6 +26,27 @@ for records that already are protobuf messages, `AvroRecordSerializer.of(schema)
 `GenericRecord` and `SpecificRecord` streams, and `JsonDocumentSerializer.of(schema)` for JSON documents
 as text.
 
+## Source
+
+| Read feature | Status |
+|---|---|
+| Bounded `BigQuerySource` over the Storage Read API: one split per read stream with offset-resumed recovery, pull assignment, column projection, row restriction and point-in-time reads, Avro rows | Implemented ([#390](https://github.com/laughingman7743/flink-connector-gcp/issues/390)) |
+| Read resilience and real-GCP restore coverage | Planned ([#391](https://github.com/laughingman7743/flink-connector-gcp/issues/391)) |
+| Reading the result of a query rather than a table | Planned ([#392](https://github.com/laughingman7743/flink-connector-gcp/issues/392)) |
+| Arrow wire format | Planned ([#393](https://github.com/laughingman7743/flink-connector-gcp/issues/393)) |
+
+```java
+Source<GenericRecord, ?, ?> source =
+        BigQuerySource.<GenericRecord>builder()
+                .table(TableDestination.of("my-project", "my_dataset", "my_table"))
+                .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+                .selectedFields("id", "name")
+                .build();
+```
+
+A read is charged for the bytes it scans, so `selectedFields` is what keeps a wide table cheap.
+Using the shipped `GenericRecord` deserializer needs `flink-avro` on the job's classpath.
+
 ## Table API / SQL
 
 | Table API / SQL feature | Status |
@@ -44,8 +66,10 @@ are documented in
 A complete runnable job is in
 [Quickstart](../docs/content/docs/quickstart/bigquery.md); dynamic destinations, the exactly-once
 write methods and table auto-creation are worked through in
-[Examples](../docs/content/docs/examples/bigquery.md). Every option the sink takes, with its
-default, is in the [configuration reference](../docs/content/docs/reference/bigquery.md).
+[Examples](../docs/content/docs/examples/bigquery.md), which also work through reading: projection
+and restriction, a public dataset, a point-in-time read and the stream-count knobs. Every option the
+sink and the source take, with its default, is in the
+[configuration reference](../docs/content/docs/reference/bigquery.md).
 
 The Table API / SQL option surface is documented in
 [docs/content/docs/connectors/table/bigquery.md](../docs/content/docs/connectors/table/bigquery.md).
