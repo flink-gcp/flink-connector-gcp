@@ -175,7 +175,9 @@ what expiry answers is undocumented and unmeasured (the DataStream page's "Strea
 paragraph says so), and a gone stream is recognised elsewhere in the classifier by a `StorageError`
 rather than by a status code. That is an argument for not guessing, not a claim about `NOT_FOUND`.
 The narrowing costs nothing measured: the emulator, whose signal *is* `NOT_FOUND`, cannot reach
-auto-creation on this write path at all ([#326]).
+auto-creation on this write path at all ([#326] — closed as an upstream report,
+[goccy/bigquery-emulator#504](https://github.com/goccy/bigquery-emulator/issues/504), rather than
+a second workaround).
 
 Leaving the committer alone was declined too, and not because a restart would not recover it —
 `FlushRows` is idempotent and the restored commit succeeds — but because a job that sets

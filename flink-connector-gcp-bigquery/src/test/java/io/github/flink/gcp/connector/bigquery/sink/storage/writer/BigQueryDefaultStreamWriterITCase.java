@@ -33,16 +33,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * appended to a pre-existing table across several checkpoint-style flushes on the same writer,
  * asserting each flush's rows are queryable once {@code flush()} returns.
  *
- * <p>Emulator deviation (0.8.1, same family as goccy/bigquery-emulator#342): on a Storage Write API
- * connection opened <em>after an earlier connection to the emulator has closed</em>, only the first
- * {@code AppendRows} request is durably applied — follow-up requests are acknowledged but their
- * rows never become queryable. The very first connection applies all its requests, and later
- * single-append connections are unaffected. This multi-flush scenario therefore lives in its own
- * test class, so its connection is guaranteed to be the container's first: the testcontainers
- * extension starts a fresh container per {@code *ITCase} class, and kept doing so when #243 made
- * the classes share forked JVMs (measured there on the Pub/Sub fixtures; the per-class lifecycle is
- * the extension's, not the module's). Real BigQuery applies every acknowledged default-stream
- * append.
+ * <p>Emulator deviation (0.8.1): on a Storage Write API connection opened <em>after an earlier
+ * connection to the emulator has closed</em>, only the first {@code AppendRows} request is durably
+ * applied — follow-up requests are acknowledged but their rows never become queryable. The very
+ * first connection applies all its requests, and later single-append connections are unaffected.
+ * The mechanism (located 2026-08-09 in v0.8.1's {@code appendRows}): a follow-up request carries no
+ * stream name, and the emulator resolved the empty name to an <em>arbitrary</em> entry of its
+ * global stream map — right only while that map held a single stream. Fixed upstream by the
+ * goccy/bigquery-emulator#342 change (goccy PR #491 binds follow-ups to the connection's
+ * first-named stream), merged but unreleased; the retirement schedule is {@code docs/adr/0029}.
+ * This multi-flush scenario therefore lives in its own test class, so its connection is guaranteed
+ * to be the container's first: the testcontainers extension starts a fresh container per {@code
+ * *ITCase} class, and kept doing so when #243 made the classes share forked JVMs (measured there on
+ * the Pub/Sub fixtures; the per-class lifecycle is the extension's, not the module's). Real
+ * BigQuery applies every acknowledged default-stream append.
  */
 class BigQueryDefaultStreamWriterITCase extends AbstractBigQueryEmulatorITCase {
 

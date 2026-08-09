@@ -68,7 +68,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * path, where the writer's first RPC is an append; {@code CreateWriteStream} is a different RPC,
  * and applying the same verdict to it was an inference. This class makes it an observation, which
  * only the real service can give: the goccy emulator answers {@code UNKNOWN} here (an
- * emulator-support gap, #326), so no emulator test can reach the question.
+ * emulator-support gap — #326, reported upstream as goccy/bigquery-emulator#504 and pinned by
+ * {@link BigQueryEmulatorMissingTableDeviationITCase}), so no emulator test can reach the question.
  *
  * <p>Four cases, in the order the writer meets them: the raw response for a missing table, the
  * propagation window right after the table is created, the same window measured at the writer's
