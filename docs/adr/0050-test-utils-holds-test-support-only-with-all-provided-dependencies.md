@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0050: test-utils holds test-support only, with all-`provided` dependencies and no forced fixture unification
 
 - Status: Accepted
-- Date: 2026-08-01 ([#27]); `testutils.sql` 2026-08-07 ([#290])
-- Issues: [#27], [#290], [#26], [#181]
+- Date: 2026-08-01 ([#27]); `testutils.sql` 2026-08-07 ([#290]); the source-reader outputs
+  2026-08-09 ([#437])
+- Issues: [#27], [#290], [#26], [#181], [#437]
 - Modules: test-utils
 - Current behavior: (Claude-facing module; nothing user-rendered)
 
@@ -40,6 +41,36 @@ limitations under the License.
   client; `AbstractBigQueryEmulatorITCase` keeps the halves naming connector types). Not
   tidiness: the SQL module runs its tests against the *relocated* connector, so a helper naming
   a connector type could not compile there at all.
+- **The second firing of that rule is the source-reader outputs** ([#437]): the BigQuery source
+  ([#390]) wrote its own `CollectingSourceOutput` and `CollectingReaderOutput` because
+  `flink-connector-base`'s test jar is a dependency of no module here, which made the Pub/Sub
+  source's the first copy and BigQuery's the second, so both moved to `testutils`. The Bigtable
+  scan source ([#216]) landed a third `CollectingSourceOutput` while this move was in flight,
+  differing from the Pub/Sub file only in its package line and its visibility; it is deleted here
+  too, so `CollectingSourceOutput` arrives with three consumers and `CollectingReaderOutput` with
+  two. Three decisions came with the move.
+  - **Only those two moved.** The context fakes beside them stayed in their modules, and the
+    divergence is the reason rather than an obstacle to it: `FakeSourceReaderContext.sendSplitRequest()`
+    throws for Pub/Sub, whose source never requests a split, and records for BigQuery and Bigtable,
+    whose whole assignment protocol *is* the request; `FakeSplitEnumeratorContext` records the
+    order of assignments against no-more-splits signals only where a pull enumerator's correctness
+    is a sequence. **The rule that follows is "the push-assigned source keeps its own", not "every
+    source keeps its own"** — [#437]'s comment thread measures BigQuery's and Bigtable's pair as
+    differing by the split type and a metric group, which is a generalisation this move does not
+    make and a later one may. `TestReaderMetrics` sits in the same packages and is a near-copy as
+    well, and cannot move at all: each names its own connector's `*SourceReaderMetrics`, and those
+    are unrelated `public final` classes with no supertype to name instead — the "a helper naming a
+    connector type" case the [#290] bullet above ends on.
+  - **Where two copies' contracts disagree, the move takes the richer one and rewrites the
+    minority's assertions.** The two `timestamps()` were incompatible, not a subset relation as
+    [#437] assumed: Pub/Sub's padded a record emitted without a timestamp as `null`, BigQuery's
+    omitted it entirely, and only Pub/Sub's had `failOnCollect`. The padded contract won on three
+    consumers to one — Pub/Sub's, Bigtable's and, once its assertion was rewritten, BigQuery's — so
+    `BigQueryRecordEmitterTest.emitsWithoutATimestamp` moved from
+    `assertThat(output.timestamps()).isEmpty()` to `containsExactly((Long) null)`. The rewrite is
+    not a concession: the emptiness assertion also passed when nothing had been emitted at all.
+  - **A moved test double becomes `@Internal public final`**, since all five copies were
+    package-private and a consumer now reaches them across a module boundary.
 - **`testutils.sql` holds the shaded-module test bases** ([#290], discharging the [#26]
   trigger): `ShadedJar` plus three abstract JUnit bases each `flink-sql-connector-gcp-*` extends.
   **Abstract bases rather than assertion-free helpers**, decided with the user: every assertion
@@ -76,6 +107,9 @@ limitations under the License.
 [#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
 [#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
 [#181]: https://github.com/laughingman7743/flink-connector-gcp/issues/181
+[#216]: https://github.com/laughingman7743/flink-connector-gcp/issues/216
 [#244]: https://github.com/laughingman7743/flink-connector-gcp/issues/244
 [#245]: https://github.com/laughingman7743/flink-connector-gcp/issues/245
 [#290]: https://github.com/laughingman7743/flink-connector-gcp/issues/290
+[#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
+[#437]: https://github.com/laughingman7743/flink-connector-gcp/issues/437

@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
+package io.github.flink.gcp.connector.testutils;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.eventtime.Watermark;
 import org.apache.flink.api.connector.source.SourceOutput;
 
@@ -24,8 +25,23 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 
-/** {@link SourceOutput} recording emitted records and their timestamps. */
-final class CollectingSourceOutput<T> implements SourceOutput<T> {
+/**
+ * {@link SourceOutput} recording emitted records and their timestamps — what a {@code
+ * RecordEmitter} is handed, and what a test driving one asserts against.
+ *
+ * <p>Written here rather than taken from Flink because {@code flink-connector-base}'s test jar is
+ * not a dependency of any module in this repository.
+ *
+ * <p>{@link #timestamps()} is padded rather than sparse: a record emitted without a timestamp
+ * appears as {@code null} rather than not appearing at all, so an assertion on it distinguishes
+ * "one record, no timestamp" from "no record".
+ *
+ * <p>Not thread-safe, and it does not need to be: a {@code SourceReaderBase} hands its record
+ * emitter the output on the thread that called {@code pollNext}, never on a fetcher thread. A test
+ * collecting from more than one thread has to synchronize itself.
+ */
+@Internal
+public final class CollectingSourceOutput<T> implements SourceOutput<T> {
 
     private final List<T> records = new ArrayList<>();
 
@@ -35,15 +51,15 @@ final class CollectingSourceOutput<T> implements SourceOutput<T> {
     @Nullable private RuntimeException failure;
 
     /** Makes every subsequent collect throw, standing in for a failing chained operator. */
-    void failOnCollect(RuntimeException failure) {
+    public void failOnCollect(RuntimeException failure) {
         this.failure = failure;
     }
 
-    List<T> records() {
+    public List<T> records() {
         return records;
     }
 
-    List<Long> timestamps() {
+    public List<Long> timestamps() {
         return timestamps;
     }
 

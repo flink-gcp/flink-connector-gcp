@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.bigtable.source.TestRows;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplitState;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeserializationSchema;
+import io.github.flink.gcp.connector.testutils.CollectingSourceOutput;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
