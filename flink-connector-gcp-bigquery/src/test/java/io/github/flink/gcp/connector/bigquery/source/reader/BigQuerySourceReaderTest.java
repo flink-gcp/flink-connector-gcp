@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeser
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.Awaits;
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
+import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

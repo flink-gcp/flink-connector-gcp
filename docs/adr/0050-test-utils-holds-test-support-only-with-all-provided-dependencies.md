@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-01 ([#27]); `testutils.sql` 2026-08-07 ([#290]); the source-reader outputs
-  2026-08-09 ([#437])
+  2026-08-09 and the pull-assignment context fakes 2026-08-10 ([#437])
 - Issues: [#27], [#290], [#26], [#181], [#437]
 - Modules: test-utils
 - Current behavior: (Claude-facing module; nothing user-rendered)
@@ -48,16 +48,22 @@ limitations under the License.
   scan source ([#216]) landed a third `CollectingSourceOutput` while this move was in flight,
   differing from the Pub/Sub file only in its package line and its visibility; it is deleted here
   too, so `CollectingSourceOutput` arrives with three consumers and `CollectingReaderOutput` with
-  two. Three decisions came with the move.
-  - **Only those two moved.** The context fakes beside them stayed in their modules, and the
-    divergence is the reason rather than an obstacle to it: `FakeSourceReaderContext.sendSplitRequest()`
-    throws for Pub/Sub, whose source never requests a split, and records for BigQuery and Bigtable,
-    whose whole assignment protocol *is* the request; `FakeSplitEnumeratorContext` records the
-    order of assignments against no-more-splits signals only where a pull enumerator's correctness
-    is a sequence. **The rule that follows is "the push-assigned source keeps its own", not "every
-    source keeps its own"** — [#437]'s comment thread measures BigQuery's and Bigtable's pair as
-    differing by the split type and a metric group, which is a generalisation this move does not
-    make and a later one may. `TestReaderMetrics` sits in the same packages and is a near-copy as
+  two. A follow-up then moved the source-side context fakes on the same rule, once a measurement
+  showed what their divergence actually tracks. Three decisions came out of it.
+  - **The context fakes split by assignment direction, not by connector.**
+    `FakeSourceReaderContext.sendSplitRequest()` throws for Pub/Sub, whose source never requests a
+    split, and records for BigQuery and Bigtable, whose whole assignment protocol *is* the request;
+    `FakeSplitEnumeratorContext` records the order of assignments against no-more-splits signals
+    only where a pull enumerator's correctness is a sequence. **So the rule is "the push-assigned
+    source keeps its own", not "every source keeps its own"**: the two pull-assigned sources' fakes
+    were measured as differing by the split type, a metric group and their log strings — which is
+    not a divergence at all — so they became one generic `FakeSplitEnumeratorContext<SplitT extends
+    SourceSplit>` and one `FakeSourceReaderContext` in `testutils`, while Pub/Sub's two stayed.
+    That the shared pair *cannot* serve a push-assigned source is the point rather than a
+    limitation: its throwing methods are what would fail a Pub/Sub test that started requesting
+    splits. The shared reader context **takes** its metric group rather than building one, which
+    keeps the unannotated flink-runtime `InternalSourceReaderMetricGroup` out of this module's main
+    sources and so out of the Flink API tier audit. `TestReaderMetrics` sits in the same packages and is a near-copy as
     well, and cannot move at all: each names its own connector's `*SourceReaderMetrics`, and those
     are unrelated `public final` classes with no supertype to name instead — the "a helper naming a
     connector type" case the [#290] bullet above ends on.

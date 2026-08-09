@@ -14,17 +14,17 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigquery.source.enumerator;
+package io.github.flink.gcp.connector.testutils;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.ReaderInfo;
 import org.apache.flink.api.connector.source.SourceEvent;
+import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSplitEnumeratorMetricGroup;
-
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -39,18 +39,30 @@ import java.util.concurrent.Callable;
 import java.util.function.BiConsumer;
 
 /**
- * In-memory {@link SplitEnumeratorContext} for enumerator tests.
+ * In-memory {@link SplitEnumeratorContext} for the tests of a <b>pull-assignment</b> enumerator —
+ * one whose readers ask for work through {@code handleSplitRequest}.
  *
- * <p>Unlike the Pub/Sub source's, this one records assignments and no-more-splits signals in
- * <em>one ordered list</em> as well as per subtask: with pull assignment the order matters — a
- * subtask told there are no more splits and then handed one is the reference implementation's
- * data-loss bug expressed as a sequence.
+ * <p>Assignments and no-more-splits signals are recorded in <em>one ordered list</em> as well as
+ * per subtask, because with pull assignment the order is the thing that can go wrong: a subtask
+ * told there are no more splits and then handed one is a lost-split bug expressed as a sequence.
+ *
+ * <p>A <b>push</b>-assigned source's enumerator wants its own fake rather than this one, and the
+ * Pub/Sub source keeps one for that reason: its coordinator-facing methods throw where these
+ * record, which is what makes a test fail if that source ever starts requesting splits ({@code
+ * docs/adr/0050}).
+ *
+ * <p>The unsupported operations throw rather than silently accepting work, so the first enumerator
+ * that needs one has to come here and decide what it should do.
+ *
+ * @param <SplitT> the split type the enumerator assigns
  */
-final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<BigQueryReadStreamSplit> {
+@Internal
+public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
+        implements SplitEnumeratorContext<SplitT> {
 
     private final int parallelism;
     private final Map<Integer, ReaderInfo> registeredReaders = new HashMap<>();
-    private final Map<Integer, List<BigQueryReadStreamSplit>> assignments = new HashMap<>();
+    private final Map<Integer, List<SplitT>> assignments = new HashMap<>();
     private final Set<Integer> readersToldNoMoreSplits = new LinkedHashSet<>();
     private final List<String> events = new ArrayList<>();
     private final Deque<Runnable> asyncCalls = new ArrayDeque<>();
@@ -60,31 +72,31 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<BigQuer
     private final SplitEnumeratorMetricGroup metricGroup =
             new InternalSplitEnumeratorMetricGroup(metricListener.getMetricGroup());
 
-    FakeSplitEnumeratorContext(int parallelism) {
+    public FakeSplitEnumeratorContext(int parallelism) {
         this.parallelism = parallelism;
     }
 
     /** Registers a reader, as the coordinator does before calling {@code addReader}. */
-    void registerReader(int subtaskId) {
+    public void registerReader(int subtaskId) {
         registeredReaders.put(subtaskId, new ReaderInfo(subtaskId, "localhost"));
     }
 
     /** Drops a reader, as the coordinator does when its last attempt goes away. */
-    void unregisterReader(int subtaskId) {
+    public void unregisterReader(int subtaskId) {
         registeredReaders.remove(subtaskId);
     }
 
     /** Returns a copy: a caller that fed this straight back in would otherwise mutate it. */
-    List<BigQueryReadStreamSplit> assignedSplits(int subtaskId) {
+    public List<SplitT> assignedSplits(int subtaskId) {
         return new ArrayList<>(assignments.getOrDefault(subtaskId, Collections.emptyList()));
     }
 
-    Set<Integer> readersToldNoMoreSplits() {
+    public Set<Integer> readersToldNoMoreSplits() {
         return new LinkedHashSet<>(readersToldNoMoreSplits);
     }
 
     /** Returns every assignment and signal in the order it happened, as {@code "verb:subtask"}. */
-    List<String> events() {
+    public List<String> events() {
         return new ArrayList<>(events);
     }
 
@@ -95,7 +107,8 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<BigQuer
 
     @Override
     public void sendEventToSourceReader(int subtaskId, SourceEvent event) {
-        throw new UnsupportedOperationException("The BigQuery enumerator sends no source events.");
+        throw new UnsupportedOperationException(
+                "A pull-assignment enumerator sends no source events.");
     }
 
     @Override
@@ -109,7 +122,7 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<BigQuer
     }
 
     @Override
-    public void assignSplits(SplitsAssignment<BigQueryReadStreamSplit> newSplitAssignments) {
+    public void assignSplits(SplitsAssignment<SplitT> newSplitAssignments) {
         newSplitAssignments
                 .assignment()
                 .forEach(
@@ -141,9 +154,9 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<BigQuer
     }
 
     /**
-     * Records the call instead of running it, so a test decides when session creation completes.
-     * Mirrors {@code ExecutorNotifier}: the callable runs off the coordinator thread and the
-     * handler then runs on it with exactly one of (result, error) set.
+     * Records the call instead of running it, so a test decides when the enumerator's planning step
+     * completes. Mirrors {@code ExecutorNotifier}: the callable runs off the coordinator thread and
+     * the handler then runs on it with exactly one of (result, error) set.
      */
     @Override
     public <T> void callAsync(Callable<T> callable, BiConsumer<T, Throwable> handler) {
@@ -161,15 +174,13 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<BigQuer
     }
 
     /** Runs every async call recorded so far, including any a handler enqueues. */
-    void runAsyncCalls() {
+    public void runAsyncCalls() {
         while (!asyncCalls.isEmpty()) {
             asyncCalls.poll().run();
         }
     }
 
-    // Session creation is the enumerator's only asynchronous step, and it is one-shot; these throw
-    // rather than silently accepting work, so the next asynchronous step added has to revisit this
-    // fake.
+    // Planning is the one asynchronous step both current enumerators take, and it is one-shot.
 
     @Override
     public <T> void callAsync(
@@ -178,20 +189,20 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<BigQuer
             long initialDelayMillis,
             long periodMillis) {
         throw new UnsupportedOperationException(
-                "The BigQuery enumerator makes no periodic async calls.");
+                "A pull-assignment enumerator makes no periodic async calls.");
     }
 
     @Override
     public void runInCoordinatorThread(Runnable runnable) {
         throw new UnsupportedOperationException(
-                "The BigQuery enumerator runs on the coordinator thread already.");
+                "A pull-assignment enumerator runs on the coordinator thread already.");
     }
 
     /**
      * Returns a counter the enumerator registered. The extra path element is Flink's own: {@link
      * InternalSplitEnumeratorMetricGroup} registers under an {@code "enumerator"} subgroup.
      */
-    long counter(String name) {
+    public long counter(String name) {
         return metricListener
                 .getCounter("enumerator", name)
                 .orElseThrow(() -> new AssertionError("No counter named " + name + " registered."))
@@ -199,7 +210,7 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<BigQuer
     }
 
     /** Returns the value of a gauge the enumerator registered. */
-    <T> T gauge(String name) {
+    public <T> T gauge(String name) {
         return metricListener
                 .<T>getGauge("enumerator", name)
                 .orElseThrow(() -> new AssertionError("No gauge named " + name + " registered."))

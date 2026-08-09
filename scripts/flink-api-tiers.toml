@@ -99,6 +99,20 @@ answer and no sink here calls (issue #208). Test-support code, so a change
 breaks a test rather than a job, and the fallback is a four-method stub of
 OperatorIOMetricGroup in this repository."""
 
+[internal."org.apache.flink.runtime.metrics.groups.InternalSplitEnumeratorMetricGroup"]
+reason = """
+The one SplitEnumeratorMetricGroup implementation a test can both hand to an
+enumerator and read back through, in test-utils' shared FakeSplitEnumeratorContext
+(issue #437). The stable-looking alternative does not work:
+UnregisteredMetricsGroup.createSplitEnumeratorMetricGroup() hands out a fresh
+counter on every call, so the counter the enumerator captured is unreachable
+afterwards - the same reason ADR-0051 records for the sink metric-group harness.
+Inlining is not the cheap option it is for a utility class either: this group's
+"enumerator" subgroup is exactly what counter()/gauge() read through. Test-support
+code, so a change breaks a test rather than a job, and the fallback is a
+ProxyMetricGroup subclass in this repository that registers under that subgroup by
+hand."""
+
 [internal."org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval"]
 reason = """
 Part of the SplitReader SPI surface in practice: handleSplitsChanges receives
