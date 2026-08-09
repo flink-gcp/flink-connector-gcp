@@ -73,6 +73,29 @@ public final class PubSubMetricNames {
     public static final String PENDING_CHECKPOINTS = "pendingCheckpoints";
 
     /**
+     * What this subtask's subscribers are holding that the fetch loop has not taken yet — a
+     * <em>state</em>, so a gauge. It is the number the paused-split bound is evaluated against, and
+     * the memory a reader that has stopped draining accumulates whether or not any split is paused
+     * (#377).
+     *
+     * <p>Two gauges rather than one, for the reason the bound they shadow has two dimensions: which
+     * of message count and byte size fills a TaskManager first depends on the message size.
+     *
+     * <p>Neither is {@link #PENDING_ACKS}, which counts messages received <em>or emitted</em> and
+     * not yet acknowledged and so cannot tell a growing buffer from a slow checkpoint. Nor do they
+     * cover the reader's whole footprint: everything already pulled has left the subscriber and
+     * left these, which is up to {@code (source.reader.element.queue.capacity + 2) ×
+     * maxRecordsPerFetch × splits} messages — the queue itself, plus the fetch the reader is
+     * working through and the batch the fetcher cannot hand over, each of which holds one drain of
+     * <em>every</em> assigned split. Measured on #377 at 3999 against a capacity of 2, a
+     * 1000-message fetch and one split.
+     */
+    public static final String BUFFERED_MESSAGES = "bufferedMessages";
+
+    /** {@link #BUFFERED_MESSAGES} in bytes. */
+    public static final String BUFFERED_BYTES = "bufferedBytes";
+
+    /**
      * The <em>state</em> a paused split is left in once its buffer outgrows its bound and the
      * reader stops its subscriber (#357), so it takes the gauge shape — and "parked" in the sense
      * {@link #PARKED_MESSAGES} already gives it here, held for a resumption that is expected. This

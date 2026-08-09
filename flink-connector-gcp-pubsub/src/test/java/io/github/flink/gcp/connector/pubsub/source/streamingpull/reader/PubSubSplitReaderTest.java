@@ -299,6 +299,77 @@ class PubSubSplitReaderTest {
     }
 
     @Test
+    void theBufferGaugesSumWhatEverySplitsSubscriberIsHolding() throws Exception {
+        // What a split holds and has not handed over is otherwise reported by nothing: pendingAcks
+        // covers messages received or emitted alike, and the paused-split bound reads a paused
+        // split alone. Under backpressure the fetch loop stops entering fetch(), so a gauge the
+        // metric reporter reads on a thread of its own is the only thing that sees it (#377).
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        long bytesA = subscriberOf(SPLIT_A).deliverSized(2, 50);
+        long bytesB = subscriberOf(SPLIT_B).deliverSized(3, 10);
+
+        assertThat(readerMetrics.gauge("bufferedMessages")).isEqualTo(5);
+        assertThat(readerMetrics.gauge("bufferedBytes")).isEqualTo(bytesA + bytesB);
+
+        reader.fetch();
+
+        assertThat(readerMetrics.gauge("bufferedMessages")).isZero();
+        assertThat(readerMetrics.gauge("bufferedBytes")).isZero();
+        reader.close();
+    }
+
+    @Test
+    void parkingASplitTakesItOutOfTheBufferGaugesAndAResumePutsItBack() throws Exception {
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        subscriberOf(SPLIT_A).deliver(message("1"), message("2"));
+
+        assertThat(readerMetrics.gauge("bufferedMessages")).isEqualTo(2);
+
+        reader.fetch();
+
+        // The park handed every message back, so a parked split holds nothing. What this pins is
+        // the registry rather than the value: the production subscriber empties its own buffer in
+        // shutdown(), so a missing subscriberClosed(...) would leak a dead client rather than
+        // misreport a live one. The fake deliberately keeps its deque, which is what makes the
+        // leak visible here at all.
+        assertThat(readerMetrics.gauge("parkedSplits")).isEqualTo(1);
+        assertThat(readerMetrics.gauge("bufferedMessages"))
+                .as("the parked split's client is no longer one the gauges sum")
+                .isZero();
+
+        reader.pauseOrResumeSplits(Collections.emptyList(), List.of(SPLIT_A));
+        subscriberOf(SPLIT_A).deliver(message("3"));
+
+        assertThat(readerMetrics.gauge("bufferedMessages")).isEqualTo(1);
+        reader.close();
+    }
+
+    @Test
+    void aRemovedSplitAndAClosedReaderLeaveNothingInTheBufferGauges() throws Exception {
+        PubSubSplitReader reader = reader(10);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        subscriberOf(SPLIT_A).deliver(message("1"));
+        subscriberOf(SPLIT_B).deliver(message("2"));
+
+        reader.handleSplitsChanges(new SplitsRemoval<>(List.of(SPLIT_A)));
+
+        assertThat(readerMetrics.gauge("bufferedMessages")).isEqualTo(1);
+
+        reader.close();
+
+        // The metrics outlive the split reader — a fetcher may be rebuilt over a reader's life —
+        // so a reader that closed still registered would leak every client it owned into a gauge
+        // read for the rest of the job. As above, the fake keeps its deque so the leak shows as a
+        // value; in production shutdown() would have emptied it.
+        assertThat(readerMetrics.gauge("bufferedMessages"))
+                .as("a closed reader leaves no client registered")
+                .isZero();
+    }
+
+    @Test
     void aPausedSplitWithNothingBufferedIsNotParked() throws Exception {
         // The state an aligned job spends its time in. A bound that fired on the pause rather than
         // on the buffer would stop every paused split's client and make alignment cost a

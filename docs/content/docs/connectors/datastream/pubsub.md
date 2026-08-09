@@ -920,9 +920,27 @@ section is why they are what they are.
 leases.** Because the source acknowledges only on checkpoint completion, everything received since
 the last completed checkpoint counts against these limits, and the client stops pulling once they
 are reached — until `maxAckExtensionPeriod` passes for a message the job has not emitted, after
-which the client releases its permit while the connector still holds it. That only reaches a split
-nothing is draining, which is a paused one, and it is bounded there by `pausedSplitBufferMaxMessages`
-/ `pausedSplitBufferMaxBytes` (see [Watermark alignment](#watermark-alignment)). `maxRecordsPerFetch` only caps how much
+which the client releases its permit while the connector still holds it. **What decides whether that
+accumulates is how fast the split is being drained**, and the break-even is
+`flowControlMaxOutstandingElementCount / (maxAckExtensionPeriod − one lease extension)` — about
+**0.28 messages a second at the defaults**, since an acknowledgement only ever covers a message the
+job already consumed, leaving expiry as the only source of permits that does not track the drain.
+The subtracted term is the client library's *own* extension length, which starts at ten seconds and
+adapts to how long messages are taking; it is not the subscription's `ackDeadlineSeconds`, and it
+is why the rate is an order rather than a constant.
+Any job making real progress stays above it. The two cases that do not are a split paused by
+watermark alignment, which is not drained at all and is bounded by `pausedSplitBufferMaxMessages` /
+`pausedSplitBufferMaxBytes` (see [Watermark alignment](#watermark-alignment)), and a downstream that
+has stopped consuming altogether, which nothing bounds — watch `bufferedMessages` and
+`bufferedBytes` ([#377]({{< param BookRepo >}}/issues/377)).
+
+Once a split is in either state, **most of what it is handed stops being new data**. A lapsed lease
+is redelivered, and the copy is buffered *beside* the one the reader is still holding, so the buffer
+fills with duplicates and the same record is emitted twice into a running pipeline — within
+at-least-once, but not at a restart. Measured against the service at 215 and 338 such redeliveries
+out of 369 and 462 deliveries over 90 s.
+
+`maxRecordsPerFetch` only caps how much
 a single fetch drains from one split; it is not a memory bound. The limit behavior is not exposed
 because the SDK subscriber does not expose it either — it forces blocking regardless of the
 settings, which for a subscriber means it stops pulling rather than blocking a thread.
@@ -1122,6 +1140,8 @@ Registered on the reader and enumerator metric groups:
 | `messagesDropped` | counter | messages discarded by `DROP` |
 | `pendingAcks` | gauge | messages received or emitted but not yet acknowledged |
 | `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
+| `bufferedMessages` | gauge | messages this subtask's subscribers hold that the fetch loop has not taken yet — see below |
+| `bufferedBytes` | gauge | the same in bytes; either dimension can be the one that fills a TaskManager first |
 | `parkedSplits` | gauge | paused splits whose subscriber has been stopped, awaiting a resume |
 | `splitsParked` | counter | times a paused split outgrew its buffer bound and its subscriber was stopped |
 | `subscriberShutdownsAbandoned` | counter | subscriber teardowns whose wait for termination expired. **Not this subtask's, and not this attempt's** — see below |
@@ -1143,6 +1163,25 @@ landing.
 — and **the timeout is the only detector**: on a subscription without exactly-once delivery the
 acknowledgement future completes with `SUCCESSFUL` on success and never completes at all on
 failure, so there is no error to observe, only the absence of a confirmation.
+
+**`bufferedMessages` and `bufferedBytes` are what a reader is holding and has not handed to the
+pipeline yet**, summed over the subtask's splits. They are the pair to watch for the failure mode
+[Watermark alignment](#watermark-alignment) describes, and for the one under sustained
+backpressure — in both, a reader accumulates messages the client library keeps delivering because
+`maxAckExtensionPeriod` has released their flow-control permits. `pendingAcks` cannot stand in for
+them: it counts messages received *or emitted* and not yet acknowledged, so it climbs for a slow
+checkpoint just as readily.
+
+They are read by the metric reporter's own thread, which matters here: the fetch loop that
+evaluates the paused-split bound stops running altogether when the downstream stops consuming
+([#377]({{< param BookRepo >}}/issues/377)), and these gauges do not.
+
+What they do **not** cover is everything already pulled out of the subscriber: Flink's element
+queue, the fetch the reader is working through and the batch the fetcher cannot hand over, each
+holding one drain of every assigned split. That is up to
+`(source.reader.element.queue.capacity + 2)` × `maxRecordsPerFetch` × splits messages — measured at
+3999 with a capacity of 2, a 1000-message fetch and one split. Nothing reports it, and the bound in
+[Watermark alignment](#watermark-alignment) does not see it either.
 
 `pendingRecordsGauge` is deliberately **not** set. Pub/Sub exposes no backlog through the data
 plane, and a wrong lag number is worse than none.
@@ -1255,8 +1294,9 @@ already a pull loop, and `SourceReaderBase` already owns the element queue and t
 between the fetcher and the task thread. The remaining reason — that flow control becomes a knob the
 user can get wrong, and that it rather than Flink bounds how much is buffered — does apply here, and
 is why the subscriber's flow-control settings are exposed rather than hidden. It is also why the
-connector has a bound of its own for the one case flow control stops covering, a paused split (see
-[Watermark alignment](#watermark-alignment)).
+connector has a bound of its own for the case flow control stops covering, a paused split (see
+[Watermark alignment](#watermark-alignment)), and gauges for the case nothing bounds, a downstream
+that has stopped consuming (see [Metrics](#metrics)).
 
 Two things decided it the other way:
 
@@ -1311,10 +1351,13 @@ outstanding limit fills — but its lease-extension budget is measured from when
 a buffered message, the client library stops extending its lease, Pub/Sub redelivers it, and the
 client **releases that message's flow-control permit** — while the connector is still holding the
 message. Permits therefore free up in a wave, pulling resumes, and the buffer grows again by about
-a whole flow-control window each time — with no ceiling in the two waves the measurement ran, and
-none in the mechanism ([#357]({{< param BookRepo >}}/issues/357)). The wave lands one
-acknowledgement deadline *before* the period elapses, not after it, because the client drops a
-message it can no longer extend past the next deadline.
+a whole flow-control window each time. The emulator measurement behind
+[#357]({{< param BookRepo >}}/issues/357) saw two such waves and then stopped; the service
+measurement behind [#377]({{< param BookRepo >}}/issues/377) kept going, so the two-wave ceiling was
+an emulator artifact and there is no ceiling in the mechanism either. The wave lands one *lease
+extension* before the period elapses, not after it, because the client drops a message it can no
+longer extend past the next one — and that extension is the client's own adaptive value, which
+starts at ten seconds, not the subscription's acknowledgement deadline.
 
 **So past its bound, a paused split's subscriber is stopped, and a fresh one opens when the split
 resumes.** The bound is [`pausedSplitBufferMaxMessages` and
@@ -1383,8 +1426,18 @@ reader's. So on a job where this subtask is ahead of its aligned group, the fail
 immediately and surfaced when the group catches up and the subtask is released. It is a delay rather
 than a loss — the subtask emits nothing further, so it does not hold the group's minimum back — and
 it is not specific to this connector: it is how a fetcher-thread error reaches the job for any
-FLIP-27 source under alignment. The same shape applies under sustained downstream backpressure,
-where the mailbox is not polling either.
+FLIP-27 source under alignment.
+
+Downstream backpressure produces the same shape from the other end, and the measurement behind
+[#377]({{< param BookRepo >}}/issues/377) is worth stating because the natural reading is worse than
+the truth. Flink's fetcher holds the batch it could not hand over and does not call `fetch()` again
+until the element queue has room, so a *stalled* downstream stops the fetch loop entirely, and with
+it every check the reader makes there. But a downstream that is merely slow frees a queue slot for
+every batch it takes, and each slot lets exactly one more `fetch()` run — so the checks are delayed
+by one drain interval, not skipped. And where the loop does stop, so does the mailbox: the reader
+would have nowhere to report a failure to either, which is why the connector adds no check on a
+thread of its own. What it adds instead is `bufferedMessages` and `bufferedBytes`, which the metric
+reporter reads whatever the fetch loop is doing.
 
 ### Message ordering
 
