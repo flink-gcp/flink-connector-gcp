@@ -24,10 +24,12 @@ import java.time.Duration;
 /**
  * The checks every connector's option builders repeat, in one place.
  *
- * <p>Both are about a {@link Duration} a user hands a builder, and both exist so the failure lands
- * on the client rather than on a TaskManager, where a job has already started. Both clear the base
- * module's multiple-consumer bar on their own: the ceiling has nine call sites across base, pubsub
- * and bigquery, and positivity has thirty-one across pubsub and bigquery (ADR-0068).
+ * <p>All of them are about a {@link Duration} a user hands a builder, and all of them exist so the
+ * failure lands on the client rather than on a TaskManager, where a job has already started. Each
+ * clears the base module's multiple-consumer bar on its own: the ceiling has nine call sites across
+ * base, pubsub and bigquery, positivity has thirty-one across pubsub and bigquery, and the
+ * millisecond floor thirty-one across pubsub, cloudtasks, bigtable and bigquery — eleven of them
+ * through the zero-tolerant variant, across pubsub and bigquery (ADR-0068).
  *
  * <p>What they replace is not merely repetition. The ceiling constant stood in six files with its
  * message written out in eight, so a new budget knob was correct only if its author remembered to
@@ -35,7 +37,9 @@ import java.time.Duration;
  * — {@code "x must be positive"}, {@code "x must be positive: <value>"} and {@code "x must be
  * positive, but was <value>"} — which is what a rule with no single implementation decays into. The
  * value-carrying form won: a builder chain setting several durations otherwise leaves the user
- * guessing which one the rejection meant.
+ * guessing which one the rejection meant. The millisecond floor was five private copies in two
+ * message shapes and two mechanics, and what a copy of it silently dropped was not the wording but
+ * the coverage: eleven setters converting a user value with {@code toMillis()} never had one.
  *
  * <p>Deliberately not a general-purpose precondition library: the next check needs an argument of
  * its own, and "it is a precondition too" is not one.
@@ -69,6 +73,71 @@ public final class OptionChecks {
                 name,
                 duration);
         return duration;
+    }
+
+    /**
+     * Returns the duration, having checked it is present and at least one millisecond.
+     *
+     * <p>Subsumes {@link #checkPositive}: zero and negative durations fail this check too, with
+     * this message rather than that one. Deliberately — a knob whose floor is a millisecond rejects
+     * {@code Duration.ZERO} for the same reason it rejects 500 µs, and a rejection saying only
+     * "must be positive" costs the user a second round trip when their next attempt is 500 µs.
+     *
+     * <p>Which knobs need it is a property of what consumes the value, never of the knob's name: it
+     * belongs wherever a user's {@code Duration} is converted with {@link Duration#toMillis()} and
+     * a zero would be harmful — a {@code RetrySchedule}, a processing-time timer, a bounded {@code
+     * await}, a millisecond field of a Google API request, or gax's retry algorithm, which
+     * truncates its own delays the same way. Two knobs of one name, on a sink and on a source, can
+     * therefore have different floors (ADR-0068).
+     *
+     * <p>A duration longer than about 292 million years throws {@link ArithmeticException} out of
+     * {@link Duration#toMillis()} instead of being rejected here. It still lands at the setter,
+     * which is where a failure belongs, so the conversion is left as it is and a test pins it.
+     *
+     * @param duration the duration to check
+     * @param name the option name, for the failure message
+     * @return the duration
+     */
+    public static Duration checkAtLeastOneMilli(Duration duration, String name) {
+        Preconditions.checkNotNull(duration, "%s must not be null", name);
+        Preconditions.checkArgument(
+                duration.toMillis() >= 1,
+                "%s must be at least 1 millisecond (it is applied at millisecond granularity): %s",
+                name,
+                duration);
+        return duration;
+    }
+
+    /**
+     * Returns the duration, having checked it is present and either zero or at least one
+     * millisecond.
+     *
+     * <p>For a knob this project **forwards to a vendor SDK that gives zero a meaning of its own**
+     * — gax reads a zero {@code totalTimeout} as "use the attempt count instead" and a zero RPC
+     * timeout as "let the call run indefinitely", and the BigQuery Storage writer reads a zero
+     * {@code maxRetryDuration} as "retry without a time limit". A setting this project merely
+     * passes through stays settable as the SDK defines it, so zero is forwarded rather than
+     * refused.
+     *
+     * <p>The floor and the exemption are the same argument, not a compromise between two: the
+     * vendor reads these values with {@code toMillis()}, so a <em>positive</em> sub-millisecond
+     * value would arrive as zero and silently become the sentinel — which is how a retry ceiling
+     * set to give up almost at once turns into unlimited retry. Refusing it is what keeps zero
+     * meaning only what the user typed.
+     *
+     * <p>Whether zero is legal is therefore a property of the SDK on the other side, never a
+     * loosening applied for convenience: a knob this project spends itself takes {@link
+     * #checkAtLeastOneMilli}, and a forwarded knob the vendor does <em>not</em> truncate takes
+     * neither — a floor promising millisecond granularity where none applies would be promising
+     * something untrue (the Pub/Sub subscriber's {@code maxAckExtensionPeriod} is that case).
+     *
+     * @param duration the duration to check
+     * @param name the option name, for the failure message
+     * @return the duration
+     */
+    public static Duration checkAtLeastOneMilliOrZero(Duration duration, String name) {
+        Preconditions.checkNotNull(duration, "%s must not be null", name);
+        return duration.isZero() ? duration : checkAtLeastOneMilli(duration, name);
     }
 
     /**

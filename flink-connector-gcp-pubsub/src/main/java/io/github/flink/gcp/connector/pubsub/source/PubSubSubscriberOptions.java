@@ -412,12 +412,29 @@ public final class PubSubSubscriberOptions implements Serializable {
          * acknowledges it: once the budget is spent the lease expires and Pub/Sub redelivers, so it
          * must stay comfortably above the checkpoint interval.
          *
-         * @param maxAckExtensionPeriod the total extension budget, positive
+         * <p><b>{@code Duration.ZERO} is settable</b> and means what the client library means by
+         * it: <em>"a zero duration effectively disables auto deadline extensions"</em>, so every
+         * message's lease expires at the subscription's own acknowledgement deadline. A setting
+         * this connector forwards to the SDK stays settable as the SDK defines it (ADR-0068).
+         *
+         * <p>Only a negative budget is refused. Unlike the {@code retry*} knobs this one takes no
+         * millisecond floor, and that is measured rather than assumed: {@code MessageDispatcher}
+         * spends it as {@code now().plus(maxAckExtensionPeriod)}, an instant at nanosecond
+         * resolution with no {@code toMillis()} anywhere, so a sub-millisecond value is a very
+         * short budget rather than a zero in disguise — and a floor whose message promised
+         * millisecond granularity would be promising something untrue here.
+         *
+         * @param maxAckExtensionPeriod the total extension budget, non-negative
          * @return this builder
          */
         public Builder maxAckExtensionPeriod(Duration maxAckExtensionPeriod) {
-            this.maxAckExtensionPeriod =
-                    OptionChecks.checkPositive(maxAckExtensionPeriod, "maxAckExtensionPeriod");
+            Preconditions.checkNotNull(
+                    maxAckExtensionPeriod, "maxAckExtensionPeriod must not be null");
+            Preconditions.checkArgument(
+                    !maxAckExtensionPeriod.isNegative(),
+                    "maxAckExtensionPeriod must not be negative: %s",
+                    maxAckExtensionPeriod);
+            this.maxAckExtensionPeriod = maxAckExtensionPeriod;
             return this;
         }
 
@@ -472,12 +489,12 @@ public final class PubSubSubscriberOptions implements Serializable {
          * <p>The wait happens on the task thread when the checkpoint completes, so it delays
          * processing by up to this long. That is the price of the confirmation.
          *
-         * @param awaitAckConfirmation how long to wait for confirmation, positive
+         * @param awaitAckConfirmation how long to wait for confirmation, at least 1 ms
          * @return this builder
          */
         public Builder awaitAckConfirmation(Duration awaitAckConfirmation) {
             this.awaitAckConfirmation =
-                    OptionChecks.checkPositive(awaitAckConfirmation, "awaitAckConfirmation");
+                    OptionChecks.checkAtLeastOneMilli(awaitAckConfirmation, "awaitAckConfirmation");
             return this;
         }
 
@@ -490,19 +507,28 @@ public final class PubSubSubscriberOptions implements Serializable {
          * default), past which a reader is abandoned mid-close and the messages it had not yet
          * released only return after their acknowledgement deadline.
          *
-         * @param shutdownTimeout the shutdown budget, positive and at most {@code
+         * @param shutdownTimeout the shutdown budget, at least 1 ms and at most {@code
          *     Duration.ofNanos(Long.MAX_VALUE)}
          * @return this builder
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {
-            OptionChecks.checkPositive(shutdownTimeout, "shutdownTimeout");
             // Unlike the sink's knob of the same name, this one is spent in milliseconds — a
             // range a million times wider, and the reader's CountDownLatch saturates rather than
             // throwing when it converts them back. So this ceiling is far tighter than that
             // conversion needs, and it is the rule (ADR-0068) rather than a crash: one answer for
             // one knob name, whose "effectively unbounded" reading is the same on both sides.
+            //
+            // It runs before the floor, and the order is load-bearing: the floor converts with
+            // toMillis(), which past about 292 million years throws an ArithmeticException naming
+            // no knob at all — so checking the ceiling first is what keeps an absurd budget
+            // answered by the message that names it.
+            OptionChecks.checkExpressibleInNanos(shutdownTimeout, "shutdownTimeout");
+            // The floor, unlike that ceiling, is not shared with the sink's knob of this name: this
+            // budget is spent as await(toMillis()), where a sub-millisecond value waits for nothing
+            // at all, and the sink's is spent in nanoseconds, where it waits for what it says. The
+            // check follows the conversion rather than the name (ADR-0068).
             this.shutdownTimeout =
-                    OptionChecks.checkExpressibleInNanos(shutdownTimeout, "shutdownTimeout");
+                    OptionChecks.checkAtLeastOneMilli(shutdownTimeout, "shutdownTimeout");
             return this;
         }
 

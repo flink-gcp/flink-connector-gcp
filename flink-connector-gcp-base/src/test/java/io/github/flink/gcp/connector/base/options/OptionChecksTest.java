@@ -49,6 +49,110 @@ class OptionChecksTest {
     }
 
     @Test
+    void checkAtLeastOneMilliAcceptsTheBoundaryAndRejectsOneNanosecondLess() {
+        Duration boundary = Duration.ofMillis(1);
+
+        // The boundary itself is accepted — a knob whose consumer reads whole milliseconds may be
+        // set to one — and returned, because most call sites assign the result.
+        assertThat(OptionChecks.checkAtLeastOneMilli(boundary, "retryInitialBackoff"))
+                .isSameAs(boundary);
+        assertThatThrownBy(
+                        () ->
+                                OptionChecks.checkAtLeastOneMilli(
+                                        boundary.minusNanos(1), "retryInitialBackoff"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryInitialBackoff must be at least 1 millisecond");
+    }
+
+    /**
+     * The floor subsumes positivity rather than deferring to {@link OptionChecks#checkPositive},
+     * and the messages are what say so: a user told only "must be positive" sets 500 µs next and is
+     * rejected a second time. Asserting the floor's own wording for zero and for a negative is what
+     * fails if the implementation ever grows a {@code checkPositive} ahead of the conversion.
+     */
+    @Test
+    void checkAtLeastOneMilliRejectsNullZeroAndNegativeWithTheFloorsOwnMessage() {
+        assertThatThrownBy(() -> OptionChecks.checkAtLeastOneMilli(null, "retryInitialBackoff"))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("retryInitialBackoff must not be null");
+        assertThatThrownBy(
+                        () ->
+                                OptionChecks.checkAtLeastOneMilli(
+                                        Duration.ZERO, "retryInitialBackoff"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryInitialBackoff must be at least 1 millisecond");
+        assertThatThrownBy(
+                        () ->
+                                OptionChecks.checkAtLeastOneMilli(
+                                        Duration.ofSeconds(-1), "retryInitialBackoff"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryInitialBackoff must be at least 1 millisecond");
+    }
+
+    /**
+     * Both halves of the message are load-bearing, and a copy drops one or the other: the
+     * parenthetical is the only place a user learns <em>why</em> a positive duration was refused,
+     * and the value is what disambiguates a builder chain setting several durations (ADR-0068).
+     */
+    @Test
+    void theFloorMessageSaysWhyAndCarriesTheValue() {
+        assertThatThrownBy(
+                        () ->
+                                OptionChecks.checkAtLeastOneMilli(
+                                        Duration.ofNanos(500_000), "retryInitialBackoff"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("it is applied at millisecond granularity")
+                .hasMessageContaining("PT0.0005S");
+    }
+
+    /**
+     * Accidental in all five private copies this check replaced, and kept deliberately: {@link
+     * Duration#toMillis()} overflows past about 292 million years. The exception type is odd, but
+     * the landing site is the one that matters — the setter, on the client, with the value still in
+     * the user's hand — so converting it to an {@code IllegalArgumentException} would buy nothing.
+     */
+    @Test
+    void anAbsurdlyLongDurationStillFailsAtTheSetter() {
+        assertThatThrownBy(
+                        () ->
+                                OptionChecks.checkAtLeastOneMilli(
+                                        Duration.ofSeconds(Long.MAX_VALUE), "retryInitialBackoff"))
+                .isInstanceOf(ArithmeticException.class);
+    }
+
+    /**
+     * The zero-tolerant variant is the floor plus one exemption, and the exemption is the vendor's
+     * rather than a convenience: gax, the Pub/Sub subscriber and the BigQuery Storage writer each
+     * document a meaning for zero. Everything else it does is {@link
+     * OptionChecks#checkAtLeastOneMilli}'s job, message included, which is what the sub-millisecond
+     * case pins — that value is refused precisely because it would arrive as the sentinel.
+     */
+    @Test
+    void checkAtLeastOneMilliOrZeroForwardsZeroAndRejectsEverythingElseBelowAMillisecond() {
+        assertThat(OptionChecks.checkAtLeastOneMilliOrZero(Duration.ZERO, "retryTotalTimeout"))
+                .isEqualTo(Duration.ZERO);
+        assertThat(
+                        OptionChecks.checkAtLeastOneMilliOrZero(
+                                Duration.ofMillis(1), "retryTotalTimeout"))
+                .isEqualTo(Duration.ofMillis(1));
+        assertThatThrownBy(
+                        () ->
+                                OptionChecks.checkAtLeastOneMilliOrZero(
+                                        Duration.ofNanos(500_000), "retryTotalTimeout"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryTotalTimeout must be at least 1 millisecond");
+        assertThatThrownBy(
+                        () ->
+                                OptionChecks.checkAtLeastOneMilliOrZero(
+                                        Duration.ofSeconds(-1), "retryTotalTimeout"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryTotalTimeout must be at least 1 millisecond");
+        assertThatThrownBy(() -> OptionChecks.checkAtLeastOneMilliOrZero(null, "retryTotalTimeout"))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("retryTotalTimeout must not be null");
+    }
+
+    @Test
     void theCeilingIsWhatANanosecondClockCanExpress() {
         // The constant is what every caller's javadoc names, so it is asserted rather than
         // assumed: toNanos() is defined exactly to Long.MAX_VALUE, and one nanosecond more throws.

@@ -139,15 +139,17 @@ class DefaultStreamOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> DefaultStreamOptions.builder().recoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().retryInitialDelay(Duration.ZERO))
+        assertThatThrownBy(
+                        () ->
+                                DefaultStreamOptions.builder()
+                                        .retryInitialDelay(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> DefaultStreamOptions.builder().retryDelayMultiplier(0.99))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().retryMaxDelay(Duration.ZERO))
+        assertThatThrownBy(
+                        () -> DefaultStreamOptions.builder().retryMaxDelay(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> DefaultStreamOptions.builder().retryMaxAttempts(0))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DefaultStreamOptions.builder().maxRetryDuration(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> DefaultStreamOptions.builder().maxInflightRequests(0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -162,6 +164,102 @@ class DefaultStreamOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> DefaultStreamOptions.builder().flushInterval(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * Every knob here is spent in whole milliseconds — the recovery pair by {@code RetrySchedule},
+     * the retry knobs by gax's own algorithm, the flush interval by a processing-time timer — so a
+     * sub-millisecond value means zero at each of them: a schedule that refuses to be built as the
+     * writer is constructed, a retry loop with no backoff, and a timer that re-arms in the past and
+     * spins on the mailbox thread (ADR-0068).
+     */
+    @Test
+    void rejectsSubMillisecondDurations() {
+        Duration halfAMilli = Duration.ofNanos(500_000);
+
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().recoveryInitialBackoff(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("recoveryInitialBackoff must be at least 1 millisecond");
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().recoveryMaxBackoff(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("recoveryMaxBackoff must be at least 1 millisecond");
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().retryInitialDelay(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryInitialDelay must be at least 1 millisecond");
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().retryMaxDelay(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryMaxDelay must be at least 1 millisecond");
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().maxRetryDuration(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxRetryDuration must be at least 1 millisecond");
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().flushInterval(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("flushInterval must be at least 1 millisecond");
+    }
+
+    /**
+     * The {@code retry*} knobs are forwarded to gax, which gives zero meanings of its own — no
+     * delay before the first retry, a cap that clamps every delay to none — so they stay settable
+     * as the SDK defines them. A positive sub-millisecond value is refused instead, because gax
+     * reads them with {@code toMillis()} and it would silently become that zero (ADR-0068). Both
+     * delays are set together because this builder still requires the cap to be at least the
+     * initial delay.
+     */
+    @Test
+    void theSdkRetryDelaysTakeTheVendorsZero() {
+        DefaultStreamOptions options =
+                DefaultStreamOptions.builder()
+                        .retryInitialDelay(Duration.ZERO)
+                        .retryMaxDelay(Duration.ZERO)
+                        .build();
+
+        assertThat(options.getRetryInitialDelay()).isEqualTo(Duration.ZERO);
+        assertThat(options.getRetryMaxDelay()).isEqualTo(Duration.ZERO);
+        assertThatThrownBy(
+                        () ->
+                                DefaultStreamOptions.builder()
+                                        .retryInitialDelay(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryInitialDelay must be at least 1 millisecond");
+        assertThatThrownBy(
+                        () ->
+                                DefaultStreamOptions.builder()
+                                        .retryMaxDelay(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryMaxDelay must be at least 1 millisecond");
+    }
+
+    /**
+     * Zero is the SDK's own sentinel for "retry without a time limit" — {@code
+     * StreamWriter.Builder.setMaxRetryDuration} documents it, {@code ConnectionWorker} implements
+     * it by skipping the elapsed-time comparison — so an SDK setting this connector merely forwards
+     * stays settable as the SDK defines it. The floor still applies to every other value, and a
+     * positive sub-millisecond one is refused precisely because it would silently *become* the
+     * sentinel (ADR-0068).
+     */
+    @Test
+    void maxRetryDurationTakesTheSdkSentinelForUnlimitedRetry() {
+        assertThat(
+                        DefaultStreamOptions.builder()
+                                .maxRetryDuration(Duration.ZERO)
+                                .build()
+                                .getMaxRetryDuration())
+                .isEqualTo(Duration.ZERO);
+        assertThatThrownBy(
+                        () ->
+                                DefaultStreamOptions.builder()
+                                        .maxRetryDuration(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxRetryDuration must be at least 1 millisecond");
+        assertThatThrownBy(
+                        () ->
+                                DefaultStreamOptions.builder()
+                                        .maxRetryDuration(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxRetryDuration must be at least 1 millisecond");
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().maxRetryDuration(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("maxRetryDuration must not be null");
     }
 
     /**

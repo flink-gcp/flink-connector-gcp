@@ -98,7 +98,10 @@ class BufferedStreamOptionsTest {
 
     @Test
     void rejectsInvalidSdkRetryKnobs() {
-        assertThatThrownBy(() -> BufferedStreamOptions.builder().retryInitialDelay(Duration.ZERO))
+        assertThatThrownBy(
+                        () ->
+                                BufferedStreamOptions.builder()
+                                        .retryInitialDelay(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryInitialDelay");
         assertThatThrownBy(() -> BufferedStreamOptions.builder().retryDelayMultiplier(0.99))
@@ -107,7 +110,8 @@ class BufferedStreamOptionsTest {
         assertThatThrownBy(() -> BufferedStreamOptions.builder().retryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryMaxAttempts");
-        assertThatThrownBy(() -> BufferedStreamOptions.builder().retryMaxDelay(Duration.ZERO))
+        assertThatThrownBy(
+                        () -> BufferedStreamOptions.builder().retryMaxDelay(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryMaxDelay");
         assertThatThrownBy(() -> BufferedStreamOptions.builder().maxRetryDuration(null))
@@ -168,6 +172,92 @@ class BufferedStreamOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> BufferedStreamOptions.builder().recoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * The recovery knobs reach a {@code RetrySchedule} through {@code toMillis()}, so a
+     * sub-millisecond value used to be accepted here and rejected by the schedule's constructor —
+     * on a TaskManager, as the writer or the committer was built (ADR-0068).
+     */
+    @Test
+    void rejectsSubMillisecondRecoveryBackoffs() {
+        assertThatThrownBy(
+                        () ->
+                                BufferedStreamOptions.builder()
+                                        .recoveryInitialBackoff(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("recoveryInitialBackoff must be at least 1 millisecond");
+        assertThatThrownBy(
+                        () ->
+                                BufferedStreamOptions.builder()
+                                        .recoveryMaxBackoff(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("recoveryMaxBackoff must be at least 1 millisecond");
+    }
+
+    /**
+     * The {@code retry*} knobs are forwarded to gax, which gives zero meanings of its own — no
+     * delay before the first retry, a cap that clamps every delay to none — so they stay settable
+     * as the SDK defines them. A positive sub-millisecond value is refused instead, because gax
+     * reads them with {@code toMillis()} and it would silently become that zero (ADR-0068). Both
+     * delays are set together because this builder still requires the cap to be at least the
+     * initial delay.
+     */
+    @Test
+    void theSdkRetryDelaysTakeTheVendorsZero() {
+        BufferedStreamOptions options =
+                BufferedStreamOptions.builder()
+                        .retryInitialDelay(Duration.ZERO)
+                        .retryMaxDelay(Duration.ZERO)
+                        .build();
+
+        assertThat(options.getRetryInitialDelay()).isEqualTo(Duration.ZERO);
+        assertThat(options.getRetryMaxDelay()).isEqualTo(Duration.ZERO);
+        assertThatThrownBy(
+                        () ->
+                                BufferedStreamOptions.builder()
+                                        .retryInitialDelay(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryInitialDelay must be at least 1 millisecond");
+        assertThatThrownBy(
+                        () ->
+                                BufferedStreamOptions.builder()
+                                        .retryMaxDelay(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryMaxDelay must be at least 1 millisecond");
+    }
+
+    /**
+     * Zero is the SDK's own sentinel for "retry without a time limit" — {@code
+     * StreamWriter.Builder.setMaxRetryDuration} documents it, {@code ConnectionWorker} implements
+     * it by skipping the elapsed-time comparison — so an SDK setting this connector merely forwards
+     * stays settable as the SDK defines it. The floor still applies to every other value, and a
+     * positive sub-millisecond one is refused precisely because it would silently *become* the
+     * sentinel (ADR-0068).
+     */
+    @Test
+    void maxRetryDurationTakesTheSdkSentinelForUnlimitedRetry() {
+        assertThat(
+                        BufferedStreamOptions.builder()
+                                .maxRetryDuration(Duration.ZERO)
+                                .build()
+                                .getMaxRetryDuration())
+                .isEqualTo(Duration.ZERO);
+        assertThatThrownBy(
+                        () ->
+                                BufferedStreamOptions.builder()
+                                        .maxRetryDuration(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxRetryDuration must be at least 1 millisecond");
+        assertThatThrownBy(
+                        () ->
+                                BufferedStreamOptions.builder()
+                                        .maxRetryDuration(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxRetryDuration must be at least 1 millisecond");
+        assertThatThrownBy(() -> BufferedStreamOptions.builder().maxRetryDuration(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("maxRetryDuration must not be null");
     }
 
     @Test

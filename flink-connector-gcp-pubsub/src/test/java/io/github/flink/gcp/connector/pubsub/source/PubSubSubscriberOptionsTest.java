@@ -86,7 +86,7 @@ class PubSubSubscriberOptionsTest {
         assertThatThrownBy(() -> builder.parallelPullCount(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("parallelPullCount");
-        assertThatThrownBy(() -> builder.maxAckExtensionPeriod(Duration.ZERO))
+        assertThatThrownBy(() -> builder.maxAckExtensionPeriod(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("maxAckExtensionPeriod");
         assertThatThrownBy(() -> builder.minDurationPerAckExtension(Duration.ofSeconds(-1)))
@@ -117,6 +117,54 @@ class PubSubSubscriberOptionsTest {
     }
 
     /**
+     * The client library reads a zero {@code maxAckExtensionPeriod} as "disable auto deadline
+     * extensions", so the knob stays settable as the SDK defines it (ADR-0068). It takes no
+     * millisecond floor, unlike the {@code retry*} knobs gax truncates: {@code MessageDispatcher}
+     * spends it as {@code now().plus(period)} at nanosecond resolution, so a sub-millisecond value
+     * is a very short budget rather than a zero in disguise. Only a negative is refused.
+     */
+    @Test
+    void maxAckExtensionPeriodTakesTheVendorsZeroAndRefusesOnlyANegative() {
+        assertThat(
+                        PubSubSubscriberOptions.builder()
+                                .maxAckExtensionPeriod(Duration.ZERO)
+                                .build()
+                                .getMaxAckExtensionPeriod())
+                .isEqualTo(Duration.ZERO);
+        assertThat(
+                        PubSubSubscriberOptions.builder()
+                                .maxAckExtensionPeriod(Duration.ofNanos(500_000))
+                                .build()
+                                .getMaxAckExtensionPeriod())
+                .isEqualTo(Duration.ofNanos(500_000));
+        assertThatThrownBy(
+                        () ->
+                                PubSubSubscriberOptions.builder()
+                                        .maxAckExtensionPeriod(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxAckExtensionPeriod must not be negative");
+    }
+
+    /**
+     * Both budgets are spent in whole milliseconds — {@code future.get(toMillis())} and {@code
+     * latch.await(toMillis())} — where a sub-millisecond value means zero: a confirmation that
+     * times out before it can arrive, and a shutdown that waits for nothing. The sink's knob of the
+     * same name keeps no floor, because it is spent in nanoseconds: the check follows the
+     * conversion, not the name (ADR-0068).
+     */
+    @Test
+    void rejectsSubMillisecondBudgets() {
+        PubSubSubscriberOptions.Builder builder = PubSubSubscriberOptions.builder();
+
+        assertThatThrownBy(() -> builder.awaitAckConfirmation(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("awaitAckConfirmation must be at least 1 millisecond");
+        assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shutdownTimeout must be at least 1 millisecond");
+    }
+
+    /**
      * Both budgets are refused past what {@code Duration.toNanos()} can express (#334; ADR-0068).
      * {@code firstCheckpointTimeout} is the one with the crash — {@code MissingCheckpointDetector}
      * converts it in its constructor, so a longer budget fails the reader as it is built on a
@@ -137,6 +185,14 @@ class PubSubSubscriberOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("shutdownTimeout must be at most")
                 .hasMessageContaining("292 years");
+
+        // A budget absurd enough to overflow toMillis() is still answered by the message that
+        // names the knob. shutdownTimeout is the one setter carrying both a ceiling and a
+        // millisecond floor, and the floor converts: run first, it would answer this with an
+        // ArithmeticException naming nothing (ADR-0068).
+        assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ofSeconds(Long.MAX_VALUE)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shutdownTimeout must be at most");
 
         // The boundary itself is accepted, or each message would describe a value it rejects.
         PubSubSubscriberOptions options =

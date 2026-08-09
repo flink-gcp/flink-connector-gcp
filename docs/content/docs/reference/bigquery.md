@@ -80,11 +80,11 @@ why the pool's caveats are JVM-global, is under
 
 | Option | Default | What it does |
 |---|---|---|
-| `retryInitialDelay` | 500 ms | First retry delay |
+| `retryInitialDelay` | 500 ms | First retry delay; `0` (gax's own default) means none |
 | `retryDelayMultiplier` | 2.0 | Delay multiplier |
-| `retryMaxDelay` | 30 s | Delay cap |
+| `retryMaxDelay` | 30 s | Delay cap; `0` clamps every retry delay to none |
 | `retryMaxAttempts` | 5 | Attempt cap |
-| `maxRetryDuration` | 5 min *(the SDK's own)* | Ceiling on retrying one failure across attempts |
+| `maxRetryDuration` | 5 min *(the SDK's own)* | Ceiling on retrying one failure across attempts; `0` is the SDK's own value for *no* time limit |
 
 **Connection pool (multiplexing).** JVM-global: the pool is static per (location, credentials) and
 adopts whichever stream writer is built first.
@@ -117,11 +117,11 @@ creation, transient re-appends, the restore probe and the committer's flush retr
 | `recoveryInitialBackoff` | 500 ms | First backoff of the connector-driven recovery schedule |
 | `recoveryMaxBackoff` | 10 s | Cap that schedule doubles up to, before jitter |
 | `recoveryMaxAttempts` | 10 | Attempt cap of that schedule |
-| `retryInitialDelay` | 500 ms | First delay of the SDK's in-stream retries |
+| `retryInitialDelay` | 500 ms | First delay of the SDK's in-stream retries; `0` (gax's own default) means none |
 | `retryDelayMultiplier` | 2.0 | Delay multiplier of that schedule |
-| `retryMaxDelay` | 30 s | Delay cap of that schedule |
+| `retryMaxDelay` | 30 s | Delay cap of that schedule; `0` clamps every retry delay to none |
 | `retryMaxAttempts` | 5 | Attempt cap of that schedule |
-| `maxRetryDuration` | 5 min *(the SDK's own)* | Ceiling on retrying one failure across attempts |
+| `maxRetryDuration` | 5 min *(the SDK's own)* | Ceiling on retrying one failure across attempts; `0` is the SDK's own value for *no* time limit |
 
 Unlike the default-stream path these appenders never enter the SDK's connection pool, so there is no
 pool-sizing knob here.

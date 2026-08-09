@@ -66,13 +66,13 @@ for how the caps are sized.
 
 | Option | Default | What it does |
 |---|---|---|
-| `retryTotalTimeout` | *unset ⇒ SDK default (600 s)* | Total budget for a publish including retries |
-| `retryInitialDelay` | *unset ⇒ SDK default (100 ms)* | Delay before the first retry |
+| `retryTotalTimeout` | *unset ⇒ SDK default (600 s)* | Total budget for a publish including retries; `0` is gax's own value for "bound retries by the attempt count instead" |
+| `retryInitialDelay` | *unset ⇒ SDK default (100 ms)* | Delay before the first retry; `0` (gax's own default) means none |
 | `retryDelayMultiplier` | *unset ⇒ SDK default (×4)* | Factor the retry delay grows by |
-| `retryMaxDelay` | *unset ⇒ SDK default (60 s)* | Cap on the delay between retries |
-| `retryInitialRpcTimeout` | *unset ⇒ SDK default* | Timeout of the first publish RPC attempt |
+| `retryMaxDelay` | *unset ⇒ SDK default (60 s)* | Cap on the delay between retries; `0` clamps every delay to none |
+| `retryInitialRpcTimeout` | *unset ⇒ SDK default* | Timeout of the first publish RPC attempt; `0` is gax's own value for "let the call run indefinitely" |
 | `retryRpcTimeoutMultiplier` | *unset ⇒ SDK default* | Factor the per-RPC timeout grows by |
-| `retryMaxRpcTimeout` | *unset ⇒ SDK default* | Cap on a publish RPC attempt's timeout |
+| `retryMaxRpcTimeout` | *unset ⇒ SDK default* | Cap on a publish RPC attempt's timeout; `0` lets every call run indefinitely |
 | `retryMaxAttempts` | *unset ⇒ SDK default* | Cap on publish attempts |
 
 `retryTotalTimeout` and `retryMaxAttempts` **are rejected beside `enableMessageOrdering(true)`**,
@@ -149,7 +149,7 @@ specific to this source, that acknowledgement waits for a checkpoint.
 | `pausedSplitBufferMaxMessages` | *unset ⇒ twice the effective `flowControlMaxOutstandingElementCount` (so 2000 by default)* | Messages a split paused by watermark alignment may buffer before its subscriber is stopped and reopened on resume |
 | `pausedSplitBufferMaxBytes` | *unset ⇒ twice the effective `flowControlMaxOutstandingRequestBytes` (so 200 MB by default)* | The same in bytes; whichever bound is exceeded first stops the subscriber |
 | `parallelPullCount` | *unset ⇒ SDK default (1)* | Streaming-pull connections per subscriber. Rejected under `orderingMode(PER_KEY)` |
-| `maxAckExtensionPeriod` | *unset ⇒ SDK default (1 h)* | How long the client library keeps extending a message's deadline. Must exceed the checkpoint interval comfortably |
+| `maxAckExtensionPeriod` | *unset ⇒ SDK default (1 h)* | How long the client library keeps extending a message's deadline. Must exceed the checkpoint interval comfortably; `0` is the client library's own value for "disable auto deadline extension" |
 | `minDurationPerAckExtension` | *unset ⇒ SDK default (adaptive)* | Smallest extension requested at a time |
 | `maxDurationPerAckExtension` | *unset ⇒ SDK default (adaptive)* | Largest extension requested at a time |
 | `awaitAckConfirmation` | *unset ⇒ acknowledgement is fire-and-forget* | Makes each completed checkpoint wait for the server's confirmation, failing the job on timeout |

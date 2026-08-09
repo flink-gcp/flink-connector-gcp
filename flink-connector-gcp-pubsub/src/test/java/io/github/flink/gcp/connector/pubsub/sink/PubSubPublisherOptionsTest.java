@@ -173,22 +173,22 @@ class PubSubPublisherOptionsTest {
         assertThatThrownBy(() -> builder.retryTotalTimeout(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryTotalTimeout");
-        assertThatThrownBy(() -> builder.retryInitialDelay(Duration.ZERO))
+        assertThatThrownBy(() -> builder.retryInitialDelay(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryInitialDelay");
         assertThatThrownBy(() -> builder.retryDelayMultiplier(0.5))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryDelayMultiplier");
-        assertThatThrownBy(() -> builder.retryMaxDelay(Duration.ZERO))
+        assertThatThrownBy(() -> builder.retryMaxDelay(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryMaxDelay");
-        assertThatThrownBy(() -> builder.retryInitialRpcTimeout(Duration.ZERO))
+        assertThatThrownBy(() -> builder.retryInitialRpcTimeout(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryInitialRpcTimeout");
         assertThatThrownBy(() -> builder.retryRpcTimeoutMultiplier(0.9))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryRpcTimeoutMultiplier");
-        assertThatThrownBy(() -> builder.retryMaxRpcTimeout(Duration.ZERO))
+        assertThatThrownBy(() -> builder.retryMaxRpcTimeout(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryMaxRpcTimeout");
         assertThatThrownBy(() -> builder.retryMaxAttempts(-1))
@@ -244,6 +244,50 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getMaxInFlightBytes()).isEqualTo(1_000);
     }
 
+    /**
+     * Every {@code retry*} knob here is forwarded to gax's {@code RetrySettings}, which gives zero
+     * meanings of its own: a zero total timeout bounds retries by the attempt count instead, a zero
+     * RPC timeout lets the call run indefinitely, and a zero delay is gax's own default. They stay
+     * settable as the SDK defines them; a positive sub-millisecond value is refused instead,
+     * because gax reads them with {@code toMillis()} and it would silently become that zero
+     * (ADR-0068).
+     */
+    @Test
+    void theSdkRetryKnobsTakeTheVendorsZero() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .retryTotalTimeout(Duration.ZERO)
+                        .retryInitialDelay(Duration.ZERO)
+                        .retryMaxDelay(Duration.ZERO)
+                        .retryInitialRpcTimeout(Duration.ZERO)
+                        .retryMaxRpcTimeout(Duration.ZERO)
+                        .build();
+
+        assertThat(options.getRetryTotalTimeout()).isEqualTo(Duration.ZERO);
+        assertThat(options.getRetryInitialDelay()).isEqualTo(Duration.ZERO);
+        assertThat(options.getRetryMaxDelay()).isEqualTo(Duration.ZERO);
+        assertThat(options.getRetryInitialRpcTimeout()).isEqualTo(Duration.ZERO);
+        assertThat(options.getRetryMaxRpcTimeout()).isEqualTo(Duration.ZERO);
+
+        PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
+        Duration halfAMilli = Duration.ofNanos(500_000);
+        assertThatThrownBy(() -> builder.retryTotalTimeout(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryTotalTimeout must be at least 1 millisecond");
+        assertThatThrownBy(() -> builder.retryInitialDelay(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryInitialDelay must be at least 1 millisecond");
+        assertThatThrownBy(() -> builder.retryMaxDelay(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryMaxDelay must be at least 1 millisecond");
+        assertThatThrownBy(() -> builder.retryInitialRpcTimeout(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryInitialRpcTimeout must be at least 1 millisecond");
+        assertThatThrownBy(() -> builder.retryMaxRpcTimeout(halfAMilli))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryMaxRpcTimeout must be at least 1 millisecond");
+    }
+
     @Test
     void rejectsSubMillisecondRecoveryBackoffs() {
         assertThatThrownBy(
@@ -258,6 +302,26 @@ class PubSubPublisherOptionsTest {
                                         .recoveryMaxBackoff(Duration.ofNanos(500_000)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("millisecond");
+    }
+
+    /**
+     * The floor the source's knob of this name carries is deliberately absent here: this budget is
+     * spent in nanoseconds by {@code BoundedShutdown}, so a sub-millisecond value waits for exactly
+     * what it says, and the floor's message — "it is applied at millisecond granularity" — would be
+     * false. The check follows the conversion, not the knob name (ADR-0068), and pinning the
+     * accepted value is what makes a later "unification" of the two knobs fail here rather than
+     * quietly narrowing this one.
+     */
+    @Test
+    void aSubMillisecondShutdownTimeoutIsAcceptedBecauseItIsSpentInNanoseconds() {
+        Duration halfAMilli = Duration.ofNanos(500_000);
+
+        assertThat(
+                        PubSubPublisherOptions.builder()
+                                .shutdownTimeout(halfAMilli)
+                                .build()
+                                .getShutdownTimeout())
+                .isEqualTo(halfAMilli);
     }
 
     @Test

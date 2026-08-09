@@ -116,7 +116,7 @@ class FileLoadsOptionsTest {
                                 FileLoadsOptions.builder()
                                         .loadJobPollInitialBackoff(Duration.ofNanos(500_000)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("at least 1 ms");
+                .hasMessageContaining("at least 1 millisecond");
         assertThatThrownBy(
                         () ->
                                 FileLoadsOptions.builder()
