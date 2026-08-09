@@ -1722,21 +1722,28 @@ the query works around two emulator deviations around an *empty* repeated column
 buffered-stream smoke test of the production
 exactly-once client wiring (`BigQueryBufferedStreamSmokeITCase` — single flush only: the
 emulator keeps no flush cursor, every `FlushRows` re-inserts all rows up to the offset, and
-buffered appends neither honor the request offset nor raise `OFFSET_ALREADY_EXISTS`, so the
-exactly-once semantics are verified against real BigQuery instead). The at-least-once tests
-connect through a test-only plaintext appender
-factory (`EmulatorAppenderFactory`) that also papers over two emulator deviations tracked by
-[goccy/bigquery-emulator#342](https://github.com/goccy/bigquery-emulator/issues/342) (default-stream naming, `UNKNOWN` instead of `NOT_FOUND` for missing
-tables); routing the *production* factory at the emulator via an injection seam was considered
-under [#54]({{< param BookRepo >}}/issues/54) and left unbuilt, the test-only overload having
-removed the need — it would slot into that factory's constructor state cheaply should a consumer
-appear. One further deviation (same family): on a connection opened after an earlier connection to
-the emulator has closed, only the first `AppendRows` request is durably applied — follow-ups are
-acknowledged but never become queryable. The multi-flush scenario therefore runs in its own test
-class, whose connection is guaranteed to be its container's first — the testcontainers lifecycle
-keeps one fresh container per `*ITCase` class, even with the classes sharing forked JVMs
-([#243]({{< param BookRepo >}}/issues/243)). Real BigQuery applies every acknowledged
-default-stream append.
+buffered appends neither honor the request offset nor raise `OFFSET_ALREADY_EXISTS`
+([goccy/bigquery-emulator#505](https://github.com/goccy/bigquery-emulator/issues/505)), so the
+exactly-once semantics are verified against real BigQuery instead). The tests connect through the
+production `StreamWriterRowAppenderFactory`, pointed at the emulator by the builder's emulator
+endpoints ([#308]({{< param BookRepo >}}/issues/308) — the test-only `EmulatorAppenderFactory`
+that predated them was deleted with that change, so the emulator ITs measure production code).
+That emulator branch papers over two goccy deviations: the default-stream name form
+([goccy/bigquery-emulator#342](https://github.com/goccy/bigquery-emulator/issues/342), fixed
+upstream but unreleased) and `UNKNOWN` instead of `NOT_FOUND` for a missing table
+([goccy/bigquery-emulator#504](https://github.com/goccy/bigquery-emulator/issues/504), which the
+former's fix does not cover — `BigQueryEmulatorMissingTableDeviationITCase` pins that deviation).
+One further deviation: on a connection opened after an earlier connection to
+the emulator has closed, only the first `AppendRows` request is durably applied — a follow-up
+request carries no stream name, and 0.8.1 resolves the empty name to an arbitrary registered
+stream, so follow-ups are acknowledged but never become queryable. Fixed upstream by the same
+unreleased change as the name forms
+([goccy/bigquery-emulator#491](https://github.com/goccy/bigquery-emulator/pull/491), which binds
+follow-ups to the connection's first-named stream). The multi-flush scenario therefore runs in
+its own test class, whose connection is guaranteed to be its container's first — the
+testcontainers lifecycle keeps one fresh container per `*ITCase` class, even with the classes
+sharing forked JVMs ([#243]({{< param BookRepo >}}/issues/243)). Real BigQuery applies every
+acknowledged default-stream append.
 
 **Real-GCP tests** cover what the emulator cannot faithfully reproduce, and stay out of
 credential-less CI:

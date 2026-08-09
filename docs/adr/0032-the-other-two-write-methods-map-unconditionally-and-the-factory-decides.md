@@ -91,8 +91,12 @@ that message names `WriteDisposition.WRITE_APPEND` &c. in prose, so the value be
 (2026-08-06, goccy 0.8.1). FILE_LOADS stages to Cloud Storage that nothing stands in for — the
 factory's own refusal is what the emulator suite asserts instead. Exactly-once was attempted and
 dropped: `CreateWriteStream` answers `UNKNOWN` for a missing table, so `create-if-needed` cannot
-auto-create ([#326] — the default-stream path carries that rewrite, the buffered one does not),
-and with the table pre-created the emulator assigns its own append offsets, so
+auto-create ([#326], closed 2026-08-09 as an upstream report — the default-stream path carries
+that rewrite, the buffered one deliberately does not;
+[goccy/bigquery-emulator#504](https://github.com/goccy/bigquery-emulator/issues/504) tracks the
+status code and `BigQueryEmulatorMissingTableDeviationITCase` pins the deviation), and with the
+table pre-created the emulator assigns its own append offsets
+([goccy/bigquery-emulator#505](https://github.com/goccy/bigquery-emulator/issues/505)), so
 `BigQueryBufferedStreamWriter`'s consistency check fails on the first append. Both round trips
 are therefore gated: `BigQueryTableExactlyOnceITCase` (a datagen sequence spanning several
 checkpoints, so the second commit is exercised — a bounded `VALUES` insert commits once and

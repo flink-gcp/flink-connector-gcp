@@ -42,10 +42,34 @@ exist never touches the REST client at all.
   form plus a `GetWriteStream` priming call, `UNKNOWN` instead of `NOT_FOUND`, and no connection
   pool); that class was **deleted** rather than left beside the production branch, so the
   emulator ITs now measure production code and exactly one copy of the workaround exists. It is
-  still a workaround, not a fact about BigQuery:
-  [goccy/bigquery-emulator#342](https://github.com/goccy/bigquery-emulator/issues/342) is fixed
-  upstream but unreleased (v0.8.1 shipped 2026-06-13, the issue closed the day after), so the
-  branch goes when a release carries the fix.
+  still a workaround, not a fact about BigQuery, and the upstream status is **per deviation**
+  (refined 2026-08-09, closing [#326] into upstream reports): the name form is
+  [goccy/bigquery-emulator#342](https://github.com/goccy/bigquery-emulator/issues/342) — fixed
+  upstream by [goccy/bigquery-emulator#491](https://github.com/goccy/bigquery-emulator/pull/491)
+  (merged 2026-06-14) but **unreleased**: v0.8.1, shipped 2026-06-13, is still the latest as of
+  2026-08-09 — but that
+  fix does **not** cover the status code, measured 2026-08-09 against goccy main; the `UNKNOWN`
+  is [goccy/bigquery-emulator#504](https://github.com/goccy/bigquery-emulator/issues/504), fix
+  proposed as [goccy/bigquery-emulator#506](https://github.com/goccy/bigquery-emulator/pull/506);
+  and the dropped appends need no report of their own — the mechanism is located (2026-08-09, in
+  v0.8.1's `appendRows`): a follow-up request carries no stream name, and 0.8.1 resolved the
+  empty name to an *arbitrary* entry of the global stream map, right only while that map held a
+  single stream, so the ACK went to a stream the rows did not; the same unreleased #342 fix binds
+  follow-ups to the connection's first-named stream. So the branch retires piecewise: the
+  `UNKNOWN` rewrite goes when a release carries the
+  [goccy/bigquery-emulator#504](https://github.com/goccy/bigquery-emulator/issues/504) fix —
+  `BigQueryEmulatorMissingTableDeviationITCase` pins that deviation, so the image bump delivering
+  it fails the build instead of leaving the rewrite to rot silently — while the priming and the
+  no-pool guard go with a released
+  [goccy/bigquery-emulator#342](https://github.com/goccy/bigquery-emulator/issues/342) fix,
+  re-verifying pooled multi-append behaviour on that bump before the pool is enabled against an
+  emulator. A buffered-path emulator round trip additionally needs
+  [goccy/bigquery-emulator#505](https://github.com/goccy/bigquery-emulator/issues/505) (request
+  offsets ignored, no flush cursor). **A new goccy release — or any of those upstream issues
+  closing — is the event that moves this**: bump the pinned image
+  (`BigQueryEmulatorContainers`), let the canary and the emulator suite report which deviations
+  remain, and update this paragraph's upstream status in the same change — the bump work is
+  tracked by [#419].
 - The production, no-endpoint path is untouched — it opens no client at all, drawing connections
   from the SDK's JVM-static pool, which is exactly why an endpoint cannot be applied to it and
   the emulator branch has to build its own client per destination.
@@ -58,3 +82,5 @@ exist never touches the REST client at all.
 [#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
 [#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
 [#287]: https://github.com/laughingman7743/flink-connector-gcp/issues/287
+[#326]: https://github.com/laughingman7743/flink-connector-gcp/issues/326
+[#419]: https://github.com/laughingman7743/flink-connector-gcp/issues/419

@@ -152,8 +152,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   placement is the design. `flushInterval` is a mitigation only; the guarantee still requires
   checkpointing.
 - **Two emulator endpoints, one per transport**; `FILE_LOADS` rejects both; the goccy deviations
-  live in exactly one place (`StreamWriterRowAppenderFactory`) and go when a release carries the
-  upstream fix (`docs/adr/0029`).
+  live in exactly one place (`StreamWriterRowAppenderFactory`) and retire piecewise as releases
+  carry their upstream fixes — per-deviation status and the canary trigger
+  (`BigQueryEmulatorMissingTableDeviationITCase`) are in `docs/adr/0029`.
 
 ## Table API / SQL (`docs/adr/0031`–`0033`, `0035`; shared rules `docs/adr/0014`)
 

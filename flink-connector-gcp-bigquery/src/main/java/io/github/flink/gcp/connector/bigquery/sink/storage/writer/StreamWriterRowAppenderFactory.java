@@ -63,20 +63,25 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>An {@link EmulatorEndpoint} switches all of that off and opens a per-destination client
  * instead, because the pool speaks to the production service with application-default credentials
  * and cannot be pointed elsewhere. That branch also carries three deviations the goccy emulator
- * requires (goccy/bigquery-emulator#342 — merged upstream but unreleased: v0.8.1 shipped
- * 2026-06-13, the issue closed the day after):
+ * requires; each is tracked upstream separately, and the removal schedule is {@code docs/adr/0029}:
  *
  * <ul>
  *   <li>the emulator registers a table's default stream only when {@code GetWriteStream} is called
  *       with the {@code .../streams/_default} name form, and {@code AppendRows} then matches that
  *       exact name — so the stream is primed and that name form is used, where the production path
  *       uses the {@code .../_default} short form the service also accepts
+ *       (goccy/bigquery-emulator#342 — merged upstream but unreleased: v0.8.1 shipped 2026-06-13,
+ *       the issue closed the day after)
  *   <li>a missing table surfaces from {@code GetWriteStream} as {@code UNKNOWN} instead of {@code
  *       NOT_FOUND}; that one status is translated so {@link
  *       io.github.flink.gcp.connector.bigquery.sink.CreateDisposition#CREATE_IF_NEEDED} handling
- *       reacts to it, and every other status is left alone
+ *       reacts to it, and every other status is left alone (goccy/bigquery-emulator#504 — not
+ *       covered by the goccy/bigquery-emulator#342 fix, and pinned by {@code
+ *       BigQueryEmulatorMissingTableDeviationITCase})
  *   <li>appends on a connection opened after an earlier one closed are silently dropped past the
- *       first, so no connection pool is enabled and no JVM-global pool bounds are applied
+ *       first, so no connection pool is enabled and no JVM-global pool bounds are applied (the
+ *       goccy/bigquery-emulator#342 fix also covers this: 0.8.1 routed a follow-up request's empty
+ *       stream name to an arbitrary registered stream)
  * </ul>
  */
 @Internal

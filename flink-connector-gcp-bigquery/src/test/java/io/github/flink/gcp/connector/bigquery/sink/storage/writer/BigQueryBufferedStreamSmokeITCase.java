@@ -34,8 +34,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Deliberately a single-flush smoke test only: the emulator (0.8.1) keeps no flush cursor —
  * every {@code FlushRows} call re-inserts all rows up to the requested offset, so a second flush
  * would duplicate previously flushed rows, and buffered appends neither honor the request offset
- * nor raise {@code OFFSET_ALREADY_EXISTS}. The exactly-once semantics (idempotent re-flush, the
- * restore probe) are therefore covered by unit tests and the real-GCP IT, not here.
+ * nor raise {@code OFFSET_ALREADY_EXISTS} (reported upstream as goccy/bigquery-emulator#505). The
+ * exactly-once semantics (idempotent re-flush, the restore probe) are therefore covered by unit
+ * tests and the real-GCP IT, not here.
  */
 class BigQueryBufferedStreamSmokeITCase extends AbstractBigQueryEmulatorITCase {
 
