@@ -75,19 +75,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  * half of this measurement.
  *
  * <p><b>Measured 2026-08-09, six runs against the emulator and {@code google-cloud-pubsub}
- * 1.152.0.</b> All three arms were delivered 151–195 messages over the 40 s window — three to four
- * times the 50-message flow-control window, whether the arm drained nothing, one message a second
- * or fifteen. What differed is what they were left holding: the stalled arm 151–179, the slow arm
- * 112–154 after draining 40, and the fast arm <b>zero</b>, its buffer peaking at 46 in the first
- * delivery and never rising again. The stalled arm's series repeats the paused one ADR-0066
- * recorded (50, then ~101 at 10.3 s, then ~152 at 20.5 s), which is the finding stated plainly: the
- * lapse has nothing to do with pausing, only with nothing draining.
+ * 1.152.0.</b> All three arms were delivered 151–195 messages over the 40 s window on one machine —
+ * three to four times the 50-message flow-control window, whether the arm drained nothing, one
+ * message a second or fifteen. What differed is what they were left holding: the stalled arm
+ * 151–179, the slow arm 112–154 after draining 40, and the fast arm <b>zero</b>, its buffer peaking
+ * at 46 in the first delivery and never rising again. The stalled arm's series repeats the paused
+ * one ADR-0066 recorded (50, then ~101 at 10.3 s, then ~152 at 20.5 s), which is the finding stated
+ * plainly: the lapse has nothing to do with pausing, only with nothing draining.
  *
- * <p>What the run does <em>not</em> establish is the delivery total. A draft asserted a ceiling of
- * {@code W × (1 + t/H)} on {@code messagesReceived} and CI produced 327 against it: that counter
- * includes redelivered copies, which cost no net permit, so it is not the quantity the permit
- * accounting bounds. The break-even above is a rate of the right order, not a proven bound, and the
- * arms are placed a factor of five and three away from it for that reason.
+ * <p>What the run does <em>not</em> establish is the delivery total, and two drafts have now
+ * asserted one anyway. The first put a ceiling of {@code W × (1 + t/H)} on {@code messagesReceived}
+ * and CI produced 327 against it: that counter includes redelivered copies, which cost no net
+ * permit, so it is not the quantity the permit accounting bounds. The second barred the fast arm's
+ * <em>drain</em> at half its requested rate — the same claim in another shape, since an arm can
+ * only drain what it was given — and CI met that bar exactly, 300 drained against a bar of 300, on
+ * a runner that delivered 318, 175 and 300 to arms this machine hands 151–195 (#440). The
+ * break-even above is a rate of the right order, not a proven bound, and the arms are placed a
+ * factor of five and three away from it for that reason.
  */
 class PubSubBackpressuredSplitBufferITCase extends AbstractPubSubSourceEmulatorITCase {
 
@@ -152,8 +156,8 @@ class PubSubBackpressuredSplitBufferITCase extends AbstractPubSubSourceEmulatorI
                 .as("a drain above the refill rate never lets the buffer past the window, %s", fast)
                 .isLessThanOrEqualTo((long) (PLATEAU_TOLERANCE * FLOW_CONTROL_MESSAGES));
         // Below the window rather than exactly zero, which is what six runs observed: the last
-        // sample is taken after this arm's drain has stopped, so a delivery landing in that gap
-        // would leave a message behind without saying anything about the drain.
+        // sample is taken while the drain is still running, so the most it can catch is a wave
+        // part-drained rather than one the teardown stranded — see BackpressuredArm.runFor.
         assertThat(fast.buffered())
                 .as("and it ends below one window rather than merely bounded, %s", fast)
                 .isLessThan(FLOW_CONTROL_MESSAGES);
@@ -166,12 +170,9 @@ class PubSubBackpressuredSplitBufferITCase extends AbstractPubSubSourceEmulatorI
                     .isGreaterThan(GROWTH_FACTOR * FLOW_CONTROL_MESSAGES);
         }
 
-        // Delivery does not track the drain, which is what leaves the drain rate deciding the
-        // buffer. The fast arm is where the two readings part company: it asked for
-        // FAST_RATE × WINDOW messages and was given a fraction of them.
-        assertThat(fast.drained())
-                .as("the fast arm was given far less than it asked for, %s", fast)
-                .isLessThan((long) (0.5 * FAST_RATE * WINDOW.toSeconds()));
+        // Nothing bounds an arm's delivery from above, here or anywhere: a bar on the fast arm's
+        // drain is such a bound in disguise, and the javadoc records what happened to the two that
+        // were tried (#440).
 
         // The emulator never redelivers a lease-expired message (ADR-0066), so nothing supersedes a
         // message the connector still holds and nothing is nacked before the teardown. Asserted

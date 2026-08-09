@@ -123,7 +123,7 @@ final class BackpressuredArm {
     private final PubSubSplitReader reader;
     private final SubscriptionSplit split;
 
-    /** Sampled buffer sizes, recorded only where they changed. */
+    /** Sampled buffer sizes, recorded only where the buffer or the delivery count changed. */
     private final List<String> steps = new ArrayList<>();
 
     /** Distinct message ids the drain saw, so a redelivered copy shows up as a repeat. */
@@ -136,6 +136,7 @@ final class BackpressuredArm {
     private volatile long nacked;
     private volatile long samples;
     private long lastBuffered = -1;
+    private long lastReceived = -1;
     private long startNanos;
     @Nullable private Thread drainThread;
 
@@ -237,7 +238,6 @@ final class BackpressuredArm {
             boolean samplerStopped =
                     sampler.awaitTermination(SAMPLE_EVERY.toMillis() * 4, TimeUnit.MILLISECONDS);
             List<AutoCloseable> teardown = new ArrayList<>(arms.size() * 2);
-            arms.forEach(arm -> teardown.add(arm::stopDraining));
             // Asserted rather than assumed: the last sample below runs on this thread, and only a
             // terminated sampler makes the series and the counters safe to read across.
             teardown.add(
@@ -247,7 +247,13 @@ final class BackpressuredArm {
                                     "The sampler did not stop, so its series cannot be read.");
                         }
                     });
+            // Before the drains stop, not after: a delivery arrives in whole flow-control waves, so
+            // one landing between a stopped drain and the last sample leaves an arm holding a wave
+            // it was never given the chance to drain — a reading about the teardown rather than
+            // about the drain rate. Live-drain sampling is what the 160 samples before it do
+            // anyway.
             arms.forEach(arm -> teardown.add(arm::sample));
+            arms.forEach(arm -> teardown.add(arm::stopDraining));
             arms.forEach(arm -> teardown.add(arm::close));
             Closers.closeAll(teardown);
         }
@@ -271,7 +277,9 @@ final class BackpressuredArm {
         }
     }
 
-    /** Records the buffer's size if it has changed since the last sample. */
+    /**
+     * Records the buffer's size if it, or the delivery count, has changed since the last sample.
+     */
     private void sample() {
         NotifyingPullSubscriber opened = subscriber.get();
         if (opened == null) {
@@ -286,8 +294,15 @@ final class BackpressuredArm {
         nacked = metrics.counter("messagesNacked");
         peakBuffered = Math.max(peakBuffered, current);
         samples++;
-        if (current != lastBuffered) {
+        // Delivery as well as the buffer, because an arm that keeps up holds nothing: its buffer
+        // reads zero from the moment it catches up, and a series keyed on the buffer alone ends
+        // there while the arm goes on being delivered hundreds of messages. #440 was filed against
+        // an emulator read as starving an arm it had in fact been generous to, off exactly that
+        // gap. `drained` is left out because it moves on nearly every sample of a live arm, and a
+        // step per sample is the series this condition exists to avoid.
+        if (current != lastBuffered || received != lastReceived) {
             lastBuffered = current;
+            lastReceived = received;
             steps.add(
                     String.format(
                             "%.1fs:buffered=%d,received=%d,drained=%d",

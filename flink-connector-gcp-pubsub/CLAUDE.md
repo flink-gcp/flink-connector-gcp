@@ -145,7 +145,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   covers what was already drained, so
   expiry is the only drain-independent source of permits — but that is a rate of the right order,
   **not a bound on `messagesReceived`**, because a supersede returns the permit it took (a draft
-  asserted such a ceiling and CI produced 327 against 250). Two facts to keep: the buffer is not the
+  asserted such a ceiling and CI produced 327 against 250). **Nothing bounds delivery from above in
+  any shape, and the rig asserts none**: a bar on the fast arm's *drain* is one too, an arm being
+  able to drain only what it was given, and CI met the half-of-requested-rate form of it exactly at
+  300 against 300 (#440). How much an arm is delivered belongs to the runner — 151–195 locally
+  against 175–318 on one CI runner — while what it is left *holding* reproduces on both, which is
+  why that is the finding. Two facts to keep: the buffer is not the
   reader's footprint (a frozen loop held 3999 messages in the element queue, invisible to
   `bufferUsage()` and so to the bound), and on the real service **most of what a backpressured split
   is handed is redelivery churn** — 215 and 338 supersedes out of 369 and 462 deliveries, against
