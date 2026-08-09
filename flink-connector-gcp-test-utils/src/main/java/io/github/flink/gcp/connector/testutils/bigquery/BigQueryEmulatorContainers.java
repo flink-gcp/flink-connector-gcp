@@ -54,6 +54,21 @@ public final class BigQueryEmulatorContainers {
      *
      * <p>The dataset comes from a command-line flag because the emulator creates it at startup;
      * tables are created by the test, or by the connector under {@code create-if-needed}.
+     *
+     * <p>Waiting for the two ports is enough to reach that dataset, and what makes it enough is the
+     * emulator's startup order rather than timing: 0.8.1 applies {@code --dataset} in {@code
+     * Server.Load} and enters {@code Server.Serve} — where {@code net.Listen} runs — only
+     * afterwards, so neither socket exists until the dataset does (#439). Measured 2026-08-09 over
+     * 20 starts of this image: the first HTTP response the emulator ever gave was a 200 on the
+     * dataset in 20 of 20, against a control arm started without {@code --dataset} where the same
+     * probe read 404 with both ports open in 3 of 3.
+     *
+     * <p>A host-side connect does land 0.075–0.281 s (median 0.105 s) ahead of any answer from the
+     * emulator, Docker's port forwarder accepting before the process is up; the probe got no HTTP
+     * response at all inside that window. {@code Wait.forListeningPorts} does not rest on the host
+     * side alone in any case — testcontainers 1.21.4 also execs a listen check that blocks inside
+     * the container until the port answers, and returns only once it has, which needs the {@code
+     * /bin/sh} this image carries.
      */
     public static GenericContainer<?> newContainer(String project, String dataset) {
         return new GenericContainer<>(IMAGE)
