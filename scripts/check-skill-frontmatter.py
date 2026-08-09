@@ -56,22 +56,50 @@ readings differ, which is the ambiguity being refused.
 Deliberately not checked: the description's wording or length. That is the part
 with judgment in it, and judgment is what this check has none of.
 
-**One known blind spot, tracked rather than papered over.** The block is the
-text between the opening `---` and the next `---` line, which is what every
-frontmatter reader does — so a file whose *closing* delimiter was deleted takes
-the next `---` in the body as its close, and the prose in between is parsed as
-frontmatter. Where that prose happens to parse and carry a `name` and a
-`description`, this reports the file clean. It is latent while no skill body
-contains a `---` line; the first one that documents frontmatter or uses a
-horizontal rule arms it. Every tightening considered was unsound (an allowlist
-of known keys false-positives on whatever Claude Code adds next; a line budget
-is arbitrary), which is why it is recorded here and on #388 instead of
-guessed at.
+**Where the block ends is Claude Code's answer, not this script's** (#388).
+Measured against 2.1.223 on 2026-08-09, by loading deliberately malformed skills
+through `--plugin-dir` beside a well-formed control and reading back the
+descriptions a session was given: the loader ends the frontmatter at the **first
+`---` anywhere** after the opening line — not at the first `---` *line*. A body
+rule of `----`, a line reading `--- not a delimiter`, and a `---` sitting
+mid-sentence inside a comment all closed it, and a `---` inside a `description:`
+value truncated that description at the dashes while the skill still loaded,
+advertising a sentence its author never wrote. The control arm loaded intact in
+the same run, which is what lets the rest of the column mean anything.
+
+So this delimits the block the way that reader does, and then asks one question
+of its own: **is the `---` it stopped at a delimiter line?** A close that is not
+alone on its line means the loader ends the block somewhere the author did not
+write one — the truncated description above, or a body rule standing in for a
+deleted closing delimiter — and both are rejected here, with the cure that fits
+whichever it is. There is nothing arbitrary in that rule and no list to keep:
+the delimiter either is one or is not.
+
+That question is **deliberately stricter than the loader**, and it is the only
+place this file is: everything else here tracks the loader's tolerance, because
+a check stricter than the loader calls a working skill broken. A `-----` typed
+into the closing line loads with its description intact — measured in the same
+run — and is reported here anyway. What the strictness buys is the case above
+it, where the loader loads something quietly other than what the file says; a
+rule that fired only where the skill was already unloadable would not have
+caught that one at all.
+
+**What remains, stated rather than papered over.** A file whose closing
+delimiter was deleted and whose body contains a line that is *exactly* `---`
+still reports clean, because the loader stops there too, and the skill really
+does load with the name and description its author wrote — what it loses is the
+part of its *body* above that line, which invoking one such skill and reading
+back its content confirmed rather than inferred. Distinguishing a horizontal rule from a
+closing delimiter needs judgment this check does not have (an allowlist of known
+keys false-positives on whatever Claude Code adds next; a line budget is
+arbitrary), and the file is not, by the measurement, misdescribed. That residue
+is the whole of #388 that survives it.
 """
 
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 
 import yaml
@@ -115,14 +143,47 @@ class _UniqueKeyLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep)
 
 
-def _frontmatter(text: str) -> str | None:
-    """Returns the frontmatter block, or None when the file has no delimited one."""
-    if not text.startswith("---\n"):
-        return None
-    end = text.find("\n---", 3)
-    if end == -1:
-        return None
-    return text[4:end]
+# The opening line, what may follow a close, and a delimiter line anywhere
+# later. The `\A` is belt and braces with the `.match()` below, which anchors on
+# its own: frontmatter is frontmatter because it comes first, and a delimited
+# block further down a file is prose. `\r?` throughout because the file is read
+# as bytes — see the read in check(), which is what makes these reachable.
+_OPENING = re.compile(r"\A---[ \t]*\r?\n")
+_AFTER_CLOSE = re.compile(r"[ \t]*(?:\r?\n|\Z)")
+_DELIMITER_LINE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
+
+
+def _frontmatter(text: str) -> tuple[str | None, str | None]:
+    """Returns the block Claude Code reads, or the reason it cannot be trusted.
+
+    Exactly one half of the pair is ever set. The `find("---")` is the loader's
+    rule as measured, dashes anywhere and not only at a line start (see the
+    module docstring); the delimiter-line test after it is this script's own,
+    and is what makes a stray `---` reportable rather than silently obeyed.
+    """
+    opening = _OPENING.match(text)
+    if opening is None:
+        return None, "no `---` delimited frontmatter block"
+    close = text.find("---", opening.end())
+    if close == -1:
+        return None, "no `---` delimited frontmatter block"
+    block = text[opening.end() : close]
+    if (not block or block.endswith("\n")) and _AFTER_CLOSE.match(text, close + 3):
+        return block, None
+    # The cure differs by which half is wrong, and quoting — the advice for
+    # every other message here — is the one thing that cannot help: the block is
+    # cut out of the file before any YAML is parsed.
+    cure = (
+        "Take the `---` out of the frontmatter; quotes will not hold it."
+        if _DELIMITER_LINE.search(text, close + 3)
+        else "Add the closing `---` delimiter."
+    )
+    line = text.count("\n", 0, close) + 1
+    return None, (
+        f"Claude Code ends the frontmatter at the first `---` in the file, on line {line},"
+        f" which is not a delimiter line — so the block it loads is not the one written here."
+        f" {cure}"
+    )
 
 
 def check(skills_dir: pathlib.Path) -> list[str]:
@@ -139,9 +200,13 @@ def check(skills_dir: pathlib.Path) -> list[str]:
             problems.append(f"{directory}: a skill directory with no SKILL.md")
     for path in paths:
         directory = path.parent.name
-        raw = _frontmatter(path.read_text(encoding="utf-8"))
-        if raw is None:
-            problems.append(f"{path}: no `---` delimited frontmatter block")
+        # Bytes, not read_text: that translates CRLF to LF before this sees the
+        # file, so the checker would be answering about a normalised copy the
+        # loader never reads — and every `\r` branch above would be dead code
+        # with a test that cannot tell whether it is there.
+        raw, problem = _frontmatter(path.read_bytes().decode("utf-8"))
+        if problem is not None:
+            problems.append(f"{path}: {problem}")
             continue
         try:
             data = yaml.load(raw, Loader=_UniqueKeyLoader)

@@ -136,8 +136,9 @@ def test_a_file_without_frontmatter_fails(check_skill_frontmatter, tmp_path):
     problems = check_skill_frontmatter.check(tmp_path)
 
     assert len(problems) == 1
-    # The exact rule, not just the word: four of the six messages say
-    # "frontmatter", so a looser assertion passes against the wrong one.
+    # The exact rule, not just the word: several of the messages here say
+    # "frontmatter", so a looser assertion passes against the wrong one — and a
+    # count of them in this comment would be one more thing to keep in step.
     assert "no `---` delimited frontmatter" in problems[0]
 
 
@@ -207,15 +208,190 @@ def test_a_duplicated_key_fails(check_skill_frontmatter, tmp_path):
     assert "double quotes" not in problems[0]
 
 
+def _raw_skill(root, name, text):
+    """Writes a SKILL.md verbatim; the cases below are about the delimiters."""
+    directory = root / name
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_text(text, encoding="utf-8")
+    return directory / "SKILL.md"
+
+
 def test_a_frontmatter_with_no_closing_delimiter_fails(
     check_skill_frontmatter, tmp_path
 ):
     # The opening-delimiter branch had a test; this one did not, and it is the
     # likelier typo — the closer is the line an edit runs past.
-    directory = tmp_path / "alpha"
-    directory.mkdir(parents=True)
-    (directory / "SKILL.md").write_text(
-        "---\nname: alpha\ndescription: A thing.\n", encoding="utf-8"
+    _raw_skill(tmp_path, "alpha", "---\nname: alpha\ndescription: A thing.\n")
+
+    problems = check_skill_frontmatter.check(tmp_path)
+
+    assert len(problems) == 1
+    assert "no `---` delimited frontmatter" in problems[0]
+
+
+def test_dashes_inside_a_value_are_reported(check_skill_frontmatter, tmp_path):
+    # Measured against Claude Code 2.1.223 (2026-08-09): the loader ends the
+    # frontmatter at the first `---` *anywhere*, so this file — both delimiters
+    # present, nothing else wrong with it — loads advertising "INLINEDESC
+    # before", a sentence its author never wrote. No other rule here would
+    # notice: it parses, the name matches, the description is non-empty.
+    _raw_skill(
+        tmp_path,
+        "alpha",
+        "---\nname: alpha\ndescription: INLINEDESC before --- after.\n---\n\n# Body\n",
+    )
+
+    problems = check_skill_frontmatter.check(tmp_path)
+
+    assert len(problems) == 1
+    assert "not a delimiter line" in problems[0]
+    # Quoting is the advice every other message here gives, and the one thing
+    # that cannot help: the block is cut out before any YAML is parsed.
+    assert "Take the `---` out" in problems[0]
+    assert "double quotes" not in problems[0]
+
+
+def test_a_value_ending_in_dashes_is_reported(check_skill_frontmatter, tmp_path):
+    # The dashes end the line, so what follows them *is* a line break and only
+    # the "did the block end at a line start" half of the rule rejects this.
+    _raw_skill(
+        tmp_path, "alpha", "---\nname: alpha\ndescription: A thing ---\n---\n\n# Body\n"
+    )
+
+    problems = check_skill_frontmatter.check(tmp_path)
+
+    assert len(problems) == 1
+    assert "not a delimiter line" in problems[0]
+
+
+def test_a_body_rule_of_four_dashes_does_not_close_the_block(
+    check_skill_frontmatter, tmp_path
+):
+    # #388's shape: the closing delimiter is gone and a body rule stands in for
+    # it. The swallowed prose is a `#` line, which YAML reads as a comment, so
+    # the block parses and carries the right name and description — which is why
+    # this reported clean until the loader's rule was measured.
+    _raw_skill(
+        tmp_path,
+        "alpha",
+        "---\nname: alpha\ndescription: A thing.\n\n# Heading\n\n----\n\nBody.\n",
+    )
+
+    problems = check_skill_frontmatter.check(tmp_path)
+
+    assert len(problems) == 1
+    assert "not a delimiter line" in problems[0]
+    # No delimiter line exists anywhere in this file, so the cure is that one.
+    assert "Add the closing" in problems[0]
+
+
+def test_a_body_line_that_merely_starts_with_dashes_does_not_close_the_block(
+    check_skill_frontmatter, tmp_path
+):
+    _raw_skill(
+        tmp_path,
+        "alpha",
+        "---\nname: alpha\ndescription: A thing.\n\n# Heading\n\n--- not a delimiter\n",
+    )
+
+    problems = check_skill_frontmatter.check(tmp_path)
+
+    assert len(problems) == 1
+    assert "not a delimiter line" in problems[0]
+
+
+def test_a_body_rule_of_exactly_three_dashes_is_still_reported_clean(
+    check_skill_frontmatter, tmp_path
+):
+    # The residue of #388, pinned so that closing it later is a deliberate act
+    # rather than an accident. Claude Code stops at this line too (measured
+    # 2.1.223, 2026-08-09: the skill loaded with the name and description below
+    # and lost only the body above the rule), so the file is not misdescribed,
+    # and telling a horizontal rule from a delimiter needs judgment this has
+    # none of.
+    _raw_skill(
+        tmp_path,
+        "alpha",
+        "---\nname: alpha\ndescription: A thing.\n\n# Heading\n\n---\n\nBody.\n",
+    )
+
+    assert check_skill_frontmatter.check(tmp_path) == []
+
+
+def test_an_empty_block_is_reported_as_not_a_mapping(check_skill_frontmatter, tmp_path):
+    # Broken either way, but by the right name: the delimiters here are both
+    # real, and a message about the closing `---` "not being a delimiter line"
+    # would send its reader looking at the one part of this file that is fine.
+    _raw_skill(tmp_path, "alpha", "---\n---\n\n# Body\n")
+
+    problems = check_skill_frontmatter.check(tmp_path)
+
+    assert len(problems) == 1
+    assert "not a mapping" in problems[0]
+
+
+def test_delimiters_carrying_trailing_whitespace_are_accepted(
+    check_skill_frontmatter, tmp_path
+):
+    # Claude Code tolerates them, and a checker stricter than the loader calls a
+    # working skill broken.
+    _raw_skill(
+        tmp_path, "alpha", "--- \nname: alpha\ndescription: A thing.\n---\t\n\n# Body\n"
+    )
+
+    assert check_skill_frontmatter.check(tmp_path) == []
+
+
+def test_crlf_line_endings_are_accepted(check_skill_frontmatter, tmp_path):
+    # A skill written on Windows loads, so it must not be reported broken. This
+    # case only discriminates because check() reads bytes: through read_text the
+    # CRLF is translated away before the delimiters are matched, and the mutation
+    # batch is what caught it — with the translating read, dropping `\r?` from
+    # both patterns changed nothing and this test passed either way.
+    _raw_skill(
+        tmp_path,
+        "alpha",
+        "---\r\nname: alpha\r\ndescription: A thing.\r\n---\r\n\r\n# Body\r\n",
+    )
+
+    assert check_skill_frontmatter.check(tmp_path) == []
+
+
+def test_the_cure_is_chosen_correctly_on_a_crlf_file(check_skill_frontmatter, tmp_path):
+    # The delimiter line this looks for to pick between the two cures has to
+    # allow the `\r` as well, or a Windows file gets told to add a closing
+    # delimiter it already has — advice that would leave the description
+    # truncated and the reader hunting for a delimiter that is right there.
+    _raw_skill(
+        tmp_path,
+        "alpha",
+        "---\r\nname: alpha\r\ndescription: A --- thing.\r\n---\r\n\r\n# Body\r\n",
+    )
+
+    problems = check_skill_frontmatter.check(tmp_path)
+
+    assert len(problems) == 1
+    assert "Take the `---` out" in problems[0]
+
+
+def test_a_closing_delimiter_at_end_of_file_is_accepted(
+    check_skill_frontmatter, tmp_path
+):
+    # A skill with no body yet: the close is the last thing in the file, with no
+    # newline after it.
+    _raw_skill(tmp_path, "alpha", "---\nname: alpha\ndescription: A thing.\n---")
+
+    assert check_skill_frontmatter.check(tmp_path) == []
+
+
+def test_a_block_that_does_not_start_the_file_is_not_frontmatter(
+    check_skill_frontmatter, tmp_path
+):
+    # Frontmatter is frontmatter because it is first, and a delimited block
+    # further down is prose — reading it as metadata would invent a description
+    # out of the body.
+    _raw_skill(
+        tmp_path, "alpha", "# Body\n\n---\nname: alpha\ndescription: A thing.\n---\n"
     )
 
     problems = check_skill_frontmatter.check(tmp_path)
