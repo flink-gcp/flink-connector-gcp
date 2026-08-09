@@ -86,27 +86,75 @@ Which mutation operation the serializer builds is what decides whether that matt
 
 ## Batching
 
-Spanner's commit limits apply to a batch write **request** as a whole: 80,000 mutations *including
-index entries*, and 100 MiB. A request over either is refused outright, taking every mutation in it
-with it. The three batch limits are what keeps the writer under those, so they are correctness
-rather than tuning.
+A request Spanner refuses is refused as a whole, taking every mutation in it with it, so a sink that
+accumulates mutations has to bound the request it builds. That is what the three batch limits are
+for, and it makes them correctness rather than tuning.
 
-`maxBatchCells` is counted the way Spanner counts. A written column costs one cell for the table
-plus one for every secondary index that contains it — as a key column or as a `STORING` column,
-since both rewrite an index entry — and a delete costs one plus the table's index entries. The index part
-is a property of the schema, so the sink reads it from the database's `INFORMATION_SCHEMA` once,
-when the writer opens. That read needs `spanner.databases.select` as well as write access.
+**Which limit each one defends is narrower than three knobs make it look.** Spanner's quotas page
+documents "mutations per commit (including indexes)" of 80,000 and a "commit size" of 100 MiB — both
+about `Commit`, which this sink does not use. The one row that names batch write is "mutations per
+*mutation group* in a batch write request", also 80,000. The batch write page adds a single sentence,
+about size only: *"the maximum size for a batch write request is the same as the limit for a commit
+request"*. So:
+
+- **No per-request mutation count is documented for batch write at all.** `maxBatchCells` and
+  `maxBatchMutations` bound the request as a proxy for its size, and keep a batch far below the
+  per-mutation-group 80,000 — which this sink, putting one mutation in each group, reaches only
+  through a single mutation that breaches it alone: a range delete over a table with secondary
+  indexes, which costs one mutation for the table plus one per index for every row the range
+  matches. On a table with no secondary index a range delete costs one however many rows it hits.
+- **`maxBatchBytes` is the one defending a documented request-level limit**, and how large that
+  limit is can be read two ways: 100 MiB by the sentence above, or 10 MiB by the quotas page's
+  "request size other than for commits". Measuring which one holds is
+  [#441]({{< param BookRepo >}}/issues/441).
+
+**All three are bounded at the setter**, so a value a request could not carry fails the job at
+submission rather than on a task manager:
+
+- `maxBatchBytes` at 100 MiB — the looser of the two readings, which rejects only what is illegal
+  under both. This is the ceiling that defends a refusal Spanner documents.
+- `maxBatchCells` at 80,000. Precautionary rather than a refusal anyone has seen: Spanner documents
+  no request-level mutation count either way, so the cap holds a batch to the only mutation figure
+  it does publish.
+- `maxBatchMutations` at 80,000 too — and *derived* from the cell ceiling rather than repeated,
+  because every mutation costs at least one cell, so a batch never holds more mutations than cells.
+
+**The three limits are ANDed** — a batch flushes on whichever binds first — so raising one alone
+usually changes nothing: `maxBatchCells` of 500,000 against the default 1 MiB and 500 mutations
+produces exactly the batches the defaults did. `maxBatchCells` and `maxBatchBytes` are the pair to
+reach for; lower `maxBatchMutations` to cap a batch by count regardless of how wide the rows are.
+
+That ANDing has one case worth naming, because nothing else would tell you: **`maxBatchMutations`
+set above the configured `maxBatchCells` can never take effect**, since the cell cap is reached
+first however cheap the mutations are. The configuration works, so it is not refused — building the
+options **logs a warning** instead, naming both values. It is written wherever the job's `main`
+runs: the client log under `flink run`, the JobManager log in application mode, the console in an
+IDE. The warning suggests no remedy, because neither obvious one is safe — lowering
+`maxBatchMutations` below `maxBatchCells` does not make the count cap bind (what each mutation costs
+in cells decides that), and raising `maxBatchCells` spends the headroom above.
+
+`maxBatchCells` is counted the way Spanner counts a mutation. A written column costs one cell for
+the table plus one for every secondary index that contains it — as a key column or as a `STORING`
+column, since both rewrite an index entry — and a delete costs one plus the table's index entries.
+The index part is a property of the schema, so the sink reads it from the database's
+`INFORMATION_SCHEMA` once, when the writer opens. That read needs `spanner.databases.select` as well
+as write access. On a wide row that count is a better proxy for the request's size than a mutation
+count is, which is why the sink keeps it rather than counting mutations alone.
 
 Two consequences worth knowing:
 
 - **A table the sink did not see is counted without its index entries** — one created after the job
   started, or one in a named schema rather than the default one. That undercounts, and the default
-  `maxBatchCells` of 5,000 is deliberately 16 times under Spanner's 80,000 so the undercount has
+  `maxBatchCells` of 5,000 is deliberately 16 times under the 80,000 ceiling so the undercount has
   room. Raising the limit toward 80,000 removes that room.
 - **The byte limit is an estimate.** The client library exposes no public way to size a `Mutation`
-  as it goes on the wire, so the sink adds up the values it can see and ignores framing. The
-  default of 1 MiB sits 100 times under the real limit, which is the room the estimate is allowed
-  to be wrong in.
+  as it goes on the wire, so the sink adds up the values it can see and ignores framing, and it
+  reads low. The default of 1 MiB sits 100 times under the looser reading of the real limit and ten
+  times under the tighter one, which is the room the estimate is allowed to be wrong in.
+
+The defaults are Apache Beam's, and Beam batches for `Commit` rather than for batch write — which is
+where the commit-shaped 80,000 entered this connector. They sit far under every reading of every
+limit all the same.
 
 There is no primary-key sorted batching. Apache Beam defaults its grouping factor to 1 — which
 skips its sort — for unbounded input, and a streaming sink's per-checkpoint batches do not amortize
@@ -228,7 +276,7 @@ Registered on the sink writer's metric group.
 | `mutationsRetried` | counter | Mutations re-sent after a transient failure, one per mutation per re-send. This is the sink's retry volume, and it exists here because the retry loop does |
 | `batchesSent` | counter | Batch write requests, first attempts and re-sends alike |
 | `bufferedMutations` | gauge | Mutations held for the next flush |
-| `bufferedCells` | gauge | Their cost against Spanner's per-request mutation limit, index entries included |
+| `bufferedCells` | gauge | Their cost in the cells `maxBatchCells` counts, index entries included |
 | `bufferedBytes` | gauge | Their estimated size |
 | `errorClass.CODE.errors` | counter | Failed writes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 

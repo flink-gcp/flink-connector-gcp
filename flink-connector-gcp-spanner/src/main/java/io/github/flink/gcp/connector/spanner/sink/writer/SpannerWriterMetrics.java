@@ -81,7 +81,7 @@ final class SpannerWriterMetrics {
      * writer is built with these metrics and cannot exist yet when they are created.
      *
      * @param bufferedMutations mutations held for the next flush
-     * @param bufferedCells their cost against Spanner's per-request mutation limit
+     * @param bufferedCells their cost in the cells {@code maxBatchCells} counts
      * @param bufferedBytes their estimated size
      */
     void bindWriterState(

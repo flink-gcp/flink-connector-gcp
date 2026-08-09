@@ -32,8 +32,8 @@ Sink<OrderEvent> sink =
 
 The connector documentation — why the destination is a database rather than a table, the
 serialization SPI, what a replay does and which mutation operations make it harmless, why the
-retry loop belongs to the sink, how a batch is weighed against Spanner's per-request limits, which
-refusals reach the failure handler and which do not, and where the emulator differs from the
+retry loop belongs to the sink, how a batch is weighed and which limit each batch knob defends,
+which refusals reach the failure handler and which do not, and where the emulator differs from the
 service — is in
 [docs/content/docs/connectors/datastream/spanner.md](../docs/content/docs/connectors/datastream/spanner.md)
 (rendered on the documentation site once it is published).
@@ -48,12 +48,13 @@ default, is in the [configuration reference](../docs/content/docs/reference/span
 
 This module is an original implementation. Apache Beam's `SpannerIO` (Apache-2.0) is a **design
 reference** only: its batch limits (1 MiB / 5,000 mutated cells / 500 rows), its way of counting a
-mutation's cells against Spanner's per-request limit (one per written column plus one per covering
-secondary index, read from `INFORMATION_SCHEMA`), its decision not to sort batches by primary key
-for unbounded input, and the shape of its mutation size estimator were all read and followed. Where
-this connector departs from it is the write RPC: Beam predates `BatchWrite` and uses
-`writeAtLeastOnceWithOptions` with a retry-and-bisect scheme, while this sink uses
-`batchWriteAtLeastOnce` and the per-group statuses it reports. The
+mutation's cells (one per written column plus one per covering secondary index, read from
+`INFORMATION_SCHEMA`), its decision not to sort batches by primary key for unbounded input, and the
+shape of its mutation size estimator were all read and followed. Where this connector departs from
+it is the write RPC: Beam predates `BatchWrite` and uses `writeAtLeastOnceWithOptions` with a
+retry-and-bisect scheme, while this sink uses `batchWriteAtLeastOnce` and the per-group statuses it
+reports — which is also why Beam's limits, values it chose for a `Commit`, are a starting point here
+rather than figures the service is documented to enforce on this RPC. The
 [Spanner connector for Apache Spark](https://github.com/GoogleCloudDataproc/spark-spanner-connector)
 and [debezium-connector-spanner](https://github.com/debezium/debezium-connector-spanner) (both
 Apache-2.0) were read as further design references for the planned sources. The design otherwise

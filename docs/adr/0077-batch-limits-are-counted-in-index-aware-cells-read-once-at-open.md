@@ -18,19 +18,51 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-09 (client library facts read in google-cloud-spanner 6.119.0; schema read verified
-  2026-08-09 against `gcr.io/cloud-spanner-emulator/emulator:1.5.56`, both dialects)
-- Issues: [#220]
+  2026-08-09 against `gcr.io/cloud-spanner-emulator/emulator:1.5.56`, both dialects), revised by
+  [#435] (2026-08-09)
+- Issues: [#220], [#435]
 - Modules: spanner (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Batching, and
   `docs/content/docs/reference/spanner.md`
 
 ## Context / Evidence
 
-Spanner's limits apply to a batch write **request** as a whole — "the maximum size for a batch
-write request is the same as the limit for a commit request" — which is **80,000 mutations
-including index entries** and **100 MiB**. A request over either is refused outright, taking every
-mutation in it with it. So a sink that accumulates mutations has to know how much of the budget it
-has spent before it sends.
+A request Spanner refuses is refused as a whole, taking every mutation in it with it. So a sink that
+accumulates mutations has to know how much of the budget it has spent before it sends — and has to
+know which budget.
+
+**What the documentation actually says.** The quotas page carries four rows that could bear on a
+batch write request:
+
+| Row | Value |
+|---|---|
+| Mutations per commit (including indexes) | 80,000 |
+| Commit size (including indexes and change streams) | 100 MiB |
+| Mutations per **mutation group** in a batch write request | 80,000 |
+| Request size other than for commits | 10 MiB |
+
+and the batch write page adds exactly one sentence about limits — *"The maximum size for a batch
+write request is the same as the limit for a commit request"* — which is about **size**, and states
+no figure of its own.
+
+Three things follow, and they are narrower than the batch-write page alone suggests:
+
+- **No per-request mutation count is documented for batch write.** The 80,000-per-commit row governs
+  `Commit`, which this sink does not use. The only mutation figure naming batch write bounds one
+  *mutation group*.
+- **A one-mutation-per-group sink reaches that per-group figure only through a single mutation.**
+  A range delete over a table carrying secondary indexes costs one mutation for the table plus one
+  per index *per row it matches* — see the delete discussion below — so it is reachable, but never
+  by accumulating, and not at all on a table with no secondary index.
+- **The request size cap is 10 MiB or 100 MiB, and the documentation can be read either way.** The
+  batch write page's sentence, read as a carve-out, puts batch write on the 100 MiB commit row; the
+  "request size other than for commits" row, read literally, puts it on 10 MiB. The quotas page has
+  no batch-write size row to break the tie. Measuring which one holds is [#441] — the emulator is
+  not an authority about quota enforcement, so it belongs to the gated real-GCP suite.
+
+The defaults below are Apache Beam's, and **Beam batches for `Commit` rather than for batch write**,
+which is where the commit-shaped figures entered this connector. They sit far under every reading of
+every row all the same.
 
 How Spanner counts is not how a naive reader would: "insert and update operations count with the
 multiplicity of the number of columns they affect, and primary key columns are always affected";
@@ -66,19 +98,87 @@ Two client-library facts constrain what can be measured at all (checked in 6.119
   (500), verified 2026-08-09 on Beam master and on the v2.68.0 tag. Beam's own javadoc for
   `withMaxNumRows` says 1,000, contradicting its own constant — so a reviewer checking Beam's
   documentation rather than its source will read this as wrong. The cell default sits **16 times**
-  under Spanner's 80,000, and that headroom is load-bearing rather than decorative — it is what
-  absorbs a table whose indexes the writer could not read.
+  under the 80,000 ceiling, and that headroom is load-bearing rather than decorative — it is what
+  absorbs a table whose indexes the writer could not read, and what would keep an undercounted batch
+  under a per-request mutation count if Spanner enforces one it does not document.
 - **Deletes are counted differently from Beam, deliberately.** Beam charges a point delete the sum
   of *every* column's weight and a range delete zero (`MutationCellCounter`: "There is no clear way
   to estimate range deletes, so they are ignored"). This sink charges both one plus the table's
   index entries, which is what Spanner's own documentation describes — "delete and delete range
   operations count as one mutation regardless of the number of columns affected", plus the index
   entries individually. Beam's point-delete figure over-counts and its range-delete figure
-  under-counts without bound; one plus the indexes is the single-row truth, and the docs page says
-  a range delete costs that per row it matches, which nothing client-side can know.
+  under-counts without bound; one plus the indexes is the single-row truth, and it is the *exact*
+  truth for a range delete on a table with no secondary index, since the quotas page counts the
+  table part once however many rows a range matches. Where there are indexes it undercounts: the
+  page's own worked example is "1 mutation for the table, plus 2 mutations for each row" on a table
+  with two indexes, and how many rows a range matches is not something client-side can know.
 - The check runs **before** a mutation is added, so a batch only ever exceeds a limit when a single
   mutation does so on its own. Refusing that one here would be this connector inventing a limit;
-  Spanner's own refusal names the real one better.
+  Spanner's own refusal names the real one better. A range delete is the one way this sink can
+  reach the per-mutation-group 80,000, and it is exactly such a single mutation.
+
+**All three are bounded at the setter** ([#435]), as `maxCommitDelay` already was — a `*_LIMIT`
+constant, a message naming what the figure is, and a reject/accept test pair. `maxBatchBytes(512L * 1024 * 1024)` built fine before them, and a job so
+configured then dies on a task manager, one request-level refusal per batch — which
+`SpannerErrorClassifier` calls `FATAL`, since a failure of the request names no mutation — for a
+mistake that was visible at submission.
+
+Two qualifications the guard's own framing has to carry, or it claims more than it delivers:
+
+- **The three limits are ANDed**, and a batch flushes on whichever binds first. Raising one alone
+  usually changes nothing — `maxBatchCells(500_000)` against the default 1 MiB and 500 mutations
+  produces exactly the batches the defaults did. The failure needs the knob that binds to be the
+  one raised.
+- **Only the byte ceiling defends a refusal Spanner documents.** Whether the service refuses a
+  request over 80,000 mutations is not documented either way, so the cell ceiling is precautionary:
+  it holds a batch to the only mutation figure Spanner publishes for this RPC. It is worth having
+  for that reason and for the headroom argument above, not because a refusal at 80,001 has been
+  seen.
+
+- `MAX_BATCH_CELLS_LIMIT` is **80,000**: the per-mutation-group row, taken as the request-level
+  ceiling because no request-level count is documented at all, so a batch under it is under every
+  row that could apply.
+- `MAX_BATCH_BYTES_LIMIT` is **100 MiB, the looser of the two readings**, deliberately. A bound at
+  the looser reading rejects only what is illegal under both, so it cannot refuse a legal
+  configuration whichever way [#441] comes out; a bound at 10 MiB would be a decision taken without
+  the measurement. What survives is the narrow band between the two: a job setting `maxBatchBytes`
+  above 10 MiB still meets the original failure mode if the tighter reading holds. The ceiling is
+  a guard against a misconfiguration rather than a value to set — the estimate reads low, so a
+  request built at exactly the ceiling is over it on the wire.
+- `MAX_BATCH_MUTATIONS_LIMIT` is **derived — `= MAX_BATCH_CELLS_LIMIT`, not a second literal**.
+  Every mutation costs at least one cell (`CellWeights.weigh` returns at least one for every
+  operation), so a batch never holds more mutations than cells, and a value above the cell ceiling
+  names a batch that cannot exist. The derivation is the point: writing 80,000 twice would leave
+  this ceiling cutting below what a batch may legally hold the moment the cell ceiling moved —
+  rejecting not a meaningless value but a correct one, with nobody re-checking. The test pins the
+  equality rather than the figure.
+- **A value legal at the ceiling but above the *configured* `maxBatchCells` is warned about, not
+  rejected.** It cannot take effect either — the cell cap is reached first however cheap the
+  mutations are — but the configuration works, so refusing it would reject something harmless while
+  saying nothing would leave a user believing they had capped a batch by count. `build()` logs it,
+  naming both values. That is the only log statement in an options class in this repository, and
+  the argument for it is that nothing else could carry the information: no exception is due, and
+  the value the user typed is kept unchanged.
+- **The warning suggests no remedy**, which is deliberate. "Lower it below `maxBatchCells`" would be
+  false — whether the count cap binds depends on what each mutation costs in cells, not on the two
+  knobs' order, so a user who lowers it by one silences the warning and has still not capped by
+  count. "Raise `maxBatchCells`" spends the headroom that absorbs a schema the writer could not
+  read. A log line that names the situation is worth more than one that prescribes a fix that is
+  wrong half the time.
+- **It is emitted from `build()`, not from the writer**, which would repeat it once per subtask.
+  That is normally the job's main method — **but not only**: initializing this class runs
+  `DEFAULTS = builder().build()`, and a task manager holding a deserialized instance has
+  initialized the class. What keeps the line off a task manager is therefore not the mechanism but
+  the defaults, which do not satisfy the condition; `SpannerWriterOptionsTest` pins that rather than
+  leaving it to chance. Where it lands is the client log under `flink run`, the JobManager log in
+  application mode, and the console in an IDE — the docs say so rather than promising the user will
+  see it.
+- Both constants are **package-private**, with the figure named in the setter's `@param` rather than
+  linked as a symbol — `OptionChecks`' rule ("widen it when something asks, not before"), and it
+  binds hardest on the byte one, since a public compile-time constant is inlined into every caller
+  and [#441] may lower that very number.
+- These are guardrails against a misconfiguration, not the thing that keeps a default-configured
+  request legal — the defaults sit two to three orders of magnitude below both.
 
 **The index coverage is read once, when the writer opens**, with a dialect-branched query over
 `INFORMATION_SCHEMA.INDEX_COLUMNS` — GoogleSQL scopes the default schema at the empty catalog and
@@ -102,8 +202,12 @@ emulator), since its cells are already counted by the columns themselves.
 
 - The sink needs read access to the database's `INFORMATION_SCHEMA` as well as write access —
   `roles/spanner.databaseUser` covers both. The quickstart's permission table says so.
-- Raising `maxBatchCells` toward 80,000 removes the headroom that makes an unknown table safe.
-  The setter's javadoc and the reference page both say what the number counts.
+- Raising `maxBatchCells` toward its 80,000 ceiling removes the headroom that makes an unknown table
+  safe. The setter's javadoc and the reference page both say what the number counts.
+- **How large a batch write request may be is still unmeasured**, and [#441] carries it: 10 MiB or
+  100 MiB, blocked on the gated real-GCP suite ([#224]). If the answer is 10 MiB, the byte ceiling
+  tightens and this ADR, the setter's javadoc and both docs pages record the measurement in place of
+  the ambiguity.
 - The dead-letter payload cannot be a protobuf either, for the same missing-conversion reason. It
   is the Java-serialized `Mutation` — `Mutation`, `Value`, `Key` and `KeySet` each declare a
   `serialVersionUID`, so it is an affordance the library maintains — and `FailedMutation` exposes
@@ -119,10 +223,30 @@ emulator), since its cells are already counted by the columns themselves.
   something different from what Spanner's documentation means by the same word.
 - **Building the wire proto ourselves to size mutations exactly.** It needs a `Value` → protobuf
   conversion for every Spanner type, arrays and structs included — some 250 lines duplicating SDK
-  internals, silently wrong the first time Spanner adds a type. The estimate plus a 100-fold gap to
-  the real limit is the better trade; Beam reached the same one.
+  internals, silently wrong the first time Spanner adds a type. The estimate plus a 10- to 100-fold
+  gap to the real limit is the better trade; Beam reached the same one.
+- **Waiting for [#441] before bounding `maxBatchBytes` at all**, which is the order [#435] proposed.
+  Declined once the readings were laid out: the looser bound is correct under both, so waiting buys
+  no accuracy and leaves the knob unbounded until a gated suite that does not exist yet does.
+- **Dropping the cell ceiling too** once it was clear that 80,000 is not a request-level figure.
+  Declined: it is the only mutation figure Spanner publishes for this RPC, a batch under it is under
+  every row that could apply, and the alternative is no guard at all on a knob that can drive a
+  request past its size limit.
+- **Leaving `maxBatchMutations` unbounded**, on the ground that a ceiling there cannot bind — which
+  is true, and was the shape this change carried for a round. Declined for two reasons that only
+  become visible once written down: a wrong value is worth refusing whether or not it is *harmful*,
+  since it always means a misunderstanding; and the argument for leaving it out (that the ceiling
+  would go stale if the cell one moved) is an argument for **deriving** the constant, not for
+  omitting it. Deriving it keeps both properties.
+- **Rejecting `maxBatchMutations` above the configured `maxBatchCells`** instead of warning.
+  Declined: unlike a value above the ceiling, that one describes a batch that *can* exist and a job
+  that works — the cell cap simply decides every flush. Refusing it would reject a harmless
+  configuration, and clamping it would silently change a value the user typed.
 - **Refreshing the weights periodically.** A schema change during a job is real, but the failure it
   causes is an undercount inside a 16-fold headroom, not a wrong answer. Reopen if a measurement
   shows the undercount reaching the limit.
 
 [#220]: https://github.com/laughingman7743/flink-connector-gcp/issues/220
+[#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
+[#435]: https://github.com/laughingman7743/flink-connector-gcp/issues/435
+[#441]: https://github.com/laughingman7743/flink-connector-gcp/issues/441

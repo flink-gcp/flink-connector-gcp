@@ -92,8 +92,7 @@ final class SpannerServiceAdapter implements SpannerDatabaseAccess {
                     "Failed to read the mutation-cell weights of "
                             + description
                             + " from INFORMATION_SCHEMA. The sink needs to read the database's"
-                            + " secondary indexes to keep a batch under Spanner's per-request"
-                            + " mutation limit.",
+                            + " secondary indexes to weigh a mutation the way Spanner counts one.",
                     e);
         }
     }

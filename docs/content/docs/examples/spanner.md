@@ -120,8 +120,15 @@ A handler taking the connector's own type sees the mutation itself:
 
 ## Tuning the batch
 
-The defaults are Apache Beam's, and they are chosen to stay well under Spanner's per-request limits.
-Lower them for latency; raise them only knowing what `maxBatchCells` counts.
+The defaults are Apache Beam's, and they sit far under every limit a batch write request has to stay
+within. Lower them for latency; raise them only knowing what `maxBatchCells` counts. Each has a
+ceiling, refused at submission rather than on a task manager — see the
+[configuration reference]({{< relref "docs/reference/spanner" >}}#batch-limits) for what each
+ceiling is and what it rests on. They are also ANDed — a batch flushes on whichever binds first — so
+raising one alone often changes nothing; `maxBatchCells` and `maxBatchBytes` are the pair to reach
+for. Setting `maxBatchMutations` above `maxBatchCells` writes a warning to the log of wherever the
+job's `main` runs, because the cell cap is then reached first and the mutation cap can never take
+effect.
 
 ```java
 SpannerSink.<Event>builder()

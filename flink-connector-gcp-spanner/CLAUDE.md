@@ -53,14 +53,43 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Batching and cell weights (`docs/adr/0077`)
 
-- Spanner's 80,000-mutation and 100 MiB limits are **per request**, not per group. The three batch
-  limits are correctness, not tuning.
+- **Bounding the request the writer builds is correctness, not tuning** — but read the quotas page,
+  not only the batch-write how-to, before saying which limit a knob defends. 80,000 mutations and
+  100 MiB are `Commit`'s; the only row naming batch write is **per mutation group** (80,000), and
+  the batch-write page's one sentence is about **size**. So no per-request mutation count is
+  documented for this RPC at all: `maxBatchBytes` defends a documented request-level limit,
+  `maxBatchCells` and `maxBatchMutations` are proxies for size. Beam's defaults are commit-shaped,
+  which is how the per-request framing got in.
+- **All three batch knobs are bounded at the setter** (#435): 80,000 / 80,000 / 100 MiB,
+  package-private `*_LIMIT` constants with the figure named in the `@param` (the `OptionChecks`
+  rule — a public compile-time constant inlines into callers, and #441 may lower the byte one).
+  The byte ceiling is the **looser** of two readings, so it rejects only what is illegal under
+  both, and it is the one that defends a refusal Spanner documents; the **cell ceiling is
+  precautionary** — no request-level mutation count is documented either way.
+- **`MAX_BATCH_MUTATIONS_LIMIT` is *derived* — `= MAX_BATCH_CELLS_LIMIT`, never a second literal.**
+  Every mutation costs at least one cell, so a batch never holds more mutations than cells; that
+  derivation is *why* the number is the same, and writing 80,000 twice would leave the mutation
+  ceiling cutting below what a batch may hold the moment the cell ceiling moved.
+  `SpannerWriterOptionsTest` pins the equality rather than the value.
+- **The three limits are ANDed**, so a batch flushes on whichever binds first and raising one alone
+  usually changes nothing. Any claim of the form "setting X large breaks the job" has to name the
+  knob that *binds*, or it is false — round two of #435 caught exactly that claim, inherited from
+  the issue. The one statically detectable case is `maxBatchMutations` above the *configured*
+  `maxBatchCells`, which can never take effect; `build()` **warns** rather than rejecting, because
+  the configuration works and refusing it would reject something harmless. That is the only log
+  statement in an options class in this repository, and the reason is that nothing else — no
+  exception, no changed value — could tell the user.
+- **A single mutation that breaches a limit on its own is still never rejected** — the check runs
+  before a mutation joins the batch, so Spanner's own refusal names the real limit. A range delete
+  over an indexed table costs one for the table **plus one per index per row it matches**, which is
+  the one way this sink can reach the per-group 80,000 at all; with no secondary index it costs one
+  however many rows it hits, and the sink's single-row estimate is then exact.
 - `maxBatchCells` counts index entries, read once from `INFORMATION_SCHEMA` when the writer opens
   — dialect-branched, primary-key index excluded by name, names folded to lower case. Reading it
   at creation is what makes an unreadable schema a job that never starts.
 - **A table the weights do not know is counted without index entries, never rejected.** The
-  default's 16-fold headroom under 80,000 is what absorbs that, so raising `maxBatchCells` toward
-  the limit is a real trade and the docs say so.
+  default's 16-fold headroom under the 80,000 ceiling is what absorbs that, so raising
+  `maxBatchCells` toward it is a real trade and the docs say so.
 - **The client library exposes no public route from a `Mutation` to its wire form**, and
   `Mutation.toString()` truncates strings at 36 characters. Hence: the byte limit is an estimate,
   and the dead-letter payload is the Java-serialized `Mutation`. Recheck both on a client upgrade

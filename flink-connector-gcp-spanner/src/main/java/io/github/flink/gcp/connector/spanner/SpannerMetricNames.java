@@ -39,8 +39,8 @@ public final class SpannerMetricNames {
     public static final String BUFFERED_MUTATIONS = "bufferedMutations";
 
     /**
-     * Mutation cells held in the writer's batch, counted the way Spanner counts them against the
-     * per-request limit — index entries included.
+     * Mutation cells held in the writer's batch, counted the way Spanner counts a mutation — index
+     * entries included.
      */
     public static final String BUFFERED_CELLS = "bufferedCells";
 

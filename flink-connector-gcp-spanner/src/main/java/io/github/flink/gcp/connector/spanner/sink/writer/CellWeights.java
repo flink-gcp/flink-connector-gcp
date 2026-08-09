@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * How many cells a mutation costs against Spanner's per-request mutation limit.
+ * How many cells a mutation costs, counted the way Spanner counts a mutation.
  *
  * <p>Spanner counts an insert or update "with the multiplicity of the number of columns they
  * affect", a delete as one "regardless of the number of columns affected", and — in both cases —
@@ -93,8 +93,10 @@ public final class CellWeights {
         String table = fold(mutation.getTable());
         if (mutation.getOperation() == Mutation.Op.DELETE) {
             // One for the row, plus one index entry per index on the table. A delete over a key
-            // *range* costs that much per row it matches, which nothing on this side can know —
-            // the estimate is deliberately the single-row one.
+            // *range* costs the one only once, plus an index entry per index per row it matches —
+            // and how many rows that is, nothing on this side can know. So the estimate is
+            // deliberately the single-row one: exact on a table with no secondary index, an
+            // undercount of one index entry per extra row on a table with them.
             return 1 + indexesPerTable.getOrDefault(table, 0);
         }
         Map<String, Integer> columns = indexesPerColumn.get(table);

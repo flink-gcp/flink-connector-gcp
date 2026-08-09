@@ -49,14 +49,19 @@ defaulted, so `SpannerWriterOptions.defaults()` is the same as not setting optio
 
 ### Batch limits
 
-Spanner applies its commit limits to a batch write **request**, not to each mutation in it — 80,000
-mutations including index entries, and 100 MiB. These three keep the writer under those.
+A request Spanner refuses is refused as a whole, so these three bound the request the writer builds.
+Each has a ceiling of its own, refused at submission — but only `maxBatchBytes`' ceiling marks a
+request the service is documented to refuse; the other two are argued rather than measured, and the
+connector page says how. The three are **ANDed** — a batch flushes on whichever binds first — so
+raising one alone often changes nothing; **`maxBatchCells` and `maxBatchBytes` are the pair that
+decides how large a request grows**. The reasoning is under
+[Batching]({{< relref "docs/connectors/datastream/spanner" >}}#batching).
 
 | Option | Default | What it does |
 |---|---|---|
-| `maxBatchCells` | `5000` | Caps the mutation *cells* in one request. A written column costs one cell for the table plus one for every secondary index containing it, so this is **not** a column count — raising it toward 80,000 removes the headroom that keeps an unread schema safe |
-| `maxBatchMutations` | `500` | Caps the mutations in one request |
-| `maxBatchBytes` | `1048576` (1 MiB) | Caps the *estimated* size of one request. Estimated, not measured: the client library exposes no way to size a `Mutation` as it goes on the wire |
+| `maxBatchCells` | `5000` | Caps the mutation *cells* in one request, **at most `80000`**. A written column costs one cell for the table plus one for every secondary index containing it, so this is **not** a column count — raising it toward the ceiling removes the headroom that keeps an unread schema safe |
+| `maxBatchMutations` | `500` | Caps the mutations in one request, **at most `80000`** — a mutation costs at least one cell, so a batch never holds more mutations than cells, and the ceiling is `maxBatchCells`' ceiling for that reason. Set above the *configured* `maxBatchCells` it cannot take effect either, and building the options **logs a warning** to wherever the job's `main` runs. Whether a lower value binds depends on what each mutation costs in cells, not on the two knobs' order |
+| `maxBatchBytes` | `1048576` (1 MiB) | Caps the *estimated* size of one request, **at most `104857600`** (100 MiB). Estimated, not measured: the client library exposes no way to size a `Mutation` as it goes on the wire, and it reads low — so the ceiling is a guard against a misconfiguration, not a value to set. It is also the looser of two readings of what a batch write request may weigh; the tighter is 10 MiB, and [#441]({{< param BookRepo >}}/issues/441) measures which one holds |
 
 ### Request scheduling
 
