@@ -18,6 +18,10 @@ package io.github.flink.gcp.connector.pubsub;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.LongAdder;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,12 +32,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * when the dead-letter queue became the second registrar — before that it was a private class
  * inside {@code PubSubSinkWriterMetrics} and only its registered behaviour was covered.
  */
-class AbandonedShutdownsCounterTest {
+class ResidueCounterTest {
 
     @Test
     void readsTheAdderItWasGivenLiveRatherThanASnapshot() {
         LongAdder residue = new LongAdder();
-        AbandonedShutdownsCounter counter = new AbandonedShutdownsCounter(residue);
+        ResidueCounter counter = new ResidueCounter(residue);
 
         assertThat(counter.getCount()).isZero();
 
@@ -47,7 +51,7 @@ class AbandonedShutdownsCounterTest {
 
     @Test
     void everyMutatorThrowsRatherThanSilentlyDoingNothing() {
-        AbandonedShutdownsCounter counter = new AbandonedShutdownsCounter(new LongAdder());
+        ResidueCounter counter = new ResidueCounter(new LongAdder());
 
         // A no-op would hide a caller that believed it was counting something: the teardowns count
         // through the adder, never through the metric.
@@ -58,24 +62,39 @@ class AbandonedShutdownsCounterTest {
     }
 
     @Test
-    void theTwoResiduesAreSeparateAdders() {
+    void everyResidueIsAnAdderOfItsOwn() {
         // What keeps `deadLetterPublisherShutdownsAbandoned` from being a second name for one
         // number — and what lets the queue register on a host sink group that already carries the
-        // sink's own name.
-        assertThat(PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED)
-                .isNotSameAs(PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
+        // sink's own name. The source's two are separate for a different reason (#358): they are
+        // registered on the reader's group, where neither could collide with a publisher name, but
+        // an expired wait and a failure nothing else reports are different things to act on.
+        // By identity rather than through doesNotHaveDuplicates(), which would rest on LongAdder
+        // not overriding equals — true today and not the property being asserted.
+        Set<LongAdder> distinct = Collections.newSetFromMap(new IdentityHashMap<>());
+        distinct.addAll(
+                List.of(
+                        PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED,
+                        PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED,
+                        PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED,
+                        PubSubShutdownResidue.SUBSCRIBER_FAILURES_UNREPORTED));
+
+        assertThat(distinct).hasSize(4);
     }
 
     @Test
-    void resetForTestsClearsBothResidues() {
+    void resetForTestsClearsEveryResidue() {
         PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED.increment();
         PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED.increment();
+        PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED.increment();
+        PubSubShutdownResidue.SUBSCRIBER_FAILURES_UNREPORTED.increment();
 
         PubSubShutdownResidue.resetForTests();
 
-        // A reset that forgot the second adder would leave one test's give-up leaking into the
-        // absolute assertions of every later class in the fork.
+        // A reset that forgot one adder would leave that test's give-up leaking into the absolute
+        // assertions of every later class in the fork.
         assertThat(PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED.sum()).isZero();
         assertThat(PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED.sum()).isZero();
+        assertThat(PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED.sum()).isZero();
+        assertThat(PubSubShutdownResidue.SUBSCRIBER_FAILURES_UNREPORTED.sum()).isZero();
     }
 }

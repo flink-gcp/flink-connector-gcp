@@ -24,6 +24,7 @@ import com.google.api.core.ApiService;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -436,6 +437,12 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
      * this can run before {@link #permanentError} is written. And nothing has been nacked, because
      * {@link #shutdown()} never ran; that message's "nothing is lost" holds anyway, for the
      * different reason that a client which never started received nothing.
+     *
+     * <p><b>Counted by nothing either</b> (#358), which is the same argument once more: the start
+     * failure this runs beneath is an {@link IOException} on its way to failing the job, so an
+     * expiry here is a footnote to something already reported, not a signal of its own. What it
+     * would otherwise report — resources stranded by a client that never ran — the SDK releases
+     * itself on three of this path's four routes (#349).
      */
     private void stopQuietly() {
         subscriberStopAsync.run();
@@ -500,11 +507,17 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
      * nacks {@link AckTracker#nackSplit} has just enqueued; a failure before that flush leaves
      * those messages to wait out their acknowledgement deadline rather than being redelivered at
      * once — the property #118 settled as one this connector asserts.
+     *
+     * <p><b>Two of the three are counted, into {@link PubSubShutdownResidue}</b> (#358), because a
+     * {@code WARN} is invisible to a log pipeline filtering below {@code ERROR} and to every
+     * dashboard. Not the re-report: the reader is failing the job on that failure, so the count
+     * would be a second series for an incident already reported by the loudest means there is.
      */
     private void awaitTerminated() {
         try {
             subscriberAwaitTerminated.await(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
+            PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED.increment();
             LOG.warn(
                     "The Pub/Sub subscriber for subscription {} did not finish shutting down"
                             + " within {}. This split's messages were nacked before the wait, so"
@@ -525,6 +538,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
                         subscription,
                         e);
             } else {
+                PubSubShutdownResidue.SUBSCRIBER_FAILURES_UNREPORTED.increment();
                 LOG.warn(
                         "The Pub/Sub subscriber for subscription {} failed while shutting down,"
                                 + " and this is the only report of it: the failure arrived after"

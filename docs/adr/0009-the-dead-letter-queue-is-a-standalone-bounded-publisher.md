@@ -180,7 +180,7 @@ each of the four carries `deadLetter` in its name.
   which avoids the collision but is unrepresentable in `check-metric-docs`'s `[[subgroups]]` — that
   mechanism reads a *templated* middle segment out of the `base.metrics` registrars — so it would
   have cost the checker, its tests and its skill.
-- The read-only `Counter` view over a residue adder became a top-level `AbandonedShutdownsCounter`
+- The read-only `Counter` view over a residue adder became a top-level `ResidueCounter`
   taking the adder as an argument, since there are now two registrars; it was a private class
   inside `PubSubSinkWriterMetrics`.
 

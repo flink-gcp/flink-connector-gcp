@@ -24,9 +24,9 @@ import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.metrics.ErrorClassCounters;
-import io.github.flink.gcp.connector.pubsub.AbandonedShutdownsCounter;
 import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
+import io.github.flink.gcp.connector.pubsub.ResidueCounter;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 
 import javax.annotation.Nullable;
@@ -98,7 +98,7 @@ public final class PubSubSinkWriterMetrics {
         // Counter is what lets the instrument be right while the storage stays process-wide.
         metricGroup.counter(
                 PubSubMetricNames.PUBLISHER_SHUTDOWNS_ABANDONED,
-                new AbandonedShutdownsCounter(PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED));
+                new ResidueCounter(PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED));
     }
 
     /**
