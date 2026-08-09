@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
+import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -176,11 +177,14 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
             writer.write(GOOD, TestContexts.NO_OP);
             writer.write("bad", TestContexts.NO_OP);
 
-            // NOT_FOUND, and fatal: a missing column family fails every record shaped like this
-            // one, so it must never reach a handler that may drop it. Bigtable reports it per
-            // entry rather than rejecting the request, and reports it for the good entry too.
+            // NOT_FOUND, and fatal under the default CREATE_NEVER: a missing column family fails
+            // every record shaped like this one, so it must never reach a handler that may drop
+            // it. The failure names the disposition, since CREATE_IF_NEEDED is the knob that
+            // repairs this. Bigtable reports it per entry rather than rejecting the request, and
+            // reports it for the good entry too.
             assertThatThrownBy(() -> writer.flush(false))
                     .hasMessageContaining(table.getTable())
+                    .hasMessageContaining("createDisposition is CREATE_NEVER")
                     .hasStackTraceContaining("Requested column family not found");
             assertThat(handler.handled).isEmpty();
             assertThat(readRows(table)).isEmpty();
@@ -219,7 +223,10 @@ class BigtableRejectionRealGcpITCase extends AbstractBigtableRealGcpITCase {
                 new DefaultMutationBatcherFactory(table, null, options, null).create();
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(
-                        batcher, new FakeMailboxExecutor(), TestSinkWriterMetricGroup.create());
+                        batcher,
+                        new BigtableTableAdmin(),
+                        new FakeMailboxExecutor(),
+                        TestSinkWriterMetricGroup.create());
     }
 
     /** A handler that drops every mutation, recording what it saw. */

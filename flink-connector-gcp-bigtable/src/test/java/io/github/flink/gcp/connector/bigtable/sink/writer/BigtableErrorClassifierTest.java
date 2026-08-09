@@ -37,6 +37,34 @@ class BigtableErrorClassifierTest {
                 .isEqualTo(BigtableErrorClassifier.Kind.ROW_LEVEL);
     }
 
+    @Test
+    void classifiesAMissingTableAsRepairable() {
+        assertThat(BigtableErrorClassifier.classify(apiException(StatusCode.Code.NOT_FOUND)))
+                .isEqualTo(BigtableErrorClassifier.Kind.TABLE_NOT_FOUND);
+    }
+
+    @Test
+    void findsAMissingTableAheadOfATransientStatus() {
+        // The load-bearing precedence: a NOT_FOUND chain that also carries a transient status is
+        // still the missing-table failure, or an outage during the incident would turn a
+        // repairable park into a job failure. Safe because the repair re-applies and never drops.
+        Throwable chain =
+                apiException(StatusCode.Code.UNAVAILABLE, apiException(StatusCode.Code.NOT_FOUND));
+
+        assertThat(BigtableErrorClassifier.classify(chain))
+                .isEqualTo(BigtableErrorClassifier.Kind.TABLE_NOT_FOUND);
+    }
+
+    @Test
+    void findsAMissingTableAheadOfADataShapedStatus() {
+        Throwable chain =
+                apiException(
+                        StatusCode.Code.INVALID_ARGUMENT, apiException(StatusCode.Code.NOT_FOUND));
+
+        assertThat(BigtableErrorClassifier.classify(chain))
+                .isEqualTo(BigtableErrorClassifier.Kind.TABLE_NOT_FOUND);
+    }
+
     @ParameterizedTest
     @EnumSource(
             value = StatusCode.Code.class,
@@ -48,7 +76,6 @@ class BigtableErrorClassifierTest {
                 "OUT_OF_RANGE",
                 // Configuration-shaped: they fail every record alike, so dropping them would empty
                 // the stream into the dead-letter destination under a green job.
-                "NOT_FOUND",
                 "PERMISSION_DENIED",
                 "UNAUTHENTICATED",
                 // Outage-shaped: the client already retried these and gave up.

@@ -192,6 +192,16 @@ abstract class AbstractBigtableRealGcpITCase {
         return TableDestination.of(PROJECT, instanceId, tableId);
     }
 
+    /** Returns a destination in the ephemeral instance without creating the table. */
+    static TableDestination tableDestination(String tableId) {
+        return TableDestination.of(PROJECT, instanceId, tableId);
+    }
+
+    /** Returns the live table description, for asserting what auto-creation actually made. */
+    static com.google.cloud.bigtable.admin.v2.models.Table describeTable(String tableId) {
+        return tableAdmin.getTable(tableId);
+    }
+
     /** Reads every row of the table, in row-key order. */
     static List<Row> readRows(TableDestination destination) {
         List<Row> rows = new ArrayList<>();

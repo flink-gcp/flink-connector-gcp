@@ -108,6 +108,11 @@ abstract class AbstractBigtableEmulatorITCase {
         return TableDestination.of(PROJECT, INSTANCE, tableId);
     }
 
+    /** Returns the live table description, for asserting what auto-creation actually made. */
+    static com.google.cloud.bigtable.admin.v2.models.Table describeTable(String tableId) {
+        return adminClient.getTable(tableId);
+    }
+
     /** Reads every row of the table, in row-key order. */
     static List<Row> readRows(TableDestination destination) {
         List<Row> rows = new ArrayList<>();

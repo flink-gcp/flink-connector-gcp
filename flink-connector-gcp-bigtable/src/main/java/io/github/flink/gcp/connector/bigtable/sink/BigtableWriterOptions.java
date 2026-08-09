@@ -16,12 +16,17 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
+
+import io.github.flink.gcp.connector.base.options.OptionChecks;
+import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.Objects;
 
 /**
@@ -35,7 +40,9 @@ import java.util.Objects;
  *
  * <p>There are deliberately <em>no</em> retry knobs. Unlike Cloud Tasks, the Bigtable client
  * retries {@code MutateRows} itself — per entry, for the transient codes, on a schedule of its own
- * — so the sink owns no retry loop and has nothing to expose.
+ * — so the sink owns no retry loop and has nothing to expose. The {@code recovery*} knobs are not
+ * an exception: they budget the sink-owned table auto-creation repair (re-applying mutations after
+ * creating a missing table), not the client's mutation retries.
  *
  * <h2>Why the in-flight bounds are the writer's own</h2>
  *
@@ -72,6 +79,9 @@ public final class BigtableWriterOptions implements Serializable {
     private final int maxInFlightMutations;
     private final long maxInFlightBytes;
     private final int maxConsecutiveRejections;
+    private final Duration recoveryInitialBackoff;
+    private final Duration recoveryMaxBackoff;
+    private final int recoveryMaxAttempts;
 
     private BigtableWriterOptions(Builder builder) {
         this.batchElementCount = builder.batchElementCount;
@@ -79,6 +89,9 @@ public final class BigtableWriterOptions implements Serializable {
         this.maxInFlightMutations = builder.maxInFlightMutations;
         this.maxInFlightBytes = builder.maxInFlightBytes;
         this.maxConsecutiveRejections = builder.maxConsecutiveRejections;
+        this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
+        this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
+        this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
     }
 
     /**
@@ -92,9 +105,10 @@ public final class BigtableWriterOptions implements Serializable {
 
     /**
      * Returns the default options: the client's own batch thresholds, at most 1000 unacknowledged
-     * mutations, at most 64 MiB of them, and a job failure after {@value
+     * mutations, at most 64 MiB of them, a job failure after {@value
      * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed rejections under a dropping
-     * policy.
+     * policy, and a table auto-creation recovery budget of 500 ms doubling to 10 s over at most 10
+     * attempts.
      *
      * @return the default options
      */
@@ -132,6 +146,35 @@ public final class BigtableWriterOptions implements Serializable {
         return maxConsecutiveRejections;
     }
 
+    /** Returns the first backoff of the table auto-creation recovery. */
+    public Duration getRecoveryInitialBackoff() {
+        return recoveryInitialBackoff;
+    }
+
+    /** Returns the backoff cap of the table auto-creation recovery. */
+    public Duration getRecoveryMaxBackoff() {
+        return recoveryMaxBackoff;
+    }
+
+    /** Returns the maximum re-apply attempts of the table auto-creation recovery. */
+    public int getRecoveryMaxAttempts() {
+        return recoveryMaxAttempts;
+    }
+
+    /**
+     * Returns the table auto-creation recovery schedule the {@code recovery*} knobs describe.
+     * Jittered: every subtask that parked mutations for the same missing table resumes against the
+     * same freshly created table, so unjittered they would re-apply in lockstep.
+     */
+    @Internal
+    public RetrySchedule toRecoverySchedule() {
+        return new RetrySchedule(
+                recoveryInitialBackoff.toMillis(),
+                recoveryMaxBackoff.toMillis(),
+                recoveryMaxAttempts,
+                RetrySchedule.DEFAULT_JITTER_RATIO);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -144,8 +187,11 @@ public final class BigtableWriterOptions implements Serializable {
         return maxInFlightMutations == that.maxInFlightMutations
                 && maxInFlightBytes == that.maxInFlightBytes
                 && maxConsecutiveRejections == that.maxConsecutiveRejections
+                && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && Objects.equals(batchElementCount, that.batchElementCount)
-                && Objects.equals(batchByteSize, that.batchByteSize);
+                && Objects.equals(batchByteSize, that.batchByteSize)
+                && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
+                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff);
     }
 
     @Override
@@ -155,7 +201,10 @@ public final class BigtableWriterOptions implements Serializable {
                 batchByteSize,
                 maxInFlightMutations,
                 maxInFlightBytes,
-                maxConsecutiveRejections);
+                maxConsecutiveRejections,
+                recoveryInitialBackoff,
+                recoveryMaxBackoff,
+                recoveryMaxAttempts);
     }
 
     @Override
@@ -170,6 +219,12 @@ public final class BigtableWriterOptions implements Serializable {
                 + maxInFlightBytes
                 + ", maxConsecutiveRejections="
                 + maxConsecutiveRejections
+                + ", recoveryInitialBackoff="
+                + recoveryInitialBackoff
+                + ", recoveryMaxBackoff="
+                + recoveryMaxBackoff
+                + ", recoveryMaxAttempts="
+                + recoveryMaxAttempts
                 + "}";
     }
 
@@ -182,6 +237,9 @@ public final class BigtableWriterOptions implements Serializable {
         private int maxInFlightMutations = 1000;
         private long maxInFlightBytes = 64L * 1024 * 1024;
         private int maxConsecutiveRejections = DEFAULT_MAX_CONSECUTIVE_REJECTIONS;
+        private Duration recoveryInitialBackoff = Duration.ofMillis(500);
+        private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
+        private int recoveryMaxAttempts = 10;
 
         private Builder() {}
 
@@ -277,12 +335,63 @@ public final class BigtableWriterOptions implements Serializable {
         }
 
         /**
+         * Sets the first backoff of the table auto-creation recovery (re-applying mutations after
+         * creating a missing table). Defaults to 500 ms.
+         *
+         * @param recoveryInitialBackoff the first backoff, positive
+         * @return this builder
+         */
+        public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
+            this.recoveryInitialBackoff =
+                    checkAtLeastOneMilli(recoveryInitialBackoff, "recoveryInitialBackoff");
+            return this;
+        }
+
+        /**
+         * Caps the backoff of the table auto-creation recovery. Defaults to 10 s.
+         *
+         * @param recoveryMaxBackoff the backoff cap, positive and at least the initial backoff
+         * @return this builder
+         */
+        public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
+            this.recoveryMaxBackoff =
+                    checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
+            return this;
+        }
+
+        /**
+         * Caps the re-apply attempts of the table auto-creation recovery. Defaults to 10.
+         *
+         * @param recoveryMaxAttempts the maximum attempts, positive
+         * @return this builder
+         */
+        public Builder recoveryMaxAttempts(int recoveryMaxAttempts) {
+            Preconditions.checkArgument(
+                    recoveryMaxAttempts > 0, "recoveryMaxAttempts must be positive");
+            this.recoveryMaxAttempts = recoveryMaxAttempts;
+            return this;
+        }
+
+        /**
          * Builds the options.
          *
          * @return the options
          */
         public BigtableWriterOptions build() {
+            Preconditions.checkState(
+                    recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
+                    "recoveryMaxBackoff must be at least recoveryInitialBackoff.");
             return new BigtableWriterOptions(this);
+        }
+
+        private static Duration checkAtLeastOneMilli(Duration duration, String name) {
+            OptionChecks.checkPositive(duration, name);
+            Preconditions.checkArgument(
+                    duration.toMillis() >= 1,
+                    "%s must be at least 1 millisecond (it is applied at millisecond"
+                            + " granularity)",
+                    name);
+            return duration;
         }
     }
 }

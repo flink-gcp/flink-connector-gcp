@@ -26,8 +26,11 @@ Assumes the artifacts and credentials from the
 [Quickstart]({{< relref "docs/quickstart" >}}) index, and the imports an IDE resolves from the
 [Java API reference]({{< param ApiDocsURL >}}).
 
-**Create the table and its column family first.** The sink creates neither: a table's schema is its
-column families and their garbage-collection policies, which is the part a sink cannot guess.
+**Create the table and its column family first.** By default the sink creates neither: a table's
+schema is its column families and their garbage-collection policies, which is the part a sink
+cannot guess. (Declaring that schema on the builder instead is
+[table auto-creation]({{< relref "docs/connectors/datastream/bigtable" >}}#table-auto-creation);
+the instance always has to exist.)
 
 ```sh
 gcloud bigtable instances create my-instance \

@@ -33,9 +33,11 @@ limitations under the License.
   system" and AIP-194 lists it must-not-retry, while `FAILED_PRECONDITION` and `OUT_OF_RANGE`
   are explicitly state-dependent — so a mutation rejected with one of those might be accepted
   later, and dropping it is data loss. **Cite the definition rather than the plausibility of the
-  failures a code names.** Everything else — `NOT_FOUND` (a missing table *or column family*),
-  `PERMISSION_DENIED`, `UNAUTHENTICATED`, and anything the client's own retries gave up on — is
-  fatal.
+  failures a code names.** Everything else — `PERMISSION_DENIED`, `UNAUTHENTICATED`, and
+  anything the client's own retries gave up on — is fatal. `NOT_FOUND` (a missing table *or*
+  column family) left this class in ADR-0073: it is checked ahead of everything, repaired under
+  `CREATE_IF_NEEDED` and fatal under `CREATE_NEVER` — never routed, so this ADR's rule that only
+  a state-independent status reaches a handler is unchanged.
 - **Routing takes both halves of a condition, and they read the cause chain differently.** No
   transient status *anywhere* in the chain (so an unstable service cannot produce a dead letter
   even behind a data-shaped status — a property of this code, not of the client surfacing one

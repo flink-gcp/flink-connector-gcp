@@ -72,6 +72,80 @@ class BigtableSinkBuilderTest {
         assertThat(config.getWriterOptions()).isEqualTo(BigtableWriterOptions.defaults());
         // Fail the job, so a mutation is never dropped by a sink nobody configured.
         assertThat(config.getFailedMutationHandler()).isSameAs(FailureHandler.failJob());
+        // Never create, so a sink nobody configured cannot invent a table whose
+        // garbage-collection policy somebody then has to fix.
+        assertThat(config.getCreateDisposition()).isEqualTo(CreateDisposition.CREATE_NEVER);
+        assertThat(config.getTableCreateOptions()).isNull();
+    }
+
+    @Test
+    void carriesTheCreateDispositionAndItsOptions() {
+        TableCreateOptions createOptions =
+                TableCreateOptions.builder().columnFamily("cf", GcRule.maxVersions(1)).build();
+
+        BigtableSinkConfig<String> config =
+                config(
+                        BigtableSink.<String>builder()
+                                .table(TABLE)
+                                .serializer(SERIALIZER)
+                                .createDisposition(CreateDisposition.CREATE_IF_NEEDED)
+                                .tableCreateOptions(createOptions)
+                                .build());
+
+        assertThat(config.getCreateDisposition()).isEqualTo(CreateDisposition.CREATE_IF_NEEDED);
+        assertThat(config.getTableCreateOptions()).isSameAs(createOptions);
+    }
+
+    @Test
+    void rejectsCreateOptionsBesideCreateNever() {
+        TableCreateOptions createOptions = TableCreateOptions.builder().columnFamily("cf").build();
+        // The likeliest mistake first: options set with the disposition left at its CREATE_NEVER
+        // default — the check must read the final state, not whether the setter was called.
+        assertThatThrownBy(
+                        () ->
+                                BigtableSink.<String>builder()
+                                        .table(TABLE)
+                                        .serializer(SERIALIZER)
+                                        .tableCreateOptions(createOptions)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("CREATE_NEVER");
+        // And in both explicit setter orders.
+        assertThatThrownBy(
+                        () ->
+                                BigtableSink.<String>builder()
+                                        .table(TABLE)
+                                        .serializer(SERIALIZER)
+                                        .tableCreateOptions(createOptions)
+                                        .createDisposition(CreateDisposition.CREATE_NEVER)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("CREATE_NEVER");
+        assertThatThrownBy(
+                        () ->
+                                BigtableSink.<String>builder()
+                                        .table(TABLE)
+                                        .serializer(SERIALIZER)
+                                        .createDisposition(CreateDisposition.CREATE_NEVER)
+                                        .tableCreateOptions(createOptions)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("CREATE_NEVER");
+    }
+
+    @Test
+    void requiresCreateOptionsBesideCreateIfNeeded() {
+        // The issue's central point: a Bigtable table's schema is its column families, so a
+        // disposition alone is not enough to create one.
+        assertThatThrownBy(
+                        () ->
+                                BigtableSink.<String>builder()
+                                        .table(TABLE)
+                                        .serializer(SERIALIZER)
+                                        .createDisposition(CreateDisposition.CREATE_IF_NEEDED)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("tableCreateOptions");
     }
 
     @Test
@@ -113,6 +187,10 @@ class BigtableSinkBuilderTest {
         assertThatThrownBy(() -> builder.appProfileId("  "))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> builder.emulatorEndpoint(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> builder.createDisposition(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> builder.tableCreateOptions(null))
                 .isInstanceOf(NullPointerException.class);
         // Parsed at the setter, so a typo fails on the client rather than when the writer is
         // created; the full parse table is EmulatorEndpointTest's.
