@@ -28,7 +28,6 @@ import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -197,16 +196,44 @@ class BigQueryDynamicTableFactoryTest {
 
     @Test
     void fileLoadsKeysReachTheBuiltSink() {
+        // No sink.file-loads.write-disposition here, deliberately: FactoryMocks builds its context
+        // over an empty Configuration, where execution.runtime-mode takes its STREAMING default,
+        // and the factory refuses a non-append disposition there. That the key maps onto the knob
+        // at all is FileLoadsOptionsMapperTest's mapsEveryOptionOntoItsKnob; what this test is for
+        // — that the mapper's output reaches the built sink rather than being dropped on the way
+        // to BigQuerySink.builder() — the two knobs below carry unchanged.
         Map<String, String> options = optionsFor(WriteMethod.FILE_LOADS);
         options.put("sink.file-loads.temp-dataset", "staging_dataset");
-        options.put("sink.file-loads.write-disposition", "write-truncate");
         options.put("sink.file-loads.schema-reconcile.max-attempts", "3");
         FileLoadsOptions built = ((BigQueryFileLoadsSink<?>) built(options)).getOptions();
         assertThat(built.getStagingPath()).isEqualTo("gs://bucket/prefix");
         assertThat(built.getTempDataset()).isEqualTo("staging_dataset");
-        assertThat(built.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE);
         // The keys follow the setters (schema-reconcile.*), the getters say schemaUpdate.
         assertThat(built.getSchemaUpdateMaxAttempts()).isEqualTo(3);
+    }
+
+    @Test
+    void aNonAppendWriteDispositionUnderFileLoadsIsRejectedByKeyName() {
+        // What this adds over its planner-level twin, which asserts the same two strings: the
+        // mode here is *defaulted* rather than set, since FactoryMocks builds over an empty
+        // Configuration and execution.runtime-mode's own default is STREAMING. A regression that
+        // only broke the defaulted path would be caught here alone. It also configures no
+        // checkpointing, which is what pins that this rule speaks regardless — unlike its
+        // sibling, an interval below the floor, which has nothing to compare when there is no
+        // interval and which FactoryMocks cannot reach anyway (no sink overload carries a session
+        // Configuration).
+        Map<String, String> options = optionsFor(WriteMethod.FILE_LOADS);
+        options.put("sink.file-loads.write-disposition", "write-truncate");
+        assertThatThrownBy(() -> sink(options))
+                .isInstanceOf(ValidationException.class)
+                // The clause is the factory's; BigQueryFileLoadsSink's own message for this rule
+                // says "supports WriteDisposition.WRITE_APPEND only".
+                .hasStackTraceContaining("cannot be used in streaming execution")
+                // Key and value are both in the WITH clause, so what separates this from
+                // FactoryUtil's dump is only the spaces around '='; the clause above is what
+                // actually discriminates, and this asserts the DDL spelling reached the message.
+                .hasStackTraceContaining(
+                        "Option 'sink.file-loads.write-disposition' = 'write-truncate'");
     }
 
     @Test

@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0032: The other two write methods' mappers build unconditionally; the factory decides
 
 - Status: Accepted
-- Date: 2026-08-06
-- Issues: [#288] (under [#57])
-- Modules: bigquery (`table.sink`)
+- Date: 2026-08-06, revised by [#332] (2026-08-09)
+- Issues: [#288] (under [#57]), [#332]
+- Modules: bigquery (`table`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
 ## Decision
@@ -40,11 +40,37 @@ that message names `WriteDisposition.WRITE_APPEND` &c. in prose, so the value be
   buffered knob is defaulted, so `builder().build()` is exactly what that DDL means; FILE_LOADS
   needs its staging path, which is why that one rejection lives in `FileLoadsOptionsMapper`.
   `presentKeys` survives on all three for the wrong-family check alone.
-- **Two of the four factory rejections are not about families**, and both became reachable from
-  SQL for the first time here: `sink.schema-update.*` under exactly-once, and `emulator-*` under
-  FILE_LOADS. The schema-update one fires on the *enabled* options object, the same condition
-  the builder uses, so `allow-new-fields = false` passes here exactly as it passes there —
-  pinned by a success-side test, the [#289] lesson.
+- **Two of the four family-era factory rejections are not about families**, and both became
+  reachable from SQL for the first time here: `sink.schema-update.*` under exactly-once, and
+  `emulator-*` under FILE_LOADS. The schema-update one fires on the *enabled* options object, the
+  same condition the builder uses, so `allow-new-fields = false` passes here exactly as it passes
+  there — pinned by a success-side test, the [#289] lesson.
+- **The factory may read the *session* configuration, and the two FILE_LOADS streaming rules are
+  where it does** ([#332]). A non-append `sink.file-loads.write-disposition` and a checkpoint
+  interval below `sink.file-loads.min-checkpoint-interval` are `BigQueryFileLoadsSink`'s rules,
+  and their messages name `WriteDisposition.WRITE_APPEND` and
+  `FileLoadsOptions.minCheckpointInterval(...)` — the two a FILE_LOADS SQL user is likeliest to
+  meet, in vocabulary they cannot act on. They are restated here in keys, gated on
+  `execution.runtime-mode` being `STREAMING`, which is the first thing this class decides from
+  anything but the `WITH` clause. It is safe to decide from, by two mechanisms rather than one —
+  see the Evidence below — so at plan time the factory and the sink cannot disagree about either
+  value, measured for both. Three consequences of the shape:
+  - **The restated message stays in DDL vocabulary throughout**, so the runtime mode appears as
+    the literal `streaming`/`batch` a user writes rather than as `RuntimeExecutionMode`'s own
+    spelling — the same rule that made the sink's message take `.name()` above, applied from the
+    other side.
+  - The check runs **after** `FileLoadsOptionsMapper`, unlike the four, because both rules
+    compare against a `FileLoadsOptions` knob whose default lives on that builder; reading the
+    options directly would put a second copy of two defaults in the table layer. The ordering the
+    four rely on survives — a missing staging path is still reported first.
+  - **`FactoryMocks` builds its context over an empty `Configuration`, so every `FactoryMocks`
+    test is implicitly streaming.** That is what makes the disposition rule reachable from
+    `BigQueryDynamicTableFactoryTest` at all, and it is also why
+    `fileLoadsKeysReachTheBuiltSink` no longer round-trips `write-truncate` — the value mapping
+    is `FileLoadsOptionsMapperTest`'s, and the two remaining knobs carry what that test is for.
+    The interval rule has no such reachability: `FactoryMocks` has no sink overload carrying a
+    session `Configuration`, so both rules and the batch acceptance are pinned against a real
+    `TableEnvironment` in `BigQueryTableWriteMethodsPlanTest`.
 - **The FILE_LOADS keys are spelled after the setters** (`sink.file-loads.schema-reconcile.*`),
   not after the `getSchemaUpdate*` getters, which the reflective tests key off too — and which
   keeps them clear of the unrelated `sink.schema-update.*` family. Both new mappers carry
@@ -77,13 +103,70 @@ same table and BigQuery answers *"Exceeded rate limits: too many table update op
 this table"* — the recovery schedule absorbs it and the job succeeds, so it is a cost rather
 than a defect, and the test pins `sink.parallelism` to 2 rather than paying it.
 
+**The factory and the sink converge on both values by two mechanisms, and the second is the one
+that matters** (measured 2026-08-09 on Flink 2.2.1, one run each). The first is the fallback:
+`TableConfig`'s root configuration is the `StreamExecutionEnvironment`'s own `Configuration`, the
+object its `CheckpointConfig` is a view over. The first alone would leave a gap, since a value set
+on `TableConfig`'s *own* layer shadows that root — and
+`AbstractStreamTableEnvironmentImpl.attachAsDataStream` does not call `configure(...)` the way
+`toStreamInternal` does. The hypothesis that this lets the two disagree was **tested and
+disproved**: `PlannerBase.translate` itself calls
+`StreamExecutionEnvironment.configure(tableConfig.getConfiguration(), classLoader)`, so every
+translate — `attachAsDataStream` included — pushes that layer down. With the environment at five
+minutes and `TableConfig` at thirty seconds, a `StatementSet.attachAsDataStream()` over a
+FILE_LOADS table is refused by the factory; **with the factory check removed as a control, the sink
+refuses the same plan with the same verdict**, and the environment reads 30 000 ms by then. The
+runtime mode was measured on the same path and in both directions: a batch `TableConfig` over a
+streaming environment leaves that environment reading `BATCH` after the attach, the factory skips
+and the sink agrees; a streaming `TableConfig` over a batch environment leaves it reading
+`STREAMING`, and the factory's disposition rule fires as the sink's would. The one genuine gap is a
+value changed *after* the plan is built — measured too, and the sink catches it in its own
+vocabulary, which is exactly the pre-[#332] behaviour rather than a regression.
+
+**`RuntimeExecutionMode.AUTOMATIC` is refused before any factory runs** (measured 2026-08-09 on
+Flink 2.2.1, one run): the Table API rejects it in `DefaultPlannerFactory` when the
+`TableEnvironment` is created — *"Unsupported mode 'AUTOMATIC' for 'execution.runtime-mode'. Only
+an explicit BATCH or STREAMING mode is supported in Table API"* — before any DDL, let alone a
+connector factory. So the mode gate needs no `AUTOMATIC` branch, and does not restate
+`BigQueryFileLoadsSink`'s refusal of it, which stays for the DataStream path where the mode does
+arrive. It survives the one hole in that argument — a session set to `AUTOMATIC` *after* the
+environment is built — because the gate is written against `STREAMING` rather than against
+`BATCH`: a mode this connector has never seen takes the silent path instead of falling through
+into rules it was never checked against.
+`BigQueryTableWriteMethodsPlanTest.anAutomaticExecutionModeIsRefusedByFlinkBeforeAnyFactory` fails
+should a later Flink accept it at construction — at which point the silent branch becomes ordinary
+and has to be argued. The asserted string is byte-identical in flink-table-planner 1.20.4, 2.2.1
+and 2.3.0, the whole range `verify-flink` covers, so it pins a premise rather than a version.
+
 ## Consequences
 
 `FileLoadsOptions.toString()` renders `writeDisposition=write-append`, the visible cost of the
 enum's DDL spelling — log-only, nothing parses it (the counterpart of ADR-0014's note about
 `StartPosition.toString()`).
 
+**From SQL, `BigQueryFileLoadsSink`'s two streaming rules are reached only by a value changed
+after the plan is built** — every path where the factory sees the final value, it decides first,
+because both read the same one. Their ordinary coverage is therefore
+`BigQueryFileLoadsSinkTopologyTest`, on the DataStream path. What that costs is the plumbing claim
+the planner test used to carry as a side effect: that a `TableEnvironment`'s
+`execution.checkpointing.interval` arrives intact. It is re-pinned one layer up, by asserting the
+interval *value* inside the factory's message (`'execution.checkpointing.interval' (30000 ms)`),
+which is the layer that reads it.
+
+## Alternatives declined
+
+- **Naming both vocabularies in the sink's own messages** ([#332], option 2) — cheaper, no session
+  read, but it puts DDL keys into a DataStream-facing message and so reverses this ADR's own
+  decision that the two spellings must not meet inside one sentence.
+- **Leaving the rules unrestated** ([#332], option 3). The failure is loud and at plan time, so
+  nothing breaks silently; what a SQL user cannot do is act on it without translating a builder
+  method name into an option key, which is exactly the boundary this class exists to hold.
+- **`TimeUtils.formatWithHighestUnit` for the durations in the message.** `org.apache.flink.util
+  .TimeUtils` is unannotated, so it would owe an entry in `scripts/flink-api-tiers.toml`; the
+  message reports milliseconds instead, as `BigQueryFileLoadsSink`'s does.
+
 [#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
 [#288]: https://github.com/laughingman7743/flink-connector-gcp/issues/288
 [#289]: https://github.com/laughingman7743/flink-connector-gcp/issues/289
 [#326]: https://github.com/laughingman7743/flink-connector-gcp/issues/326
+[#332]: https://github.com/laughingman7743/flink-connector-gcp/issues/332

@@ -341,10 +341,11 @@ on the DataStream page for the full statement; what a SQL user needs is:
   them with load jobs. In streaming execution each checkpoint issues at least one load job per
   table, against BigQuery's quota of **1,500 per table per day**, so the checkpoint interval has a
   floor — two minutes — that `sink.file-loads.min-checkpoint-interval` lowers only as an explicit
-  opt-in; and each checkpoint appends, so `write-truncate` and `write-empty` are refused there. The
-  quota is per *table* while the floor is checked per *job*, so two jobs writing one table, or two
-  `INSERT INTO` statements in one `StatementSet`, each pass the check and together double the
-  cadence.
+  opt-in; and each checkpoint appends, so `write-truncate` and `write-empty` are refused there.
+  Both refusals arrive when the plan is built, and each names the `sink.file-loads.*` key you
+  would change. The quota is per *table* while the floor is checked per *job*, so two jobs writing
+  one table, or two `INSERT INTO` statements in one `StatementSet`, each pass the check and
+  together double the cadence.
   Batch execution, `SET 'execution.runtime-mode' = 'batch'`, loads everything at end of input and
   takes any disposition.
 

@@ -17,7 +17,10 @@
 package io.github.flink.gcp.connector.bigquery.table;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
@@ -28,6 +31,7 @@ import org.apache.flink.table.types.logical.RowType;
 
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
@@ -40,6 +44,7 @@ import io.github.flink.gcp.connector.bigquery.table.sink.TableCreateOptionsMappe
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -53,12 +58,20 @@ import java.util.Set;
  *
  * <p>This is the only place a DDL option becomes a value. Value validation stays in the connector's
  * own builders, so a SQL user gets the same message a DataStream user does; what this class owns
- * are the checks whose message has to name <em>option keys</em>, which a builder's cannot. All four
- * are cross-checks against the selected write method: a tuning family belonging to another one,
- * schema evolution under {@code storage-api-exactly-once}, an emulator endpoint under {@code
- * file-loads}, and — in {@code FileLoadsOptionsMapper} — a missing staging path. Each restates a
- * rule {@code BigQuerySinkBuilder} also has, and each of those builder rules stays exactly where it
- * is: it is the DataStream API's backstop, not a duplicate of this.
+ * are the checks whose message has to name <em>option keys</em>, which a builder's cannot. Most are
+ * cross-checks against the selected write method, decided from the {@code WITH} clause alone: a
+ * tuning family belonging to another one, schema evolution under {@code storage-api-exactly-once},
+ * an emulator endpoint under {@code file-loads}, and — in {@code FileLoadsOptionsMapper} — a
+ * missing staging path.
+ *
+ * <p>{@code checkFileLoadsStreamingRules} is the exception, and the only place this class reads the
+ * <em>session</em> configuration rather than the table's own options: a non-append write
+ * disposition and a checkpoint interval below the connector's floor both depend on {@code
+ * execution.runtime-mode}.
+ *
+ * <p>Every one of them restates a rule {@code BigQuerySinkBuilder} or {@code BigQueryFileLoadsSink}
+ * also has, and each of those stays exactly where it is: it is the DataStream API's backstop, not a
+ * duplicate of this.
  *
  * <p>The identifier {@code bigquery} is also the Dataproc connector's. A classpath carrying both
  * fails factory discovery loudly, which is the acceptable outcome: the natural name wins.
@@ -176,6 +189,12 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                         : null;
         FileLoadsOptions fileLoadsOptions =
                 writeMethod == WriteMethod.FILE_LOADS ? FileLoadsOptionsMapper.map(config) : null;
+        // Below the mapper rather than above it, and it has to be: both rules compare against a
+        // FileLoadsOptions knob whose default lives on that builder, so reading the options
+        // directly would put a second copy of two defaults in this class. The ordering the
+        // rejections above rely on survives — a missing staging path is still reported before
+        // this, and TableCreateOptionsMapper still after it.
+        checkFileLoadsStreamingRules(context.getConfiguration(), fileLoadsOptions);
 
         DataType physicalDataType = context.getPhysicalRowDataType();
         return BigQueryDynamicSink.builder()
@@ -322,6 +341,93 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                         present,
                         BigQueryConnectorOptions.SINK_WRITE_METHOD.key(),
                         WriteMethod.FILE_LOADS));
+    }
+
+    /**
+     * Rejects the two {@code file-loads} rules that only apply in streaming execution.
+     *
+     * <p>{@code BigQueryFileLoadsSink.validateStreaming(...)} holds both, and keeps them: it is the
+     * DataStream API's backstop. Its messages name {@code WriteDisposition.WRITE_APPEND} and {@code
+     * FileLoadsOptions.minCheckpointInterval(...)}, and mixing the DDL spellings into them was
+     * declined — the two vocabularies must not meet inside one message. So the rules are restated
+     * here in keys, and this message stays in DDL vocabulary throughout, which is why the runtime
+     * mode appears as the literal {@code streaming}/{@code batch} a user writes rather than as
+     * {@link RuntimeExecutionMode}'s own spelling.
+     *
+     * <p>The session configuration is safe to decide from, and by two mechanisms rather than one.
+     * The {@code TableConfig} the planner hands this factory falls back to the {@code
+     * StreamExecutionEnvironment}'s own {@code Configuration}, the very object its {@code
+     * CheckpointConfig} is a view over; and {@code PlannerBase.translate} pushes {@code
+     * TableConfig}'s own layer onto that environment with {@code configure(...)}, which is what
+     * covers the {@code attachAsDataStream} bridge path where nothing else would. Measured
+     * 2026-08-09 on Flink 2.2.1: with the environment at five minutes and {@code TableConfig} at
+     * thirty seconds, removing this check makes the sink reject the same plan with the same
+     * verdict. What neither mechanism can cover is a value changed <em>after</em> the plan is
+     * built, which no plan-time check could; the sink still catches it, in its own vocabulary.
+     */
+    private static void checkFileLoadsStreamingRules(
+            ReadableConfig sessionConfig, @Nullable FileLoadsOptions options) {
+        if (options == null) {
+            return;
+        }
+        // What this excludes is BATCH, which takes any disposition and triggers on end of input
+        // rather than on checkpoints, so neither rule applies there. AUTOMATIC is refused by
+        // Flink's own DefaultPlannerFactory when the TableEnvironment is created (measured
+        // 2026-08-09 on Flink 2.2.1, one run), so it arrives only if set on the session
+        // afterwards — and the comparison is written against STREAMING rather than against BATCH
+        // so that such a mode takes the silent path instead of falling through into rules it was
+        // never checked against.
+        if (sessionConfig.get(ExecutionOptions.RUNTIME_MODE) != RuntimeExecutionMode.STREAMING) {
+            return;
+        }
+        String runtimeModeKey = ExecutionOptions.RUNTIME_MODE.key();
+        if (options.getWriteDisposition() != WriteDisposition.WRITE_APPEND) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' = '%s' cannot be used in streaming execution ('%s' ="
+                                    + " 'streaming'), where '%s' = '%s' appends each checkpoint's"
+                                    + " rows with a load job of its own: replacing or rejecting the"
+                                    + " table on every checkpoint is not a meaningful write. Use"
+                                    + " '%s', or run in batch execution ('%s' = 'batch').",
+                            BigQueryConnectorOptions.SINK_FILE_LOADS_WRITE_DISPOSITION.key(),
+                            options.getWriteDisposition(),
+                            runtimeModeKey,
+                            BigQueryConnectorOptions.SINK_WRITE_METHOD.key(),
+                            WriteMethod.FILE_LOADS,
+                            WriteDisposition.WRITE_APPEND,
+                            runtimeModeKey));
+        }
+        // CheckpointConfig.isCheckpointingEnabled() reproduced: the option has no default, and an
+        // absent or non-positive interval means checkpointing is off. This rule alone stays silent
+        // then, and not out of deference to BigQueryFileLoadsSink's "requires checkpointing"
+        // message — it is that an interval that does not exist cannot be compared with a floor.
+        // The disposition above has a true answer with or without checkpointing, so it speaks.
+        long intervalMs =
+                sessionConfig
+                        .getOptional(CheckpointingOptions.CHECKPOINTING_INTERVAL)
+                        .map(Duration::toMillis)
+                        .orElse(-1L);
+        long minIntervalMs = options.getMinCheckpointInterval().toMillis();
+        if (intervalMs > 0 && intervalMs < minIntervalMs) {
+            String intervalKey = CheckpointingOptions.CHECKPOINTING_INTERVAL.key();
+            throw new ValidationException(
+                    String.format(
+                            "'%s' (%d ms) is shorter than the smallest checkpoint interval '%s' ="
+                                    + " '%s' accepts in streaming execution (%d ms): BigQuery allows"
+                                    + " 1,500 load jobs per table per day and each checkpoint issues"
+                                    + " at least one load job per destination table (1 min ="
+                                    + " 1,440/day, 2 min = 720/day, 5 min = 288/day). Increase '%s',"
+                                    + " or set '%s' lower explicitly for a short-lived job whose"
+                                    + " daily load count stays safe.",
+                            intervalKey,
+                            intervalMs,
+                            BigQueryConnectorOptions.SINK_WRITE_METHOD.key(),
+                            WriteMethod.FILE_LOADS,
+                            minIntervalMs,
+                            intervalKey,
+                            BigQueryConnectorOptions.SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL
+                                    .key()));
+        }
     }
 
     private static RowDataSchemaOptions schemaOptions(ReadableConfig config) {
