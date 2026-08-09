@@ -162,7 +162,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   this repository has paid for elsewhere), declared in the script's own **PEP 723** header, so the
   uv project takes no *runtime* dependency and this one script runs as
   `uv run --no-project scripts/…` (pyyaml is in the dev group all the same, because
-  `just test-scripts` loads the script by file path). Also checks
+  `just test-scripts` loads the script by file path). **Where the block ends is measured too**
+  (#388): Claude Code closes the frontmatter at the first `---` *anywhere* after the opening line,
+  not at the first `---` line — a `----` rule, a `--- text` line and a `---` inside a
+  `description:` all close it, the last of them truncating the description while the skill still
+  loads — so the script delimits that way and reports a close that is not alone on its line. Only
+  a body rule of exactly `---` still passes for a deleted closing delimiter, and there the loader
+  agrees with it. Also checks
   name-matches-directory, a non-empty description, no duplicate key and a skill directory whose
   `SKILL.md` is gone; no allowlist, so no curate-* skill. **Its own `verify.yaml` job, not part of
   `just lint`** — because it downloads, and `just lint` stays offline; that is

@@ -109,6 +109,28 @@ guard.
   than part of `just lint`: this repository already had that rule, written on
   `check-flink-api-tiers` and relied on by three other comments and by ADR-0058, and round two of
   this pull request's own review found the first draft breaking it.
+- **Where that block *ends* is the loader's answer, not the script's** — refined on [#388], which
+  had recorded the opposite as an unclosable gap. Measured against 2.1.223 on 2026-08-09, by
+  loading deliberately malformed skills through `--plugin-dir` beside a well-formed control and
+  reading back the descriptions a session was given: Claude Code ends the frontmatter at the
+  **first `---` anywhere** after the opening line, not at the first `---` *line*. A `----` rule
+  closed it, so did a line reading `--- not a delimiter`, so did a `---` mid-sentence inside a
+  comment; and a `---` inside a `description:` value truncated that description at the dashes
+  while the skill still loaded, advertising a sentence its author never wrote. The control loaded
+  intact in the same run, which is what lets the rest of the column mean anything. So the check
+  delimits the way that reader does, and asks one question of its own — is the `---` it stopped at
+  alone on its line? — which is enough to fail three files that reported clean, with no allowlist
+  and no line budget. That question is knowingly the one place the check is *stricter* than the
+  loader: a `-----` typed into the closing line loads with its description intact, measured, and
+  is reported anyway; a rule that fired only where the skill was already unloadable would have
+  missed the truncated description, which is the case worth having. What survives is a body rule
+  of exactly `---` standing in for a deleted closing delimiter: the loader stops there too, the
+  skill keeps the name and description its author wrote and loses only the body above the rule —
+  confirmed by invoking such a skill and reading back its content, not inferred — so nothing is
+  misdescribed, and telling a horizontal rule from a delimiter needs judgment this check has none
+  of. Worth noting which way both corrections went — the measurement above
+  found the loader more tolerant than PyYAML, this one found it more tolerant than a line-anchored
+  delimiter search, and a guess in either direction would have been wrong.
 - **The gate is only meaningful after the rebase**, which the pull request adding it found by
   running it too early on its own branch: against a `main` that has moved, `git diff origin/main`
   reports upstream work the branch has not picked up yet as deletions, in exactly the shape the
@@ -123,3 +145,4 @@ guard.
   restored: a reviewer who read the earlier diff read a wrong one.
 
 [#376]: https://github.com/laughingman7743/flink-connector-gcp/pull/376
+[#388]: https://github.com/laughingman7743/flink-connector-gcp/issues/388
