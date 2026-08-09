@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 ([#250], live since the plan upgrade; shape decided with the user on PR
-  [#305](https://github.com/laughingman7743/flink-connector-gcp/pull/305))
-- Issues: [#250]
+  [#305](https://github.com/laughingman7743/flink-connector-gcp/pull/305)); the cost of moving
+  the tofu plan under the orchestrator recorded 2026-08-09 ([#444])
+- Issues: [#250], [#444]
 - Modules: all (CI)
 - Current behavior: `scripts/ci-gate.py` (the hand-runnable truth table), `ci.yaml`
 
@@ -55,6 +56,14 @@ briefly enumerated the checkers as their own required contexts.
 - A job or workflow enrolls in `ci.yaml` or its child alone and touches no repository
   setting. The one exception is the gate's own name: a required context is matched **by job
   name**, so renaming `CI passed` must update branch protection in the same change.
+- **Moving a workflow under the orchestrator can break something outside GitHub that names
+  it**, and this one did: a `workflow_call` child has no runs of its own, so the tofu plan's
+  artifact belongs to `ci.yaml`'s run, and `tfaction-root.yaml`'s `plan_workflow_name` — left
+  naming `tofu-plan.yaml` when the plan moved here — could no longer find it. Every apply with
+  something to apply failed until it was repointed at `ci.yaml`, months of infra changes later
+  in the worst case; it happened to be three days
+  ([#444](https://github.com/laughingman7743/flink-connector-gcp/issues/444), ADR-0063, which
+  carries the mechanics and the two constraints `ci.yaml` now carries).
 - `docs.yaml` and `lint.yaml` are required through the gate like everything else; their
   `paths` filters survive on the push trigger only, as cost control (ADR-0058).
 - **A fresh pull request showing "no checks reported" is diagnosed at the merge state
@@ -69,3 +78,4 @@ briefly enumerated the checkers as their own required contexts.
   status-page/billing/trigger diagnosis before the merge state was checked.
 
 [#250]: https://github.com/laughingman7743/flink-connector-gcp/issues/250
+[#444]: https://github.com/laughingman7743/flink-connector-gcp/issues/444

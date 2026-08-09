@@ -27,9 +27,11 @@ queues) are created and deleted by the tests themselves.
 | `/tfaction-root.yaml` | Global tfaction configuration (repository root) |
 
 CI: a pull request touching `opentofu/**` gets a plan comment from
-`.github/workflows/tofu-plan.yaml`; the merge to `main` applies the reviewed
-plan file and comments the result (`tofu-apply.yaml`). Locally, `just tofu
-<args>` runs OpenTofu in the root module and `just lint` checks formatting.
+`.github/workflows/tofu-plan.yaml`, which runs as a job of `ci.yaml` — so the
+run that carries the plan file is `ci.yaml`'s; the merge to `main` applies that
+reviewed plan file and comments the result (`tofu-apply.yaml`). Locally, `just
+tofu <args>` runs OpenTofu in the root module and `just lint` checks
+formatting.
 
 ## tfaction configuration decisions
 
@@ -42,6 +44,7 @@ why:
 | `terraform_command: tofu` | on | This is an OpenTofu repository |
 | Plan/apply as separate WIF service accounts | on | A pull request's plan job never holds write credentials |
 | Plan file via GitHub Artifacts | on (built in) | The apply runs exactly the plan the PR reviewed; no extra storage |
+| `plan_workflow_name` | `ci.yaml` | It names the workflow whose *run* owns the plan artifact, not the file the plan steps live in: the plan runs as a `workflow_call` child, whose artifacts belong to the caller's run. `ci.yaml` must therefore stay `pull_request`-only — the lookup takes the newest run on the head branch with no event filter ([#444](https://github.com/laughingman7743/flink-connector-gcp/issues/444)) |
 | `dismiss_approval_before_plan` | on (default) | A re-plan dismisses stale approvals, so an approval always refers to the plan that will apply |
 | `hide-comment` job in the plan workflow | on | Outdated plan comments are hidden; the visible comment is the one that would apply |
 | GitHub App | none | Plain `GITHUB_TOKEN` suffices for plan/apply/comments/labels; the App only pays for push-back features (below). Revisit once the repository is public (or moves to a dedicated org): an App token would unlock them |

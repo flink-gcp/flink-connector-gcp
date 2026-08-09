@@ -9,7 +9,13 @@ on:
   push:
     branches:
       - main
-    # Keep in sync with tofu-plan.yaml's paths (see the note there).
+    # tofu-plan.yaml has no paths of its own to mirror any more — it runs under
+    # ci.yaml (see the note there). What this list must not miss is any path a
+    # merge could carry a reviewed plan for: 'opentofu/**' is a superset of
+    # tfaction's root-module markers, and the rest are the inputs that decide
+    # how a plan is produced. ci.yaml is deliberately absent although the plan
+    # now runs under it — a change to it alone selects no target, so it could
+    # only start applies with nothing to apply.
     paths:
       - 'opentofu/**'
       - 'tfaction-root.yaml'

@@ -157,7 +157,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   Deliberately does **not** run `just --fmt --check` — an unstable feature, excluded from
   just's compatibility guarantee (ADR-0057). actionlint is handed
   `-shellcheck "$(mise which shellcheck)"` rather than letting it find the runner image's own.
-  It also runs `just check-skill-frontmatter` (below)
+  It does **not** run `just check-skill-frontmatter`, which downloads and therefore has its own
+  `verify.yaml` job (below) — the recipe body is the list above and nothing else
 - `just check-skill-frontmatter` — is every `.claude/skills/*/SKILL.md` frontmatter strict YAML?
   **A house style, not Claude Code's requirement, and the difference is measured**: the unquoted
   `description:` carrying a `: ` that PyYAML rejects outright was loaded by Claude Code with its
@@ -463,9 +464,13 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   `needs` them all and derives its verdict through `scripts/ci-gate.py` (children with a
   legitimately skippable job carry an internal verdict job with `SKIPPED_OK`), so a job or
   workflow enrolls in `ci.yaml` or its child alone and touches no repository setting — except a
-  rename of `CI passed` itself, which must update branch protection in the same change. When a
-  fresh PR shows "no checks reported", run `gh pr view <n> --json mergeable` **first**: a
-  `CONFLICTING` pull request triggers zero `pull_request` runs at all
+  rename of `CI passed` itself, which must update branch protection in the same change. Two
+  things about `ci.yaml` do reach outside it, both because the tofu plan runs as one of its jobs
+  and the plan artifact therefore belongs to *its* run (#444; ADR-0063): its **file name** is
+  what `tfaction-root.yaml`'s `plan_workflow_name` must hold, and its **trigger list** must stay
+  `pull_request`-only, since tfaction takes the newest run on the head branch with no event
+  filter. When a fresh PR shows "no checks reported", run `gh pr view <n> --json mergeable`
+  **first**: a `CONFLICTING` pull request triggers zero `pull_request` runs at all
 
 ## Licensing and provenance
 
