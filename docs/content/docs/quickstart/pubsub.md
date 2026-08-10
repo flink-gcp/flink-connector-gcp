@@ -85,10 +85,10 @@ record's event timestamp, so a `WatermarkStrategy` over it is what to use instea
 
 ## The same thing in SQL
 
-Pub/Sub and BigQuery have table connectors; Cloud Tasks' is tracked on
+Pub/Sub, BigQuery and Bigtable have table connectors; Cloud Tasks' is tracked on
 [#99]({{< param BookRepo >}}/issues/99). Put `flink-sql-connector-gcp-pubsub` in Flink's `lib/`, or
 add it in the SQL client — and `flink-sql-connector-gcp-bigquery` beside it if the job also writes
-to BigQuery, since the two are built to share a classpath:
+to BigQuery, since the jars are built to share a classpath:
 
 ```sql
 ADD JAR '/path/to/flink-sql-connector-gcp-pubsub-0.1.0-SNAPSHOT.jar';

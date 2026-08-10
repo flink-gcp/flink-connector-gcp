@@ -44,7 +44,7 @@ Source<OrderEvent, ?, ?> source =
 | `bigtable` table connector; the HBase-compatible DDL model, the cell codec, an upsert `DynamicTableSink` and table auto-creation | Implemented ([#458](https://github.com/laughingman7743/flink-connector-gcp/issues/458)) |
 | `ScanTableSource` with column-family projection pushdown | Planned ([#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459)) |
 | `LookupTableSource`, sync and async, with the standard lookup caches | Planned ([#460](https://github.com/laughingman7743/flink-connector-gcp/issues/460)) |
-| `flink-sql-connector-gcp-bigtable` shaded uber-jar | Planned ([#461](https://github.com/laughingman7743/flink-connector-gcp/issues/461)) |
+| `flink-sql-connector-gcp-bigtable` shaded uber-jar | Implemented ([#461](https://github.com/laughingman7743/flink-connector-gcp/issues/461)) |
 
 ## Documentation
 

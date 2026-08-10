@@ -301,8 +301,9 @@ bound failures"; and it reaches the trees only through the few artifacts that de
   what makes the same drift fail inside `just verify`.
 - What is specific to a tree (an artifact kept out of the bundle, a relocation only it needs)
   belongs beside that connector — the BigQuery jar's record is its module's, ADR-0035, and
-  `slf4j-api` is there because only that tree carries it. An exclusion both trees take is this
-  record's, which is where `javax.annotation-api` sits.
+  `slf4j-api`'s reasoning lives there; the Bigtable tree, which meets the same artifact through
+  its own client, takes that exclusion by reference in its pom. An exclusion every tree takes is
+  this record's, which is where `javax.annotation-api` sits.
 
 [#26]: https://github.com/laughingman7743/flink-connector-gcp/issues/26
 [#138]: https://github.com/laughingman7743/flink-connector-gcp/issues/138

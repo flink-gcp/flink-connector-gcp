@@ -1,0 +1,345 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright 2026 laughingman7743
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.flink-gcp</groupId>
+        <artifactId>flink-connector-gcp-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>flink-sql-connector-gcp-bigtable</artifactId>
+    <name>Flink Connectors GCP : SQL : Bigtable</name>
+    <packaging>jar</packaging>
+
+    <properties>
+        <!-- This module has no source of its own; its public surface is the connector's,
+             checked there. japicmp would compare a relocated uber-jar against itself. -->
+        <japicmp.skip>true</japicmp.skip>
+    </properties>
+
+    <dependencies>
+        <!-- The only compile dependency, and the reason this module exists: it is bundled
+             along with its whole runtime tree. Nothing here references it from source,
+             which is why maven-dependency-plugin:analyze has to be told to ignore it. -->
+        <dependency>
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-bigtable</artifactId>
+            <version>${project.version}</version>
+            <!-- The two artifacts of the tree that must NOT be bundled. Excluded here
+                 rather than filtered out of the shade, so that the dependency tree the
+                 NOTICE, the licence report and BundledDependenciesNoticeTest all read is
+                 the tree that is actually bundled - one fact, not a fact plus an exception
+                 list. The connector jar still declares them, so a DataStream user resolving
+                 transitively is unaffected. -->
+            <exclusions>
+                <!-- The Pub/Sub tree carries no slf4j at all; this one gets it because
+                     google-cloud-bigtable declares slf4j-api as a direct compile dependency
+                     for the client's own logging (2.0.16 in its pom; the 1.7.36 that
+                     flink-core declares wins mediation - nothing manages the version).
+                     Why bundling it is wrong either way round -
+                     relocated, the connector logs into a copy no Flink log configuration
+                     reaches; unrelocated, a second slf4j-api beside flink-dist's - is
+                     ADR-0035's record, taken by reference. -->
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-api</artifactId>
+                </exclusion>
+                <!-- Fifteen classes nothing loads, dual-licensed
+                     CDDL-1.0 / GPL-2.0-with-classpath-exception. Why a dual licence alone
+                     disqualifies an artifact, and why the answer is exclusion rather than
+                     electing an arm, is ADR-0015; the two sibling SQL modules exclude it
+                     for the same reason.
+
+                     Measured for THIS tree rather than inherited: the path that wins
+                     mediation here is api-common's, not the one the Pub/Sub module records
+                     - `./mvnw dependency:tree -pl flink-connector-gcp-bigtable
+                     -Dincludes=javax.annotation:javax.annotation-api` prints
+                     com.google.api:api-common:2.65.0 as the only parent. Upstream
+                     api-common lists the artifact under ignoredUnusedDeclaredDependencies,
+                     "declared to fix upper bound failures". BundledDependenciesNoticeTest
+                     and the packaging ITCase are what would notice if something in this
+                     bundle did reference it: the jar would be missing classes those tests
+                     sample for. -->
+                <exclusion>
+                    <groupId>javax.annotation</groupId>
+                    <artifactId>javax.annotation-api</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- Test scope. The integration tests run against the shaded jar rather than
+             against these classes (see the surefire configuration below), so what is
+             needed here is a Flink able to plan and run a SQL job, plus the emulator. -->
+        <dependency>
+            <!-- Shared test utilities (#27): the emulator container image and the stock
+                 admin/pull clients the smoke test drives the emulator with. -->
+            <groupId>io.github.flink-gcp</groupId>
+            <artifactId>flink-connector-gcp-test-utils</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-api-java-bridge</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-planner-loader</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-runtime</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-clients</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- The FLIP-27 source base the connector compiles against as `provided`. It ships in
+             flink-dist, so it is not bundled here either — but the test classpath is not a
+             Flink distribution and has to supply it. -->
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-base</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-test-utils</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- The emulator. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>gcloud</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- The test harness also drives the emulator with the *unshaded* Bigtable admin
+             and data clients, so that the connector's relocated copy and a stock one
+             demonstrably coexist on one classpath. Those classes are NOT declared here on
+             purpose: they arrive transitively from the connector at compile scope, and a
+             direct `test` declaration would win by Maven's nearest-definition rule and
+             demote them out of the shaded bundle - measured on the Pub/Sub module, where
+             it silently cut the uber-jar down to guava plus a handful of annotation jars.
+             `maven-dependency-plugin:analyze` is deliberately absent for the same reason:
+             the scoping it would demand is exactly the scoping that breaks the bundle. -->
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <!-- Everything but the relocations below - the version, the `shade-flink`
+                     execution's phase and goal, the artifactSet, the filters and the
+                     transformers - comes from the root pom's pluginManagement, which is
+                     where the reasoning for each lives and where a change reaches both SQL
+                     bundles at once. The relocation list is the one part that must stay
+                     per module: it is derived from *this* module's runtime-classpath.txt,
+                     and a pattern wider than this tree would rewrite references nothing can
+                     then supply. -->
+                <executions>
+                    <execution>
+                        <id>shade-flink</id>
+                        <configuration>
+                            <relocations>
+                                <!-- Everything a user's own job could carry a different version
+                                     of, with no exception. -->
+                                <!-- First-party shared infrastructure (#61), bundled transitively
+                                     through the connector. Relocated because a sibling GCP SQL
+                                     uber-jar will bundle it too, and two jars at different release
+                                     versions must not fight over one unrelocated copy — the same
+                                     classpath-sharing rule that keeps grpc-netty-shaded relocated.
+                                     The connector's own ...connector.bigtable package stays
+                                     unrelocated: it is this jar's public surface. -->
+                                <relocation>
+                                    <pattern>io.github.flink.gcp.connector.base</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.io.github.flink.gcp.connector.base</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>com.google</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.com.google</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>io.grpc</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.io.grpc</shadedPattern>
+                                </relocation>
+
+                                <!-- io.grpc:grpc-netty-shaded has been relocated once already, by
+                                     gRPC's own build, which renamed META-INF/native/libnetty* to
+                                     libio_grpc_netty_shaded_netty* to match. Netty derives the
+                                     native library name at runtime from the package prefix of its
+                                     own NativeLibraryLoader, and maven-shade does not rename
+                                     native resources — so relocating those classes a second time
+                                     without these two entries leaves the classes looking under
+                                     the new prefix while the files sit under the old one. Both
+                                     forms are needed: Windows DLLs carry no `lib`.
+
+                                     This is the established form, not an invention. Identical
+                                     pairs appear in googleapis/java-bigtable-hbase (which cites
+                                     netty#6995 and grpc-java#2485), GoogleCloudDataproc's
+                                     gcs-connector, and the uber-jars of both Google Flink
+                                     connectors; Beam and spark-bigquery do the same thing with
+                                     their own prefixes. maven-shade matches resource paths
+                                     directly, so no `rawString` is required — and none of those
+                                     projects uses it. The counterexample is
+                                     GoogleCloudDataproc/flink-bigquery-connector, which relocates
+                                     io.grpc without renaming and ships a jar whose tcnative and
+                                     epoll libraries can never load.
+
+                                     The replacement is not free-form: netty's
+                                     calculateMangledPackagePrefix() takes its own class name
+                                     minus io.netty.util.internal.NativeLibraryLoader and maps
+                                     `_` to `_1` then `.` to `_`. So the relocated name must stay
+                                     a pure *prefix* of that suffix — collapsing the middle throws
+                                     UnsatisfiedLinkError at class init — and an underscore in the
+                                     prefix would have to be written `_1`. This prefix has none.
+                                     BigtableSqlConnectorPackagingITCase derives the same string
+                                     from the shaded prefix, so the two cannot drift apart.
+
+                                     Leaving grpc-netty-shaded unrelocated was built and rejected:
+                                     it makes this jar unable to share a classpath with any other
+                                     jar carrying io.grpc.netty.shaded — including a future GCP SQL
+                                     connector built the same way, whose copy would extend a
+                                     differently relocated gRPC core. The failure is
+                                     "NettyChannelProvider not a subtype", observed in a real test
+                                     run, and it is exactly what an uber-jar exists to prevent.
+
+                                     Untested residue: whether the renamed libraries load through
+                                     JNI is only exercised on Linux with epoll or tcnative, which
+                                     the plaintext emulator test never reaches. A wrong rename
+                                     degrades to NIO and JDK SSL silently rather than failing. -->
+                                <relocation>
+                                    <pattern>META-INF/native/libio_grpc_netty_shaded_netty</pattern>
+                                    <shadedPattern>META-INF/native/libio_github_flink_gcp_connector_bigtable_shaded_io_grpc_netty_shaded_netty</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>META-INF/native/io_grpc_netty_shaded_netty</pattern>
+                                    <shadedPattern>META-INF/native/io_github_flink_gcp_connector_bigtable_shaded_io_grpc_netty_shaded_netty</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>io.opencensus</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.io.opencensus</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>io.opentelemetry</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.io.opentelemetry</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>io.perfmark</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.io.perfmark</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.threeten</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.org.threeten</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.apache.http</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.org.apache.http</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.apache.commons.codec</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.org.apache.commons.codec</shadedPattern>
+                                </relocation>
+                                <!-- Not relocated, and each for a reason:
+
+                                     org.conscrypt — ships native libraries under META-INF/native
+                                       named after its own package, the same hazard handled above
+                                       for netty. Unlike netty it is a leaf: nothing here links
+                                       against it, gRPC only picks it up reflectively as an
+                                       optional TLS provider, and it falls back to JDK SSL when
+                                       absent or unusable. So the rename dance buys nothing here.
+
+                                     javax.annotation (jsr305 alone; javax.annotation-api is
+                                     excluded from the tree - see above),
+                                     org.jspecify, org.codehaus.mojo.animal_sniffer,
+                                     android.annotation — annotation-only artifacts. Relocation
+                                       exists to stop two versions of a *behaving* class fighting
+                                       over one name; a duplicate annotation class is inert,
+                                       resolved by whichever loader wins and never invoked. So
+                                       relocating buys nothing, and for javax.annotation it would
+                                       mean rewriting a standard JSR package, which is a surprise
+                                       nobody asked for.
+
+                                     AbstractSqlConnectorPackagingITCase carries the matching
+                                     allow-list - the five common ones there, this module's own
+                                     package root in its subclass - so this list and that one fail
+                                     together, in both directions: an exemption with no classes
+                                     under it fails too. -->
+                            </relocations>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Configured entirely in the root pom's pluginManagement, which is also where
+                 the reasoning lives; an empty declaration is what switches each on for this
+                 module. Between them they produce the licence report check-notice.py reads and
+                 the runtime tree the packaging tests read. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>license-maven-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <executions>
+                    <!-- Redeclares the parent's integration-test execution so the ITs run
+                         against the *shaded* jar. Dropping the connector artifact and adding
+                         the uber-jar is what makes "the connector class came from the uber-jar"
+                         true rather than hoped for; the smoke test asserts it as well, since a
+                         silent regression here would leave the test passing against unshaded
+                         classes and proving nothing.
+
+                         The connector's transitive Google artifacts stay: the harness drives the
+                         emulator with them while the connector uses its relocated copies, and
+                         that coexistence is the point. -->
+                    <execution>
+                        <id>integration-tests</id>
+                        <configuration>
+                            <classpathDependencyExcludes>
+                                <classpathDependencyExclude>io.github.flink-gcp:flink-connector-gcp-bigtable</classpathDependencyExclude>
+                            </classpathDependencyExcludes>
+                            <additionalClasspathElements>
+                                <additionalClasspathElement>${project.build.directory}/${project.build.finalName}.jar</additionalClasspathElement>
+                            </additionalClasspathElements>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

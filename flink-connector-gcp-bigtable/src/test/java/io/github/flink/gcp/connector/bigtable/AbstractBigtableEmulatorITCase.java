@@ -17,10 +17,8 @@
 package io.github.flink.gcp.connector.bigtable;
 
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
-import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.Query;
@@ -28,13 +26,14 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowMutation;
 import com.google.cloud.bigtable.data.v2.models.TableId;
+import io.github.flink.gcp.connector.testutils.bigtable.BigtableEmulatorContainers;
+import io.github.flink.gcp.connector.testutils.bigtable.BigtableTestClients;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.BigtableEmulatorContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -62,33 +61,17 @@ public abstract class AbstractBigtableEmulatorITCase {
 
     protected static final String FAMILY = "cf";
 
-    private static final DockerImageName IMAGE =
-            DockerImageName.parse(
-                    "gcr.io/google.com/cloudsdktool/google-cloud-cli:441.0.0-emulators");
-
     @Container
     protected static final BigtableEmulatorContainer EMULATOR =
-            new BigtableEmulatorContainer(IMAGE);
+            BigtableEmulatorContainers.newContainer();
 
     private static BigtableTableAdminClient adminClient;
     private static BigtableDataClient dataClient;
 
     @BeforeAll
     protected static void startClients() throws IOException {
-        adminClient =
-                BigtableTableAdminClient.create(
-                        BigtableTableAdminSettings.newBuilderForEmulator(
-                                        EMULATOR.getHost(), EMULATOR.getEmulatorPort())
-                                .setProjectId(PROJECT)
-                                .setInstanceId(INSTANCE)
-                                .build());
-        dataClient =
-                BigtableDataClient.create(
-                        BigtableDataSettings.newBuilderForEmulator(
-                                        EMULATOR.getHost(), EMULATOR.getEmulatorPort())
-                                .setProjectId(PROJECT)
-                                .setInstanceId(INSTANCE)
-                                .build());
+        adminClient = BigtableTestClients.adminClient(EMULATOR, PROJECT, INSTANCE);
+        dataClient = BigtableTestClients.dataClient(EMULATOR, PROJECT, INSTANCE);
     }
 
     @AfterAll
