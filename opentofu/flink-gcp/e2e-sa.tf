@@ -52,19 +52,19 @@ resource "google_project_iam_member" "e2e" {
     "roles/cloudtasks.admin",
     # Tests create and delete their own topics and subscriptions.
     "roles/pubsub.editor",
-    # Admin for the same reason roles/bigtable.admin is above: the Spanner
-    # suite (#224) creates and deletes an ephemeral instance per gated test
-    # class, and no predefined role narrower than admin can create one —
-    # roles/spanner.databaseAdmin administers databases inside an instance that
-    # already exists, and roles/spanner.databaseUser is data access only.
-    # It is also what makes this one binding rather than two: the batch
-    # source's gated tests read with Data Boost, whose
-    # spanner.databases.useDataBoost permission roles/spanner.databaseReader
-    # does not carry (roles/spanner.databaseReaderWithDataBoost does), and
-    # admin carries both that and the DDL the tests issue. Nothing persistent
-    # exists for it to reach: the instance a run works in was created by that
-    # run. A custom role was declined for the reason written out above.
-    "roles/spanner.admin",
+    # Editor, not admin, and unlike Bigtable above this connector does not need
+    # the wider grant: the Spanner suite (#224) creates and deletes an ephemeral
+    # instance per gated test class, and roles/spanner.editor carries
+    # spanner.instances.create/delete along with database creation, DDL, reads,
+    # writes and spanner.databases.useDataBoost — every permission the suite
+    # uses, checked one by one against `gcloud iam roles describe`. What admin
+    # adds over it is what a CI account should not hold: setIamPolicy on
+    # instances, databases, backups and backup schedules, which is a
+    # privilege-escalation surface, plus CMEK key-handle creation and tag
+    # bindings. Nothing persistent exists for it to reach either way: the
+    # instance a run works in was created by that run. A custom role was
+    # declined for the reason written out above.
+    "roles/spanner.editor",
   ])
 
   project = local.project_id
