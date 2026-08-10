@@ -16,7 +16,9 @@
 
 package io.github.flink.gcp.connector.bigtable.source;
 
+import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableEmulatorITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -101,11 +103,59 @@ class BigtableEmulatorReadDeviationITCase extends AbstractBigtableEmulatorITCase
     }
 
     @Test
+    void answersARangeExclusiveAtItsOwnEndKeyWithNoRows() {
+        // The state a split's range reaches after its last row was emitted. The emulator answers
+        // it empty, which is exactly the answer the service refuses to give — see the disabled
+        // twin — and why neither refusal in #481 could have been found here.
+        TableDestination table = createTable("deviation-inverted-range");
+        seedRows(table, "a", "b");
+
+        assertThat(
+                        readRange(
+                                table,
+                                ByteStringRange.unbounded()
+                                        .startOpen(ByteString.copyFromUtf8("b"))
+                                        .endClosed(ByteString.copyFromUtf8("b"))))
+                .isEmpty();
+    }
+
+    @Test
+    void answersAFilterNamingAnAbsentColumnFamilyWithNoRows() {
+        // The emulator evaluates the family filter against the rows and finds nothing, where the
+        // service checks the family against the table's schema first — see the disabled twin.
+        TableDestination table = createTable("deviation-absent-family-filter");
+        seedRows(table, "a");
+
+        assertThat(readRows(table, Filters.FILTERS.family().exactMatch("absent"))).isEmpty();
+    }
+
+    @Test
     @Disabled(
             "Real Bigtable returns one boundary per tablet, so a pre-split table samples"
                     + " deterministically. Enable when the emulator models tablets; until then the"
                     + " gated real-GCP suite is the only coverage of multi-split planning.")
     void samplesOneBoundaryPerTabletAsBigtableDoes() {
+        throw new UnsupportedOperationException("Recorded for the service, not run here.");
+    }
+
+    @Test
+    @Disabled(
+            "Real Bigtable refuses a range whose start is exclusive at its own end key with"
+                    + " INVALID_ARGUMENT (\"start_key must be less than end_key\", measured"
+                    + " 2026-08-10, #481). The emulator answers it empty, so the reader's"
+                    + " finish-without-a-stream short-circuit is verifiable only against the"
+                    + " service.")
+    void refusesARangeExclusiveAtItsOwnEndKeyAsBigtableDoes() {
+        throw new UnsupportedOperationException("Recorded for the service, not run here.");
+    }
+
+    @Test
+    @Disabled(
+            "Real Bigtable refuses a read whose filter names a column family the table does not"
+                    + " have with NOT_FOUND (\"Requested column family not found\", measured"
+                    + " 2026-08-10, #481). The emulator answers it empty, so the loud failure a"
+                    + " misconfigured filter earns is covered only by the gated real-GCP suite.")
+    void refusesAFilterNamingAnAbsentColumnFamilyAsBigtableDoes() {
         throw new UnsupportedOperationException("Recorded for the service, not run here.");
     }
 

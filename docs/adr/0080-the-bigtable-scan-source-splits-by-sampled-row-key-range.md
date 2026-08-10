@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-09
-- Issues: [#216], [#34], [#248]
+- Issues: [#216], [#34], [#248], [#481]
 - Modules: bigtable (`source`, `source.readrows`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Source
 
@@ -64,6 +64,15 @@ Checked against the pinned versions before the design was committed (`google-clo
 - **`roles/bigtable.admin`, which the E2E service account already holds, covers the source's whole
   RPC set** (`bigtable.tables.readRows`, `bigtable.tables.sampleRowKeys`) and the app-profile
   administration its gated test needs. No infrastructure change.
+- **Real Bigtable refuses the two reads the gated suite first assumed it would answer empty**
+  (measured 2026-08-10, on the suite's first contact with the service — [#481]): a `ReadRows` range
+  whose start is exclusive at its own end key is `INVALID_ARGUMENT` ("start_key must be less than
+  end_key" — while the closed-closed single-key range `[K, K]` is answered with that row alone, so
+  the refusal is about a range empty by construction, not about `start == end`), and a read whose
+  filter names a column family the table does not
+  have is `NOT_FOUND` ("Requested column family not found"). The emulator answers both empty with
+  no error (measured the same day against the pinned image), so neither refusal could have been
+  found anywhere but the gated suite.
 
 ## Decision
 
@@ -107,10 +116,12 @@ the flag are a finished split and a real failure respectively.
 
 **A truncated range may be empty, and the reader finishes such a split without opening a stream.**
 That is the normal state of a split whose inclusively-ended range had its last row emitted before
-the checkpoint, and it is also what keeps an inverted range from ever reaching the service. The
-gated suite measures what Bigtable answers such a range with anyway, so the design is not resting on
-an unknown. Note the deliberate asymmetry with the builder, which *rejects* an empty range: user
-error and normal end-of-split are different things.
+the checkpoint, and it is also what keeps an inverted range from ever reaching the service. That
+short-circuit is **load-bearing, not tidy**: the gated suite measured what Bigtable answers such a
+range with ([#481]), and the answer is `INVALID_ARGUMENT` — a job that let one through would fail,
+not read empty — so the unit test pinning the short-circuit asserts zero stream opens rather than
+merely an empty fetch. Note the deliberate asymmetry with the builder, which *rejects* an empty
+range: user error and normal end-of-split are different things.
 
 **The deserialization SPI is collector-shaped**, unlike the BigQuery source's nullable return, and
 the difference is in the resume unit rather than in taste: BigQuery resumes at a count of rows
@@ -175,3 +186,4 @@ onto it rather than left as a second copy.
 [#216]: https://github.com/laughingman7743/flink-connector-gcp/issues/216
 [#248]: https://github.com/laughingman7743/flink-connector-gcp/issues/248
 [#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
+[#481]: https://github.com/laughingman7743/flink-connector-gcp/issues/481
