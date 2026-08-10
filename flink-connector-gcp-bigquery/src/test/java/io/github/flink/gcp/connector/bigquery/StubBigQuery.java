@@ -64,10 +64,11 @@ import java.util.Map;
  * The parts of {@link BigQuery} this module's REST callers read, with everything else unsupported —
  * so a new dependency on the client shows up as a failing test rather than as a silent null.
  *
- * <p>Five methods are live ({@link #getJob}, {@link #create(JobInfo, JobOption...)}, {@link
+ * <p>Six methods are live ({@link #getJob}, {@link #create(JobInfo, JobOption...)}, {@link
  * #create(TableInfo, TableOption...)}, {@link #delete(TableId)}, {@link #getTable(TableId,
- * TableOption...)}), plus {@link #getOptions()}, which no caller invokes itself — {@link Job}'s
- * constructor does, so a stub throwing there fails on the first submitted job. The other 50 throw.
+ * TableOption...)}, {@link #getDataset(DatasetId, DatasetOption...)}), plus {@link #getOptions()},
+ * which no caller invokes itself — {@link Job}'s constructor does, so a stub throwing there fails
+ * on the first submitted job. The other 49 throw.
  *
  * <p>It lives here, beside {@link RealBigQuery}, rather than in one caller's package, because it
  * has two consumers: {@link BigQueryLoadJobRunner}'s tests, which it was written for, and {@code
@@ -118,6 +119,17 @@ public final class StubBigQuery implements BigQuery {
 
     /** What {@code getTable} answers, one entry per call; calls past the script answer absent. */
     private final List<TableAnswer> getTableAnswers = new ArrayList<>();
+
+    /** Every {@link DatasetId} {@code getDataset} was called with, in order. */
+    public final List<DatasetId> getDatasetCalls = new ArrayList<>();
+
+    /**
+     * What {@code getDataset} answers, by id; an unscripted id answers {@code null} (no dataset).
+     */
+    private final Map<DatasetId, String> datasetLocations = new HashMap<>();
+
+    /** Thrown by {@code getDataset} when set. */
+    @Nullable public BigQueryException getDatasetFailure;
 
     /**
      * The configuration a minted job reports, instead of the one it was submitted with.
@@ -249,6 +261,11 @@ public final class StubBigQuery implements BigQuery {
         getTableAnswers.addAll(List.of(answers));
     }
 
+    /** Scripts {@code getDataset} to answer a dataset in the given location. */
+    public void locatedDataset(DatasetId datasetId, String location) {
+        datasetLocations.put(datasetId, location);
+    }
+
     @Override
     public BigQueryOptions getOptions() {
         return options;
@@ -376,8 +393,21 @@ public final class StubBigQuery implements BigQuery {
     }
 
     @Override
+    @Nullable
     public Dataset getDataset(DatasetId datasetId, DatasetOption... options) {
-        throw unsupported("getDataset(DatasetId)");
+        if (options.length > 0) {
+            throw new UnsupportedOperationException(
+                    "BigQueryLoadJobRunner passes no DatasetOptions; got "
+                            + List.of(options)
+                            + ".");
+        }
+        getDatasetCalls.add(datasetId);
+        if (getDatasetFailure != null) {
+            throw getDatasetFailure;
+        }
+        String location = datasetLocations.get(datasetId);
+        // An unscripted id answers null, as the service answers a dataset that does not exist.
+        return location == null ? null : TestJobs.dataset(this, datasetId, location);
     }
 
     @Override

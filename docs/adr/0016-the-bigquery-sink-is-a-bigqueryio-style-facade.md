@@ -41,8 +41,11 @@ limitations under the License.
   method and rejects it for others. (The default-stream object is the one deliberate deviation —
   ADR-0028.)
 - Deferred: `location()` granularity — recorded on PR
-  [#46](https://github.com/laughingman7743/flink-connector-gcp/pull/46), decided in [#10].
+  [#46](https://github.com/laughingman7743/flink-connector-gcp/pull/46), decided in [#10]. The
+  load-job half is answered by ADR-0018's [#491] revision: per destination, derived from each
+  job's destination dataset when `location()` is unset.
 
 [#10]: https://github.com/laughingman7743/flink-connector-gcp/issues/10
 [#13]: https://github.com/laughingman7743/flink-connector-gcp/issues/13
 [#14]: https://github.com/laughingman7743/flink-connector-gcp/issues/14
+[#491]: https://github.com/laughingman7743/flink-connector-gcp/issues/491

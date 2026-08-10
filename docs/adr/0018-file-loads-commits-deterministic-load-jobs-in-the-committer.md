@@ -19,8 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-07-19 ([#14]); load stage revised 2026-07-20 ([#69]); committer schedules
   2026-08-01 ([#198]); revised by [#337] (2026-08-08); conflict handler revised by [#380]
-  (2026-08-08); load-job grouping refined by [#284] (2026-08-08)
-- Issues: [#14], [#69], [#198], [#337], [#380], [#284]
+  (2026-08-08); load-job grouping refined by [#284] (2026-08-08); job locations revised by
+  [#491] (2026-08-10)
+- Issues: [#14], [#69], [#198], [#337], [#380], [#284], [#491]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -123,6 +124,45 @@ limitations under the License.
   retry id. Which is also the revision's limit — a failed zombie behind a statusless answer is
   still attached to, its stored failure surfacing from the first poll at the same one-restart
   cost, because no verdict exists to read at attach time.
+- **Every job id names its location, derived from the destination dataset when `location()` is
+  unset** ([#491]). BigQuery scopes a job to (project, location, id), and a `jobs.get` naming no
+  location resolves against the US multi-region only. Measured 2026-08-10 with standalone SDK
+  calls against a us-central1 dataset: a load submitted under a location-less `JobId` succeeds —
+  the server infers the location from the destination dataset — but the same location-less id
+  then answers `null` to `jobs.get`, and resubmitting it throws the SDK's own
+  `NullPointerException` out of the duplicate-id absorber's location-less re-fetch
+  (google-cloud-bigquery 2.68.0; upstream
+  [googleapis/google-cloud-java#14025](https://github.com/googleapis/google-cloud-java/issues/14025),
+  fix PR [googleapis/google-cloud-java#14026](https://github.com/googleapis/google-cloud-java/pull/14026)
+  — which only renames the failure here: with the NPE guarded, the retry still finds nothing to
+  attach to). Normal runs never noticed, because ids are fresh per attempt and `awaitJob` polls
+  the server-returned `JobId`, which carries the server-filled location — so the gated suite's
+  green against its regional dataset was no evidence about re-attach. A commit retry or failover
+  recovery against anything but the US multi-region was permanently stuck, with BigQuery holding
+  the id for six months. The runner now derives each job's location from its destination
+  dataset's metadata — the dataset decides, because BigQuery runs a load job in the location of
+  the dataset it writes, so the derived value is exactly where the previous attempt's job lives —
+  one `datasets.get` per dataset, memoized for the runner's lifetime (a dataset's location is
+  immutable), failures converted to the SPI's `IOException` like every other lookup ([#337]
+  above). The derivation is a new permission for a location-less FILE_LOADS deployment —
+  `bigquery.datasets.get` on the destination datasets — and its not-found message offers both
+  readings, because a 404 does not establish non-existence: GCP's disclosure convention can
+  answer it for a resource the caller may not see, and the wrong-location measurement below
+  answers it for a dataset that demonstrably exists. Setting `location()` remains the escape
+  that makes no metadata call. A configured `location()` wins unchanged. Multi-region datasets need no special case:
+  `datasets.get` reports `US`/`EU`, valid job locations — and `US` pins exactly what the
+  location-less lookup already resolved to, which is why only US-multi-region deployments were
+  ever unaffected. The declined alternative was requiring `location()` at `build()` under
+  `FILE_LOADS`, mirroring the query source's reuse knob (ADR-0089): FILE_LOADS supports dynamic
+  destinations across datasets, where one value cannot cover cross-region routing — an explicit
+  location that disagrees with a job's destination dataset fails the submission (measured
+  2026-08-10: `jobs.insert` under `EU` against the us-central1 dataset answers `404 Not found:
+  Dataset`) — and the
+  requirement would have taxed every FILE_LOADS user, including the unaffected US ones, for a
+  recovery path most runs never take. This answers, for load jobs, the `location()` granularity
+  question ADR-0016 deferred: per destination, derived. The gated
+  `BigQueryLoadJobRunnerRealGcpITCase` holds the re-attach against the suite's regional dataset
+  with no location configured — the only coverage of the path a fresh-id happy run cannot reach.
 
 [#14]: https://github.com/laughingman7743/flink-connector-gcp/issues/14
 [#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
@@ -131,3 +171,4 @@ limitations under the License.
 [#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337
 [#284]: https://github.com/laughingman7743/flink-connector-gcp/issues/284
 [#380]: https://github.com/laughingman7743/flink-connector-gcp/issues/380
+[#491]: https://github.com/laughingman7743/flink-connector-gcp/issues/491

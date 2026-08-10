@@ -1154,7 +1154,14 @@ bucket prefix — so files from failed/restarted attempts (which use unique name
 subtask, attempt, random component) can never leak into a load. Job ids are deterministic hashes
 of the destination and its sorted file list (streaming ids additionally carry a visible
 `-c<checkpointId>` segment for attribution): a retry after a failure re-attaches to the
-already-running/completed BigQuery job instead of loading twice. Committables carry the Flink job
+already-running/completed BigQuery job instead of loading twice. The re-attach look-up names the
+job's **location** as well: BigQuery scopes a job to (project, location, id), and a look-up naming
+no location sees only the US multi-region, so a location-less recovery on any other dataset would
+find nothing and collide ([#491]({{< param BookRepo >}}/issues/491)). Each load job therefore runs
+under `location(...)` when it is set, and otherwise under the location of its destination dataset,
+read from the dataset's metadata once per dataset per committer (which needs the
+`bigquery.datasets.get` permission on those datasets) — the same location BigQuery runs the job in
+either way. Committables carry the Flink job
 id of the run that staged them, so even a restore under a *new* Flink job id (`flink run -s` on a
 savepoint or retained checkpoint) reproduces the original job ids and re-attaches. Known residual
 risk (shared with the Beam and Dataproc designs): if a failure destroys the persisted
