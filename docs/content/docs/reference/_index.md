@@ -38,12 +38,14 @@ name, its default and one line on what it does. The reasoning behind a default �
 no rate knobs at all — stays on the {{< relref "docs/connectors" >}} page it belongs to, and each
 section below links to it.
 
-**Two surfaces are documented elsewhere, deliberately.** The
-[Pub/Sub SQL connector]({{< relref "docs/connectors/table/pubsub" >}}) page carries the full
-`WITH` option surface, because a SQL option exists only where a builder setter does and the mapping
-between them is the thing worth reading. And every type named here — including the enums, the
-destination types and the SPIs an option takes — is in the
-[Java API reference]({{< param ApiDocsURL >}}), generated from the source.
+**Two surfaces are documented elsewhere, deliberately.** The SQL connector pages —
+[BigQuery]({{< relref "docs/connectors/table/bigquery" >}}),
+[Pub/Sub]({{< relref "docs/connectors/table/pubsub" >}}) and
+[Bigtable]({{< relref "docs/connectors/table/bigtable" >}}) — carry the full `WITH` option surface,
+because a SQL option exists only where a builder setter does and the mapping between them is the
+thing worth reading. And every type named here — including the enums, the destination types and the
+SPIs an option takes — is in the [Java API reference]({{< param ApiDocsURL >}}), generated from the
+source.
 
 ## What a default means
 
