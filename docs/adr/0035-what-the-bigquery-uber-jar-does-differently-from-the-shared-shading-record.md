@@ -68,7 +68,10 @@ own:
   it reintroduces the enumerated include list ADR-0015 removed after measuring that an unlisted
   transitive is silently *dropped*, and [#64] would need them back. Priced before declining:
   3.2 MB of the 58 MB of compressed entries, about 5% (measured 2026-08-06) — a third of what
-  the first estimate assumed.
+  the first estimate assumed. The [#64] half of that reasoning turned out to be wrong about
+  Arrow specifically: the source landed reading Avro, and ADR-0090 declined the Arrow wire format
+  outright, so those classes stay bundled and unrun. The decision is unchanged — the argument
+  against an enumerated include list never depended on them being needed.
 - The smoke ITCase lets the sink **create its own table**, so one job drives both relocated
   transports — REST for the metadata half, gRPC for the rows — the shape only this connector
   needs, since only it has two `emulator-*` options.
