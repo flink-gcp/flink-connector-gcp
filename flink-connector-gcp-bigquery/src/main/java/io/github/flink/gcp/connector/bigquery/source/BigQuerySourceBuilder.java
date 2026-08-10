@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSpl
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -82,6 +83,7 @@ public class BigQuerySourceBuilder<T> {
     @Nullable private String query;
     @Nullable private String queryLocation;
     @Nullable private String queryResultDataset;
+    @Nullable private Duration reuseQueryResultWithin;
     private boolean materializeViews;
     private String parentProject;
     private BigQueryRowDeserializer<T> deserializer;
@@ -221,6 +223,55 @@ public class BigQuerySourceBuilder<T> {
                 !StringUtils.isNullOrWhitespaceOnly(queryResultDataset),
                 "queryResultDataset must not be blank");
         this.queryResultDataset = queryResultDataset;
+        return this;
+    }
+
+    /**
+     * Lets a re-planned job reuse a previous attempt's query job instead of running the query
+     * again, for attempts within the given window.
+     *
+     * <p>Optional, and off by default — the job id is then random and every plan runs the query.
+     * With it, the job id is derived from the <b>Flink job name</b>, a digest of the query
+     * configuration, and the window, so a JobManager failover before the first checkpoint — the one
+     * failure that re-plans a source — finds the first attempt's job and adopts it: a job still
+     * running is waited for instead of racing it with a second scan, and a finished one has its
+     * result table read directly. {@code queryJobsReattached} reports each reuse.
+     *
+     * <p><b>What it treats as "the same job" is the Flink job name</b>, because the name is the
+     * identifier the user controls: rename the job and nothing is reused. The rest of the id is
+     * derived — a digest over the query, project, location, result dataset and this window — so two
+     * pipelines can only ever share a job when they would run the identical query to the identical
+     * place, in which case sharing it is correct. The flip side is deliberate: attempts of the
+     * <em>same</em> name and query inside one window reuse each other's result even across an
+     * intentional redeploy, so the result can be up to a window old. Size the window to how stale a
+     * result the pipeline can read, or rename the job to force a fresh one.
+     *
+     * <p>At most 24 hours, because both places a result can land expire at about a day: a longer
+     * window would reuse a job whose result table is already gone, and the read would fail where
+     * nothing names the cause.
+     *
+     * <p><b>Requires {@link #queryLocation(String)}</b>: BigQuery scopes a job to (project,
+     * location, id), and a look-up that names no location sees only the US multi-region — outside
+     * it the previous attempt's job would never be found, so the reuse this knob asks for could
+     * never happen (measured 2026-08-10 against a us-central1 dataset).
+     *
+     * @param reuseQueryResultWithin the window, positive and at most 24 hours
+     * @return this builder
+     */
+    public BigQuerySourceBuilder<T> reuseQueryResultWithin(Duration reuseQueryResultWithin) {
+        Preconditions.checkNotNull(
+                reuseQueryResultWithin, "reuseQueryResultWithin must not be null");
+        Preconditions.checkArgument(
+                !reuseQueryResultWithin.isNegative() && !reuseQueryResultWithin.isZero(),
+                "reuseQueryResultWithin must be positive: %s",
+                reuseQueryResultWithin);
+        Preconditions.checkArgument(
+                reuseQueryResultWithin.compareTo(Duration.ofHours(24)) <= 0,
+                "reuseQueryResultWithin must be at most 24 hours: %s. Both places a query result"
+                        + " can land expire after about a day, so a longer window would reuse a"
+                        + " job whose result table no longer exists.",
+                reuseQueryResultWithin);
+        this.reuseQueryResultWithin = reuseQueryResultWithin;
         return this;
     }
 
@@ -488,6 +539,17 @@ public class BigQuerySourceBuilder<T> {
                 "queryResultDataset(...) applies to query(...) or materializeViews() only; reading"
                         + " a table materializes nothing.");
         Preconditions.checkState(
+                runsAQuery || reuseQueryResultWithin == null,
+                "reuseQueryResultWithin(...) applies to query(...) or materializeViews() only; a"
+                        + " table source runs no query job to reuse.");
+        Preconditions.checkState(
+                reuseQueryResultWithin == null || queryLocation != null,
+                "reuseQueryResultWithin(...) requires queryLocation(...): BigQuery scopes a job to"
+                        + " (project, location, id), and a look-up that names no location sees"
+                        + " only the US multi-region — outside it a previous attempt's job would"
+                        + " never be found, and the colliding resubmission fails instead of"
+                        + " reusing (measured 2026-08-10 against a us-central1 dataset).");
+        Preconditions.checkState(
                 runsAQuery || emulatorRestEndpoint == null,
                 "emulatorRestEndpoint(...) applies to query(...) or materializeViews() only; a"
                         + " table source makes no REST call, so there is nothing to point at an"
@@ -520,6 +582,7 @@ public class BigQuerySourceBuilder<T> {
                         query,
                         queryLocation,
                         queryResultDataset,
+                        reuseQueryResultWithin,
                         materializeViews,
                         !runsAQuery
                                 ? null

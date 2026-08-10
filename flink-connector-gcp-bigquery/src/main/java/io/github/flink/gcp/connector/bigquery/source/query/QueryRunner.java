@@ -55,11 +55,16 @@ public interface QueryRunner extends Serializable {
      * <p>Called once per job, from the enumerator's planning call, and never again after a restore:
      * a restored enumerator adopts the read session the first one created.
      *
+     * <p>A specification carrying a {@link QueryJobIdentity} asks for the job to be submitted under
+     * that identity's deterministic id, and for a previous attempt's job found under it — still
+     * running, or done without an error — to be reused rather than run again. Without one the id is
+     * random and nothing is ever reused.
+     *
      * @param spec the query to run
-     * @return the table the result landed in
+     * @return the table the result landed in, and whether a previous attempt's job was reused
      * @throws IOException if the job cannot be submitted, fails, or reports no result table
      */
-    TableDestination run(QuerySpec spec) throws IOException;
+    QueryResult run(QuerySpec spec) throws IOException;
 
     /**
      * Returns whether the given name is a view rather than a table.

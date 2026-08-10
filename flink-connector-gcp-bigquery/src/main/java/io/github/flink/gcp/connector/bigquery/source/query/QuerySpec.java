@@ -39,6 +39,7 @@ public final class QuerySpec {
     private final String project;
     @Nullable private final String location;
     @Nullable private final String resultDataset;
+    @Nullable private final QueryJobIdentity jobIdentity;
 
     /**
      * Creates the specification.
@@ -52,10 +53,39 @@ public final class QuerySpec {
      */
     public QuerySpec(
             String sql, String project, @Nullable String location, @Nullable String resultDataset) {
+        this(sql, project, location, resultDataset, null);
+    }
+
+    private QuerySpec(
+            String sql,
+            String project,
+            @Nullable String location,
+            @Nullable String resultDataset,
+            @Nullable QueryJobIdentity jobIdentity) {
         this.sql = Preconditions.checkNotNull(sql, "sql must not be null");
         this.project = Preconditions.checkNotNull(project, "project must not be null");
         this.location = location;
         this.resultDataset = resultDataset;
+        this.jobIdentity = jobIdentity;
+    }
+
+    /**
+     * Returns a copy carrying the identity a reusable job is submitted and looked up under.
+     *
+     * <p>A wither rather than a constructor argument because the identity is derived <em>from</em>
+     * the finished specification — its digest covers every other field — so it cannot exist before
+     * the specification does.
+     *
+     * @param identity the identity
+     * @return the copy
+     */
+    public QuerySpec withJobIdentity(QueryJobIdentity identity) {
+        return new QuerySpec(
+                sql,
+                project,
+                location,
+                resultDataset,
+                Preconditions.checkNotNull(identity, "identity must not be null"));
     }
 
     /**
@@ -139,6 +169,15 @@ public final class QuerySpec {
     @Nullable
     public String getResultDataset() {
         return resultDataset;
+    }
+
+    /**
+     * Returns the identity a reusable job is submitted and looked up under, or {@code null} for a
+     * random id with no reuse — the default, and the fallback where no job name was readable.
+     */
+    @Nullable
+    public QueryJobIdentity getJobIdentity() {
+        return jobIdentity;
     }
 
     @Override

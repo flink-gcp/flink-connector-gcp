@@ -25,6 +25,10 @@ import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
+import io.github.flink.gcp.connector.bigquery.source.query.BigQueryQueryRunner;
+import io.github.flink.gcp.connector.bigquery.source.query.QueryJobIdentity;
+import io.github.flink.gcp.connector.bigquery.source.query.QueryResult;
+import io.github.flink.gcp.connector.bigquery.source.query.QuerySpec;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.apache.avro.generic.GenericRecord;
@@ -35,6 +39,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.UnaryOperator;
@@ -206,6 +211,58 @@ class BigQueryQuerySourceRealGcpITCase {
                 // whose message says nothing about this connector's builder.
                 .hasStackTraceContaining("query(...)")
                 .hasStackTraceContaining("non-table entities");
+    }
+
+    @Test
+    void reusesTheQueryJobAcrossTwoRunsUnderTheSameIdentity() throws Exception {
+        // The reuse behaviours only the service can answer: that BigQuery accepts the
+        // deterministic id's shape, that a second attempt finds the finished job under it by
+        // jobs.get, and that the completed job's metadata still names the anonymous table the
+        // first run landed in. The second run() submits nothing — one query is billed.
+        //
+        // The identity's digest covers the SQL, and the SQL names this run's unique fixture
+        // table, so ids cannot collide across weekly runs however long BigQuery keeps them. A
+        // window rollover between the two calls is covered too, by the previous-bucket attach —
+        // which is exactly the production claim.
+        QuerySpec spec =
+                new QuerySpec(
+                        "SELECT id FROM " + RealBigQuery.tablePath(TABLE) + " WHERE id < 3",
+                        RealBigQuery.project(),
+                        // The location is load-bearing, not configuration hygiene: without it the
+                        // second attempt's jobs.get sees only the US multi-region and this
+                        // dataset is regional — the measurement that made queryLocation(...) a
+                        // requirement of the reuse knob.
+                        RealBigQuery.datasetLocation(),
+                        null);
+        QuerySpec reusable =
+                spec.withJobIdentity(
+                        QueryJobIdentity.of(
+                                "query-source-reattach-it",
+                                spec,
+                                Duration.ofHours(1),
+                                System.currentTimeMillis()));
+
+        QueryResult first = new BigQueryQueryRunner(null).run(reusable);
+        // A fresh runner, as a failed-over JobManager's enumerator would build one.
+        QueryResult second = new BigQueryQueryRunner(null).run(reusable);
+
+        assertThat(first.isReattached()).isFalse();
+        assertThat(second.isReattached()).isTrue();
+        assertThat(second.getTable()).isEqualTo(first.getTable());
+    }
+
+    @Test
+    void readsAViewThroughAQueryWithTheReuseKnobOn() throws Exception {
+        // The production path end to end: the enumerator derives the id from the real job's
+        // name — whatever the local environment called it, read out of the metric variables —
+        // and BigQuery accepts the sanitised form. The rows prove the session read the landed
+        // table; the id acceptance is the half no unit test can claim.
+        assertThat(
+                        read(
+                                builder ->
+                                        builder.queryLocation(RealBigQuery.datasetLocation())
+                                                .reuseQueryResultWithin(Duration.ofHours(1))))
+                .containsExactlyInAnyOrderElementsOf(expected());
     }
 
     /** Runs a job reading the view through a query, with the given knobs applied. */

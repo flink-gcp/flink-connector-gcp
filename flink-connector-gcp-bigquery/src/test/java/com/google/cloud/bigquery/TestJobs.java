@@ -119,9 +119,43 @@ public final class TestJobs {
             JobId jobId,
             @Nullable JobStatus status,
             @Nullable JobConfiguration configuration) {
-        return new Job.Builder(bigquery, configuration == null ? ANY_CONFIGURATION : configuration)
-                .setJobId(jobId)
-                .setStatus(status)
-                .build();
+        return job(bigquery, jobId, status, configuration, null);
+    }
+
+    /**
+     * Returns a job that also reports a creation time, for a caller that reads the job's age.
+     *
+     * <p>Two more package-private reaches than the overloads above, both verified against 2.68.0:
+     * {@code Job.Builder#setStatistics}, and {@code JobStatistics.CopyStatistics#fromPb} — the one
+     * road to a {@link JobStatistics} value, whose builders' constructors are all {@code private}.
+     * The subtype does not matter to a caller reading {@link JobStatistics#getCreationTime}, so it
+     * matches {@link #ANY_CONFIGURATION}'s copy job.
+     *
+     * @param bigquery the client the job is bound to
+     * @param jobId the job id the job reports
+     * @param status the status the job reports, or {@code null} to model a response that carried no
+     *     status
+     * @param configuration the configuration the job reports, or {@code null} for the placeholder
+     * @param creationTimeMillis the creation time the job's statistics report, or {@code null} to
+     *     model a response that carried no statistics
+     * @return the job
+     */
+    public static Job job(
+            BigQuery bigquery,
+            JobId jobId,
+            @Nullable JobStatus status,
+            @Nullable JobConfiguration configuration,
+            @Nullable Long creationTimeMillis) {
+        Job.Builder job =
+                new Job.Builder(bigquery, configuration == null ? ANY_CONFIGURATION : configuration)
+                        .setJobId(jobId)
+                        .setStatus(status);
+        if (creationTimeMillis != null) {
+            job.setStatistics(
+                    JobStatistics.CopyStatistics.fromPb(
+                            new com.google.api.services.bigquery.model.JobStatistics()
+                                    .setCreationTime(creationTimeMillis)));
+        }
+        return job.build();
     }
 }

@@ -86,5 +86,11 @@ public final class BigQueryMetricNames {
     // hold — and here that also means the query has been billed more than once.
     public static final String QUERY_JOBS_SUBMITTED = "queryJobsSubmitted";
 
+    // A re-plan that found a previous attempt's query job under the deterministic reuse id and
+    // adopted it instead of submitting a new one. Counted apart from queryJobsSubmitted so that
+    // counter keeps meaning "the query was billed": a reuse is precisely a billing that did not
+    // happen.
+    public static final String QUERY_JOBS_REATTACHED = "queryJobsReattached";
+
     private BigQueryMetricNames() {}
 }

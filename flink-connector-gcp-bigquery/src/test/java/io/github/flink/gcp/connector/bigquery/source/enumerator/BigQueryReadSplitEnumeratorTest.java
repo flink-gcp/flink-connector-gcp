@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -205,6 +206,122 @@ class BigQueryReadSplitEnumeratorTest {
                     .isNotNull();
             assertThat(creator.lastRequest().getReadSession().getTable())
                     .isEqualTo(TestSources.QUERY_RESULT.toTablePath());
+        }
+    }
+
+    @Test
+    void derivesTheReuseIdentityFromTheJobNameTheMetricGroupCarries() throws Exception {
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+        context.putMetricVariable("<job_name>", "my pipeline");
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.queryConfig(
+                                builder ->
+                                        builder.queryLocation("asia-northeast1")
+                                                .reuseQueryResultWithin(Duration.ofHours(1))),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        runner,
+                        null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.lastSpec().getJobIdentity()).isNotNull();
+            assertThat(runner.lastSpec().getJobIdentity().getCurrentJobId())
+                    .contains("_my_pipeline_");
+        }
+    }
+
+    @Test
+    void fallsBackToARandomIdWhereTheMetricGroupCarriesNoJobName() throws Exception {
+        // The fake context's variables are empty unless a test injects them, which is exactly the
+        // production fallback under test: a runtime that did not fill the variable in must get
+        // today's behaviour, not a failed job.
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.queryConfig(
+                                builder ->
+                                        builder.queryLocation("asia-northeast1")
+                                                .reuseQueryResultWithin(Duration.ofHours(1))),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        runner,
+                        null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.runs()).isEqualTo(1);
+            assertThat(runner.lastSpec().getJobIdentity()).isNull();
+        }
+    }
+
+    @Test
+    void withoutTheReuseKnobNoIdentityIsDerivedEvenWithAJobName() throws Exception {
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+        context.putMetricVariable("<job_name>", "my pipeline");
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                queryEnumerator(context, ScriptedReadSessionCreator.withStreams(1), runner)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.lastSpec().getJobIdentity()).isNull();
+        }
+    }
+
+    @Test
+    void aMaterializedViewsQueryCarriesTheIdentityToo() throws Exception {
+        // The identity wiring sits after the forView branch, so this pins that a view's generated
+        // SELECT is reused under the same rules as a hand-written query.
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+        context.putMetricVariable("<job_name>", "my pipeline");
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.config(
+                                builder ->
+                                        builder.materializeViews()
+                                                .queryLocation("asia-northeast1")
+                                                .reuseQueryResultWithin(Duration.ofHours(1))),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        runner,
+                        null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.viewChecks()).isEqualTo(1);
+            assertThat(runner.lastSpec().getJobIdentity()).isNotNull();
+        }
+    }
+
+    @Test
+    void countsAReuseApartFromASubmission() throws Exception {
+        ScriptedQueryRunner runner =
+                ScriptedQueryRunner.answering(TestSources.QUERY_RESULT).reattaching();
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                queryEnumerator(context, ScriptedReadSessionCreator.withStreams(1), runner)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            // queryJobsSubmitted means "the query was billed"; a reuse is exactly a billing that
+            // did not happen, so it lands on its own counter.
+            assertThat(context.counter("queryJobsSubmitted")).isZero();
+            assertThat(context.counter("queryJobsReattached")).isEqualTo(1);
         }
     }
 

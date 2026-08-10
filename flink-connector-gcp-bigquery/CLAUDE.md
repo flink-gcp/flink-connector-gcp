@@ -242,8 +242,19 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   state nor any serializer changed for it.** Nothing after planning can tell the two kinds of source
   apart, since a split names a stream and the opener opens by stream name — so if a change here
   starts needing the table in the state, that is the signal something has been put on the wrong side
-  of the seam. The query job's id is random and re-attach is deliberately absent: a deterministic id
-  would make the *next run of the same pipeline* read a stale result.
+  of the seam. The query job's id is random by default; `reuseQueryResultWithin(...)` opts into a
+  deterministic one (`docs/adr/0089`) keyed on the **Flink job name** — read out of the enumerator
+  metric group's `<job_name>` variable, the one route to it, measured across a global failover on
+  all three supported Flink versions by `BigQueryQueryJobIdentityITCase` — plus a digest of
+  everything the runner reads and a window bucket. Do not key it on the JobID: in HA application
+  deployments the JobID is derived from the HA cluster id and recurs across redeploys, so when it
+  changes is not something a user can reason about (the finding that overturned #477's premise).
+  The window is bounded at 24 h at the setter because both landing places expire at about a day;
+  the previous window's id is only ever looked up, never submitted, which is what keeps BigQuery's
+  six-month id retention from producing an unreachable id. A task failure never re-runs the query
+  at all — only the global-restore path rebuilds the enumerator (measured, same ITCase) — so the
+  exposure the knob closes is a JobManager failover before the first checkpoint, and the honest
+  reading of the knob is "attempts inside a window share a result", redeploys included.
 - **No recovery test against the emulator**, which ignores `ReadRowsRequest.offset` and answers from
   row zero; a green test there proves the opposite. The read-path deviations are pinned by
   `BigQueryEmulatorReadDeviationITCase`, each with a `@Disabled` twin carrying the correct

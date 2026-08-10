@@ -70,6 +70,15 @@ public final class RealBigQuery {
         return BigQueryOptions.newBuilder().setProjectId(project()).build().getService();
     }
 
+    /**
+     * The gated dataset's location, which a reuse-enabled query source must name: BigQuery scopes a
+     * job to (project, location, id), and a location-less {@code jobs.get} sees only the US
+     * multi-region — measured 2026-08-10 against this suite's regional dataset.
+     */
+    public static String datasetLocation() {
+        return client().getDataset(dataset()).getLocation();
+    }
+
     /** The gated dataset's destination for {@code table}, as the sink builders take it. */
     public static TableDestination destination(String table) {
         return TableDestination.of(project(), dataset(), table);

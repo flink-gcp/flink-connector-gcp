@@ -121,18 +121,17 @@ by stream name — so **neither the enumerator state nor its serializer changed*
 split's. `ReadSessionRequests.of` takes the resolved table as a parameter, which is the one point
 where the two converge.
 
-**The job id is random and no previous attempt is re-attached to**, the opposite of
-`BigQueryLoadJobRunner`'s choice. A deterministic id would have to come from the query, and BigQuery
-keeps a job's metadata — and so its id — for six months after it was created, so the second run of
-the same pipeline would re-attach to the first run's completed job and read a stale result. An id
-stable across a failover
-but not across pipeline runs needs a nonce in the checkpointed state and buys only the window
-between submitting the query and the first checkpoint — where a re-plan is a cache hit on the
-anonymous path and a second expiring table on the named one. `queryJobsSubmitted` reports it.
-**Deriving that nonce from the job's own context rather than from the checkpoint — Flink's JobID,
-bounded by a configurable lookback — is [#477]**, which also records the trap this paragraph's
-reasoning leads to: BigQuery's six-month id retention is longer than any usable lookback, so a
-deterministic id needs the load runner's `-rN` probing to escape the gap between the two.
+**The job id is random by default and no previous attempt is re-attached to then**, the opposite
+of `BigQueryLoadJobRunner`'s choice. A deterministic id derived from the query would re-attach the
+second run of the same pipeline to the first run's completed job — BigQuery keeps a job's metadata,
+and so its id, for six months — and read a stale result. What buys only the window between
+submitting the query and the first checkpoint is deduplicating a *failover*: there a re-plan is a
+cache hit on the anonymous path and a second expiring table on the named one, unless the first
+query is still running, where nothing mitigates the doubled scan. `queryJobsSubmitted` reports it.
+**The opt-in that closes that window is ADR-0089** ([#477]): an id keyed on the Flink job name and
+a digest of the query configuration, valid inside a configurable window that rides in the id — the
+shape that keeps the six-month retention from ever answering `ALREADY_EXISTS` for a job too old to
+attach to, with the load runner's probing kept for failed ids only.
 
 **The polling has no attempt bound**, matching the load runner, and here the service is what makes
 it terminate: BigQuery ends a query job at its own execution limit, so the job reaches `DONE` either

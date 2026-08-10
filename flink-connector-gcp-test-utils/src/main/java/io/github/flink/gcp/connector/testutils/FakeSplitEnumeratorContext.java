@@ -22,9 +22,11 @@ import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
+import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSplitEnumeratorMetricGroup;
+import org.apache.flink.runtime.metrics.groups.ProxyMetricGroup;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -69,8 +71,12 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
 
     private final MetricListener metricListener = new MetricListener();
 
+    private final Map<String, String> metricVariables = new HashMap<>();
+
     private final SplitEnumeratorMetricGroup metricGroup =
-            new InternalSplitEnumeratorMetricGroup(metricListener.getMetricGroup());
+            new VariablesCarryingGroup(
+                    new InternalSplitEnumeratorMetricGroup(metricListener.getMetricGroup()),
+                    metricVariables);
 
     public FakeSplitEnumeratorContext(int parallelism) {
         this.parallelism = parallelism;
@@ -103,6 +109,20 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
     @Override
     public SplitEnumeratorMetricGroup metricGroup() {
         return metricGroup;
+    }
+
+    /**
+     * Puts a variable into what the metric group's {@code getAllVariables()} answers.
+     *
+     * <p>By default the map is empty — {@code MetricListener}'s root group has no parent, so
+     * nothing populates the variables Flink's own hierarchy would carry ({@code <job_name>} and its
+     * siblings). A test of code reading them injects what its job would have had.
+     *
+     * @param key the variable key, in Flink's bracketed spelling, for example {@code <job_name>}
+     * @param value the value
+     */
+    public void putMetricVariable(String key, String value) {
+        metricVariables.put(key, value);
     }
 
     @Override
@@ -215,5 +235,34 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
                 .<T>getGauge("enumerator", name)
                 .orElseThrow(() -> new AssertionError("No gauge named " + name + " registered."))
                 .getValue();
+    }
+
+    /**
+     * Carries the injected variables over the real {@code InternalSplitEnumeratorMetricGroup},
+     * which cannot be handed them directly: its constructor calls {@code addGroup} on whatever it
+     * wraps, so a variables-answering wrapper underneath it is unwrapped before the proxying
+     * starts. Everything else — the counters and gauges a test reads back — still forwards to the
+     * {@code MetricListener}-backed group.
+     */
+    private static final class VariablesCarryingGroup
+            extends ProxyMetricGroup<SplitEnumeratorMetricGroup>
+            implements SplitEnumeratorMetricGroup {
+
+        private final Map<String, String> variables;
+
+        VariablesCarryingGroup(SplitEnumeratorMetricGroup parent, Map<String, String> variables) {
+            super(parent);
+            this.variables = variables;
+        }
+
+        @Override
+        public Map<String, String> getAllVariables() {
+            return new HashMap<>(variables);
+        }
+
+        @Override
+        public <G extends Gauge<Long>> G setUnassignedSplitsGauge(G unassignedSplitsGauge) {
+            return parentMetricGroup.setUnassignedSplitsGauge(unassignedSplitsGauge);
+        }
     }
 }
