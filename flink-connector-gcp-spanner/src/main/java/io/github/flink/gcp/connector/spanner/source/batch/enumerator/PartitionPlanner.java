@@ -20,7 +20,10 @@ import org.apache.flink.annotation.Internal;
 
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -47,6 +50,8 @@ public interface PartitionPlanner extends Serializable, AutoCloseable {
      * @param partitionOptions the partition-count and partition-size hints; the service may ignore
      *     both
      * @param dataBoostEnabled whether to run the read on Data Boost's independent compute
+     * @param rpcPriority the priority Spanner schedules the reads at, or {@code null} to leave it
+     *     unset
      * @return the snapshot and its partitions
      * @throws IOException if the read cannot be planned
      */
@@ -54,7 +59,8 @@ public interface PartitionPlanner extends Serializable, AutoCloseable {
             SpannerReadOperation operation,
             TimestampBound bound,
             PartitionOptions partitionOptions,
-            boolean dataBoostEnabled)
+            boolean dataBoostEnabled,
+            @Nullable SpannerRpcPriority rpcPriority)
             throws IOException;
 
     /**

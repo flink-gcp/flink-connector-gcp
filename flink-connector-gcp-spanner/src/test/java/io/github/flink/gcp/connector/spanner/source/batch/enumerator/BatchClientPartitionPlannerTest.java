@@ -16,16 +16,19 @@
 
 package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 
+import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -58,7 +61,8 @@ class BatchClientPartitionPlannerTest {
                                         SpannerReadOperation.query(Statement.of("SELECT 1")),
                                         TimestampBound.strong(),
                                         PartitionOptions.getDefaultInstance(),
-                                        false))
+                                        false,
+                                        null))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining(DATABASE.toString());
     }
@@ -75,6 +79,59 @@ class BatchClientPartitionPlannerTest {
         assertThatCode(planner::close).doesNotThrowAnyException();
     }
 
+    @Test
+    void theOptionsCarryOnlyWhatWasAskedFor() {
+        // Asserted by kind rather than by value, because the client library reads an option only
+        // from inside its own package. What the *value* maps to is SpannerRpcPriorityTest's.
+        assertThat(BatchClientPartitionPlanner.queryOptions(false, null)).isEmpty();
+        assertThat(BatchClientPartitionPlanner.readOptions(false, null)).isEmpty();
+
+        assertThat(BatchClientPartitionPlanner.queryOptions(false, SpannerRpcPriority.LOW))
+                .singleElement()
+                .matches(option -> option.getClass() == priorityKind());
+        assertThat(BatchClientPartitionPlanner.readOptions(false, SpannerRpcPriority.LOW))
+                .singleElement()
+                .matches(option -> option.getClass() == priorityKind());
+
+        assertThat(BatchClientPartitionPlanner.queryOptions(true, null))
+                .singleElement()
+                .matches(option -> option.getClass() == dataBoostKind());
+        assertThat(BatchClientPartitionPlanner.readOptions(true, null))
+                .singleElement()
+                .matches(option -> option.getClass() == dataBoostKind());
+    }
+
+    @Test
+    void bothOptionsTravelTogether() {
+        // The two families are assembled separately because the client gives their values no
+        // common supertype; asserting one family would leave the other free to lose an option.
+        assertThat(BatchClientPartitionPlanner.queryOptions(true, SpannerRpcPriority.MEDIUM))
+                .hasSize(2)
+                .anyMatch(option -> option.getClass() == dataBoostKind())
+                .anyMatch(option -> option.getClass() == priorityKind());
+        assertThat(BatchClientPartitionPlanner.readOptions(true, SpannerRpcPriority.MEDIUM))
+                .hasSize(2)
+                .anyMatch(option -> option.getClass() == dataBoostKind())
+                .anyMatch(option -> option.getClass() == priorityKind());
+    }
+
+    /**
+     * The class {@code dataBoostEnabled} answers with.
+     *
+     * <p>Read through the public interface it implements, because the class itself is
+     * package-private in the client library — calling {@code getClass()} on the expression does not
+     * compile from here.
+     */
+    private static Class<?> dataBoostKind() {
+        Options.ReadAndQueryOption option = Options.dataBoostEnabled(true);
+        return option.getClass();
+    }
+
+    /** The class {@code priority} answers with. */
+    private static Class<?> priorityKind() {
+        return Options.priority(Options.RpcPriority.LOW).getClass();
+    }
+
     private void plan() throws IOException {
         BatchClientPartitionPlanner planner = planner();
         planner.close();
@@ -82,7 +139,8 @@ class BatchClientPartitionPlannerTest {
                 SpannerReadOperation.query(Statement.of("SELECT 1")),
                 TimestampBound.strong(),
                 PartitionOptions.getDefaultInstance(),
-                false);
+                false,
+                null);
     }
 
     private static BatchClientPartitionPlanner planner() {

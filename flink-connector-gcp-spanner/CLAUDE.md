@@ -127,6 +127,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The deserialization SPI is a nullable return**, not the collector Bigtable's source takes: a
   whole-partition resume permits either, and a relational row makes a one-to-many mapping
   meaningless. `null` skips, `recordsSkipped` counts.
+- **`SpannerRpcPriority` is at the module root, with the enum-to-SDK mapping on it**, because both
+  directions take it — `SpannerDatabase`'s reasoning applied. The mapping is one written-out switch,
+  so a value added to either side fails to compile rather than silently changing what a job asked
+  for; do not grow a second copy in a direction's own package.
+- **The two option families are assembled separately** in `BatchClientPartitionPlanner`:
+  `Options.dataBoostEnabled` answers with a `ReadAndQueryOption` and `Options.priority` with a
+  `ReadQueryUpdateTransactionOption`, which are siblings rather than one hierarchy. Both are a
+  `ReadOption` and a `QueryOption`, so each call site builds its own array — a cast to unify them
+  compiles and fails at run time.
 - `SpannerClients` at the module root builds the service handle both directions open. The
   emulator-versus-credentials branch is exactly what `docs/adr/0064` exists for; do not grow a
   second copy.

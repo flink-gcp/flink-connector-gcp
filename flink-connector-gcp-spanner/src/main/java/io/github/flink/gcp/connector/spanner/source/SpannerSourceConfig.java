@@ -22,9 +22,12 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
+
+import javax.annotation.Nullable;
 
 import java.io.Serializable;
 
@@ -49,6 +52,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
     private final TimestampBound timestampBound;
     private final PartitionOptions partitionOptions;
     private final boolean dataBoostEnabled;
+    @Nullable private final SpannerRpcPriority rpcPriority;
     private final PartitionPlanner planner;
     private final StructStreamOpener opener;
     private final int maxRecordsPerFetch;
@@ -60,6 +64,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
             TimestampBound timestampBound,
             PartitionOptions partitionOptions,
             boolean dataBoostEnabled,
+            @Nullable SpannerRpcPriority rpcPriority,
             PartitionPlanner planner,
             StructStreamOpener opener,
             int maxRecordsPerFetch) {
@@ -73,6 +78,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
         this.partitionOptions =
                 Preconditions.checkNotNull(partitionOptions, "partitionOptions must not be null");
         this.dataBoostEnabled = dataBoostEnabled;
+        this.rpcPriority = rpcPriority;
         this.planner = Preconditions.checkNotNull(planner, "planner must not be null");
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         Preconditions.checkArgument(
@@ -134,6 +140,16 @@ public final class SpannerSourceConfig<T> implements Serializable {
      */
     public boolean isDataBoostEnabled() {
         return dataBoostEnabled;
+    }
+
+    /**
+     * Returns the priority Spanner schedules the reads at.
+     *
+     * @return the priority, or {@code null} to leave it unset
+     */
+    @Nullable
+    public SpannerRpcPriority getRpcPriority() {
+        return rpcPriority;
     }
 
     /**

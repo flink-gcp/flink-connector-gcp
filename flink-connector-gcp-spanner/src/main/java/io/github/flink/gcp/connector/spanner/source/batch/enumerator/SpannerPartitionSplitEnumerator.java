@@ -141,7 +141,8 @@ public class SpannerPartitionSplitEnumerator
                         config.getReadOperation(),
                         config.getTimestampBound(),
                         config.getPartitionOptions(),
-                        config.isDataBoostEnabled());
+                        config.isDataBoostEnabled(),
+                        config.getRpcPriority());
     }
 
     @Override

@@ -25,6 +25,7 @@ import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
@@ -55,6 +56,7 @@ public class SpannerSourceBuilder<T> {
     private @Nullable Long maxPartitions;
     private @Nullable Long partitionSizeBytes;
     private boolean dataBoostEnabled;
+    private @Nullable SpannerRpcPriority rpcPriority;
     private @Nullable EmulatorEndpoint emulatorEndpoint;
     private @Nullable PartitionPlanner planner;
     private @Nullable StructStreamOpener opener;
@@ -186,6 +188,30 @@ public class SpannerSourceBuilder<T> {
     }
 
     /**
+     * Sets the priority Spanner schedules the reads at. Optional; unset leaves the service's own
+     * handling in place, which is the same as {@code HIGH}.
+     *
+     * <p>{@code LOW} is what a backfill of a large table wants: Spanner sheds low-priority work
+     * first when an instance is at capacity, so the read yields to the traffic the instance is
+     * serving rather than competing with it. {@code MEDIUM} is a step down from the default rather
+     * than a restatement of it, since Spanner treats an unspecified priority as {@code HIGH}.
+     *
+     * <p>The priority applies to the reads that move the rows, which is where a job's load on the
+     * instance actually is. It does not apply to the one call that plans the partitions.
+     *
+     * <p>Not a substitute for {@link #dataBoostEnabled(boolean)}: a low-priority read still runs on
+     * the instance's own compute and still competes for it, while Data Boost does not use it at
+     * all. Lowering the priority costs nothing extra; Data Boost is billed separately.
+     *
+     * @param rpcPriority the priority
+     * @return this builder
+     */
+    public SpannerSourceBuilder<T> rpcPriority(SpannerRpcPriority rpcPriority) {
+        this.rpcPriority = Preconditions.checkNotNull(rpcPriority, "rpcPriority must not be null");
+        return this;
+    }
+
+    /**
      * Points the source at an emulator, over a plaintext channel with no credentials. Never
      * production.
      *
@@ -246,6 +272,7 @@ public class SpannerSourceBuilder<T> {
                         timestampBound,
                         partitionOptions(),
                         dataBoostEnabled,
+                        rpcPriority,
                         planner != null
                                 ? planner
                                 : new BatchClientPartitionPlanner(database, emulatorEndpoint),

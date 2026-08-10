@@ -22,7 +22,6 @@ import org.apache.flink.annotation.VisibleForTesting;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Options;
-import com.google.cloud.spanner.Options.RpcPriority;
 import com.google.cloud.spanner.Options.TransactionOption;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.Statement;
@@ -30,7 +29,6 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
-import io.github.flink.gcp.connector.spanner.sink.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 
 import javax.annotation.Nullable;
@@ -106,27 +104,8 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
             transactionOptions.add(Options.maxCommitDelay(options.getMaxCommitDelay()));
         }
         if (options.getRpcPriority() != null) {
-            transactionOptions.add(Options.priority(toRpcPriority(options.getRpcPriority())));
+            transactionOptions.add(Options.priority(options.getRpcPriority().toSpanner()));
         }
         return transactionOptions.toArray(new TransactionOption[0]);
-    }
-
-    /**
-     * Maps this connector's priority onto the client library's.
-     *
-     * <p>Written out rather than matched by enum name so that a value added to either side fails to
-     * compile here instead of silently changing what a job asked for.
-     */
-    private static RpcPriority toRpcPriority(SpannerRpcPriority priority) {
-        switch (priority) {
-            case LOW:
-                return RpcPriority.LOW;
-            case MEDIUM:
-                return RpcPriority.MEDIUM;
-            case HIGH:
-                return RpcPriority.HIGH;
-            default:
-                throw new IllegalStateException("Unsupported RPC priority: " + priority);
-        }
     }
 }

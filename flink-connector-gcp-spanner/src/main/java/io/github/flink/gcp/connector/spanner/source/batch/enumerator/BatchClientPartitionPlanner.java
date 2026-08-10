@@ -17,12 +17,14 @@
 package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.cloud.spanner.BatchClient;
 import com.google.cloud.spanner.BatchReadOnlyTransaction;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Options;
-import com.google.cloud.spanner.Options.ReadAndQueryOption;
+import com.google.cloud.spanner.Options.QueryOption;
+import com.google.cloud.spanner.Options.ReadOption;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.Spanner;
@@ -32,11 +34,13 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -101,15 +105,57 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
             SpannerReadOperation operation,
             TimestampBound bound,
             PartitionOptions partitionOptions,
-            boolean dataBoostEnabled)
+            boolean dataBoostEnabled,
+            @Nullable SpannerRpcPriority rpcPriority)
             throws IOException {
         BatchReadOnlyTransaction txn = open(bound);
-        ReadAndQueryOption[] options =
-                dataBoostEnabled
-                        ? new ReadAndQueryOption[] {Options.dataBoostEnabled(true)}
-                        : new ReadAndQueryOption[0];
-        List<Partition> partitions = partition(txn, operation, partitionOptions, options);
+        List<Partition> partitions =
+                partition(txn, operation, partitionOptions, dataBoostEnabled, rpcPriority);
         return new PartitionPlan(txn.getBatchTransactionId(), txn.getReadTimestamp(), partitions);
+    }
+
+    /**
+     * Assembles the options a partition call carries.
+     *
+     * <p>They travel further than the call they are given to: the partition the service answers
+     * with holds the options it was planned under, and {@code execute} replays them — so the
+     * priority reaches the streaming read that actually moves the rows, which is the request whose
+     * load on the instance a job cares about. It does <em>not</em> reach the {@code PartitionQuery}
+     * call itself, which the client sends under the session's own options.
+     *
+     * <p>Assembled twice, once per option family, because the client library gives the two values
+     * no common supertype: {@code dataBoostEnabled} answers with a {@code ReadAndQueryOption} and
+     * {@code priority} with a {@code ReadQueryUpdateTransactionOption}, which are siblings. Both
+     * are a {@code ReadOption} and a {@code QueryOption}, so each call site gets its own array —
+     * and a cast to unify them compiles and then fails at run time, which is why there is not one.
+     */
+    @VisibleForTesting
+    static QueryOption[] queryOptions(
+            boolean dataBoostEnabled, @Nullable SpannerRpcPriority rpcPriority) {
+        List<QueryOption> options = new ArrayList<>(2);
+        if (dataBoostEnabled) {
+            options.add(Options.dataBoostEnabled(true));
+        }
+        if (rpcPriority != null) {
+            options.add(Options.priority(rpcPriority.toSpanner()));
+        }
+        return options.toArray(new QueryOption[0]);
+    }
+
+    /**
+     * The read-call counterpart of {@link #queryOptions}; see its javadoc for why there are two.
+     */
+    @VisibleForTesting
+    static ReadOption[] readOptions(
+            boolean dataBoostEnabled, @Nullable SpannerRpcPriority rpcPriority) {
+        List<ReadOption> options = new ArrayList<>(2);
+        if (dataBoostEnabled) {
+            options.add(Options.dataBoostEnabled(true));
+        }
+        if (rpcPriority != null) {
+            options.add(Options.priority(rpcPriority.toSpanner()));
+        }
+        return options.toArray(new ReadOption[0]);
     }
 
     /**
@@ -124,10 +170,15 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
             BatchReadOnlyTransaction txn,
             SpannerReadOperation operation,
             PartitionOptions partitionOptions,
-            ReadAndQueryOption[] options) {
+            boolean dataBoostEnabled,
+            @Nullable SpannerRpcPriority rpcPriority) {
         if (operation.isQuery()) {
-            return txn.partitionQuery(partitionOptions, operation.getStatement(), options);
+            return txn.partitionQuery(
+                    partitionOptions,
+                    operation.getStatement(),
+                    queryOptions(dataBoostEnabled, rpcPriority));
         }
+        ReadOption[] options = readOptions(dataBoostEnabled, rpcPriority);
         if (operation.getIndex() == null) {
             return txn.partitionRead(
                     partitionOptions,

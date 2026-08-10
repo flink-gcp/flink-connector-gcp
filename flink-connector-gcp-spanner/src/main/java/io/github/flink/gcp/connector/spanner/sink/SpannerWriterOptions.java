@@ -22,6 +22,7 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

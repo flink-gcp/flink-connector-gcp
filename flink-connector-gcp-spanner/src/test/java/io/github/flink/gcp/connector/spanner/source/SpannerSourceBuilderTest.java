@@ -24,6 +24,7 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
@@ -57,7 +58,8 @@ class SpannerSourceBuilderTest {
                                         TimestampBound.ofExactStaleness(5, TimeUnit.SECONDS))
                                 .maxPartitions(12)
                                 .partitionSizeBytes(4096)
-                                .dataBoostEnabled(true));
+                                .dataBoostEnabled(true)
+                                .rpcPriority(SpannerRpcPriority.LOW));
 
         assertThat(config.getDatabase()).isEqualTo(DATABASE);
         assertThat(config.getReadOperation()).isEqualTo(OPERATION);
@@ -66,6 +68,7 @@ class SpannerSourceBuilderTest {
         assertThat(config.getPartitionOptions().getMaxPartitions()).isEqualTo(12);
         assertThat(config.getPartitionOptions().getPartitionSizeBytes()).isEqualTo(4096);
         assertThat(config.isDataBoostEnabled()).isTrue();
+        assertThat(config.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
         assertThat(config.getMaxRecordsPerFetch())
                 .isEqualTo(SpannerSplitReader.DEFAULT_MAX_ROWS_PER_FETCH);
     }
@@ -76,6 +79,9 @@ class SpannerSourceBuilderTest {
 
         assertThat(config.getTimestampBound().getMode()).isEqualTo(TimestampBound.Mode.STRONG);
         assertThat(config.isDataBoostEnabled()).isFalse();
+        // Unset rather than defaulted to HIGH: leaving the field out of the request keeps the
+        // service's own handling in place instead of freezing today's default into every job.
+        assertThat(config.getRpcPriority()).isNull();
         // Zero on both fields is the wire form for "no preference"; the connector never sends a
         // hint the user did not ask for.
         assertThat(config.getPartitionOptions().getMaxPartitions()).isZero();
@@ -195,6 +201,8 @@ class SpannerSourceBuilderTest {
         assertThatThrownBy(() -> SpannerSource.<Long>builder().deserializer(null))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> SpannerSource.<Long>builder().timestampBound(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> SpannerSource.<Long>builder().rpcPriority(null))
                 .isInstanceOf(NullPointerException.class);
     }
 

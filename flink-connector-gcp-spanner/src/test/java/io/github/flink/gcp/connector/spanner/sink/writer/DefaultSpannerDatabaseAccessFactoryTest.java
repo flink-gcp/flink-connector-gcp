@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.spanner.sink.writer;
 import com.google.cloud.spanner.Options;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
-import io.github.flink.gcp.connector.spanner.sink.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
