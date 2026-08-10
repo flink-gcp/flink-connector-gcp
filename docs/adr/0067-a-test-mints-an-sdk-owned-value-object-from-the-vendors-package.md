@@ -78,11 +78,12 @@ resolves:
 ## Consequences
 
 - The coupling is to package-private members of a pinned dependency, so a release that moves one
-  **the helper reaches** breaks a **test** at **compile** time. That is three members today
-  (`Job.Builder`'s two-argument constructor, `Job.Builder#setStatus`, the three-argument
-  `JobStatus` constructor) — the rest of the Evidence list is why no other reach exists, not what
-  is reached. A loud failure with an obvious fix, but it lands on whoever bumps `libraries-bom`,
-  not on whoever is thinking about this class.
+  **the helper reaches** breaks a **test** at **compile** time. Which members are reached is the
+  helper's javadoc's to enumerate, not this record's: the list grows with the values tests need
+  ([#477] added a statistics reach, [#485] a `Table` one), and the copy that used to sit here
+  went stale the first time it did. The rest of the Evidence list is why no other reach exists,
+  not what is reached. A loud failure with an obvious fix, but it lands on whoever bumps
+  `libraries-bom`, not on whoever is thinking about this class.
 - The runner is driven through the real SDK types, which is how [#337]'s change measured — rather
   than modelled — the `Job#reload()` behaviour ADR-0018 records. It is not a behaviour a
   hand-written fake would have reproduced: a fake would have been written to match the assumption
@@ -109,3 +110,5 @@ resolves:
 
 [#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
 [#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337
+[#477]: https://github.com/laughingman7743/flink-connector-gcp/issues/477
+[#485]: https://github.com/laughingman7743/flink-connector-gcp/issues/485

@@ -1655,8 +1655,9 @@ recorded in ADR-0089). With it, the job id is derived from the **Flink job name*
 query configuration, and the window, so a re-plan finds the first attempt's job under the same id
 and adopts it. It requires `queryLocation(...)`: BigQuery scopes a job to (project, location, id),
 and a look-up naming no location sees only jobs in the US multi-region — anywhere else the
-previous attempt's job would never be found (measured against a regional dataset) — a running job is waited for, a finished one has its result table read directly, a
-failed one is probed past to a fresh retry id. `queryJobsReattached` reports each reuse.
+previous attempt's job would never be found (measured against a regional dataset) — a running job
+is waited for, a finished one has its result table checked and read, a failed one is probed past
+to a fresh retry id. `queryJobsReattached` reports each reuse.
 
 Its contract is worth stating precisely: **attempts of the same Flink job name and the same query
 configuration inside one window share one query job.** That covers the failover above, and it
@@ -1667,11 +1668,12 @@ rename the job to force a fresh query. Two unrelated pipelines do not collide: t
 the query, project, location, result dataset and window, so ids only meet when the jobs they name
 are identical — up to a sixteen-hex digest, the same footing the sink's deterministic load-job ids
 stand on. The window is capped at 24 hours, because both places a result can land expire
-after about a day, and a longer lookback would reuse a job whose result table is already gone. A
-table that vanishes *early* — deleted by hand, or a cached-results table Google dropped inside its
-nominal day — still fails the reuse at session creation until the window rolls past the job;
-falling back to a fresh query there is
-[#485]({{< param BookRepo >}}/issues/485).
+after about a day: past that there is nothing left to reuse, so a longer window could only ever
+pay for the query again while appearing to deduplicate it. A table can also vanish *early* —
+deleted by hand, or a cached-results table Google dropped inside its nominal day — which is why
+adopting a finished job spends one `getTable` on the table its metadata names: a table that is
+gone is probed past like a failed job, and the query runs again under a fresh retry id, which
+`queryJobsSubmitted` reports ([#485]({{< param BookRepo >}}/issues/485)).
 
 ### Deserialization
 

@@ -63,8 +63,9 @@ is a plain `MetricGroup` method and the `"<job_name>"` key is inlined rather tha
 the `@Internal` `ScopeFormat`.
 
 **Both landing places expire at about a day**: the anonymous dataset by BigQuery's own policy, the
-named path by the 24-hour expiration `BigQueryQueryRunner` sets (ADR-0087). Any reuse window
-longer than that would attach to a job whose result table is already gone.
+named path by the 24-hour expiration `BigQueryQueryRunner` sets (ADR-0087). Past a day there is
+nothing left to reuse — the adoption's existence check ([#485]) refuses a job whose table is gone
+— so a longer window could only ever run the query again while appearing to deduplicate it.
 
 ## Decision
 
@@ -106,10 +107,13 @@ therefore costs nothing: the straddling failover attaches across the boundary.
 **Found jobs are judged as the load runner judges them, without hoisting it** (ADR-0087's
 no-hoist decision stands; the shape is shared, the code is not). `RUNNING` is attached to and
 polled — the concurrent-scan case, the one the anonymous dataset's cache cannot help, since a
-cache serves only completed results. `DONE` without error has its result table adopted, and the
-expiration backstop re-applied. `DONE` with error is probed past to `_rN` — underscore, not the
-load runner's hyphen, because the id doubles as the result table's name and a hyphen is illegal
-there. A create that loses a race answers HTTP 409, and the winner's job is adopted as a reuse.
+cache serves only completed results. `DONE` without error spends one `getTable` on the result
+table its metadata names — the metadata answers whether or not the table still exists, so a
+vanished one is probed past exactly like a failed job and the query runs fresh ([#485]) — then
+adopts the table, with the expiration backstop re-applied. `DONE` with error is probed past to
+`_rN` — underscore, not the load runner's hyphen, because the id doubles as the result table's
+name and a hyphen is illegal there. A create that loses a race answers HTTP 409, and the
+winner's job is adopted as a reuse.
 `queryJobsReattached` counts every reuse, separately from `queryJobsSubmitted`, so the latter
 keeps meaning "the query was billed".
 
@@ -134,12 +138,16 @@ keeps meaning "the query was billed".
 - `BigQueryQueryJobIdentityITCase` stays as a permanent test, so the weekly Flink matrix
   re-verifies the `<job_name>` channel and the coordinator-recreation behaviour every supported
   version relies on.
-- A `DONE` job adopted whose result table vanished *early* — deleted by hand, or an anonymous
-  cache table dropped inside its nominal day — fails at session creation and re-plans into the
-  same adoption until the bucket rolls or the job ages out. The window arithmetic bounds that
-  loop but does not remove it; falling back to running the query (probe past the link, as a
-  failed one is probed past) is [#485], separated because its tests need a vendor-package
-  `Table` mint, an ADR-0067 decision.
+- A result table vanished *early* — deleted by hand, or an anonymous cache table dropped inside
+  its nominal day — no longer crash-loops at session creation ([#485]): the adoption's `getTable`
+  probes past the job like a failed link, the query is submitted fresh under the next retry id,
+  and `queryJobsSubmitted` reports the re-bill. The check reaches every `DONE` adoption — the
+  current window's id, the previous window's chain, and a conflict's winner — while `RUNNING`
+  jobs are exempt, their table being created only at completion. Its tests needed a
+  vendor-package `Table` mint: `TestJobs` reaches the package-private `Table.Builder(BigQuery,
+  TableId, TableDefinition)` constructor, recorded in its javadoc per ADR-0067 (decided with the
+  user, 2026-08-10). The gated suite additionally pins the service half: `jobs.get` still
+  reports the deleted table's job, metadata intact.
 - Not done, deliberately: attaching across *window settings* (the setting is in the digest, so
   changing it starts fresh — simpler than migrating attachments, and it happens once per
   reconfiguration); any attempt to detect redeploys; and a `<job_id>`-keyed mode, which the

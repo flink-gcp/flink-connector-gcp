@@ -21,17 +21,19 @@ import javax.annotation.Nullable;
 import java.util.List;
 
 /**
- * Mints {@link Job} and {@link JobStatus} values for tests, from inside the package that owns them.
+ * Mints {@link Job}, {@link JobStatus} and {@link Table} values for tests, from inside the package
+ * that owns them.
  *
  * <p><b>Why this class is in {@code com.google.cloud.bigquery}.</b> A test driving a class that
- * reads what {@link BigQuery#getJob} and {@link BigQuery#create} return has to produce those
- * values, and neither type can be built from outside this package: {@code Job(BigQuery,
- * JobInfo.BuilderImpl)}, both {@link Job.Builder} constructors, {@code Job.Builder#setStatus},
- * {@code Job.fromPb} and both {@link JobStatus} constructors are package-private, and {@code Job} —
- * though not {@code final} — has no constructor a subclass elsewhere could call. Declaring the
- * package is the only reach that does not require either a mocking framework (this project has
- * none, deliberately) or an abstraction over {@code Job} in production code. The record is {@code
- * docs/adr/0067}.
+ * reads what {@link BigQuery#getJob}, {@link BigQuery#create} and {@link BigQuery#getTable} return
+ * has to produce those values, and none of the types can be built from outside this package: {@code
+ * Job(BigQuery, JobInfo.BuilderImpl)}, both {@link Job.Builder} constructors, {@code
+ * Job.Builder#setStatus}, {@code Job.fromPb} and both {@link JobStatus} constructors are
+ * package-private, and {@code Job} — though not {@code final} — has no constructor a subclass
+ * elsewhere could call; {@link Table} is the same shape ({@link #table(BigQuery, TableId)} names
+ * its reach). Declaring the package is the only reach that does not require either a mocking
+ * framework (this project has none, deliberately) or an abstraction over the vendor's types in
+ * production code. The record is {@code docs/adr/0067}.
  *
  * <p>The coupling is to package-private members of a pinned dependency, so a {@code
  * google-cloud-bigquery} release that moves any of them breaks this file at <em>compile</em> time,
@@ -157,5 +159,26 @@ public final class TestJobs {
                                     .setCreationTime(creationTimeMillis)));
         }
         return job.build();
+    }
+
+    /**
+     * Returns a table bound to the given client, as {@link BigQuery#getTable} returns one.
+     *
+     * <p>One more package-private reach, verified against 2.68.0: the {@code
+     * Table.Builder(BigQuery, TableId, TableDefinition)} constructor. It is the narrowest road to a
+     * {@link Table} — the class's own constructor takes the package-private {@code
+     * TableInfo.BuilderImpl}, {@code Table.fromPb} would reach a second member <em>and</em> drag in
+     * the wire model, and the public {@code TableInfo.of(...)} factories produce a {@link
+     * TableInfo}, never a {@code Table}. The definition is an empty standard table because a caller
+     * asking only "is it there" never reads one.
+     *
+     * @param bigquery the client the table is bound to; its {@code getOptions()} must answer, which
+     *     the stub's do
+     * @param tableId the table id the table reports
+     * @return the table
+     */
+    public static Table table(BigQuery bigquery, TableId tableId) {
+        return new Table.Builder(bigquery, tableId, StandardTableDefinition.of(Schema.of()))
+                .build();
     }
 }

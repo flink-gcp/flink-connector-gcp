@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.source.query;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
@@ -158,62 +159,149 @@ public final class BigQueryQueryRunner implements QueryRunner {
      * can never be reused, and its id can never be resubmitted, so each failed id is probed past to
      * the next {@code _rN}.
      *
+     * <p>The walk itself is this method; what one id yields is {@link #probeOnce}, and the two ways
+     * an id can be unusable — a failed job, a finished job whose result table is gone — are each
+     * reported as a {@link ProbeOutcome} carrying the reason the give-up message below quotes.
+     */
+    private QueryResult runReusable(QueryJobIdentity identity, QuerySpec spec) throws IOException {
+        String lastError = null;
+        for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
+            ProbeOutcome outcome = probeOnce(identity, spec, probe);
+            if (outcome.result != null) {
+                return outcome.result;
+            }
+            lastError = outcome.error;
+        }
+        throw new IOException(
+                "The BigQuery query job "
+                        + identity.getCurrentJobId()
+                        + " and all its retry ids are unusable from previous attempts; last"
+                        + " error: "
+                        + lastError);
+    }
+
+    /**
+     * What one id of the {@code _rN} chain yielded: the query's result, or the reason that id
+     * cannot be used and the walk moves on to the next.
+     *
+     * <p>Exactly one of the two is set, and the factories check it rather than document it: the
+     * walk quotes the last reason in the message it gives up with, so "an id that yields no result
+     * yields a reason" has to hold — as a property of this type rather than of every exit from a
+     * probe remembering to record one. A probe has four such exits and gains one with each new way
+     * an id can turn out unusable, which is the shape that makes an invariant held by convention
+     * worth moving into a type.
+     */
+    private static final class ProbeOutcome {
+
+        @Nullable final QueryResult result;
+        @Nullable final String error;
+
+        private ProbeOutcome(@Nullable QueryResult result, @Nullable String error) {
+            this.result = result;
+            this.error = error;
+        }
+
+        /** The query's result, from a job this probe ran, adopted, or attached to. */
+        static ProbeOutcome of(QueryResult result) {
+            return new ProbeOutcome(Preconditions.checkNotNull(result, "result"), null);
+        }
+
+        /** The reason this id is unusable, already logged by whichever check produced it. */
+        static ProbeOutcome unusable(String error) {
+            // Checked rather than trusted, because the invariant above is what the give-up
+            // message rests on: a null here would surface as "last error: null" on a
+            // JobManager, a page past the probe that failed to record a reason.
+            return new ProbeOutcome(null, Preconditions.checkNotNull(error, "error"));
+        }
+    }
+
+    /**
+     * Probes one id of the chain: adopts what a previous attempt left there, or submits under it.
+     *
      * <p>The previous window's id is consulted only when the current one has no job at all, which
      * is the one case a rollover between the first attempt and the re-plan produces; it is only
      * ever attached to, never submitted, and only when the job's creation time is still inside the
      * window — the id alone already bounds it to twice the window, and the check is what makes the
      * documented window exact rather than "up to twice".
      */
-    private QueryResult runReusable(QueryJobIdentity identity, QuerySpec spec) throws IOException {
-        String lastError = null;
-        for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
-            String suffix = retrySuffix(identity.getCurrentJobId(), probe);
-            Job existing = lookUp(jobId(spec, suffix), spec.getProject());
-            if (existing == null) {
-                if (probe == 0) {
-                    Job straddled = previousWindowJob(identity, spec);
-                    if (straddled != null) {
-                        LOG.info(
-                                "Re-attached to the BigQuery query job {} from the previous reuse"
-                                        + " window (state {}).",
-                                straddled.getJobId().getJob(),
-                                state(straddled.getStatus()));
-                        return new QueryResult(landed(await(straddled, spec), spec), true);
-                    }
-                }
-                Created created = create(jobId(spec, suffix), configuration(spec, suffix), spec);
-                if (isFailed(created.job.getStatus())) {
-                    // create lost its race to a zombie that had itself already failed, whose id is
-                    // as unusable as one the look-up above would have found failed.
-                    lastError = probePast(suffix, created.job.getStatus(), probe);
-                    continue;
-                }
-                if (created.conflicted) {
-                    LOG.info(
-                            "Re-attached to the BigQuery query job {} another attempt submitted"
-                                    + " first (state {}).",
-                            suffix,
-                            state(created.job.getStatus()));
-                } else {
-                    LOG.info("Running the BigQuery source's query as job {}: {}", suffix, spec);
-                }
-                return new QueryResult(landed(await(created.job, spec), spec), created.conflicted);
+    private ProbeOutcome probeOnce(QueryJobIdentity identity, QuerySpec spec, int probe)
+            throws IOException {
+        String suffix = retrySuffix(identity.getCurrentJobId(), probe);
+        Job existing = lookUp(jobId(spec, suffix), spec.getProject());
+        if (existing != null) {
+            return adopt(suffix, existing, probe, spec);
+        }
+        if (probe == 0) {
+            Job straddled = previousWindowJob(identity, spec);
+            if (straddled != null) {
+                LOG.info(
+                        "Re-attached to the BigQuery query job {} from the previous reuse window"
+                                + " (state {}).",
+                        straddled.getJobId().getJob(),
+                        state(straddled.getStatus()));
+                return ProbeOutcome.of(new QueryResult(landed(await(straddled, spec), spec), true));
             }
-            if (isFailed(existing.getStatus())) {
-                lastError = probePast(suffix, existing.getStatus(), probe);
-                continue;
+        }
+        return submitOrAttach(suffix, spec, probe);
+    }
+
+    /**
+     * Adopts the job a previous attempt left under this id, or reports why it cannot be.
+     *
+     * <p>Adopting a <em>finished</em> job spends one {@code getTable} on its result table, because
+     * the job's metadata names that table whether or not it still exists (#485). A table gone
+     * <em>early</em> — deleted by hand from a named dataset, or an anonymous cached-results table
+     * BigQuery dropped inside its nominal day — would otherwise surface only at session creation,
+     * and the restarted job would re-plan into the same adoption until the bucket rolled. A
+     * vanished table is treated exactly like a failed link: probed past, so the query is submitted
+     * fresh under the next retry id.
+     */
+    private ProbeOutcome adopt(String suffix, Job existing, int probe, QuerySpec spec)
+            throws IOException {
+        if (isFailed(existing.getStatus())) {
+            return ProbeOutcome.unusable(probePast(suffix, existing.getStatus(), probe));
+        }
+        TableId vanished = vanishedResultTable(existing, spec.getProject());
+        if (vanished != null) {
+            return ProbeOutcome.unusable(probePastVanished(suffix, vanished, probe));
+        }
+        LOG.info(
+                "Re-attached to the BigQuery query job {} from a previous attempt (state {}).",
+                suffix,
+                state(existing.getStatus()));
+        return ProbeOutcome.of(new QueryResult(landed(await(existing, spec), spec), true));
+    }
+
+    /**
+     * Submits under this id, adopting instead the job a racing attempt got in first.
+     *
+     * <p>Reached only where the look-up found nothing, so the two judgments {@link #adopt} makes
+     * are made again here — on the conflict winner's job, which is as much a previous attempt's as
+     * one the look-up would have found.
+     */
+    private ProbeOutcome submitOrAttach(String suffix, QuerySpec spec, int probe)
+            throws IOException {
+        Created created = create(jobId(spec, suffix), configuration(spec, suffix), spec);
+        if (isFailed(created.job.getStatus())) {
+            // create lost its race to a zombie that had itself already failed, whose id is as
+            // unusable as one the look-up would have found failed.
+            return ProbeOutcome.unusable(probePast(suffix, created.job.getStatus(), probe));
+        }
+        if (created.conflicted) {
+            TableId vanished = vanishedResultTable(created.job, spec.getProject());
+            if (vanished != null) {
+                return ProbeOutcome.unusable(probePastVanished(suffix, vanished, probe));
             }
             LOG.info(
-                    "Re-attached to the BigQuery query job {} from a previous attempt (state {}).",
+                    "Re-attached to the BigQuery query job {} another attempt submitted first"
+                            + " (state {}).",
                     suffix,
-                    state(existing.getStatus()));
-            return new QueryResult(landed(await(existing, spec), spec), true);
+                    state(created.job.getStatus()));
+        } else {
+            LOG.info("Running the BigQuery source's query as job {}: {}", suffix, spec);
         }
-        throw new IOException(
-                "The BigQuery query job "
-                        + identity.getCurrentJobId()
-                        + " and all its retry ids failed in previous attempts; last error: "
-                        + lastError);
+        return ProbeOutcome.of(
+                new QueryResult(landed(await(created.job, spec), spec), created.conflicted));
     }
 
     /**
@@ -221,9 +309,10 @@ public final class BigQueryQueryRunner implements QueryRunner {
      *
      * <p>Walks the same {@code _rN} chain the submitter would have left behind, because a previous
      * attempt that probed past a failed job left its live one under a retry id. A failed link is
-     * walked past; the first absent id ends the chain; and the job the chain ends at is reused only
-     * if it reports a creation time inside the window. No creation time reads as "do not reuse" —
-     * running the query again costs money, not correctness.
+     * walked past — as is a finished one whose result table has vanished, the same judgment the
+     * current window applies before adopting (#485) — the first absent id ends the chain; and the
+     * job the chain ends at is reused only if it reports a creation time inside the window. No
+     * creation time reads as "do not reuse" — running the query again costs money, not correctness.
      */
     @Nullable
     private Job previousWindowJob(QueryJobIdentity identity, QuerySpec spec) throws IOException {
@@ -239,6 +328,18 @@ public final class BigQueryQueryRunner implements QueryRunner {
             Long created = creationTime(job);
             if (created == null || !identity.isWithinWindow(created, System.currentTimeMillis())) {
                 return null;
+            }
+            TableId vanished = vanishedResultTable(job, spec.getProject());
+            if (vanished != null) {
+                // Not probePastVanished: this walk never runs anything, and the chain's next
+                // link — left by an attempt that made this same walk — may be adopted.
+                LOG.warn(
+                        "The BigQuery query job {} from the previous reuse window completed, but"
+                                + " its result table {}.{} is gone; walking past it.",
+                        suffix,
+                        vanished.getDataset(),
+                        vanished.getTable());
+                continue;
             }
             return job;
         }
@@ -288,6 +389,66 @@ public final class BigQueryQueryRunner implements QueryRunner {
             LOG.warn(
                     "The BigQuery query job {} from a previous attempt failed ({}), and no retry"
                             + " ids are left to probe.",
+                    suffix,
+                    error);
+        }
+        return error;
+    }
+
+    /**
+     * Returns the finished job's result table where it no longer exists, or {@code null}.
+     *
+     * <p>{@code null} — adopt the job — covers three cases deliberately. A job that is not {@code
+     * DONE} without error has no result table to check: a running one's table is created when it
+     * completes, a statusless one (the SDK's already-exists absorber) is attached to and polled,
+     * and a failed one was probed past before this is asked. A completed job naming no destination
+     * at all is a contract violation, and adopting it is what routes it to {@link #landed}'s report
+     * rather than guessing here. Only a job whose named table answers {@code getTable} with nothing
+     * is refused — one more use of the call {@link #expire}'s backstop already makes, not a new
+     * client surface.
+     */
+    @Nullable
+    private TableId vanishedResultTable(Job job, String project) throws IOException {
+        if (!isDone(job) || isFailed(job.getStatus())) {
+            return null;
+        }
+        TableId landed = ((QueryJobConfiguration) job.getConfiguration()).getDestinationTable();
+        if (landed == null) {
+            return null;
+        }
+        try {
+            return client(project).getTable(landed) == null ? landed : null;
+        } catch (BigQueryException e) {
+            throw new IOException(
+                    "Failed to look up the result table "
+                            + landed.getDataset()
+                            + "."
+                            + landed.getTable()
+                            + " of the BigQuery query job "
+                            + job.getJobId().getJob()
+                            + " before reusing it.",
+                    e);
+        }
+    }
+
+    /** Logs the vanished result table being walked past and answers the give-up line's error. */
+    private static String probePastVanished(String suffix, TableId vanished, int probe) {
+        String error =
+                "its result table "
+                        + vanished.getDataset()
+                        + "."
+                        + vanished.getTable()
+                        + " is gone";
+        if (probe < MAX_RETRY_PROBES) {
+            LOG.warn(
+                    "The BigQuery query job {} from a previous attempt completed, but {}; probing"
+                            + " the next retry id.",
+                    suffix,
+                    error);
+        } else {
+            LOG.warn(
+                    "The BigQuery query job {} from a previous attempt completed, but {}, and no"
+                            + " retry ids are left to probe.",
                     suffix,
                     error);
         }
@@ -369,11 +530,10 @@ public final class BigQueryQueryRunner implements QueryRunner {
     /**
      * Returns whether a table type is one the Storage Read API cannot read directly.
      *
-     * <p>Split from the lookup so the decision is testable without a {@link Table}, which has no
-     * constructor reachable outside the vendor's package — minting one would need a second helper
-     * there, which {@code docs/adr/0067} asks to be decided deliberately rather than reached for.
-     * What is left in {@link #isView} is the round trip itself, which the gated real-GCP case
-     * covers.
+     * <p>Split from the lookup so the decision is testable without a {@link Table} or a client at
+     * all: the vendor-package helper mints a {@code Table} ({@code docs/adr/0067}), but a static
+     * predicate needs neither the mint nor a stub. What is left in {@link #isView} is the round
+     * trip itself, which the gated real-GCP case covers.
      *
      * <p>Only the two view types answer {@code true}. An external table and a snapshot are read
      * differently — an external table the API also refuses, a snapshot it accepts — and neither is

@@ -64,10 +64,10 @@ import java.util.Map;
  * The parts of {@link BigQuery} this module's REST callers read, with everything else unsupported —
  * so a new dependency on the client shows up as a failing test rather than as a silent null.
  *
- * <p>Four methods are live ({@link #getJob}, {@link #create(JobInfo, JobOption...)}, {@link
- * #create(TableInfo, TableOption...)}, {@link #delete(TableId)}), plus {@link #getOptions()}, which
- * no caller invokes itself — {@link Job}'s constructor does, so a stub throwing there fails on the
- * first submitted job. The other 50 throw.
+ * <p>Five methods are live ({@link #getJob}, {@link #create(JobInfo, JobOption...)}, {@link
+ * #create(TableInfo, TableOption...)}, {@link #delete(TableId)}, {@link #getTable(TableId,
+ * TableOption...)}), plus {@link #getOptions()}, which no caller invokes itself — {@link Job}'s
+ * constructor does, so a stub throwing there fails on the first submitted job. The other 50 throw.
  *
  * <p>It lives here, beside {@link RealBigQuery}, rather than in one caller's package, because it
  * has two consumers: {@link BigQueryLoadJobRunner}'s tests, which it was written for, and {@code
@@ -115,6 +115,9 @@ public final class StubBigQuery implements BigQuery {
 
     /** Every {@link TableId} {@code getTable} was called with, in order. */
     public final List<TableId> getTableCalls = new ArrayList<>();
+
+    /** What {@code getTable} answers, one entry per call; calls past the script answer absent. */
+    private final List<TableAnswer> getTableAnswers = new ArrayList<>();
 
     /**
      * The configuration a minted job reports, instead of the one it was submitted with.
@@ -202,6 +205,48 @@ public final class StubBigQuery implements BigQuery {
     /** Scripts the answers {@code getJob} gives, in call order. */
     public void answering(JobAnswer... answers) {
         getJobAnswers.addAll(List.of(answers));
+    }
+
+    /** What a scripted {@code getTable} call answers. */
+    public static final class TableAnswer {
+
+        private final boolean present;
+        @Nullable private final BigQueryException failure;
+
+        private TableAnswer(boolean present, @Nullable BigQueryException failure) {
+            this.present = present;
+            this.failure = failure;
+        }
+
+        /** Answers that no table exists under the id asked for. */
+        public static TableAnswer absent() {
+            return new TableAnswer(false, null);
+        }
+
+        /** Answers with a live table under the id asked for. */
+        public static TableAnswer existing() {
+            return new TableAnswer(true, null);
+        }
+
+        /** Fails the lookup, as the client does once its own retries are exhausted. */
+        public static TableAnswer failing(BigQueryException failure) {
+            return new TableAnswer(false, failure);
+        }
+    }
+
+    /**
+     * Scripts the answers {@code getTable} gives, in call order.
+     *
+     * <p>Unlike {@code getJob}'s script, a call past the end answers absent instead of throwing:
+     * "gone" was this stub's only answer before the script existed, and the callers written against
+     * that — the expiration backstop's gone-before-expire branch, and {@code isView} asked about a
+     * name that exists nowhere — assert on exactly that answer with nothing to script. A test that
+     * <em>needed</em> a live table and forgot to script one still fails loudly, just less
+     * precisely: the caller takes the table-is-gone branch it did not expect, and either its own
+     * reattach assertions fail or the fallback overruns the {@code getJob} script.
+     */
+    public void tablesAnswering(TableAnswer... answers) {
+        getTableAnswers.addAll(List.of(answers));
     }
 
     @Override
@@ -408,14 +453,20 @@ public final class StubBigQuery implements BigQuery {
     @Override
     @Nullable
     public Table getTable(TableId tableId, TableOption... options) {
-        // Records the call and answers "gone", which is the one answer this stub can give: a Table
-        // has no constructor reachable from here, and minting one would need a second helper in the
-        // vendor's own package — a decision `docs/adr/0067` asks to be taken deliberately rather
-        // than reached for. What that covers is the query runner asking to expire the table it
-        // created, and the branch where the table is no longer there; the update itself is the
-        // gated real-GCP case's.
         getTableCalls.add(tableId);
-        return null;
+        int call = getTableCalls.size() - 1;
+        if (call >= getTableAnswers.size()) {
+            return null;
+        }
+        TableAnswer answer = getTableAnswers.get(call);
+        if (answer.failure != null) {
+            throw answer.failure;
+        }
+        // The answered table is stamped with the id it was asked for, as the service does; the
+        // mint reaches the vendor's package (docs/adr/0067), which is what lets this stub answer
+        // "still there" at all. The expiration update against such a table is still unsupported —
+        // that round trip is the gated real-GCP case's.
+        return answer.present ? TestJobs.table(this, tableId) : null;
     }
 
     @Override
