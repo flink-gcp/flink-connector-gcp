@@ -70,6 +70,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * it is checked against are pinned to the same instant with {@code snapshotTime} and {@code FOR
  * SYSTEM TIME AS OF}. Without that, a row inserted between the two would read as a lost or
  * duplicated one.
+ *
+ * <p><b>Swapping the table is meant to be a one-line change</b>, because a public dataset can be
+ * withdrawn or reshaped and the replacement's only requirements are that BigQuery splits it and
+ * that it is small enough to read in a test. So nothing here names a column: the reader schema
+ * declares no fields at all, the query derives its path from {@link #TABLE}, and the assertions are
+ * about how many rows came back rather than what was in them. Point {@code TABLE} at another table
+ * and the rest follows.
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
@@ -80,14 +87,22 @@ class BigQueryMultiStreamRealGcpITCase {
             TableDestination.of("bigquery-public-data", "austin_bikeshare", "bikeshare_trips");
 
     /**
-     * Only {@code trip_id}, resolved out of the session's own schema by Avro.
+     * A record with no fields, which every table's schema resolves into.
      *
-     * <p>The read session still selects every column, because that is what makes BigQuery split the
-     * table; the reader schema only keeps the decoded record small.
+     * <p>Avro skips a writer field the reader does not declare, so this decodes any row BigQuery
+     * sends into an empty record — which is all this case needs, since it counts rows rather than
+     * reading them. That is what keeps the fixture swappable: naming even one column would tie the
+     * test to a table's schema. The read session still selects every column, since that is what
+     * makes BigQuery split the table in the first place.
+     *
+     * <p>It also rests on Avro not requiring the two <em>record names</em> to match — BigQuery
+     * writes {@code __root__} and this says {@code Row} — which in Avro 1.12.1 is a check {@code
+     * Resolver} carries commented out, with "current implementation doesn't do this check. To pass
+     * regressions tests, we can't either." An Avro release that restores it would fail this case,
+     * and every hand-written reader schema besides.
      */
     private static final String READER_SCHEMA =
-            "{\"type\":\"record\",\"name\":\"Row\",\"fields\":["
-                    + "{\"name\":\"trip_id\",\"type\":[\"null\",\"string\"],\"default\":null}]}";
+            "{\"type\":\"record\",\"name\":\"Row\",\"fields\":[]}";
 
     /** Static because the map function is shipped into a job running in this same JVM. */
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
@@ -137,11 +152,22 @@ class BigQueryMultiStreamRealGcpITCase {
         assertThat(read).hasValue(expected);
     }
 
-    /** The table's row count at the same instant the read is pinned to. */
+    /**
+     * The table's row count at the same instant the read is pinned to.
+     *
+     * <p>Free, whatever the table's size: {@code COUNT(*)} is answered from metadata and bills no
+     * bytes. The path is derived from {@link #TABLE} rather than written out, so the table is named
+     * exactly once in this class.
+     */
     private static long rowCountAsOf(Instant snapshot) throws InterruptedException {
         return RealBigQuery.queryLongs(
-                        "SELECT COUNT(*) FROM `bigquery-public-data.austin_bikeshare"
-                                + ".bikeshare_trips` FOR SYSTEM_TIME AS OF TIMESTAMP('"
+                        "SELECT COUNT(*) FROM `"
+                                + TABLE.getProject()
+                                + "."
+                                + TABLE.getDataset()
+                                + "."
+                                + TABLE.getTable()
+                                + "` FOR SYSTEM_TIME AS OF TIMESTAMP('"
                                 + snapshot
                                 + "')")
                 .get(0);
