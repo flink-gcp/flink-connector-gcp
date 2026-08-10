@@ -17,16 +17,13 @@
 package io.github.flink.gcp.connector.bigtable.source.readrows.enumerator;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.api.connector.source.SplitsAssignment;
-import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
-import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
-import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.source.EnumeratorCounters;
+import io.github.flink.gcp.connector.base.source.PullAssignmentSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumeratorState;
@@ -37,33 +34,18 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
-import java.io.IOException;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Deque;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.OptionalLong;
-import java.util.Set;
 
 /**
  * Samples the table once, cuts the configured ranges at the sampled boundaries, and hands the
  * pieces out one at a time.
  *
- * <p>Assignment is pull-based: a reader asks for a split when it starts with none and asks again
- * whenever it finishes one, so a range that takes longer than its siblings does not hold up a
- * subtask that could be reading another. Parallelism therefore comes from how finely the table
- * happens to be sampled, and a table with one tablet is read by one subtask however many are
- * running.
- *
- * <p>The enumerator keeps <em>no</em> record of which subtask holds which split. Its whole state is
- * a queue of unassigned splits and the flag saying the plan exists, and every question a ledger
- * would answer is answered instead by what this class is handed — a request, or a returned split.
- * Flink's {@code SourceCoordinator} does the per-reader half already: it suppresses a further
- * request from a subtask it has told there are no more splits, and clears that only on a reset,
- * which is also what returns a failed reader's splits, so a returned split is always reachable by
- * the subtask that comes back for it.
+ * <p>The assignment protocol — pull-based, and keeping no record of which subtask holds which split
+ * — is {@link PullAssignmentSplitEnumerator}'s, and the reasoning behind it lives there. What this
+ * class adds is the plan: parallelism comes from how finely the table happens to be sampled, and a
+ * table with one tablet is read by one subtask however many are running.
  *
  * <p><b>A restore never samples again.</b> Tablets split and merge while a job runs, so a second
  * sampling would produce different boundaries and therefore different splits — under the same
@@ -71,37 +53,17 @@ import java.util.Set;
  * readers' restored splits disagree about which range each id names. The checkpointed flag is what
  * prevents it, and it is not the same statement as "the queue is non-empty": a plan that has been
  * fully handed out must not be recomputed either.
- *
- * <p>The metrics follow the same rule as the state: counting assignments and returns needs no
- * reconciliation, while a gauge of currently-assigned splits would need the ledger this class
- * exists without. The unassigned side is Flink's own gauge, reading the queue directly — a
- * best-effort read, since the reporter thread samples a queue the coordinator thread mutates.
  */
 @Internal
 public class BigtableScanSplitEnumerator
-        implements SplitEnumerator<RowRangeSplit, BigtableScanEnumeratorState> {
+        extends PullAssignmentSplitEnumerator<
+                RowRangeSplit, BigtableScanEnumeratorState, List<RowKeySample>> {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigtableScanSplitEnumerator.class);
 
-    private final SplitEnumeratorContext<RowRangeSplit> context;
     private final BigtableSourceConfig<?> config;
     private final RowKeySampler sampler;
     @Nullable private final BigtableScanEnumeratorState restoredState;
-
-    /** Splits no reader currently holds, in assignment order. */
-    private final Deque<RowRangeSplit> pending = new ArrayDeque<>();
-
-    /** Subtasks that asked for a split before the plan existed, in the order they asked. */
-    private final Set<Integer> awaitingPlan = new LinkedHashSet<>();
-
-    private boolean planned;
-
-    /** Written by {@link #close()} on the scheduler thread, read by the completion handler. */
-    private volatile boolean closed;
-
-    private Counter splitsAssigned = new ThreadSafeSimpleCounter();
-    private Counter splitsReturned = new ThreadSafeSimpleCounter();
-    private Counter rowKeySamplesTaken = new ThreadSafeSimpleCounter();
 
     /**
      * Creates the enumerator.
@@ -114,68 +76,76 @@ public class BigtableScanSplitEnumerator
             SplitEnumeratorContext<RowRangeSplit> context,
             BigtableSourceConfig<?> config,
             @Nullable BigtableScanEnumeratorState restoredState) {
-        this.context = Preconditions.checkNotNull(context, "context must not be null");
-        this.config = Preconditions.checkNotNull(config, "config must not be null");
+        super(
+                context,
+                sampler(config),
+                "scan split",
+                samplingFailureMessage(config),
+                "Failed to close the Bigtable row key sampler.");
+        this.config = config;
         this.sampler = config.getSampler();
         this.restoredState = restoredState;
     }
 
+    /**
+     * Takes the sampler out of the configuration, checking the configuration on the way.
+     *
+     * <p>Static because it is evaluated as a {@code super(...)} argument, and first among them, so
+     * a null configuration is named here rather than thrown from the message below.
+     */
+    private static RowKeySampler sampler(BigtableSourceConfig<?> config) {
+        Preconditions.checkNotNull(config, "config must not be null");
+        return config.getSampler();
+    }
+
+    private static String samplingFailureMessage(BigtableSourceConfig<?> config) {
+        return "Failed to sample the row keys of "
+                + config.getTable()
+                + "; the scan cannot be planned.";
+    }
+
     @Override
-    public void start() {
-        registerMetrics();
-        if (restoredState != null && restoredState.isPlanned()) {
-            planned = true;
-            pending.addAll(restoredState.getPendingSplits());
-            LOG.info(
-                    "Restored the Bigtable scan plan for {} with {} unassigned split(s); the table"
-                            + " is not sampled again, so the split ids the readers hold keep their"
-                            + " meaning.",
-                    config.getTable(),
-                    pending.size());
-            return;
+    protected boolean restore() {
+        if (restoredState == null || !restoredState.isPlanned()) {
+            return false;
         }
+        addPlannedSplits(restoredState.getPendingSplits());
+        LOG.info(
+                "Restored the Bigtable scan plan for {} with {} unassigned split(s); the table"
+                        + " is not sampled again, so the split ids the readers hold keep their"
+                        + " meaning.",
+                config.getTable(),
+                pendingSplitCount());
+        return true;
+    }
+
+    @Override
+    protected void onPlanningStarted() {
         LOG.info(
                 "Sampling row keys of {} to plan the scan (ranges={}, parallelism={}).",
                 config.getTable(),
                 describeRanges(),
                 context.currentParallelism());
-        context.callAsync(() -> sampler.sample(config.getTable()), this::onSampled);
     }
 
-    /**
-     * Runs on the coordinator thread once sampling finishes, so it needs no synchronization.
-     * Throwing is how a split enumerator fails the job from an asynchronous call.
-     */
-    private void onSampled(@Nullable List<RowKeySample> samples, @Nullable Throwable error) {
-        if (closed) {
-            // The job is being torn down; failing it now would turn a clean cancellation into a
-            // failure whose cause is our own shutdown.
-            return;
-        }
-        if (error != null) {
-            // Not softened into a single unsplit plan. The client already retried the transient
-            // codes under a total timeout of its own, so a failure that reaches here is a
-            // permission, quota or configuration problem — and a fallback would turn it into a job
-            // that reads the whole table on one subtask for reasons nothing reports.
-            throw new FlinkRuntimeException(
-                    "Failed to sample the row keys of "
-                            + config.getTable()
-                            + "; the scan cannot be planned.",
-                    error);
-        }
-        List<PlannedSplit> plan = RowRangeSplitPlanner.plan(config.getRanges(), samples);
-        for (PlannedSplit split : plan) {
-            pending.add(split.getSplit());
-        }
-        planned = true;
-        rowKeySamplesTaken.inc();
-        logPlan(samples, plan);
+    @Override
+    protected List<RowKeySample> plan() throws Exception {
+        // Not softened into a single unsplit plan when it fails. The client already retried the
+        // transient codes under a total timeout of its own, so a failure that reaches the
+        // enumerator is a permission, quota or configuration problem — and a fallback would turn
+        // it into a job that reads the whole table on one subtask for reasons nothing reports.
+        return sampler.sample(config.getTable());
+    }
 
-        List<Integer> waiting = new ArrayList<>(awaitingPlan);
-        awaitingPlan.clear();
-        for (int subtaskId : waiting) {
-            serve(subtaskId);
+    @Override
+    protected void onPlanned(List<RowKeySample> samples) {
+        List<PlannedSplit> plan = RowRangeSplitPlanner.plan(config.getRanges(), samples);
+        List<RowRangeSplit> splits = new ArrayList<>();
+        for (PlannedSplit split : plan) {
+            splits.add(split.getSplit());
         }
+        addPlannedSplits(splits);
+        logPlan(samples, plan);
     }
 
     /**
@@ -257,92 +227,19 @@ public class BigtableScanSplitEnumerator
         return String.join(", ", rendered);
     }
 
-    /**
-     * Registers the enumerator's metrics.
-     *
-     * <p>The null check is defensive: {@code SplitEnumeratorContext#metricGroup()} carries no
-     * nullability annotation, and a context that answered with nothing would otherwise fail the job
-     * at startup over its metrics. Flink's own contexts always provide one.
-     */
-    private void registerMetrics() {
-        SplitEnumeratorMetricGroup metricGroup = context.metricGroup();
-        if (metricGroup == null) {
-            return;
-        }
-        splitsAssigned = metricGroup.counter(BigtableMetricNames.SPLITS_ASSIGNED, splitsAssigned);
-        splitsReturned = metricGroup.counter(BigtableMetricNames.SPLITS_RETURNED, splitsReturned);
-        rowKeySamplesTaken =
-                metricGroup.counter(BigtableMetricNames.ROW_KEY_SAMPLES_TAKEN, rowKeySamplesTaken);
-        metricGroup.setUnassignedSplitsGauge(() -> (long) pending.size());
-    }
-
     @Override
-    public void addReader(int subtaskId) {
-        // Assignment is pull-based: a reader with no splits asks for one when it starts, and asks
-        // again whenever it finishes one. Nothing to do when it merely registers.
-    }
-
-    @Override
-    public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
-        if (!planned) {
-            LOG.info(
-                    "Source subtask {} asked for a split before the scan was planned; it waits for"
-                            + " the plan.",
-                    subtaskId);
-            awaitingPlan.add(subtaskId);
-            return;
-        }
-        serve(subtaskId);
-    }
-
-    /** Hands a subtask the next unassigned split, or finishes it when there is none left. */
-    private void serve(int subtaskId) {
-        if (!context.registeredReaders().containsKey(subtaskId)) {
-            // It failed while it was parked. Its splits, if it held any, come back through
-            // addSplitsBack, and it asks again when it restarts.
-            LOG.info("Source subtask {} is no longer registered; skipping its request.", subtaskId);
-            return;
-        }
-        RowRangeSplit split = pending.poll();
-        if (split == null) {
-            // Nothing left right now. Nothing records that this subtask was told so: if a failed
-            // reader returns a split later, this subtask is served again when it next asks.
-            LOG.info("No Bigtable scan split left for source subtask {}.", subtaskId);
-            context.signalNoMoreSplits(subtaskId);
-            return;
-        }
-        LOG.info("Assigning {} to source subtask {}.", split, subtaskId);
-        splitsAssigned.inc();
-        context.assignSplits(
-                new SplitsAssignment<>(
-                        Collections.singletonMap(subtaskId, Collections.singletonList(split))));
-    }
-
-    @Override
-    public void addSplitsBack(List<RowRangeSplit> splits, int subtaskId) {
-        pending.addAll(splits);
-        splitsReturned.inc(splits.size());
-        LOG.info(
-                "Source subtask {} returned {} scan split(s); they are reassigned on the next"
-                        + " request.",
-                subtaskId,
-                splits.size());
+    protected EnumeratorCounters registerCounters(SplitEnumeratorMetricGroup metricGroup) {
+        return new EnumeratorCounters(
+                metricGroup.counter(
+                        BigtableMetricNames.SPLITS_ASSIGNED, new ThreadSafeSimpleCounter()),
+                metricGroup.counter(
+                        BigtableMetricNames.SPLITS_RETURNED, new ThreadSafeSimpleCounter()),
+                metricGroup.counter(
+                        BigtableMetricNames.ROW_KEY_SAMPLES_TAKEN, new ThreadSafeSimpleCounter()));
     }
 
     @Override
     public BigtableScanEnumeratorState snapshotState(long checkpointId) {
-        return new BigtableScanEnumeratorState(planned, new ArrayList<>(pending));
-    }
-
-    @Override
-    public void close() throws IOException {
-        // Runs on the scheduler thread, possibly while sampling is still in flight; the flag is
-        // volatile so the completion handler sees it and stays quiet.
-        closed = true;
-        try {
-            Closers.closeAll(sampler);
-        } catch (Exception e) {
-            throw new IOException("Failed to close the Bigtable row key sampler.", e);
-        }
+        return new BigtableScanEnumeratorState(isPlanned(), pendingSplits());
     }
 }

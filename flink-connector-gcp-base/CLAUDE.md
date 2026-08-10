@@ -39,6 +39,27 @@ record — context, evidence, declined alternatives — is the named ADR under `
   counters name events, gauges name states, and **no name takes Flink's `num` prefix**
   (`docs/adr/0038`; the mechanical half is `just check-metric-docs`).
 
+## `base.source` (`docs/adr/0083`)
+
+- `PullAssignmentSplitEnumerator` is the assignment protocol every **bounded, pull-assigned**
+  source shares: the queue, the parked requests, `serve`, the returned splits, the one-shot
+  `callAsync` plan with its `closed` guard, and the close of the seam. `start()`, `close()` and the
+  three assignment methods are **`final`** — a connector able to override them could lose the guard
+  in one module and keep it in the other. A connector supplies five hooks plus its own
+  `snapshotState`, and **the checkpointed state type stays per connector** (`StateT`).
+- **The counters are registered by the connector, in `registerCounters`, and that is not style**:
+  `scripts/check-metric-docs.py` reads a literal `.counter(<Product>MetricNames.X)` out of the
+  module's own sources to decide a documented metric is registered, so a name passed in here as a
+  string would report as unregistered. Keep the registration call where the name lives;
+  `EnumeratorCounters.unregistered()` is what stands in when a context offers no metric group.
+- Logging goes through `LoggerFactory.getLogger(getClass())` — the concrete connector's category,
+  so a connector-scoped log configuration keeps matching. **Deliberately the opposite of
+  `BoundedShutdown`**, which logs under its own name (`docs/adr/0007`): there the shared class is
+  the subject of the message, here the connector is.
+- **Nothing continuous belongs here.** This class plans once; a change-streams enumerator
+  discovering partitions as it goes is a different shape, and widening this one is an argument to
+  make on evidence rather than a hook to add.
+
 ## `base.retry` and `base.rpc` (`docs/adr/0039`)
 
 - Retry loops stay in the connectors; do not add a `Retries.run` executor. Every schedule

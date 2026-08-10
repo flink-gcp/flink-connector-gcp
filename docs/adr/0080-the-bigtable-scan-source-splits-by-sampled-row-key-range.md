@@ -90,7 +90,10 @@ reads nothing under a green job is indistinguishable from a job with nothing to 
 would produce different boundaries under the same ordinal split ids the readers already hold, and
 `addSplitsBack` and the restored readers would disagree about which range each id names. The
 checkpointed `planned` flag is what prevents it, and it is deliberately not the same statement as
-"the pending queue is non-empty": a plan fully handed out must not be recomputed either.
+"the pending queue is non-empty": a plan fully handed out must not be recomputed either. (Since
+[#452] the assignment protocol around it — the queue, the parking, the closed-guard on the sampling
+call — is `base.source.PullAssignmentSplitEnumerator`, shared with the BigQuery source and recorded
+in ADR-0083. What stays here is the sampling and the plan.)
 
 **The split reader keeps its own delivered key, beside the split state's emitted key.** They are
 two clocks on two threads, and the rows between them are in the element queue: a reopen after a
@@ -171,3 +174,4 @@ onto it rather than left as a second copy.
 [#34]: https://github.com/laughingman7743/flink-connector-gcp/issues/34
 [#216]: https://github.com/laughingman7743/flink-connector-gcp/issues/216
 [#248]: https://github.com/laughingman7743/flink-connector-gcp/issues/248
+[#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
