@@ -239,11 +239,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   are set, and **at least one is required** under `create-if-needed` — stricter than the DataStream
   API, because an at-least-once upsert sink writes another version on every replay. Defaulting the
   rule instead was declined: that would be this layer inventing a default rather than mapping one.
-- The parity test reflects over **three** surfaces, widening the Pub/Sub precedent (which reflects
-  over options builders only), and a further assertion accounts for every option that feeds
-  something other than one setter. Adding a setter to `BigtableSinkBuilder` now costs either an
-  option or an exemption carrying its reason; `BigtableSourceBuilder` joins when the `scan.*`
-  options do.
+- `BigtableOptionParityTest` reflects over **three** surfaces, widening the Pub/Sub precedent (which
+  reflects over options builders only), and **two** further assertions ride along: no option feeds
+  two setters, and every option that feeds something other than one setter is accounted for. Adding
+  a setter to `BigtableSinkBuilder` now costs either an option or an exemption carrying its reason;
+  `BigtableSourceBuilder` joins when the `scan.*` options do.
 - The module's only new compile-scope dependency is `flink-table-common` at `provided` — measured:
   the whole surface this layer needs, up to `DefaultLookupCache`, is in it, so `flink-table-runtime`
   stays test scope and nothing here needs a `flink-api-tiers.toml` entry.

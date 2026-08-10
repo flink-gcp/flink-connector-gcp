@@ -44,11 +44,8 @@ import java.util.Set;
  * builder's cannot: the shape of the DDL schema, the primary key, and a table-creation key set
  * under a disposition that creates nothing.
  *
- * <p>Whether the identifier {@code bigtable} collides with google/flink-connector-gcp's own table
- * connector is unsettled — that project publishes no DDL — and is tracked as <a
- * href="https://github.com/laughingman7743/flink-connector-gcp/issues/472">#472</a>. A classpath
- * carrying two factories for one identifier fails discovery loudly, which is the acceptable
- * outcome.
+ * <p>The identifier {@code bigtable} is also google/flink-connector-gcp's. A classpath carrying
+ * both fails factory discovery loudly, which is the acceptable outcome: the natural name wins.
  *
  * <p>Nothing here reads the session configuration. The Bigtable sink is at-least-once in both
  * execution modes and has no rule that depends on the runtime mode or the checkpoint interval.

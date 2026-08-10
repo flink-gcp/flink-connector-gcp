@@ -76,11 +76,16 @@ last of which would otherwise reach the service as a mutation-less entry and com
 uniformly to every family. At least one is **required** under `create-if-needed`, which the
 DataStream API does not require.
 
-**The reflective parity test covers four surfaces rather than the options builders alone**:
-`BigtableWriterOptions.Builder` (no exemptions), `TableCreateOptions.Builder`,
-`BigtableSinkBuilder`, and — from [#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459) — `BigtableSourceBuilder`, each connector builder carrying an
-exemption set whose entries state why a setter has no DDL form. A fifth assertion accounts for every
-declared option that feeds something other than one setter, so an option with no home fails too.
+**`BigtableOptionParityTest` covers three surfaces rather than the options builders alone**:
+`BigtableWriterOptions.Builder`, whose every knob has a key and which carries no exemption;
+`BigtableSinkBuilder`, carrying an exemption set whose entries state why a setter has no DDL form;
+and `TableCreateOptions.Builder`, whose one setter is wholly exempt, the families being the DDL's
+`ROW<...>` columns rather than a key. `BigtableSourceBuilder` waits for the `scan.*` surface to
+arrive with [#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459) — exempting
+every one of its setters first would mean writing reasons scheduled to stop being true. Two further
+assertions ride along: no option feeds two setters, and the declared options equal the mapped ones
+in **both** directions, so an option with no home fails and so does a table entry naming a key that
+no longer exists.
 
 ## Evidence
 
