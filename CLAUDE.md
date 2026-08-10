@@ -228,7 +228,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `docs/content/docs/{quickstart,examples}/<connector>.md` (#90) are the other two per-connector
   pages: one runnable job each, and the worked cases the design record describes but does not show
 - The module `README.md` is an **overview only**: title, one-paragraph description, the
-  feature-status table (`Implemented (#N)` / `Planned (#N)`), a minimal code sample, a link to the
+  feature-status table (`Implemented (#N)` / `Planned (#N)` / `Declined (#N)` — the third for a
+  feature measured and rejected, whose reasoning is the ADR the docs page links), a minimal code sample, a link to the
   docs page, and the **provenance/attribution section** — provenance pairs with `NOTICE` and is a
   licensing obligation, so it stays in the repository
 - Implementation status lives in the README table only; the docs page links to it instead of

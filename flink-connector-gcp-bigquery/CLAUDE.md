@@ -93,15 +93,6 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   leave the SPI as the client's unchecked type either — and the conflict lookup keeps the 409 as
   a suppressed exception. `BigQueryLoadJobRunner`'s unit tests drive it through a scripted
   `StubBigQuery`, with `Job` values minted by `TestJobs` (`docs/adr/0067`).
-- **Every load-job id names its location, and the destination dataset decides it when
-  `location()` is unset** (#491; `docs/adr/0018`): BigQuery scopes a job to (project, location,
-  id), a location-less `jobs.get` sees only the US multi-region, and BigQuery runs a load job in
-  its destination dataset's location — so the runner derives the location from `datasets.get`,
-  once per dataset, memoized; a configured `location()` wins. **Do not make `location()` required
-  under FILE_LOADS** — dynamic destinations may span regions, where one value is wrong for some
-  jobs — and do not read the fresh-id happy path's green as re-attach evidence: only the gated
-  `BigQueryLoadJobRunnerRealGcpITCase` exercises re-attach, deliberately location-less against
-  the regional dataset.
 - **The staging format is a real constraint**: Parquet cannot reach a `JSON` column, and "what
   the load job accepts" is answered only by a load job (`docs/adr/0019`). `DATETIME` stages as
   `local-timestamp-micros`; the literal parser keeps `ResolverStyle.STRICT`, which is
@@ -298,6 +289,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   priced rather than the read cost. Measured 2026-08-10: BigQuery splits somewhere between 195 MB
   (one stream) and 264 MB (four), and **a projection lowers the count** — it follows the bytes
   selected, not the table's size — so the fixture reads every column, deliberately.
+- **Avro is the only wire format, and Arrow was measured and declined** (`docs/adr/0090`). **Do not
+  re-propose an Arrow deserializer without engaging that record**: "Arrow is faster" is what it
+  confirms, not what it refutes, so a re-proposal has to exhibit a consumer that takes a batch
+  without materialising a row from it — a faster decode number is not that. The same run measured
+  this module's own Avro path: **the stream decoder allocates a fresh 8 KiB buffer on every
+  `configure`**, so `AvroRowCursor` pays one per response block.
 
 ## Metrics (`docs/adr/0034`; conventions in the base module's CLAUDE.md)
 

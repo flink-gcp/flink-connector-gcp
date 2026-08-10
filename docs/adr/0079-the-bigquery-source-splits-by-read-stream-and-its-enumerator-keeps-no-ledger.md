@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-09 (BigQuery and emulator behaviour measured the same day), revised by [#392]
-  (2026-08-10)
-- Issues: [#390], [#64], [#392]
+  (2026-08-10) and [#393] (2026-08-11)
+- Issues: [#390], [#64], [#392], [#393]
 - Modules: bigquery (`source`, `source.enumerator`, `source.reader`, `source.serializer`,
   `source.split`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Source
@@ -123,9 +123,9 @@ written rather than at session creation.
 resolution rules, so a hand-written schema naming a subset of the columns works and the records
 carry the schema the produced `TypeInformation` was derived from. The shipped `genericRecord(...)`
 implementation answers with **`GenericRecordAvroTypeInfo`**, which is why `flink-avro` is a new
-`provided` dependency: the Kryo fallback does not work at all. A batch-aware Arrow variant ([#393])
-arrives as a sibling abstract class, not as a widening of this one — one call per row is what the
-offset rests on.
+`provided` dependency: the Kryo fallback does not work at all. **This SPI is the only one**, and
+Avro the source's only wire format: [#393] measured a batch-aware Arrow variant and declined to
+build it, the gain being reachable only by a consumer that never asks for a row (ADR-0090).
 
 **The source takes one emulator endpoint where the sink takes two** (ADR-0029). It makes no REST
 call: the read session carries the schema. The moment the source grows a metadata call, this is the
@@ -159,7 +159,8 @@ the Avro-namespace reason above.
   size, and a table large enough to be split costs more than the assignment logic is worth there.
   The enumerator's unit tests carry it instead.
 - Error-handling depth, session-expiry reporting and wider real-GCP restore coverage are [#391];
-  query input is [#392], landed and recorded in ADR-0087; Arrow is [#393].
+  query input is [#392], landed and recorded in ADR-0087; Arrow was [#393], measured and declined in
+  ADR-0090, so Avro is the source's only wire format.
 
 [#64]: https://github.com/laughingman7743/flink-connector-gcp/issues/64
 [#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
