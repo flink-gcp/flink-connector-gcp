@@ -58,12 +58,71 @@ SELECT user_id, ROW(name, email), ROW(requests, last_seen) FROM staged_profiles;
 
 ## Getting the connector onto the classpath
 
-Use `flink-connector-gcp-bigtable` and let the deployment resolve its transitive dependencies —
-Maven or Gradle for a job jar, or a `lib/` directory assembled with those dependencies present. An
-uber-jar for the SQL client, the sibling of `flink-sql-connector-gcp-bigquery` and
-`flink-sql-connector-gcp-pubsub`, is [#461]({{< param BookRepo >}}/issues/461); until it exists,
-adding this connector to a bare SQL client means assembling the Bigtable client's runtime tree by
-hand.
+Use `flink-sql-connector-gcp-bigtable`, an uber-jar built for exactly this: put it in Flink's
+`lib/` directory, or add it with `ADD JAR` in the SQL client. It bundles
+`flink-connector-gcp-bigtable` together with its whole runtime tree — the Bigtable client, gRPC,
+protobuf, Guava, the Google auth and HTTP clients — which is 67 artifacts, not a dependency list
+anyone wants to assemble by hand.
+
+The plain `flink-connector-gcp-bigtable` jar works too, where the deployment already resolves
+transitive dependencies. That is the right choice for a DataStream job built with Maven or Gradle.
+For SQL it usually is not.
+
+### Everything bundled is relocated
+
+Every bundled package moves under `io.github.flink.gcp.connector.bigtable.shaded.`, so the
+versions of gRPC, protobuf and Guava this connector needs cannot collide with the ones a job,
+another connector, or Flink itself brings. Six packages are deliberately *not* relocated, and none
+of them can collide in a way that matters: `org.conscrypt`, which gRPC picks up reflectively as an
+optional TLS provider and does without when it is unusable; and the annotation-only
+`javax.annotation` (jsr305's classes only — `javax.annotation-api`, the other artifact publishing
+into that package, is not bundled, [#352]({{< param BookRepo >}}/issues/352)), `org.jspecify`,
+`org.codehaus.mojo.animal_sniffer`, `android.annotation` and `org.checkerframework`, where a
+duplicate class is inert because nothing ever invokes it.
+
+`io.grpc:grpc-netty-shaded` *is* relocated, including the rename of its `META-INF/native/`
+libraries that relocating an already-relocated gRPC requires. The full reasoning — why exempting
+it instead would trade a real collision for a hypothetical one — is on the
+[Pub/Sub SQL page]({{< relref "docs/connectors/table/pubsub" >}}), and this jar inherits it. One
+consequence worth repeating: relocation rewrites netty's system-property names along with its
+packages, so a `-D` spelled with the upstream `io.grpc.netty.shaded.io.netty.` prefix has no
+effect inside this jar.
+
+Sharing a `lib/` with the sibling GCP SQL uber-jars works, and it is measured for this jar rather
+than inherited: of the 560 file entries it shares with the Pub/Sub jar and the 1,034 it shares
+with the BigQuery jar, all but four are byte-identical in each pair, and the four are per-jar
+metadata Flink reads through `ServiceLoader` or enumeration — the manifest, the `NOTICE`, and two
+service files (measured 2026-08-10, one build of each jar; the
+[BigQuery SQL page]({{< relref "docs/connectors/table/bigquery" >}}) carries the same measurement
+for the pair it names).
+**Merging jars into one fat jar is the case that does not work**: without maven-shade's
+`ServicesResourceTransformer`, one jar's
+`META-INF/services/org.apache.flink.table.factories.Factory` entry silently shadows the other's,
+as does one jar's `NOTICE`. Put the jars in `lib/`, or add each with its own `ADD JAR`.
+
+That warning has a second reader here that the sibling pages do not have:
+google/flink-connector-gcp publishes a Bigtable table connector that registers the same
+`bigtable` identifier ([#472]({{< param BookRepo >}}/issues/472)). With both jars in `lib/`,
+`FactoryUtil` discovery fails loudly, naming the ambiguous identifier — the acceptable outcome.
+Merged into one fat jar, the failure is silent: whichever factory registration survives owns
+`bigtable`, and the DDL then means whatever that connector says it means. The two option
+vocabularies overlap in only `project`, `instance` and `table`, so the first symptom is the other
+connector rejecting options it never declared.
+
+### Licensing
+
+`META-INF/NOTICE` inside the jar lists every bundled artifact grouped by licence, and
+`META-INF/licenses/` carries the full text of each non-Apache-2.0 one — protobuf, gax and
+api-common, the Google auth library, the ThreeTen backport, RE2/J, animal-sniffer and the Checker
+Framework qualifiers.
+
+The prose of the NOTICE is human-written, in the module's `NOTICE.template`; the artifact lists
+are generated into it from what Maven actually resolves, so a wrong licence grouping or a stale
+version cannot be written at all. Each licence text has a pinned source — the artifact's own jar
+where one ships a text, otherwise a curated URL matched to the bundled version — recorded with its
+sha256, so a text that changes upstream fails the build instead of being shipped unreviewed. `just
+update-notice <module>` regenerates both after a dependency change; `just check-notice <module>`
+verifies, offline, that what is checked in still matches the bundle and the pins.
 
 ## The schema
 

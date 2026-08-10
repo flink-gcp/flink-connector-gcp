@@ -119,7 +119,7 @@ which then has to be written into the NOTICE and its obligations met
 (CDDL-1.0 §3.1's source-availability clause, for one). `javax.annotation-api`
 (`CDDL + GPLv2 with classpath exception`) is the worked example, and its answer
 was this section's ordinary one rather than a special case: nothing referenced
-it, so it was excluded from both bundles (#352, ADR-0015, which carries the
+it, so it was excluded from the bundles (#352, ADR-0015, which carries the
 measurement). **Measure before you draft prose** — the artifact that needs no
 licence paragraph is the one that is not in the jar.
 

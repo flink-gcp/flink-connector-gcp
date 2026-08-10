@@ -71,6 +71,15 @@ limitations under the License.
             <scope>provided</scope>
         </dependency>
 
+        <!-- The Bigtable half (testutils.bigtable): the admin and data clients the emulator
+             harnesses open. Version managed by the libraries BOM; the container type comes
+             from testcontainers' `gcloud` module below, as Pub/Sub's does. -->
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-bigtable</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- The Pub/Sub half (testutils.pubsub). Versions managed by the libraries BOM. -->
         <dependency>
             <groupId>com.google.cloud</groupId>

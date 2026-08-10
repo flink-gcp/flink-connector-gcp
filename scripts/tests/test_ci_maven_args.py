@@ -36,6 +36,7 @@ MODULES = [
     "flink-sql-connector-gcp-pubsub",
     "flink-connector-gcp-cloudtasks",
     "flink-connector-gcp-bigtable",
+    "flink-sql-connector-gcp-bigtable",
     "flink-connector-gcp-spanner",
 ]
 
@@ -290,18 +291,21 @@ def test_full_mode_builds_everything(ci_maven_args):
         "check_notice": "true",
         "notice_modules": (
             "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
+            " flink-sql-connector-gcp-bigtable"
         ),
         "check_notice_sources": "false",
     }
 
 
 def test_one_connector_builds_its_slice(ci_maven_args):
+    # Spanner, because the slice this pins is a connector with no shaded
+    # sibling; Bigtable stopped being that connector when #461 gave it one.
     out = outputs(
-        run_cli("--files", json.dumps(["flink-connector-gcp-bigtable/src/X.java"]))
+        run_cli("--files", json.dumps(["flink-connector-gcp-spanner/src/X.java"]))
     )
     assert out["maven_args"] == (
         "-pl .,flink-connector-gcp-test-utils,flink-connector-gcp-base,"
-        "flink-connector-gcp-bigtable"
+        "flink-connector-gcp-spanner"
     )
     assert out["check_notice"] == "false"
 
@@ -326,8 +330,10 @@ def test_only_the_selected_shaded_modules_are_named(ci_maven_args):
 
 
 def test_a_change_reaching_no_shaded_module_names_none(ci_maven_args):
+    # Spanner for the same reason as test_one_connector_builds_its_slice: this
+    # needs a change whose closure holds no shaded module.
     out = outputs(
-        run_cli("--files", json.dumps(["flink-connector-gcp-bigtable/src/X.java"]))
+        run_cli("--files", json.dumps(["flink-connector-gcp-spanner/src/X.java"]))
     )
     assert out["notice_modules"] == ""
     assert out["check_notice"] == "false"
@@ -342,6 +348,16 @@ def test_bigquery_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
         run_cli("--files", json.dumps(["flink-connector-gcp-bigquery/pom.xml"]))
     )
     assert "flink-sql-connector-gcp-bigquery" in out["maven_args"]
+    assert out["check_notice"] == "true"
+
+
+def test_bigtable_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
+    # The third shaded pair (#461), pinned like the two before it.
+    out = outputs(
+        run_cli("--files", json.dumps(["flink-connector-gcp-bigtable/pom.xml"]))
+    )
+    assert "flink-sql-connector-gcp-bigtable" in out["maven_args"]
+    assert out["notice_modules"] == "flink-sql-connector-gcp-bigtable"
     assert out["check_notice"] == "true"
 
 
@@ -396,6 +412,7 @@ def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
         "check_notice": "true",
         "notice_modules": (
             "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
+            " flink-sql-connector-gcp-bigtable"
         ),
         "check_notice_sources": "true",
     }

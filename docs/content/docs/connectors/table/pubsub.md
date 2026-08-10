@@ -103,7 +103,8 @@ library name from its own package at load time. Relocating those classes a secon
 means renaming the library files again in step. Leaving it alone was the obvious alternative and is
 wrong — the jar would then be unable to share a classpath with anything else bundling gRPC. That
 is no longer the hypothetical it was when this was written: `flink-sql-connector-gcp-bigquery`
-bundles gRPC too, and the two are meant to sit in one `lib/`.
+and `flink-sql-connector-gcp-bigtable` bundle gRPC too, and all three are meant to sit in one
+`lib/`.
 
 ### Licensing
 

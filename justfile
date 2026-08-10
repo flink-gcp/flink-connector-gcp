@@ -157,7 +157,7 @@ binary-compat ceiling:
     @echo '==> Build against the floor (the Flink version pinned in pom.xml)'
     {{ mvn }} verify
     @echo '==> Install what the goal-only rerun cannot resolve from the reactor'
-    {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-test-utils -DskipTests install
+    {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable,flink-connector-gcp-test-utils -DskipTests install
     @echo '==> Record which tests the floor build ran'
     @mkdir -p target
     scripts/surefire-fingerprint.sh > target/floor-tests.txt

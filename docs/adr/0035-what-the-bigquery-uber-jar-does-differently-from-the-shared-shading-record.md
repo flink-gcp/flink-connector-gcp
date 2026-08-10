@@ -27,9 +27,11 @@ limitations under the License.
 The shading and licensing decisions are ADR-0015's, inherited wholesale. What is this tree's
 own:
 
-- **`org.slf4j:slf4j-api` is the artifact kept out of *this* bundle and not the other's** (the
-  Pub/Sub tree carries no slf4j at all; this one gets it through Avro). The exclusion both trees
-  take, `javax.annotation-api`, is ADR-0015's. Bundling slf4j is wrong either way
+- **`org.slf4j:slf4j-api` is the artifact kept out of *this* bundle and not Pub/Sub's** (that
+  tree carries no slf4j at all; this one gets it through Avro — and the later Bigtable jar, whose
+  client declares slf4j-api directly, takes the same exclusion with this record's reasoning,
+  recorded in its pom). The exclusion every tree
+  takes, `javax.annotation-api`, is ADR-0015's. Bundling slf4j is wrong either way
   round: relocated, the connector's own `LoggerFactory` calls are rewritten with it, so they
   bind to a copy no Flink log configuration reaches and the connector goes silent under a green
   job; unrelocated, the jar puts a second `slf4j-api` on a classpath that already has
@@ -41,14 +43,14 @@ own:
   `commons-compress` resolves 1.24.0 here against 1.26.0 there, because their only path is
   `flink-core`, which is `provided` on the connector and contributes nothing transitively. The
   other two are the exclusions this pom declares — `slf4j-api`, this tree's, and
-  `javax.annotation-api`, both trees' (ADR-0015). The relocation list is derived from the SQL
+  `javax.annotation-api`, every tree's (ADR-0015). The relocation list is derived from the SQL
   module's own `runtime-classpath.txt`.
 - **A relocation pattern rewrites *references*, so it must not be wider than the tree.**
   `org.apache.commons` was the tempting one line for a tree carrying only commons-codec and
   commons-compress, and it silently renamed httpclient's 113 references to
   `org.apache.commons.logging` — an artifact this tree does not have — into a name private to
   the jar, which no user can then satisfy by putting commons-logging in `lib/`. Two named
-  patterns instead. `com.google` is the standing exception, wholesale in both SQL modules, and
+  patterns instead. `com.google` is the standing exception, wholesale in every SQL module, and
   it pays the same cost for `com.google.appengine` — an optional dependency already absent.
 - **`org.apache.avro` is relocated, which makes the uber-jar's `AvroRecordSerializer` unusable
   from a DataStream job** — its signature there takes a relocated `IndexedRecord`. Accepted

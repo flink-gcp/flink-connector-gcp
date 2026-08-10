@@ -155,9 +155,9 @@ INSERT INTO orders VALUES ('order#a-1', ROW('a-1', CAST(10 AS BIGINT)));
 ```
 
 The sink is upsert-shaped, so an updating query works as it stands and a delete removes the whole
-row. There is no uber-jar for the SQL client yet ([#461]({{< param BookRepo >}}/issues/461)), so a
-SQL deployment needs `flink-connector-gcp-bigtable` and its runtime tree on the classpath. The full
-`WITH` surface, the cell encodings and the type mapping are on the
+row. For the SQL client, put the `flink-sql-connector-gcp-bigtable` uber-jar in Flink's `lib/` —
+it carries the connector and its whole runtime tree, relocated. The full `WITH` surface, the cell
+encodings and the type mapping are on the
 [Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page. Reading a table from
 SQL is [#459]({{< param BookRepo >}}/issues/459).
 

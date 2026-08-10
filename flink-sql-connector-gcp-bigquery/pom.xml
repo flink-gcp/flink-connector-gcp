@@ -50,8 +50,9 @@
                  connector jar still declares them, so a DataStream user resolving
                  transitively is unaffected. -->
             <exclusions>
-                <!-- The one place the two SQL modules differ in what they take: Pub/Sub's
-                     tree carries no slf4j, this one gets it transitively through Avro.
+                <!-- Pub/Sub's tree carries no slf4j; this one gets it transitively through
+                     Avro, and the Bigtable jar meets it through google-cloud-bigtable and
+                     excludes it the same way.
 
                      Bundling it is wrong either way round. Relocated, the connector's own
                      LoggerFactory calls are rewritten with it, so they bind to a copy no

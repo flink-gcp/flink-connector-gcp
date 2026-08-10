@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigtable.sink.tables;
 
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import com.google.cloud.bigtable.admin.v2.models.ColumnFamily;
 import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.admin.v2.models.GCRules;
@@ -25,6 +24,8 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.testutils.bigtable.BigtableEmulatorContainers;
+import io.github.flink.gcp.connector.testutils.bigtable.BigtableTestClients;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -32,7 +33,6 @@ import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.BigtableEmulatorContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -45,8 +45,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration tests for {@link BigtableTableAdmin} against the emulator, whose table admin surface
  * — creation, family readback with garbage-collection rules intact, {@code ALREADY_EXISTS} on a
  * repeated creation and on an existing family's re-addition — was measured to behave like the
- * service's for what this class exercises (2026-08-08 against the pinned image below). The emulator
- * stays a convenience, not an authority: the gated real-GCP suite owns the service-side verdicts.
+ * service's for what this class exercises (2026-08-08, against {@code
+ * google-cloud-cli:441.0.0-emulators}; {@link BigtableEmulatorContainers} pins the image). The
+ * emulator stays a convenience, not an authority: the gated real-GCP suite owns the service-side
+ * verdicts.
  *
  * <p>Not shared with {@code AbstractBigtableEmulatorITCase}: that harness lives in the writer's
  * package with package-private access, and this class needs only a container and one verification
@@ -59,12 +61,9 @@ class BigtableTableAdminEmulatorITCase {
     private static final String PROJECT = "it-project";
     private static final String INSTANCE = "it-instance";
 
-    private static final DockerImageName IMAGE =
-            DockerImageName.parse(
-                    "gcr.io/google.com/cloudsdktool/google-cloud-cli:441.0.0-emulators");
-
     @Container
-    private static final BigtableEmulatorContainer EMULATOR = new BigtableEmulatorContainer(IMAGE);
+    private static final BigtableEmulatorContainer EMULATOR =
+            BigtableEmulatorContainers.newContainer();
 
     /** Harness-owned client for preparing tables and reading the results back. */
     private static BigtableTableAdminClient verification;
@@ -73,13 +72,7 @@ class BigtableTableAdminEmulatorITCase {
 
     @BeforeAll
     static void startClients() throws IOException {
-        verification =
-                BigtableTableAdminClient.create(
-                        BigtableTableAdminSettings.newBuilderForEmulator(
-                                        EMULATOR.getHost(), EMULATOR.getEmulatorPort())
-                                .setProjectId(PROJECT)
-                                .setInstanceId(INSTANCE)
-                                .build());
+        verification = BigtableTestClients.adminClient(EMULATOR, PROJECT, INSTANCE);
         admin =
                 new BigtableTableAdmin(
                         EmulatorEndpoint.parse(
