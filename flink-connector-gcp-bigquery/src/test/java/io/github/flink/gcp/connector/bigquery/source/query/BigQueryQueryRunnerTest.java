@@ -51,10 +51,13 @@ class BigQueryQueryRunnerTest {
         client.completedConfiguration =
                 QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
 
-        TableDestination landed =
+        QueryResult result =
                 new BigQueryQueryRunner(client).run(new QuerySpec(SQL, "p", null, null));
+        TableDestination landed = result.getTable();
 
         assertThat(landed).isEqualTo(TableDestination.of("p", "_anon1", "anon1"));
+        // The random-id path never reuses anything, so it must never report a reattach.
+        assertThat(result.isReattached()).isFalse();
         QueryJobConfiguration sent =
                 (QueryJobConfiguration) client.created.get(0).getConfiguration();
         assertThat(sent.getQuery()).isEqualTo(SQL);
@@ -70,7 +73,9 @@ class BigQueryQueryRunnerTest {
         StubBigQuery client = new StubBigQuery();
 
         TableDestination landed =
-                new BigQueryQueryRunner(client).run(new QuerySpec(SQL, "p", null, "scratch"));
+                new BigQueryQueryRunner(client)
+                        .run(new QuerySpec(SQL, "p", null, "scratch"))
+                        .getTable();
 
         QueryJobConfiguration sent =
                 (QueryJobConfiguration) client.created.get(0).getConfiguration();

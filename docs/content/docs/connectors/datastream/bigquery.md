@@ -1641,16 +1641,37 @@ dataset must already exist, must be in the query's own location, and must live i
 The expiration cannot cut a read short: a read session lasts six hours and a bounded read has to
 finish inside that anyway.
 
-#### What is not done here
+#### Reusing the query job across a failover
 
-The query job's id is random, and a previous attempt is never re-attached to. A deterministic id
-would have to come from the query, and BigQuery keeps a job's metadata — and so its id — for six
-months after it was created, so the second run of the same pipeline would find the first run's
-completed job and read its stale result. Making an id stable across a failover but not across
-pipeline runs needs a nonce in the checkpointed state, and it would buy only the window between submitting the query and the first
-checkpoint. In that window a re-plan runs the query again: against the anonymous dataset that is a
-cache hit, and against a named dataset it writes a second result table that expires on its own.
-`queryJobsSubmitted` is what reports it. Deriving that nonce from the job's own context instead — Flink's JobID, with a configurable limit on how far back a previous attempt may be reused — is [#477]({{< param BookRepo >}}/issues/477).
+By default the query job's id is random and a previous attempt is never re-attached to: a
+JobManager failover before the first checkpoint re-plans the source and runs the query again.
+Against the anonymous dataset a completed first query makes that a free cache hit; a first query
+still *running* is the expensive case, since the cache serves only completed results and the two
+scans run — and bill — concurrently. Against a named dataset every re-run writes a second result
+table. `queryJobsSubmitted` is what reports a repeat.
+
+`reuseQueryResultWithin(...)` closes that window ([#477]({{< param BookRepo >}}/issues/477),
+recorded in ADR-0089). With it, the job id is derived from the **Flink job name**, a digest of the
+query configuration, and the window, so a re-plan finds the first attempt's job under the same id
+and adopts it. It requires `queryLocation(...)`: BigQuery scopes a job to (project, location, id),
+and a look-up naming no location sees only jobs in the US multi-region — anywhere else the
+previous attempt's job would never be found (measured against a regional dataset) — a running job is waited for, a finished one has its result table read directly, a
+failed one is probed past to a fresh retry id. `queryJobsReattached` reports each reuse.
+
+Its contract is worth stating precisely: **attempts of the same Flink job name and the same query
+configuration inside one window share one query job.** That covers the failover above, and it
+equally covers an intentional redeploy under the same name inside the window — the connector
+cannot tell the two apart, so a redeployed pipeline reads the previous run's result even if the
+source data moved meanwhile. Size the window to how stale a result the pipeline may read, or
+rename the job to force a fresh query. Two unrelated pipelines do not collide: the digest covers
+the query, project, location, result dataset and window, so ids only meet when the jobs they name
+are identical — up to a sixteen-hex digest, the same footing the sink's deterministic load-job ids
+stand on. The window is capped at 24 hours, because both places a result can land expire
+after about a day, and a longer lookback would reuse a job whose result table is already gone. A
+table that vanishes *early* — deleted by hand, or a cached-results table Google dropped inside its
+nominal day — still fails the reuse at session creation until the window rolls past the job;
+falling back to a fresh query there is
+[#485]({{< param BookRepo >}}/issues/485).
 
 ### Deserialization
 
@@ -1916,6 +1937,7 @@ is one set for the job, since there is one enumerator.
 | `splitsReturned` | counter | read streams a failed reader gave back, on the enumerator |
 | `readSessionsCreated` | counter | read sessions created, on the enumerator |
 | `queryJobsSubmitted` | counter | query jobs this source submitted, on the enumerator. Registered by every source, so a `0` says this one named a table rather than that nothing registered it |
+| `queryJobsReattached` | counter | re-plans that reused a previous attempt's query job under [`reuseQueryResultWithin`]({{< relref "docs/reference/bigquery" >}}) instead of submitting a new one — each is a query that was not billed again |
 | `unassignedSplits` | gauge (Flink standard) | read streams not currently held by a reader |
 
 **`readSessionsCreated` is the one to alert on.** It is `1` for a job that started and `0` for one

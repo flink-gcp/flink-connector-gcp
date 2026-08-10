@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeser
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
@@ -45,6 +46,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     @Nullable private final String query;
     @Nullable private final String queryLocation;
     @Nullable private final String queryResultDataset;
+    @Nullable private final Duration reuseQueryResultWithin;
     private final boolean materializeViews;
     @Nullable private final QueryRunner queryRunner;
     private final String parentProject;
@@ -63,6 +65,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
             @Nullable String query,
             @Nullable String queryLocation,
             @Nullable String queryResultDataset,
+            @Nullable Duration reuseQueryResultWithin,
             boolean materializeViews,
             @Nullable QueryRunner queryRunner,
             String parentProject,
@@ -79,6 +82,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         this.query = query;
         this.queryLocation = queryLocation;
         this.queryResultDataset = queryResultDataset;
+        this.reuseQueryResultWithin = reuseQueryResultWithin;
         this.materializeViews = materializeViews;
         this.queryRunner = queryRunner;
         this.parentProject = parentProject;
@@ -123,6 +127,15 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     @Nullable
     public String getQueryResultDataset() {
         return queryResultDataset;
+    }
+
+    /**
+     * Returns how long a re-planned job may reuse a previous attempt's query job, or {@code null}
+     * for the default: a random job id, under which nothing is ever reused.
+     */
+    @Nullable
+    public Duration getReuseQueryResultWithin() {
+        return reuseQueryResultWithin;
     }
 
     /**

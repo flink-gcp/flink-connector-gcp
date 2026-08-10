@@ -30,6 +30,8 @@ import io.github.flink.gcp.connector.base.source.PullAssignmentSplitEnumerator;
 import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceConfig;
+import io.github.flink.gcp.connector.bigquery.source.query.QueryJobIdentity;
+import io.github.flink.gcp.connector.bigquery.source.query.QueryResult;
 import io.github.flink.gcp.connector.bigquery.source.query.QueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.query.QuerySpec;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
@@ -38,6 +40,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -87,6 +90,23 @@ public class BigQueryReadSplitEnumerator
      * itself is thread-safe all the same, as the enumerator's others are.
      */
     @Nullable private Counter queryJobsSubmitted;
+
+    /** Counts a reused query job the same way, and stays {@code null} the same way. */
+    @Nullable private Counter queryJobsReattached;
+
+    /**
+     * The Flink job name, read out of the enumerator metric group's variables, or {@code null}
+     * where the group offered none.
+     *
+     * <p>The variables are the one route from an enumerator to the job's name — {@code
+     * SplitEnumeratorContext} carries no first-class job identity — and {@code
+     * BigQueryQueryJobIdentityITCase} is the measurement that they hold it, on every supported
+     * Flink version. Read in {@link #registerCounters} rather than on the planning thread, because
+     * {@code AbstractMetricGroup#getAllVariables()} caches lazily with no synchronization and is
+     * only safely reached from the coordinator thread that owns the group; the field is then
+     * published to the planning thread by the same submission that publishes the counters.
+     */
+    @Nullable private String flinkJobName;
 
     /**
      * Creates the enumerator.
@@ -216,10 +236,30 @@ public class BigQueryReadSplitEnumerator
                             config.getQueryLocation(),
                             config.getQueryResultDataset());
         }
-        if (queryJobsSubmitted != null) {
+        Duration reuseWindow = config.getReuseQueryResultWithin();
+        if (reuseWindow != null) {
+            QueryJobIdentity identity =
+                    QueryJobIdentity.of(
+                            flinkJobName, spec, reuseWindow, System.currentTimeMillis());
+            if (identity == null) {
+                LOG.warn(
+                        "reuseQueryResultWithin(...) is set, but the enumerator's metric group"
+                                + " carries no Flink job name to derive the reuse id from; the"
+                                + " query runs under a random id and nothing is reused, which is"
+                                + " the same as not setting the option.");
+            } else {
+                spec = spec.withJobIdentity(identity);
+            }
+        }
+        QueryResult result = runner.run(spec);
+        if (result.isReattached()) {
+            if (queryJobsReattached != null) {
+                queryJobsReattached.inc();
+            }
+        } else if (queryJobsSubmitted != null) {
             queryJobsSubmitted.inc();
         }
-        return runner.run(spec);
+        return result.getTable();
     }
 
     @Override
@@ -262,6 +302,14 @@ public class BigQueryReadSplitEnumerator
         queryJobsSubmitted =
                 metricGroup.counter(
                         BigQueryMetricNames.QUERY_JOBS_SUBMITTED, new ThreadSafeSimpleCounter());
+        queryJobsReattached =
+                metricGroup.counter(
+                        BigQueryMetricNames.QUERY_JOBS_REATTACHED, new ThreadSafeSimpleCounter());
+        // The literal is the key Flink's JobMetricGroup publishes the name under
+        // (ScopeFormat.SCOPE_JOB_NAME); the constant lives in an @Internal flink-runtime class,
+        // and inlining the two characters of syntax around "job_name" is cheaper than an audit
+        // entry for it.
+        flinkJobName = metricGroup.getAllVariables().get("<job_name>");
         return new EnumeratorCounters(
                 metricGroup.counter(
                         BigQueryMetricNames.SPLITS_ASSIGNED, new ThreadSafeSimpleCounter()),

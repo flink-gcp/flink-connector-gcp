@@ -37,6 +37,7 @@ public final class ScriptedQueryRunner implements QueryRunner {
 
     private final TableDestination result;
     @Nullable private final IOException failure;
+    private boolean reattached;
 
     private final AtomicInteger runs = new AtomicInteger();
     private final AtomicInteger viewChecks = new AtomicInteger();
@@ -62,14 +63,20 @@ public final class ScriptedQueryRunner implements QueryRunner {
         return new ScriptedQueryRunner(TableDestination.of("p", "d", "unused"), failure);
     }
 
+    /** Makes {@link #run} report the answered table as a reused previous attempt's job. */
+    public ScriptedQueryRunner reattaching() {
+        this.reattached = true;
+        return this;
+    }
+
     @Override
-    public TableDestination run(QuerySpec spec) throws IOException {
+    public QueryResult run(QuerySpec spec) throws IOException {
         runs.incrementAndGet();
         lastSpec.set(spec);
         if (failure != null) {
             throw failure;
         }
-        return result;
+        return new QueryResult(result, reattached);
     }
 
     @Override

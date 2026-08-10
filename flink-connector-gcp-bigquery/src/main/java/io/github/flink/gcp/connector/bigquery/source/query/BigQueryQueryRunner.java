@@ -25,6 +25,7 @@ import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
+import com.google.cloud.bigquery.JobStatistics;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Table;
@@ -41,6 +42,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.time.Duration;
 import java.util.UUID;
 
@@ -56,17 +58,16 @@ import java.util.UUID;
  * where the restored job goes on reading the read session that table backs, so deleting on teardown
  * would break the recovery it appears to tidy up after.
  *
- * <p><b>The job id is random, and re-attaching to a previous attempt is deliberately not done</b> —
- * which is the opposite of {@code BigQueryLoadJobRunner}'s choice, for a reason that does not apply
- * there. A deterministic id would have to be derived from the query, and BigQuery keeps a job's
- * metadata — and so its id — for six months after it was created; the second run of the same
- * pipeline would then find the first run's completed job and read its stale result rather than
- * running the query again. Making the id stable across a failover but not across pipeline runs
- * needs a nonce in the checkpointed enumerator state, which buys only the case where the JobManager
- * fails between submitting the query and the first checkpoint. In that case a re-plan runs the
- * query a second time: against the anonymous dataset BigQuery answers it from its cache, free and
- * landing on the same table (measured), and against a named dataset it writes a second result table
- * that expires on its own.
+ * <p><b>The job id is random by default, and nothing is ever reused then</b>: a JobManager failover
+ * before the first checkpoint re-plans and runs the query again, which against the anonymous
+ * dataset is answered from cache — free, landing on the same table (measured) — and against a named
+ * dataset writes a second result table that expires on its own. A {@link QuerySpec} carrying a
+ * {@link QueryJobIdentity} opts into the deterministic id instead, under which a re-plan finds the
+ * previous attempt's job and reuses it; what the identity is derived from, and why reuse has a
+ * bounded window at all, is that class's record. BigQuery keeps a finished job's id for six months
+ * and refuses to reuse one, which shapes both paths here: a failed id is probed past to {@code _rN}
+ * ids exactly as {@code BigQueryLoadJobRunner} probes, and an id from an expired window is never
+ * submitted again because the window rides in the id.
  *
  * <p>The client is opened on first use rather than in the constructor: this object is built where
  * the job graph is, and a client built there would demand credentials on the submitting machine.
@@ -87,6 +88,14 @@ public final class BigQueryQueryRunner implements QueryRunner {
      * applies to the anonymous tables of the other path, so the two behave alike.
      */
     @VisibleForTesting static final Duration RESULT_TABLE_EXPIRATION = Duration.ofHours(24);
+
+    /**
+     * How many {@code _rN} ids past a failed previous attempt the deterministic path probes.
+     *
+     * <p>The load runner's bound, for the load runner's reason: each probe means a previous attempt
+     * failed at this same query, so a chain this long is a systemic failure no fresh id will fix.
+     */
+    @VisibleForTesting static final int MAX_RETRY_PROBES = 5;
 
     /**
      * How the completion of the query job is polled for.
@@ -125,41 +134,206 @@ public final class BigQueryQueryRunner implements QueryRunner {
     }
 
     @Override
-    public TableDestination run(QuerySpec spec) throws IOException {
-        // One suffix for both names, so the job and the table it wrote are found from each other in
-        // a log line or in the BigQuery console.
-        String suffix = "flink_bigquery_source_" + UUID.randomUUID().toString().replace("-", "");
-        TableId destination =
-                spec.getResultDataset() == null
-                        ? null
-                        : TableId.of(spec.getProject(), spec.getResultDataset(), suffix);
-        QueryJobConfiguration.Builder configuration =
-                QueryJobConfiguration.newBuilder(spec.getSql());
-        if (destination != null) {
-            configuration
-                    .setDestinationTable(destination)
-                    .setWriteDisposition(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+    public QueryResult run(QuerySpec spec) throws IOException {
+        QueryJobIdentity identity = spec.getJobIdentity();
+        if (identity == null) {
+            // One suffix for both names, so the job and the table it wrote are found from each
+            // other in a log line or in the BigQuery console.
+            String suffix = QueryJobIdentity.PREFIX + UUID.randomUUID().toString().replace("-", "");
+            LOG.info("Running the BigQuery source's query as job {}: {}", suffix, spec);
+            Job job = await(submit(jobId(spec, suffix), configuration(spec, suffix), spec), spec);
+            return new QueryResult(landed(job, spec), false);
         }
+        return runReusable(identity, spec);
+    }
+
+    /**
+     * Submits under the identity's deterministic id, reusing a previous attempt's job where one is
+     * still usable.
+     *
+     * <p>The shape is {@code BigQueryLoadJobRunner#submitOrAttach}'s, not a call to it: the load
+     * runner's machinery exists for the sink's exactly-once commit and carries an active-jobs map
+     * and copy jobs this path has no use for (ADR-0087 records the decision not to hoist it). The
+     * one judgment they must share is shared by construction — a job that finished with an error
+     * can never be reused, and its id can never be resubmitted, so each failed id is probed past to
+     * the next {@code _rN}.
+     *
+     * <p>The previous window's id is consulted only when the current one has no job at all, which
+     * is the one case a rollover between the first attempt and the re-plan produces; it is only
+     * ever attached to, never submitted, and only when the job's creation time is still inside the
+     * window — the id alone already bounds it to twice the window, and the check is what makes the
+     * documented window exact rather than "up to twice".
+     */
+    private QueryResult runReusable(QueryJobIdentity identity, QuerySpec spec) throws IOException {
+        String lastError = null;
+        for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
+            String suffix = retrySuffix(identity.getCurrentJobId(), probe);
+            Job existing = lookUp(jobId(spec, suffix), spec.getProject());
+            if (existing == null) {
+                if (probe == 0) {
+                    Job straddled = previousWindowJob(identity, spec);
+                    if (straddled != null) {
+                        LOG.info(
+                                "Re-attached to the BigQuery query job {} from the previous reuse"
+                                        + " window (state {}).",
+                                straddled.getJobId().getJob(),
+                                state(straddled.getStatus()));
+                        return new QueryResult(landed(await(straddled, spec), spec), true);
+                    }
+                }
+                Created created = create(jobId(spec, suffix), configuration(spec, suffix), spec);
+                if (isFailed(created.job.getStatus())) {
+                    // create lost its race to a zombie that had itself already failed, whose id is
+                    // as unusable as one the look-up above would have found failed.
+                    lastError = probePast(suffix, created.job.getStatus(), probe);
+                    continue;
+                }
+                if (created.conflicted) {
+                    LOG.info(
+                            "Re-attached to the BigQuery query job {} another attempt submitted"
+                                    + " first (state {}).",
+                            suffix,
+                            state(created.job.getStatus()));
+                } else {
+                    LOG.info("Running the BigQuery source's query as job {}: {}", suffix, spec);
+                }
+                return new QueryResult(landed(await(created.job, spec), spec), created.conflicted);
+            }
+            if (isFailed(existing.getStatus())) {
+                lastError = probePast(suffix, existing.getStatus(), probe);
+                continue;
+            }
+            LOG.info(
+                    "Re-attached to the BigQuery query job {} from a previous attempt (state {}).",
+                    suffix,
+                    state(existing.getStatus()));
+            return new QueryResult(landed(await(existing, spec), spec), true);
+        }
+        throw new IOException(
+                "The BigQuery query job "
+                        + identity.getCurrentJobId()
+                        + " and all its retry ids failed in previous attempts; last error: "
+                        + lastError);
+    }
+
+    /**
+     * Returns the previous window's job where attaching to it is still allowed, or {@code null}.
+     *
+     * <p>Walks the same {@code _rN} chain the submitter would have left behind, because a previous
+     * attempt that probed past a failed job left its live one under a retry id. A failed link is
+     * walked past; the first absent id ends the chain; and the job the chain ends at is reused only
+     * if it reports a creation time inside the window. No creation time reads as "do not reuse" —
+     * running the query again costs money, not correctness.
+     */
+    @Nullable
+    private Job previousWindowJob(QueryJobIdentity identity, QuerySpec spec) throws IOException {
+        for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
+            String suffix = retrySuffix(identity.getPreviousJobId(), probe);
+            Job job = lookUp(jobId(spec, suffix), spec.getProject());
+            if (job == null) {
+                return null;
+            }
+            if (isFailed(job.getStatus())) {
+                continue;
+            }
+            Long created = creationTime(job);
+            if (created == null || !identity.isWithinWindow(created, System.currentTimeMillis())) {
+                return null;
+            }
+            return job;
+        }
+        return null;
+    }
+
+    private static String retrySuffix(String base, int probe) {
+        // An underscore, not the load runner's hyphen: this suffix is also the result table's
+        // name, and a hyphen is not legal there.
+        return probe == 0 ? base : base + "_r" + probe;
+    }
+
+    @Nullable
+    private static Long creationTime(Job job) {
+        JobStatistics statistics = job.getStatistics();
+        return statistics == null ? null : statistics.getCreationTime();
+    }
+
+    /**
+     * Whether the job has finished and reports an error — the one state that can never be reused,
+     * since BigQuery keeps the failed id for six months and refuses it.
+     *
+     * <p>{@code null} is not failed, and that is load-bearing: the job the SDK's own already-exists
+     * absorber returns carries no status at all (measured 2026-08-08 against google-cloud-bigquery
+     * 2.68.0, ADR-0018), and such a job must be attached to and polled rather than probed past.
+     */
+    private static boolean isFailed(@Nullable JobStatus status) {
+        return status != null
+                && status.getState() == JobStatus.State.DONE
+                && status.getError() != null;
+    }
+
+    private static String state(@Nullable JobStatus status) {
+        return status == null || status.getState() == null ? "unknown" : status.getState().name();
+    }
+
+    /** Logs the failed job being walked past and answers its error for the give-up message. */
+    private static String probePast(String suffix, JobStatus status, int probe) {
+        String error = status.getError().toString();
+        if (probe < MAX_RETRY_PROBES) {
+            LOG.warn(
+                    "The BigQuery query job {} from a previous attempt failed ({}); probing the"
+                            + " next retry id.",
+                    suffix,
+                    error);
+        } else {
+            LOG.warn(
+                    "The BigQuery query job {} from a previous attempt failed ({}), and no retry"
+                            + " ids are left to probe.",
+                    suffix,
+                    error);
+        }
+        return error;
+    }
+
+    private static JobId jobId(QuerySpec spec, String suffix) {
         JobId.Builder jobId = JobId.newBuilder().setJob(suffix).setProject(spec.getProject());
         if (spec.getLocation() != null) {
             jobId.setLocation(spec.getLocation());
         }
+        return jobId.build();
+    }
 
-        LOG.info("Running the BigQuery source's query as job {}: {}", jobId.build().getJob(), spec);
-        Job job = await(submit(jobId.build(), configuration.build(), spec), spec);
+    private static QueryJobConfiguration configuration(QuerySpec spec, String suffix) {
+        QueryJobConfiguration.Builder configuration =
+                QueryJobConfiguration.newBuilder(spec.getSql());
+        if (spec.getResultDataset() != null) {
+            configuration
+                    .setDestinationTable(
+                            TableId.of(spec.getProject(), spec.getResultDataset(), suffix))
+                    .setWriteDisposition(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+        }
+        return configuration.build();
+    }
 
-        TableId landed = ((QueryJobConfiguration) job.getConfiguration()).getDestinationTable();
+    /**
+     * Reads the table the completed job's result landed in, and backstops its expiration.
+     *
+     * <p>The expiration is set on a reused job's table too, not only on a fresh submission's: the
+     * attempt that submitted the job may have died before setting one, and re-applying it merely
+     * moves the expiration to a day from now.
+     */
+    private TableDestination landed(Job done, QuerySpec spec) throws IOException {
+        TableId landed = ((QueryJobConfiguration) done.getConfiguration()).getDestinationTable();
         if (landed == null) {
             // BigQuery fills the destination in on the completed job whether or not one was asked
             // for, so this is a contract violation rather than a case to fall back from — and
             // guessing a table here would read someone else's data.
             throw new IOException(
                     "The BigQuery query job "
-                            + job.getJobId().getJob()
+                            + done.getJobId().getJob()
                             + " completed but reported no result table, so there is nothing to"
                             + " read.");
         }
-        if (destination != null) {
+        if (spec.getResultDataset() != null) {
             expire(landed, spec.getProject());
         }
         TableDestination result =
@@ -167,7 +341,7 @@ public final class BigQueryQueryRunner implements QueryRunner {
         LOG.info(
                 "The BigQuery source's query job {} wrote its result to {}; the read session is"
                         + " created against that table.",
-                job.getJobId().getJob(),
+                done.getJobId().getJob(),
                 result);
         return result;
     }
@@ -224,6 +398,51 @@ public final class BigQueryQueryRunner implements QueryRunner {
         try {
             return client(spec.getProject()).create(JobInfo.of(jobId, configuration));
         } catch (BigQueryException e) {
+            throw new IOException(
+                    "Failed to submit the BigQuery query job " + jobId.getJob() + ".", e);
+        }
+    }
+
+    /** What {@link #create} produced: the job, and whether another attempt created it first. */
+    private static final class Created {
+        final Job job;
+        final boolean conflicted;
+
+        Created(Job job, boolean conflicted) {
+            this.job = job;
+            this.conflicted = conflicted;
+        }
+    }
+
+    /**
+     * Submits under a deterministic id, absorbing the conflict a racing attempt produces.
+     *
+     * <p>An HTTP 409 means another attempt — a coordinator this one is failing over from, most
+     * likely — submitted the id between this attempt's look-up and its create. Its job is looked up
+     * and handed back for the caller's judgment, marked as a reuse; a conflict whose job then
+     * cannot be found is reported as the submission failure it is, with the conflict kept as a
+     * suppressed exception because it names the one thing the look-up failure does not.
+     */
+    private Created create(JobId jobId, QueryJobConfiguration configuration, QuerySpec spec)
+            throws IOException {
+        try {
+            return new Created(
+                    client(spec.getProject()).create(JobInfo.of(jobId, configuration)), false);
+        } catch (BigQueryException e) {
+            if (e.getCode() == HttpURLConnection.HTTP_CONFLICT) {
+                Job existing;
+                try {
+                    existing = client(spec.getProject()).getJob(jobId);
+                } catch (BigQueryException lookupFailure) {
+                    lookupFailure.addSuppressed(e);
+                    throw new IOException(
+                            "Failed to submit the BigQuery query job " + jobId.getJob() + ".",
+                            lookupFailure);
+                }
+                if (existing != null) {
+                    return new Created(existing, true);
+                }
+            }
             throw new IOException(
                     "Failed to submit the BigQuery query job " + jobId.getJob() + ".", e);
         }

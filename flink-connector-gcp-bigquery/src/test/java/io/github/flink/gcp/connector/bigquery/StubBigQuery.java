@@ -151,12 +151,22 @@ public final class StubBigQuery implements BigQuery {
         @Nullable private final JobStatus status;
         private final boolean present;
         @Nullable private final BigQueryException failure;
+        @Nullable private final Long creationTimeMillis;
 
         private JobAnswer(
                 @Nullable JobStatus status, boolean present, @Nullable BigQueryException failure) {
+            this(status, present, failure, null);
+        }
+
+        private JobAnswer(
+                @Nullable JobStatus status,
+                boolean present,
+                @Nullable BigQueryException failure,
+                @Nullable Long creationTimeMillis) {
             this.status = status;
             this.present = present;
             this.failure = failure;
+            this.creationTimeMillis = creationTimeMillis;
         }
 
         /** Answers that no job exists under the id asked for. */
@@ -172,6 +182,15 @@ public final class StubBigQuery implements BigQuery {
         /** Answers with a job whose status the response did not carry. */
         public static JobAnswer withoutStatus() {
             return new JobAnswer(null, true, null);
+        }
+
+        /**
+         * Answers with a job that also reports when it was created, which is what the query
+         * runner's previous-window reuse reads. The plain {@link #withStatus} answer models a
+         * response with no statistics, which that path treats as "do not reuse".
+         */
+        public static JobAnswer withStatusCreatedAt(JobStatus status, long creationTimeMillis) {
+            return new JobAnswer(status, true, null, creationTimeMillis);
         }
 
         /** Fails the lookup, as the client does once its own retries are exhausted. */
@@ -209,7 +228,12 @@ public final class StubBigQuery implements BigQuery {
             throw answer.failure;
         }
         return answer.present
-                ? TestJobs.job(this, jobId, answer.status, configurationOf(jobId))
+                ? TestJobs.job(
+                        this,
+                        jobId,
+                        answer.status,
+                        configurationOf(jobId),
+                        answer.creationTimeMillis)
                 : null;
     }
 

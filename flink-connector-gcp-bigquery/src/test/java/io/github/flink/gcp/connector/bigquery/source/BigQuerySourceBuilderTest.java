@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeser
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 
@@ -267,6 +268,63 @@ class BigQuerySourceBuilderTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining(
                         "emulatorRestEndpoint(...) applies to query(...) or materializeViews() only");
+    }
+
+    @Test
+    void rejectsTheReuseWindowOnATableSourceAndWhereItIsTyped() {
+        assertThatThrownBy(() -> builder().reuseQueryResultWithin(Duration.ofHours(1)).build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "reuseQueryResultWithin(...) applies to query(...) or materializeViews()"
+                                + " only");
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySource.<GenericRecord>builder()
+                                        .reuseQueryResultWithin(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be positive");
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySource.<GenericRecord>builder()
+                                        .reuseQueryResultWithin(Duration.ofHours(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be positive");
+        // Both landing places expire after about a day, so a longer window would reuse a job
+        // whose result table is gone — rejected where the value was typed, not met as a failed
+        // read on the JobManager.
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySource.<GenericRecord>builder()
+                                        .reuseQueryResultWithin(Duration.ofHours(24).plusMillis(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at most 24 hours");
+    }
+
+    @Test
+    void theReuseWindowRequiresAQueryLocation() {
+        // BigQuery scopes a job to (project, location, id); a look-up naming no location sees
+        // only the US multi-region, so without one the previous attempt's job would never be
+        // found — measured against a regional dataset, and rejected where the knob is typed.
+        assertThatThrownBy(
+                        () ->
+                                TestSources.queryConfig(
+                                        b -> b.reuseQueryResultWithin(Duration.ofHours(1))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("requires queryLocation(...)");
+    }
+
+    @Test
+    void acceptsTheReuseWindowUpToADayOnAQuerySource() {
+        assertThat(
+                        TestSources.queryConfig(
+                                        b ->
+                                                b.queryLocation("asia-northeast1")
+                                                        .reuseQueryResultWithin(
+                                                                Duration.ofHours(24)))
+                                .getReuseQueryResultWithin())
+                .isEqualTo(Duration.ofHours(24));
+        // Off unless asked for: the default keeps today's random id and runs the query per plan.
+        assertThat(TestSources.queryConfig().getReuseQueryResultWithin()).isNull();
     }
 
     @Test
