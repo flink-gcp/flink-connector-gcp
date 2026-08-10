@@ -149,7 +149,11 @@ projection measurement above shows a single-column read collapses the fixture to
 - The weekly E2E suite gains a case that reads a third-party public table. If Google retires or
   reshapes `austin_bikeshare.bikeshare_trips`, that case fails — and the assertion that more than
   one subtask read is what turns a table that stopped splitting into a failure rather than a quiet
-  loss of coverage.
+  loss of coverage. **The response is meant to be a one-line change**, so the case names no column
+  at all: its reader schema declares no fields (Avro skips every writer field a reader does not
+  declare), its row-count query derives its path from the same constant, and it asserts how many
+  rows came back rather than what was in them. The requirements on a replacement are only that
+  BigQuery splits it and that it is small enough to read in a test.
 - Not covered, and deliberately: how much a retrying-but-progressing stream costs in wall clock.
   `readRetries` reports that it is happening; deciding what to do about it is an operator's, and a
   connector-side response would be the retry loop this record declines.
