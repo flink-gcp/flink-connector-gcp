@@ -41,11 +41,14 @@ import java.util.List;
 public final class TestJobs {
 
     /**
-     * The configuration every minted job carries.
+     * The configuration a job minted by {@link #job(BigQuery, JobId, JobStatus)} carries.
      *
-     * <p>Which configuration it is never matters: nothing a caller drives reads it back, and the
-     * one method that inspects a job's configuration ({@code Job#checkNotDryRun}) only looks for a
-     * {@link QueryJobConfiguration}. A copy job is the cheapest thing to build that is not one.
+     * <p>Which configuration it is does not matter to that overload's callers: the load runner
+     * never reads one back, and the one method that inspects a job's configuration ({@code
+     * Job#checkNotDryRun}) only looks for a {@link QueryJobConfiguration}. A copy job is the
+     * cheapest thing to build that is not one. A caller that <em>does</em> read it back — the query
+     * runner takes its result table off the completed job — passes its own through the
+     * four-argument overload.
      */
     private static final JobConfiguration ANY_CONFIGURATION =
             CopyJobConfiguration.of(
@@ -96,7 +99,27 @@ public final class TestJobs {
      * @return the job
      */
     public static Job job(BigQuery bigquery, JobId jobId, @Nullable JobStatus status) {
-        return new Job.Builder(bigquery, ANY_CONFIGURATION)
+        return job(bigquery, jobId, status, ANY_CONFIGURATION);
+    }
+
+    /**
+     * Returns a job carrying the given configuration, for a caller that reads one back.
+     *
+     * @param bigquery the client the job is bound to
+     * @param jobId the job id the job reports
+     * @param status the status the job reports, or {@code null} to model a response that carried no
+     *     status
+     * @param configuration the configuration the job reports — for a query job that has run, this
+     *     is where BigQuery reports the table the result landed in — or {@code null} for the
+     *     placeholder a caller that never reads one back gets
+     * @return the job
+     */
+    public static Job job(
+            BigQuery bigquery,
+            JobId jobId,
+            @Nullable JobStatus status,
+            @Nullable JobConfiguration configuration) {
+        return new Job.Builder(bigquery, configuration == null ? ANY_CONFIGURATION : configuration)
                 .setJobId(jobId)
                 .setStatus(status)
                 .build();

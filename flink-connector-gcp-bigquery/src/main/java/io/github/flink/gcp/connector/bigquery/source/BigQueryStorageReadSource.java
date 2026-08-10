@@ -115,7 +115,8 @@ public class BigQueryStorageReadSource<T>
     @Override
     public SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> createEnumerator(
             SplitEnumeratorContext<BigQueryReadStreamSplit> context) {
-        return new BigQueryReadSplitEnumerator(context, config, config.getSessionCreator(), null);
+        return new BigQueryReadSplitEnumerator(
+                context, config, config.getSessionCreator(), config.getQueryRunner(), null);
     }
 
     @Override
@@ -123,7 +124,7 @@ public class BigQueryStorageReadSource<T>
             SplitEnumeratorContext<BigQueryReadStreamSplit> context,
             BigQueryReadEnumeratorState checkpoint) {
         return new BigQueryReadSplitEnumerator(
-                context, config, config.getSessionCreator(), checkpoint);
+                context, config, config.getSessionCreator(), config.getQueryRunner(), checkpoint);
     }
 
     @Override

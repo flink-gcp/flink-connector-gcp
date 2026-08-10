@@ -212,8 +212,38 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   reader it finished.
 - Both stream-count knobs default to `0`. `maxStreamCount` is a cap and **never a floor** — a 6 MB
   table answers with one stream at `maxStreamCount(8)`, measured — so nothing may promise a count.
-- **One emulator endpoint, not the sink's two** (`docs/adr/0029`): the source makes no REST call.
-  Revisit if it ever grows one.
+- **One emulator endpoint for a `table(...)` source, two for a `query(...)` one** (`docs/adr/0029`,
+  `docs/adr/0087`): the read path makes no REST call, and the query job is one. That is ADR-0079's
+  "revisit when the source grows a metadata call" answered rather than left open — do not restore
+  the "makes no REST call at all" wording, and **do not add a metadata call to the read path**,
+  which is what auto-detecting a view would have cost.
+- **A view is read through a query job, and nothing infers one by default** (`docs/adr/0087`). The
+  Storage Read API cannot read a logical *or* materialized view — both answer `INVALID_ARGUMENT:
+  request failed: non-table entities cannot be read with the storage API`, same code and same words
+  (measured 2026-08-10), which is why one mapping covers both. `table(...)` naming a view fails and
+  gains a sentence naming `query(...)`. That hint is the module's one match on message text and the
+  argument for it is narrow — it decorates a failure and never routes one — so do not cite it as a
+  precedent for `isMissingTable`-style matching (`docs/adr/0030` still governs there), and **do not
+  make it route** by materializing reactively off that error: that is the one shape of automatic
+  view handling this module refuses outright.
+- **`materializeViews()` is the opt-in, and it stays opt-in.** It spends one metadata call per job
+  to tell a view from a table, and making it unconditional would put that call on every ordinary
+  table read — the property ADR-0079 asked to be revisited deliberately rather than eroded. Its
+  generated `SELECT` folds `selectedFields` and **not** `rowRestriction`: the rule is **fold into
+  SQL the connector wrote, never into SQL the user wrote**, which is also why `query(...)` is
+  passed through untouched. `snapshotTime` is rejected beside it.
+- **Where a query's result lands is the caller's choice, and neither path deletes anything at
+  teardown** (`docs/adr/0087`). Unset is BigQuery's anonymous dataset — nothing created, no storage
+  charged, a re-plan a free cache hit onto the same table (measured); `queryResultDataset(...)`
+  creates a table with a one-day expiration. A teardown-time delete is wrong in both: teardown also
+  runs on a JobManager failover, where the restored job is still reading the session that table
+  backs.
+- **The query runs from `plan()` under the same flag as the read session, and neither the enumerator
+  state nor any serializer changed for it.** Nothing after planning can tell the two kinds of source
+  apart, since a split names a stream and the opener opens by stream name — so if a change here
+  starts needing the table in the state, that is the signal something has been put on the wrong side
+  of the seam. The query job's id is random and re-attach is deliberately absent: a deterministic id
+  would make the *next run of the same pipeline* read a stale result.
 - **No recovery test against the emulator**, which ignores `ReadRowsRequest.offset` and answers from
   row zero; a green test there proves the opposite. The read-path deviations are pinned by
   `BigQueryEmulatorReadDeviationITCase`, each with a `@Disabled` twin carrying the correct

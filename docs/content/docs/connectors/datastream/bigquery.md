@@ -1546,6 +1546,112 @@ partitioning or clustering column. They are also the seam a later Table API sour
 instant outside it is rejected when the session is created, with `INVALID_ARGUMENT: time travel
 timestamp exceeds the maximum time travel duration of 168h` (measured 2026-08-09).
 
+### Reading a query or a view
+
+**The Storage Read API cannot read a view.** Not a logical one and not a materialized one — it reads
+storage, and a view has none, so `CreateReadSession` against one answers `INVALID_ARGUMENT: request
+failed: non-table entities cannot be read with the storage API` (measured 2026-08-10; a logical view
+and a materialized view give the same code and the same words). Pointing `table(...)` at a view fails
+with that error, and the connector adds a sentence naming `query(...)` — unless the source asked for
+[`materializeViews()`](#reading-a-view-without-writing-the-query), which handles it instead.
+
+`query(...)` is the way round it, and the way to read anything else SQL can express — a join, an
+aggregate, a `FOR SYSTEM_TIME AS OF`:
+
+```java
+Source<GenericRecord, ?, ?> source =
+        BigQuerySource.<GenericRecord>builder()
+                .query("SELECT id, name FROM `my-project.my_dataset.my_view`")
+                .parentProject("my-project")
+                .deserializer(BigQueryRowDeserializer.genericRecord(schema))
+                .build();
+```
+
+The query runs once, as an ordinary query job, from the enumerator's planning call — and once is
+enforced by the same checkpointed flag that stops a second read session, so a restore adopts the
+session the first plan created and never re-runs the query. The source then reads the table the
+result landed in; from the split downwards nothing can tell the two kinds of source apart.
+
+**Cancelling the Flink job does not cancel the query.** By then it is an ordinary BigQuery job, and
+BigQuery runs it to completion — or to its own execution limit — and bills for it either way. Cancel
+it in BigQuery if that matters: the JobManager logs the job id when it submits the query, and that
+is the line that exists while the query is still running. A second line, written once the query
+finishes, names the table the result went to.
+
+**It is billed twice**: once for the bytes the query scans, and again for the bytes the read session
+scans out of its result. `selectedFields` and `rowRestriction` are applied by BigQuery to the
+*result*, so they cannot make the query cheaper — prune inside the query itself. `snapshotTime` is
+rejected beside `query(...)` rather than ignored: the result table is created by the query, so there
+is no earlier version of it, and the point in time belongs in the query as `FOR SYSTEM_TIME AS OF`.
+
+#### Reading a view without writing the query
+
+View materialization is **opt-in and never automatic by default**. `materializeViews()` turns it on:
+the source then asks BigQuery once, at job start, what the configured name is, and a view — logical
+or materialized — is read by generating `SELECT … FROM the_view` and reading its result. An ordinary
+table is read directly, exactly as without it.
+
+```java
+BigQuerySource.<GenericRecord>builder()
+        .table(TableDestination.of("my-project", "my_dataset", "active_accounts"))
+        .materializeViews()
+        .deserializer(BigQueryRowDeserializer.genericRecord(schema))
+        .build();
+```
+
+Off by default for two reasons, and both are what the opt-in buys back. It costs a metadata call,
+and a source pointed at a table should not pay a round trip to be told it is a table — without it
+the read path makes no REST call at all. And it bills a query nobody wrote, which is a thing to ask
+for rather than to inherit. Spark and the Dataproc connector spell the same switch `viewsEnabled`.
+
+`selectedFields` **is** folded into the generated `SELECT`: a view's `SELECT *` scans every column
+and the query is billed for the scan, so leaving the projection to the read session would prune the
+transfer after paying for it. `rowRestriction` is **not** folded — BigQuery's restriction syntax is
+not a SQL `WHERE`, and folding it would give one knob two meanings depending on what the source was
+pointed at — so it stays on the read session, where a table source applies it too. The rule behind
+both: **this connector folds into SQL it wrote, and never into SQL you wrote.**
+
+`snapshotTime` is rejected beside `materializeViews()`. If the name turns out to be a view, its
+result table is created by that job and has no earlier version, so the read would fail at session
+creation rather than where the value was typed.
+
+#### Where the result lands
+
+Two choices, and they differ in who owns the result rather than in what is read.
+
+**Unset — BigQuery's anonymous dataset (the default).** The job is submitted with no destination
+table, so BigQuery writes the result into a hidden dataset of its own, expires it after about a day
+and charges no storage for it. Nothing is created here, so nothing is left to clean up, and an
+identical query re-run inside that window is answered from cache — free, and landing on the same
+table (measured 2026-08-10), which is what makes a JobManager failover before the first checkpoint
+cost nothing. Its constraints are BigQuery's, not this connector's:
+
+- access to an anonymous dataset is restricted to the identity that ran the query — the same service
+  account across JobManager and TaskManagers in an ordinary deployment, but not something to assume;
+- Google advises against depending on a cached results table as the input of another job;
+- a result above the maximum response size is not kept as a cached result;
+- the result is not shareable and cannot be addressed from outside the job.
+
+**Set — a table in `queryResultDataset`.** The connector creates a table there and sets a one-day
+expiration on it. Storage is charged until it expires, and nothing deletes it earlier: teardown also
+runs on a JobManager failover, where the restored job is still reading the read session that table
+backs, so deleting on teardown would break the recovery it looks like it is tidying up after. The
+dataset must already exist, must be in the query's own location, and must live in `parentProject`.
+
+The expiration cannot cut a read short: a read session lasts six hours and a bounded read has to
+finish inside that anyway.
+
+#### What is not done here
+
+The query job's id is random, and a previous attempt is never re-attached to. A deterministic id
+would have to come from the query, and BigQuery keeps a job's metadata — and so its id — for six
+months after it was created, so the second run of the same pipeline would find the first run's
+completed job and read its stale result. Making an id stable across a failover but not across
+pipeline runs needs a nonce in the checkpointed state, and it would buy only the window between submitting the query and the first
+checkpoint. In that window a re-plan runs the query again: against the anonymous dataset that is a
+cache hit, and against a named dataset it writes a second result table that expires on its own.
+`queryJobsSubmitted` is what reports it. Deriving that nonce from the job's own context instead — Flink's JobID, with a configurable limit on how far back a previous attempt may be reused — is [#477]({{< param BookRepo >}}/issues/477).
+
 ### Deserialization
 
 Rows arrive as Avro and are decoded into a `GenericRecord`, which
@@ -1571,9 +1677,16 @@ know about, so assigning one is the job's decision through a `WatermarkStrategy`
 
 ### Reading against the emulator
 
-`emulatorEndpoint(...)` sends the source's traffic to a local BigQuery emulator over plaintext. The
-source takes **one** endpoint where the sink takes two: it reads the table's schema from the read
-session and makes no REST call at all, so there is no second transport to point anywhere.
+`emulatorEndpoint(...)` sends the source's read traffic to a local BigQuery emulator over plaintext.
+For a source reading a `table(...)` that is **all** of it, where the sink takes two endpoints: the
+table's schema comes from the read session, and nothing on that path makes a REST call. A source
+reading a [`query(...)`](#reading-a-query-or-a-view), or one that asked for `materializeViews()`,
+does make one — the query job, and the view lookup — and takes `emulatorRestEndpoint(...)` as well,
+the same split the sink has.
+
+The query path is not covered against the emulator. Where the result of a destination-less query
+lands is BigQuery's own mechanism rather than an API this connector drives, so the gated real-GCP
+case is its only coverage.
 
 The emulator is a convenience, never evidence about the service. Measured against
 goccy/bigquery-emulator 0.8.1 (2026-08-09), its read path differs in four ways that matter:
@@ -1652,10 +1765,16 @@ of ours has to be large enough to split. How large that is: measured 2026-08-10,
 answers with one stream and a 264 MB one with four, and a projection lowers the count further,
 because it follows the bytes actually selected rather than the table's size.
 
+The query path is covered against BigQuery and nowhere else, for the reason
+[Reading against the emulator](#reading-against-the-emulator) gives: a gated case reads a view
+through both landing places and asserts the same rows, and reads the same view as a table to hold
+the failure message that names `query(...)` to what BigQuery actually answers. The planning
+behaviour around it — the query running once, a restore running none, the session being created
+against the table the result landed in — is the enumerator's unit tests, which need no service.
+
 ### Not here yet
 
-Reading the result of a query rather than a table is
-[#392]({{< param BookRepo >}}/issues/392); the Arrow wire format is
+The Arrow wire format is
 [#393]({{< param BookRepo >}}/issues/393). There is no unbounded or CDC read, and there is no
 planned one: BigQuery has no changelog read primitive, so it could only be a polling emulation
 ([#64]({{< param BookRepo >}}/issues/64) records the reasoning).
@@ -1783,7 +1902,7 @@ subtask's share.
 
 ### Source metrics
 
-Registered on the reader's metric group, one set per subtask, plus three on the enumerator's — which
+Registered on the reader's metric group, one set per subtask, plus four on the enumerator's — which
 is one set for the job, since there is one enumerator.
 
 | Metric | Type | Meaning |
@@ -1796,11 +1915,14 @@ is one set for the job, since there is one enumerator.
 | `splitsAssigned` | counter | read streams handed to a reader, on the enumerator |
 | `splitsReturned` | counter | read streams a failed reader gave back, on the enumerator |
 | `readSessionsCreated` | counter | read sessions created, on the enumerator |
+| `queryJobsSubmitted` | counter | query jobs this source submitted, on the enumerator. Registered by every source, so a `0` says this one named a table rather than that nothing registered it |
 | `unassignedSplits` | gauge (Flink standard) | read streams not currently held by a reader |
 
 **`readSessionsCreated` is the one to alert on.** It is `1` for a job that started and `0` for one
 that restored an existing session; any other value means the restore guard failed and the job is
-reading a second snapshot of the table.
+reading a second snapshot of the table. `queryJobsSubmitted` above `1` is the same failure seen from
+the other side, and on a [query source](#reading-a-query-or-a-view) it also means the query has been
+billed more than once.
 
 Counters rather than an assigned-splits gauge, on the enumerator: a gauge would need a ledger of
 which subtask holds what, and not keeping one is the whole design of that enumerator (see

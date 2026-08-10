@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0079: The BigQuery source splits by read stream, and its enumerator keeps no ledger
 
 - Status: Accepted
-- Date: 2026-08-09 (BigQuery and emulator behaviour measured the same day)
-- Issues: [#390], [#64]
+- Date: 2026-08-09 (BigQuery and emulator behaviour measured the same day), revised by [#392]
+  (2026-08-10)
+- Issues: [#390], [#64], [#392]
 - Modules: bigquery (`source`, `source.enumerator`, `source.reader`, `source.serializer`,
   `source.split`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Source
@@ -128,7 +129,10 @@ offset rests on.
 
 **The source takes one emulator endpoint where the sink takes two** (ADR-0029). It makes no REST
 call: the read session carries the schema. The moment the source grows a metadata call, this is the
-decision to revisit.
+decision to revisit — **and [#392] revisited it**: a source reading a `query(...)` submits a query
+job, which is a REST call, so it takes `emulatorRestEndpoint(...)` as well. What is stated here
+holds unchanged for a source reading a table, and adding a metadata call to *that* path was declined
+along with the automatic view materialization that would have needed one (ADR-0087).
 
 **No recovery test may be written against the emulator.** Resume is covered by a unit test over a
 fake that honours offsets, a MiniCluster job that fails once and is asserted to have resumed rather
@@ -155,7 +159,7 @@ the Avro-namespace reason above.
   size, and a table large enough to be split costs more than the assignment logic is worth there.
   The enumerator's unit tests carry it instead.
 - Error-handling depth, session-expiry reporting and wider real-GCP restore coverage are [#391];
-  query input is [#392]; Arrow is [#393].
+  query input is [#392], landed and recorded in ADR-0087; Arrow is [#393].
 
 [#64]: https://github.com/laughingman7743/flink-connector-gcp/issues/64
 [#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390

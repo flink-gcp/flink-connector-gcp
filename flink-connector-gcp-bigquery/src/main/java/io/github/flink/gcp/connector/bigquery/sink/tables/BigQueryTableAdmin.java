@@ -414,12 +414,15 @@ public class BigQueryTableAdmin implements TableAdmin {
      * since every request made here names its table in full (see {@link #toTableId}); that is also
      * why one cached client stays correct across destinations in several projects.
      *
+     * <p>Public because the source's query runner builds its REST client the same way, and a second
+     * spelling of the paragraph above is a second thing to keep true. It reaches no published
+     * surface: this class is {@code @Internal}.
+     *
      * @param endpoint the emulator's REST endpoint
      * @param project the project id to satisfy the builder with
      * @return the options
      */
-    @VisibleForTesting
-    static BigQueryOptions emulatorOptions(EmulatorEndpoint endpoint, String project) {
+    public static BigQueryOptions emulatorOptions(EmulatorEndpoint endpoint, String project) {
         return BigQueryOptions.newBuilder()
                 .setHost("http://" + endpoint.getTarget())
                 .setProjectId(project)
