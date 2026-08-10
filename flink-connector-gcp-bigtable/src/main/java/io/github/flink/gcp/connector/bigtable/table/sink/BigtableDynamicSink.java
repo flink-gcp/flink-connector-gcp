@@ -22,6 +22,7 @@ import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -96,8 +97,21 @@ public final class BigtableDynamicSink implements DynamicTableSink {
 
     @Override
     public ChangelogMode getChangelogMode(ChangelogMode requestedMode) {
-        // A Bigtable write is an upsert on the row key by construction: setCell overwrites, and
-        // there is no append-only path to offer instead.
+        // An insert-only query is consumed as inserts, and saying so is load-bearing on Flink
+        // 2.3+ (#488): FLIP-558 dropped the planner's own insert-only-input early return from its
+        // upsert-materialize analysis, so an upsert answer here sends even a plain INSERT INTO ..
+        // VALUES over a PRIMARY KEY'd table into the upsert-key comparison, which fails it with
+        // "please specify an ON CONFLICT clause" whenever the planner cannot infer an upsert key.
+        // An append answer takes the analysis's surviving sink-is-append early return instead —
+        // measured against the 2.2.1 and 2.3.0 planner sources; on 2.2 and 1.20 the planner's
+        // input-is-append early return made the two answers equivalent, so no plan changes there.
+        // The cost, measured on 2.3.0: an insert-only statement cannot carry an ON CONFLICT
+        // clause into this sink, the planner rejecting the clause for an append sink.
+        if (requestedMode.containsOnly(RowKind.INSERT)) {
+            return ChangelogMode.insertOnly();
+        }
+        // For an updating query, a Bigtable write is an upsert on the row key by construction:
+        // setCell overwrites, and there is no retract path to offer instead.
         //
         // Whether a delete may carry the upsert key *alone* is a different question, and the
         // answer is whether that key is the row key. A declared PRIMARY KEY guarantees it, the
@@ -108,8 +122,7 @@ public final class BigtableDynamicSink implements DynamicTableSink {
         // Measured on Flink 2.2.1 against an upsert source keyed on a non-row-key column: with a
         // key declared the plan already carries ChangelogNormalize and upsertMaterialize, so the
         // row key is filled in either way; with none, answering false is what puts
-        // ChangelogNormalize there. An insert-only query into the same table gets neither, so the
-        // honest answer is free wherever there is no delete to complete.
+        // ChangelogNormalize there.
         return CrossVersionChangelogMode.upsert(keyOnlyDeletesAreSafe);
     }
 

@@ -156,6 +156,11 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         TableDestination destination = createTable("sql-delete", "cf1", "cf2");
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        // No ON CONFLICT clause and no escape option, and on Flink 2.3 that is load-bearing
+        // rather than lucky (#488): the source view's declared primary key 'k' gives the planner
+        // an upsert key, the SELECT maps it onto the sink's PRIMARY KEY, and FLIP-558's demand
+        // fires only when the two differ — measured, this statement plans on 2.3.0 with no
+        // materializer. A retract source with no declared key would meet the demand instead.
         tEnv.executeSql(ddl(withOptions("sql-delete")));
         tEnv.executeSql(
                         "INSERT INTO bt VALUES"
@@ -206,9 +211,13 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
                                 + " CAST(ROW(flag) AS ROW<flag BOOLEAN>) FROM src")
                 .await();
 
+        // Exactly 'keep': the deletion of 'gone' is the point, and a plan that swallowed the -D
+        // (a materializer or normalize starting empty, since the rows came from a previous job)
+        // would leave 'gone' standing under a green .contains("keep"). The two statements are
+        // separate jobs, so their order is defined and the exact assertion cannot flake.
         assertThat(readRows(destination))
                 .extracting(row -> row.getKey().toStringUtf8())
-                .contains("keep");
+                .containsExactly("keep");
     }
 
     @Test
@@ -294,7 +303,10 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         // What #470 is about survives all of that: before it, this job did not finish at all. The
         // delete reached the writer with a null row-key column and .await() threw. So the
         // assertion is that the job completes, with 'keep' as the control proving it wrote —
-        // an empty table would otherwise look like a delete that worked.
+        // an empty table would otherwise look like a delete that worked. It is deliberately
+        // `contains` and not `containsExactly`, which would assert the very state the paragraph
+        // above says is undefined, and would pass only because the emulator happens to apply one
+        // request's entries in submission order.
         TypeInformation<org.apache.flink.types.Row> rowType =
                 Types.ROW_NAMED(
                         new String[] {"id", "rowkey", "name"},
@@ -329,6 +341,6 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
 
         assertThat(readRows(destination))
                 .extracting(row -> row.getKey().toStringUtf8())
-                .containsExactly("keep");
+                .contains("keep");
     }
 }

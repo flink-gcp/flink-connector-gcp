@@ -155,7 +155,9 @@ INSERT INTO orders VALUES ('order#a-1', ROW('a-1', CAST(10 AS BIGINT)));
 ```
 
 The sink is upsert-shaped, so an updating query works as it stands and a delete removes the whole
-row. For the SQL client, put the `flink-sql-connector-gcp-bigtable` uber-jar in Flink's `lib/` —
+row; on Flink 2.3, an updating query whose upsert key the planner cannot match to the `PRIMARY
+KEY` also needs an `ON CONFLICT` clause, which the SQL connector page below explains. For the SQL
+client, put the `flink-sql-connector-gcp-bigtable` uber-jar in Flink's `lib/` —
 it carries the connector and its whole runtime tree, relocated. The full `WITH` surface, the cell
 encodings and the type mapping are on the
 [Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page. Reading a table from

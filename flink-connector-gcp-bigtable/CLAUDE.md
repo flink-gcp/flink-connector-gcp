@@ -230,11 +230,22 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   directions share them and neither may import the other (ADR-0055's module-root rule one level
   down). A colon in a family name is rejected there — `familyNameRegexFilter` refuses one even
   escaped, so such a family would be writable and never selectively readable.
-- **Upsert, and a `-D` deletes the whole row.** `UPDATE_BEFORE`, a null row key, a row key encoding
-  to zero bytes and **a row whose every family is null** each fail the record rather than skipping
-  it; the HBase connector drops two of them, which leaves an incomplete table under a green job,
-  and the last would otherwise reach the service as a mutation-less entry and return an
-  `INVALID_ARGUMENT` naming nothing.
+- **Upsert for an updating query, and a `-D` deletes the whole row.** `UPDATE_BEFORE`, a null row
+  key, a row key encoding to zero bytes and **a row whose every family is null** each fail the
+  record rather than skipping it; the HBase connector drops two of them, which leaves an incomplete
+  table under a green job, and the last would otherwise reach the service as a mutation-less entry
+  and return an `INVALID_ARGUMENT` naming nothing.
+- **An insert-only query is answered with insert-only, and the answer is load-bearing on Flink
+  2.3** (#488): FLIP-558's planner demands `ON CONFLICT` of an upsert sink with a `PRIMARY KEY`
+  even for append input whenever it cannot infer the query's upsert key, and the append answer is
+  what takes its sink-is-append early return instead — do not "simplify" `getChangelogMode` back
+  to one unconditional mode — it is also what Flink's own HBase connector answers, by echoing the
+  requested kinds. The measured trade (ADR-0086): an insert-only statement cannot carry an `ON
+  CONFLICT` clause into this sink on 2.3, which costs `DO NOTHING` and `DO ERROR` and costs
+  nothing for `DO DEDUPLICATE`. An updating query with an uninferrable upsert
+  key meets the demand as Flink designed — but a keyed source satisfies it, upsert-key inference
+  being unique-key metadata even on a retract stream, which is why the ITCase suite needs no
+  escape option. The docs page's ON CONFLICT section is owed an edit with any change here.
 - **Whether a delete may carry the upsert key alone is answered by the DDL's primary key** (#470).
   Declaring one makes that key the row key; declaring none lets the planner key its upserts on
   whatever the query is unique by, so the sink asks for whole rows and the planner completes each

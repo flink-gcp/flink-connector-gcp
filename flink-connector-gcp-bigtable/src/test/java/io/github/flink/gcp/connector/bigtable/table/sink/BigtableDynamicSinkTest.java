@@ -94,6 +94,21 @@ class BigtableDynamicSinkTest {
     }
 
     @Test
+    void anInsertOnlyQueryIsConsumedAsInsertsAlone() {
+        // #488. The per-PR build runs the pinned floor version, where an upsert answer and this
+        // one plan identically, so this assertion is what fails on the floor if the append answer
+        // regresses — the 2.3+ planner (FLIP-558) refuses to plan even an insert-only query into
+        // an upsert sink with a PRIMARY KEY without an ON CONFLICT clause whenever it cannot
+        // infer an upsert key, and BigtableTableSinkITCase only shows that on a 2.3 run.
+        assertThat(sink(SCHEMA).getChangelogMode(ChangelogMode.insertOnly()))
+                .as("without a PRIMARY KEY")
+                .isEqualTo(ChangelogMode.insertOnly());
+        assertThat(sink(withRowKeyAsPrimaryKey()).getChangelogMode(ChangelogMode.insertOnly()))
+                .as("with the row key declared as PRIMARY KEY")
+                .isEqualTo(ChangelogMode.insertOnly());
+    }
+
+    @Test
     void theCopyKeepsWhatTheDdlAnsweredAboutDeletes() {
         // A field dropped from copy() resets the mode silently, and the sink's own equality would
         // not show it either unless that field is compared. Both repetitions are asserted here
