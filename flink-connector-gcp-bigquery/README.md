@@ -31,7 +31,7 @@ as text.
 | Read feature | Status |
 |---|---|
 | Bounded `BigQuerySource` over the Storage Read API: one split per read stream with offset-resumed recovery, pull assignment, column projection, row restriction and point-in-time reads, Avro rows | Implemented ([#390](https://github.com/laughingman7743/flink-connector-gcp/issues/390)) |
-| Read resilience and real-GCP restore coverage | Planned ([#391](https://github.com/laughingman7743/flink-connector-gcp/issues/391)) |
+| Read resilience: a bounded `ReadRows` retry, a retry counter, an explained session expiry, and multi-stream restore coverage against real BigQuery | Implemented ([#391](https://github.com/laughingman7743/flink-connector-gcp/issues/391)) |
 | Reading the result of a query rather than a table | Planned ([#392](https://github.com/laughingman7743/flink-connector-gcp/issues/392)) |
 | Arrow wire format | Planned ([#393](https://github.com/laughingman7743/flink-connector-gcp/issues/393)) |
 

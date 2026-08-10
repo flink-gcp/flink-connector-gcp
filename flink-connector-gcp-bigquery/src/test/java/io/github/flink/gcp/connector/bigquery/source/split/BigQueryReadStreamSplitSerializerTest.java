@@ -17,11 +17,13 @@
 package io.github.flink.gcp.connector.bigquery.source.split;
 
 import org.apache.flink.core.memory.DataInputDeserializer;
+import org.apache.flink.core.memory.DataOutputSerializer;
 
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -32,12 +34,15 @@ class BigQueryReadStreamSplitSerializerTest {
     private static final String SCHEMA =
             "{\"type\":\"record\",\"name\":\"Row\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}";
 
+    private static final Instant EXPIRE_TIME = Instant.parse("2026-08-09T18:00:00.123456789Z");
+
     private final BigQueryReadStreamSplitSerializer serializer =
             new BigQueryReadStreamSplitSerializer();
 
     @Test
     void roundTripsASplit() throws Exception {
-        BigQueryReadStreamSplit split = new BigQueryReadStreamSplit(STREAM, 42, SCHEMA);
+        BigQueryReadStreamSplit split =
+                new BigQueryReadStreamSplit(STREAM, 42, SCHEMA, EXPIRE_TIME);
 
         BigQueryReadStreamSplit restored =
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(split));
@@ -45,13 +50,49 @@ class BigQueryReadStreamSplitSerializerTest {
         assertThat(restored).isEqualTo(split);
         assertThat(restored.getOffset()).isEqualTo(42);
         assertThat(restored.getAvroSchemaJson()).isEqualTo(SCHEMA);
+        assertThat(restored.getSessionExpireTime()).isEqualTo(EXPIRE_TIME);
     }
 
     @Test
-    void writesTheFieldsInTheOrderVersionOneDefines() throws Exception {
+    void roundTripsASplitWithoutASessionExpiry() throws Exception {
+        BigQueryReadStreamSplit split = new BigQueryReadStreamSplit(STREAM, 42, SCHEMA, null);
+
+        BigQueryReadStreamSplit restored =
+                serializer.deserialize(serializer.getVersion(), serializer.serialize(split));
+
+        assertThat(restored).isEqualTo(split);
+        assertThat(restored.getSessionExpireTime()).isNull();
+    }
+
+    @Test
+    void readsAVersionOneSplitAsOneWithoutASessionExpiry() throws Exception {
+        // Version 1 is the same layout with nothing after the schema. Written by hand rather than
+        // by keeping the old serializer, so what this asserts against is the format itself.
+        DataOutputSerializer out = new DataOutputSerializer(1024);
+        out.writeUTF(STREAM);
+        out.writeLong(42);
+        byte[] schema = SCHEMA.getBytes(StandardCharsets.UTF_8);
+        out.writeInt(schema.length);
+        out.write(schema);
+
+        BigQueryReadStreamSplit restored =
+                serializer.deserialize(
+                        BigQueryReadStreamSplitSerializer.VERSION_WITHOUT_EXPIRY,
+                        out.getCopyOfBuffer());
+
+        assertThat(restored.getStreamName()).isEqualTo(STREAM);
+        assertThat(restored.getOffset()).isEqualTo(42);
+        assertThat(restored.getAvroSchemaJson()).isEqualTo(SCHEMA);
+        assertThat(restored.getSessionExpireTime()).isNull();
+    }
+
+    @Test
+    void writesTheFieldsInTheOrderTheLayoutDefines() throws Exception {
         // Pins the layout rather than the bytes: a field added in the middle would round-trip fine
-        // and still break a state written by an older job.
-        byte[] bytes = serializer.serialize(new BigQueryReadStreamSplit(STREAM, 42, SCHEMA));
+        // and still break a state written by an older job. The expiry is appended, which is what
+        // lets a version 1 payload be read by stopping where it stops.
+        byte[] bytes =
+                serializer.serialize(new BigQueryReadStreamSplit(STREAM, 42, SCHEMA, EXPIRE_TIME));
 
         DataInputDeserializer in = new DataInputDeserializer(bytes);
         assertThat(in.readUTF()).isEqualTo(STREAM);
@@ -60,6 +101,9 @@ class BigQueryReadStreamSplitSerializerTest {
         byte[] schema = new byte[schemaLength];
         in.readFully(schema);
         assertThat(new String(schema, StandardCharsets.UTF_8)).isEqualTo(SCHEMA);
+        assertThat(in.readBoolean()).isTrue();
+        assertThat(in.readLong()).isEqualTo(EXPIRE_TIME.getEpochSecond());
+        assertThat(in.readInt()).isEqualTo(EXPIRE_TIME.getNano());
         assertThat(in.available()).isZero();
     }
 
@@ -76,7 +120,7 @@ class BigQueryReadStreamSplitSerializerTest {
         }
         String wide = "{\"type\":\"record\",\"name\":\"Row\",\"fields\":[" + fields + "]}";
         assertThat(wide.getBytes(StandardCharsets.UTF_8).length).isGreaterThan(65535);
-        BigQueryReadStreamSplit split = new BigQueryReadStreamSplit(STREAM, 0, wide);
+        BigQueryReadStreamSplit split = new BigQueryReadStreamSplit(STREAM, 0, wide, EXPIRE_TIME);
 
         assertThat(serializer.deserialize(serializer.getVersion(), serializer.serialize(split)))
                 .isEqualTo(split);
@@ -84,11 +128,11 @@ class BigQueryReadStreamSplitSerializerTest {
 
     @Test
     void rejectsAnUnknownVersionNamingBoth() throws Exception {
-        byte[] bytes = serializer.serialize(new BigQueryReadStreamSplit(STREAM, 0, SCHEMA));
+        byte[] bytes = serializer.serialize(new BigQueryReadStreamSplit(STREAM, 0, SCHEMA, null));
 
         assertThatThrownBy(() -> serializer.deserialize(99, bytes))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("99")
-                .hasMessageContaining("version 1");
+                .hasMessageContaining("version 2");
     }
 }

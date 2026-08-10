@@ -170,7 +170,9 @@ class BigQueryEmulatorReadDeviationITCase extends AbstractBigQuerySourceEmulator
     }
 
     private static RowStreamOpener streamOpener() {
-        return new ReadClientRowStreamOpener(EmulatorEndpoint.parse(grpcEndpoint()));
+        return new ReadClientRowStreamOpener(
+                EmulatorEndpoint.parse(grpcEndpoint()),
+                BigQuerySourceBuilder.DEFAULT_RETRY_MAX_ATTEMPTS);
     }
 
     private static long rowCount(RowStreamOpener opener, String stream, long offset)

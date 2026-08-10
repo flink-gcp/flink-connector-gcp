@@ -20,6 +20,7 @@ import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
@@ -114,6 +115,31 @@ class BigQuerySourceBuilderTest {
     }
 
     @Test
+    void handsTheRetryBoundToTheOpenerThatAppliesIt() {
+        assertThat(opener(TestSources.config(builder -> builder.retryMaxAttempts(3))))
+                .extracting(ReadClientRowStreamOpener::retryMaxAttempts)
+                .isEqualTo(3);
+    }
+
+    @Test
+    void defaultsTheRetryBoundRatherThanLeavingItUnset() {
+        // Zero is how gax spells "no bound", so a dropped default would fail nothing — it would
+        // quietly restore the twenty-four-hour retry this knob exists to replace. The literal for
+        // the reason the fetch cap above uses one: the constant would be inlined into this class
+        // and compared against itself.
+        assertThat(opener(TestSources.config()))
+                .extracting(ReadClientRowStreamOpener::retryMaxAttempts)
+                .isEqualTo(25);
+    }
+
+    @Test
+    void rejectsANonPositiveRetryBound() {
+        assertThatThrownBy(() -> builder().retryMaxAttempts(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retryMaxAttempts must be positive");
+    }
+
+    @Test
     void takesTheSelectedFieldsAsACollectionToo() {
         assertThat(
                         TestSources.config(
@@ -161,5 +187,9 @@ class BigQuerySourceBuilderTest {
 
     private static BigQueryRowDeserializer<GenericRecord> deserializer() {
         return BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON);
+    }
+
+    private static ReadClientRowStreamOpener opener(BigQuerySourceConfig<?> config) {
+        return (ReadClientRowStreamOpener) config.getRowStreamOpener();
     }
 }

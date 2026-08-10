@@ -33,13 +33,20 @@ import java.util.List;
  * Serializer for {@link BigQueryReadEnumeratorState}.
  *
  * <p>Pending splits are written through the split's own serializer rather than field by field, so
- * the two formats can move independently.
+ * the two formats can move independently. Which split layout a payload holds is derived from this
+ * version rather than written beside it: a second version number inside the payload would be one
+ * more thing to keep in step, for a mapping that is a single line.
+ *
+ * <p>Version 2 is version 1 with splits that carry the read session's expiry; version 1 is still
+ * read.
  */
 @Internal
 public final class BigQueryReadEnumeratorStateSerializer
         implements SimpleVersionedSerializer<BigQueryReadEnumeratorState> {
 
-    private static final int VERSION = 1;
+    private static final int VERSION_WITHOUT_SPLIT_EXPIRY = 1;
+
+    private static final int VERSION = 2;
 
     /** Enough for a session name and a few splits; the serializer grows the buffer if needed. */
     private static final int INITIAL_BUFFER_SIZE = 4096;
@@ -72,7 +79,7 @@ public final class BigQueryReadEnumeratorStateSerializer
     @Override
     public BigQueryReadEnumeratorState deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != VERSION) {
+        if (version != VERSION && version != VERSION_WITHOUT_SPLIT_EXPIRY) {
             throw new IOException(
                     "Unsupported BigQuery read enumerator state serialization version "
                             + version
@@ -80,6 +87,10 @@ public final class BigQueryReadEnumeratorStateSerializer
                             + VERSION
                             + ".");
         }
+        int splitVersion =
+                version == VERSION_WITHOUT_SPLIT_EXPIRY
+                        ? BigQueryReadStreamSplitSerializer.VERSION_WITHOUT_EXPIRY
+                        : BigQueryReadStreamSplitSerializer.VERSION_WITH_EXPIRY;
         DataInputDeserializer in = new DataInputDeserializer(serialized);
         boolean initialized = in.readBoolean();
         String sessionName = in.readBoolean() ? in.readUTF() : null;
@@ -92,7 +103,7 @@ public final class BigQueryReadEnumeratorStateSerializer
         }
         List<BigQueryReadStreamSplit> splits = new ArrayList<>(Math.min(splitCount, 1024));
         for (int i = 0; i < splitCount; i++) {
-            splits.add(BigQueryReadStreamSplitSerializer.readSplit(in));
+            splits.add(BigQueryReadStreamSplitSerializer.readSplit(in, splitVersion));
         }
         return new BigQueryReadEnumeratorState(initialized, sessionName, expireTime, splits);
     }

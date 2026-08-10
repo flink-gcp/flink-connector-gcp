@@ -160,7 +160,7 @@ class BigQuerySourceReaderTest {
     }
 
     private BigQueryReadStreamSplit split(long offset) {
-        return new BigQueryReadStreamSplit(STREAM, offset, TestRows.SCHEMA_JSON);
+        return new BigQueryReadStreamSplit(STREAM, offset, TestRows.SCHEMA_JSON, null);
     }
 
     private BigQuerySourceReader<String> reader(

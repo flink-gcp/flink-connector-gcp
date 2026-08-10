@@ -94,6 +94,9 @@ public class BigQueryStorageReadSource<T>
         BigQuerySourceReaderMetrics metrics =
                 new BigQuerySourceReaderMetrics(context.metricGroup());
         RowStreamOpener opener = config.getRowStreamOpener();
+        // Before any fetcher starts, which is what the SPI's contract asks for: an implementation
+        // whose client captures the listener when it is built would ignore a later registration.
+        opener.setRetryListener(metrics::readRetried);
         Supplier<SplitReader<GenericRecord, BigQueryReadStreamSplit>> splitReaderSupplier =
                 () ->
                         new BigQuerySplitReader(

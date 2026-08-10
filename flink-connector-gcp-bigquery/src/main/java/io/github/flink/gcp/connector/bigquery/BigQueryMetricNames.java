@@ -65,6 +65,12 @@ public final class BigQueryMetricNames {
     public static final String ROWS_READ = "rowsRead";
     public static final String BYTES_READ = "bytesRead";
 
+    // Registered by the source's reader. Counts the client library's own ReadRows retries, which
+    // nothing else reports: a stream that keeps failing and resuming is making progress, so it
+    // never reaches retryMaxAttempts and never fails the job — it just reads slowly. A plain noun
+    // phrase for the same reason appendRetries is one; there is no actor to name.
+    public static final String READ_RETRIES = "readRetries";
+
     // Registered by the source's split enumerator. Counters rather than an assigned-splits gauge:
     // a gauge would need a ledger of which subtask holds what, and not keeping one is the whole
     // design of that enumerator. readSessionsCreated is 1 for a job that started and 0 for one that

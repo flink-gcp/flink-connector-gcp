@@ -42,6 +42,9 @@ public final class ScriptedReadSessionCreator implements ReadSessionCreator {
     private final AtomicInteger creations = new AtomicInteger();
     private final AtomicInteger closes = new AtomicInteger();
 
+    /** The expiry the canned session carries, and therefore the one its splits do. */
+    public static final Instant EXPIRE_TIME = Instant.parse("2026-08-09T12:00:00Z");
+
     private ScriptedReadSessionCreator(int streamCount, @Nullable RuntimeException failure) {
         this.streamCount = streamCount;
         this.failure = failure;
@@ -73,10 +76,7 @@ public final class ScriptedReadSessionCreator implements ReadSessionCreator {
                         .setName(SESSION)
                         .setAvroSchema(AvroSchema.newBuilder().setSchema(TestRows.SCHEMA_JSON))
                         .setExpireTime(
-                                Timestamp.newBuilder()
-                                        .setSeconds(
-                                                Instant.parse("2026-08-09T12:00:00Z")
-                                                        .getEpochSecond()));
+                                Timestamp.newBuilder().setSeconds(EXPIRE_TIME.getEpochSecond()));
         for (int i = 0; i < streamCount; i++) {
             session.addStreams(ReadStream.newBuilder().setName(streamName(i)));
         }

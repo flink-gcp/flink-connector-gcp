@@ -26,12 +26,13 @@ import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
 /**
  * The reader's metrics.
  *
- * <p>Two threads increment these. {@code rowsRead} and {@code bytesRead} are counted where the rows
- * arrive, on the split fetcher's thread, and are therefore thread-safe counters: a fetcher thread
- * is torn down and recreated over a reader's life, so a plain counter could both lose increments
- * across that handover and fail to publish them to the reporter. {@code recordsSkipped} is counted
- * by the record emitter on the task thread, where a plain counter is what the rest of this
- * connector uses.
+ * <p>Three threads increment these. {@code rowsRead} and {@code bytesRead} are counted where the
+ * rows arrive, on the split fetcher's thread, and are therefore thread-safe counters: a fetcher
+ * thread is torn down and recreated over a reader's life, so a plain counter could both lose
+ * increments across that handover and fail to publish them to the reporter. {@code readRetries} is
+ * counted from the client library's own retry scheduler — a thread this connector neither owns nor
+ * can name — so it takes the same treatment. {@code recordsSkipped} is counted by the record
+ * emitter on the task thread, where a plain counter is what the rest of this connector uses.
  *
  * <p>No lag gauge is registered: the Storage Read API reports an estimated row count for a whole
  * session and nothing per stream, so a per-subtask "records behind" figure would be a guess, and a
@@ -42,6 +43,7 @@ public final class BigQuerySourceReaderMetrics {
 
     private final Counter rowsRead;
     private final Counter bytesRead;
+    private final Counter readRetries;
     private final Counter recordsSkipped;
 
     /**
@@ -54,7 +56,21 @@ public final class BigQuerySourceReaderMetrics {
                 metricGroup.counter(BigQueryMetricNames.ROWS_READ, new ThreadSafeSimpleCounter());
         this.bytesRead =
                 metricGroup.counter(BigQueryMetricNames.BYTES_READ, new ThreadSafeSimpleCounter());
+        this.readRetries =
+                metricGroup.counter(
+                        BigQueryMetricNames.READ_RETRIES, new ThreadSafeSimpleCounter());
         this.recordsSkipped = metricGroup.counter(BigQueryMetricNames.RECORDS_SKIPPED);
+    }
+
+    /**
+     * Counts one retried attempt at a read stream, made by the client library rather than by this
+     * connector.
+     *
+     * <p>Public because the thing that calls it is the client's own retry listener, wired where the
+     * reader is created rather than from inside this package.
+     */
+    public void readRetried() {
+        readRetries.inc();
     }
 
     /**

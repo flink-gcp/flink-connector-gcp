@@ -134,7 +134,9 @@ class BigQuerySourceRealGcpITCase {
     void resumesAStreamAtTheRequestedOffset() throws Exception {
         ReadSession session = createSession();
 
-        try (RowStreamOpener opener = new ReadClientRowStreamOpener(null)) {
+        try (RowStreamOpener opener =
+                new ReadClientRowStreamOpener(
+                        null, BigQuerySourceBuilder.DEFAULT_RETRY_MAX_ATTEMPTS)) {
             List<Long> whole = read(opener, session, 0);
             assertThat(whole).hasSize(ROWS);
 
@@ -154,7 +156,9 @@ class BigQuerySourceRealGcpITCase {
         // rows and no error, which is what the reader treats as a finished split.
         ReadSession session = createSession();
 
-        try (RowStreamOpener opener = new ReadClientRowStreamOpener(null)) {
+        try (RowStreamOpener opener =
+                new ReadClientRowStreamOpener(
+                        null, BigQuerySourceBuilder.DEFAULT_RETRY_MAX_ATTEMPTS)) {
             assertThat(read(opener, session, 0)).hasSize(ROWS);
             assertThat(read(opener, session, ROWS)).isEmpty();
         }

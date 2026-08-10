@@ -65,6 +65,9 @@ public final class BigQueryReadStreamSplitState {
     /** Returns the immutable split at the progress reached so far. */
     public BigQueryReadStreamSplit toSplit() {
         return new BigQueryReadStreamSplit(
-                split.getStreamName(), offset, split.getAvroSchemaJson());
+                split.getStreamName(),
+                offset,
+                split.getAvroSchemaJson(),
+                split.getSessionExpireTime());
     }
 }

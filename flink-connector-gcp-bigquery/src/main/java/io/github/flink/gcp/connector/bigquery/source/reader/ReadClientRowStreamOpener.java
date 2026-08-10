@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.source.reader;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.rpc.ServerStream;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
@@ -49,17 +50,49 @@ public final class ReadClientRowStreamOpener implements RowStreamOpener {
     private static final long serialVersionUID = 1L;
 
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final int retryMaxAttempts;
 
     private transient BigQueryReadClient client;
     private transient boolean closed;
 
     /**
+     * Volatile because it is written on the task thread by {@link #setRetryListener} and read on a
+     * split fetcher's when the client is built. The write happens before any fetcher starts, so the
+     * ordering is already established; the modifier says so rather than leaving it to be
+     * re-derived.
+     */
+    @Nullable private transient volatile Runnable onRetry;
+
+    /**
      * Creates the opener.
      *
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
+     * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
      */
-    public ReadClientRowStreamOpener(@Nullable EmulatorEndpoint emulatorEndpoint) {
+    public ReadClientRowStreamOpener(
+            @Nullable EmulatorEndpoint emulatorEndpoint, int retryMaxAttempts) {
         this.emulatorEndpoint = emulatorEndpoint;
+        this.retryMaxAttempts = retryMaxAttempts;
+    }
+
+    @Override
+    public void setRetryListener(Runnable onRetry) {
+        this.onRetry = onRetry;
+    }
+
+    /**
+     * Returns the bound this opener puts on the client's own {@code ReadRows} retry.
+     *
+     * <p>{@code public} only because the builder's own tests live a package away and the value is
+     * otherwise unobservable — a builder that accepted the knob and dropped it would look exactly
+     * like one that did not. The same argument {@code BoundedShutdown#timeout()} is public under; a
+     * third seam of this shape should cite one of them rather than widen by default.
+     *
+     * @return the bound
+     */
+    @VisibleForTesting
+    public int retryMaxAttempts() {
+        return retryMaxAttempts;
     }
 
     @Override
@@ -71,7 +104,9 @@ public final class ReadClientRowStreamOpener implements RowStreamOpener {
                         "The BigQuery read stream opener was closed; the reader is shutting down.");
             }
             if (client == null) {
-                client = BigQueryReadClients.create(emulatorEndpoint);
+                client =
+                        BigQueryReadClients.createForReads(
+                                emulatorEndpoint, retryMaxAttempts, onRetry);
             }
             open = client;
         }
