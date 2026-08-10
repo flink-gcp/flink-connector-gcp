@@ -23,6 +23,7 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 
 /**
  * Serializer for {@link BigQueryReadStreamSplit}.
@@ -33,19 +34,27 @@ import java.nio.charset.StandardCharsets;
  * <p>The Avro schema is written with an explicit length prefix rather than through {@code
  * writeUTF}, whose modified-UTF-8 encoding cannot carry more than 65535 bytes — a limit a wide
  * table's schema reaches, and one that would only be discovered by the job that has such a table.
+ *
+ * <p>Version 2 appended the session's expiry. Version 1 is still read, as the same layout without
+ * it: a job restoring a checkpoint written before the field existed carries {@code null} there and
+ * loses nothing but the annotation on a failure it may never meet.
  */
 @Internal
 public final class BigQueryReadStreamSplitSerializer
         implements SimpleVersionedSerializer<BigQueryReadStreamSplit> {
 
-    private static final int VERSION = 1;
+    /** The split layout that carried no session expiry. */
+    public static final int VERSION_WITHOUT_EXPIRY = 1;
+
+    /** The split layout this serializer writes, and the version {@link #getVersion()} reports. */
+    public static final int VERSION_WITH_EXPIRY = 2;
 
     /** Enough for a stream name and a small schema; the serializer grows the buffer if needed. */
     private static final int INITIAL_BUFFER_SIZE = 4096;
 
     @Override
     public int getVersion() {
-        return VERSION;
+        return VERSION_WITH_EXPIRY;
     }
 
     @Override
@@ -57,15 +66,15 @@ public final class BigQueryReadStreamSplitSerializer
 
     @Override
     public BigQueryReadStreamSplit deserialize(int version, byte[] serialized) throws IOException {
-        if (version != VERSION) {
+        if (version != VERSION_WITH_EXPIRY && version != VERSION_WITHOUT_EXPIRY) {
             throw new IOException(
                     "Unsupported BigQuery read stream split serialization version "
                             + version
                             + "; this connector writes version "
-                            + VERSION
+                            + VERSION_WITH_EXPIRY
                             + ".");
         }
-        return readSplit(new DataInputDeserializer(serialized));
+        return readSplit(new DataInputDeserializer(serialized), version);
     }
 
     /**
@@ -85,16 +94,25 @@ public final class BigQueryReadStreamSplitSerializer
         byte[] schema = split.getAvroSchemaJson().getBytes(StandardCharsets.UTF_8);
         out.writeInt(schema.length);
         out.write(schema);
+        Instant expireTime = split.getSessionExpireTime();
+        out.writeBoolean(expireTime != null);
+        if (expireTime != null) {
+            out.writeLong(expireTime.getEpochSecond());
+            out.writeInt(expireTime.getNano());
+        }
     }
 
     /**
      * Reads a split written by {@link #writeSplit}.
      *
      * @param in the input to read from
+     * @param version the layout the split was written in: {@link #VERSION_WITH_EXPIRY}, or {@link
+     *     #VERSION_WITHOUT_EXPIRY} for one written before the session expiry was carried
      * @return the split
      * @throws IOException if reading fails
      */
-    public static BigQueryReadStreamSplit readSplit(DataInputDeserializer in) throws IOException {
+    public static BigQueryReadStreamSplit readSplit(DataInputDeserializer in, int version)
+            throws IOException {
         String streamName = in.readUTF();
         long offset = in.readLong();
         int schemaLength = in.readInt();
@@ -104,7 +122,11 @@ public final class BigQueryReadStreamSplitSerializer
         }
         byte[] schema = new byte[schemaLength];
         in.readFully(schema);
+        Instant expireTime = null;
+        if (version >= VERSION_WITH_EXPIRY && in.readBoolean()) {
+            expireTime = Instant.ofEpochSecond(in.readLong(), in.readInt());
+        }
         return new BigQueryReadStreamSplit(
-                streamName, offset, new String(schema, StandardCharsets.UTF_8));
+                streamName, offset, new String(schema, StandardCharsets.UTF_8), expireTime);
     }
 }

@@ -50,7 +50,7 @@ class BigQueryRecordEmitterTest {
         output = new CollectingSourceOutput<>();
         state =
                 new BigQueryReadStreamSplitState(
-                        new BigQueryReadStreamSplit(STREAM, 0, TestRows.SCHEMA_JSON));
+                        new BigQueryReadStreamSplit(STREAM, 0, TestRows.SCHEMA_JSON, null));
     }
 
     @Test

@@ -20,6 +20,9 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.util.Preconditions;
 
+import javax.annotation.Nullable;
+
+import java.time.Instant;
 import java.util.Objects;
 
 /**
@@ -35,6 +38,13 @@ import java.util.Objects;
  * but the latter is not something the API contract promises for every call, and a resumed read that
  * arrives without one has no other source for it.
  *
+ * <p>It carries the session's expiry for the same reason, and for one purpose: a read that fails
+ * after the session has expired is explained rather than left as a bare stream error. It is not a
+ * deadline this connector enforces — the expiry is BigQuery's to apply, and a client clock is not
+ * the one that decides — so nothing here refuses to open a stream because of it. A split restored
+ * from a checkpoint written before the field existed carries {@code null}, and the failure is
+ * reported unannotated.
+ *
  * <p>A checkpoint can be taken between the last row of a stream being emitted and the reader
  * recording the stream as finished, so a restored split can sit at exactly the stream's row count.
  * Nothing marks it: BigQuery answers such a read with an empty stream and no error (measured
@@ -48,6 +58,7 @@ public final class BigQueryReadStreamSplit implements SourceSplit {
     private final String streamName;
     private final long offset;
     private final String avroSchemaJson;
+    @Nullable private final Instant sessionExpireTime;
 
     /**
      * Creates a split.
@@ -55,13 +66,19 @@ public final class BigQueryReadStreamSplit implements SourceSplit {
      * @param streamName the {@code projects/../locations/../sessions/../streams/..} stream name
      * @param offset how many rows of this stream have already been emitted
      * @param avroSchemaJson the read session's Avro schema, in its JSON form
+     * @param sessionExpireTime when the read session expires, or {@code null} when it is not known
      */
-    public BigQueryReadStreamSplit(String streamName, long offset, String avroSchemaJson) {
+    public BigQueryReadStreamSplit(
+            String streamName,
+            long offset,
+            String avroSchemaJson,
+            @Nullable Instant sessionExpireTime) {
         Preconditions.checkArgument(offset >= 0, "offset must not be negative: %s", offset);
         this.streamName = Preconditions.checkNotNull(streamName, "streamName must not be null");
         this.offset = offset;
         this.avroSchemaJson =
                 Preconditions.checkNotNull(avroSchemaJson, "avroSchemaJson must not be null");
+        this.sessionExpireTime = sessionExpireTime;
     }
 
     /** Returns the stream's resource name, which is also this split's id. */
@@ -77,6 +94,12 @@ public final class BigQueryReadStreamSplit implements SourceSplit {
     /** Returns the read session's Avro schema, in its JSON form. */
     public String getAvroSchemaJson() {
         return avroSchemaJson;
+    }
+
+    /** Returns when the read session expires, or {@code null} when it is not known. */
+    @Nullable
+    public Instant getSessionExpireTime() {
+        return sessionExpireTime;
     }
 
     @Override
@@ -95,19 +118,26 @@ public final class BigQueryReadStreamSplit implements SourceSplit {
         BigQueryReadStreamSplit other = (BigQueryReadStreamSplit) o;
         return offset == other.offset
                 && streamName.equals(other.streamName)
-                && avroSchemaJson.equals(other.avroSchemaJson);
+                && avroSchemaJson.equals(other.avroSchemaJson)
+                && Objects.equals(sessionExpireTime, other.sessionExpireTime);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(streamName, offset, avroSchemaJson);
+        return Objects.hash(streamName, offset, avroSchemaJson, sessionExpireTime);
     }
 
     @Override
     public String toString() {
         // The schema is deliberately left out: it is kilobytes of JSON and every log line carrying
-        // a
-        // split would otherwise carry the whole table's shape.
-        return "BigQueryReadStreamSplit{streamName='" + streamName + "', offset=" + offset + '}';
+        // a split would otherwise carry the whole table's shape. The expiry is a single instant and
+        // is the thing an assignment log line is read for when a long read starts failing.
+        return "BigQueryReadStreamSplit{streamName='"
+                + streamName
+                + "', offset="
+                + offset
+                + ", sessionExpireTime="
+                + sessionExpireTime
+                + '}';
     }
 }

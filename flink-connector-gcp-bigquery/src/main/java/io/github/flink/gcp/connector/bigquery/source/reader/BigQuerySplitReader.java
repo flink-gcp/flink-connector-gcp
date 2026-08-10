@@ -23,10 +23,12 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -36,6 +38,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
 
@@ -121,13 +124,11 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryR
                         // reopens the stream past the rows already handed over.
                         break;
                     }
-                    throw new IOException(
-                            "Failed to read from the BigQuery read stream "
-                                    + stream.split.getStreamName()
-                                    + " at offset "
-                                    + stream.deliveredOffset
-                                    + ".",
-                            e);
+                    // Nothing decoded in this fetch is handed over: the batch is dropped with the
+                    // exception, so the rows counted into deliveredOffset above go nowhere and the
+                    // reader restarts from the offset its last checkpoint holds. That is what makes
+                    // a failure here lose no row and duplicate none.
+                    throw new IOException(readFailureMessage(stream, e), e);
                 }
                 if (response == null) {
                     finish(batch, stream);
@@ -143,6 +144,40 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryR
             stream.deliveredOffset++;
         }
         return batch.build();
+    }
+
+    /**
+     * Builds the message a failed read is reported with.
+     *
+     * <p>Two things are added to the stream and the offset, and neither claims anything about what
+     * BigQuery answered. The status code is named when the failure carries one, so the failure can
+     * be grepped for and looked up. And a session already past its expiry is called out, because
+     * that failure is the one a restart cannot fix: the reader would resume against the same
+     * expired session, so the job has to start over and create a new one. Whether the service
+     * reports expiry as this particular failure is not asserted — the clock is read here, and the
+     * sentence only says what is true of the session either way.
+     */
+    private static String readFailureMessage(ActiveStream stream, Throwable failure) {
+        StringBuilder message =
+                new StringBuilder("Failed to read from the BigQuery read stream ")
+                        .append(stream.split.getStreamName())
+                        .append(" at offset ")
+                        .append(stream.deliveredOffset);
+        ExceptionUtils.findThrowable(failure, cause -> StatusCodes.codeOf(cause) != null)
+                .map(StatusCodes::codeOf)
+                .ifPresent(code -> message.append(" (status ").append(code).append(')'));
+        message.append('.');
+        Instant expireTime = stream.split.getSessionExpireTime();
+        if (expireTime != null && Instant.now().isAfter(expireTime)) {
+            message.append(" The read session expired at ")
+                    .append(expireTime)
+                    .append(". A BigQuery read session lives six hours from its creation, and a")
+                    .append(" read that outlives it cannot be resumed: restarting reads against")
+                    .append(" the same expired session, so the job has to be started over for a")
+                    .append(" new session to be created. Read the table with more parallelism, or")
+                    .append(" fewer columns, so that it finishes inside that window.");
+        }
+        return message.toString();
     }
 
     /**

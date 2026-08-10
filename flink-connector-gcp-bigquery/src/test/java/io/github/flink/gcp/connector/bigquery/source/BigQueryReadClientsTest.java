@@ -18,11 +18,18 @@ package io.github.flink.gcp.connector.bigquery.source;
 
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
+import com.google.api.gax.retrying.RetrySettings;
+import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadSettings;
+import com.google.cloud.bigquery.storage.v1.stub.readrows.ReadRowsResumptionStrategy;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.grpc.Metadata;
+import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,6 +57,85 @@ class BigQueryReadClientsTest {
         assertThat(provider(settings).getEndpoint()).isEqualTo("localhost:9060");
         assertThat(provider(settings).toBuilder().getChannelConfigurator()).isNotNull();
         assertThat(settings.getCredentialsProvider()).isInstanceOf(NoCredentialsProvider.class);
+    }
+
+    @Test
+    void theReadingSettingsBoundTheClientsOwnRetry() throws IOException {
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, null);
+
+        assertThat(settings.readRowsSettings().getRetrySettings().getMaxAttempts()).isEqualTo(7);
+    }
+
+    @Test
+    void theReadingSettingsChangeNothingAboutTheRetryButItsBound() throws IOException {
+        // The backoff sequence is the SDK's, and staying out of it is the decision: a schedule
+        // rewritten here would be one more thing to keep in step with a client that already tunes
+        // it for this API.
+        RetrySettings sdk =
+                BigQueryReadSettings.newBuilder().build().readRowsSettings().getRetrySettings();
+
+        RetrySettings ours =
+                BigQueryReadClients.readSettings(null, 7, null)
+                        .readRowsSettings()
+                        .getRetrySettings();
+
+        assertThat(ours).isEqualTo(sdk.toBuilder().setMaxAttempts(7).build());
+    }
+
+    @Test
+    void theSdkLeavesReadRowsUnboundedWhichIsWhyTheKnobExists() throws IOException {
+        // The premise the retryMaxAttempts knob rests on, measured against
+        // google-cloud-bigquerystorage 3.30.0 and pinned here so a BOM bump that changes it fails
+        // rather than quietly making the knob pointless — or, worse, doubly bounding the read.
+        RetrySettings sdk =
+                BigQueryReadSettings.newBuilder().build().readRowsSettings().getRetrySettings();
+
+        assertThat(sdk.getMaxAttempts()).isZero();
+        assertThat(sdk.getTotalTimeoutDuration()).isEqualTo(Duration.ofHours(24));
+    }
+
+    @Test
+    void theClientResumesABrokenReadItself() throws IOException {
+        // The other half of that premise, and the reason this connector runs no retry loop of its
+        // own: the client resumes a broken ReadRows at originalOffset + rowsProcessed. Were this
+        // strategy to disappear, a retried attempt would re-read the stream from the top and every
+        // row already handed downstream would be emitted twice.
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, null);
+
+        assertThat(settings.readRowsSettings().getResumptionStrategy())
+                .isInstanceOf(ReadRowsResumptionStrategy.class);
+    }
+
+    @Test
+    void theClientRetriesOnlyWhatItsOwnClassificationAllows() throws IOException {
+        // Deliberately not widened. UNAVAILABLE is the configured code; the client additionally
+        // resumes a handful of INTERNAL messages and a RESOURCE_EXHAUSTED carrying RetryInfo,
+        // through its own algorithm rather than through this set. A bump that adds a code here is
+        // worth reading before it ships.
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, null);
+
+        assertThat(settings.readRowsSettings().getRetryableCodes())
+                .containsExactly(StatusCode.Code.UNAVAILABLE);
+    }
+
+    @Test
+    void theRetryListenerIsWiredWhenOneIsGiven() throws IOException {
+        AtomicInteger retries = new AtomicInteger();
+
+        BigQueryReadSettings settings =
+                BigQueryReadClients.readSettings(null, 7, retries::incrementAndGet);
+
+        settings.getReadRowsRetryAttemptListener()
+                .onRetryAttempt(Status.UNAVAILABLE, new Metadata());
+        assertThat(retries).hasValue(1);
+    }
+
+    @Test
+    void noRetryListenerIsWiredWhenNoneIsGiven() throws IOException {
+        assertThat(
+                        BigQueryReadClients.readSettings(null, 7, null)
+                                .getReadRowsRetryAttemptListener())
+                .isNull();
     }
 
     private static InstantiatingGrpcChannelProvider provider(BigQueryReadSettings settings) {

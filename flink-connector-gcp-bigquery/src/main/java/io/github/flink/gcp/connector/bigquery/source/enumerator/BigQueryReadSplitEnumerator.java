@@ -115,8 +115,10 @@ public class BigQueryReadSplitEnumerator
         addPlannedSplits(restoredState.getPendingSplits());
         if (sessionExpireTime != null && Instant.now().isAfter(sessionExpireTime)) {
             // Nothing here can recover it: creating a second session would read a second snapshot
-            // of the table, so the reads simply fail. Naming the cause is what turns a restart loop
-            // into a diagnosable one; reporting it as a terminal error is #391.
+            // of the table, so the reads simply fail. A warning and not a thrown failure,
+            // deliberately — the expiry is BigQuery's to apply and this is a client clock, so
+            // refusing here would fail a read the service might still have served. The failure a
+            // reader does meet carries the same explanation, from the expiry its split carries.
             LOG.warn(
                     "The restored BigQuery read session {} expired at {}, which has passed."
                             + " Reads against it will fail; a bounded read must finish within"
@@ -153,13 +155,15 @@ public class BigQueryReadSplitEnumerator
     @Override
     protected void onPlanned(ReadSession session) {
         String schemaJson = session.getAvroSchema().getSchema();
-        List<BigQueryReadStreamSplit> splits = new ArrayList<>();
-        for (ReadStream stream : session.getStreamsList()) {
-            splits.add(new BigQueryReadStreamSplit(stream.getName(), 0L, schemaJson));
-        }
-        addPlannedSplits(splits);
         sessionName = session.getName();
         sessionExpireTime = Instant.ofEpochSecond(session.getExpireTime().getSeconds());
+        List<BigQueryReadStreamSplit> splits = new ArrayList<>();
+        for (ReadStream stream : session.getStreamsList()) {
+            splits.add(
+                    new BigQueryReadStreamSplit(
+                            stream.getName(), 0L, schemaJson, sessionExpireTime));
+        }
+        addPlannedSplits(splits);
         if (splits.size() < context.currentParallelism()) {
             LOG.warn(
                     "BigQuery returned {} stream(s) for {} at parallelism {}; the subtasks left"

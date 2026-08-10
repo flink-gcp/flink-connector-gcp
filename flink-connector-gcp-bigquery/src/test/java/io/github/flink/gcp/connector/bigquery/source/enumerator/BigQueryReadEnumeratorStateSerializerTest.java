@@ -16,11 +16,14 @@
 
 package io.github.flink.gcp.connector.bigquery.source.enumerator;
 
+import org.apache.flink.core.memory.DataOutputSerializer;
+
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
@@ -29,6 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BigQueryReadEnumeratorStateSerializerTest {
+
+    private static final Instant EXPIRE_TIME = Instant.parse("2026-08-09T18:00:00Z");
 
     private final BigQueryReadEnumeratorStateSerializer serializer =
             new BigQueryReadEnumeratorStateSerializer();
@@ -72,14 +77,63 @@ class BigQueryReadEnumeratorStateSerializerTest {
                         new BigQueryReadEnumeratorState(
                                 false, null, null, Collections.emptyList()));
 
-        assertThatThrownBy(() -> serializer.deserialize(2, bytes))
+        assertThatThrownBy(() -> serializer.deserialize(3, bytes))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("version 2")
-                .hasMessageContaining("version 1");
+                .hasMessageContaining("version 3")
+                .hasMessageContaining("version 2");
+    }
+
+    @Test
+    void readsAVersionOnePayloadWhoseSplitsCarryNoSessionExpiry() throws Exception {
+        // A checkpoint written before the splits carried the session's expiry. The state's own
+        // expireTime field predates this change and is read as it always was; what version 1 lacks
+        // is the copy inside each split, so those come back null and a failure they meet is
+        // reported without the expiry sentence.
+        byte[] version1 =
+                versionOnePayload(
+                        Instant.parse("2026-08-09T12:34:56.789Z"),
+                        "projects/p/locations/l/sessions/s/streams/0",
+                        17);
+
+        BigQueryReadEnumeratorState restored = serializer.deserialize(1, version1);
+
+        assertThat(restored.getSessionExpireTime())
+                .isEqualTo(Instant.parse("2026-08-09T12:34:56.789Z"));
+        assertThat(restored.getPendingSplits()).hasSize(1);
+        assertThat(restored.getPendingSplits().get(0).getSessionExpireTime()).isNull();
+        assertThat(restored.getPendingSplits().get(0).getOffset()).isEqualTo(17);
+    }
+
+    /**
+     * Writes the version 1 layout by hand: the state's fields, then one split without the trailing
+     * expiry flag version 2 appends.
+     *
+     * <p>By hand rather than by keeping the old serializer around, so the bytes this asserts
+     * against are the format and not whatever a retained class happens to still produce.
+     */
+    private static byte[] versionOnePayload(
+            Instant sessionExpireTime, String streamName, long offset) throws Exception {
+        DataOutputSerializer out = new DataOutputSerializer(1024);
+        out.writeBoolean(true);
+        out.writeBoolean(true);
+        out.writeUTF("projects/p/locations/l/sessions/s");
+        out.writeBoolean(true);
+        out.writeLong(sessionExpireTime.getEpochSecond());
+        out.writeInt(sessionExpireTime.getNano());
+        out.writeInt(1);
+        out.writeUTF(streamName);
+        out.writeLong(offset);
+        byte[] schema = TestRows.SCHEMA_JSON.getBytes(StandardCharsets.UTF_8);
+        out.writeInt(schema.length);
+        out.write(schema);
+        return out.getCopyOfBuffer();
     }
 
     private static BigQueryReadStreamSplit split(int index, long offset) {
         return new BigQueryReadStreamSplit(
-                "projects/p/locations/l/sessions/s/streams/" + index, offset, TestRows.SCHEMA_JSON);
+                "projects/p/locations/l/sessions/s/streams/" + index,
+                offset,
+                TestRows.SCHEMA_JSON,
+                EXPIRE_TIME);
     }
 }

@@ -20,8 +20,11 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.rpc.ServerStreamingCallSettings;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadSettings;
+import com.google.cloud.bigquery.storage.v1.ReadRowsRequest;
+import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 
@@ -33,6 +36,11 @@ import java.io.IOException;
  * Storage Read API clients, for the two places the source opens one: the enumerator creates the
  * read session, and every reader opens its assigned streams.
  *
+ * <p>Two factory methods rather than one, because only the reading side has anything to configure:
+ * the {@code ReadRows} retry budget is inert on a client that only creates sessions, and a caller
+ * that had to pass it would be inventing a value. Naming them after the call each serves is what
+ * keeps the wrong one from being picked.
+ *
  * <p>{@code public} because those two live in sibling packages and Java has no
  * package-tree-internal access — the same reason the connector's metric-name inventory is public.
  */
@@ -42,22 +50,103 @@ public final class BigQueryReadClients {
     private BigQueryReadClients() {}
 
     /**
-     * Creates a client for the given endpoint: the emulator form when one is set, and the SDK's own
-     * application-default-credentials form otherwise.
+     * Creates the client the enumerator creates its read session with.
+     *
+     * <p>{@code CreateReadSession}'s own retry settings are left as the SDK ships them — a
+     * ten-minute budget over {@code DEADLINE_EXCEEDED} and {@code UNAVAILABLE}. That call happens
+     * once per job, on the coordinator thread, before anything has been read, and a failure there
+     * is reported immediately rather than sitting inside a fetch.
      *
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
      * @return the client; the caller owns it and must close it
      * @throws IOException if the client cannot be created
      */
-    public static BigQueryReadClient create(@Nullable EmulatorEndpoint emulatorEndpoint)
+    public static BigQueryReadClient createForSessions(@Nullable EmulatorEndpoint emulatorEndpoint)
             throws IOException {
-        return emulatorEndpoint == null
-                ? BigQueryReadClient.create()
-                : forEmulator(emulatorEndpoint);
+        return BigQueryReadClient.create(settingsBuilder(emulatorEndpoint).build());
     }
 
-    private static BigQueryReadClient forEmulator(EmulatorEndpoint endpoint) throws IOException {
-        return BigQueryReadClient.create(emulatorSettings(endpoint));
+    /**
+     * Creates the client a reader opens its assigned streams with.
+     *
+     * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
+     * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
+     * @param onRetry run once per retried attempt, or {@code null} to observe none
+     * @return the client; the caller owns it and must close it
+     * @throws IOException if the client cannot be created
+     */
+    public static BigQueryReadClient createForReads(
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            int retryMaxAttempts,
+            @Nullable Runnable onRetry)
+            throws IOException {
+        return BigQueryReadClient.create(readSettings(emulatorEndpoint, retryMaxAttempts, onRetry));
+    }
+
+    /**
+     * Builds the reading client's settings, with the client's own {@code ReadRows} retry bounded
+     * and everything else about it left alone.
+     *
+     * <p>Left alone deliberately: the client resumes a broken {@code ReadRows} at {@code
+     * originalOffset + rowsProcessed} through its own {@code ReadRowsResumptionStrategy}, and
+     * classifies which failures earn a resume. What it does not do is stop — {@code maxAttempts} is
+     * unset and the total budget is twenty-four hours, so a stream that will never come back holds
+     * a split fetcher for a day while reporting nothing at all. That is the whole of what this
+     * method changes ({@code docs/adr/0084}).
+     *
+     * <p>{@code maxAttempts} and not {@code totalTimeout}, and the two are not interchangeable: gax
+     * resets the attempt count whenever an attempt produced a response, while carrying the first
+     * attempt's start time forward. So {@code maxAttempts} counts <em>consecutive failures without
+     * progress</em>, which is the thing worth bounding, and {@code totalTimeout} runs from the
+     * moment the stream was opened — shortening it would cut off the retry of a stream that has
+     * been healthy for hours.
+     *
+     * <p>Separate from client creation so a test can read what the settings carry: creating a
+     * client resolves application default credentials, and building settings does not.
+     *
+     * <p>The retry listener is the only report a retry makes. Its argument is a {@code Runnable}
+     * rather than the SDK's own listener type so that nothing outside this class has to name a
+     * status and a metadata map it does not read: the counter behind it says how much work the
+     * client's retry is doing, which is what an operator cannot otherwise see — a stream that keeps
+     * failing and resuming makes progress, so it never trips {@code maxAttempts} and never reports
+     * anything else.
+     *
+     * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
+     * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
+     * @param onRetry run once per retried attempt, or {@code null} to observe none
+     * @return the settings
+     * @throws IOException if the settings cannot be built
+     */
+    @VisibleForTesting
+    static BigQueryReadSettings readSettings(
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            int retryMaxAttempts,
+            @Nullable Runnable onRetry)
+            throws IOException {
+        BigQueryReadSettings.Builder settings = settingsBuilder(emulatorEndpoint);
+        ServerStreamingCallSettings.Builder<ReadRowsRequest, ReadRowsResponse> readRows =
+                settings.readRowsSettings();
+        readRows.setRetrySettings(
+                readRows.getRetrySettings().toBuilder().setMaxAttempts(retryMaxAttempts).build());
+        if (onRetry != null) {
+            settings.setReadRowsRetryAttemptListener((status, metadata) -> onRetry.run());
+        }
+        return settings.build();
+    }
+
+    /**
+     * Builds settings for the given endpoint: the emulator form when one is set, and the SDK's own
+     * application-default-credentials form otherwise.
+     *
+     * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
+     * @return the settings builder
+     * @throws IOException if the settings cannot be built
+     */
+    private static BigQueryReadSettings.Builder settingsBuilder(
+            @Nullable EmulatorEndpoint emulatorEndpoint) throws IOException {
+        return emulatorEndpoint == null
+                ? BigQueryReadSettings.newBuilder()
+                : emulatorSettingsBuilder(emulatorEndpoint);
     }
 
     /**
@@ -78,12 +167,16 @@ public final class BigQueryReadClients {
      */
     @VisibleForTesting
     static BigQueryReadSettings emulatorSettings(EmulatorEndpoint endpoint) throws IOException {
+        return emulatorSettingsBuilder(endpoint).build();
+    }
+
+    private static BigQueryReadSettings.Builder emulatorSettingsBuilder(EmulatorEndpoint endpoint)
+            throws IOException {
         return BigQueryReadSettings.newBuilder()
                 .setCredentialsProvider(NoCredentialsProvider.create())
                 .setTransportChannelProvider(
                         EmulatorChannels.plaintextProvider(
                                 BigQueryReadSettings.defaultGrpcTransportProviderBuilder(),
-                                endpoint))
-                .build();
+                                endpoint));
     }
 }

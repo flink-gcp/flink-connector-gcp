@@ -1591,6 +1591,53 @@ without a hyphen: a hyphen is not legal in an Avro namespace, so the schema fail
 row is decoded. Each deviation is pinned by `BigQueryEmulatorReadDeviationITCase`, so the image bump
 that fixes one fails the build rather than leaving a workaround behind.
 
+### Read failures and retries
+
+**A broken `ReadRows` is resumed by the client library, not by this connector.** The Storage Read
+API client tracks how many rows a call has delivered and reissues it at that row, so a stream that
+drops mid-read carries on where it stopped — no row is read twice, and none is skipped. It retries
+`UNAVAILABLE`, a short list of `INTERNAL` transport faults (`RST_STREAM` and its neighbours), and a
+`RESOURCE_EXHAUSTED` that carries a `RetryInfo` delay, honouring that delay. A bare `INTERNAL` and a
+bare `RESOURCE_EXHAUSTED` are deliberately not retried by the client; this connector neither widens
+that classification nor runs a second retry loop behind it.
+
+What the client does not do is stop. Left alone it retries for **twenty-four hours**, so a stream
+that is never coming back would hold a reader for a day while reporting nothing at all.
+[`retryMaxAttempts`]({{< relref "docs/reference/bigquery" >}}#bigquerysourcebuilder) is the bound,
+and it counts **consecutive attempts that made no progress** — an attempt that delivered rows resets
+the count. When the read does fail, Flink's restart strategy restores from the last checkpoint and
+each stream resumes at the offset that checkpoint holds rather than being read from the top.
+
+How long twenty-five attempts take depends on which failure it is, and the two ends are far
+apart. For `UNAVAILABLE` the client backs off exponentially — nominally 100 ms growing by 1.3 —
+and then picks each wait *uniformly between zero and that value*, so the default bounds a stuck
+stream at about three minutes and reaches it in about half that on average. For the `INTERNAL`
+transport faults the client waits a fixed **one millisecond** and does not back off at all, so
+the bound is reached almost at once. A `RESOURCE_EXHAUSTED` waits exactly the delay the server
+named.
+
+That reset has a consequence worth knowing for a job that is slow rather than stuck. A stream that
+keeps failing and resuming *is* making progress, so it never reaches the bound and never fails
+anything — it just reads at a fraction of the speed. **`readRetries` is what reports it**, and it is
+the only thing that does at a level anyone watches: the client library logs a retry too, but through
+`java.util.logging` at `FINEST`.
+
+A failed read names the gRPC status it carried, so a failure can be looked up rather than guessed
+at. Two conditions are worth recognising:
+
+| The read fails | What it means |
+|---|---|
+| with `FAILED_PRECONDITION`, naming an offset | The restored offset is past the rows the stream holds. A stream restored at exactly its row count is *not* this: that answers empty and no error (measured 2026-08-09) |
+| after the read session's expiry | The read outlived its session, and the message says so |
+
+**A read session lives six hours from its creation**, and a read that outlives it cannot be resumed:
+restarting restores the same expired session, and creating a second one is exactly what the source
+must not do, since it would pin a second snapshot of the table. So such a job has to be started over,
+and a read that cannot finish inside six hours needs more parallelism or fewer columns. The connector
+recognises the case and says so in the failure, from the expiry each split carries. It does **not**
+refuse to read because a local clock says the session is old: the expiry is BigQuery's to apply, and
+the machine reading need not agree with it about the time.
+
 ### How the source is tested
 
 The offset resume is covered three ways, because no single one of them can carry it: a unit test
@@ -1599,10 +1646,15 @@ once part-way through and is asserted to read every row exactly once, having res
 started over; and a gated real-GCP case measures that BigQuery resumes where it left off and answers
 a read at the row count with an empty stream.
 
+Multi-stream recovery — a subtask dying with a stream in hand, its splits coming back, another
+subtask finishing them — is measured against BigQuery as well, over a public dataset so that no table
+of ours has to be large enough to split. How large that is: measured 2026-08-10, a 195 MB table
+answers with one stream and a 264 MB one with four, and a projection lowers the count further,
+because it follows the bytes actually selected rather than the table's size.
+
 ### Not here yet
 
-Error-handling depth and real-GCP restore coverage are
-[#391]({{< param BookRepo >}}/issues/391); reading the result of a query rather than a table is
+Reading the result of a query rather than a table is
 [#392]({{< param BookRepo >}}/issues/392); the Arrow wire format is
 [#393]({{< param BookRepo >}}/issues/393). There is no unbounded or CDC read, and there is no
 planned one: BigQuery has no changelog read primitive, so it could only be a polling emulation
@@ -1740,6 +1792,7 @@ is one set for the job, since there is one enumerator.
 | `rowsRead` | counter | rows decoded from the response blocks this subtask received |
 | `bytesRead` | counter | their serialized bytes as they arrived on the wire. Not the billed quantity — BigQuery charges for bytes *scanned from storage*, which a client cannot see — but it is what says whether a job is moving what you expected |
 | `recordsSkipped` | counter | rows the deserializer skipped by returning `null` — neither emitted nor failed |
+| `readRetries` | counter | attempts at a read stream the client library retried. Rising while the job still progresses is a stream that keeps dropping and resuming — see [Read failures and retries](#read-failures-and-retries) |
 | `splitsAssigned` | counter | read streams handed to a reader, on the enumerator |
 | `splitsReturned` | counter | read streams a failed reader gave back, on the enumerator |
 | `readSessionsCreated` | counter | read sessions created, on the enumerator |

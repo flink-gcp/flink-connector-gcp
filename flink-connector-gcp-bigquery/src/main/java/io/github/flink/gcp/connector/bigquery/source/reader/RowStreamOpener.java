@@ -46,6 +46,18 @@ public interface RowStreamOpener extends Serializable, AutoCloseable {
     RowStream open(String streamName, long offset) throws IOException;
 
     /**
+     * Registers what to run each time the underlying client retries an attempt at a stream.
+     *
+     * <p>Called once per subtask, on the task thread, before any stream is opened — an
+     * implementation whose client captures the listener at creation may therefore ignore one
+     * registered later. Default no-op, because an implementation that does not retry has nothing to
+     * report and should not be made to say so.
+     *
+     * @param onRetry run once per retried attempt, on whichever thread the client retries from
+     */
+    default void setRetryListener(Runnable onRetry) {}
+
+    /**
      * Releases whatever client state {@link #open} opened.
      *
      * @throws IOException if the release fails

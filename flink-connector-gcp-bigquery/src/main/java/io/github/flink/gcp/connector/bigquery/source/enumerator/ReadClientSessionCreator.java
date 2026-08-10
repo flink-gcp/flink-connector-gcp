@@ -73,7 +73,7 @@ public final class ReadClientSessionCreator implements ReadSessionCreator {
                                 + " down.");
             }
             if (client == null) {
-                client = BigQueryReadClients.create(emulatorEndpoint);
+                client = BigQueryReadClients.createForSessions(emulatorEndpoint);
             }
             open = client;
         }

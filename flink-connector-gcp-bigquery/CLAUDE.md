@@ -185,7 +185,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `<relocations>`, its surefire override, `japicmp.skip` and its dependencies. A change to the
   shared block is verified by a zero-delta comparison of both uber-jars' entry names and CRCs.
 
-## Source (`docs/adr/0079`, `0083`)
+## Source (`docs/adr/0079`, `0083`, `0084`)
 
 - **The assignment protocol is the base module's** (`docs/adr/0083`):
   `BigQueryReadSplitEnumerator` extends `PullAssignmentSplitEnumerator` and supplies the read
@@ -222,6 +222,27 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The deserializer may declare a reader schema; rows are resolved into it. The shipped
   `GenericRecord` implementation answers with `GenericRecordAvroTypeInfo`, which is why `flink-avro`
   is a `provided` dependency — Kryo cannot serialize a `GenericData.Record` at all (measured).
+- **The client library's own `ReadRows` retry is the loop; the connector adds only a stop**
+  (`docs/adr/0084`). It resumes a broken call at `originalOffset + rowsProcessed`, so a
+  connector-level reopen would be the same thing less precisely — **do not add one**, and do not
+  widen `setRetryableCodes` either: the vendor excludes a bare `INTERNAL` and a bare
+  `RESOURCE_EXHAUSTED` with a stated reason, and there is no evidence here against it.
+  `retryMaxAttempts` sets `maxAttempts` and nothing else, and **`totalTimeout` is not an
+  alternative** — gax resets the attempt count on progress but carries the first attempt's start
+  time forward, so one bounds a stuck stream and the other would cut off a healthy long one.
+- **A progressing-but-retrying stream trips no bound**, which is exactly why `readRetries` exists;
+  it is a `ThreadSafeSimpleCounter` because the client's retry scheduler increments it. The listener
+  is registered through `RowStreamOpener.setRetryListener`, once per subtask **before any fetcher
+  starts** — the client captures it when it is built, so a later registration reports nothing.
+- **Session expiry is explained, never pre-empted** (`docs/adr/0084`): the split carries the
+  session's expiry so a failure past it says a restart cannot help, and **nothing refuses to read
+  on a local clock** — not the reader, not the enumerator's restore check, which stays a warning.
+  Nothing claims what status BigQuery answers an expired session with; that is unmeasured, and
+  keeping the message clear of it is what makes it testable without a six-hour wait.
+- **Multi-stream coverage reads a public dataset**, because that removes the storage cost ADR-0079
+  priced rather than the read cost. Measured 2026-08-10: BigQuery splits somewhere between 195 MB
+  (one stream) and 264 MB (four), and **a projection lowers the count** — it follows the bytes
+  selected, not the table's size — so the fixture reads every column, deliberately.
 
 ## Metrics (`docs/adr/0034`; conventions in the base module's CLAUDE.md)
 

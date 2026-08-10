@@ -156,8 +156,10 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void handsOutOneStreamPerRequest() throws Exception {
-        // The session's streams reach the readers one at a time, and each carries the session's
-        // Avro schema: a split that lost it would fail in the reader rather than here.
+        // The session's streams reach the readers one at a time, and each carries two things off
+        // the session that a reader is given no other way: the Avro schema, without which it
+        // cannot decode a row, and the expiry, without which a failure past it is a bare stream
+        // error. Both would fail in the reader rather than here.
         FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
                 new FakeSplitEnumeratorContext<>(2);
         try (BigQueryReadSplitEnumerator enumerator = started(context, 3)) {
@@ -174,6 +176,8 @@ class BigQueryReadSplitEnumeratorTest {
                                 assertThat(split.getOffset()).isZero();
                                 assertThat(split.getAvroSchemaJson())
                                         .isEqualTo(TestRows.SCHEMA_JSON);
+                                assertThat(split.getSessionExpireTime())
+                                        .isEqualTo(ScriptedReadSessionCreator.EXPIRE_TIME);
                             });
             assertThat(enumerator.snapshotState(1L).getPendingSplits()).hasSize(2);
         }
@@ -181,7 +185,10 @@ class BigQueryReadSplitEnumeratorTest {
 
     private static BigQueryReadStreamSplit split(int index, long offset) {
         return new BigQueryReadStreamSplit(
-                ScriptedReadSessionCreator.streamName(index), offset, TestRows.SCHEMA_JSON);
+                ScriptedReadSessionCreator.streamName(index),
+                offset,
+                TestRows.SCHEMA_JSON,
+                ScriptedReadSessionCreator.EXPIRE_TIME);
     }
 
     private static BigQueryReadSplitEnumerator enumerator(

@@ -20,17 +20,25 @@ import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
 
+import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -227,8 +235,121 @@ class BigQuerySplitReaderTest {
         assertThat(opener.cancelled()).isTrue();
     }
 
+    @Test
+    void namesTheStatusCodeAReadFailureCarries() {
+        BigQuerySplitReader reader =
+                new BigQuerySplitReader(
+                        throwingOpener(() -> new StatusRuntimeException(Status.UNAVAILABLE)),
+                        10,
+                        null,
+                        metrics.metrics());
+        reader.handleSplitsChanges(addition(split(7)));
+
+        assertThatThrownBy(reader::fetch)
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("status UNAVAILABLE");
+    }
+
+    @Test
+    void explainsAFailureAgainstASessionThatHasAlreadyExpired() {
+        BigQuerySplitReader reader =
+                new BigQuerySplitReader(
+                        throwingOpener(() -> new IllegalStateException("boom")),
+                        10,
+                        null,
+                        metrics.metrics());
+        reader.handleSplitsChanges(addition(split(7, Instant.now().minusSeconds(60))));
+
+        assertThatThrownBy(reader::fetch)
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("The read session expired at")
+                .hasMessageContaining("six hours");
+    }
+
+    @Test
+    void saysNothingAboutExpiryWhileTheSessionIsStillAlive() {
+        // The control arm of the case above: the sentence is there because the session is past its
+        // expiry, not merely because the split carries one.
+        BigQuerySplitReader reader =
+                new BigQuerySplitReader(
+                        throwingOpener(() -> new IllegalStateException("boom")),
+                        10,
+                        null,
+                        metrics.metrics());
+        reader.handleSplitsChanges(addition(split(7, Instant.now().plusSeconds(3600))));
+
+        assertThatThrownBy(reader::fetch)
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(STREAM)
+                .hasMessageNotContaining("expired");
+    }
+
+    @Test
+    void handsOverNothingFromAFetchThatFailedPartWayThrough() {
+        // The rows decoded before the failure were already counted into the reader's own offset,
+        // and they must not reach the element queue: the batch dies with the exception, and the
+        // reader that restarts opens at the offset the last checkpoint holds. Were a partial batch
+        // to escape here, those rows would be emitted once now and again after the restart.
+        AtomicInteger blocks = new AtomicInteger();
+        RowStreamOpener opener =
+                simpleOpener(
+                        () -> {
+                            if (blocks.getAndIncrement() == 0) {
+                                return TestRows.blocks(TestRows.rows(0, 3), 3).get(0);
+                            }
+                            throw new IllegalStateException("boom");
+                        });
+        BigQuerySplitReader reader = new BigQuerySplitReader(opener, 10, null, metrics.metrics());
+        reader.handleSplitsChanges(addition(split(0)));
+
+        // Throwing is what discards the batch — there is no partial batch to inspect, because a
+        // fetch either returns one or does not return. The row count is the control arm: it says
+        // the block did arrive and three rows were decoded out of it, so the failure landed
+        // mid-batch rather than before the reader had anything to lose.
+        assertThatThrownBy(reader::fetch).isInstanceOf(IOException.class);
+        assertThat(metrics.counter("rowsRead")).isEqualTo(3);
+    }
+
+    /** An opener whose stream throws what the supplier answers, instead of a block. */
+    private static RowStreamOpener throwingOpener(Supplier<RuntimeException> failure) {
+        return simpleOpener(
+                () -> {
+                    throw failure.get();
+                });
+    }
+
+    /** An opener over a single stream whose blocks the supplier answers. */
+    private static RowStreamOpener simpleOpener(Supplier<ReadRowsResponse> blocks) {
+        return new RowStreamOpener() {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public RowStream open(String streamName, long offset) {
+                return new RowStream() {
+                    @Override
+                    public ReadRowsResponse next() {
+                        return blocks.get();
+                    }
+
+                    @Override
+                    public void cancel() {}
+
+                    @Override
+                    public void close() {}
+                };
+            }
+
+            @Override
+            public void close() {}
+        };
+    }
+
     private static BigQueryReadStreamSplit split(long offset) {
-        return new BigQueryReadStreamSplit(STREAM, offset, TestRows.SCHEMA_JSON);
+        return split(offset, null);
+    }
+
+    private static BigQueryReadStreamSplit split(long offset, @Nullable Instant expireTime) {
+        return new BigQueryReadStreamSplit(STREAM, offset, TestRows.SCHEMA_JSON, expireTime);
     }
 
     private static List<GenericRecord> collectInto(RecordsWithSplitIds<GenericRecord> records) {

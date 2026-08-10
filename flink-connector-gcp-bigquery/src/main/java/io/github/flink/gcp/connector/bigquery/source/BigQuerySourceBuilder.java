@@ -61,6 +61,21 @@ public class BigQuerySourceBuilder<T> {
      */
     public static final int DEFAULT_MAX_RECORDS_PER_FETCH = 10_000;
 
+    /**
+     * Default for {@link #retryMaxAttempts(int)}: consecutive {@code ReadRows} attempts without
+     * progress.
+     *
+     * <p>Read off the sequence it bounds rather than chosen for its own sake, and how long it is
+     * depends on the failure. An {@code UNAVAILABLE} backs off exponentially — nominally 100 ms
+     * growing by 1.3 — with gax picking each wait uniformly between zero and that value, which puts
+     * twenty-five consecutive failures at about three minutes at worst and half that on average:
+     * long enough to ride out the restarts a long read meets, short enough that a stream which is
+     * never coming back is reported instead of retried for the SDK's own twenty-four hours. The
+     * {@code INTERNAL} transport faults the client also resumes are retried a fixed millisecond
+     * apart with no growth, so for those the bound is reached almost at once.
+     */
+    public static final int DEFAULT_RETRY_MAX_ATTEMPTS = 25;
+
     private TableDestination table;
     private String parentProject;
     private BigQueryRowDeserializer<T> deserializer;
@@ -70,6 +85,7 @@ public class BigQuerySourceBuilder<T> {
     private int maxStreamCount;
     private int preferredMinStreamCount;
     private int maxRecordsPerFetch = DEFAULT_MAX_RECORDS_PER_FETCH;
+    private int retryMaxAttempts = DEFAULT_RETRY_MAX_ATTEMPTS;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
     @Nullable private ReadSessionCreator sessionCreator;
     @Nullable private RowStreamOpener rowStreamOpener;
@@ -243,6 +259,31 @@ public class BigQuerySourceBuilder<T> {
     }
 
     /**
+     * Sets how many consecutive {@code ReadRows} attempts without progress the client makes before
+     * the read fails.
+     *
+     * <p>Optional; defaults to {@link #DEFAULT_RETRY_MAX_ATTEMPTS}. The retry itself is the client
+     * library's, not this connector's: it resumes a broken stream at the row it had reached, and
+     * decides for itself which failures deserve a resume. This knob only stops it. Without one the
+     * client retries for twenty-four hours, so a stream that will never come back holds a reader
+     * for a day while reporting nothing.
+     *
+     * <p>An attempt that produced rows resets the count, so this bounds a stream that is stuck
+     * rather than one that is slow. Raise it for a read that must survive a long outage; the job
+     * fails and restarts from its last checkpoint either way, resuming each stream at the offset
+     * that checkpoint holds rather than reading it from the top.
+     *
+     * @param retryMaxAttempts the maximum number of consecutive attempts without progress
+     * @return this builder
+     */
+    public BigQuerySourceBuilder<T> retryMaxAttempts(int retryMaxAttempts) {
+        Preconditions.checkArgument(
+                retryMaxAttempts > 0, "retryMaxAttempts must be positive: %s", retryMaxAttempts);
+        this.retryMaxAttempts = retryMaxAttempts;
+        return this;
+    }
+
+    /**
      * Sends the source's traffic to a BigQuery emulator at {@code host:port}, over plaintext and
      * without credentials.
      *
@@ -303,7 +344,7 @@ public class BigQuerySourceBuilder<T> {
                                 ? new ReadClientSessionCreator(emulatorEndpoint)
                                 : sessionCreator,
                         rowStreamOpener == null
-                                ? new ReadClientRowStreamOpener(emulatorEndpoint)
+                                ? new ReadClientRowStreamOpener(emulatorEndpoint, retryMaxAttempts)
                                 : rowStreamOpener));
     }
 }

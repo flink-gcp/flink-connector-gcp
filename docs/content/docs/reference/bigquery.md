@@ -234,4 +234,5 @@ does with the two stream-count knobs, is under
 | `maxStreamCount` | `0`, BigQuery decides | An upper bound on the read streams the session gets. A cap and never a floor: a small table is read by one stream however many are asked for |
 | `preferredMinStreamCount` | `0`, no request | How many read streams to ask BigQuery for. Best effort; must not exceed `maxStreamCount` when both are set |
 | `maxRecordsPerFetch` | 10000 | The most rows one fetch hands to the task thread, so a checkpoint can be taken part-way through a response block |
+| `retryMaxAttempts` | 25 | How many consecutive attempts at a read stream the client library may make **without progress** before the read fails. An attempt that delivered rows resets the count; without a bound the client retries for twenty-four hours |
 | `emulatorEndpoint` | — | Sends the source's traffic to a BigQuery emulator at `host:port`, over plaintext and without credentials. One endpoint, not the sink's two: the source makes no REST call |
