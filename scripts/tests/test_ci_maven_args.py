@@ -147,6 +147,13 @@ def test_module_readme_is_ignored_before_module_matching(fake_repo, ci_maven_arg
     "path",
     [
         "docs/content/x.md",
+        # `docs/` is one prefix and every `docs/` case here used to sit under
+        # `docs/content/`, so narrowing it to `docs/content/` — plausible,
+        # since `docs/public/` is build output — would have left every ADR-only
+        # change falling through to the full reactor with no test saying
+        # otherwise (#479). The archive is edited often: it is where a decision
+        # is recorded, and a refinement edits one in place.
+        "docs/adr/0001-a-decision.md",
         # Nothing Maven builds reads these, but the root module's rat run
         # scans them, so they buy `-pl .` rather than nothing (#253).
         "scripts/ci-maven-args.py",
