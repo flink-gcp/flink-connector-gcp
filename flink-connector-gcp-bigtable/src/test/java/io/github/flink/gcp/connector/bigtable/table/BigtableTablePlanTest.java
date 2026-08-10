@@ -16,20 +16,34 @@
 
 package io.github.flink.gcp.connector.bigtable.table;
 
+import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.types.Row;
+import org.apache.flink.types.RowKind;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * When the connector's DDL-shape rejections actually reach a user.
+ * When the connector's DDL-shape rejections actually reach a user, and what the planner puts
+ * between a changelog and this sink.
  *
- * <p>Deliberately not an ITCase: every case here throws while the job graph is being built, before
- * a client is opened, so the emulator endpoint below is a string that only has to parse.
+ * <p>Deliberately not an ITCase: every case here throws, or is explained, while the job graph is
+ * being built, before a client is opened, so the emulator endpoint below is a string that only has
+ * to parse.
  *
  * <p>The question it answers is one {@code FactoryMocks} cannot, because that harness calls the
  * factory directly: a {@code CREATE TABLE} does not call the factory at all — it registers a
@@ -93,6 +107,73 @@ class BigtableTablePlanTest {
                                                 + ") "
                                                 + WITH_CLAUSE))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void aTableWithNoPrimaryKeyCompletesTheRowBeforeADeleteReachesTheSink() {
+        // #470. Without a declared key the planner keys its upserts on whatever the query is
+        // unique by — here 'id', a column the Bigtable table does not even have — so a key-only
+        // delete would otherwise reach the sink with the row-key column null. Asserting the plan
+        // rather than the changelog mode is what makes this portable: ChangelogMode.keyOnlyDeletes
+        // does not exist on the 1.20 LTS build, and naming it here would break that build and not
+        // this one.
+        assertThat(planOfInsertFromAnUpsertSourceKeyedOnId("no_pk")).contains("ChangelogNormalize");
+    }
+
+    @Test
+    void anInsertOnlyQueryGetsNoChangelogNormalize() {
+        // The cost bound on the case above: completing the row is what a delete needs, and a query
+        // carrying none pays nothing for it.
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE insert_only (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<v STRING>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        assertThat(
+                        tEnv.explainSql(
+                                "INSERT INTO insert_only VALUES ('r1', CAST(ROW('x') AS ROW<v"
+                                        + " STRING>))"))
+                .doesNotContain("ChangelogNormalize");
+    }
+
+    private static String planOfInsertFromAnUpsertSourceKeyedOnId(String table) {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        tEnv.executeSql(
+                "CREATE TABLE "
+                        + table
+                        + " (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<v STRING>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        DataStream<Row> changelog =
+                env.fromData(
+                        Collections.singletonList(
+                                Row.ofKind(RowKind.DELETE, "id1", "rk1", "hello")),
+                        Types.ROW_NAMED(
+                                new String[] {"id", "rowkey", "v"},
+                                Types.STRING,
+                                Types.STRING,
+                                Types.STRING));
+        tEnv.createTemporaryView(
+                "src",
+                tEnv.fromChangelogStream(
+                        changelog,
+                        Schema.newBuilder()
+                                .column("id", DataTypes.STRING().notNull())
+                                .column("rowkey", DataTypes.STRING())
+                                .column("v", DataTypes.STRING())
+                                .primaryKey("id")
+                                .build(),
+                        ChangelogMode.upsert()));
+
+        return tEnv.explainSql(
+                "INSERT INTO " + table + " SELECT rowkey, CAST(ROW(v) AS ROW<v STRING>) FROM src");
     }
 
     @Test

@@ -117,7 +117,8 @@ public class BigtableDynamicTableFactory implements DynamicTableSinkFactory {
                 config.getOptional(BigtableConnectorOptions.SINK_CREATE_DISPOSITION).orElse(null),
                 TableCreateOptionsMapper.map(config, schema),
                 config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
-                config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null));
+                config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null),
+                context.getPrimaryKeyIndexes().length > 0);
     }
 
     /**
