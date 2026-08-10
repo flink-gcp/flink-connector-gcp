@@ -16,9 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.sink.writer;
 
-import com.google.cloud.NoCredentials;
 import com.google.cloud.spanner.Options;
-import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.sink.SpannerRpcPriority;
@@ -37,17 +35,6 @@ class DefaultSpannerDatabaseAccessFactoryTest {
 
     private static final SpannerDatabase DATABASE =
             SpannerDatabase.of("my-project", "my-instance", "my-db");
-
-    @Test
-    void anEmulatorEndpointAlsoTurnsOffCredentialsAndTransportSecurity() {
-        // One call does all three, which is why nothing else here configures the emulator — and
-        // why every test touching the production path can point at a closed port safely.
-        SpannerOptions settings = factory("localhost:9010").settings();
-
-        assertThat(settings.getProjectId()).isEqualTo("my-project");
-        assertThat(settings.getHost()).isEqualTo("http://localhost:9010");
-        assertThat(settings.getCredentials()).isInstanceOf(NoCredentials.class);
-    }
 
     @Test
     void unsetKnobsAddNoTransactionOptionAtAll() {

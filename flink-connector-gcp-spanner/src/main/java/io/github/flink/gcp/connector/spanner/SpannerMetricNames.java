@@ -26,9 +26,10 @@ import org.apache.flink.annotation.Internal;
  * same thing in another connector of this project is spelled the same way there.
  *
  * <p>Deliberately absent: the names Flink itself provides through {@code SinkWriterMetricGroup}
- * ({@code numRecordsSend}, {@code numBytesSend}, {@code numRecordsSendErrors}), and the templated
- * leaves of the shared {@code base.metrics} subgroups ({@code errorClass.CODE.errors}) — neither is
- * this connector's to name.
+ * ({@code numRecordsSend}, {@code numBytesSend}, {@code numRecordsSendErrors}) and through the
+ * source's own groups ({@code numRecordsIn}, {@code unassignedSplits}), and the templated leaves of
+ * the shared {@code base.metrics} subgroups ({@code errorClass.CODE.errors}) — none of them is this
+ * connector's to name.
  */
 @Internal
 public final class SpannerMetricNames {
@@ -59,6 +60,31 @@ public final class SpannerMetricNames {
 
     /** Batch write requests the writer sent, first attempts and re-sends alike. */
     public static final String BATCHES_SENT = "batchesSent";
+
+    // Registered by the batch source's enumerator (SpannerPartitionSplitEnumerator).
+
+    /** Partition splits handed to a reader. */
+    public static final String SPLITS_ASSIGNED = "splitsAssigned";
+
+    /** Partition splits a failed reader gave back, to be handed out again. */
+    public static final String SPLITS_RETURNED = "splitsReturned";
+
+    /**
+     * Reads planned into partitions. One per job at most: a restored enumerator plans nothing, so
+     * this reads {@code 1} on a fresh run and {@code 0} on a restored one.
+     */
+    public static final String READS_PLANNED = "readsPlanned";
+
+    // Registered by the batch source's readers (SpannerSourceReaderMetrics).
+
+    /** Rows pulled off a partition. */
+    public static final String ROWS_READ = "rowsRead";
+
+    /**
+     * Partitions opened again from their start after a wake-up cancelled them part-way, delivering
+     * the rows they had already handed on a second time.
+     */
+    public static final String PARTITIONS_REREAD = "partitionsReread";
 
     private SpannerMetricNames() {}
 }

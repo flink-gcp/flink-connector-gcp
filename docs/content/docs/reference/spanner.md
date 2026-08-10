@@ -22,7 +22,7 @@ limitations under the License.
 
 # Spanner options
 
-Every option the Spanner sink takes. What each one is *for* is on the
+Every option the Spanner sink and source take. What each one is *for* is on the
 [Spanner connector]({{< relref "docs/connectors/datastream/spanner" >}}) page; the three forms of
 the Default column are explained [here]({{< relref "docs/reference" >}}#what-a-default-means).
 
@@ -80,3 +80,22 @@ whole batch.
 | `retryInitialBackoff` | `500ms` | The first backoff, at least 1 ms |
 | `retryMaxBackoff` | `10s` | The backoff cap, at least `retryInitialBackoff` |
 | `retryMaxAttempts` | `10` | Attempts before the job fails. Exhausting the budget fails the job — a sink cannot drop what the service never refused. Note the wall-clock worst case: the client library gives a batch write a one-hour total timeout and this sink sets no deadline of its own, so a wedged request blocks the task thread — and therefore checkpointing — for up to an hour per attempt |
+
+## `SpannerSource.builder()`
+
+The bounded batch source. What each option is *for*, and what Spanner decides rather than the job,
+is under [Source]({{< relref "docs/connectors/datastream/spanner" >}}#source).
+
+| Option | Default | What it does |
+|---|---|---|
+| `database` | **required** | The database to read |
+| `readOperation` | **required** | What to read: `SpannerReadOperation.query(...)`, `.read(...)` or `.readUsingIndex(...)`. A query has to be root-partitionable |
+| `deserializer` | **required** | Turns a `Struct` into a record, or into `null` to skip the row |
+| `timestampBound` | `TimestampBound.strong()` | The snapshot to read at. Only `strong()`, `ofReadTimestamp` and `ofExactStaleness` are accepted; the other two modes are single-use-only and are rejected here |
+| `maxPartitions` | *unset ⇒ the service decides* | How many partitions to ask for. A hint the service may ignore, and the emulator ignores outright |
+| `partitionSizeBytes` | *unset ⇒ the service decides* | How much data one partition should cover. A hint, like the one above |
+| `dataBoostEnabled` | `false` | Runs the read on Data Boost's independent compute. Needs `spanner.databases.useDataBoost`, is billed separately, and has a concurrency quota of its own |
+| `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator. Setting it also stops the client looking for credentials |
+
+There is no per-fetch record cap here, and no options object: the cap is a correctness floor rather
+than a knob, and promoting it would need a measurement.

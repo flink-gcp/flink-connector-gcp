@@ -25,10 +25,10 @@ import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.Options.RpcPriority;
 import com.google.cloud.spanner.Options.TransactionOption;
 import com.google.cloud.spanner.Spanner;
-import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.sink.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
@@ -67,13 +67,7 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
 
     @Override
     public SpannerDatabaseAccess create() throws IOException {
-        Spanner spanner;
-        try {
-            spanner = settings().getService();
-        } catch (RuntimeException e) {
-            throw new IOException("Failed to create the Spanner client for " + database + ".", e);
-        }
-        return create(spanner);
+        return create(SpannerClients.open(database, emulatorEndpoint));
     }
 
     @VisibleForTesting
@@ -99,22 +93,6 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
             Closers.closeAllSuppressing(e, spanner::close);
             throw e;
         }
-    }
-
-    /**
-     * Builds the client settings. Separate from {@link #create()} so the options-to-settings
-     * mapping is testable without opening a channel.
-     */
-    @VisibleForTesting
-    SpannerOptions settings() {
-        SpannerOptions.Builder settings =
-                SpannerOptions.newBuilder().setProjectId(database.getProject());
-        if (emulatorEndpoint != null) {
-            // This one call also switches the channel to plaintext and the credentials to none,
-            // which is why the emulator needs no further configuration here.
-            settings.setEmulatorHost(emulatorEndpoint.getTarget());
-        }
-        return settings.build();
     }
 
     /**

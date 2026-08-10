@@ -1,7 +1,8 @@
 # flink-connector-gcp-spanner
 
-Cloud Spanner sink for Apache Flink — one `Mutation` per record, applied through
-`batchWriteAtLeastOnce` into the tables of one database. Both dialects, GoogleSQL and PostgreSQL.
+Cloud Spanner connector for Apache Flink. The sink applies one `Mutation` per record through
+`batchWriteAtLeastOnce` into the tables of one database; the bounded source reads a database at one
+snapshot, on partitions the service planned. Both dialects, GoogleSQL and PostgreSQL.
 
 | Feature | Status |
 |---|---|
@@ -9,7 +10,7 @@ Cloud Spanner sink for Apache Flink — one `Mutation` per record, applied throu
 | Per-mutation failure policy (the shared `FailureHandler` SPI) | Implemented ([#220](https://github.com/laughingman7743/flink-connector-gcp/issues/220)) |
 | Index-aware mutation-cell batching, read from `INFORMATION_SCHEMA` | Implemented ([#220](https://github.com/laughingman7743/flink-connector-gcp/issues/220)) |
 | Emulator integration tests, both dialects | Implemented ([#220](https://github.com/laughingman7743/flink-connector-gcp/issues/220)) |
-| DataStream bounded batch source (`PartitionQuery`, Data Boost) | Planned ([#221](https://github.com/laughingman7743/flink-connector-gcp/issues/221)) |
+| DataStream bounded batch source (`PartitionQuery`, Data Boost) | Implemented ([#221](https://github.com/laughingman7743/flink-connector-gcp/issues/221)) |
 | Change streams source | Planned ([#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222)) |
 | Table API / SQL support | Planned ([#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)) |
 | Gated real-GCP integration tests | Planned ([#224](https://github.com/laughingman7743/flink-connector-gcp/issues/224)) |
@@ -33,16 +34,17 @@ Sink<OrderEvent> sink =
 The connector documentation — why the destination is a database rather than a table, the
 serialization SPI, what a replay does and which mutation operations make it harmless, why the
 retry loop belongs to the sink, how a batch is weighed and which limit each batch knob defends,
-which refusals reach the failure handler and which do not, and where the emulator differs from the
-service — is in
+which refusals reach the failure handler and which do not, how the source splits a read and what a
+recovery re-reads, and where the emulator differs from the service — is in
 [docs/content/docs/connectors/datastream/spanner.md](../docs/content/docs/connectors/datastream/spanner.md)
 (rendered on the documentation site once it is published).
 
 A complete runnable job is in
 [Quickstart](../docs/content/docs/quickstart/spanner.md); writing to several tables from one
-stream, deletes, dropping refused mutations and emulator-backed local runs are worked through in
-[Examples](../docs/content/docs/examples/spanner.md). Every option the sink takes, with its
-default, is in the [configuration reference](../docs/content/docs/reference/spanner.md).
+stream, deletes, dropping refused mutations, reading a key range and emulator-backed local runs are
+worked through in
+[Examples](../docs/content/docs/examples/spanner.md). Every option the sink and the source take,
+with its default, is in the [configuration reference](../docs/content/docs/reference/spanner.md).
 
 ## Provenance and attribution
 
@@ -57,7 +59,8 @@ reports — which is also why Beam's limits, values it chose for a `Commit`, are
 rather than figures the service is documented to enforce on this RPC. The
 [Spanner connector for Apache Spark](https://github.com/GoogleCloudDataproc/spark-spanner-connector)
 and [debezium-connector-spanner](https://github.com/debezium/debezium-connector-spanner) (both
-Apache-2.0) were read as further design references for the planned sources. The design otherwise
+Apache-2.0) were read as further design references for the batch source and the planned
+change-stream source. The design otherwise
 follows the Cloud Tasks sink in this repository, whose writer likewise owns its retry loop.
 
 No source code has been copied into this module.

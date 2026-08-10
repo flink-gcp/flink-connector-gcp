@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.spanner.sink.writer;
+package io.github.flink.gcp.connector.spanner;
 
 import com.google.cloud.spanner.DatabaseAdminClient;
 import com.google.cloud.spanner.DatabaseClient;
@@ -28,7 +28,6 @@ import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -44,22 +43,22 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Base for the Spanner emulator integration tests: one emulator container and one instance per test
- * class, with a fresh database per test.
+ * Base for the Spanner emulator integration tests, in both directions: one emulator container and
+ * one instance per test class, with a fresh database per test.
  *
  * <p>The image is <b>not</b> the {@code google-cloud-cli} bundle the Bigtable and Pub/Sub tests
  * use. Its Spanner emulator predates the {@code BatchWrite} RPC, which the emulator only implements
- * from v1.5.31 — this sink's entire write path would answer {@code UNIMPLEMENTED} against it.
+ * from v1.5.31 — the sink's entire write path would answer {@code UNIMPLEMENTED} against it.
  *
  * <p>An emulator is a convenience, never evidence about the service: where the two disagree, the
  * real service decides. The deviations these tests found are recorded on the connector's docs page.
  */
 @Testcontainers
 @Timeout(300)
-abstract class AbstractSpannerEmulatorITCase {
+public abstract class AbstractSpannerEmulatorITCase {
 
-    static final String PROJECT = "it-project";
-    static final String INSTANCE = "it-instance";
+    protected static final String PROJECT = "it-project";
+    protected static final String INSTANCE = "it-instance";
 
     /**
      * Pinned, and above the floor that matters: {@code BatchWrite} landed in v1.5.31 (emulator
@@ -98,7 +97,7 @@ abstract class AbstractSpannerEmulatorITCase {
         }
     }
 
-    static String emulatorEndpoint() {
+    protected static String emulatorEndpoint() {
         return EMULATOR.getEmulatorGrpcEndpoint();
     }
 
@@ -106,7 +105,8 @@ abstract class AbstractSpannerEmulatorITCase {
      * Creates a database of the given dialect with the given DDL and a name of its own, so tests
      * within a class never see each other's schema.
      */
-    static SpannerDatabase createDatabase(Dialect dialect, String... ddl) throws Exception {
+    protected static SpannerDatabase createDatabase(Dialect dialect, String... ddl)
+            throws Exception {
         // Lower case, and underscores rather than the hyphens TestNames.unique would give: a
         // database id must match [a-z][a-z0-9_-]{1,29}.
         String databaseId =
@@ -128,7 +128,7 @@ abstract class AbstractSpannerEmulatorITCase {
     }
 
     /** Runs a query against the database and materializes its rows. */
-    static List<Struct> query(SpannerDatabase database, String sql) {
+    protected static List<Struct> query(SpannerDatabase database, String sql) {
         DatabaseClient client = client(database);
         List<Struct> rows = new ArrayList<>();
         try (ResultSet resultSet = client.singleUse().executeQuery(Statement.of(sql))) {
@@ -142,7 +142,7 @@ abstract class AbstractSpannerEmulatorITCase {
     /**
      * Applies mutations through the harness's own client, for arranging a test's starting state.
      */
-    static DatabaseClient client(SpannerDatabase database) {
+    protected static DatabaseClient client(SpannerDatabase database) {
         return spanner.getDatabaseClient(
                 DatabaseId.of(
                         database.getProject(), database.getInstance(), database.getDatabase()));
