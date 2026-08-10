@@ -290,9 +290,10 @@ as a null; pick a literal the data cannot contain.
 
 ## Delivery guarantees
 
-The sink is **at-least-once** and its changelog mode is **upsert**. A Bigtable write is an upsert on
-the row key by construction — `setCell` overwrites — and there is no append-only path to offer
-instead, so an updating query is accepted rather than rejected. On Flink 2.x the mode says a delete
+The sink is **at-least-once** and its changelog mode for an updating query is **upsert**. A
+Bigtable write is an upsert on the row key by construction — `setCell` overwrites — and there is no
+retract path to offer instead, so an updating query is accepted rather than rejected; an
+insert-only query is consumed as plain inserts. On Flink 2.x the upsert mode says a delete
 may carry the upsert key alone only when the DDL declares the primary key, which is what makes that
 key the row key; [The schema](#the-schema) above has the consequence for a job. Flink 1.20 has no
 such distinction and always completes the row first.
@@ -300,6 +301,43 @@ such distinction and always completes the row first.
 A `-D` deletes the **whole row**, not the declared qualifiers one by one. The row key is the primary
 key, so "this key is gone" is what a delete means here; removing only the declared cells would leave
 a row behind made of whatever else was in it.
+
+### Flink 2.3 demands ON CONFLICT of some updating queries
+
+Flink 2.3
+([FLIP-558](https://cwiki.apache.org/confluence/display/FLINK/FLIP-558%3A+Improvements+to+SinkUpsertMaterializer+and+changelog+disorder))
+refuses to plan an updating query into a sink table declaring a `PRIMARY KEY` when the query's
+upsert key differs from that key — or when it cannot infer one at all, as for a source declaring
+no key — unless the `INSERT` carries one of the `ON CONFLICT DO DEDUPLICATE` / `DO ERROR` /
+`DO NOTHING` clauses Flink 2.3 introduces. The refusal is the planner's, not this connector's:
+rows with different upsert keys mapping to one primary key reach the sink in no defined order,
+and Flink 2.3 asks the query to say what that should mean instead of materializing silently. An
+updating query whose upsert key *is* the primary key — a keyed changelog or upsert source whose
+key column the query maps onto the row key — plans with no clause, exactly as on 2.2.
+
+An **insert-only query never meets the demand**: the sink tells the planner it consumes an append
+query as plain inserts ([#488]({{< param BookRepo >}}/issues/488)), which is what keeps every
+insert-only example on this page planning on 2.3 exactly as it does on 2.2 and 1.20. Flink's own
+HBase connector answers the same way, echoing back the kinds its input carries.
+
+The answer costs one thing, and only for an insert-only statement: such a statement cannot carry
+an `ON CONFLICT` clause into this sink, the planner rejecting the clause for a sink that accepts
+only inserts. An updating query is unaffected and may carry any of the three. Measured on 2.3.0,
+what an insert-only statement loses per behaviour: `DO DEDUPLICATE` loses nothing, the planner
+already treating it as a no-op on append input — the plan is the one a plain `INSERT` gets, and
+overwriting is what a Bigtable write does anyway. `DO NOTHING` (keep the first row per key) and
+`DO ERROR` (fail on a conflicting key) are genuinely unavailable; both also require every source
+table to declare a watermark, wherever they are used. An append query needing first-wins
+semantics deduplicates in the query instead — and note that `DO NOTHING` would not mean "leave an
+existing Bigtable row alone" in any case, since it compares against the job's own state rather
+than the table. Whether to offer a way back to it is
+[#496]({{< param BookRepo >}}/issues/496).
+
+An updating query that must also run on 2.2 or 1.20 cannot write the clause, which those parsers
+reject; the cross-version spelling is the configuration behind the check:
+`table.exec.sink.require-on-conflict` = `false`, which restores the older versions' silent
+materialization (a `SinkUpsertMaterializer` keyed on the primary key). The older versions do not
+have the option and ignore it.
 
 ### Two rows for one key in one batch have no defined winner
 

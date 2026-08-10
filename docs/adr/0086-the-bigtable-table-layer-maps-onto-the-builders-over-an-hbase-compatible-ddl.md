@@ -52,10 +52,56 @@ and `table.source`, and neither direction package may import the other. This is 
 module-root rule applied one level down; a `table.codec` layer would fail [#119](https://github.com/laughingman7743/flink-connector-gcp/issues/119)'s test, since the
 only sibling schema model in prospect was declined on [#34](https://github.com/laughingman7743/flink-connector-gcp/issues/34).
 
-**The changelog is an upsert, and a `-D` deletes the whole row.** A Bigtable write is an upsert on
-the row key by construction, so there is no append-only mode to offer instead. The row key is the
-primary key, so a delete means the key is gone; removing only the declared cells would leave a row
-behind made of whatever else was in it.
+**The changelog is an upsert for an updating query, and a `-D` deletes the whole row.** A Bigtable
+write is an upsert on the row key by construction, so there is no retract mode to offer instead.
+The row key is the primary key, so a delete means the key is gone; removing only the declared cells
+would leave a row behind made of whatever else was in it.
+
+**An insert-only query is answered with insert-only, and the answer is load-bearing on Flink 2.3**
+([#488](https://github.com/laughingman7743/flink-connector-gcp/issues/488), refining the
+unconditional upsert answer this ADR first recorded). FLIP-558 changed the 2.3 planner's
+upsert-materialize analysis — measured against the 2.2.1 and 2.3.0 `flink-table-planner` sources:
+2.2 returned early when the *input* was insert-only, 2.3 dropped that early return and, with the
+new `table.exec.sink.require-on-conflict` defaulting to `true`, refuses to plan a query whose
+upsert key differs from the sink's `PRIMARY KEY` — a set that includes every query the planner
+cannot infer an upsert key for, `INSERT INTO .. VALUES` first among them — unless the statement
+carries one of the new `ON CONFLICT DO ..` clauses. The analysis still returns early when the
+*sink* accepts only inserts, which is the seam this layer uses: an append answer keeps every
+insert-only statement planning on 2.3 exactly as it did on 2.2, while an updating query keeps the
+upsert answer and, where its upsert key genuinely differs, meets Flink's demand as designed — the
+docs page carries what to write then. The demand is narrower than the failure made it look:
+upsert-key inference is unique-key metadata, so a retract source *with a declared key* satisfies
+it — measured on 2.3.0, `aChangelogDeleteRemovesTheWholeRow`'s retract statement plans with no
+clause, no escape option and no materializer, because its view's `primaryKey("k")` maps onto the
+sink's `PRIMARY KEY` — which is why the ITCase suite needs no escape anywhere. This is also why
+the BigQuery and Pub/Sub table layers never met the change: both answer `insertOnly()`
+throughout, and neither DDL takes a `PRIMARY KEY`. **The append answer is Flink's own HBase connector's**, which this layer's DDL model already
+follows: `HBaseDynamicTableSink.getChangelogMode` echoes the requested kinds back minus
+`UPDATE_BEFORE`, so an insert-only query gets an insert-only answer there too. The shape here is
+kept rather than replaced by that echo, because the echo cannot carry #470's key-only-deletes
+flag; the two agree on every input either can express.
+
+The append answer has one measured cost: 2.3 validates an `ON CONFLICT` clause against the sink's
+mode before the strategy analysis, so an insert-only statement carrying one is rejected with "ON
+CONFLICT clause is only allowed for upsert sinks". What that costs, measured behaviour by
+behaviour on 2.3.0 against the unconditional-upsert answer: `DO DEDUPLICATE` costs **nothing** —
+the planner returns early for it on append input (`inputIsAppend && isDeduplicateConflictStrategy`),
+so the plan carried no materializer and was the plain-`INSERT` plan already; `DO NOTHING` and
+`DO ERROR` did materialize (`upsertMaterialize=[true], conflictStrategy=[NOTHING]`/`[ERROR]`) and
+are genuinely lost, both being further gated on every source table declaring a watermark.
+Accepted: the alternative broke every plain insert into a primary-keyed table, the docs page's
+first example among them, and an append query wanting first-wins can express it in the query.
+An *updating* query keeps the clause — measured, `DO DEDUPLICATE` plans — so the gap is confined
+to insert-only statements, and it is
+[#496](https://github.com/laughingman7743/flink-connector-gcp/issues/496), which prices the one
+local mechanism (a DDL option forcing the upsert answer, inert on two of the three supported
+versions) against what `DO NOTHING` measurably is: a job-local, TTL-able materializer state, not
+a probe of the table, so it does not give the insert-if-absent semantics its name suggests. Nothing else moves — the pre-sink keyed shuffle reads the declared primary key and the
+parallelism, not the sink's answer (measured in 2.3.0's `CommonExecSink.applyKeyBy`), and
+compiled-plan restore reads the serialized changelog mode rather than asking the sink again.
+`BigtableDynamicSinkTest.anInsertOnlyQueryIsConsumedAsInsertsAlone` pins the answer on the floor
+version, where the two answers otherwise plan identically and the ITCase cannot show the
+difference.
 
 **Whether a delete may carry the upsert key alone is answered by the DDL's primary key**
 ([#470](https://github.com/laughingman7743/flink-connector-gcp/issues/470)). Declaring one makes
@@ -65,8 +111,9 @@ its upserts on whatever the query is unique by, which need not be the row-key co
 asks for whole rows instead. Measured on Flink 2.2.1 against an upsert source keyed on a non-row-key
 column: with a key declared the plan already carries `ChangelogNormalize` and `upsertMaterialize`;
 with none, answering `false` is what puts `ChangelogNormalize` there and fills the row key in; and
-an insert-only query into the same table gets neither, so the honest answer costs nothing where
-there is no delete to complete. Answering `true` unconditionally, as this layer did until #470,
+an insert-only query into the same table got neither operator — the observation
+[#488](https://github.com/laughingman7743/flink-connector-gcp/issues/488) later hardened into an
+explicit insert-only answer. Answering `true` unconditionally, as this layer did until #470,
 sends that delete to `RowDataSerializationSchema` with a null row key — measured end to end against
 the emulator, the job fails with "The row-key column 'rowkey' is null", loud rather than silent but
 dying on every delete.
