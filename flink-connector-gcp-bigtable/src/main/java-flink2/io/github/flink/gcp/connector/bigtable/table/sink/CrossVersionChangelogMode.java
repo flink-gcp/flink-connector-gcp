@@ -20,7 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.connector.ChangelogMode;
 
 /**
- * The second cross-version seam in this module, alongside {@code
+ * A cross-version seam, alongside {@code
  * io.github.flink.gcp.connector.bigtable.sink.CrossVersionSink}: {@code
  * ChangelogMode.upsert(boolean)} and {@code ChangelogMode.keyOnlyDeletes()} exist on Flink 2.x and
  * not on the 1.20 LTS, so naming either in shared source — or in a test — breaks that build and not
@@ -30,7 +30,7 @@ import org.apache.flink.table.connector.ChangelogMode;
  * flink.compat=flink2}; see the {@code java-flink1} twin for what 1.20 does instead.
  */
 @Internal
-public final class CrossVersionChangelogMode {
+final class CrossVersionChangelogMode {
 
     private CrossVersionChangelogMode() {}
 
@@ -41,7 +41,7 @@ public final class CrossVersionChangelogMode {
      * @param keyOnlyDeletes whether the planner may send a delete carrying only the upsert key
      * @return the mode to hand back from {@code getChangelogMode}
      */
-    public static ChangelogMode upsert(boolean keyOnlyDeletes) {
+    static ChangelogMode upsert(boolean keyOnlyDeletes) {
         return ChangelogMode.upsert(keyOnlyDeletes);
     }
 }

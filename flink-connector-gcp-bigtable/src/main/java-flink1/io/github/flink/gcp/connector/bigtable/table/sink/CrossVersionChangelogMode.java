@@ -31,7 +31,7 @@ import org.apache.flink.table.connector.ChangelogMode;
  * and 1.20 was never exposed to what this seam exists to fix.
  */
 @Internal
-public final class CrossVersionChangelogMode {
+final class CrossVersionChangelogMode {
 
     private CrossVersionChangelogMode() {}
 
@@ -41,7 +41,7 @@ public final class CrossVersionChangelogMode {
      * @param keyOnlyDeletes ignored on this build, which cannot express it
      * @return the mode to hand back from {@code getChangelogMode}
      */
-    public static ChangelogMode upsert(boolean keyOnlyDeletes) {
+    static ChangelogMode upsert(boolean keyOnlyDeletes) {
         return ChangelogMode.upsert();
     }
 }

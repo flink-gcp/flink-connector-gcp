@@ -110,42 +110,46 @@ class BigtableTablePlanTest {
     }
 
     @Test
-    void aTableWithNoPrimaryKeyCompletesTheRowBeforeADeleteReachesTheSink() {
+    void theRowIsCompletedForADeleteAndForNothingElse() {
         // #470. Without a declared key the planner keys its upserts on whatever the query is
         // unique by — here 'id', a column the Bigtable table does not even have — so a key-only
         // delete would otherwise reach the sink with the row-key column null. Asserting the plan
         // rather than the changelog mode is what makes this portable: ChangelogMode.keyOnlyDeletes
         // does not exist on the 1.20 LTS build, and naming it here would break that build and not
         // this one.
-        assertThat(planOfInsertFromAnUpsertSourceKeyedOnId("no_pk")).contains("ChangelogNormalize");
-    }
-
-    @Test
-    void anInsertOnlyQueryGetsNoChangelogNormalize() {
-        // The cost bound on the case above: completing the row is what a delete needs, and a query
-        // carrying none pays nothing for it.
-        TableEnvironment tEnv = tableEnvironment();
-        tEnv.executeSql(
-                "CREATE TABLE insert_only (\n"
-                        + "  rowkey STRING,\n"
-                        + "  cf1 ROW<v STRING>\n"
-                        + ") "
-                        + WITH_CLAUSE);
+        //
+        // The two halves are one test on purpose. Alone, the second is an assertion that cannot
+        // fail: an append-only VALUES query gets no ChangelogNormalize whatever the sink answers —
+        // measured, it passes under insertOnly(), upsert(), upsert(false) and all(). Its meaning
+        // comes entirely from being the *same* string, through the *same* environment, that the
+        // first half has just found present. That also makes a rename of the operator loud in both
+        // directions rather than silently vacuous in the negative one.
+        //
+        // The key is pinned as well as the node: a normalize appearing for some unrelated reason
+        // is not the one this test is about.
+        StreamTableEnvironment tEnv = streamTableEnvironmentWithAnUpsertSourceKeyedOnId();
 
         assertThat(
-                        tEnv.explainSql(
-                                "INSERT INTO insert_only VALUES ('r1', CAST(ROW('x') AS ROW<v"
-                                        + " STRING>))"))
+                        planOfInsertInto(
+                                tEnv,
+                                "no_pk",
+                                "SELECT rowkey, CAST(ROW(v) AS ROW<v STRING>)" + " FROM src"))
+                .contains("ChangelogNormalize(key=[id])");
+        assertThat(
+                        planOfInsertInto(
+                                tEnv, "no_pk", "VALUES ('r1', CAST(ROW('x') AS ROW<v STRING>))"))
                 .doesNotContain("ChangelogNormalize");
     }
 
-    private static String planOfInsertFromAnUpsertSourceKeyedOnId(String table) {
+    /**
+     * A streaming environment holding a {@code no_pk} Bigtable table with no {@code PRIMARY KEY}
+     * and an upsert view {@code src} keyed on {@code id}, which is not the row-key column.
+     */
+    private static StreamTableEnvironment streamTableEnvironmentWithAnUpsertSourceKeyedOnId() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         tEnv.executeSql(
-                "CREATE TABLE "
-                        + table
-                        + " (\n"
+                "CREATE TABLE no_pk (\n"
                         + "  rowkey STRING,\n"
                         + "  cf1 ROW<v STRING>\n"
                         + ") "
@@ -171,9 +175,12 @@ class BigtableTablePlanTest {
                                 .primaryKey("id")
                                 .build(),
                         ChangelogMode.upsert()));
+        return tEnv;
+    }
 
-        return tEnv.explainSql(
-                "INSERT INTO " + table + " SELECT rowkey, CAST(ROW(v) AS ROW<v STRING>) FROM src");
+    private static String planOfInsertInto(
+            StreamTableEnvironment tEnv, String table, String query) {
+        return tEnv.explainSql("INSERT INTO " + table + " " + query);
     }
 
     @Test
