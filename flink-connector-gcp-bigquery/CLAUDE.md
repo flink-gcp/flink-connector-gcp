@@ -254,7 +254,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   six-month id retention from producing an unreachable id. A task failure never re-runs the query
   at all — only the global-restore path rebuilds the enumerator (measured, same ITCase) — so the
   exposure the knob closes is a JobManager failover before the first checkpoint, and the honest
-  reading of the knob is "attempts inside a window share a result", redeploys included.
+  reading of the knob is "attempts inside a window share a result", redeploys included. Adopting
+  a **finished** job spends one `getTable` on its result table (#485): the job's metadata names
+  the table whether or not it still exists, so a table gone early — deleted by hand, or an
+  anonymous cache table dropped inside its nominal day — is probed past like a failed link and
+  the query runs fresh. Do not remove the check as redundant with the window arithmetic: the
+  arithmetic bounds only the tables that expire on schedule.
 - **No recovery test against the emulator**, which ignores `ReadRowsRequest.offset` and answers from
   row zero; a green test there proves the opposite. The read-path deviations are pinned by
   `BigQueryEmulatorReadDeviationITCase`, each with a `@Disabled` twin carrying the correct

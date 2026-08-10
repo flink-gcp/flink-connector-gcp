@@ -289,9 +289,9 @@ class BigQuerySourceBuilderTest {
                                         .reuseQueryResultWithin(Duration.ofHours(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("must be positive");
-        // Both landing places expire after about a day, so a longer window would reuse a job
-        // whose result table is gone — rejected where the value was typed, not met as a failed
-        // read on the JobManager.
+        // Both landing places expire after about a day, so a longer window has nothing to reuse
+        // — every older adoption would find its table gone and fall back to running the query —
+        // rejected where the value was typed rather than shipped as a knob that cannot work.
         assertThatThrownBy(
                         () ->
                                 BigQuerySource.<GenericRecord>builder()

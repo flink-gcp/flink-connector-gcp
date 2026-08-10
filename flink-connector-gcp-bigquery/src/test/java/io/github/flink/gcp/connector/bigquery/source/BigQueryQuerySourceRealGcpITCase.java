@@ -252,6 +252,46 @@ class BigQueryQuerySourceRealGcpITCase {
     }
 
     @Test
+    void fallsBackToRunningTheQueryWhenTheReusedResultTableIsGone() throws Exception {
+        // The half of the fallback only the service can answer: jobs.get still reports the DONE
+        // job — metadata naming a result table that was deleted by hand — so the one getTable the
+        // adoption spends is the only thing standing between a re-plan and a crash loop at
+        // session creation. The second run must probe past the job and run the query fresh under
+        // the retry id, in a new table.
+        //
+        // A named dataset, unlike the reattach case's anonymous one, because the deletable table
+        // is the scenario: the dataset is the user's, and so is the delete. Both result tables
+        // carry the runner's 24-hour expiration; the explicit deletes just do not lean on it.
+        QuerySpec spec =
+                new QuerySpec(
+                        "SELECT id FROM " + RealBigQuery.tablePath(TABLE) + " WHERE id < 5",
+                        RealBigQuery.project(),
+                        RealBigQuery.datasetLocation(),
+                        RealBigQuery.dataset());
+        QuerySpec reusable =
+                spec.withJobIdentity(
+                        QueryJobIdentity.of(
+                                "query-source-fallback-it",
+                                spec,
+                                Duration.ofHours(1),
+                                System.currentTimeMillis()));
+
+        QueryResult first = new BigQueryQueryRunner(null).run(reusable);
+        RealBigQuery.deleteTables(first.getTable().getTable());
+
+        // A fresh runner, as a failed-over JobManager's enumerator would build one.
+        QueryResult second = new BigQueryQueryRunner(null).run(reusable);
+
+        assertThat(first.isReattached()).isFalse();
+        assertThat(second.isReattached()).isFalse();
+        // The identity is built once above, so the ids cannot straddle a window rollover: the
+        // fallback's landing place is deterministically the first retry id's table.
+        assertThat(second.getTable().getTable()).isEqualTo(first.getTable().getTable() + "_r1");
+
+        RealBigQuery.deleteTables(second.getTable().getTable());
+    }
+
+    @Test
     void readsAViewThroughAQueryWithTheReuseKnobOn() throws Exception {
         // The production path end to end: the enumerator derives the id from the real job's
         // name — whatever the local environment called it, read out of the metric variables —

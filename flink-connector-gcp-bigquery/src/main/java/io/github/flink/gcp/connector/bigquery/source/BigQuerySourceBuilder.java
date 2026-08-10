@@ -235,7 +235,8 @@ public class BigQuerySourceBuilder<T> {
      * configuration, and the window, so a JobManager failover before the first checkpoint — the one
      * failure that re-plans a source — finds the first attempt's job and adopts it: a job still
      * running is waited for instead of racing it with a second scan, and a finished one has its
-     * result table read directly. {@code queryJobsReattached} reports each reuse.
+     * result table checked and read — a table that vanished meanwhile makes the attempt run the
+     * query again instead. {@code queryJobsReattached} reports each reuse.
      *
      * <p><b>What it treats as "the same job" is the Flink job name</b>, because the name is the
      * identifier the user controls: rename the job and nothing is reused. The rest of the id is
@@ -246,9 +247,10 @@ public class BigQuerySourceBuilder<T> {
      * intentional redeploy, so the result can be up to a window old. Size the window to how stale a
      * result the pipeline can read, or rename the job to force a fresh one.
      *
-     * <p>At most 24 hours, because both places a result can land expire at about a day: a longer
-     * window would reuse a job whose result table is already gone, and the read would fail where
-     * nothing names the cause.
+     * <p>At most 24 hours, because both places a result can land expire at about a day: past that
+     * there is nothing left to reuse — an adoption whose table has expired falls back to running
+     * the query — so a longer window could only ever pay for the query again while appearing to
+     * deduplicate it.
      *
      * <p><b>Requires {@link #queryLocation(String)}</b>: BigQuery scopes a job to (project,
      * location, id), and a look-up that names no location sees only the US multi-region — outside
@@ -268,8 +270,9 @@ public class BigQuerySourceBuilder<T> {
         Preconditions.checkArgument(
                 reuseQueryResultWithin.compareTo(Duration.ofHours(24)) <= 0,
                 "reuseQueryResultWithin must be at most 24 hours: %s. Both places a query result"
-                        + " can land expire after about a day, so a longer window would reuse a"
-                        + " job whose result table no longer exists.",
+                        + " can land expire after about a day, so a longer window has nothing to"
+                        + " reuse: every older adoption would find the table gone and run the"
+                        + " query again.",
                 reuseQueryResultWithin);
         this.reuseQueryResultWithin = reuseQueryResultWithin;
         return this;

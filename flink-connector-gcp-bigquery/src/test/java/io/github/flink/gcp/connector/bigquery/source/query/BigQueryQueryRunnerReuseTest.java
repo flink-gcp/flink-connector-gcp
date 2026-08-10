@@ -24,6 +24,7 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TestJobs;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery.JobAnswer;
+import io.github.flink.gcp.connector.bigquery.StubBigQuery.TableAnswer;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -92,6 +93,7 @@ class BigQueryQueryRunnerReuseTest {
     void reattachesToTheCurrentWindowsJobInsteadOfSubmitting() throws Exception {
         StubBigQuery client = new StubBigQuery();
         client.answering(JobAnswer.withStatus(DONE));
+        client.tablesAnswering(TableAnswer.existing());
         client.completedConfiguration =
                 QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
         QuerySpec spec = reusableSpec(null);
@@ -101,6 +103,8 @@ class BigQueryQueryRunnerReuseTest {
         assertThat(result.isReattached()).isTrue();
         assertThat(result.getTable().getTable()).isEqualTo("anon1");
         assertThat(client.created).isEmpty();
+        // Adopting a finished job spends exactly one existence check on its result table.
+        assertThat(client.getTableCalls).containsExactly(ANONYMOUS);
     }
 
     @Test
@@ -120,6 +124,9 @@ class BigQueryQueryRunnerReuseTest {
         assertThat(result.isReattached()).isTrue();
         assertThat(client.created).isEmpty();
         assertThat(client.getJobCalls).hasSize(2);
+        // A running job has no result table yet — it is created at completion — so adopting one
+        // spends no existence check on it.
+        assertThat(client.getTableCalls).isEmpty();
     }
 
     @Test
@@ -150,9 +157,12 @@ class BigQueryQueryRunnerReuseTest {
         assertThatThrownBy(() -> new BigQueryQueryRunner(client).run(spec))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining(currentId(spec))
-                .hasMessageContaining("all its retry ids failed")
+                .hasMessageContaining("all its retry ids are unusable")
                 .hasMessageContaining("previous attempt failed");
         assertThat(client.created).isEmpty();
+        // The whole budget was spent before giving up — the message's "all" is counted, not
+        // assumed.
+        assertThat(client.getJobCalls).hasSize(BigQueryQueryRunner.MAX_RETRY_PROBES + 1);
     }
 
     @Test
@@ -162,6 +172,7 @@ class BigQueryQueryRunnerReuseTest {
         // won the race between the two calls. The conflict's job is adopted, and counted as a
         // reuse — the query is billed once either way.
         client.answering(JobAnswer.absent(), JobAnswer.absent(), JobAnswer.withStatus(DONE));
+        client.tablesAnswering(TableAnswer.existing());
         client.createFailure = new BigQueryException(HttpURLConnection.HTTP_CONFLICT, "exists");
         client.completedConfiguration =
                 QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
@@ -181,6 +192,7 @@ class BigQueryQueryRunnerReuseTest {
                 JobAnswer.absent(),
                 JobAnswer.withStatusCreatedAt(
                         DONE, System.currentTimeMillis() - Duration.ofMinutes(10).toMillis()));
+        client.tablesAnswering(TableAnswer.existing());
         client.completedConfiguration =
                 QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
         QuerySpec spec = reusableSpec(null);
@@ -232,6 +244,7 @@ class BigQueryQueryRunnerReuseTest {
                 JobAnswer.withStatus(FAILED),
                 JobAnswer.withStatusCreatedAt(
                         DONE, System.currentTimeMillis() - Duration.ofMinutes(10).toMillis()));
+        client.tablesAnswering(TableAnswer.existing());
         client.completedConfiguration =
                 QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
         QuerySpec spec = reusableSpec(null);
@@ -255,6 +268,143 @@ class BigQueryQueryRunnerReuseTest {
         QueryResult result = new BigQueryQueryRunner(client).run(spec);
 
         assertThat(result.isReattached()).isTrue();
+        assertThat(client.created).isEmpty();
+    }
+
+    @Test
+    void fallsBackToRunningTheQueryWhenTheAdoptedJobsResultTableIsGone() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        // The current id holds a healthy finished job, but the table its metadata names no longer
+        // exists — deleted by hand, or an anonymous cached-results table dropped early. Adopting
+        // it would crash-loop at session creation, so the link is probed past like a failed one
+        // and the query runs again under the retry id.
+        client.answering(JobAnswer.withStatus(DONE), JobAnswer.absent());
+        client.tablesAnswering(TableAnswer.absent());
+        client.completedConfiguration =
+                QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
+        QuerySpec spec = reusableSpec(null);
+
+        QueryResult result = new BigQueryQueryRunner(client).run(spec);
+
+        assertThat(result.isReattached()).isFalse();
+        assertThat(client.getTableCalls).containsExactly(ANONYMOUS);
+        assertThat(client.created).hasSize(1);
+        assertThat(client.created.get(0).getJobId().getJob()).isEqualTo(currentId(spec) + "_r1");
+    }
+
+    @Test
+    void aPreviousWindowsJobWhoseResultTableIsGoneIsNotReused() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        // The straddling path applies the same judgment: a finished link whose table vanished is
+        // walked past, the chain ends at the next absent id, and the query is submitted fresh
+        // under the current window's id.
+        client.answering(
+                JobAnswer.absent(),
+                JobAnswer.withStatusCreatedAt(
+                        DONE, System.currentTimeMillis() - Duration.ofMinutes(10).toMillis()),
+                JobAnswer.absent());
+        client.tablesAnswering(TableAnswer.absent());
+        client.completedConfiguration =
+                QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
+        QuerySpec spec = reusableSpec(null);
+
+        QueryResult result = new BigQueryQueryRunner(client).run(spec);
+
+        assertThat(result.isReattached()).isFalse();
+        assertThat(client.getJobCalls.get(2).getJob()).isEqualTo(previousId(spec) + "_r1");
+        assertThat(client.created).hasSize(1);
+        assertThat(client.created.get(0).getJobId().getJob()).isEqualTo(currentId(spec));
+    }
+
+    @Test
+    void aConflictWinnersJobWhoseResultTableIsGoneIsProbedPastToo() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        // The racing attempt's job finished, but its table is already gone by the time this
+        // attempt adopts it — the same one check every finished adoption spends.
+        client.answering(
+                JobAnswer.absent(),
+                JobAnswer.absent(),
+                JobAnswer.withStatus(DONE),
+                JobAnswer.absent());
+        client.tablesAnswering(TableAnswer.absent());
+        client.createFailure = new BigQueryException(HttpURLConnection.HTTP_CONFLICT, "exists");
+        client.completedConfiguration =
+                QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
+        QuerySpec spec = reusableSpec(null);
+
+        QueryResult result = new BigQueryQueryRunner(client).run(spec);
+
+        assertThat(result.isReattached()).isFalse();
+        assertThat(client.getTableCalls).containsExactly(ANONYMOUS);
+        assertThat(client.created).hasSize(2);
+        assertThat(client.created.get(1).getJobId().getJob()).isEqualTo(currentId(spec) + "_r1");
+    }
+
+    @Test
+    void givesUpNamingTheVanishedTableWhenEveryRetryIdsResultTableIsGone() {
+        StubBigQuery client = new StubBigQuery();
+        int probes = BigQueryQueryRunner.MAX_RETRY_PROBES + 1;
+        JobAnswer[] allDone = new JobAnswer[probes];
+        TableAnswer[] allGone = new TableAnswer[probes];
+        for (int i = 0; i < probes; i++) {
+            allDone[i] = JobAnswer.withStatus(DONE);
+            allGone[i] = TableAnswer.absent();
+        }
+        client.answering(allDone);
+        client.tablesAnswering(allGone);
+        client.completedConfiguration =
+                QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
+        QuerySpec spec = reusableSpec(null);
+
+        // The give-up line names the vanished table, not the read session the crash loop this
+        // fallback replaces used to fail at.
+        assertThatThrownBy(() -> new BigQueryQueryRunner(client).run(spec))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(currentId(spec))
+                .hasMessageContaining("result table _anon1.anon1 is gone");
+        assertThat(client.created).isEmpty();
+        // The whole budget was spent before giving up — the message's "all" is counted, not
+        // assumed.
+        assertThat(client.getJobCalls).hasSize(BigQueryQueryRunner.MAX_RETRY_PROBES + 1);
+    }
+
+    @Test
+    void adoptionInANamedDatasetChecksExistenceAndThenReappliesTheExpiration() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.answering(JobAnswer.withStatus(DONE));
+        // Two consumptions, in order: the adoption's existence check finds the table, then the
+        // expiration backstop makes its own look-up — a refactor that merges the two calls, or
+        // lets the check consume the answer the backstop needed, shows up here.
+        client.tablesAnswering(TableAnswer.existing(), TableAnswer.absent());
+        TableId scratch = TableId.of("p", "scratch", "result");
+        client.completedConfiguration =
+                QueryJobConfiguration.newBuilder(SQL).setDestinationTable(scratch).build();
+        QuerySpec spec = reusableSpec("scratch");
+
+        QueryResult result = new BigQueryQueryRunner(client).run(spec);
+
+        assertThat(result.isReattached()).isTrue();
+        assertThat(result.getTable().getTable()).isEqualTo("result");
+        assertThat(client.created).isEmpty();
+        assertThat(client.getTableCalls).containsExactly(scratch, scratch);
+    }
+
+    @Test
+    void aFailedResultTableLookupIsReportedNotTreatedAsAnAnswer() {
+        StubBigQuery client = new StubBigQuery();
+        client.answering(JobAnswer.withStatus(DONE));
+        client.tablesAnswering(TableAnswer.failing(new BigQueryException(500, "backend error")));
+        client.completedConfiguration =
+                QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
+        QuerySpec spec = reusableSpec(null);
+
+        // Neither adopted (the table may be gone) nor probed past (the table may be fine, and
+        // probing would re-bill the query over a transient error): the failure is reported, and
+        // the restarted plan asks again.
+        assertThatThrownBy(() -> new BigQueryQueryRunner(client).run(spec))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Failed to look up the result table")
+                .hasMessageContaining("_anon1.anon1");
         assertThat(client.created).isEmpty();
     }
 }
