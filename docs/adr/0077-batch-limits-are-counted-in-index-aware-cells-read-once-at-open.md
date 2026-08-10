@@ -54,11 +54,20 @@ Three things follow, and they are narrower than the batch-write page alone sugge
   A range delete over a table carrying secondary indexes costs one mutation for the table plus one
   per index *per row it matches* — see the delete discussion below — so it is reachable, but never
   by accumulating, and not at all on a table with no secondary index.
-- **The request size cap is 10 MiB or 100 MiB, and the documentation can be read either way.** The
-  batch write page's sentence, read as a carve-out, puts batch write on the 100 MiB commit row; the
-  "request size other than for commits" row, read literally, puts it on 10 MiB. The quotas page has
-  no batch-write size row to break the tie. Measuring which one holds is [#441] — the emulator is
-  not an authority about quota enforcement, so it belongs to the gated real-GCP suite.
+- **The request size cap is 100 MiB — measured, and the documentation could be read either way.**
+  The batch write page's sentence, read as a carve-out, puts batch write on the 100 MiB commit row;
+  the "request size other than for commits" row, read literally, puts it on 10 MiB, and the quotas
+  page has no batch-write size row to break the tie. [#441] measured it against the service
+  (2026-08-10, `SpannerRejectionRealGcpITCase`): a request of roughly 12 MiB is accepted, and one of
+  roughly 110 MiB is refused with `RESOURCE_EXHAUSTED: SERVER: Received message larger than max
+  (115350024 vs. 104857600)`. 104,857,600 is 100 MiB exactly, so the carve-out reading holds and
+  `MAX_BATCH_BYTES_LIMIT` needed no change. Two things the refusal shows beyond the number: it is a
+  **transport-level** refusal rather than a quota `INVALID_ARGUMENT`, and it arrives under
+  `RESOURCE_EXHAUSTED`, which this connector classifies as transient — so a request that breaches
+  the ceiling is retried rather than failed. Nothing reachable through the public builder can
+  produce one, since `maxBatchBytes` is bounded at the same 100 MiB and the estimate would have to
+  undercount by the whole margin between the configured value and the ceiling; it is recorded here
+  because the margin narrows as `maxBatchBytes` is raised toward its own bound.
 
 The defaults below are Apache Beam's, and **Beam batches for `Commit` rather than for batch write**,
 which is where the commit-shaped figures entered this connector. They sit far under every reading of
@@ -138,13 +147,25 @@ Two qualifications the guard's own framing has to carry, or it claims more than 
 - `MAX_BATCH_CELLS_LIMIT` is **80,000**: the per-mutation-group row, taken as the request-level
   ceiling because no request-level count is documented at all, so a batch under it is under every
   row that could apply.
-- `MAX_BATCH_BYTES_LIMIT` is **100 MiB, the looser of the two readings**, deliberately. A bound at
-  the looser reading rejects only what is illegal under both, so it cannot refuse a legal
-  configuration whichever way [#441] comes out; a bound at 10 MiB would be a decision taken without
-  the measurement. What survives is the narrow band between the two: a job setting `maxBatchBytes`
-  above 10 MiB still meets the original failure mode if the tighter reading holds. The ceiling is
-  a guard against a misconfiguration rather than a value to set — the estimate reads low, so a
-  request built at exactly the ceiling is over it on the wire.
+- `MAX_BATCH_BYTES_LIMIT` is **100 MiB**, chosen as the looser of the two readings before the
+  measurement and **confirmed by it** ([#441], 2026-08-10): the service refuses at exactly
+  104,857,600 bytes and accepts well above 10 MiB, so the looser reading was the right one and the
+  constant did not move. Choosing it that way was still the right call at the time — a bound at the
+  looser reading rejects only what is illegal under both, so it could not refuse a legal
+  configuration whichever way the measurement came out, where a bound at 10 MiB would have been a
+  decision taken without it. The ceiling remains
+  a guard against a misconfiguration rather than a value to set — the estimate still reads low by
+  the framing it ignores (about sixty bytes a mutation, measured), so a request built at exactly the
+  ceiling is over it on the wire.
+- **A `BYTES` value is counted at its base64 length, and that is the one place the estimate does not
+  count a value as itself.** Measured 2026-08-10: 83,886,080 raw bytes were refused at 111,852,884
+  received — four thirds, because a Spanner value travels inside a `google.protobuf.Value`, which
+  has no bytes kind. Counting the raw length made the estimate read a **quarter** low for a
+  `BYTES`-heavy batch, far more than the framing gap absorbs, and the failure it enabled is not a
+  clean one: an over-sized request is refused under `RESOURCE_EXHAUSTED`, which this connector
+  classifies as transient, so it is retried until the budget runs out rather than failed with a
+  reason. Splitting `RESOURCE_EXHAUSTED` by its message text to fix that end instead is ruled out by
+  ADR-0076's rule, which is why the fix is at the estimator.
 - `MAX_BATCH_MUTATIONS_LIMIT` is **derived — `= MAX_BATCH_CELLS_LIMIT`, not a second literal**.
   Every mutation costs at least one cell (`CellWeights.weigh` returns at least one for every
   operation), so a batch never holds more mutations than cells, and a value above the cell ceiling
@@ -174,9 +195,10 @@ Two qualifications the guard's own framing has to carry, or it claims more than 
   application mode, and the console in an IDE — the docs say so rather than promising the user will
   see it.
 - Both constants are **package-private**, with the figure named in the setter's `@param` rather than
-  linked as a symbol — `OptionChecks`' rule ("widen it when something asks, not before"), and it
-  binds hardest on the byte one, since a public compile-time constant is inlined into every caller
-  and [#441] may lower that very number.
+  linked as a symbol — `OptionChecks`' rule ("widen it when something asks, not before"). The
+  argument that a public compile-time constant is inlined into every caller was pointed at the byte
+  one in particular while [#441] might have lowered it; the measurement left it where it was, and
+  the rule stands on its own.
 - These are guardrails against a misconfiguration, not the thing that keeps a default-configured
   request legal — the defaults sit two to three orders of magnitude below both.
 
@@ -204,10 +226,11 @@ emulator), since its cells are already counted by the columns themselves.
   `roles/spanner.databaseUser` covers both. The quickstart's permission table says so.
 - Raising `maxBatchCells` toward its 80,000 ceiling removes the headroom that makes an unknown table
   safe. The setter's javadoc and the reference page both say what the number counts.
-- **How large a batch write request may be is still unmeasured**, and [#441] carries it: 10 MiB or
-  100 MiB, blocked on the gated real-GCP suite ([#224]). If the answer is 10 MiB, the byte ceiling
-  tightens and this ADR, the setter's javadoc and both docs pages record the measurement in place of
-  the ambiguity.
+- **How large a batch write request may be is 100 MiB**, measured by [#441] once the gated
+  real-GCP suite ([#224]) existed to measure it in. The byte ceiling therefore did not move, and the
+  ambiguity is gone from this ADR, the setter's javadoc and both docs pages. What the measurement
+  added rather than removed: the refusal is a transport one under `RESOURCE_EXHAUSTED`, a status
+  this connector retries, so the ceiling is not a fail-fast boundary.
 - The dead-letter payload cannot be a protobuf either, for the same missing-conversion reason. It
   is the Java-serialized `Mutation` — `Mutation`, `Value`, `Key` and `KeySet` each declare a
   `serialVersionUID`, so it is an affordance the library maintains — and `FailedMutation` exposes

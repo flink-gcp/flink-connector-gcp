@@ -65,12 +65,13 @@ jobs:
     if: github.repository_owner == 'laughingman7743'
     name: Real-GCP gated ITCases
     runs-on: ubuntu-latest
-    # Raised from 30 when the Bigtable suite joined: each of its gated classes
-    # waits on an instance being provisioned before its first test runs. The
-    # ceiling also bounds what a hung run can leave standing, since the sweep
-    # in AbstractBigtableRealGcpITCase treats anything older than two hours as
-    # abandoned.
-    timeout-minutes: 40
+    # Raised from 30 when the Bigtable suite joined, and again when Spanner's
+    # did: each gated class of either waits on an instance being provisioned
+    # before its first test runs, and the Spanner classes seed and read a few
+    # thousand rows on top. The ceiling also bounds what a hung run can leave
+    # standing, since both suites' sweeps treat anything older than two hours as
+    # abandoned — so this must stay well under two hours whatever else changes.
+    timeout-minutes: 60
     steps:
       # Pinned to the commit for the same reason as weekly.yaml: a merge
       # landing mid-run must not change what this run tests.
@@ -119,4 +120,5 @@ jobs:
           BQ_IT_GCS_BUCKET: flink-gcp
           PUBSUB_IT_PROJECT: flink-gcp
           BIGTABLE_IT_PROJECT: flink-gcp
+          SPANNER_IT_PROJECT: flink-gcp
         run: just e2e

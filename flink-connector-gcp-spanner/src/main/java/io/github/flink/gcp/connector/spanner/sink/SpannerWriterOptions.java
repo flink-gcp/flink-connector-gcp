@@ -124,13 +124,13 @@ public final class SpannerWriterOptions implements Serializable {
      * The largest {@link Builder#maxBatchBytes(long)} this connector accepts: 100 MiB, from "the
      * maximum size for a batch write request is the same as the limit for a commit request" and
      * Spanner's 100 MiB commit size. Package-private for the reason {@link #MAX_BATCH_CELLS_LIMIT}
-     * gives, which binds hardest here — #441 may lower this very number.
+     * gives.
      *
-     * <p><b>The looser of two readings</b>, deliberately. The quotas page also carries a "request
-     * size other than for commits" of 10 MiB, which a batch write can be read as falling under, and
-     * it has no batch-write size row to break the tie. Bounding at the looser reading rejects only
-     * what is illegal under both; measuring which one holds, and tightening this to 10 MiB if that
-     * is the answer, is #441.
+     * <p><b>Measured</b> (#441, 2026-08-10, against the service): a request of roughly 110 MiB is
+     * refused with {@code RESOURCE_EXHAUSTED: SERVER: Received message larger than max (… vs.
+     * 104857600)} and one of roughly 12 MiB is accepted, so the figure here is the service's own.
+     * The quotas page also carries a "request size other than for commits" of 10 MiB, which a batch
+     * write could be read as falling under; the measurement says it does not.
      */
     static final long MAX_BATCH_BYTES_LIMIT = 100L * 1024 * 1024;
 

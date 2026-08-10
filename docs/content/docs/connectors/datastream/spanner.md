@@ -105,15 +105,18 @@ request"*. So:
   indexes, which costs one mutation for the table plus one per index for every row the range
   matches. On a table with no secondary index a range delete costs one however many rows it hits.
 - **`maxBatchBytes` is the one defending a documented request-level limit**, and how large that
-  limit is can be read two ways: 100 MiB by the sentence above, or 10 MiB by the quotas page's
-  "request size other than for commits". Measuring which one holds is
-  [#441]({{< param BookRepo >}}/issues/441).
+  limit is could be read two ways: 100 MiB by the sentence above, or 10 MiB by the quotas page's
+  "request size other than for commits". The gated real-GCP suite measured it
+  ([#441]({{< param BookRepo >}}/issues/441)): the service accepts a request of roughly 12 MiB and
+  refuses one of roughly 110 MiB, naming `104857600` bytes — 100 MiB exactly. Note what the refusal
+  is: a transport-level `RESOURCE_EXHAUSTED`, which this sink treats as transient and retries, not
+  a fail-fast rejection.
 
 **All three are bounded at the setter**, so a value a request could not carry fails the job at
 submission rather than on a task manager:
 
-- `maxBatchBytes` at 100 MiB — the looser of the two readings, which rejects only what is illegal
-  under both. This is the ceiling that defends a refusal Spanner documents.
+- `maxBatchBytes` at 100 MiB — the figure the service was measured to enforce. This is the ceiling
+  that defends a refusal Spanner documents.
 - `maxBatchCells` at 80,000. Precautionary rather than a refusal anyone has seen: Spanner documents
   no request-level mutation count either way, so the cap holds a batch to the only mutation figure
   it does publish.
@@ -149,9 +152,14 @@ Two consequences worth knowing:
   `maxBatchCells` of 5,000 is deliberately 16 times under the 80,000 ceiling so the undercount has
   room. Raising the limit toward 80,000 removes that room.
 - **The byte limit is an estimate.** The client library exposes no public way to size a `Mutation`
-  as it goes on the wire, so the sink adds up the values it can see and ignores framing, and it
-  reads low. The default of 1 MiB sits 100 times under the looser reading of the real limit and ten
-  times under the tighter one, which is the room the estimate is allowed to be wrong in.
+  as it goes on the wire, so the sink adds up the values it can see and ignores framing — about
+  sixty bytes a mutation, measured — and so it reads low. The default of 1 MiB sits 100 times under
+  the 100 MiB limit, which is the room the estimate is allowed to be wrong in.
+  One value type is *not* counted as itself: a `BYTES` column is counted at its **base64** length,
+  because a Spanner value travels inside a `google.protobuf.Value`, which has no bytes kind. That
+  was measured, not assumed — 83,886,080 raw bytes arrived as 111,852,884, four thirds of
+  themselves. Counting the raw length made the estimate read a quarter low for a `BYTES`-heavy
+  batch, which is more than the room above once `maxBatchBytes` is raised toward its ceiling.
 
 The defaults are Apache Beam's, and Beam batches for `Commit` rather than for batch write — which is
 where the commit-shaped 80,000 entered this connector. They sit far under every reading of every
@@ -386,22 +394,29 @@ separately; it also does not remove the read from the instance, where Data Boost
 applies to the reads that move the rows — the partition the service plans carries it and the read
 replays it — and not to the one call that plans the partitions.
 
-Nothing here claims Data Boost has been exercised end to end. What this connector guarantees is that
-the flag reaches the partition calls; the emulator accepts it and does nothing with it, and the
-gated real-GCP suite ([#224]({{< param BookRepo >}}/issues/224)) is what will measure the rest.
+Data Boost has been exercised end to end against the service, by the gated real-GCP suite
+([#224]({{< param BookRepo >}}/issues/224), measured 2026-08-10): a boosted read of a 5,000-row
+table returned every row, both through `partitionQuery` directly and through a job built with
+`dataBoostEnabled(true)`. Two things that measurement settles. It needs **no edition upgrade** —
+Google lists Data Boost from `STANDARD` up, and the suite's instance is a 100-processing-unit
+`STANDARD` one — and a read succeeding at all is the `spanner.databases.useDataBoost` permission
+being honoured. What it does not reach is Data Boost's concurrency quota or its billing; a suite
+this size touches neither, so the `RESOURCE_EXHAUSTED` a boosted read can meet is still described
+here rather than demonstrated.
 
 ### Reading against the emulator
 
 The emulator is a convenience, never evidence about the service, and on the read path it deviates in
 one direction that is easy to get backwards. Measured against `emulator:1.5.56` on 2026-08-10:
 
-| Deviation | Consequence |
-|---|---|
-| It planned exactly two partitions, one of them empty, for every table measured (500 and 4,000 rows) | Split planning has no emulator coverage. What the emulator *does* give is real coverage of an empty partition, which a reader must finish without complaint |
-| It ignores `maxPartitions` and `partitionSizeBytes` | Neither hint can be shown to have any effect here |
-| Its partitionability check is **stricter** than the service's | It refuses aggregates, `ORDER BY` and `LIMIT` with "not able to determine whether this query is partitionable" — a query it rejects may be one Spanner would plan. A test needing such a shape prefixes the statement with `@{spanner_emulator.disable_query_partitionability_check=true}`, which works only *before* the `SELECT` |
-| It accepts `dataBoostEnabled` and does nothing with it | The IAM permission, the quota and the billing are the gated suite's to show |
-| No IAM | `PERMISSION_DENIED` on a read is never exercised |
+| Deviation | Consequence | What the service does |
+|---|---|---|
+| It planned exactly two partitions, one of them empty, for every table measured (500 and 4,000 rows) | Split planning has no emulator coverage. What the emulator *does* give is real coverage of an empty partition, which a reader must finish without complaint | Planned **one** partition over 5,000 rows on a 100-processing-unit instance — a table that small is one split. Neither count is evidence about a large table |
+| It ignores `maxPartitions` and `partitionSizeBytes` | Neither hint can be shown to have any effect here | Neither hint changed the count either, at that scale. A hint cannot manufacture parallelism the data's layout does not offer |
+| Its partitionability check is **stricter** than the service's | It refuses aggregates, `ORDER BY` and `LIMIT` with "not able to determine whether this query is partitionable" — a query it rejects may be one Spanner would plan. A test needing such a shape prefixes the statement with `@{spanner_emulator.disable_query_partitionability_check=true}`, which works only *before* the `SELECT` | Refused the same three shapes, so the difference did not show on any shape tried — but with a different and far more useful message: `Query is not root partitionable since it does not have a DistributedUnion at the root`, and a link to the documented conditions |
+| It accepts `dataBoostEnabled` and does nothing with it | The IAM permission, the quota and the billing are the gated suite's to show | Served the read: every row came back, on a `STANDARD`-edition instance. Quota and billing remain unmeasured |
+| No IAM | `PERMISSION_DENIED` on a read is never exercised | Still not exercised: the E2E account holds `roles/spanner.editor`, which carries every permission the suite uses, so there is no unauthorized identity in it to refuse |
+| It accepts extra DDL in a `CreateDatabase` request for a PostgreSQL-dialect database | A harness that creates its schema in one call works here | Refuses it — "DDL statements other than &lt;CREATE DATABASE&gt; are not allowed in database creation request for PostgreSQL-enabled databases" — so the gated harness issues a separate `updateDatabaseDdl` for that dialect |
 
 ### Not here yet
 
@@ -482,5 +497,22 @@ disagree, the service decides. Known deviations, and what covers them instead:
 | Deviation | Consequence |
 |---|---|
 | One read-write transaction at a time | Tests that write concurrently serialize. The `ABORTED` the emulator answers with is classified transient, so the sink retries through it |
-| No IAM | Neither `PERMISSION_DENIED` nor the `spanner.databases.select` requirement of the schema read is exercised. The gated real-GCP suite ([#224]({{< param BookRepo >}}/issues/224)) is the only coverage |
-| Rejection statuses are the emulator's | The table above is measured against the emulator. The same suite confirms each row against the service |
+| No IAM | Neither `PERMISSION_DENIED` nor the `spanner.databases.select` requirement of the schema read is exercised. The gated real-GCP suite ([#224]({{< param BookRepo >}}/issues/224)) reads the schema over real credentials, but holds `roles/spanner.editor`, so a refusal is still not exercised anywhere |
+| Rejection statuses are the emulator's | The table above was measured against the emulator, and **every row of it is now confirmed against the service** (2026-08-10) — same status, same per-group reporting. The gated suite asserts each row, so a change on either side has to be declared |
+
+### The gated real-GCP suite
+
+Everything above runs in an ordinary build. What only the service can answer runs in a separate,
+opt-in suite ([#224]({{< param BookRepo >}}/issues/224)): the rejection statuses and their per-group
+reporting, the mutation-cell weights read from the service's own `INFORMATION_SCHEMA` in both
+dialects, how many partitions Spanner plans and for which query shapes, and Data Boost end to end.
+It is also the only place the connector's clients are built over application-default credentials
+rather than an emulator endpoint.
+
+The suite is opt-in per command rather than per shell: each class carries `@Tag("gated")`, which
+every ordinary build excludes, and `just e2e` is the one thing that clears the exclusion. Each class
+creates a 100-processing-unit regional Spanner instance in the `STANDARD` edition, uses it, and
+deletes it — nothing persistent is provisioned, because an instance bills for as long as it exists.
+`STANDARD` is enough, and the suite shows it rather than citing it: the Data Boost tests run on that
+instance and read every row, so exercising Data Boost needs no edition upgrade. Instance names carry their creation time, so a run that dies before its teardown
+is reclaimed both by the next run and by a daily sweep.

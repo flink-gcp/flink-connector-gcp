@@ -185,7 +185,8 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 worktree-env:
     scripts/worktree-env.sh
 
-# The ITCases gated on the BQ_IT_*, PUBSUB_IT_PROJECT and BIGTABLE_IT_PROJECT
+# The ITCases gated on the BQ_IT_*, PUBSUB_IT_PROJECT, BIGTABLE_IT_PROJECT and
+# SPANNER_IT_PROJECT
 # variables: what they check is exactly what the emulators cannot (see the
 # testing sections of the connector documentation). The E2E workflow
 # (.github/workflows/e2e.yaml) runs this same recipe weekly via WIF; locally
@@ -218,10 +219,12 @@ worktree-env:
 # on every pull request, and this install only primes ~/.m2.
 #
 # This costs real money beyond runner minutes, which the BigQuery and Pub/Sub
-# halves do not: the Bigtable suite has no persistent instance to run against
-# (a one-node one stands at roughly $470 a month) and creates one per gated
-# class instead, deleting it afterwards. A killed run is swept by the next one,
-# not left standing — see AbstractBigtableRealGcpITCase.
+# halves do not: neither the Bigtable nor the Spanner suite has a persistent
+# instance to run against, so each creates one per gated class and deletes it
+# afterwards. A Bigtable node stands at roughly $470 a month, a 100-processing-
+# unit Spanner instance at an order of magnitude less, and both are zero while
+# nothing is running. A killed run is swept by the next one, not left standing —
+# see AbstractBigtableRealGcpITCase and AbstractSpannerRealGcpITCase.
 #
 # -Dtest.excluded.groups= is that opt-in (issue #245): the gated classes carry
 # @Tag("gated"), which the root pom excludes from every surefire execution, so
@@ -233,8 +236,8 @@ worktree-env:
 e2e:
     scripts/e2e-gated-its.sh --require-env
     {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-test-utils -DskipTests -Drat.skip=true install
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable test-compile
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(scripts/e2e-gated-its.sh)"
+    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable,flink-connector-gcp-spanner test-compile
+    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable,flink-connector-gcp-spanner surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(scripts/e2e-gated-its.sh)"
     scripts/e2e-gated-its.sh --assert-ran
 
 # The two markers a gated real-GCP ITCase carries have to stay together: the
@@ -250,19 +253,21 @@ e2e:
 check-gated-tags:
     scripts/e2e-gated-its.sh --check-tags
 
-# Deletes Bigtable instances an E2E run abandoned (issue #246). The suite
-# already sweeps at the start of a gated class, but only the weekly E2E
-# workflow schedules one — so a run whose teardown never executed leaves a
-# one-node instance standing until the next Saturday, about $109. This is the
+# Deletes the instances an E2E run abandoned (issue #246), for every service
+# whose gated suite provisions one: Bigtable and Spanner. Each suite already
+# sweeps at the start of a gated class, but only the weekly E2E workflow
+# schedules one — so a run whose teardown never executed leaves an instance
+# standing until the next Saturday, about $109 for a Bigtable node. This is the
 # same sweep on a daily schedule (sweep-e2e.yaml), turning a 7-day worst case
-# into a 1-day one. The prefix and the two-hour threshold are read from
-# AbstractBigtableRealGcpITCase rather than repeated, so the two sweeps cannot
-# disagree. Needs BIGTABLE_IT_PROJECT and an authenticated gcloud;
-# `--dry-run` lists without deleting.
+# into a 1-day one. Each service's prefix and two-hour threshold are read from
+# its Abstract*RealGcpITCase rather than repeated, so the two sweeps cannot
+# disagree, and the services are swept independently so one failure cannot hide
+# the other. Needs BIGTABLE_IT_PROJECT, SPANNER_IT_PROJECT and an authenticated
+# gcloud; `--dry-run` lists without deleting.
 #
-# Delete Bigtable instances left behind by a crashed E2E run.
+# Delete the instances left behind by a crashed E2E run.
 sweep-e2e *args:
-    scripts/sweep-bigtable-e2e.sh {{ args }}
+    scripts/sweep-e2e.sh {{ args }}
 
 # Spotless and checkstyle cover the Java sources inside `just verify`; this is
 # everything else.

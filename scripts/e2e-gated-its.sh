@@ -64,7 +64,7 @@ set -euo pipefail
 # gate-agnostic (see there) and must not require this particular list to match.
 gated_sources() {
     local sources='' gate matched
-    for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT; do
+    for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT; do
         matched=$(grep -rl --include='*.java' "named = \"$gate\"" ./*/src/test/java | sort) || {
             echo "::error::no test class is gated on $gate; the gating annotation moved or the tree layout changed" >&2
             return 1
@@ -86,12 +86,13 @@ case "${1:-}" in
     --require-env)
         # The union of what the gates read: BQ_IT_PROJECT/BQ_IT_DATASET gate
         # every BigQuery class, BQ_IT_GCS_BUCKET additionally gates the
-        # FILE_LOADS ones, PUBSUB_IT_PROJECT gates the Pub/Sub suite, and
-        # BIGTABLE_IT_PROJECT the Bigtable one. Bigtable needs no companion
-        # variable: unlike the BigQuery dataset and the GCS bucket, nothing
-        # persistent is provisioned for it — the suite creates and deletes an
-        # instance of its own — so there is no resource name to pass in.
-        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT; do
+        # FILE_LOADS ones, PUBSUB_IT_PROJECT gates the Pub/Sub suite,
+        # BIGTABLE_IT_PROJECT the Bigtable one and SPANNER_IT_PROJECT the
+        # Spanner one. Neither Bigtable nor Spanner needs a companion variable:
+        # unlike the BigQuery dataset and the GCS bucket, nothing persistent is
+        # provisioned for them — each suite creates and deletes an instance of
+        # its own — so there is no resource name to pass in.
+        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT; do
             if [ -z "${!var:-}" ]; then
                 echo "::error::$var is not set, so the gated real-GCP ITCases would silently skip. Locally the variables come from the uncommitted .env at the repository root, which mise loads." >&2
                 exit 1

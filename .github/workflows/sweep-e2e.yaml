@@ -14,16 +14,18 @@
 
 name: Sweep E2E leftovers
 
-# Deletes Bigtable instances an E2E run abandoned (issue #246).
+# Deletes the instances an E2E run abandoned (issue #246), for both services
+# whose gated suites provision one: Bigtable and Spanner.
 #
-# AbstractBigtableRealGcpITCase sweeps at the start of a gated class, which is
-# enough while runs finish. It is not enough when one does not: a killed
-# runner, a cancelled job or a JVM crash after @BeforeAll leaves a one-node
+# Each suite's Abstract*RealGcpITCase sweeps at the start of a gated class,
+# which is enough while runs finish. It is not enough when one does not: a
+# killed runner, a cancelled job or a JVM crash after @BeforeAll leaves an
 # instance standing, and the only thing that schedules a gated class is
-# e2e.yaml, weekly. At $0.65 a node-hour that is ~$109 per leaked instance over
-# seven days, and two gated classes run per execution — the number this
+# e2e.yaml, weekly. At $0.65 a node-hour a leaked Bigtable instance is ~$109
+# over seven days, and two gated classes run per execution — the number this
 # workflow exists to bound, and a property of the sweep-on-next-run design
-# rather than of anything Bigtable does.
+# rather than of anything Bigtable does. A leaked 100-processing-unit Spanner
+# instance is an order of magnitude cheaper and swept by the same schedule.
 #
 # Daily, so the worst case is ~$15 rather than ~$109. Detection of everything a
 # sweep cannot foresee is a separate question (a billing budget; see the issue),
@@ -37,7 +39,7 @@ name: Sweep E2E leftovers
 on:
   schedule:
     # Daily, and off the hour and the half hour like every other schedule
-    # here. Clear of e2e.yaml's Saturday 01:17 slot plus its 40-minute ceiling,
+    # here. Clear of e2e.yaml's Saturday 01:17 slot plus its 60-minute ceiling,
     # but that is tidiness rather than the safety property: what keeps this
     # from deleting a running E2E instance is the two-hour threshold, which
     # holds for a workflow_dispatch run at any time of day too. The coupling
@@ -60,7 +62,7 @@ jobs:
     # anyway (the provider condition pins the repository and owner IDs), but
     # this keeps them from trying.
     if: github.repository_owner == 'laughingman7743'
-    name: Delete abandoned Bigtable instances
+    name: Delete abandoned E2E instances
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -70,7 +72,8 @@ jobs:
       # change was needed for this workflow: the binding in e2e-sa.tf is on
       # repository_id:event_name:ref, so it admits schedule and
       # workflow_dispatch on main whatever the workflow is called. The account
-      # holds project-wide roles/bigtable.admin, which is what lets it delete.
+      # holds project-wide roles/bigtable.admin and roles/spanner.editor, which
+      # is what lets it delete.
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -91,4 +94,5 @@ jobs:
       - name: Sweep
         env:
           BIGTABLE_IT_PROJECT: flink-gcp
+          SPANNER_IT_PROJECT: flink-gcp
         run: just sweep-e2e

@@ -192,15 +192,31 @@ is symmetric with this module's sink SPI.
 
 ## Consequences
 
-- **Parallelism is the service's decision.** `PartitionOptions` is documented by Google as a hint
-  and measured to be ignored by the emulator; the enumerator warns when it plans fewer partitions
-  than there are subtasks, as Bigtable's does.
+- **Parallelism is the service's decision**, and the gated suite measured how completely. Over
+  5,000 rows in a 100-processing-unit regional instance (2026-08-10,
+  `SpannerSourceRealGcpITCase`), Spanner planned **one** partition — for `partitionQuery` with
+  default hints, with `maxPartitions = 16`, with `partitionSizeBytes = 1024`, and for
+  `partitionRead`. A table that small is one split, so this is a measurement of that scale rather
+  than evidence about a large one; what it does settle is that a hint cannot manufacture
+  parallelism the data's layout does not offer, which is why the enumerator warns when it plans
+  fewer partitions than there are subtasks rather than trying to ask for more.
 - **A restart re-reads at most one partition per in-flight subtask**, which is what the docs must
   say rather than "at-least-once" alone: the duplicate window is a partition, not a record.
 - **Split planning has emulator coverage, and the partitionability path does too** — which [#36]
-  expected to need real GCP for. What still needs [#224]: whether a query the *emulator* rejects
-  is one the service accepts (its check is conservative, so the two disagree by construction), and
-  Data Boost's IAM, quota and billing behaviour.
+  expected to need real GCP for. What [#224] then measured, and what it found:
+  - **The service refuses the same three shapes the emulator does.** `SELECT COUNT(*)`, `ORDER BY`
+    and `LIMIT` are all rejected with `INVALID_ARGUMENT: Query is not root partitionable since it
+    does not have a DistributedUnion at the root`, plus a `links` block pointing at the documented
+    conditions; a plain scan and a `WHERE` predicate are planned. The emulator's conservatism, real
+    in principle because its check is its own, did not manifest on any shape tried. What differs is
+    the *message*: the service names the condition and links its documentation, where the emulator
+    says only that it could not determine partitionability — which is the argument for surfacing
+    the refusal unwrapped rather than wrapping it.
+  - **Data Boost serves a read**, on the cheapest instance the suite can create: a boosted
+    `partitionQuery` returned all 5,000 rows, and a job built with `dataBoostEnabled(true)` read the
+    table end to end. It needs no edition upgrade — Google lists Data Boost from `STANDARD` up — and
+    the `spanner.databases.useDataBoost` permission is exercised by the read succeeding at all. Its
+    quota and its billing stay unmeasured; a suite this size reaches neither.
 - The emulator's bypass hint is a **statement-level** hint and must precede `SELECT`; placed after
   it, the emulator answers `Invalid emulator-only hint`. Any IT wanting a query shape the
   emulator's check refuses has to write it that way.

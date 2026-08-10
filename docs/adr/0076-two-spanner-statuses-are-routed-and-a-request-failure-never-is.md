@@ -56,8 +56,20 @@ The client library's own generated retry policy is the other piece of evidence:
 `SpannerStubSettings` gives `Commit` and `ExecuteSql` the retryable set
 `{UNAVAILABLE, RESOURCE_EXHAUSTED}` (`retry_policy_3_codes`), and gives `INTERNAL` to nothing.
 
-This is emulator evidence, so it is a starting point rather than an authority. The gated real-GCP
-suite ([#224]) is where each row is confirmed against the service.
+That table was emulator evidence when it was written — a starting point rather than an authority.
+**Every row of it is now confirmed against the service** (2026-08-10, `SpannerRejectionRealGcpITCase`
+under [#224], `google-cloud-spanner` 6.119.0, a 100-processing-unit regional instance): same status
+for every shape, and every one reported per group, including the `delete` of a missing row that is
+simply applied. The emulator was right, which is worth recording precisely because it was not
+something the emulator could establish. The gated class now asserts each row, so a change on either
+side has to be declared.
+
+One shape the two do *not* agree on turned up while porting the class, and it is a harness
+deviation rather than a rejection: real Spanner refuses a `CreateDatabase` request that carries
+extra DDL for a **PostgreSQL-dialect** database ("DDL statements other than &lt;CREATE DATABASE&gt;
+are not allowed in database creation request for PostgreSQL-enabled databases"), where the emulator
+applies them. The gated harness therefore issues the DDL as a separate `updateDatabaseDdl` for that
+dialect.
 
 ## Decision
 

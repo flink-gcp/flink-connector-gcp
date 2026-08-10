@@ -33,9 +33,13 @@ import java.util.List;
  * (checked against google-cloud-spanner 6.119.0) — so this adds up the values through the public
  * accessors instead, the way Apache Beam's {@code MutationSizeEstimator} has for years. It ignores
  * protobuf framing, column names and the request envelope, so it reads low; the default threshold
- * sits 100 times under the 100 MiB a batch write request is documented to allow, and ten times
- * under the 10 MiB it can also be read as allowing (#441). Either way, that gap is the room the
- * estimate is allowed to be wrong in.
+ * sits 100 times under the 100 MiB a batch write request was measured to allow (#441), and that gap
+ * is the room the estimate is allowed to be wrong in.
+ *
+ * <p>One departure from counting a value's own length, and it is there because the gap did not
+ * cover it: a {@code BYTES} value is counted at its <b>base64</b> length, which is what Spanner
+ * receives. See {@link #base64Length(int)} for the measurement. Every other type is counted as
+ * itself, and the framing this still ignores is about sixty bytes a mutation.
  *
  * <p>A value this estimator cannot size is counted at {@link #UNKNOWN_VALUE_BYTES} rather than
  * rejected — a type the client library adds later, and a {@code Value.untyped(...)}, which carries
@@ -125,7 +129,7 @@ final class MutationSizeEstimator {
                 return value.getPgJsonb().length();
             case BYTES:
             case PROTO:
-                return value.getBytes().length();
+                return base64Length(value.getBytes().length());
             case ARRAY:
                 return sizeOfArray(value);
             default:
@@ -171,7 +175,7 @@ final class MutationSizeEstimator {
             case BYTES:
             case PROTO:
                 return value.getBytesArray().stream()
-                        .mapToLong(element -> element == null ? 0 : element.length())
+                        .mapToLong(element -> element == null ? 0 : base64Length(element.length()))
                         .sum();
             default:
                 return UNKNOWN_VALUE_BYTES;
@@ -180,5 +184,23 @@ final class MutationSizeEstimator {
 
     private static long sizeOfStrings(List<String> elements) {
         return elements.stream().mapToLong(element -> element == null ? 0 : element.length()).sum();
+    }
+
+    /**
+     * What {@code rawLength} bytes cost once base64-encoded: four characters per three bytes,
+     * rounded up to a whole quartet.
+     *
+     * <p>This is the one place the estimate departs from counting a value's own length, and it is
+     * measured rather than reasoned: a Spanner value travels inside a {@code
+     * google.protobuf.Value}, which has no bytes kind, so a {@code BYTES} column goes on the wire
+     * as a string. A batch of 83,886,080 raw bytes was refused by the service at 111,852,884 bytes
+     * received (2026-08-10, {@code SpannerRejectionRealGcpITCase}) — four thirds of the raw length,
+     * plus about sixty bytes of framing per mutation. Counting the raw length here made the
+     * estimate read a quarter low for a {@code BYTES}-heavy batch, which is enough for a job that
+     * raised {@code maxBatchBytes} toward its ceiling to build a request the service always
+     * refuses.
+     */
+    private static long base64Length(int rawLength) {
+        return 4L * ((rawLength + 2) / 3);
     }
 }

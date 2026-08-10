@@ -39,13 +39,19 @@ POM = SCRIPTS.parent / "pom.xml"
 POM_NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 
 # The gates the E2E workflow sets, and the variables --require-env demands.
-E2E_GATES = ("BQ_IT_PROJECT", "PUBSUB_IT_PROJECT", "BIGTABLE_IT_PROJECT")
+E2E_GATES = (
+    "BQ_IT_PROJECT",
+    "PUBSUB_IT_PROJECT",
+    "BIGTABLE_IT_PROJECT",
+    "SPANNER_IT_PROJECT",
+)
 REQUIRED = (
     "BQ_IT_PROJECT",
     "BQ_IT_DATASET",
     "BQ_IT_GCS_BUCKET",
     "PUBSUB_IT_PROJECT",
     "BIGTABLE_IT_PROJECT",
+    "SPANNER_IT_PROJECT",
 )
 
 REPORT = '<?xml version="1.0"?>\n<testsuite name="{fqcn}" tests="{tests}" skipped="{skipped}">\n'
@@ -111,10 +117,10 @@ def full_suite(tree, tag=True):
 
 
 def test_paired_markers_pass(tree):
-    full_suite(tree)
+    sources = full_suite(tree)
     result = tree("--check-tags")
     assert result.returncode == 0, result.stderr
-    assert "3" in result.stdout
+    assert str(len(sources)) in result.stdout
 
 
 def test_environment_gate_without_tag_fails(tree):
@@ -182,15 +188,15 @@ def test_no_gated_class_at_all_is_fatal(tree):
 
 
 def test_default_mode_prints_the_class_list(tree):
-    full_suite(tree)
+    sources = full_suite(tree)
     tree.add("PlainITCase")
     result = tree()
     assert result.returncode == 0, result.stderr
-    assert sorted(result.stdout.strip().split(",")) == [
-        "BigtableITCase",
-        "BqITCase",
-        "PubsubITCase",
-    ]
+    # One name per gate and nothing else — PlainITCase carries no gate, so a
+    # discovery that widened to every *ITCase would show up right here.
+    assert sorted(result.stdout.strip().split(",")) == sorted(
+        source.stem for source in sources
+    )
 
 
 def test_default_mode_is_fatal_when_a_gate_matches_nothing(tree):
