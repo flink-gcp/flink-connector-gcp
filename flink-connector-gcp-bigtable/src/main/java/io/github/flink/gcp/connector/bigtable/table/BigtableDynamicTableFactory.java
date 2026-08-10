@@ -105,20 +105,29 @@ public class BigtableDynamicTableFactory implements DynamicTableSinkFactory {
         checkPrimaryKeyIsTheRowKey(context, schema);
         checkSinkHasSomewhereToWrite(schema);
 
-        return new BigtableDynamicSink(
-                schema,
-                TableDestination.of(
-                        config.get(BigtableConnectorOptions.PROJECT),
-                        config.get(BigtableConnectorOptions.INSTANCE),
-                        config.get(BigtableConnectorOptions.TABLE)),
-                config.get(BigtableConnectorOptions.NULL_STRING_LITERAL),
-                config.getOptional(BigtableConnectorOptions.SINK_APP_PROFILE_ID).orElse(null),
-                WriterOptionsMapper.map(config),
-                config.getOptional(BigtableConnectorOptions.SINK_CREATE_DISPOSITION).orElse(null),
-                TableCreateOptionsMapper.map(config, schema),
-                config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
-                config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null),
-                context.getPrimaryKeyIndexes().length > 0);
+        return BigtableDynamicSink.builder()
+                .schema(schema)
+                .destination(
+                        TableDestination.of(
+                                config.get(BigtableConnectorOptions.PROJECT),
+                                config.get(BigtableConnectorOptions.INSTANCE),
+                                config.get(BigtableConnectorOptions.TABLE)))
+                .nullStringLiteral(config.get(BigtableConnectorOptions.NULL_STRING_LITERAL))
+                .appProfileId(
+                        config.getOptional(BigtableConnectorOptions.SINK_APP_PROFILE_ID)
+                                .orElse(null))
+                .writerOptions(WriterOptionsMapper.map(config))
+                .createDisposition(
+                        config.getOptional(BigtableConnectorOptions.SINK_CREATE_DISPOSITION)
+                                .orElse(null))
+                .tableCreateOptions(TableCreateOptionsMapper.map(config, schema))
+                .emulatorEndpoint(
+                        config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
+                .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
+                // A declared primary key is the row-key column alone, checked above, so the
+                // planner's upsert key is the row key and a key-only delete carries it (#470).
+                .keyOnlyDeletesAreSafe(context.getPrimaryKeyIndexes().length > 0)
+                .build();
     }
 
     /**
