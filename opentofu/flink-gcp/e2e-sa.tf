@@ -14,10 +14,11 @@
 
 # The account the nightly real-GCP E2E workflow runs as. Scoped to the fixed
 # set of services the connectors touch; the fine-grained resources (tables,
-# topics, subscriptions, queues, and the Bigtable instance itself) are created
-# and deleted by the tests themselves, which is why the Pub/Sub, Cloud Tasks
-# and Bigtable grants are create-capable. A new connector's E2E suite adds its
-# grant here in the pull request that first needs it.
+# topics, subscriptions, queues, and the Bigtable and Spanner instances
+# themselves) are created and deleted by the tests themselves, which is why the
+# Pub/Sub, Cloud Tasks, Bigtable and Spanner grants are create-capable. A new
+# connector's E2E suite adds its grant here in the pull request that first
+# needs it.
 
 resource "google_service_account" "github_actions_e2e" {
   account_id   = "github-actions-e2e"
@@ -51,6 +52,19 @@ resource "google_project_iam_member" "e2e" {
     "roles/cloudtasks.admin",
     # Tests create and delete their own topics and subscriptions.
     "roles/pubsub.editor",
+    # Admin for the same reason roles/bigtable.admin is above: the Spanner
+    # suite (#224) creates and deletes an ephemeral instance per gated test
+    # class, and no predefined role narrower than admin can create one —
+    # roles/spanner.databaseAdmin administers databases inside an instance that
+    # already exists, and roles/spanner.databaseUser is data access only.
+    # It is also what makes this one binding rather than two: the batch
+    # source's gated tests read with Data Boost, whose
+    # spanner.databases.useDataBoost permission roles/spanner.databaseReader
+    # does not carry (roles/spanner.databaseReaderWithDataBoost does), and
+    # admin carries both that and the DDL the tests issue. Nothing persistent
+    # exists for it to reach: the instance a run works in was created by that
+    # run. A custom role was declined for the reason written out above.
+    "roles/spanner.admin",
   ])
 
   project = local.project_id
