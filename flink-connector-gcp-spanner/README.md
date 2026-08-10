@@ -13,7 +13,7 @@ snapshot, on partitions the service planned. Both dialects, GoogleSQL and Postgr
 | DataStream bounded batch source (`PartitionQuery`, Data Boost) | Implemented ([#221](https://github.com/laughingman7743/flink-connector-gcp/issues/221)) |
 | Change streams source | Planned ([#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222)) |
 | Table API / SQL support | Planned ([#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)) |
-| Gated real-GCP integration tests | Planned ([#224](https://github.com/laughingman7743/flink-connector-gcp/issues/224)) |
+| Gated real-GCP integration tests | Implemented ([#224](https://github.com/laughingman7743/flink-connector-gcp/issues/224)) |
 | Change-stream CDC in SQL | Planned ([#225](https://github.com/laughingman7743/flink-connector-gcp/issues/225)) |
 
 ```java

@@ -62,9 +62,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   which is how the per-request framing got in.
 - **All three batch knobs are bounded at the setter** (#435): 80,000 / 80,000 / 100 MiB,
   package-private `*_LIMIT` constants with the figure named in the `@param` (the `OptionChecks`
-  rule — a public compile-time constant inlines into callers, and #441 may lower the byte one).
-  The byte ceiling is the **looser** of two readings, so it rejects only what is illegal under
-  both, and it is the one that defends a refusal Spanner documents; the **cell ceiling is
+  rule — a public compile-time constant inlines into callers).
+  The byte ceiling is **measured** (#441, 2026-08-10): the service refuses at exactly 104,857,600
+  bytes and accepts well above 10 MiB, so the looser of the two readings was right and the constant
+  did not move. It defends a refusal Spanner documents — under `RESOURCE_EXHAUSTED`, which this
+  connector retries, so it is not a fail-fast boundary. The **cell ceiling is
   precautionary** — no request-level mutation count is documented either way.
 - **`MAX_BATCH_MUTATIONS_LIMIT` is *derived* — `= MAX_BATCH_CELLS_LIMIT`, never a second literal.**
   Every mutation costs at least one cell, so a batch never holds more mutations than cells; that
@@ -154,4 +156,27 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The production `createWriter(WriterInitContext)` is covered by the emulator ITs rather than by a
   closed-port unit test: this sink reads the schema while creating the writer, so a closed port
   costs the client's whole retry budget (27 s, measured 2026-08-09) to prove less.
-- An emulator is never the authority. Real-GCP confirmation of the rejection table is `#224`.
+- An emulator is never the authority. The gated real-GCP suite (#224) is what confirms the
+  rejection table, the schema read in both dialects, which query shapes the service will plan, how
+  many partitions it plans, and Data Boost — and it is the only place a client is built over
+  application-default credentials rather than an emulator endpoint.
+- **The gated suite's instance is ephemeral, one per gated class** (`docs/adr/0088`, following
+  `docs/adr/0044`):
+  100 processing units — the floor for a regional configuration — in the `STANDARD` edition, which
+  is set rather than defaulted because it is the cheapest edition carrying Data Boost — **measured
+  on that instance, not read off the editions page** — and because the free-trial instance that
+  would otherwise be tempting is one of the few places Data Boost is
+  explicitly unsupported. Nothing persistent is provisioned: an instance bills for as long as it
+  exists. The E2E account holds `roles/spanner.editor`, **not** `roles/spanner.admin`: editor
+  carries every permission the suite uses, and admin would add `setIamPolicy` on four resource
+  kinds to a CI identity.
+- **A gated class creates its databases once, in its own `@BeforeAll`, and shares them.** The
+  emulator classes can afford a database per test method; against the service each one costs
+  seconds, and a test that only reads a schema does not need a database of its own.
+- Both markers stay on the concrete classes, never on `AbstractSpannerRealGcpITCase` — and its
+  javadoc writes `{@code @EnabledIfEnvironmentVariable}` with no argument list, or
+  `just check-gated-tags` picks the base class up as an unpaired gate.
+- **Real Spanner refuses extra DDL in a `CreateDatabase` request for a PostgreSQL-dialect
+  database**, where the emulator applies it (measured 2026-08-10) — so the gated harness issues
+  `updateDatabaseDdl` separately for that dialect and keeps the one-call form for GoogleSQL. A new
+  harness that creates a PostgreSQL database will meet this too.

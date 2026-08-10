@@ -42,7 +42,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   behind the one-artifact claim (ADR-0053 records why its order and its install step are
   load-bearing). Reproducing a red weekly `binary_compat` is what it is for, and run by hand it
   primes `~/.m2` with `io.github.flink-gcp` SNAPSHOTs (the recipe comment has the cleanup line)
-- `just e2e` — the ITCases gated on the `BQ_IT_*` / `PUBSUB_IT_PROJECT` / `BIGTABLE_IT_PROJECT`
+- `just e2e` — the ITCases gated on the `BQ_IT_*` / `PUBSUB_IT_PROJECT` / `BIGTABLE_IT_PROJECT` /
+  `SPANNER_IT_PROJECT`
   variables, **and the only thing that runs them** (#245; ADR-0065 records the per-shell
   incident and the marker mechanics): each gated class also carries `@Tag("gated")`, which the
   root pom excludes from every surefire execution, and this recipe is the opt-in that clears
@@ -53,14 +54,20 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   recipe via WIF; locally the variables come from the uncommitted `.env`, which a fresh
   worktree does not have — run `just worktree-env` once there to symlink the main checkout's
   copy (#156; the same link also carries `just tofu`'s credentials)
-- `just sweep-e2e [--dry-run]` — deletes Bigtable instances an E2E run abandoned (#246).
-  `AbstractBigtableRealGcpITCase` sweeps at the start of a gated class, but only the weekly
-  E2E workflow schedules one, so a run whose teardown never executed leaves a one-node
-  instance standing (~**$109** until the next weekly run); `sweep-e2e.yaml` runs this daily,
-  which is what bounds that number. The
+- `just sweep-e2e [--dry-run]` — deletes the instances an E2E run abandoned (#246, #224), for
+  every service whose gated suite provisions one: Bigtable and Spanner. Each suite's
+  `Abstract*RealGcpITCase` sweeps at the start of a gated class, but only the weekly
+  E2E workflow schedules one, so a run whose teardown never executed leaves an
+  instance standing (~**$109** for a Bigtable node until the next weekly run, an order of
+  magnitude less for a 100-processing-unit Spanner instance); `sweep-e2e.yaml` runs this daily,
+  which is what bounds that number. Per service, the
   instance prefix and the two-hour threshold are **read out of the Java source** (a second copy
   would go stale silently), and both greps plus the gcloud listing are hard errors, because a
-  sweep that matches nothing looks exactly like a sweep with nothing to do
+  sweep that matches nothing looks exactly like a sweep with nothing to do. **One script rather
+  than a recipe line per service**, because `just` stops at its first failing line: two lines
+  would let one service's delete failure skip the other's sweep entirely, so `scripts/sweep-e2e.sh`
+  sweeps each independently and reports the worst status. The listing failure is checked
+  explicitly rather than left to `set -e`, which the per-service function no longer sees
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
@@ -577,8 +584,13 @@ are the trigger; they are not a summary, and none of them is safe to answer from
 - `flink-connector-gcp-spanner/CLAUDE.md` — the Mutation-based at-least-once sink (#220): why
   `batchWriteAtLeastOnce` rather than a commit, the retry loop the connector owns because the
   client library retries this RPC not at all, index-aware mutation-cell weights read from
-  `INFORMATION_SCHEMA`, which statuses are routed and which are retried, and both dialects.
-  Recorded in ADRs (`docs/adr/0075`–`0077`)
+  `INFORMATION_SCHEMA`, which statuses are routed and which are retried, and both dialects. Also
+  the bounded batch source (#221): one server-planned partition per split, a partition as the unit
+  of progress, and the two option families assembled separately. Also the gated real-GCP suite
+  (#224): the ephemeral 100-processing-unit `STANDARD` instance per gated class and why that
+  edition, what the service turned out to answer where only the emulator had been asked, and the
+  measured 100 MiB batch-write request ceiling (#441).
+  Recorded in ADRs (`docs/adr/0075`–`0077`, `0085`, `0088`)
 - `flink-connector-gcp-test-utils/CLAUDE.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its

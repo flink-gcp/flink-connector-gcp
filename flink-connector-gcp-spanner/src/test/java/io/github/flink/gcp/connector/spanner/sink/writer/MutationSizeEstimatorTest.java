@@ -50,7 +50,7 @@ class MutationSizeEstimatorTest {
     }
 
     @Test
-    void sizesStringsAndBytesByTheirLength() {
+    void sizesAStringByItsLengthAndBytesByItsBase64Length() {
         Mutation mutation =
                 Mutation.newInsertBuilder("T")
                         .set("Note")
@@ -59,7 +59,50 @@ class MutationSizeEstimatorTest {
                         .to(ByteArray.copyFrom(new byte[64]))
                         .build();
 
-        assertThat(MutationSizeEstimator.sizeOf(mutation)).isEqualTo(300 + 64);
+        // 64 raw bytes are 88 base64 characters, which is what Spanner receives: a value travels
+        // inside a google.protobuf.Value, which has no bytes kind. Measured against the service on
+        // 2026-08-10 — see MutationSizeEstimator#base64Length. Counting the raw 64 here would make
+        // the estimate read a quarter low for a BYTES-heavy batch.
+        assertThat(MutationSizeEstimator.sizeOf(mutation)).isEqualTo(300 + 88);
+    }
+
+    @Test
+    void roundsAPartialBase64QuartetUp() {
+        // 1, 2 and 3 raw bytes all cost one four-character quartet; 4 costs two. The rounding is
+        // what keeps the estimate from reading low on many small values, where a per-value error
+        // compounds.
+        for (int raw = 1; raw <= 3; raw++) {
+            assertThat(MutationSizeEstimator.sizeOf(blobOf(raw)))
+                    .as("%s raw byte(s)", raw)
+                    .isEqualTo(4);
+        }
+        assertThat(MutationSizeEstimator.sizeOf(blobOf(4))).isEqualTo(8);
+        assertThat(MutationSizeEstimator.sizeOf(blobOf(0))).isZero();
+    }
+
+    @Test
+    void sizesAnArrayOfBytesByEachElementsBase64Length() {
+        // The array arm is a separate switch from the scalar one, so it needs its own case: an
+        // ARRAY<BYTES> column that counted raw would undercount by the same quarter, and nothing
+        // else here would notice.
+        Mutation mutation =
+                Mutation.newInsertBuilder("T")
+                        .set("Blobs")
+                        .toBytesArray(
+                                Arrays.asList(
+                                        ByteArray.copyFrom(new byte[64]),
+                                        ByteArray.copyFrom(new byte[4]),
+                                        null))
+                        .build();
+
+        assertThat(MutationSizeEstimator.sizeOf(mutation)).isEqualTo(88 + 8);
+    }
+
+    private static Mutation blobOf(int rawLength) {
+        return Mutation.newInsertBuilder("T")
+                .set("Blob")
+                .to(ByteArray.copyFrom(new byte[rawLength]))
+                .build();
     }
 
     @Test
