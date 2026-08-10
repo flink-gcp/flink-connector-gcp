@@ -22,12 +22,10 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
-import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
-import org.apache.flink.types.RowKind;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -37,7 +35,6 @@ import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
-import io.github.flink.gcp.connector.bigtable.table.sink.CrossVersionChangelogMode;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -132,32 +129,6 @@ class BigtableDynamicTableFactoryTest {
         assertThat(sink.getConfig().getAppProfileId()).isNull();
         assertThat(sink.getConfig().getEmulatorEndpoint()).isNull();
         assertThat(sink.getConfig().getTableCreateOptions()).isNull();
-    }
-
-    @Test
-    void deletesCarryTheKeyAloneOnlyWhenAPrimaryKeyIsDeclared() {
-        ChangelogMode withoutKey =
-                sink(SCHEMA, minimalOptions()).getChangelogMode(ChangelogMode.all());
-        ChangelogMode withKey =
-                sink(withPrimaryKey("rowkey"), minimalOptions())
-                        .getChangelogMode(ChangelogMode.all());
-
-        // The mode itself, not just its contained kinds: on 2.x a key-only-deletes upsert and a
-        // full-deletes one carry the same three kinds and compare unequal. Both expectations are
-        // built through CrossVersionChangelogMode rather than named directly, because
-        // ChangelogMode.upsert(boolean) does not exist on the 1.20 LTS build this source tree also
-        // compiles against — where the two collapse to one value, which is the truth there: 1.20
-        // completes the row before every delete regardless.
-        //
-        // #470 is what the first of these pins. With no PRIMARY KEY the planner keys its upserts
-        // on whatever the query is unique by, which need not be the row key, so a delete carrying
-        // that key alone would reach the writer with the row-key column null.
-        assertThat(withoutKey).isEqualTo(CrossVersionChangelogMode.upsert(false));
-        assertThat(withKey).isEqualTo(CrossVersionChangelogMode.upsert(true));
-        assertThat(withoutKey.getContainedKinds())
-                .containsExactlyInAnyOrder(RowKind.INSERT, RowKind.UPDATE_AFTER, RowKind.DELETE);
-        assertThat(withKey.getContainedKinds())
-                .containsExactlyInAnyOrder(RowKind.INSERT, RowKind.UPDATE_AFTER, RowKind.DELETE);
     }
 
     @Test

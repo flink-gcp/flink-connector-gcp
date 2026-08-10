@@ -101,6 +101,14 @@ already applied to every table that declares a primary key; from
 different job wrote is the goal, emit the row key in the delete — a retract source carrying whole
 rows reaches the sink without a normalize.
 
+**Upgrading past [#470]({{< param BookRepo >}}/issues/470) changes the plan** of an updating query
+over a table with no `PRIMARY KEY`, because `ChangelogNormalize` is a new stateful operator. Flink
+assigns a SQL pipeline's operator UIDs explicitly only when it came from a persisted `COMPILED PLAN`
+— `table.exec.uid.generation` defaults to `PLAN_ONLY` — and otherwise lets the lower layers generate
+them "taking the complete topology into account". A savepoint taken before the upgrade therefore
+does not map onto the new topology, so restoring one is a plan migration rather than a version bump.
+A table that declares its primary key is unaffected: such a job already had the operator.
+
 **Every rejection on this page happens when a statement is planned, not at `CREATE TABLE`.** Flink
 does not consult a connector while registering a table, so a `CREATE TABLE` naming a column this
 connector cannot encode is accepted and the first `INSERT INTO` over it fails. The message arrives
@@ -234,8 +242,14 @@ The writer hands entries to the client's bulk-mutation batcher, and Bigtable's o
 `MutateRows` is that its entries "may be applied in arbitrary order (even between entries for the
 same row)". So when a job produces two changelog rows for the same key close enough together to
 share a request, which one lands last is not defined — and if they share a millisecond they also
-share a cell timestamp, so they collapse to one version rather than two. Rows for a key that arrive
-in separate requests do have a defined order.
+share a cell timestamp, so they collapse to one version rather than two.
+
+**Separate requests are not the fix**, and setting `sink.batching.element-count` to `1` to force one
+entry per request is the shape that looks like it. The batcher sends each request without waiting
+for the previous one's response, so requests a single job has in flight are concurrent rather than
+ordered — measured, forcing one entry per request made a delete stop taking effect. What has a
+defined order is separate *writes*: a request whose response has been awaited before the next is
+issued, which is what successive jobs give you.
 
 A job that needs last-write-wins per key within a batch has to keep at most one row per key in
 flight — by aggregating upstream, or by putting the version in the row key. Google's own guidance

@@ -240,13 +240,19 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   primary key was declared, which is why a test proving `deleteRow` must ride the insert and the
   delete on one stream or use a retract source. **`ChangelogMode.upsert(boolean)` and `keyOnlyDeletes()` do
   not exist on the 1.20 LTS build** — naming either anywhere, including in a test, breaks that
-  build and not this one, which is why the answer goes through `CrossVersionChangelogMode`, the
-  module's **second** per-major seam beside `CrossVersionSink`.
+  build and not this one, which is why the answer goes through `CrossVersionChangelogMode`, package-private beside
+  its only caller as `CrossVersionCheckpointId` is — unlike `CrossVersionSink`, which is public
+  because sinks in sibling packages implement it.
 - **Two rows for one key in one `MutateRows` have no defined winner** (the proto says entries may be
   applied in any order, even for the same row) and, inside a millisecond, no second cell version
-  either. An integration test that needs an order sends **separate requests**; one that batches them
-  is asserting the emulator's submission order. The cell timestamp is the **writer's clock**, which
-  is what makes a retry idempotent.
+  either. An integration test that needs an order sends them from **separate jobs**; one that
+  batches them is asserting the emulator's submission order. **Separate *requests* are not enough,
+  and `sink.batching.element-count` = `1` is not the escape hatch it looks like** — measured on
+  #470's follow-up, one entry per request made a delete stop taking effect on the 1.20 build,
+  because the requests one job has in flight are concurrent rather than ordered. A test that cannot
+  use two jobs — the table layer's delete test, since `ChangelogNormalize` knows only what its own
+  job has seen — asserts something order-independent instead. The cell timestamp is the **writer's
+  clock**, which is what makes a retry idempotent.
 - **Table creation takes its families from the DDL and its rule from two keys**, unioned when both
   are set, and **at least one is required** under `create-if-needed` — stricter than the DataStream
   API, because an at-least-once upsert sink writes another version on every replay. Defaulting the

@@ -80,8 +80,8 @@ written before #470 when a PK-less table had no normalize, while the #470 test r
 and the delete on one upsert stream.
 
 `ChangelogMode.upsert(boolean)` and `keyOnlyDeletes()` exist on 2.x and not on 1.20, so the answer
-goes through `CrossVersionChangelogMode` in the per-major source roots — the module's **second**
-seam, beside `CrossVersionSink` — and nothing in the code or the tests may name either method
+goes through `CrossVersionChangelogMode` in the per-major source roots — package-private beside
+its only caller, as `CrossVersionCheckpointId` is — and nothing in the code or the tests may name either method
 directly. 1.20 has no key-only concept at all and was never exposed: its planner completes the row
 before every delete regardless. The *sink* behaves identically on both — it reads only the row key
 on a delete — but the *planner* does not, which a test discovered: an upsert source feeding this
@@ -166,7 +166,15 @@ version. That is a property of batching over this API rather than of this layer,
 the docs page instead of being papered over ([#471](https://github.com/laughingman7743/flink-connector-gcp/issues/471) asks whether the sink should enforce an
 order); a test asserting an in-batch winner would be asserting
 the emulator's submission order, which is why the integration tests that need an order use separate
-requests.
+**jobs**.
+
+Separate *requests* are not enough, and `sink.batching.element-count` = `1` is not the escape hatch
+it looks like: measured on #470's follow-up, forcing one entry per request made a delete stop taking
+effect on the 1.20 build, because the requests one job has in flight are concurrent rather than
+ordered. Where two jobs are impossible — the table layer's delete test, since `ChangelogNormalize`
+knows only what its own job has seen — the assertion has to be order-independent instead.
+`aKeyOnlyDeleteRemovesTheRowWhenNoPrimaryKeyIsDeclared` asserts that the job *completes*, which is
+exactly what #470 bought, and leaves the row's final state unasserted.
 
 **The cell timestamp is the writer's clock**, not the server's: the client library's three-argument
 `setCell` stamps `System.currentTimeMillis()`, which is what makes a retried mutation rewrite the
