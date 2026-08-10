@@ -150,6 +150,90 @@ SpannerSink.<Event>builder()
 indexes covering them costs far more than five. Watch `bufferedCells` beside `bufferedBytes` to see
 which limit is the one actually firing.
 
+## Reading a key range instead of a query
+
+A table read takes a key set and a column list, and is the cheapest shape when the rows wanted are
+a contiguous range of the primary key. There is no SQL to be root-partitionable, so nothing about
+the read can be refused for being undistributable.
+
+```java
+SpannerSource.<Order>builder()
+        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+        .readOperation(
+                SpannerReadOperation.read(
+                        "Orders",
+                        KeySet.range(KeyRange.closedOpen(Key.of(1_000L), Key.of(2_000L))),
+                        Arrays.asList("OrderId", "Total")))
+        .deserializer(new OrderDeserializer())
+        .build();
+```
+
+`SpannerReadOperation.readUsingIndex("Orders", "OrdersByCustomer", keys, columns)` reads the same
+way through a secondary index, with the key set interpreted in the *index's* key space.
+
+## Reading a large table without disturbing serving traffic
+
+Data Boost serves the read from compute that is not the instance's. The caller needs
+`spanner.databases.useDataBoost` on the database, the read is billed separately, and its
+concurrency has a quota of its own.
+
+```java
+SpannerSource.<Order>builder()
+        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+        .readOperation(
+                SpannerReadOperation.query(
+                        Statement.of("SELECT OrderId, Total FROM Orders WHERE Total > 100")))
+        .deserializer(new OrderDeserializer())
+        .dataBoostEnabled(true)
+        // Both are hints. Asking for one partition per subtask is reasonable; getting a different
+        // number is normal, and the enumerator warns when the plan is smaller than the parallelism.
+        .maxPartitions(env.getParallelism())
+        .build();
+```
+
+## Reading at a fixed timestamp
+
+Reading two tables at the same timestamp makes their contents consistent with each other, which a
+job joining them usually wants.
+
+```java
+Timestamp readAt = Timestamp.parseTimestamp("2026-08-10T00:00:00Z");
+
+SpannerSource.<Order>builder()
+        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+        .readOperation(SpannerReadOperation.query(Statement.of("SELECT OrderId FROM Orders")))
+        .deserializer(new OrderDeserializer())
+        .timestampBound(TimestampBound.ofReadTimestamp(readAt))
+        .build();
+```
+
+The timestamp has to lie inside the database's `version_retention_period` — an hour by default, up
+to a week — or the data behind it is gone. `TimestampBound.ofExactStaleness(...)` is the other
+accepted form; `ofMaxStaleness` and `ofMinReadTimestamp` are rejected, because Spanner allows them
+only on a single-use transaction.
+
+## Skipping rows on the way in
+
+Returning `null` from a source deserializer skips the row, exactly as returning `null` from the
+sink's serializer skips a record. `recordsSkipped` counts them.
+
+```java
+new SpannerStructDeserializationSchema<Order>() {
+    @Override
+    public Order deserialize(Struct row) {
+        // Rows the query could not exclude, filtered before they cost anything downstream.
+        return row.isNull("Total") ? null : new Order(row.getLong("OrderId"), row.getBigDecimal("Total"));
+    }
+
+    @Override
+    public TypeInformation<Order> getProducedType() {
+        return TypeInformation.of(Order.class);
+    }
+};
+```
+
+A row you could not read is a different thing: throw, and the job fails rather than losing it.
+
 ## Running against the emulator
 
 ```sh
@@ -164,8 +248,25 @@ SpannerSink.<Event>builder()
         .build();
 ```
 
+The source takes the same option:
+
+```java
+SpannerSource.<Order>builder()
+        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+        .readOperation(SpannerReadOperation.query(Statement.of("SELECT OrderId FROM Orders")))
+        .deserializer(new OrderDeserializer())
+        .emulatorEndpoint("localhost:9010")
+        .build();
+```
+
 Setting the endpoint also stops the client looking for credentials. Pin an image at **v1.5.31 or
 newer**: the emulator implements the `BatchWrite` RPC this sink writes with only from that release,
 and an older one answers `UNIMPLEMENTED` to everything. The emulator has no IAM and serializes
 concurrent transactions, so it is a convenience for fast feedback rather than evidence about the
 service.
+
+On the read path in particular, the emulator plans exactly two partitions whatever the data, ignores
+both partition hints, and applies a partitionability check of its own that refuses query shapes the
+real service accepts —
+[the deviation table]({{< relref "docs/connectors/datastream/spanner" >}}#reading-against-the-emulator)
+has the details.

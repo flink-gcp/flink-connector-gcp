@@ -22,7 +22,8 @@ limitations under the License.
 
 # Spanner connector
 
-An at-least-once sink that applies one Spanner `Mutation` per record. Both dialects — GoogleSQL and
+An at-least-once sink that applies one Spanner `Mutation` per record, and a bounded source that
+reads a database at one snapshot on partitions the service planned. Both dialects — GoogleSQL and
 PostgreSQL — are supported from the same code; the dialect is a property of the database, and the
 sink reads it rather than being told.
 
@@ -263,6 +264,144 @@ Returning `null` from the serializer **skips** the record: it is written nowhere
 never reaches the failure handler, and is counted by `recordsSkipped`. Throwing marks the record as
 failed and routes it instead. This is the same contract every connector here follows.
 
+## Source
+
+The source reads a Spanner database at one snapshot and finishes.
+
+```java
+Source<Singer, ?, ?> source =
+        SpannerSource.<Singer>builder()
+                .database(SpannerDatabase.of("my-project", "my-instance", "my-db"))
+                .readOperation(
+                        SpannerReadOperation.query(
+                                Statement.of("SELECT id, name FROM singers")))
+                .deserializer(new SingerDeserializer())
+                .build();
+
+env.fromSource(source, WatermarkStrategy.noWatermarks(), "singers");
+```
+
+Bounded is not the same as batch-only: a bounded source runs inside a streaming pipeline and simply
+ends, which is what makes reading a Spanner table and joining it against an unbounded stream work.
+
+The options are in [the reference]({{< relref "docs/reference/spanner" >}}#spannersourcebuilder).
+
+### Splits, partitions and recovery
+
+**Spanner decides how the read is divided, not the job.** The enumerator opens one batch read-only
+transaction, asks the service to partition it, and turns each partition into one split. Every
+subtask then rejoins that same transaction and streams the partitions it is given, so every row the
+job sees comes from one consistent snapshot — across every subtask, with no column to split on and
+no bounds to supply.
+
+`maxPartitions` and `partitionSizeBytes` are **hints**, which is Google's own word for them. The
+service may return more partitions or fewer, and a job that plans for a particular parallelism has
+to cope with getting a different one. The enumerator logs the count it received, and warns when it
+is smaller than the parallelism — the subtasks left without a partition finish immediately.
+
+**A partition is the unit of progress, and the unit of re-reading.** There is no position inside a
+partition to resume at: `execute` replays the whole thing, and a partitioned query's row order is
+not contractual — a query is partitionable only when the first operator of its execution plan is a
+distributed union, which rules out the top-level `ORDER BY` that would fix an order — so a count of
+rows already read would not mean the same thing on a second execution. A checkpoint therefore records which partitions a reader still holds, and recovery
+re-reads each of them from the start.
+
+That makes the delivery guarantee **at-least-once, with a duplicate window of one partition**. It
+applies in two places, and the second one is the surprising one:
+
+- a job that fails and restarts re-reads the partitions that were in flight;
+- a partition **cancelled mid-read while the job is running** — which is what Flink does to a
+  reader it needs to interrupt — is opened again at its start, so the rows it had already emitted
+  are emitted again. It is logged at `WARN` and counted by `partitionsReread`, which is the metric
+  that explains duplicate output from a run that never failed.
+
+If your pipeline cannot tolerate that, deduplicate on the primary key downstream. The alternative —
+reading on rather than interrupting — would hold a subtask until the client's own read deadline
+whenever the service went quiet, including while a job was being cancelled.
+
+### The snapshot, and how long it lasts
+
+The default is a **strong** read: the latest committed data at the moment the read is planned.
+`ofReadTimestamp` and `ofExactStaleness` are the other two bounds a batch read can take, and a
+stale read is cheaper for the service to serve because any replica can answer it.
+
+`ofMaxStaleness` and `ofMinReadTimestamp` are **rejected by the builder**. Spanner allows those two
+only on a single-use transaction, and a batch read is by construction a multi-use one — every
+partition rejoins the transaction the plan was made in.
+
+What bounds how long a read may take is the database's **`version_retention_period`** (one hour by
+default, up to a week). A batch read holds a snapshot at a fixed timestamp, and once that timestamp
+falls outside the retention window the data behind it is gone: a long backfill either finishes
+inside the window or runs against a database whose retention was raised first. The same applies to a
+savepoint — resuming a read whose snapshot has expired is not possible, whatever the state file
+holds.
+
+### Read shapes and push-down
+
+A read is either a query or a table read, never both:
+
+- `SpannerReadOperation.query(Statement)` — any root-partitionable query. Predicates and projections
+  are pushed to the service, and a parameterised `Statement` carries its bindings.
+- `SpannerReadOperation.read(table, keySet, columns)` — a key set and a column list, which is the
+  cheapest shape for reading a table or a key range whole.
+- `SpannerReadOperation.readUsingIndex(table, index, keySet, columns)` — the same through a
+  secondary index, with the key set interpreted in the index's key space. A column the index does
+  not store is read back from the base table, which costs a lookup per row.
+
+**Not every query can be read this way.** Spanner partitions a query only when its execution plan
+begins with a distributed union — in practice a scan of one table, with predicates and projections
+but no aggregate, no `ORDER BY` and no `LIMIT`. A query that is not root-partitionable is refused
+when the source plans, and the service's own message says which part it could not distribute; the
+connector surfaces it rather than wrapping it, because that message is the only thing that tells you
+what to change. Reading a non-partitionable query on a single subtask is deliberately not offered
+([#36]({{< param BookRepo >}}/issues/36) holds the deferral).
+
+### Deserialization
+
+`SpannerStructDeserializationSchema` turns one `Struct` into at most one record, and declares its own
+`TypeInformation` so a job needs no `returns(...)` after the source. Returning `null` **skips** the
+row: it is emitted nowhere, is not a failure, and `recordsSkipped` is the only thing that reports it
+— the same contract the sink's serializer has in the other direction. A row you could not read is a
+failure and should be thrown, not skipped.
+
+One row becomes at most one record. A Spanner row is a relational row, so fanning one out is a
+`flatMap` in the job rather than a shape this SPI takes.
+
+### Serverless reads with Data Boost
+
+`dataBoostEnabled(true)` runs the read on compute that is not the instance's, so a large scan does
+not contend with the workload the instance is serving. Three things come with it:
+
+- the caller needs `spanner.databases.useDataBoost` on the database, which
+  `roles/spanner.databaseReader` does **not** carry — `roles/spanner.databaseReaderWithDataBoost`
+  is the role that does;
+- the read is billed separately;
+- its concurrency has a quota of its own, so `RESOURCE_EXHAUSTED` is a shape a boosted read can meet
+  that an ordinary one does not.
+
+Nothing here claims Data Boost has been exercised end to end. What this connector guarantees is that
+the flag reaches the partition calls; the emulator accepts it and does nothing with it, and the
+gated real-GCP suite ([#224]({{< param BookRepo >}}/issues/224)) is what will measure the rest.
+
+### Reading against the emulator
+
+The emulator is a convenience, never evidence about the service, and on the read path it deviates in
+one direction that is easy to get backwards. Measured against `emulator:1.5.56` on 2026-08-10:
+
+| Deviation | Consequence |
+|---|---|
+| It planned exactly two partitions, one of them empty, for every table measured (500 and 4,000 rows) | Split planning has no emulator coverage. What the emulator *does* give is real coverage of an empty partition, which a reader must finish without complaint |
+| It ignores `maxPartitions` and `partitionSizeBytes` | Neither hint can be shown to have any effect here |
+| Its partitionability check is **stricter** than the service's | It refuses aggregates, `ORDER BY` and `LIMIT` with "not able to determine whether this query is partitionable" — a query it rejects may be one Spanner would plan. A test needing such a shape prefixes the statement with `@{spanner_emulator.disable_query_partitionability_check=true}`, which works only *before* the `SELECT` |
+| It accepts `dataBoostEnabled` and does nothing with it | The IAM permission, the quota and the billing are the gated suite's to show |
+| No IAM | `PERMISSION_DENIED` on a read is never exercised |
+
+### Not here yet
+
+- Table API and SQL, which is [#223]({{< param BookRepo >}}/issues/223).
+- A change-stream source, which is [#222]({{< param BookRepo >}}/issues/222) — a different API with
+  different semantics, and a source of its own.
+
 ## Metrics
 
 Registered on the sink writer's metric group.
@@ -292,6 +431,29 @@ bill the connector should sign on your behalf.
 
 `currentSendTime` is deliberately unset: a batch write's latency covers a whole request of unrelated
 mutations, so attributing it to records would say nothing an operator can act on.
+
+### Source metrics
+
+Registered on the split enumerator's group, on the coordinator, and on the source reader's group, on
+each subtask.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `readsPlanned` | counter | Planning calls that completed. One on a fresh run, zero on a restored one — which is how a restore tells itself apart at runtime |
+| `splitsAssigned` | counter | Partition splits handed to a reader |
+| `splitsReturned` | counter | Partition splits a failed reader gave back, to be handed out again |
+| `unassignedSplits` | gauge (Flink standard) | Partition splits nobody holds yet |
+| `numRecordsIn` | counter (Flink standard) | Records handed downstream |
+| `rowsRead` | counter | Rows pulled off a partition, including rows the deserializer skipped |
+| `partitionsReread` | counter | Partitions opened again from their start after a wake-up cancelled them part-way. Non-zero means some rows were delivered twice by a run that never failed |
+
+`recordsSkipped` is registered on this side too, and means the same thing it does above: rows the
+deserializer returned `null` for.
+
+There is no bytes-read counter and no rows-remaining gauge. The client hands over a decoded `Struct`
+and says nothing about what it cost on the wire, so any byte figure would be this connector's
+arithmetic wearing the look of the quantity Spanner bills for; and a partition is an opaque token, so
+nothing knows how many rows are left inside one.
 
 ## Testing
 

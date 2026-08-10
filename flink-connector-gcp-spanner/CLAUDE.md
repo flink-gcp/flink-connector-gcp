@@ -95,6 +95,46 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   and the dead-letter payload is the Java-serialized `Mutation`. Recheck both on a client upgrade
   — a public conversion appearing upstream would reopen the payload encoding.
 
+## Batch source (`docs/adr/0085`, `docs/adr/0083`)
+
+- **The assignment protocol is the base module's**: `SpannerPartitionSplitEnumerator` extends
+  `PullAssignmentSplitEnumerator` and supplies only the planning step — `restore`, the partition
+  call, the plan and its report, the counters, its own `snapshotState`. A change to assignment
+  changes both sources and belongs in `flink-connector-gcp-base` (`docs/adr/0083`).
+- **A split is one server-planned partition, and the partition is the unit of progress.** There is
+  no position inside one to resume at, so a checkpoint records which partitions a reader still
+  holds and recovery re-reads each whole. Do not add an offset: `partitionQuery` gives no order
+  contract — a query is partitionable only when its plan begins with a distributed union, which
+  rules out the top-level `ORDER BY` that would fix an order — and the emulator's own re-execution
+  being stable is not a promise. (The emulator refuses `ORDER BY` too, but its check is *stricter*
+  than the service's, so it is not evidence for what Spanner does.)
+- **A wake-up costs a partition its progress, deliberately**, and the duplicate is logged at WARN
+  and counted by `partitionsReread`. Reading on instead would hold a subtask until the client's own
+  read deadline whenever the service went quiet. The case is rare because this enumerator assigns
+  only on request, so a mid-partition wake-up comes from `SplitFetcher.shutdown()` — which never
+  fetches again.
+- **The `cancelled` flag decides whether a split finished, never the read's behaviour** — measured:
+  closing a `ResultSet` from another thread ends a blocked `next()` either by returning `false` or
+  by throwing `CANCELLED`. Both shapes occur.
+- **The split serializer writes both vendor values with Java serialization**, which is this
+  repository's one exception to "a checkpointed split owns its own byte format" and is forced: the
+  partition token is opaque, the accessors are package-private and there is no public factory.
+  The exposure is bounded by the snapshot, not by the format.
+- **The enumerator owns `cleanup()`**, wrapped with the client into the one `AutoCloseable` the
+  base closes. Readers close their own transaction handle and never call it — releasing the session
+  would end every other reader's read. Against the pinned client the call is a no-op (multiplexed
+  session); it stays because it is the contract.
+- **The deserialization SPI is a nullable return**, not the collector Bigtable's source takes: a
+  whole-partition resume permits either, and a relational row makes a one-to-many mapping
+  meaningless. `null` skips, `recordsSkipped` counts.
+- `SpannerClients` at the module root builds the service handle both directions open. The
+  emulator-versus-credentials branch is exactly what `docs/adr/0064` exists for; do not grow a
+  second copy.
+- **A test needing a `Partition` or a `BatchTransactionId` goes through
+  `src/test/java/com/google/cloud/spanner/TestPartitions.java`** — the second file in this
+  repository declaring a vendor package, taken under `docs/adr/0067`'s bar and recorded in
+  `docs/adr/0085`. Do not treat it as a precedent for a third.
+
 ## Testing
 
 - Emulator ITs pin `gcr.io/cloud-spanner-emulator/emulator`, **not** the `google-cloud-cli` bundle

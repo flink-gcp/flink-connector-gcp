@@ -27,6 +27,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Struct;
+import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import org.junit.jupiter.api.Test;

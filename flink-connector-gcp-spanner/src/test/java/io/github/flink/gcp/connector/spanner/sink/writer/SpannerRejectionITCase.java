@@ -22,6 +22,7 @@ import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.MutationGroup;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.sink.ConstraintViolationPolicy;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;

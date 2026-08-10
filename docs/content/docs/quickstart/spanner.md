@@ -75,7 +75,51 @@ from the builder — one sink writes to as many tables of `orders-db` as the ser
 [connector page]({{< relref "docs/connectors/datastream/spanner" >}}#delivery-guarantee-and-why-the-mutation-operation-is-your-decision)
 has the table of which operations are idempotent.
 
+## Read the table back into Flink
+
+The source reads the database at one snapshot and finishes. Spanner decides how the read is divided;
+the job supplies no split column and no bounds.
+
+```java
+StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+Source<Long, ?, ?> source =
+        SpannerSource.<Long>builder()
+                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .readOperation(
+                        SpannerReadOperation.query(
+                                Statement.of("SELECT OrderId FROM Orders")))
+                .deserializer(
+                        new SpannerStructDeserializationSchema<Long>() {
+                            @Override
+                            public Long deserialize(Struct row) {
+                                return row.getLong("OrderId");
+                            }
+
+                            @Override
+                            public TypeInformation<Long> getProducedType() {
+                                return TypeInformation.of(Long.class);
+                            }
+                        })
+                .build();
+
+env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders").print();
+env.execute("spanner-read-quickstart");
+```
+
+The identity running the job needs `spanner.sessions.create`, `spanner.databases.select` and the
+partitioned-read permissions `spanner.databases.partitionQuery` and `spanner.databases.partitionRead`
+— `roles/spanner.databaseReader` carries all four. Data Boost needs one more, and a different role;
+see [Serverless reads with Data Boost]({{< relref "docs/connectors/datastream/spanner" >}}#serverless-reads-with-data-boost).
+
+Two things worth knowing before the first large read. The read holds a snapshot at one timestamp,
+and the database's `version_retention_period` (an hour by default) is what bounds how long it stays
+readable. And recovery re-reads whole partitions, so a job that fails part-way emits some rows twice
+— see
+[Splits, partitions and recovery]({{< relref "docs/connectors/datastream/spanner" >}}#splits-partitions-and-recovery).
+
 ## Next
 
 [Spanner examples]({{< relref "docs/examples/spanner" >}}) — deletes, skipping records, dropping
-refused mutations instead of failing, tuning the batch, and running against the emulator.
+refused mutations instead of failing, tuning the batch, reading a key range, and running against the
+emulator.
