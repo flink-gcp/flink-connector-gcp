@@ -48,6 +48,11 @@ import java.util.Objects;
  * a {@code PARTITIONED BY} clause could name. {@code SupportsWritingMetadata}: the one piece of
  * envelope a mutation has is the cell timestamp, which is deferred to a follow-up issue rather than
  * being decided under this one.
+ *
+ * <p>Built through {@link #builder()} rather than a constructor, for the reason {@code
+ * BigQueryDynamicSink} records: a positional list is repeated four times over — the constructor,
+ * {@link #copy()}, {@link #equals(Object)} and {@link #hashCode()} — with no compiler check that
+ * the repetitions agree, and its trailing arguments here were two nullables and a boolean.
  */
 @Internal
 public final class BigtableDynamicSink implements DynamicTableSink {
@@ -61,47 +66,32 @@ public final class BigtableDynamicSink implements DynamicTableSink {
     @Nullable private final TableCreateOptions tableCreateOptions;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
-    private final boolean primaryKeyDeclared;
+    private final boolean keyOnlyDeletesAreSafe;
+
+    private BigtableDynamicSink(Builder builder) {
+        this.schema = Preconditions.checkNotNull(builder.schema, "schema must not be null");
+        this.destination =
+                Preconditions.checkNotNull(builder.destination, "destination must not be null");
+        this.nullStringLiteral =
+                Preconditions.checkNotNull(
+                        builder.nullStringLiteral, "nullStringLiteral must not be null");
+        this.appProfileId = builder.appProfileId;
+        this.writerOptions =
+                Preconditions.checkNotNull(builder.writerOptions, "writerOptions must not be null");
+        this.createDisposition = builder.createDisposition;
+        this.tableCreateOptions = builder.tableCreateOptions;
+        this.emulatorEndpoint = builder.emulatorEndpoint;
+        this.parallelism = builder.parallelism;
+        this.keyOnlyDeletesAreSafe = builder.keyOnlyDeletesAreSafe;
+    }
 
     /**
-     * Creates the sink from fully resolved values.
+     * Returns a builder for this sink.
      *
-     * @param schema the table's parsed DDL model
-     * @param destination the destination table
-     * @param nullStringLiteral the cell value standing for a null character string
-     * @param appProfileId the app profile the writes are attributed to, or {@code null}
-     * @param writerOptions the writer tuning
-     * @param createDisposition the create disposition, or {@code null} for the connector's default
-     * @param tableCreateOptions the creation settings, or {@code null} when the sink creates
-     *     nothing
-     * @param emulatorEndpoint the emulator's endpoint, or {@code null} for the real service
-     * @param parallelism the sink parallelism, or {@code null} for the planner's own
-     * @param primaryKeyDeclared whether the DDL declared a {@code PRIMARY KEY}, which the factory
-     *     has already held to be the row-key column alone
+     * @return a builder with nothing set
      */
-    public BigtableDynamicSink(
-            BigtableTableSchema schema,
-            TableDestination destination,
-            String nullStringLiteral,
-            @Nullable String appProfileId,
-            BigtableWriterOptions writerOptions,
-            @Nullable CreateDisposition createDisposition,
-            @Nullable TableCreateOptions tableCreateOptions,
-            @Nullable String emulatorEndpoint,
-            @Nullable Integer parallelism,
-            boolean primaryKeyDeclared) {
-        this.schema = Preconditions.checkNotNull(schema, "schema must not be null");
-        this.destination = Preconditions.checkNotNull(destination, "destination must not be null");
-        this.nullStringLiteral =
-                Preconditions.checkNotNull(nullStringLiteral, "nullStringLiteral must not be null");
-        this.appProfileId = appProfileId;
-        this.writerOptions =
-                Preconditions.checkNotNull(writerOptions, "writerOptions must not be null");
-        this.createDisposition = createDisposition;
-        this.tableCreateOptions = tableCreateOptions;
-        this.emulatorEndpoint = emulatorEndpoint;
-        this.parallelism = parallelism;
-        this.primaryKeyDeclared = primaryKeyDeclared;
+    public static Builder builder() {
+        return new Builder();
     }
 
     @Override
@@ -120,7 +110,7 @@ public final class BigtableDynamicSink implements DynamicTableSink {
         // row key is filled in either way; with none, answering false is what puts
         // ChangelogNormalize there. An insert-only query into the same table gets neither, so the
         // honest answer is free wherever there is no delete to complete.
-        return CrossVersionChangelogMode.upsert(primaryKeyDeclared);
+        return CrossVersionChangelogMode.upsert(keyOnlyDeletesAreSafe);
     }
 
     @Override
@@ -148,17 +138,18 @@ public final class BigtableDynamicSink implements DynamicTableSink {
 
     @Override
     public DynamicTableSink copy() {
-        return new BigtableDynamicSink(
-                schema,
-                destination,
-                nullStringLiteral,
-                appProfileId,
-                writerOptions,
-                createDisposition,
-                tableCreateOptions,
-                emulatorEndpoint,
-                parallelism,
-                primaryKeyDeclared);
+        return builder()
+                .schema(schema)
+                .destination(destination)
+                .nullStringLiteral(nullStringLiteral)
+                .appProfileId(appProfileId)
+                .writerOptions(writerOptions)
+                .createDisposition(createDisposition)
+                .tableCreateOptions(tableCreateOptions)
+                .emulatorEndpoint(emulatorEndpoint)
+                .parallelism(parallelism)
+                .keyOnlyDeletesAreSafe(keyOnlyDeletesAreSafe)
+                .build();
     }
 
     @Override
@@ -184,7 +175,7 @@ public final class BigtableDynamicSink implements DynamicTableSink {
                 && Objects.equals(tableCreateOptions, that.tableCreateOptions)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
-                && primaryKeyDeclared == that.primaryKeyDeclared;
+                && keyOnlyDeletesAreSafe == that.keyOnlyDeletesAreSafe;
     }
 
     @Override
@@ -199,6 +190,124 @@ public final class BigtableDynamicSink implements DynamicTableSink {
                 tableCreateOptions,
                 emulatorEndpoint,
                 parallelism,
-                primaryKeyDeclared);
+                keyOnlyDeletesAreSafe);
+    }
+
+    /** Collects the sink's values, so no caller has to keep a positional list in order. */
+    public static final class Builder {
+
+        private BigtableTableSchema schema;
+        private TableDestination destination;
+        private String nullStringLiteral;
+        @Nullable private String appProfileId;
+        private BigtableWriterOptions writerOptions;
+        @Nullable private CreateDisposition createDisposition;
+        @Nullable private TableCreateOptions tableCreateOptions;
+        @Nullable private String emulatorEndpoint;
+        @Nullable private Integer parallelism;
+        private boolean keyOnlyDeletesAreSafe;
+
+        private Builder() {}
+
+        /**
+         * @param schema the table's parsed DDL model
+         * @return this builder
+         */
+        public Builder schema(BigtableTableSchema schema) {
+            this.schema = schema;
+            return this;
+        }
+
+        /**
+         * @param destination the destination table
+         * @return this builder
+         */
+        public Builder destination(TableDestination destination) {
+            this.destination = destination;
+            return this;
+        }
+
+        /**
+         * @param nullStringLiteral the cell value standing for a null character string
+         * @return this builder
+         */
+        public Builder nullStringLiteral(String nullStringLiteral) {
+            this.nullStringLiteral = nullStringLiteral;
+            return this;
+        }
+
+        /**
+         * @param appProfileId the app profile the writes are attributed to, or {@code null}
+         * @return this builder
+         */
+        public Builder appProfileId(@Nullable String appProfileId) {
+            this.appProfileId = appProfileId;
+            return this;
+        }
+
+        /**
+         * @param writerOptions the writer tuning
+         * @return this builder
+         */
+        public Builder writerOptions(BigtableWriterOptions writerOptions) {
+            this.writerOptions = writerOptions;
+            return this;
+        }
+
+        /**
+         * @param createDisposition the create disposition, or {@code null} for the connector's own
+         * @return this builder
+         */
+        public Builder createDisposition(@Nullable CreateDisposition createDisposition) {
+            this.createDisposition = createDisposition;
+            return this;
+        }
+
+        /**
+         * @param tableCreateOptions the creation settings, or {@code null} when nothing is created
+         * @return this builder
+         */
+        public Builder tableCreateOptions(@Nullable TableCreateOptions tableCreateOptions) {
+            this.tableCreateOptions = tableCreateOptions;
+            return this;
+        }
+
+        /**
+         * @param emulatorEndpoint the emulator's endpoint, or {@code null} for the real service
+         * @return this builder
+         */
+        public Builder emulatorEndpoint(@Nullable String emulatorEndpoint) {
+            this.emulatorEndpoint = emulatorEndpoint;
+            return this;
+        }
+
+        /**
+         * @param parallelism the sink parallelism, or {@code null} for the planner's own
+         * @return this builder
+         */
+        public Builder parallelism(@Nullable Integer parallelism) {
+            this.parallelism = parallelism;
+            return this;
+        }
+
+        /**
+         * Says whether the planner may send a delete carrying the upsert key alone, which is safe
+         * exactly when that key is the row key. The factory sets it from the DDL's {@code PRIMARY
+         * KEY}, having already refused one naming any other column.
+         *
+         * @param keyOnlyDeletesAreSafe whether a delete may carry the upsert key alone
+         * @return this builder
+         */
+        public Builder keyOnlyDeletesAreSafe(boolean keyOnlyDeletesAreSafe) {
+            this.keyOnlyDeletesAreSafe = keyOnlyDeletesAreSafe;
+            return this;
+        }
+
+        /**
+         * @return the sink
+         */
+        public BigtableDynamicSink build() {
+            return new BigtableDynamicSink(this);
+        }
     }
 }

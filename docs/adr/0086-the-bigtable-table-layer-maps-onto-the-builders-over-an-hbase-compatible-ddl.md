@@ -79,7 +79,8 @@ primary key; #470 extends it to those that do not. It is the reason
 written before #470 when a PK-less table had no normalize, while the #470 test rides the insert
 and the delete on one upsert stream.
 
-`ChangelogMode.upsert(boolean)` and `keyOnlyDeletes()` exist on 2.x and not on 1.20, so the answer
+`ChangelogMode.upsert(boolean)` and `keyOnlyDeletes()` arrive in Flink **2.1** — verified absent
+from the 2.0.0 sources and present in 2.1.0 — and do not exist on 1.20, so the answer
 goes through `CrossVersionChangelogMode` in the per-major source roots — package-private beside
 its only caller, as `CrossVersionCheckpointId` is — and nothing in the code or the tests may name either method
 directly. 1.20 has no key-only concept at all and was never exposed: its planner completes the row

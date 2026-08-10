@@ -109,6 +109,12 @@ them "taking the complete topology into account". A savepoint taken before the u
 does not map onto the new topology, so restoring one is a plan migration rather than a version bump.
 A table that declares its primary key is unaffected: such a job already had the operator.
 
+**A persisted `COMPILED PLAN` pins the old shape**, which is what it is for. The plan *is* the
+execution graph — `stream-exec-changelog-normalize` is one of its own node types — and its sink node
+stores the changelog mode it was compiled with rather than asking the connector again. A plan
+written before this change therefore keeps the pre-upgrade topology, and the job running it keeps
+the pre-upgrade behaviour, until the plan is recompiled.
+
 **Every rejection on this page happens when a statement is planned, not at `CREATE TABLE`.** Flink
 does not consult a connector while registering a table, so a `CREATE TABLE` naming a column this
 connector cannot encode is accepted and the first `INSERT INTO` over it fails. The message arrives

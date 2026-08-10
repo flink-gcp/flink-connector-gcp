@@ -22,7 +22,7 @@ import org.apache.flink.table.connector.ChangelogMode;
 /**
  * A cross-version seam, alongside {@code
  * io.github.flink.gcp.connector.bigtable.sink.CrossVersionSink}: {@code
- * ChangelogMode.upsert(boolean)} and {@code ChangelogMode.keyOnlyDeletes()} exist on Flink 2.x and
+ * ChangelogMode.upsert(boolean)} and {@code ChangelogMode.keyOnlyDeletes()} arrive in Flink 2.1 and
  * not on the 1.20 LTS, so naming either in shared source — or in a test — breaks that build and not
  * this one.
  *
