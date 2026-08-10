@@ -40,7 +40,7 @@ section; the three forms of the Default column are explained
 | `tableCreateOptionsProvider` | — | The same, resolved per destination. Overrides `tableCreateOptions` |
 | `schemaUpdateOptions` | updates disabled | [What the sink may change](#schemaupdateoptions) about a destination table's schema |
 | `failedRowHandler` | `FailureHandler.failJob()` | What happens to a row that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
-| `location` | — | The BigQuery location shared by the destination tables |
+| `location` | — | The BigQuery location shared by the destination tables. Setting it avoids a per-table metadata lookup when a write connection is opened; under `FILE_LOADS` it is the location every load job runs in and is recovered under, derived from each job's destination dataset when unset — which is what a sink routing to datasets in several regions should rely on |
 | `defaultStreamOptions` | [defaults](#defaultstreamoptions) | Tuning for `STORAGE_API_AT_LEAST_ONCE`; rejected for the other two |
 | `bufferedStreamOptions` | **required** for `STORAGE_API_EXACTLY_ONCE` | [Tuning](#bufferedstreamoptions) for that method; rejected for the other two |
 | `fileLoadsOptions` | **required** for `FILE_LOADS` | [Settings](#fileloadsoptions) for that method; rejected for the other two |

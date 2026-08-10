@@ -135,7 +135,9 @@ public final class BigQueryConnectorOptions {
                     .withDescription(
                             "The BigQuery location of the destination table, for example 'US' or"
                                     + " 'asia-northeast1'. Setting it avoids a metadata lookup"
-                                    + " when a write connection is opened.");
+                                    + " when a write connection is opened; under FILE_LOADS it is"
+                                    + " the location load jobs run in, derived from the"
+                                    + " destination dataset when unset.");
 
     public static final ConfigOption<Boolean> SINK_SCHEMA_UPDATE_ALLOW_NEW_FIELDS =
             ConfigOptions.key("sink.schema-update.allow-new-fields")

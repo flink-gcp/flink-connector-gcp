@@ -21,19 +21,20 @@ import javax.annotation.Nullable;
 import java.util.List;
 
 /**
- * Mints {@link Job}, {@link JobStatus} and {@link Table} values for tests, from inside the package
- * that owns them.
+ * Mints {@link Job}, {@link JobStatus}, {@link Table} and {@link Dataset} values for tests, from
+ * inside the package that owns them.
  *
  * <p><b>Why this class is in {@code com.google.cloud.bigquery}.</b> A test driving a class that
- * reads what {@link BigQuery#getJob}, {@link BigQuery#create} and {@link BigQuery#getTable} return
- * has to produce those values, and none of the types can be built from outside this package: {@code
- * Job(BigQuery, JobInfo.BuilderImpl)}, both {@link Job.Builder} constructors, {@code
- * Job.Builder#setStatus}, {@code Job.fromPb} and both {@link JobStatus} constructors are
- * package-private, and {@code Job} — though not {@code final} — has no constructor a subclass
- * elsewhere could call; {@link Table} is the same shape ({@link #table(BigQuery, TableId)} names
- * its reach). Declaring the package is the only reach that does not require either a mocking
- * framework (this project has none, deliberately) or an abstraction over the vendor's types in
- * production code. The record is {@code docs/adr/0067}.
+ * reads what {@link BigQuery#getJob}, {@link BigQuery#create}, {@link BigQuery#getTable} and {@link
+ * BigQuery#getDataset} return has to produce those values, and none of the types can be built from
+ * outside this package: {@code Job(BigQuery, JobInfo.BuilderImpl)}, both {@link Job.Builder}
+ * constructors, {@code Job.Builder#setStatus}, {@code Job.fromPb} and both {@link JobStatus}
+ * constructors are package-private, and {@code Job} — though not {@code final} — has no constructor
+ * a subclass elsewhere could call; {@link Table} and {@link Dataset} are the same shape ({@link
+ * #table(BigQuery, TableId)} and {@link #dataset(BigQuery, DatasetId, String)} name their reaches).
+ * Declaring the package is the only reach that does not require either a mocking framework (this
+ * project has none, deliberately) or an abstraction over the vendor's types in production code. The
+ * record is {@code docs/adr/0067}.
  *
  * <p>The coupling is to package-private members of a pinned dependency, so a {@code
  * google-cloud-bigquery} release that moves any of them breaks this file at <em>compile</em> time,
@@ -180,5 +181,23 @@ public final class TestJobs {
     public static Table table(BigQuery bigquery, TableId tableId) {
         return new Table.Builder(bigquery, tableId, StandardTableDefinition.of(Schema.of()))
                 .build();
+    }
+
+    /**
+     * Returns a dataset bound to the given client, reporting the given location, as {@link
+     * BigQuery#getDataset(DatasetId, BigQuery.DatasetOption...)} returns one.
+     *
+     * <p>One package-private reach, verified against 2.68.0: the {@link Dataset.Builder} used here
+     * — {@code Dataset} has no public constructor or factory, and {@code DatasetInfo.newBuilder}
+     * builds the info type, not the {@code Dataset} the client returns. {@code setLocation} and
+     * {@code build()} on that builder are public.
+     *
+     * @param bigquery the client the dataset is bound to
+     * @param datasetId the dataset id
+     * @param location the location the dataset reports
+     * @return the dataset
+     */
+    public static Dataset dataset(BigQuery bigquery, DatasetId datasetId, String location) {
+        return new Dataset.Builder(bigquery, datasetId).setLocation(location).build();
     }
 }

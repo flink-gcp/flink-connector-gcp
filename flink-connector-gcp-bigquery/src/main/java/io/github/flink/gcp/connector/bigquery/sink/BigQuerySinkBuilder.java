@@ -196,7 +196,11 @@ public class BigQuerySinkBuilder<T> {
     /**
      * Sets the BigQuery location (for example {@code US} or {@code asia-northeast1}) shared by the
      * destination tables. Optional; setting it avoids a per-table metadata lookup when opening
-     * Storage Write API connections.
+     * Storage Write API connections, and under {@link WriteMethod#FILE_LOADS} it becomes the
+     * location every load job runs in and is looked up under. When unset, {@code FILE_LOADS}
+     * derives each job's location from its destination dataset's metadata instead — one {@code
+     * datasets.get} per dataset per committer, which needs the {@code bigquery.datasets.get}
+     * permission there — so a sink routing to datasets in several regions should leave it unset.
      *
      * @param location the BigQuery location
      * @return this builder

@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.CopyJobConfiguration;
+import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FormatOptions;
 import com.google.cloud.bigquery.JobInfo;
@@ -62,6 +63,7 @@ class BigQueryLoadJobRunnerTest {
 
     private static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
     private static final TableDestination TEMP = TableDestination.of("p", "d", "t_tmp");
+    private static final DatasetId DATASET = DatasetId.of("p", "d");
 
     private static final Schema SCHEMA = Schema.of(Field.of("f1", StandardSQLTypeName.STRING));
 
@@ -660,18 +662,108 @@ class BigQueryLoadJobRunnerTest {
         assertThat(client.created)
                 .singleElement()
                 .returns(LOCATION, info -> info.getJobId().getLocation());
+        // The configured location wins outright: no metadata round trip happens at all.
+        assertThat(client.getDatasetCalls).isEmpty();
     }
 
     @Test
-    void noLocationLeavesTheJobIdUnlocated() throws Exception {
+    void noConfiguredLocationDerivesTheJobLocationFromTheDestinationDataset() throws Exception {
+        // A location-less id must not be built at all: a jobs.get naming no location resolves
+        // against the US multi-region only, so on any other dataset the re-attach probe would
+        // never find a previous attempt's job and the resubmission would collide (measured
+        // 2026-08-10, #491).
+        client.locatedDataset(DATASET, "europe-west1");
         client.answering(JobAnswer.absent());
 
         new BigQueryLoadJobRunner(client, null, FAST).submitLoad(JOB_ID, loadSpec(List.of()));
 
-        assertThat(client.getJobCalls).singleElement().returns(null, id -> id.getLocation());
+        assertThat(client.getDatasetCalls).containsExactly(DATASET);
+        assertThat(client.getJobCalls)
+                .singleElement()
+                .returns("europe-west1", id -> id.getLocation());
         assertThat(client.created)
                 .singleElement()
-                .returns(null, info -> info.getJobId().getLocation());
+                .returns("europe-west1", info -> info.getJobId().getLocation());
+    }
+
+    @Test
+    void theDatasetLocationIsDerivedOncePerDataset() throws Exception {
+        client.locatedDataset(DATASET, "europe-west1");
+        client.answering(JobAnswer.absent(), JobAnswer.absent());
+
+        BigQueryLoadJobRunner runner = new BigQueryLoadJobRunner(client, null, FAST);
+        runner.submitLoad(JOB_ID, loadSpec(List.of()));
+        runner.submitLoad("bq-2", loadSpec(List.of()));
+
+        assertThat(client.getDatasetCalls).containsExactly(DATASET);
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getLocation())
+                .containsExactly("europe-west1", "europe-west1");
+    }
+
+    @Test
+    void eachDestinationDatasetDerivesItsOwnJobLocation() throws Exception {
+        // Dynamic destinations may route one committer's jobs to datasets in different regions;
+        // each job runs where its own destination dataset lives, which no single configured
+        // location could express.
+        client.locatedDataset(DATASET, "europe-west1");
+        client.locatedDataset(DatasetId.of("p", "d2"), "asia-northeast1");
+        client.answering(JobAnswer.absent(), JobAnswer.absent());
+
+        BigQueryLoadJobRunner runner = new BigQueryLoadJobRunner(client, null, FAST);
+        runner.submitLoad(JOB_ID, loadSpecInto(DESTINATION));
+        runner.submitLoad("bq-2", loadSpecInto(TableDestination.of("p", "d2", "t")));
+
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getLocation())
+                .containsExactly("europe-west1", "asia-northeast1");
+    }
+
+    @Test
+    void aCopyJobDerivesItsLocationFromItsDestinationDatasetNotItsSources() throws Exception {
+        // The sources sit in a different dataset (as they do under FileLoadsOptions.tempDataset),
+        // so a derivation that consulted a source dataset would be caught by both assertions.
+        CopyJobSpec spec =
+                new CopyJobSpec(
+                        List.of(TableDestination.of("p", "d_tmp", "t_tmp")),
+                        DESTINATION,
+                        JobInfo.WriteDisposition.WRITE_TRUNCATE);
+        client.locatedDataset(DATASET, "europe-west1");
+        client.answering(JobAnswer.absent());
+
+        new BigQueryLoadJobRunner(client, null, FAST).submitCopy(JOB_ID, spec);
+
+        assertThat(client.getDatasetCalls).containsExactly(DATASET);
+        assertThat(client.created)
+                .singleElement()
+                .returns("europe-west1", info -> info.getJobId().getLocation());
+    }
+
+    @Test
+    void aFailedDatasetLookupFailsTheSubmissionNamingTheDataset() {
+        client.getDatasetFailure = unavailable();
+
+        BigQueryLoadJobRunner runner = new BigQueryLoadJobRunner(client, null, FAST);
+
+        assertThatThrownBy(() -> runner.submitLoad(JOB_ID, loadSpec(List.of())))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Failed to look up dataset p.d")
+                .hasCauseInstanceOf(BigQueryException.class);
+        assertThat(client.created).isEmpty();
+    }
+
+    @Test
+    void aMissingDatasetFailsTheSubmissionNamingTheDatasetAndBothCauses() {
+        // Nothing scripted: the client answers null on a 404 — which BigQuery gives for a dataset
+        // that does not exist AND for one this principal may not see, so the message must offer
+        // both readings rather than assert non-existence.
+        BigQueryLoadJobRunner runner = new BigQueryLoadJobRunner(client, null, FAST);
+
+        assertThatThrownBy(() -> runner.submitLoad(JOB_ID, loadSpec(List.of())))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Dataset p.d was not found")
+                .hasMessageContaining("bigquery.datasets.get");
+        assertThat(client.created).isEmpty();
     }
 
     @Test
@@ -772,6 +864,17 @@ class BigQueryLoadJobRunnerTest {
                 JobInfo.WriteDisposition.WRITE_APPEND,
                 schemaUpdateOptions,
                 format);
+    }
+
+    private static LoadJobSpec loadSpecInto(TableDestination destination) {
+        return new LoadJobSpec(
+                destination,
+                List.of("gs://bucket/a.avro"),
+                SCHEMA,
+                JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                JobInfo.WriteDisposition.WRITE_APPEND,
+                List.of(),
+                StagingFormat.AVRO);
     }
 
     private static CopyJobSpec copySpec() {

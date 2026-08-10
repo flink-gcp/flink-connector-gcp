@@ -24,6 +24,8 @@ import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.CopyJobConfiguration;
+import com.google.cloud.bigquery.Dataset;
+import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.FormatOptions;
 import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobConfiguration;
@@ -58,6 +60,15 @@ import java.util.stream.Collectors;
  * when the existing job <em>failed</em> does the runner probe {@code -r1}, {@code -r2}, ... (a
  * bounded number of times, since ids of failed jobs cannot be reused) for a fresh deterministic id.
  *
+ * <p><b>Every job id the runner builds names a location.</b> BigQuery scopes a job to (project,
+ * location, id), and a look-up naming no location resolves against the US multi-region only — so a
+ * location-less re-attach probe can never find a previous attempt's job on any other dataset, and
+ * the colliding resubmission fails instead of attaching (measured 2026-08-10, #491; ADR-0018). The
+ * configured location wins when set; otherwise the runner derives each job's location from its
+ * destination dataset's metadata — the destination dataset decides, because BigQuery runs a load
+ * job in the location of the dataset it writes — one {@code datasets.get} per dataset for the
+ * runner's lifetime.
+ *
  * <p>Completion is polled with capped exponential backoff and effectively no attempt bound: batch
  * load jobs may legitimately run long, and overall timeouts are the Flink job's to enforce.
  */
@@ -72,12 +83,14 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     private final RetrySchedule pollSchedule;
     @Nullable private final String location;
     private final Map<String, Job> activeJobs = new HashMap<>();
+    private final Map<DatasetId, String> datasetLocations = new HashMap<>();
     private BigQuery client;
 
     /**
      * Creates a runner.
      *
-     * @param location the BigQuery location jobs run in, or {@code null} for the API default
+     * @param location the BigQuery location jobs run in, or {@code null} to derive each job's
+     *     location from its destination dataset (see the class javadoc)
      * @param pollSchedule how completion polling backs off
      */
     public BigQueryLoadJobRunner(@Nullable String location, RetrySchedule pollSchedule) {
@@ -105,7 +118,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         if (!spec.getSchemaUpdateOptions().isEmpty()) {
             load.setSchemaUpdateOptions(spec.getSchemaUpdateOptions());
         }
-        submitOrAttach(jobId, load.build(), spec.toString());
+        submitOrAttach(jobId, load.build(), spec.getDestination(), spec.toString());
     }
 
     /**
@@ -143,7 +156,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                         .setCreateDisposition(JobInfo.CreateDisposition.CREATE_NEVER)
                         .setWriteDisposition(spec.getWriteDisposition())
                         .build();
-        submitOrAttach(jobId, copy, spec.toString());
+        submitOrAttach(jobId, copy, spec.getDestination(), spec.toString());
     }
 
     @Override
@@ -188,12 +201,17 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         }
     }
 
-    private void submitOrAttach(String baseJobId, JobConfiguration configuration, String what)
+    private void submitOrAttach(
+            String baseJobId,
+            JobConfiguration configuration,
+            TableDestination destination,
+            String what)
             throws IOException {
+        String jobLocation = jobLocation(destination);
         String lastError = null;
         for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
             String jobName = probe == 0 ? baseJobId : baseJobId + "-r" + probe;
-            JobId jobId = toJobId(jobName);
+            JobId jobId = JobId.newBuilder().setJob(jobName).setLocation(jobLocation).build();
             Job existing = getJob(jobId, "looking for a previous attempt's job");
             if (existing == null) {
                 Job submitted = create(jobId, configuration);
@@ -327,12 +345,54 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         return status != null && status.getState() == JobStatus.State.DONE;
     }
 
-    private JobId toJobId(String jobName) {
-        JobId.Builder jobId = JobId.newBuilder().setJob(jobName);
+    /**
+     * The location every id of this job is scoped to: the configured location when set, otherwise
+     * the destination dataset's own — the class javadoc carries why a job id must name one at all.
+     *
+     * <p>Derived once per dataset for the runner's lifetime. A dataset's location is immutable, so
+     * the memo can never go stale, and a recovery looking for a previous attempt's job derives the
+     * same value that attempt's job was inferred into.
+     *
+     * @param destination the job's destination table, whose dataset decides the location
+     * @return the location, never {@code null}
+     * @throws IOException if the dataset cannot be looked up or does not exist
+     */
+    private String jobLocation(TableDestination destination) throws IOException {
         if (location != null) {
-            jobId.setLocation(location);
+            return location;
         }
-        return jobId.build();
+        DatasetId datasetId = DatasetId.of(destination.getProject(), destination.getDataset());
+        String derived = datasetLocations.get(datasetId);
+        if (derived != null) {
+            return derived;
+        }
+        Dataset dataset;
+        try {
+            dataset = client().getDataset(datasetId);
+        } catch (BigQueryException e) {
+            throw new IOException(
+                    "Failed to look up dataset "
+                            + datasetId.getProject()
+                            + "."
+                            + datasetId.getDataset()
+                            + " while resolving the location BigQuery jobs writing it run in",
+                    e);
+        }
+        if (dataset == null) {
+            // A 404 does not establish non-existence — GCP's disclosure convention can answer it
+            // for a dataset the caller may not see — so this cannot claim which of the two it met.
+            throw new IOException(
+                    "Dataset "
+                            + datasetId.getProject()
+                            + "."
+                            + datasetId.getDataset()
+                            + " was not found while resolving the location BigQuery jobs writing"
+                            + " it run in: it does not exist, or this principal cannot read its"
+                            + " metadata (bigquery.datasets.get). Create it, grant the"
+                            + " permission, or set location(...) on the sink.");
+        }
+        datasetLocations.put(datasetId, dataset.getLocation());
+        return dataset.getLocation();
     }
 
     private BigQuery client() {

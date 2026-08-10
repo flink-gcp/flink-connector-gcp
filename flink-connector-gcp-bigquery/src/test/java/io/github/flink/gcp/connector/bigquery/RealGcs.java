@@ -17,13 +17,14 @@
 package io.github.flink.gcp.connector.bigquery;
 
 import com.google.cloud.storage.Blob;
+import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
 
 /**
  * Cloud Storage plumbing for the gated FILE_LOADS ITCases: the {@code BQ_IT_GCS_BUCKET} variable, a
  * client over the same application-default credentials {@link RealBigQuery} uses, and
- * staging-prefix listing and cleanup.
+ * staging-prefix upload, listing and cleanup.
  *
  * <p>A sibling of {@link RealBigQuery} rather than part of it: only FILE_LOADS stages anything, so
  * the BigQuery helper knows nothing about a bucket. It sits beside it all the same, because both
@@ -58,6 +59,11 @@ public final class RealGcs {
      */
     public static String uri(String path) {
         return "gs://" + bucket() + "/" + path;
+    }
+
+    /** Uploads {@code content} at {@code path} in the staging bucket. */
+    public static void upload(String path, byte[] content) {
+        client().create(BlobInfo.newBuilder(bucket(), path).build(), content);
     }
 
     /** The objects currently under {@code prefix}. */
