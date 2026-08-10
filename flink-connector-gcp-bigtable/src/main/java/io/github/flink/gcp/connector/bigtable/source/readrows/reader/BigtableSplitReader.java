@@ -153,7 +153,8 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
         if (range.isExhausted()) {
             // A range truncated to nothing — the normal state of a split whose last row was
             // emitted before the checkpoint. Reporting it finished without opening a stream is what
-            // keeps an inverted range from ever reaching the service.
+            // keeps an inverted range from ever reaching the service, which refuses one with
+            // INVALID_ARGUMENT rather than answering it empty (measured 2026-08-10, #481).
             LOG.info(
                     "Split {} has nothing left to read; finishing it without opening a stream.",
                     range.split.splitId());

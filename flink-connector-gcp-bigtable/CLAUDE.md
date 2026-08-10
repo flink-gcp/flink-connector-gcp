@@ -175,8 +175,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   to start **exclusively** at the last emitted key. No offset exists to resume at — `ReadRows` takes
   a range — so progress is measured in rows, never in records, which is what lets the deserializer
   be collector-shaped where BigQuery's cannot be. A truncated range **may be empty** and the reader
-  finishes such a split **without opening a stream**; the builder rejects an empty *configured*
-  range, and that asymmetry is deliberate.
+  finishes such a split **without opening a stream** — load-bearing, not tidy: the service refuses
+  an inverted range with `INVALID_ARGUMENT` rather than answering it empty (#481), so a reader that
+  opened one would fail the job. The builder rejects an empty *configured* range, and that
+  asymmetry is deliberate.
+- **A filter naming a column family the table lacks fails the read with `NOT_FOUND`** (#481) —
+  documented behaviour, not a gap: the source deliberately does not pre-validate a filter's
+  families against the table, which would cost every scan a metadata read to soften an error the
+  service already reports precisely.
 - **The split reader's delivered key and the split state's emitted key are two clocks**: reopen from
   the reader's or the element queue is handed over twice inside one *successful* run; checkpoint the
   reader's and in-flight rows are dropped.

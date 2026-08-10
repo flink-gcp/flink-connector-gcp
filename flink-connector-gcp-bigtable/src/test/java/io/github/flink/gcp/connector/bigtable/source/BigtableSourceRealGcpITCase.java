@@ -21,11 +21,12 @@ import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.ExceptionUtils;
 
+import com.google.api.gax.rpc.InvalidArgumentException;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
-import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -49,8 +50,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * table, which is the only way the split planner is exercised against tablets that actually exist —
  * the emulator models none. The production client-construction path, over application-default
  * credentials, which every emulator test bypasses. And the measurement the restore design rests on:
- * what the service answers a range whose start is exclusive at its own end key, which is the state
- * a split reaches after emitting its last row.
+ * the service refuses a range whose start is exclusive at its own end key — the state a split
+ * reaches after emitting its last row — which is what makes the reader's finish-without-a-stream
+ * short-circuit load-bearing rather than tidy (#481).
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BIGTABLE_IT_PROJECT", matches = ".+")
@@ -127,21 +129,42 @@ class BigtableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
     }
 
     @Test
-    void answersARangeExclusiveAtItsOwnEndWithNothingAndNoError() {
-        // What a split's range looks like after its last row was emitted. The reader finishes such
-        // a split without opening a stream, so this is not a path the connector takes — it is the
-        // measurement that says the design is not resting on an unknown.
+    void refusesARangeExclusiveAtItsOwnEndKey() {
+        // What a split's range looks like after its last row was emitted. The service refuses it
+        // outright — INVALID_ARGUMENT, "start_key must be less than end_key", measured 2026-08-10
+        // (#481) — rather than answering it empty, which is what makes the reader finishing such a
+        // split without opening a stream load-bearing rather than tidy. Asserted on the status;
+        // the message is the service's prose to change.
         TableDestination table = createTable("source-empty-range");
         seedRows(table, key(0), key(1));
 
-        List<Row> rows =
-                readRange(
-                        table,
-                        ByteStringRange.unbounded()
-                                .startOpen(ByteString.copyFromUtf8(key(1)))
-                                .endClosed(ByteString.copyFromUtf8(key(1))));
+        assertThatThrownBy(
+                        () ->
+                                readRange(
+                                        table,
+                                        ByteStringRange.unbounded()
+                                                .startOpen(ByteString.copyFromUtf8(key(1)))
+                                                .endClosed(ByteString.copyFromUtf8(key(1)))))
+                .isInstanceOf(InvalidArgumentException.class);
+    }
 
-        assertThat(rows).isEmpty();
+    @Test
+    void answersAClosedClosedRangeAtOneKeyWithThatRow() {
+        // The refused shape's nearest legal neighbour, measured so ADR-0080's scope note carries
+        // an answer rather than an unknown: [K, K] with both bounds closed is a single-row read,
+        // so the refusal above is about a range empty by construction, not about start == end.
+        // No connector path produces this shape either — truncation always yields an open start.
+        TableDestination table = createTable("source-single-key-range");
+        seedRows(table, key(0), key(1));
+
+        assertThat(
+                        readRange(
+                                table,
+                                ByteStringRange.unbounded()
+                                        .startClosed(ByteString.copyFromUtf8(key(1)))
+                                        .endClosed(ByteString.copyFromUtf8(key(1)))))
+                .extracting(row -> row.getKey().toStringUtf8())
+                .containsExactly(key(1));
     }
 
     @Test
@@ -159,19 +182,26 @@ class BigtableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
     }
 
     @Test
-    void failsWhenTheApplicationProfileDoesNotExist() {
+    void failsWhenTheApplicationProfileDoesNotExist() throws Exception {
         // The load-bearing half: a source that dropped the setter would pass the test above by
-        // reading through the instance's default profile, and fail only here. Asserted on the
-        // status rather than on the message, which is the service's prose to change.
+        // reading through the instance's default profile, and fail only here — which is why the
+        // assertion must not accept just any failure. NOT_FOUND, measured 2026-08-10 (#481):
+        // asserted on the status name in the chain's messages, the SerializedThrowable rule the
+        // filter test below explains.
         TableDestination table = createTable("source-app-profile-missing");
         seedRows(table, key(0));
 
+        // The control: the same table reads fine through the default profile, so the only
+        // NOT_FOUND left for the read below to earn is the profile's.
+        assertThat(read(table, builder -> builder, 1)).containsExactly(key(0));
+
         assertThatThrownBy(() -> read(table, builder -> builder.appProfileId("no-such-profile"), 1))
-                .isNotNull();
+                .satisfies(
+                        thrown -> ExceptionUtils.assertThrowableWithMessage(thrown, "NOT_FOUND"));
     }
 
     @Test
-    void appliesRangesPrefixesAndFiltersOnTheServer() throws Exception {
+    void appliesRangesAndPrefixesOnTheServer() throws Exception {
         TableDestination table = createTable("source-pushdown");
         seedRows(table, keys());
 
@@ -182,15 +212,40 @@ class BigtableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
                         IntStream.range(0, 10)
                                 .mapToObj(BigtableSourceRealGcpITCase::key)
                                 .collect(Collectors.toList()));
-        // A family that does not exist: Bigtable itself excludes every row, which is what tells
-        // the filter apart from one that never left the client.
-        assertThat(
-                        read(
-                                table,
-                                builder ->
-                                        builder.filter(
-                                                Filters.FILTERS.family().exactMatch("absent")),
-                                1))
-                .isEmpty();
+    }
+
+    @Test
+    void refusesAFilterNamingAColumnFamilyTheTableDoesNotHave() throws Exception {
+        // NOT_FOUND, "Requested column family not found", measured 2026-08-10 (#481) — the read
+        // fails rather than answering empty, so a misconfigured filter fails the job loudly. The
+        // source deliberately does not pre-validate a filter's families against the table: that
+        // would cost the scan a metadata read it does not otherwise need, to soften an error the
+        // service already reports precisely. The refusal being the service's own answer is also
+        // what tells the filter apart from one that never left the client.
+        //
+        // Asserted on the status name in the chain's messages, not on the gax exception class:
+        // Flink transports a task-side failure as SerializedThrowable, which keeps the original
+        // class only as a message prefix — so a class-based findThrowable can never match here
+        // (measured against the MiniCluster, same day). assertThrowableWithMessage rethrows the
+        // original chain on a miss, so a red run reports what was actually thrown.
+        TableDestination table = createTable("source-filter-absent-family");
+        seedRows(table, key(0));
+
+        // The control: the same table reads fine unfiltered, so the only NOT_FOUND left for the
+        // read below to earn is the filter's.
+        assertThat(read(table, builder -> builder, 1)).containsExactly(key(0));
+
+        assertThatThrownBy(
+                        () ->
+                                read(
+                                        table,
+                                        builder ->
+                                                builder.filter(
+                                                        Filters.FILTERS
+                                                                .family()
+                                                                .exactMatch("absent")),
+                                        1))
+                .satisfies(
+                        thrown -> ExceptionUtils.assertThrowableWithMessage(thrown, "NOT_FOUND"));
     }
 }

@@ -172,7 +172,9 @@ class BigtableSplitReaderTest {
     @Test
     void finishesAnEmptyRangeWithoutOpeningAStream() throws Exception {
         // The normal state of a split whose last row was emitted before the checkpoint: opening it
-        // would ask the service to serve an inverted range, whose answer nothing here has measured.
+        // would ask the service to serve an inverted range, which real Bigtable refuses with
+        // INVALID_ARGUMENT rather than answering empty (measured 2026-08-10, #481) — so the zero
+        // open calls asserted below are load-bearing, not tidiness.
         ScriptedRowStreamOpener opener = ScriptedRowStreamOpener.over("empty", "a", "z");
         BigtableSplitReader reader = reader(opener, 10, null);
         reader.handleSplitsChanges(

@@ -539,6 +539,12 @@ can depend on how the key space was divided. Per-cell shaping is all expressible
 families and qualifiers to return, which timestamp window, how many versions of a cell. A filter is
 also the cheapest thing a scan can carry, since what it excludes never leaves the server.
 
+A filter naming a **column family the table does not have** fails the read with `NOT_FOUND` — the
+service checks the family against the table's schema rather than matching it against nothing
+(measured 2026-08-10, [#481]({{< param BookRepo >}}/issues/481)). The job fails loudly instead of
+finishing empty, and the source deliberately does not pre-validate a filter's families: that would
+cost every scan a metadata read to soften an error the service already reports precisely.
+
 ### Deserialization
 
 `BigtableRowDeserializationSchema<T>` turns a row into **zero or more** records through a
@@ -735,8 +741,12 @@ builder — ranges, prefixes and filters surviving into the query the reader sen
 wiring, nothing more.
 
 Real `SampleRowKeys` over a **pre-split table** is the gated suite's, and so is the measurement the
-truncation design leans on: what the service answers a range whose start is exclusive at its own end
-key, which is the state a split reaches after emitting its last row.
+truncation design leans on: the service **refuses** a range whose start is exclusive at its own end
+key — the state a split reaches after emitting its last row — with `INVALID_ARGUMENT` rather than
+answering it empty (measured 2026-08-10, [#481]({{< param BookRepo >}}/issues/481)). That is what
+makes the reader finishing such a split without opening a stream load-bearing rather than merely
+tidy, and the unit test pinning that short-circuit asserts zero open calls, not just an empty
+result.
 
 Integration tests run against the
 [Bigtable emulator](https://cloud.google.com/bigtable/docs/emulator) in a container, through the
@@ -802,7 +812,8 @@ The status is the deviation that matters. `INTERNAL` is [fatal](#error-handling)
 service makes droppable — the wrong lesson, learned cheaply. It is also why the emulator suite
 asserts no rejection except in the class that exists to record these differences.
 
-The read path has its own table, measured 2026-08-09 against the same pinned image:
+The read path has its own table, measured 2026-08-09 against the same pinned image (the last two
+rows 2026-08-10, [#481]({{< param BookRepo >}}/issues/481)):
 
 | Behaviour | Real Bigtable | Emulator |
 |---|---|---|
@@ -810,6 +821,8 @@ The read path has its own table, measured 2026-08-09 against the same pinned ima
 | `SampleRowKeys` on an empty table | one response carrying the empty end-of-table key | no samples at all |
 | Application profile named on a request | honoured | ignored entirely |
 | Empty row key | rejected | accepted, which is why the connector's range algebra can express progress past one |
+| Range whose start is exclusive at its own end key | `INVALID_ARGUMENT`, "start_key must be less than end_key" | answered empty, no error |
+| Filter naming a column family the table does not have | `NOT_FOUND`, the read fails | answered empty, no error |
 
 The first row is why **split planning is never an emulator test**: every plan built against the
 emulator is effectively one split, so an emulator suite could not tell a working planner from one

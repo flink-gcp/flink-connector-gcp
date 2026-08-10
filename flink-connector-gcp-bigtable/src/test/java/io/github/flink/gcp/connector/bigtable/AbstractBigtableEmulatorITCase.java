@@ -21,8 +21,10 @@ import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.Query;
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowMutation;
 import com.google.cloud.bigtable.data.v2.models.TableId;
@@ -160,5 +162,23 @@ public abstract class AbstractBigtableEmulatorITCase {
     /** Returns what the emulator answers {@code SampleRowKeys} with, for the deviation suite. */
     protected static List<KeyOffset> sampleRowKeys(TableDestination destination) {
         return dataClient.sampleRowKeys(TableId.of(destination.getTable()));
+    }
+
+    /** Reads one range directly, for the deviation suite to measure what the emulator does. */
+    protected static List<Row> readRange(TableDestination destination, ByteStringRange range) {
+        List<Row> rows = new ArrayList<>();
+        dataClient
+                .readRows(Query.create(TableId.of(destination.getTable())).range(range))
+                .forEach(rows::add);
+        return rows;
+    }
+
+    /** Reads the whole table under one filter, for the deviation suite. */
+    protected static List<Row> readRows(TableDestination destination, Filters.Filter filter) {
+        List<Row> rows = new ArrayList<>();
+        dataClient
+                .readRows(Query.create(TableId.of(destination.getTable())).filter(filter))
+                .forEach(rows::add);
+        return rows;
     }
 }
