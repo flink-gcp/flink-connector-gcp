@@ -30,6 +30,12 @@ public final class TestSources {
 
     public static final TableDestination TABLE = TableDestination.of("p", "d", "t");
 
+    /** The query a query source is configured with; it stands in for a read of a view. */
+    public static final String QUERY = "SELECT * FROM `p.d.v`";
+
+    /** The anonymous table a scripted query runner reports its result landed in. */
+    public static final TableDestination QUERY_RESULT = TableDestination.of("p", "_anon", "anon1");
+
     private TestSources() {}
 
     /** Returns the configuration of a source built with the defaults. */
@@ -53,6 +59,37 @@ public final class TestSources {
                         // application-default credentials on a machine that has them and fail in CI
                         // on one that does not. The endpoint is never connected to.
                         .emulatorEndpoint("localhost:1");
+        return ((BigQueryStorageReadSource<GenericRecord>) customizer.apply(builder).build())
+                .getConfig();
+    }
+
+    /** Returns the configuration of a source reading the result of {@link #QUERY}. */
+    public static BigQuerySourceConfig<GenericRecord> queryConfig() {
+        return queryConfig(UnaryOperator.identity());
+    }
+
+    /**
+     * Returns the configuration of a query source built with the given knobs applied.
+     *
+     * <p>A separate builder rather than a customizer over {@link #config(UnaryOperator)}: the two
+     * are alternatives at {@code build()}, so a query source cannot be reached by adding to one
+     * that already named a table.
+     *
+     * @param customizer applies the knobs a test needs
+     * @return the configuration
+     */
+    public static BigQuerySourceConfig<GenericRecord> queryConfig(
+            UnaryOperator<BigQuerySourceBuilder<GenericRecord>> customizer) {
+        BigQuerySourceBuilder<GenericRecord> builder =
+                BigQuerySource.<GenericRecord>builder()
+                        .query(QUERY)
+                        .parentProject(TABLE.getProject())
+                        .deserializer(BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON))
+                        // Both endpoints, for the reason the table configuration sets one: this
+                        // source builds a REST client as well, and it would demand
+                        // application-default credentials. Neither is ever connected to.
+                        .emulatorEndpoint("localhost:1")
+                        .emulatorRestEndpoint("localhost:1");
         return ((BigQueryStorageReadSource<GenericRecord>) customizer.apply(builder).build())
                 .getConfig();
     }

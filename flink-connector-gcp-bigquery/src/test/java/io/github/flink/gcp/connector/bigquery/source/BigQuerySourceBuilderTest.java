@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.source;
 
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.util.InstantiationUtil;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
@@ -25,6 +26,7 @@ import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeser
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,17 +59,6 @@ class BigQuerySourceBuilderTest {
     @Test
     void billsTheReadToTheTablesProjectByDefault() {
         assertThat(TestSources.config().getParentProject()).isEqualTo("p");
-    }
-
-    @Test
-    void requiresATable() {
-        assertThatThrownBy(
-                        () ->
-                                BigQuerySource.<GenericRecord>builder()
-                                        .deserializer(deserializer())
-                                        .build())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("A table is required");
     }
 
     @Test
@@ -173,6 +164,183 @@ class BigQuerySourceBuilderTest {
     void rejectsAMalformedEmulatorEndpointWhereItIsTyped() {
         assertThatThrownBy(() -> builder().emulatorEndpoint("not-a-host-port"))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> builder().emulatorRestEndpoint("not-a-host-port"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void requiresATableOrAQueryAndRefusesBoth() {
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySource.<GenericRecord>builder()
+                                        .deserializer(deserializer())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("set table(...) or query(...)");
+        assertThatThrownBy(() -> builder().query("SELECT 1").build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("alternatives");
+    }
+
+    @Test
+    void buildsAQuerySourceThatCarriesItsQueryAndNoTable() {
+        BigQuerySourceConfig<GenericRecord> config =
+                TestSources.queryConfig(
+                        builder -> builder.queryLocation("US").queryResultDataset("scratch"));
+
+        assertThat(config.getTable()).isNull();
+        assertThat(config.getQuery()).isEqualTo(TestSources.QUERY);
+        assertThat(config.getQueryLocation()).isEqualTo("US");
+        assertThat(config.getQueryResultDataset()).isEqualTo("scratch");
+        assertThat(config.getQueryRunner()).isNotNull();
+        assertThat(config.describeInput()).isEqualTo("the result of the configured query");
+    }
+
+    @Test
+    void shipsAQuerySourceThroughTheJobGraph() throws Exception {
+        // Everything a query source adds travels with it: the query, where its result goes, and the
+        // runner. A non-serializable field here fails at job submission and nowhere earlier, which
+        // is the one job-level risk the enumerator's own tests cannot reach.
+        BigQueryStorageReadSource<GenericRecord> source =
+                (BigQueryStorageReadSource<GenericRecord>)
+                        BigQuerySource.<GenericRecord>builder()
+                                .query("SELECT 1 AS id")
+                                .parentProject("p")
+                                .queryResultDataset("scratch")
+                                .deserializer(deserializer())
+                                .emulatorEndpoint("localhost:1")
+                                .emulatorRestEndpoint("localhost:1")
+                                .build();
+
+        BigQueryStorageReadSource<GenericRecord> copy = InstantiationUtil.clone(source);
+
+        assertThat(copy.getConfig().getQuery()).isEqualTo("SELECT 1 AS id");
+        assertThat(copy.getConfig().getQueryResultDataset()).isEqualTo("scratch");
+        assertThat(copy.getConfig().getQueryRunner()).isNotNull();
+    }
+
+    @Test
+    void landsTheResultInBigQuerysAnonymousDatasetUnlessADatasetIsNamed() {
+        // Unset is what makes the default path the one with nothing to create, nothing to expire
+        // and nothing to delete.
+        assertThat(TestSources.queryConfig().getQueryResultDataset()).isNull();
+    }
+
+    @Test
+    void buildsATableSourceThatRunsNoQuery() {
+        BigQuerySourceConfig<GenericRecord> config = TestSources.config();
+
+        assertThat(config.getQuery()).isNull();
+        assertThat(config.getQueryRunner()).isNull();
+        assertThat(config.describeInput()).isEqualTo("table p.d.t");
+    }
+
+    @Test
+    void requiresAParentProjectBesideAQuery() {
+        // A table source takes the table's project; a query names no table, so nothing else says
+        // which project the job is submitted to and billed to.
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySource.<GenericRecord>builder()
+                                        .query("SELECT 1")
+                                        .deserializer(deserializer())
+                                        .emulatorEndpoint("localhost:1")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("query(...) requires parentProject(...)");
+    }
+
+    @Test
+    void rejectsTheQueryKnobsOnATableSource() {
+        assertThatThrownBy(() -> builder().queryLocation("US").build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "queryLocation(...) applies to query(...) or materializeViews() only");
+        assertThatThrownBy(() -> builder().queryResultDataset("scratch").build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "queryResultDataset(...) applies to query(...) or materializeViews() only");
+        // Silently ignoring it would leave a test pointing half its traffic at the emulator and
+        // half at BigQuery, which is the shape that reads as a flake rather than as
+        // misconfiguration.
+        assertThatThrownBy(() -> builder().emulatorRestEndpoint("localhost:1").build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "emulatorRestEndpoint(...) applies to query(...) or materializeViews() only");
+    }
+
+    @Test
+    void materializeViewsIsOffUnlessAskedFor() {
+        assertThat(TestSources.config().isMaterializeViewsEnabled()).isFalse();
+        assertThat(TestSources.config(b -> b.materializeViews()).isMaterializeViewsEnabled())
+                .isTrue();
+        // The runner is what makes the metadata call, so a source without the opt-in must not even
+        // hold one — that absence is the "no REST call on the read path" property.
+        assertThat(TestSources.config().getQueryRunner()).isNull();
+        assertThat(TestSources.config(b -> b.materializeViews()).getQueryRunner()).isNotNull();
+    }
+
+    @Test
+    void rejectsMaterializeViewsBesideAQuery() {
+        assertThatThrownBy(() -> TestSources.queryConfig(b -> b.materializeViews()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("materializeViews() applies to table(...) only");
+    }
+
+    @Test
+    void letsTheQueryKnobsThroughWhenViewsAreMaterialized() {
+        // They describe the query job, and materializeViews() is the other way to get one.
+        BigQuerySourceConfig<GenericRecord> config =
+                TestSources.config(
+                        b ->
+                                b.materializeViews()
+                                        .queryLocation("US")
+                                        .queryResultDataset("scratch")
+                                        .emulatorRestEndpoint("localhost:1"));
+
+        assertThat(config.getQueryLocation()).isEqualTo("US");
+        assertThat(config.getQueryResultDataset()).isEqualTo("scratch");
+    }
+
+    @Test
+    void rejectsASnapshotTimeBesideMaterializeViews() {
+        // A view's result table is created now, so time travel over it has nothing to reach — and
+        // the read would fail at session creation, far from where the value was typed.
+        assertThatThrownBy(
+                        () ->
+                                TestSources.config(
+                                        b ->
+                                                b.materializeViews()
+                                                        .snapshotTime(
+                                                                Instant.parse(
+                                                                        "2026-08-01T00:00:00Z"))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("do not go together");
+    }
+
+    @Test
+    void rejectsASnapshotTimeBesideAQuery() {
+        // The result table is created by the query, so there is no earlier version of it to read.
+        // Ignoring the knob would read the current result and look like it had been honoured.
+        assertThatThrownBy(
+                        () ->
+                                TestSources.queryConfig(
+                                        b -> b.snapshotTime(Instant.parse("2026-08-01T00:00:00Z"))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("FOR SYSTEM_TIME AS OF");
+    }
+
+    @Test
+    void rejectsABlankQueryOrItsCompanionsWhereTheyAreTyped() {
+        assertThatThrownBy(() -> builder().query(" "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("query must not be blank");
+        assertThatThrownBy(() -> builder().queryLocation(" "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("queryLocation must not be blank");
+        assertThatThrownBy(() -> builder().queryResultDataset(" "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("queryResultDataset must not be blank");
     }
 
     private static BigQuerySourceBuilder<GenericRecord> builder() {

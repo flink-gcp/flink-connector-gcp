@@ -17,16 +17,21 @@
 package io.github.flink.gcp.connector.bigquery.source.enumerator;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.rpc.ApiException;
+import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
 import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.bigquery.source.BigQueryReadClients;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.Locale;
 
 /**
  * Creates read sessions through a {@link BigQueryReadClient}.
@@ -77,7 +82,48 @@ public final class ReadClientSessionCreator implements ReadSessionCreator {
             }
             open = client;
         }
-        return open.createReadSession(request);
+        try {
+            return open.createReadSession(request);
+        } catch (ApiException e) {
+            String hint = viewHint(e);
+            if (hint == null) {
+                throw e;
+            }
+            throw new IOException(hint, e);
+        }
+    }
+
+    /**
+     * Returns the sentence to put in front of a failure that looks like a read of a view, or {@code
+     * null} for any other failure.
+     *
+     * <p>This connector's rule is to match status codes and never message text, and the rule is not
+     * being bent here so much as reaching its edge: {@code INVALID_ARGUMENT} is also what a bad
+     * projection, an unparsable row restriction and a snapshot outside the time-travel window
+     * answer with, so the code alone identifies nothing. What makes matching the text acceptable is
+     * that the result is <em>only</em> a sentence added to a failure that is being thrown either
+     * way — never a decision about retrying, dropping or routing, which is what that rule protects.
+     * If BigQuery rewords this, the hint stops appearing and the error the user sees is exactly the
+     * one they would have seen without it.
+     *
+     * <p>Measured 2026-08-10: a logical view and a materialized view both answer {@code
+     * CreateReadSession} with {@code INVALID_ARGUMENT: request failed: non-table entities cannot be
+     * read with the storage API} — the same code and the same words, so one match covers both.
+     */
+    @Nullable
+    @VisibleForTesting
+    static String viewHint(ApiException e) {
+        if (StatusCodes.codeOf(e) != StatusCode.Code.INVALID_ARGUMENT) {
+            return null;
+        }
+        String message = e.getMessage();
+        if (message == null || !message.toLowerCase(Locale.ROOT).contains("non-table entities")) {
+            return null;
+        }
+        return "BigQuery refused to read this as a table. The Storage Read API reads storage, and"
+                + " a logical or materialized view has none — if that is what this names, read it"
+                + " with query(...) instead of table(...), for example"
+                + " query(\"SELECT * FROM `project.dataset.the_view`\").";
     }
 
     @Override

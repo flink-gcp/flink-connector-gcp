@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreator;
+import io.github.flink.gcp.connector.bigquery.source.query.QueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
 
@@ -40,7 +41,12 @@ public final class BigQuerySourceConfig<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final TableDestination table;
+    @Nullable private final TableDestination table;
+    @Nullable private final String query;
+    @Nullable private final String queryLocation;
+    @Nullable private final String queryResultDataset;
+    private final boolean materializeViews;
+    @Nullable private final QueryRunner queryRunner;
     private final String parentProject;
     private final BigQueryRowDeserializer<T> deserializer;
     private final List<String> selectedFields;
@@ -53,7 +59,12 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     private final RowStreamOpener rowStreamOpener;
 
     BigQuerySourceConfig(
-            TableDestination table,
+            @Nullable TableDestination table,
+            @Nullable String query,
+            @Nullable String queryLocation,
+            @Nullable String queryResultDataset,
+            boolean materializeViews,
+            @Nullable QueryRunner queryRunner,
             String parentProject,
             BigQueryRowDeserializer<T> deserializer,
             List<String> selectedFields,
@@ -65,6 +76,11 @@ public final class BigQuerySourceConfig<T> implements Serializable {
             ReadSessionCreator sessionCreator,
             RowStreamOpener rowStreamOpener) {
         this.table = table;
+        this.query = query;
+        this.queryLocation = queryLocation;
+        this.queryResultDataset = queryResultDataset;
+        this.materializeViews = materializeViews;
+        this.queryRunner = queryRunner;
         this.parentProject = parentProject;
         this.deserializer = deserializer;
         this.selectedFields = selectedFields;
@@ -77,9 +93,68 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         this.rowStreamOpener = rowStreamOpener;
     }
 
-    /** Returns the table being read. */
+    /**
+     * Returns the table being read, or {@code null} when a query decides it.
+     *
+     * <p>Exactly one of this and {@link #getQuery()} is set; which one is what the builder
+     * enforced.
+     */
+    @Nullable
     public TableDestination getTable() {
         return table;
+    }
+
+    /** Returns the query whose result is read, or {@code null} when a table is named directly. */
+    @Nullable
+    public String getQuery() {
+        return query;
+    }
+
+    /** Returns the location the query job runs in, or {@code null} to let BigQuery infer it. */
+    @Nullable
+    public String getQueryLocation() {
+        return queryLocation;
+    }
+
+    /**
+     * Returns the dataset the query's result is written to, or {@code null} for BigQuery's own
+     * anonymous dataset.
+     */
+    @Nullable
+    public String getQueryResultDataset() {
+        return queryResultDataset;
+    }
+
+    /**
+     * Returns whether {@code materializeViews()} was asked for.
+     *
+     * <p>Named {@code ...Enabled} rather than after the field alone, which every other boolean
+     * getter here is: {@code isMaterializeViews()} reads as a question about a <em>materialized
+     * view</em> — a real BigQuery noun, and one this very class decides about — rather than as "the
+     * option is on". A reader misread it that way, which is the whole argument.
+     *
+     * <p>Off unless asked for, because deciding it costs a metadata call the read path otherwise
+     * never makes.
+     */
+    public boolean isMaterializeViewsEnabled() {
+        return materializeViews;
+    }
+
+    /** Returns the seam running the query, or {@code null} when a table is named directly. */
+    @Nullable
+    public QueryRunner getQueryRunner() {
+        return queryRunner;
+    }
+
+    /**
+     * Returns what this source reads, as it reads mid-sentence, for the enumerator's log lines and
+     * failure messages.
+     *
+     * <p>The query is not quoted in full: it can be arbitrarily long, and a message that buries its
+     * own point under a page of SQL is worse than one that names the job to look up.
+     */
+    public String describeInput() {
+        return table != null ? "table " + table : "the result of the configured query";
     }
 
     /** Returns the project the read session belongs to and is billed to. */

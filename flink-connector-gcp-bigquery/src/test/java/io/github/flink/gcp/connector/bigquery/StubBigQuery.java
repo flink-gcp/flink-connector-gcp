@@ -30,6 +30,7 @@ import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.InsertAllRequest;
 import com.google.cloud.bigquery.InsertAllResponse;
 import com.google.cloud.bigquery.Job;
+import com.google.cloud.bigquery.JobConfiguration;
 import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
@@ -55,7 +56,9 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.BigQueryLoa
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The parts of {@link BigQuery} this module's REST callers read, with everything else unsupported —
@@ -109,6 +112,21 @@ public final class StubBigQuery implements BigQuery {
 
     /** Thrown by {@code delete} when set. */
     @Nullable public RuntimeException deleteFailure;
+
+    /** Every {@link TableId} {@code getTable} was called with, in order. */
+    public final List<TableId> getTableCalls = new ArrayList<>();
+
+    /**
+     * The configuration a minted job reports, instead of the one it was submitted with.
+     *
+     * <p>This models the half of a query job only the service can do: a query submitted with no
+     * destination table comes back reporting the anonymous table BigQuery chose for it. Left {@code
+     * null}, a job reports what it was created with.
+     */
+    @Nullable public JobConfiguration completedConfiguration;
+
+    /** The configuration each created job was submitted with, keyed by job name. */
+    private final Map<String, JobConfiguration> submittedConfigurations = new HashMap<>();
 
     /**
      * The options {@link Job}'s constructor reads.
@@ -190,7 +208,9 @@ public final class StubBigQuery implements BigQuery {
         if (answer.failure != null) {
             throw answer.failure;
         }
-        return answer.present ? TestJobs.job(this, jobId, answer.status) : null;
+        return answer.present
+                ? TestJobs.job(this, jobId, answer.status, configurationOf(jobId))
+                : null;
     }
 
     @Override
@@ -202,7 +222,20 @@ public final class StubBigQuery implements BigQuery {
             createFailure = null;
             throw failure;
         }
-        return TestJobs.job(this, jobInfo.getJobId(), createdStatus);
+        submittedConfigurations.put(jobInfo.getJobId().getJob(), jobInfo.getConfiguration());
+        return TestJobs.job(
+                this, jobInfo.getJobId(), createdStatus, configurationOf(jobInfo.getJobId()));
+    }
+
+    /**
+     * What a job under this id reports as its configuration, or {@code null} for the placeholder a
+     * caller that never reads one back gets — which is every caller but the query runner.
+     */
+    @Nullable
+    private JobConfiguration configurationOf(JobId jobId) {
+        return completedConfiguration != null
+                ? completedConfiguration
+                : submittedConfigurations.get(jobId.getJob());
     }
 
     @Override
@@ -349,8 +382,16 @@ public final class StubBigQuery implements BigQuery {
     }
 
     @Override
+    @Nullable
     public Table getTable(TableId tableId, TableOption... options) {
-        throw unsupported("getTable(TableId)");
+        // Records the call and answers "gone", which is the one answer this stub can give: a Table
+        // has no constructor reachable from here, and minting one would need a second helper in the
+        // vendor's own package — a decision `docs/adr/0067` asks to be taken deliberately rather
+        // than reached for. What that covers is the query runner asking to expire the table it
+        // created, and the branch where the table is no longer there; the update itself is the
+        // gated real-GCP case's.
+        getTableCalls.add(tableId);
+        return null;
     }
 
     @Override

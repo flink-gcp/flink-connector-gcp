@@ -80,5 +80,11 @@ public final class BigQueryMetricNames {
     public static final String SPLITS_RETURNED = "splitsReturned";
     public static final String READ_SESSIONS_CREATED = "readSessionsCreated";
 
+    // Registered by the source's split enumerator, by every source and not only one reading a
+    // query, so a zero reads as "this source named a table" rather than "nothing registered it".
+    // Above 1 means what readSessionsCreated above 1 means — the guard that plans once did not
+    // hold — and here that also means the query has been billed more than once.
+    public static final String QUERY_JOBS_SUBMITTED = "queryJobsSubmitted";
+
     private BigQueryMetricNames() {}
 }

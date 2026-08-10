@@ -293,6 +293,67 @@ BigQuerySource.<GenericRecord>builder()
 Note that a read session pins its own snapshot at creation regardless, so a job that does *not* set
 this still reads one consistent view of the table — just whichever one existed when it started.
 
+## Reading a view
+
+A view cannot be read as a table — the Storage Read API reads storage, and a view has none. Run it
+as a query instead, and the source reads the table its result lands in.
+
+```java
+BigQuerySource.<GenericRecord>builder()
+        .query("SELECT id, name FROM `my-project.my_dataset.active_accounts`")
+        .parentProject("my-project")
+        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+        .build();
+```
+
+`parentProject` is required here rather than optional: no table is named, so nothing else says which
+project runs the query job and is billed for it. By default the result goes to BigQuery's own
+anonymous dataset, which expires it in about a day and charges no storage for it — nothing to create
+and nothing to clean up.
+
+Prune inside the query rather than with `selectedFields`: those are applied to the *result*, so they
+cannot make the query itself cheaper, and a query source pays for both scans. The trade-offs and the
+constraints of each landing place are under
+[Reading a query or a view]({{< relref "docs/connectors/datastream/bigquery" >}}#reading-a-query-or-a-view).
+
+## Reading a view without writing the query
+
+If a job is pointed at names it does not control — a catalog where some are tables and some are
+views — `materializeViews()` handles both without the job having to know which is which.
+
+```java
+BigQuerySource.<GenericRecord>builder()
+        .table(TableDestination.of("my-project", "my_dataset", "active_accounts"))
+        .materializeViews()
+        .selectedFields("id", "region")
+        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+        .build();
+```
+
+A view is materialized and read; an ordinary table is read directly, with nothing billed for a
+query. It is off by default because it costs one metadata call per job to tell the two apart, and
+because materializing bills a query nobody wrote. `selectedFields` is folded into the generated
+`SELECT`, so a view is not scanned for columns that would only be discarded.
+
+## Landing a query result in your own dataset
+
+Name a dataset when the anonymous one will not do — because something outside the job has to read
+the result, or because a cached results table is not a dependency you want to take.
+
+```java
+BigQuerySource.<GenericRecord>builder()
+        .query("SELECT o.id, c.region FROM `my-project.sales.orders` o"
+                + " JOIN `my-project.sales.customers` c USING (customer_id)")
+        .parentProject("my-project")
+        .queryResultDataset("scratch")
+        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+        .build();
+```
+
+The dataset must already exist and be in the query's own location. The connector creates a table
+there with a one-day expiration and does not delete it earlier: teardown also runs on a JobManager
+failover, where the restored job is still reading the read session that table backs.
+
 ## Asking for more read streams
 
 A read stream is read by one subtask at a time, and a subtask takes the next stream as soon as it

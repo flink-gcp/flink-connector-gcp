@@ -30,7 +30,8 @@ class ReadSessionRequestsTest {
 
     @Test
     void readsTheWholeTableByDefault() {
-        CreateReadSessionRequest request = ReadSessionRequests.of(TestSources.config());
+        CreateReadSessionRequest request =
+                ReadSessionRequests.of(TestSources.config(), TestSources.TABLE);
 
         assertThat(request.getParent()).isEqualTo("projects/p");
         assertThat(request.getReadSession().getTable()).isEqualTo("projects/p/datasets/d/tables/t");
@@ -42,7 +43,8 @@ class ReadSessionRequestsTest {
 
     @Test
     void leavesBothStreamCountsUnsetWhenBigQueryIsToDecide() {
-        CreateReadSessionRequest request = ReadSessionRequests.of(TestSources.config());
+        CreateReadSessionRequest request =
+                ReadSessionRequests.of(TestSources.config(), TestSources.TABLE);
 
         // Zero is how the API spells "the server decides", and an unset field is how the field is
         // left at zero — a source that sent an explicit zero would say the same thing, but the
@@ -58,7 +60,8 @@ class ReadSessionRequestsTest {
                         TestSources.config(
                                 builder ->
                                         builder.selectedFields("id", "name")
-                                                .rowRestriction("id > 3")));
+                                                .rowRestriction("id > 3")),
+                        TestSources.TABLE);
 
         assertThat(request.getReadSession().getReadOptions().getSelectedFieldsList())
                 .containsExactly("id", "name");
@@ -72,7 +75,8 @@ class ReadSessionRequestsTest {
 
         CreateReadSessionRequest request =
                 ReadSessionRequests.of(
-                        TestSources.config(builder -> builder.snapshotTime(snapshot)));
+                        TestSources.config(builder -> builder.snapshotTime(snapshot)),
+                        TestSources.TABLE);
 
         assertThat(request.getReadSession().getTableModifiers().getSnapshotTime().getSeconds())
                 .isEqualTo(snapshot.getEpochSecond());
@@ -85,7 +89,8 @@ class ReadSessionRequestsTest {
         CreateReadSessionRequest request =
                 ReadSessionRequests.of(
                         TestSources.config(
-                                builder -> builder.maxStreamCount(20).preferredMinStreamCount(8)));
+                                builder -> builder.maxStreamCount(20).preferredMinStreamCount(8)),
+                        TestSources.TABLE);
 
         assertThat(request.getMaxStreamCount()).isEqualTo(20);
         assertThat(request.getPreferredMinStreamCount()).isEqualTo(8);
@@ -95,7 +100,8 @@ class ReadSessionRequestsTest {
     void billsTheReadToTheParentProjectWhenOneIsSet() {
         CreateReadSessionRequest request =
                 ReadSessionRequests.of(
-                        TestSources.config(builder -> builder.parentProject("payer")));
+                        TestSources.config(builder -> builder.parentProject("payer")),
+                        TestSources.TABLE);
 
         assertThat(request.getParent()).isEqualTo("projects/payer");
         assertThat(request.getReadSession().getTable()).isEqualTo("projects/p/datasets/d/tables/t");

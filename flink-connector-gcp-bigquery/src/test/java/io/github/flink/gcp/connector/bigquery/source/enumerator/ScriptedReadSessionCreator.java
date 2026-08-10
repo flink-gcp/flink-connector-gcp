@@ -28,6 +28,7 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** A {@link ReadSessionCreator} answering with a canned session, and counting the calls. */
 public final class ScriptedReadSessionCreator implements ReadSessionCreator {
@@ -41,6 +42,7 @@ public final class ScriptedReadSessionCreator implements ReadSessionCreator {
 
     private final AtomicInteger creations = new AtomicInteger();
     private final AtomicInteger closes = new AtomicInteger();
+    private final AtomicReference<CreateReadSessionRequest> lastRequest = new AtomicReference<>();
 
     /** The expiry the canned session carries, and therefore the one its splits do. */
     public static final Instant EXPIRE_TIME = Instant.parse("2026-08-09T12:00:00Z");
@@ -68,6 +70,7 @@ public final class ScriptedReadSessionCreator implements ReadSessionCreator {
     @Override
     public ReadSession create(CreateReadSessionRequest request) throws IOException {
         creations.incrementAndGet();
+        lastRequest.set(request);
         if (failure != null) {
             throw failure;
         }
@@ -90,6 +93,12 @@ public final class ScriptedReadSessionCreator implements ReadSessionCreator {
 
     int creations() {
         return creations.get();
+    }
+
+    /** Returns the last request this creator was handed, or {@code null} if it was handed none. */
+    @Nullable
+    CreateReadSessionRequest lastRequest() {
+        return lastRequest.get();
     }
 
     int closes() {

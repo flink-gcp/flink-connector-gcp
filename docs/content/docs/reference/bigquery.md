@@ -225,9 +225,13 @@ does with the two stream-count knobs, is under
 
 | Option | Default | What it does |
 |---|---|---|
-| `table` | **required** | The table to read |
+| `table` | **required**, unless `query` is set | The table to read. Not a view: the Storage Read API reads storage, and a view has none — use `query` |
+| `query` | **required**, unless `table` is set | Reads the result of this GoogleSQL query rather than a table, by running it as a query job first. This is the only way to read a view. Billed twice: the bytes the query scans, then the bytes the read session scans |
 | `deserializer` | **required** | Converts each Avro row into a record, or into `null` to skip it |
-| `parentProject` | the table's own project | The project the read session belongs to and is billed to. Set it to read a table in another project, such as a public dataset |
+| `parentProject` | the table's own project | The project the read session belongs to and is billed to. Set it to read a table in another project, such as a public dataset. **Required with `query`**, which names no table to default from and which is billed to it as well |
+| `materializeViews` | off | Reads a `table` that turns out to be a view by materializing it: one metadata call at job start, then `SELECT … FROM the_view` and a read of its result. An ordinary table is read directly. Off by default because it costs that call, and because it bills a query nobody wrote. Spelled `viewsEnabled` in the Spark and Dataproc connectors |
+| `queryLocation` | BigQuery infers it from the tables the query names | The location the query job runs in. `query` or `materializeViews` only |
+| `queryResultDataset` | BigQuery's anonymous dataset | Where the query's (or the materialized view's) result lands. Unset, BigQuery writes it into a hidden dataset of its own, expires it after about a day and charges no storage for it. Set, the connector creates a table in this dataset with a one-day expiration, and storage is charged until it expires. `query` or `materializeViews` only |
 | `selectedFields` | every column | The columns to read. Applied by BigQuery when the session is created, so the rest are neither transferred nor scanned — and scanned bytes are what a read is charged for |
 | `rowRestriction` | no filter | A BigQuery filter expression — a `WHERE` clause without the keyword — applied before any row is sent |
 | `snapshotTime` | the table's current contents | Reads the table as of an instant inside BigQuery's time-travel window, seven days by default; an older instant is rejected when the session is created |
@@ -235,4 +239,5 @@ does with the two stream-count knobs, is under
 | `preferredMinStreamCount` | `0`, no request | How many read streams to ask BigQuery for. Best effort; must not exceed `maxStreamCount` when both are set |
 | `maxRecordsPerFetch` | 10000 | The most rows one fetch hands to the task thread, so a checkpoint can be taken part-way through a response block |
 | `retryMaxAttempts` | 25 | How many consecutive attempts at a read stream the client library may make **without progress** before the read fails. An attempt that delivered rows resets the count; without a bound the client retries for twenty-four hours |
-| `emulatorEndpoint` | — | Sends the source's traffic to a BigQuery emulator at `host:port`, over plaintext and without credentials. One endpoint, not the sink's two: the source makes no REST call |
+| `emulatorEndpoint` | — | Sends the source's read traffic to a BigQuery emulator at `host:port`, over plaintext and without credentials. The whole of it for a `table` source, which makes no REST call |
+| `emulatorRestEndpoint` | — | The REST half of `emulatorEndpoint`, for the query job and the view lookup. `query` or `materializeViews` only |

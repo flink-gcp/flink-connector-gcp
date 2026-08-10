@@ -18,12 +18,15 @@ package io.github.flink.gcp.connector.bigquery.source.enumerator;
 
 import org.apache.flink.util.FlinkRuntimeException;
 
+import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceConfig;
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.TestSources;
+import io.github.flink.gcp.connector.bigquery.source.query.ScriptedQueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -116,7 +119,7 @@ class BigQueryReadSplitEnumeratorTest {
 
             assertThatThrownBy(context::runAsyncCalls)
                     .isInstanceOf(FlinkRuntimeException.class)
-                    .hasMessageContaining("read session")
+                    .hasMessageContaining("plan the BigQuery read")
                     .hasMessageContaining(TestSources.config().getTable().toString())
                     .hasRootCauseMessage("denied");
         }
@@ -183,6 +186,253 @@ class BigQueryReadSplitEnumeratorTest {
         }
     }
 
+    @Test
+    void runsTheQueryOnceAndCreatesTheSessionAgainstWhereItLanded() throws Exception {
+        ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(1);
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator = queryEnumerator(context, creator, runner)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.runs()).isEqualTo(1);
+            assertThat(context.counter("queryJobsSubmitted")).isEqualTo(1);
+            // The whole point of the query path: the session reads the result table, not the query.
+            assertThat(creator.lastRequest())
+                    .as("the session creator was handed a request")
+                    .isNotNull();
+            assertThat(creator.lastRequest().getReadSession().getTable())
+                    .isEqualTo(TestSources.QUERY_RESULT.toTablePath());
+        }
+    }
+
+    @Test
+    void handsTheRunnerTheQueryAndWhereItsResultShouldGo() throws Exception {
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+        BigQuerySourceConfig<?> config =
+                TestSources.queryConfig(
+                        builder ->
+                                builder.queryLocation("asia-northeast1")
+                                        .queryResultDataset("scratch"));
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context, config, ScriptedReadSessionCreator.withStreams(1), runner, null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.lastSpec().getSql()).isEqualTo(TestSources.QUERY);
+            assertThat(runner.lastSpec().getProject()).isEqualTo(TestSources.TABLE.getProject());
+            assertThat(runner.lastSpec().getLocation()).isEqualTo("asia-northeast1");
+            assertThat(runner.lastSpec().getResultDataset()).isEqualTo("scratch");
+        }
+    }
+
+    @Test
+    void runsNoQueryWhenItRestoresAnInitializedState() throws Exception {
+        // The flag that stops a second read session stops a second query with it — and a second
+        // query is the one that would be billed again, against a result the readers are not
+        // reading.
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+        BigQueryReadEnumeratorState restored =
+                new BigQueryReadEnumeratorState(
+                        true,
+                        ScriptedReadSessionCreator.SESSION,
+                        null,
+                        Collections.singletonList(split(0, 7)));
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.queryConfig(),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        runner,
+                        restored)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.runs()).isZero();
+            assertThat(context.counter("queryJobsSubmitted")).isZero();
+        }
+    }
+
+    @Test
+    void runsNoQueryForASourceThatNamedATable() throws Exception {
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                enumerator(context, ScriptedReadSessionCreator.withStreams(1), null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            // Registered by every source so a dashboard reads one set of metrics, so the zero here
+            // is a fact about this source rather than about what was registered.
+            assertThat(context.counter("queryJobsSubmitted")).isZero();
+        }
+    }
+
+    @Test
+    void failsTheJobWhenTheQueryFails() throws Exception {
+        ScriptedQueryRunner runner =
+                ScriptedQueryRunner.failing(new IOException("the query was invalid"));
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                queryEnumerator(context, ScriptedReadSessionCreator.withStreams(1), runner)) {
+            enumerator.start();
+
+            assertThatThrownBy(context::runAsyncCalls)
+                    .isInstanceOf(FlinkRuntimeException.class)
+                    .hasMessageContaining("plan the BigQuery read")
+                    .hasMessageContaining("the result of the configured query")
+                    .hasRootCauseMessage("the query was invalid");
+        }
+    }
+
+    @Test
+    void materializesATableThatTurnsOutToBeAView() throws Exception {
+        ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(1);
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.config(builder -> builder.materializeViews()),
+                        creator,
+                        runner,
+                        null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.viewChecks()).isEqualTo(1);
+            assertThat(runner.runs()).isEqualTo(1);
+            assertThat(runner.lastSpec().getSql())
+                    .isEqualTo("SELECT * FROM `" + TestSources.TABLE + "`");
+            // What the whole feature is for: the session reads the materialized result.
+            assertThat(creator.lastRequest().getReadSession().getTable())
+                    .isEqualTo(TestSources.QUERY_RESULT.toTablePath());
+        }
+    }
+
+    @Test
+    void readsATableDirectlyEvenWhenViewsAreMaterialized() throws Exception {
+        // The opt-in costs one metadata call and nothing else: an ordinary table is still read
+        // straight, with no query job and nothing billed for one.
+        ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(1);
+        ScriptedQueryRunner runner =
+                ScriptedQueryRunner.answering(TestSources.QUERY_RESULT).answeringNotAView();
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.config(builder -> builder.materializeViews()),
+                        creator,
+                        runner,
+                        null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.viewChecks()).isEqualTo(1);
+            assertThat(runner.runs()).isZero();
+            assertThat(context.counter("queryJobsSubmitted")).isZero();
+            assertThat(creator.lastRequest().getReadSession().getTable())
+                    .isEqualTo(TestSources.TABLE.toTablePath());
+        }
+    }
+
+    @Test
+    void asksNothingAboutATableWhenViewsAreNotMaterialized() throws Exception {
+        // The default: no metadata call at all, which is the property the opt-in exists to protect.
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.config(),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        runner,
+                        null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(runner.viewChecks()).isZero();
+            assertThat(runner.runs()).isZero();
+        }
+    }
+
+    @Test
+    void foldsTheProjectionIntoTheQueryItWritesForAView() throws Exception {
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.config(
+                                builder ->
+                                        builder.materializeViews()
+                                                .selectedFields("id")
+                                                .rowRestriction("id > 3")),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        runner,
+                        null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            // The projection is folded, so the view is not scanned for columns nobody reads. The
+            // restriction is not: it is BigQuery's restriction syntax, not a SQL WHERE, and it
+            // stays on the read session where a table source applies it too.
+            assertThat(runner.lastSpec().getSql())
+                    .isEqualTo("SELECT `id` FROM `" + TestSources.TABLE + "`");
+        }
+    }
+
+    @Test
+    void failsTheJobWhenTheViewCheckFails() throws Exception {
+        ScriptedQueryRunner runner =
+                ScriptedQueryRunner.answering(TestSources.QUERY_RESULT)
+                        .failingTheViewCheck(new IOException("denied by IAM"));
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.config(builder -> builder.materializeViews()),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        runner,
+                        null)) {
+            enumerator.start();
+
+            assertThatThrownBy(context::runAsyncCalls)
+                    .isInstanceOf(FlinkRuntimeException.class)
+                    .hasRootCauseMessage("denied by IAM");
+        }
+    }
+
+    private static BigQueryReadSplitEnumerator queryEnumerator(
+            FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context,
+            ScriptedReadSessionCreator creator,
+            ScriptedQueryRunner runner) {
+        return new BigQueryReadSplitEnumerator(
+                context, TestSources.queryConfig(), creator, runner, null);
+    }
+
     private static BigQueryReadStreamSplit split(int index, long offset) {
         return new BigQueryReadStreamSplit(
                 ScriptedReadSessionCreator.streamName(index),
@@ -195,7 +445,8 @@ class BigQueryReadSplitEnumeratorTest {
             FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context,
             ScriptedReadSessionCreator creator,
             BigQueryReadEnumeratorState restored) {
-        return new BigQueryReadSplitEnumerator(context, TestSources.config(), creator, restored);
+        return new BigQueryReadSplitEnumerator(
+                context, TestSources.config(), creator, null, restored);
     }
 
     /** An enumerator whose session has been created, with the given number of streams. */
