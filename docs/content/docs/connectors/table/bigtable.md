@@ -83,13 +83,23 @@ A `PRIMARY KEY` is optional, exactly as it is in the HBase connector — a Bigta
 the row key whether or not the DDL says so. If one is declared it must be the row-key column and
 nothing else.
 
-**Declare it for an updating query.** On Flink 2.x this sink asks for key-only deletes, so the
-planner may send a delete carrying only the query's own upsert key. When that key is the row-key
-column — which declaring the primary key is what guarantees — the delete works; when it is not, the
-row-key field arrives null and every delete record fails through the failure handler with a message
-naming the column. It fails loudly rather than deleting the wrong row, but a declared primary key is
-what keeps it from happening; making the sink declare full deletes without one is
-[#470]({{< param BookRepo >}}/issues/470).
+**Declaring it makes an updating query cheaper.** A delete has to reach the sink carrying the row
+key, and which of two ways that is arranged depends on the primary key. With one declared, the sink
+tells the planner a delete may carry the upsert key alone — that key *is* the row key, so nothing
+else is needed. With none declared, the planner keys its upserts on whatever the query happens to be
+unique by, which need not be the row-key column at all, so the sink asks for whole rows and the
+planner completes each one before the delete reaches it. That completion is a `ChangelogNormalize`,
+which keeps state proportional to the keyspace. A query that carries no deletes gets neither, so an
+insert-only job pays nothing either way.
+
+**A completed delete is completed from what the job has seen.** `ChangelogNormalize` holds the last
+row per key in Flink state, so a `-D` for a key this job never inserted has nothing to complete from
+and is dropped rather than applied — a row written by an earlier job, or before the state was
+cleared, is not deleted by it. This is the planner's behaviour rather than the connector's, and it
+already applied to every table that declares a primary key; from
+[#470]({{< param BookRepo >}}/issues/470) it applies to those that do not. If deleting rows a
+different job wrote is the goal, emit the row key in the delete — a retract source carrying whole
+rows reaches the sink without a normalize.
 
 **Every rejection on this page happens when a statement is planned, not at `CREATE TABLE`.** Flink
 does not consult a connector while registering a table, so a `CREATE TABLE` naming a column this
@@ -209,8 +219,10 @@ as a null; pick a literal the data cannot contain.
 
 The sink is **at-least-once** and its changelog mode is **upsert**. A Bigtable write is an upsert on
 the row key by construction — `setCell` overwrites — and there is no append-only path to offer
-instead, so an updating query is accepted rather than rejected. On Flink 2.x the mode is declared
-with key-only deletes, because a delete reads nothing but the row key.
+instead, so an updating query is accepted rather than rejected. On Flink 2.x the mode says a delete
+may carry the upsert key alone only when the DDL declares the primary key, which is what makes that
+key the row key; [The schema](#the-schema) above has the consequence for a job. Flink 1.20 has no
+such distinction and always completes the row first.
 
 A `-D` deletes the **whole row**, not the declared qualifiers one by one. The row key is the primary
 key, so "this key is gone" is what a delete means here; removing only the declared cells would leave

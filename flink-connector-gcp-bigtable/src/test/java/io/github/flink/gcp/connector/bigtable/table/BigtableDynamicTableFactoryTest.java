@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
+import io.github.flink.gcp.connector.bigtable.table.sink.CrossVersionChangelogMode;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -87,7 +88,11 @@ class BigtableDynamicTableFactoryTest {
     }
 
     private static DynamicTableSink sink(Map<String, String> options) {
-        return FactoryMocks.createTableSink(SCHEMA, options);
+        return sink(SCHEMA, options);
+    }
+
+    private static DynamicTableSink sink(ResolvedSchema schema, Map<String, String> options) {
+        return FactoryMocks.createTableSink(schema, options);
     }
 
     /**
@@ -130,15 +135,28 @@ class BigtableDynamicTableFactoryTest {
     }
 
     @Test
-    void theChangelogModeIsAnUpsert() {
-        ChangelogMode mode = sink(minimalOptions()).getChangelogMode(ChangelogMode.all());
+    void deletesCarryTheKeyAloneOnlyWhenAPrimaryKeyIsDeclared() {
+        ChangelogMode withoutKey =
+                sink(SCHEMA, minimalOptions()).getChangelogMode(ChangelogMode.all());
+        ChangelogMode withKey =
+                sink(withPrimaryKey("rowkey"), minimalOptions())
+                        .getChangelogMode(ChangelogMode.all());
 
-        // The mode itself, not just its contained kinds: on 2.x upsert() also means key-only
-        // deletes, and a hand-built mode with the same three kinds does not. Asserting equality
-        // pins that on both majors without naming ChangelogMode.keyOnlyDeletes(), which does not
-        // exist on the 1.20 LTS build this source tree also compiles against.
-        assertThat(mode).isEqualTo(ChangelogMode.upsert());
-        assertThat(mode.getContainedKinds())
+        // The mode itself, not just its contained kinds: on 2.x a key-only-deletes upsert and a
+        // full-deletes one carry the same three kinds and compare unequal. Both expectations are
+        // built through CrossVersionChangelogMode rather than named directly, because
+        // ChangelogMode.upsert(boolean) does not exist on the 1.20 LTS build this source tree also
+        // compiles against — where the two collapse to one value, which is the truth there: 1.20
+        // completes the row before every delete regardless.
+        //
+        // #470 is what the first of these pins. With no PRIMARY KEY the planner keys its upserts
+        // on whatever the query is unique by, which need not be the row key, so a delete carrying
+        // that key alone would reach the writer with the row-key column null.
+        assertThat(withoutKey).isEqualTo(CrossVersionChangelogMode.upsert(false));
+        assertThat(withKey).isEqualTo(CrossVersionChangelogMode.upsert(true));
+        assertThat(withoutKey.getContainedKinds())
+                .containsExactlyInAnyOrder(RowKind.INSERT, RowKind.UPDATE_AFTER, RowKind.DELETE);
+        assertThat(withKey.getContainedKinds())
                 .containsExactlyInAnyOrder(RowKind.INSERT, RowKind.UPDATE_AFTER, RowKind.DELETE);
     }
 

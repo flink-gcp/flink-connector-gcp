@@ -52,19 +52,41 @@ and `table.source`, and neither direction package may import the other. This is 
 module-root rule applied one level down; a `table.codec` layer would fail [#119](https://github.com/laughingman7743/flink-connector-gcp/issues/119)'s test, since the
 only sibling schema model in prospect was declined on [#34](https://github.com/laughingman7743/flink-connector-gcp/issues/34).
 
-**The changelog is `ChangelogMode.upsert()`, and a `-D` deletes the whole row.** A Bigtable write
-is an upsert on the row key by construction, so there is no append-only mode to offer instead. The
-row key is the primary key, so a delete means the key is gone; removing only the declared cells
-would leave a row behind made of whatever else was in it. On 2.x `upsert()` is the key-only-deletes
-form, which is honest because `deleteRow` reads nothing else; 1.20 has no such concept, so nothing
-in the code or the tests may name `keyOnlyDeletes()`. The *sink* behaves identically on both — it
-reads only the row key on a delete — but the *planner* does not, which a test discovered: an upsert
-source feeding this sink gets a stateful `ChangelogNormalize` on 1.20 and none on 2.x, so an
-integration test proving `deleteRow` has to use a retract source to run on both.
+**The changelog is an upsert, and a `-D` deletes the whole row.** A Bigtable write is an upsert on
+the row key by construction, so there is no append-only mode to offer instead. The row key is the
+primary key, so a delete means the key is gone; removing only the declared cells would leave a row
+behind made of whatever else was in it.
 
-The changelog mode also carries an exposure the planner does not guard, recorded in
-[#470](https://github.com/laughingman7743/flink-connector-gcp/issues/470): a key-only delete over a table with no declared primary key can arrive with a null
-row key, which fails loudly rather than deleting the wrong row.
+**Whether a delete may carry the upsert key alone is answered by the DDL's primary key**
+([#470](https://github.com/laughingman7743/flink-connector-gcp/issues/470)). Declaring one makes
+that key the row key, which the factory enforces, so the key alone is everything `deleteRow` reads.
+Declaring none is allowed — an HBase DDL has to move across unchanged — and the planner then keys
+its upserts on whatever the query is unique by, which need not be the row-key column, so the sink
+asks for whole rows instead. Measured on Flink 2.2.1 against an upsert source keyed on a non-row-key
+column: with a key declared the plan already carries `ChangelogNormalize` and `upsertMaterialize`;
+with none, answering `false` is what puts `ChangelogNormalize` there and fills the row key in; and
+an insert-only query into the same table gets neither, so the honest answer costs nothing where
+there is no delete to complete. Answering `true` unconditionally, as this layer did until #470,
+sends that delete to `RowDataSerializationSchema` with a null row key — measured end to end against
+the emulator, the job fails with "The row-key column 'rowkey' is null", loud rather than silent but
+dying on every delete.
+
+**What the completion costs beyond state**: `ChangelogNormalize` completes a delete from what *this
+job* has seen, so a `-D` for a key the job never inserted is dropped rather than applied. That is
+the planner's behaviour, not this connector's, and it already applied to every table declaring a
+primary key; #470 extends it to those that do not. It is the reason
+`BigtableTableSinkITCase.aChangelogDeleteRemovesTheWholeRow` uses a retract source, having been
+written before #470 when a PK-less table had no normalize, while the #470 test rides the insert
+and the delete on one upsert stream.
+
+`ChangelogMode.upsert(boolean)` and `keyOnlyDeletes()` exist on 2.x and not on 1.20, so the answer
+goes through `CrossVersionChangelogMode` in the per-major source roots — the module's **second**
+seam, beside `CrossVersionSink` — and nothing in the code or the tests may name either method
+directly. 1.20 has no key-only concept at all and was never exposed: its planner completes the row
+before every delete regardless. The *sink* behaves identically on both — it reads only the row key
+on a delete — but the *planner* does not, which a test discovered: an upsert source feeding this
+sink gets a stateful `ChangelogNormalize` on 1.20 and, before #470, none on 2.x, so an integration
+test proving `deleteRow` has to use a retract source to run on both.
 
 **Four record-level conditions fail the record rather than skipping it**: an `UPDATE_BEFORE` row,
 a null row key, a row key encoding to zero bytes, and a row whose every column family is null — the

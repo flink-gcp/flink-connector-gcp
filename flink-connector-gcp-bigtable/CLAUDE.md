@@ -228,8 +228,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   to zero bytes and **a row whose every family is null** each fail the record rather than skipping
   it; the HBase connector drops two of them, which leaves an incomplete table under a green job,
   and the last would otherwise reach the service as a mutation-less entry and return an
-  `INVALID_ARGUMENT` naming nothing. **`ChangelogMode.keyOnlyDeletes()` does not exist on the 1.20
-  LTS build** — naming it anywhere, including in a test, breaks that build and not this one.
+  `INVALID_ARGUMENT` naming nothing.
+- **Whether a delete may carry the upsert key alone is answered by the DDL's primary key** (#470).
+  Declaring one makes that key the row key; declaring none lets the planner key its upserts on
+  whatever the query is unique by, so the sink asks for whole rows and the planner completes each
+  one — measured on 2.2.1, that is a `ChangelogNormalize` on a query carrying deletes and nothing
+  at all on an insert-only one. Answering `true` unconditionally, as this layer did until #470,
+  sends a delete with a null row key — measured end to end, the job dies on "The row-key column
+  'rowkey' is null". **The completion is from what the job has seen**, so a `-D` for a key this job
+  never inserted is dropped; that is the planner's behaviour and it already applied wherever a
+  primary key was declared, which is why a test proving `deleteRow` must ride the insert and the
+  delete on one stream or use a retract source. **`ChangelogMode.upsert(boolean)` and `keyOnlyDeletes()` do
+  not exist on the 1.20 LTS build** — naming either anywhere, including in a test, breaks that
+  build and not this one, which is why the answer goes through `CrossVersionChangelogMode`, the
+  module's **second** per-major seam beside `CrossVersionSink`.
 - **Two rows for one key in one `MutateRows` have no defined winner** (the proto says entries may be
   applied in any order, even for the same row) and, inside a millisecond, no second cell version
   either. An integration test that needs an order sends **separate requests**; one that batches them

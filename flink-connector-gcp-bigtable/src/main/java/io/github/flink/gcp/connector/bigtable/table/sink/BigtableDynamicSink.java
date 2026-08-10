@@ -61,6 +61,7 @@ public final class BigtableDynamicSink implements DynamicTableSink {
     @Nullable private final TableCreateOptions tableCreateOptions;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
+    private final boolean primaryKeyDeclared;
 
     /**
      * Creates the sink from fully resolved values.
@@ -75,6 +76,8 @@ public final class BigtableDynamicSink implements DynamicTableSink {
      *     nothing
      * @param emulatorEndpoint the emulator's endpoint, or {@code null} for the real service
      * @param parallelism the sink parallelism, or {@code null} for the planner's own
+     * @param primaryKeyDeclared whether the DDL declared a {@code PRIMARY KEY}, which the factory
+     *     has already held to be the row-key column alone
      */
     public BigtableDynamicSink(
             BigtableTableSchema schema,
@@ -85,7 +88,8 @@ public final class BigtableDynamicSink implements DynamicTableSink {
             @Nullable CreateDisposition createDisposition,
             @Nullable TableCreateOptions tableCreateOptions,
             @Nullable String emulatorEndpoint,
-            @Nullable Integer parallelism) {
+            @Nullable Integer parallelism,
+            boolean primaryKeyDeclared) {
         this.schema = Preconditions.checkNotNull(schema, "schema must not be null");
         this.destination = Preconditions.checkNotNull(destination, "destination must not be null");
         this.nullStringLiteral =
@@ -97,14 +101,26 @@ public final class BigtableDynamicSink implements DynamicTableSink {
         this.tableCreateOptions = tableCreateOptions;
         this.emulatorEndpoint = emulatorEndpoint;
         this.parallelism = parallelism;
+        this.primaryKeyDeclared = primaryKeyDeclared;
     }
 
     @Override
     public ChangelogMode getChangelogMode(ChangelogMode requestedMode) {
         // A Bigtable write is an upsert on the row key by construction: setCell overwrites, and
-        // there is no append-only path to offer instead. The key-only form is the honest one — a
-        // delete reads nothing but the row key, because deleteRow needs nothing else.
-        return ChangelogMode.upsert();
+        // there is no append-only path to offer instead.
+        //
+        // Whether a delete may carry the upsert key *alone* is a different question, and the
+        // answer is whether that key is the row key. A declared PRIMARY KEY guarantees it, the
+        // factory having already refused one naming anything else; with none declared the planner
+        // keys its upserts on whatever the query happens to be unique by, and a key-only delete
+        // then reaches RowDataSerializationSchema with the row-key column null (#470).
+        //
+        // Measured on Flink 2.2.1 against an upsert source keyed on a non-row-key column: with a
+        // key declared the plan already carries ChangelogNormalize and upsertMaterialize, so the
+        // row key is filled in either way; with none, answering false is what puts
+        // ChangelogNormalize there. An insert-only query into the same table gets neither, so the
+        // honest answer is free wherever there is no delete to complete.
+        return CrossVersionChangelogMode.upsert(primaryKeyDeclared);
     }
 
     @Override
@@ -141,7 +157,8 @@ public final class BigtableDynamicSink implements DynamicTableSink {
                 createDisposition,
                 tableCreateOptions,
                 emulatorEndpoint,
-                parallelism);
+                parallelism,
+                primaryKeyDeclared);
     }
 
     @Override
@@ -166,7 +183,8 @@ public final class BigtableDynamicSink implements DynamicTableSink {
                 && createDisposition == that.createDisposition
                 && Objects.equals(tableCreateOptions, that.tableCreateOptions)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
-                && Objects.equals(parallelism, that.parallelism);
+                && Objects.equals(parallelism, that.parallelism)
+                && primaryKeyDeclared == that.primaryKeyDeclared;
     }
 
     @Override
@@ -180,6 +198,7 @@ public final class BigtableDynamicSink implements DynamicTableSink {
                 createDisposition,
                 tableCreateOptions,
                 emulatorEndpoint,
-                parallelism);
+                parallelism,
+                primaryKeyDeclared);
     }
 }

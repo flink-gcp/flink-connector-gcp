@@ -259,4 +259,55 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
                 .isEqualTo(new byte[] {0, 0, 0, 0, 0, 0, 0, 1});
         assertThat(cell(rows.get(0), "cf1", "name")).isEqualTo("alice");
     }
+
+    @Test
+    void aKeyOnlyDeleteRemovesTheRowWhenNoPrimaryKeyIsDeclared() throws Exception {
+        TableDestination destination = createTable("sql-keyonly-delete", "cf1");
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        // No PRIMARY KEY, which the factory accepts so an HBase DDL moves across unchanged.
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<name STRING>\n"
+                        + ") "
+                        + withOptions("sql-keyonly-delete"));
+
+        // An upsert source keyed on 'id', which is *not* the row-key column, whose delete carries
+        // that key and nothing else — the shape an upsert source emits. #470: while the sink
+        // declared key-only deletes unconditionally this row reached the serializer with a null
+        // row-key column. Insert and delete ride the same stream because the completion the sink
+        // now asks for is a ChangelogNormalize, which knows only what this job has seen.
+        TypeInformation<org.apache.flink.types.Row> rowType =
+                Types.ROW_NAMED(
+                        new String[] {"id", "rowkey", "name"},
+                        Types.STRING,
+                        Types.STRING,
+                        Types.STRING);
+        DataStream<org.apache.flink.types.Row> changelog =
+                env.fromData(
+                        Arrays.asList(
+                                org.apache.flink.types.Row.ofKind(
+                                        RowKind.INSERT, "id1", "gone", "alice"),
+                                org.apache.flink.types.Row.ofKind(
+                                        RowKind.DELETE, "id1", null, null)),
+                        rowType);
+        tEnv.createTemporaryView(
+                "src",
+                tEnv.fromChangelogStream(
+                        changelog,
+                        Schema.newBuilder()
+                                .column("id", DataTypes.STRING().notNull())
+                                .column("rowkey", DataTypes.STRING())
+                                .column("name", DataTypes.STRING())
+                                .primaryKey("id")
+                                .build(),
+                        ChangelogMode.upsert()));
+
+        tEnv.executeSql(
+                        "INSERT INTO bt SELECT rowkey, CAST(ROW(name) AS ROW<name STRING>) FROM src")
+                .await();
+
+        assertThat(readRows(destination)).isEmpty();
+    }
 }
