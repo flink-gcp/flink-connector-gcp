@@ -26,6 +26,9 @@ Every option the Bigtable sink and source take. What each one is *for* is on the
 [Bigtable connector]({{< relref "docs/connectors/datastream/bigtable" >}}) page; the three forms of
 the Default column are explained [here]({{< relref "docs/reference" >}}#what-a-default-means).
 
+The `WITH` options of the `bigtable` table connector are a separate surface, documented on the
+[Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page.
+
 One thing this reference does not list, because it is not an option here. **There are no retry
 knobs**: the client retries `MutateRows` per entry on a schedule of its own, so the sink owns no
 retry loop — the opposite of the [Cloud Tasks]({{< relref "docs/reference/cloudtasks" >}}) sink, and

@@ -46,6 +46,16 @@ limitations under the License.
             <artifactId>flink-connector-base</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <!-- The whole Table API surface this connector's table layer needs is here, up to and
+                 including DefaultLookupCache: measured 2026-08-10 against 2.2.1, the lookup
+                 providers, the caches, the source abilities, RowData and SinkV2Provider are all
+                 in this artifact, and nothing from flink-table-runtime appears in their public
+                 signatures. So flink-table-runtime stays a test dependency. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Shared connector infrastructure: the failure-handler SPI (#37). -->
         <dependency>
@@ -143,6 +153,32 @@ limitations under the License.
             <!-- Rate-limited source spanning checkpoints in the job integration tests. -->
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-datagen</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- FactoryMocks, for driving the table factory without a planner. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- TableEnvironment for the SQL integration tests. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-api-java-bridge</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The planner behind those TableEnvironments. The loader form is the one the
+                 connector parent's enforcer permits. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-planner-loader</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- RowData runtime types the planner-generated code needs at test runtime. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-runtime</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

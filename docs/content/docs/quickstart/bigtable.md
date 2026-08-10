@@ -133,6 +133,34 @@ covers both — and creates nothing.
 says the table's sections begin, so a small table is read by one subtask however high the parallelism
 is set; the others finish immediately.
 
+## The same thing in SQL
+
+The `bigtable` table connector writes the same rows from a `CREATE TABLE`. The schema is the HBase
+convention: one atomic column is the row key, and every `ROW<...>` column is a column family whose
+fields are its qualifiers.
+
+```sql
+CREATE TABLE orders (
+  rowkey STRING,
+  cf ROW<order_id STRING, amount BIGINT>,
+  PRIMARY KEY (rowkey) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project'   = 'my-project',
+  'instance'  = 'my-instance',
+  'table'     = 'orders'
+);
+
+INSERT INTO orders VALUES ('order#a-1', ROW('a-1', CAST(10 AS BIGINT)));
+```
+
+The sink is upsert-shaped, so an updating query works as it stands and a delete removes the whole
+row. There is no uber-jar for the SQL client yet ([#461]({{< param BookRepo >}}/issues/461)), so a
+SQL deployment needs `flink-connector-gcp-bigtable` and its runtime tree on the classpath. The full
+`WITH` surface, the cell encodings and the type mapping are on the
+[Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page. Reading a table from
+SQL is [#459]({{< param BookRepo >}}/issues/459).
+
 ## Next
 
 [Bigtable examples]({{< relref "docs/examples/bigtable" >}}) — several mutations per record,

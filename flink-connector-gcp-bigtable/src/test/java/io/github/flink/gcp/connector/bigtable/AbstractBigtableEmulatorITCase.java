@@ -106,7 +106,22 @@ public abstract class AbstractBigtableEmulatorITCase {
 
     /** Creates a table with the shared column family and returns its destination. */
     protected static TableDestination createTable(String tableId) {
-        adminClient.createTable(CreateTableRequest.of(tableId).addFamily(FAMILY));
+        return createTable(tableId, FAMILY);
+    }
+
+    /**
+     * Creates a table with the given column families and returns its destination.
+     *
+     * @param tableId the table to create
+     * @param families the column families it gets, at least one
+     * @return the destination naming it
+     */
+    protected static TableDestination createTable(String tableId, String... families) {
+        CreateTableRequest request = CreateTableRequest.of(tableId);
+        for (String family : families) {
+            request.addFamily(family);
+        }
+        adminClient.createTable(request);
         return TableDestination.of(PROJECT, INSTANCE, tableId);
     }
 

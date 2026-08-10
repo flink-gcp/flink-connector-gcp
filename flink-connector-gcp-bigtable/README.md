@@ -10,7 +10,6 @@ a table's rows, splitting it by the row-key boundaries the service samples.
 | Per-mutation failure policy (the shared `FailureHandler` SPI) | Implemented ([#33](https://github.com/laughingman7743/flink-connector-gcp/issues/33)) |
 | Emulator integration tests | Implemented ([#33](https://github.com/laughingman7743/flink-connector-gcp/issues/33)) |
 | DataStream bounded scan source | Implemented ([#216](https://github.com/laughingman7743/flink-connector-gcp/issues/216)) |
-| Table API / SQL support | Planned ([#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217)) |
 | Gated real-GCP integration tests | Implemented ([#218](https://github.com/laughingman7743/flink-connector-gcp/issues/218)) |
 | Table and column-family auto-creation (`CREATE_IF_NEEDED`) | Implemented ([#233](https://github.com/laughingman7743/flink-connector-gcp/issues/233)) |
 | Per-record table destinations (`destinationResolver`) | Implemented ([#232](https://github.com/laughingman7743/flink-connector-gcp/issues/232)) |
@@ -38,6 +37,15 @@ Source<OrderEvent, ?, ?> source =
                 .build();
 ```
 
+## Table API / SQL
+
+| Table API / SQL feature | Status |
+|---|---|
+| `bigtable` table connector; the HBase-compatible DDL model, the cell codec, an upsert `DynamicTableSink` and table auto-creation | Implemented ([#458](https://github.com/laughingman7743/flink-connector-gcp/issues/458)) |
+| `ScanTableSource` with column-family projection pushdown | Planned ([#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459)) |
+| `LookupTableSource`, sync and async, with the standard lookup caches | Planned ([#460](https://github.com/laughingman7743/flink-connector-gcp/issues/460)) |
+| `flink-sql-connector-gcp-bigtable` shaded uber-jar | Planned ([#461](https://github.com/laughingman7743/flink-connector-gcp/issues/461)) |
+
 ## Documentation
 
 The connector documentation — what the connector is for, the serialization SPI, why the table is
@@ -54,6 +62,9 @@ bad rows, reading a key range, filtering on the server and emulator-backed local
 through in [Examples](../docs/content/docs/examples/bigtable.md). Every option the sink and source
 take, with its default, is in the
 [configuration reference](../docs/content/docs/reference/bigtable.md).
+
+The Table API / SQL option surface, the DDL schema model and the cell encodings are documented in
+[docs/content/docs/connectors/table/bigtable.md](../docs/content/docs/connectors/table/bigtable.md).
 
 ## Provenance and attribution
 

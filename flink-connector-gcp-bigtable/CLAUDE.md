@@ -206,6 +206,48 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   image). The gated table is **pre-split**; the failover ITCase scripts both seams, because one
   split cannot show a reassignment.
 
+## Table API / SQL (`docs/adr/0086`; shared rules `docs/adr/0014`)
+
+- The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
+  setter, `getOptional(...).ifPresent(...)`, no default restated. The **one** table-owned option is
+  `null-string-literal`, which has no builder behind it, and `BigtableConnectorOptionsTest` asserts
+  that partition **exactly** rather than exempting it — a mapped option gaining a default and a
+  table-owned one losing its own both fail.
+- **The DDL model and the cell encoding are Flink's HBase connector's, and the encoding is
+  normative** — one atomic column is the row key, every `ROW<...>` column is a family, cell bytes
+  are `Bytes` as `HBaseSerde` applies them. `HBaseSerde` is the interop target, **not**
+  `HBaseTypeUtils`: the two disagree on `DATE` and `TIME`, and only the first is what a Flink SQL
+  HBase job writes. `CellValueCodecTest`'s golden vectors are the record; a round-trip test would
+  pass with the interop broken. Two traps they pin: `true` is `0xFF`, and a `TINYINT` must not go
+  through a numeric overload (a `byte` widens to `short`).
+- `BigtableTableSchema` and `CellValueCodec` sit at the **`table` root**, not in a subpackage: both
+  directions share them and neither may import the other (ADR-0055's module-root rule one level
+  down). A colon in a family name is rejected there — `familyNameRegexFilter` refuses one even
+  escaped, so such a family would be writable and never selectively readable.
+- **Upsert, and a `-D` deletes the whole row.** `UPDATE_BEFORE`, a null row key, a row key encoding
+  to zero bytes and **a row whose every family is null** each fail the record rather than skipping
+  it; the HBase connector drops two of them, which leaves an incomplete table under a green job,
+  and the last would otherwise reach the service as a mutation-less entry and return an
+  `INVALID_ARGUMENT` naming nothing. **`ChangelogMode.keyOnlyDeletes()` does not exist on the 1.20
+  LTS build** — naming it anywhere, including in a test, breaks that build and not this one.
+- **Two rows for one key in one `MutateRows` have no defined winner** (the proto says entries may be
+  applied in any order, even for the same row) and, inside a millisecond, no second cell version
+  either. An integration test that needs an order sends **separate requests**; one that batches them
+  is asserting the emulator's submission order. The cell timestamp is the **writer's clock**, which
+  is what makes a retry idempotent.
+- **Table creation takes its families from the DDL and its rule from two keys**, unioned when both
+  are set, and **at least one is required** under `create-if-needed` — stricter than the DataStream
+  API, because an at-least-once upsert sink writes another version on every replay. Defaulting the
+  rule instead was declined: that would be this layer inventing a default rather than mapping one.
+- The parity test reflects over **three** surfaces, widening the Pub/Sub precedent (which reflects
+  over options builders only), and a further assertion accounts for every option that feeds
+  something other than one setter. Adding a setter to `BigtableSinkBuilder` now costs either an
+  option or an exemption carrying its reason; `BigtableSourceBuilder` joins when the `scan.*`
+  options do.
+- The module's only new compile-scope dependency is `flink-table-common` at `provided` — measured:
+  the whole surface this layer needs, up to `DefaultLookupCache`, is in it, so `flink-table-runtime`
+  stays test scope and nothing here needs a `flink-api-tiers.toml` entry.
+
 ## E2E and emulator (`docs/adr/0044`)
 
 - The gated suite creates an ephemeral instance per gated **class** (`flink-it-<epoch>-<runId>`
