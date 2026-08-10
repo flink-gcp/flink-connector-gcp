@@ -379,6 +379,13 @@ not contend with the workload the instance is serving. Three things come with it
 - its concurrency has a quota of its own, so `RESOURCE_EXHAUSTED` is a shape a boosted read can meet
   that an ordinary one does not.
 
+`rpcPriority` is the cheaper lever, and a different one: `LOW` keeps the read on the instance's own
+compute but tells Spanner to shed it first when that instance is at capacity, so a backfill yields
+to serving traffic instead of competing with it. It costs nothing extra, where Data Boost is billed
+separately; it also does not remove the read from the instance, where Data Boost does. The priority
+applies to the reads that move the rows — the partition the service plans carries it and the read
+replays it — and not to the one call that plans the partitions.
+
 Nothing here claims Data Boost has been exercised end to end. What this connector guarantees is that
 the flag reaches the partition calls; the emulator accepts it and does nothing with it, and the
 gated real-GCP suite ([#224]({{< param BookRepo >}}/issues/224)) is what will measure the rest.

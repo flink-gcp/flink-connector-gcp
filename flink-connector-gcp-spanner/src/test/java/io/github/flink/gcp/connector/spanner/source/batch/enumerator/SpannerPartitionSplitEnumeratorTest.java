@@ -24,6 +24,7 @@ import org.apache.flink.util.FlinkRuntimeException;
 import com.google.cloud.spanner.TestPartitions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import io.github.flink.gcp.connector.spanner.source.TestSources;
 import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
@@ -161,7 +162,8 @@ class SpannerPartitionSplitEnumeratorTest {
                                                 TimestampBound.ofExactStaleness(
                                                         9, TimeUnit.SECONDS))
                                         .maxPartitions(4)
-                                        .dataBoostEnabled(true),
+                                        .dataBoostEnabled(true)
+                                        .rpcPriority(SpannerRpcPriority.LOW),
                         null)) {
             enumerator.start();
             context.runAsyncCalls();
@@ -175,6 +177,23 @@ class SpannerPartitionSplitEnumeratorTest {
                     .extracting(options -> options.getMaxPartitions())
                     .isEqualTo(4L);
             assertThat(planner.dataBoostFlags()).containsExactly(true);
+            assertThat(planner.priorities()).containsExactly("LOW");
+        }
+    }
+
+    @Test
+    void anUnsetPriorityReachesThePlannerAsNothingRatherThanAsADefault() throws Exception {
+        // The other arm of the test above: a builder that quietly substituted HIGH would pass it
+        // and would then send a priority on every request of every job that never asked for one.
+        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a");
+        FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
+
+        try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator =
+                enumerator(context, planner, null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(planner.priorities()).containsExactly("null");
         }
     }
 

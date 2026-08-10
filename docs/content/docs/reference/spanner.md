@@ -95,6 +95,7 @@ is under [Source]({{< relref "docs/connectors/datastream/spanner" >}}#source).
 | `maxPartitions` | *unset ⇒ the service decides* | How many partitions to ask for. A hint the service may ignore, and the emulator ignores outright |
 | `partitionSizeBytes` | *unset ⇒ the service decides* | How much data one partition should cover. A hint, like the one above |
 | `dataBoostEnabled` | `false` | Runs the read on Data Boost's independent compute. Needs `spanner.databases.useDataBoost`, is billed separately, and has a concurrency quota of its own |
+| `rpcPriority` | *unset ⇒ `HIGH`* | `LOW`, `MEDIUM` or `HIGH`, applied to the reads that move the rows. `LOW` is what a backfill that must not disturb serving traffic wants. Spanner treats an unspecified priority as `HIGH`, so `MEDIUM` is a step down from the default rather than a restatement of it |
 | `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator. Setting it also stops the client looking for credentials |
 
 There is no per-fetch record cap here, and no options object: the cap is a correctness floor rather

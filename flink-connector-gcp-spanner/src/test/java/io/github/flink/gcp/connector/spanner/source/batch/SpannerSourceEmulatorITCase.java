@@ -33,6 +33,7 @@ import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
@@ -193,6 +194,45 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
                         SpannerReadOperation.query(Statement.of("SELECT id FROM singers")),
                         SpannerSourceEmulatorITCase::id,
                         builder -> builder.maxPartitions(8).partitionSizeBytes(1024));
+
+        assertThat(ids).containsExactlyInAnyOrderElementsOf(allIds());
+    }
+
+    @Test
+    void aLowPriorityReadStillReturnsEveryRow() throws Exception {
+        // What this can show, and no more: the option is one the client accepts and the service
+        // does not refuse, and setting it changes no row. It does not show the priority reaching
+        // the wire — the emulator ignores it — so which option object the connector assembles is
+        // pinned in BatchClientPartitionPlannerTest, and whether Spanner sheds a LOW read under
+        // load is the service's to demonstrate rather than this suite's.
+        SpannerDatabase database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
+
+        List<Long> ids =
+                run(
+                        database,
+                        SpannerReadOperation.query(Statement.of("SELECT id FROM singers")),
+                        SpannerSourceEmulatorITCase::id,
+                        builder -> builder.rpcPriority(SpannerRpcPriority.LOW));
+
+        assertThat(ids).containsExactlyInAnyOrderElementsOf(allIds());
+    }
+
+    @Test
+    void aLowPriorityTableReadStillReturnsEveryRow() throws Exception {
+        // The read family assembles its options separately from the query family, because the
+        // client library gives the two option values no common supertype — so the two paths are
+        // covered separately rather than assumed to share one.
+        SpannerDatabase database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
+
+        List<Long> ids =
+                run(
+                        database,
+                        SpannerReadOperation.read(
+                                "singers", KeySet.all(), Collections.singletonList("id")),
+                        SpannerSourceEmulatorITCase::id,
+                        builder ->
+                                builder.rpcPriority(SpannerRpcPriority.MEDIUM)
+                                        .dataBoostEnabled(true));
 
         assertThat(ids).containsExactlyInAnyOrderElementsOf(allIds());
     }

@@ -21,6 +21,7 @@ import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TestPartitions;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 
 import javax.annotation.Nullable;
@@ -109,18 +110,30 @@ public final class ScriptedPartitionPlanner implements PartitionPlanner {
         return new ArrayList<>(state().dataBoostFlags);
     }
 
+    /**
+     * Returns the RPC priorities this planner was asked for, rendered, in order.
+     *
+     * <p>Rendered rather than held as the enum, so that "unset" is a value a test can assert on
+     * rather than a null the assertion has to work around.
+     */
+    public List<String> priorities() {
+        return new ArrayList<>(state().priorities);
+    }
+
     @Override
     public PartitionPlan plan(
             SpannerReadOperation operation,
             TimestampBound bound,
             PartitionOptions partitionOptions,
-            boolean dataBoostEnabled)
+            boolean dataBoostEnabled,
+            @Nullable SpannerRpcPriority rpcPriority)
             throws IOException {
         State state = state();
         state.plans.incrementAndGet();
         state.bounds.add(bound);
         state.partitionOptions.add(partitionOptions);
         state.dataBoostFlags.add(dataBoostEnabled);
+        state.priorities.add(String.valueOf(rpcPriority));
         RuntimeException failure = state.failNextPlan;
         if (failure != null) {
             state.failNextPlan = null;
@@ -159,6 +172,7 @@ public final class ScriptedPartitionPlanner implements PartitionPlanner {
         private final List<TimestampBound> bounds = new CopyOnWriteArrayList<>();
         private final List<PartitionOptions> partitionOptions = new CopyOnWriteArrayList<>();
         private final List<Boolean> dataBoostFlags = new CopyOnWriteArrayList<>();
+        private final List<String> priorities = new CopyOnWriteArrayList<>();
 
         @Nullable private volatile RuntimeException failNextPlan;
         @Nullable private volatile RuntimeException failClose;

@@ -37,11 +37,11 @@ import java.util.Objects;
  *
  * <p>Instances are pure database <em>identity</em>: {@link #equals(Object)} and {@link #hashCode()}
  * are defined over exactly (project, instance, database). Nothing about how the client reaches the
- * database — the emulator endpoint, the RPC priority — belongs here; those are sink options,
- * because they choose a path to the data rather than the data's address.
+ * database — the emulator endpoint, the RPC priority — belongs here; those are options of the
+ * direction that takes them, because they choose a path to the data rather than the data's address.
  *
- * <p>This type sits at the module root rather than under {@code sink} because both planned sources
- * take the same value.
+ * <p>This type sits at the module root rather than under {@code sink} because the source takes the
+ * same value, as the planned change-stream source will.
  *
  * <p>Instances are immutable and cheap to reuse.
  */
