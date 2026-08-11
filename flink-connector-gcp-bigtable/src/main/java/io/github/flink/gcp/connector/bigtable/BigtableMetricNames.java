@@ -51,6 +51,9 @@ public final class BigtableMetricNames {
 
     // Registered by the scan source's reader (BigtableSourceReaderMetrics).
     public static final String ROWS_READ = "rowsRead";
+    public static final String CHANGE_STREAM_MUTATIONS_READ = "changeStreamMutationsRead";
+    public static final String CHANGE_STREAM_HEARTBEATS_READ = "changeStreamHeartbeatsRead";
+    public static final String PARTITION_LOW_WATERMARK_MILLIS = "partitionLowWatermarkMillis";
 
     // Registered by the scan source's split enumerator (BigtableScanSplitEnumerator).
     public static final String SPLITS_ASSIGNED = "splitsAssigned";

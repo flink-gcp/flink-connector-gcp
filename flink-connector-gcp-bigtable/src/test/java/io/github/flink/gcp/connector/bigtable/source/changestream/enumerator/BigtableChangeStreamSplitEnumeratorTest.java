@@ -391,6 +391,73 @@ class BigtableChangeStreamSplitEnumeratorTest {
         assertThat(client.closeCalls()).isEqualTo(1);
     }
 
+    @Test
+    void rejectsCheckpointBeforeAsynchronousInitializationCompletes() throws Exception {
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context(1), ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+
+        assertThatThrownBy(() -> enumerator.snapshotState(1))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("initialization is still outstanding");
+        enumerator.close();
+    }
+
+    @Test
+    void lateReturnedParentIsNotResurrectedAfterItsTransition() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionTransitionEvent(
+                        parent.splitId(), parent.getLowWatermark(), Collections.emptyList()));
+
+        enumerator.addSplitsBack(Collections.singletonList(parent), 0);
+
+        BigtableChangeStreamEnumeratorState checkpoint = enumerator.snapshotState(1);
+        assertThat(checkpoint.getAssignedSplits()).isEmpty();
+        assertThat(checkpoint.getUnassignedSplits()).isEmpty();
+        enumerator.close();
+    }
+
+    @Test
+    void boundedSourceSignalsCompletionOnlyAfterEveryPartitionFinishes() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(3);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT),
+                        StartPosition.latest(),
+                        Optional.empty(),
+                        null,
+                        true);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        enumerator.handleSplitRequest(1, "localhost");
+        enumerator.handleSplitRequest(2, "localhost");
+        ChangeStreamPartitionSplit first = context.assignedSplits(0).get(0);
+        ChangeStreamPartitionSplit second = context.assignedSplits(1).get(0);
+
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionTransitionEvent(
+                        first.splitId(), first.getLowWatermark(), Collections.emptyList()));
+
+        assertThat(context.readersToldNoMoreSplits()).isEmpty();
+        enumerator.handleSourceEvent(
+                1,
+                new PartitionTransitionEvent(
+                        second.splitId(), second.getLowWatermark(), Collections.emptyList()));
+        assertThat(context.readersToldNoMoreSplits()).containsExactly(0, 1, 2);
+        enumerator.close();
+    }
+
     private static FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context(int parallelism) {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =
                 new FakeSplitEnumeratorContext<>(parallelism);

@@ -23,6 +23,9 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 import org.apache.flink.util.UserCodeClassLoader;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -48,6 +51,7 @@ public final class FakeSourceReaderContext implements SourceReaderContext {
     private final SourceReaderMetricGroup metricGroup;
     private final Configuration configuration;
     private final AtomicInteger splitRequests = new AtomicInteger();
+    private final List<SourceEvent> sourceEvents = new ArrayList<>();
 
     public FakeSourceReaderContext(SourceReaderMetricGroup metricGroup) {
         this(metricGroup, new Configuration());
@@ -62,6 +66,11 @@ public final class FakeSourceReaderContext implements SourceReaderContext {
     /** Returns how many splits this reader has asked the enumerator for. */
     public int splitRequests() {
         return splitRequests.get();
+    }
+
+    /** Returns the source events sent to the coordinator, in order. */
+    public List<SourceEvent> sourceEvents() {
+        return Collections.unmodifiableList(new ArrayList<>(sourceEvents));
     }
 
     @Override
@@ -91,8 +100,7 @@ public final class FakeSourceReaderContext implements SourceReaderContext {
 
     @Override
     public void sendSourceEventToCoordinator(SourceEvent sourceEvent) {
-        throw new UnsupportedOperationException(
-                "A pull-assignment source sends no source events; add support here when one does.");
+        sourceEvents.add(sourceEvent);
     }
 
     /**

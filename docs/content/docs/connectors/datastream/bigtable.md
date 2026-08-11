@@ -614,11 +614,44 @@ a configured `appProfileId` reaches the client, which the gated real-GCP suite a
 - Read-ahead and paging knobs. How many rows one fetch hands to the task thread is a fixed internal
   bound — a correctness floor that lets a checkpoint land inside a long range — rather than a knob,
   and turning it into one needs a measurement rather than a preference.
-- Change streams: [#35]({{< param BookRepo >}}/issues/35). Reading and writing this table from SQL
-  exist today, on the
+- Change-stream reconciliation after a missing topology event remains in
+  [#512]({{< param BookRepo >}}/issues/512). Reading and writing this table from SQL exist today, on the
   [Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page — its
   `ScanTableSource` maps onto this source; a lookup join over it is
   [#460]({{< param BookRepo >}}/issues/460).
+
+## Change Streams source
+
+`BigtableChangeStreamSource` is a separate FLIP-27 source because `ReadChangeStream` has a moving
+partition topology and continuation-token checkpoints rather than the bounded scan's row ranges.
+
+```java
+Source<ChangeStreamMutation, ?, ?> source =
+        BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+                .table(TableDestination.of("my-project", "my-instance", "orders"))
+                .appProfileId("orders-change-stream")
+                .deserializer(new ChangeStreamMutationDeserializationSchema())
+                .startPosition(StartPosition.latest())
+                .build();
+```
+
+The application profile is required and must use single-cluster routing. The Bigtable emulator
+does not implement Change Streams, so this builder deliberately has no emulator option.
+
+Fresh jobs default to `StartPosition.latest()`. Restores use the exact checkpointed continuation
+token and estimated low watermark instead. If that position has fallen outside the table's
+retention, restore fails by default; `resumeFallback(...)` explicitly accepts the resulting gap and
+restarts the affected partition without its stale token. `endTime(...)` makes the source bounded.
+
+Each mutation is handed to `BigtableChangeStreamDeserializationSchema` and may produce zero or more
+records. Every produced record carries the mutation's commit time as its Flink timestamp. A
+heartbeat produces no record but advances the checkpointed continuation token and low watermark.
+`CloseStream` transfers successor partitions and their tokens to the coordinator.
+
+Watermark generation remains the job's `WatermarkStrategy`; the source does not emit service low
+watermarks as Flink watermarks. For a quiet stream, configure idleness on that strategy so one idle
+partition does not hold back the downstream watermark. The estimated low watermark is exposed as a
+reader metric for lag monitoring.
 
 ## Metrics
 
@@ -701,6 +734,9 @@ Registered on the source reader's and the split enumerator's metric groups:
 | Metric | Type | Meaning |
 |---|---|---|
 | `rowsRead` | counter | rows this subtask pulled off a stream |
+| `changeStreamMutationsRead` | counter | change-stream mutations this subtask received |
+| `changeStreamHeartbeatsRead` | counter | heartbeats this subtask received; they advance state without producing a record |
+| `partitionLowWatermarkMillis` | gauge | latest estimated low watermark observed for this subtask's current partition, as epoch milliseconds |
 | `recordsSkipped` | counter | rows the deserializer emitted no record for |
 | `numRecordsIn` | counter (Flink standard) | records handed downstream. With a one-to-many deserializer this is neither `rowsRead` nor `rowsRead` minus `recordsSkipped` |
 | `splitsAssigned` | counter | splits handed to a reader. On the enumerator, so one set per job |
