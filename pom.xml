@@ -70,6 +70,7 @@ limitations under the License.
         <module>flink-connector-gcp-bigtable</module>
         <module>flink-sql-connector-gcp-bigtable</module>
         <module>flink-connector-gcp-spanner</module>
+        <module>flink-sql-connector-gcp-spanner</module>
     </modules>
 
     <properties>
@@ -480,9 +481,13 @@ limitations under the License.
                                                  (Woodstox because google-cloud-storage brings
                                                  jackson-dataformat-xml, which falls back to
                                                  the JDK factory and wraps it), and the
-                                                 Pub/Sub jar contains neither entry - measured
-                                                 2026-08-09. The exclusion is stated for both
-                                                 so the bundles cannot answer one question two
+                                                 Spanner tree additionally carries Bouncy
+                                                 Castle through Tink; its provider file would
+                                                 register a relocated implementation under
+                                                 java.security.Provider for every job in the
+                                                 JVM. The Pub/Sub jar contains none of these
+                                                 entries - measured 2026-08-09. The exclusion is
+                                                 stated for all so the bundles cannot answer one question two
                                                  ways, which is the reasoning META-INF/versions
                                                  above already takes. Note what does not need
                                                  this: an SPI whose interface relocates with
@@ -491,6 +496,7 @@ limitations under the License.
                                                  these jars' whole point. -->
                                             <exclude>META-INF/services/javax.xml.stream.*</exclude>
                                             <exclude>META-INF/services/java.time.chrono.Chronology</exclude>
+                                            <exclude>META-INF/services/java.security.Provider</exclude>
                                         </excludes>
                                     </filter>
                                 </filters>

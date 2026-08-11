@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0097: The Spanner lookup source is primary-key-only and Flink owns its cache
+# ADR-0098: The Spanner lookup source is primary-key-only and Flink owns its cache
 
 - Status: Accepted
 - Date: 2026-08-11

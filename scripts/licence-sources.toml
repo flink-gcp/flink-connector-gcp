@@ -105,6 +105,15 @@ sha256 = "0d17e86dbd1f3504cfa311e67827e1569ad27bbfff29cc405194e4a2549e9df8"
 # Release tags are animal-sniffer-<version>. The POM-declared URL is spdx.org's
 # bare MIT template, which lacks the copyright line.
 
+[files."LICENSE.bouncycastle"]
+artifacts = ["org.bouncycastle:bcprov-jdk18on"]
+url = "https://raw.githubusercontent.com/bcgit/bc-java/r1rv{version}/LICENSE.md"
+version_strip_prefix = "1."
+sha256 = "7c20547eca5a50aca23852d5b0eb30de23ded9a04110b2ec355a9543d88aacc8"
+# The publisher's r1rv80 tag for artifact version 1.80. Neither the runtime
+# nor sources jar carries a licence text; LICENSE.md at the matching tag is
+# plain text and includes the publisher's copyright notice.
+
 [files."LICENSE.threetenbp"]
 artifacts = ["org.threeten:threetenbp"]
 jar = "META-INF/LICENSE.txt"
