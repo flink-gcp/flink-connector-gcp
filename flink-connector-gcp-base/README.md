@@ -8,11 +8,15 @@ exceptions the Google Cloud clients surface, and — from the DLQ and metrics st
 failure-handling SPI (`FailureHandler`, `DeadLetterQueue`) plus the sink metric helpers the
 connectors register their error-class and per-destination counters through. `base.lifecycle` holds
 the close-time helpers: releasing several resources so that one refusing to close never strands the
-rest, and bounding a client shutdown that is not guaranteed to return.
+rest, and bounding a client shutdown that is not guaranteed to return. `base.source` also holds
+the shared `StartPosition` value used by the Bigtable and Spanner change-stream sources: a fresh
+job can start at the earliest retained position, the current position, an absolute timestamp or a
+duration before startup, while restored source state remains authoritative.
 
 Every type in this module is `@Internal` except the failure-handling SPI in `base.failure`, which
-is public because users implement it; the connectors' own builders remain the place failure
-policies are configured. Everything else is consumed by the sibling connector modules at compile
-scope, is not part of any connector's public API, and carries no compatibility guarantee outside
-this repository. Retry behavior is configured through each connector's own public options
-objects, which map onto the internal schedule type here.
+is public because users implement it, and `base.source.StartPosition`, which users pass to both
+change-stream source builders. The connectors' own builders remain the place these policies are
+configured. Everything else is consumed by the sibling connector modules at compile scope, is not
+part of any connector's public API, and carries no compatibility guarantee outside this
+repository. Retry behavior is configured through each connector's own public options objects,
+which map onto the internal schedule type here.
