@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Memory"
+  short_description: "Consult private local project knowledge safely"
+  default_prompt: "Use $project-memory to find and consult relevant local project memory before working."
