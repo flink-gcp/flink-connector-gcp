@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0073: Bigtable auto-creation parks `NOT_FOUND` and repairs through an ensure
 
 - Status: Accepted
-- Date: 2026-08-09 (emulator behaviour measured 2026-08-08; reconciliation bound refined by [#414])
-- Issues: [#233], [#414]
+- Date: 2026-08-09 (emulator behaviour measured 2026-08-08; reconciliation bound refined by [#414]; unrepairable-family detection refined by [#432] on 2026-08-11)
+- Issues: [#233], [#414], [#432]
 - Modules: bigtable (`sink`, `sink.tables`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Table auto-creation
 
@@ -42,6 +42,11 @@ Measured before the design was committed (2026-08-08, `google-cloud-cli:441.0.0-
   propagation and the add-only reconcile; the sink classifies by status alone, so the wording
   difference costs nothing. The missing-family `NOT_FOUND` was already pinned against the
   service ("Requested column family not found").
+- **That missing-family description carries no family id.** In `google-cloud-bigtable` 2.80.0,
+  `MutateRowsAttemptCallable.createEntryError` builds the per-entry `ApiException` from the
+  response status's code and message and does not carry its details forward. The cheaper #432
+  detector therefore cannot name a family from the status alone; it needs the family-bearing
+  mutations in the entry and the metadata snapshot the ensure already reads.
 - **The emulator's admin surface behaves like the service's for what the repair needs**: a
   repeated `CreateTable` answers `ALREADY_EXISTS`; `ModifyColumnFamilies` with a `create` mod for
   an existing family answers `ALREADY_EXISTS` for the whole atomic request; created GC rules read
@@ -82,6 +87,19 @@ reads the live families, adds only the declared absentees in **one atomic**
 ones with it), and on a lost family race re-reads and retries the remainder. An
 existing family's rule is never compared or updated —
 creation-only, per family, the `TopicCreateOptions` semantics carried down one level.
+
+**A family that creation cannot repair fails after one post-ensure verdict, not after the recovery
+budget.** `EnsureResult` returns the families known to exist when the ensure completes: the
+declared set for a newly created table, or the live set plus this call's additions for an existing
+one. When a re-applied entry receives the service's specific "Requested column family not found"
+description, the writer compares its family-bearing mutations with that snapshot. Any absent
+referenced family is undeclared by construction — every declared family was ensured and is in the
+snapshot — so the job fails immediately with the destination and family ids. A declared family
+whose metadata is still propagating, an undeclared family that already exists, a missing table,
+and any `NOT_FOUND` without that exact service description retain the bounded retry. This avoids a
+new metadata RPC and avoids guessing a family from a generic status message; per-table budgets stay
+declined because they do nothing for the single-table delay and are unnecessary for the detectable
+configuration error ([#432]).
 
 **The reconciliation is bounded by what its own termination argument asserts** ([#414], refining
 this ADR's original "unbounded under perpetual external churn, accepted rather than capped"). A
@@ -161,9 +179,10 @@ same way.
   would need its retriability verdict measured, the way ADR-0071's was for BigQuery's admin-plane
   rate limit — is deliberately deferred until such a shape is observed
   (widen-only-what-was-observed, ADR-0030's rule).
-- A mutation naming a family `tableCreateOptions` does not declare is unrepairable by
-  construction; the budget-exhaustion message names that case, since it is the one a user can fix
-  by editing the options.
+- A mutation naming an absent family `tableCreateOptions` does not declare is unrepairable by
+  construction; after the ensure and one re-application, the failure names that table and family
+  without spending the remaining shared budget. Ambiguous `NOT_FOUND` incidents still exhaust the
+  budget with the generic hint.
 - The repair extends checkpoint duration by up to the recovery budget (~1 minute at defaults),
   stated on the documentation page beside Pub/Sub's identical caveat.
 - `FakeMutationBatcher` gained `tableMissing` (request-level `NOT_FOUND` fan-out, the measured
@@ -175,3 +194,4 @@ same way.
 [#233]: https://github.com/laughingman7743/flink-connector-gcp/issues/233
 [#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
 [#414]: https://github.com/laughingman7743/flink-connector-gcp/issues/414
+[#432]: https://github.com/laughingman7743/flink-connector-gcp/issues/432

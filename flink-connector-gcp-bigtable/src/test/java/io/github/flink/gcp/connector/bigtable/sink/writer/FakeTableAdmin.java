@@ -27,6 +27,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A {@link TableAdmin} for writer tests: records what was ensured, answers with a scripted result
@@ -43,7 +44,7 @@ final class FakeTableAdmin implements TableAdmin {
     final Deque<IOException> ensureFailures = new ArrayDeque<>();
 
     /** What {@code ensureTable} reports; defaults to "created the table". */
-    EnsureResult result = EnsureResult.created();
+    EnsureResult result = EnsureResult.created(Set.of("cf"));
 
     /** Runs after a successful ensure, before the result is returned. */
     @Nullable Runnable onEnsure;

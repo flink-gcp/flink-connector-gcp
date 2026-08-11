@@ -82,6 +82,12 @@ final class FakeMutationBatcher implements MutationBatcher {
     boolean tableMissing;
 
     /**
+     * Sends up to this count fail with the real service's missing-family description. Zero (the
+     * default) disables it; {@link Integer#MAX_VALUE} keeps the family missing indefinitely.
+     */
+    int columnFamilyMissingThroughSends;
+
+    /**
      * Requests after this many sends fail as {@link #tableMissing} does — for the case where the
      * table vanishes <em>mid-flush</em>, which no test code can inject between two sends of one
      * writer call. {@link Integer#MAX_VALUE} (the default) never triggers.
@@ -143,8 +149,15 @@ final class FakeMutationBatcher implements MutationBatcher {
         boolean rejected =
                 batch.stream().anyMatch(index -> rejectedRowKeys.contains(rowKey(index)));
         boolean missing = tableMissing || sentBatches.size() > tableMissingAfterSends;
+        boolean familyMissing = sentBatches.size() <= columnFamilyMissingThroughSends;
         for (int index : batch) {
-            if (missing) {
+            if (familyMissing) {
+                futures.get(index)
+                        .setException(
+                                apiException(
+                                        StatusCode.Code.NOT_FOUND,
+                                        BigtableErrorClassifier.MISSING_COLUMN_FAMILY_DESCRIPTION));
+            } else if (missing) {
                 futures.get(index)
                         .setException(
                                 apiException(
@@ -218,6 +231,14 @@ final class FakeMutationBatcher implements MutationBatcher {
 
     static Exception apiException(StatusCode.Code code) {
         return apiException(code, new RuntimeException("scripted " + code));
+    }
+
+    /** Builds an exception whose status carries the given description. */
+    static Exception apiException(StatusCode.Code code, String description) {
+        Status status =
+                Status.fromCode(Status.Code.valueOf(code.name())).withDescription(description);
+        return ApiExceptionFactory.createException(
+                status.asRuntimeException(), GrpcStatusCode.of(status.getCode()), false);
     }
 
     /** Builds an exception carrying {@code code} over the given cause, for cause-chain tests. */

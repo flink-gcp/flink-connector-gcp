@@ -27,6 +27,7 @@ import org.apache.flink.util.function.ThrowingRunnable;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
+import com.google.bigtable.v2.Mutation;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
@@ -151,20 +152,22 @@ import java.util.stream.Collectors;
  * #pendingRepair} rather than failing the job, and {@link #runRepair()} repairs the incident from
  * the next {@link #write} or {@link #flush(boolean)}: it drains the writer, ensures every table
  * that reported itself missing and its declared families exist through the {@link TableAdmin},
- * re-applies the parked mutations, and retries on a jittered backoff schedule until they land or
- * {@code BigtableWriterOptions.recoveryMaxAttempts} is spent. The disposition gates the
- * <em>parking</em>, unlike the Pub/Sub writer's (where a cascade behind a dropped ordered message
- * must be parked whatever the disposition): this writer has no ordering keys and no cascades, so
- * under {@code CREATE_NEVER} a {@code NOT_FOUND} is simply fatal, with the disposition named in the
- * failure. {@link #tablesMissing} carries the repair's reason — added to only where a {@code
- * NOT_FOUND} is parked, consumed per table per attempt, so the admin is called only for a table
- * that actually reported itself missing, and not again once its ensure has succeeded.
+ * re-applies the parked mutations, and retries on a jittered backoff schedule until they land,
+ * {@code BigtableWriterOptions.recoveryMaxAttempts} is spent, or the post-ensure verdict proves the
+ * family unrepairable as described below. The disposition gates the <em>parking</em>, unlike the
+ * Pub/Sub writer's (where a cascade behind a dropped ordered message must be parked whatever the
+ * disposition): this writer has no ordering keys and no cascades, so under {@code CREATE_NEVER} a
+ * {@code NOT_FOUND} is simply fatal, with the disposition named in the failure. {@link
+ * #tablesMissing} carries the repair's reason — added to only where a {@code NOT_FOUND} is parked,
+ * consumed per table per attempt, so the admin is called only for a table that actually reported
+ * itself missing, and not again once its ensure has succeeded.
  *
- * <p>One repair covers every table parked at the time, and its budget is shared: a mutation naming
- * a column family {@code tableCreateOptions} does not declare can never be repaired, and spending
- * the budget on it now fails the job while other tables' parked work is still outstanding. That
- * work is neither applied nor routed, which at-least-once covers for the reason {@link #close()}'s
- * discard is covered — no checkpoint completed with it parked.
+ * <p>One repair covers every table parked at the time, and its budget is shared. A mutation naming
+ * a column family {@code tableCreateOptions} does not declare can never be repaired; once the
+ * ensure's family snapshot and a post-ensure missing-family verdict identify that condition, the
+ * repair fails immediately rather than spending the shared budget. Other parked work is still
+ * neither applied nor routed, which at-least-once covers for the reason {@link #close()}'s discard
+ * is covered — no checkpoint completed with it parked.
  *
  * <p>A failure that first surfaces during {@link #close()} reaches neither the handler nor {@link
  * #asyncError}: Flink quiesces the task mailbox before it closes operators, so a completion
@@ -292,6 +295,16 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * must not issue a creation for it. Touched only on the task thread.
      */
     private final Set<TableDestination> tablesMissing = new LinkedHashSet<>();
+
+    /**
+     * Families known to exist after each table's successful ensure in the current repair.
+     *
+     * <p>The service's missing-family status carries no family id. A re-application that receives
+     * it is therefore compared with this snapshot and the entry's own family-bearing mutations; the
+     * map is empty outside a repair so an initial {@code NOT_FOUND} can never be mistaken for
+     * evidence that creation cannot fix it.
+     */
+    private final Map<TableDestination, Set<String>> familiesAfterEnsure = new LinkedHashMap<>();
 
     /**
      * The failure that parked the current repair's first mutation, carried so a repair that
@@ -667,12 +680,14 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * at one cap's worth. An entry that fails {@code INVALID_ARGUMENT} here parks for the isolation
      * pass, not this loop, which is why the loop keys on its own queue alone.
      *
-     * <p>Budget exhaustion names the one condition creation cannot repair: a mutation writing to a
-     * family {@code tableCreateOptions} does not declare fails {@code NOT_FOUND} forever, since the
-     * sink creates only the declared families. One such table spends the budget the whole repair
-     * shares, which is the cost of one repair over every parked table rather than one per table.
+     * <p>A post-ensure {@code NOT_FOUND} whose service description specifically names a missing
+     * family is checked against the families the ensure observed and the entry references. An
+     * absent referenced family is undeclared by construction — every declared family is in the
+     * ensure result — so it fails immediately with the exact table and family names. An ambiguous
+     * {@code NOT_FOUND} still spends the budget and reaches the existing exhaustion message.
      */
     private void runRepair() throws IOException, InterruptedException {
+        familiesAfterEnsure.clear();
         sendEveryBatcher();
         drainInFlight();
         Set<TableDestination> ensured = new LinkedHashSet<>();
@@ -721,6 +736,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                     if (result.columnFamiliesAdded() > 0) {
                         metrics.columnFamiliesAdded(result.columnFamiliesAdded());
                     }
+                    familiesAfterEnsure.put(table, result.existingColumnFamilies());
                 }
                 if (!tablesMissing.isEmpty()) {
                     // An ensure failed and spent this attempt; the ones it did not reach are owed
@@ -741,6 +757,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             drainInFlight();
             if (pendingRepair.isEmpty()) {
                 repairCause = null;
+                familiesAfterEnsure.clear();
                 return;
             }
             if (attempt >= recoverySchedule.maxAttempts()) {
@@ -1091,6 +1108,27 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // is a fresh give-up. The Pub/Sub writer counts its parked NOT_FOUNDs the same way.
         metrics.applyFailure(BigtableErrorClassifier.statusCode(throwable));
         if (kind == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND && repairsTables()) {
+            Set<String> existingFamilies = familiesAfterEnsure.get(state.destination);
+            if (existingFamilies != null
+                    && BigtableErrorClassifier.isMissingColumnFamily(throwable)) {
+                Set<String> missingFamilies = missingFamilies(entry, existingFamilies);
+                if (!missingFamilies.isEmpty()) {
+                    if (asyncError == null) {
+                        asyncError =
+                                new IOException(
+                                        "A mutation of Bigtable table "
+                                                + state.destination
+                                                + " names column families "
+                                                + missingFamilies
+                                                + " that do not exist after the table and its"
+                                                + " declared families were ensured."
+                                                + " tableCreateOptions cannot repair these"
+                                                + " families because it does not declare them.",
+                                        throwable);
+                    }
+                    return;
+                }
+            }
             pendingRepair.add(new ParkedMutation(state.destination, entry, serializedSize));
             // The only thing that makes the repair call the admin for this table. Re-applying the
             // parked batch is needed whatever parked it, and a repair that has not seen a NOT_FOUND
@@ -1111,6 +1149,41 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     /** Whether the sink may repair a missing table by creating it. */
     private boolean repairsTables() {
         return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED;
+    }
+
+    /**
+     * Returns family ids used by the entry that were absent from the ensure's metadata snapshot.
+     */
+    private static Set<String> missingFamilies(
+            RowMutationEntry entry, Set<String> existingFamilies) {
+        Set<String> missing = new LinkedHashSet<>();
+        for (Mutation mutation : entry.toProto().getMutationsList()) {
+            String family = null;
+            switch (mutation.getMutationCase()) {
+                case SET_CELL:
+                    family = mutation.getSetCell().getFamilyName();
+                    break;
+                case DELETE_FROM_COLUMN:
+                    family = mutation.getDeleteFromColumn().getFamilyName();
+                    break;
+                case DELETE_FROM_FAMILY:
+                    family = mutation.getDeleteFromFamily().getFamilyName();
+                    break;
+                case ADD_TO_CELL:
+                    family = mutation.getAddToCell().getFamilyName();
+                    break;
+                case MERGE_TO_CELL:
+                    family = mutation.getMergeToCell().getFamilyName();
+                    break;
+                case DELETE_FROM_ROW:
+                case MUTATION_NOT_SET:
+                    break;
+            }
+            if (family != null && !existingFamilies.contains(family)) {
+                missing.add(family);
+            }
+        }
+        return missing;
     }
 
     /**

@@ -22,6 +22,9 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * Table administration operations used by the sink, abstracting the Bigtable admin client so writer
@@ -63,10 +66,14 @@ public interface TableAdmin extends AutoCloseable {
 
         private final boolean tableCreated;
         private final int columnFamiliesAdded;
+        private final Set<String> existingColumnFamilies;
 
-        private EnsureResult(boolean tableCreated, int columnFamiliesAdded) {
+        private EnsureResult(
+                boolean tableCreated, int columnFamiliesAdded, Set<String> existingColumnFamilies) {
             this.tableCreated = tableCreated;
             this.columnFamiliesAdded = columnFamiliesAdded;
+            this.existingColumnFamilies =
+                    Collections.unmodifiableSet(new LinkedHashSet<>(existingColumnFamilies));
         }
 
         /**
@@ -74,20 +81,22 @@ public interface TableAdmin extends AutoCloseable {
          * never also "added", which is what the two factories keeping the pair apart makes
          * unrepresentable.
          *
+         * @param columnFamilies the families created with the table
          * @return the result
          */
-        public static EnsureResult created() {
-            return new EnsureResult(true, 0);
+        public static EnsureResult created(Set<String> columnFamilies) {
+            return new EnsureResult(true, 0, columnFamilies);
         }
 
         /**
          * The table already existed and the given number of declared families it lacked were added.
          *
          * @param count how many families were added; zero when everything already existed
+         * @param existingColumnFamilies the families known to exist when the ensure completed
          * @return the result
          */
-        public static EnsureResult familiesAdded(int count) {
-            return new EnsureResult(false, count);
+        public static EnsureResult familiesAdded(int count, Set<String> existingColumnFamilies) {
+            return new EnsureResult(false, count, existingColumnFamilies);
         }
 
         /** Returns whether the table was created (with every declared family). */
@@ -100,12 +109,24 @@ public interface TableAdmin extends AutoCloseable {
             return columnFamiliesAdded;
         }
 
+        /**
+         * Returns the snapshot of families known to exist when the ensure completed.
+         *
+         * <p>For a created table these are the declared families sent with the creation. For an
+         * existing table they are the families read from the table, plus any this call added.
+         */
+        public Set<String> existingColumnFamilies() {
+            return existingColumnFamilies;
+        }
+
         @Override
         public String toString() {
             return "EnsureResult{tableCreated="
                     + tableCreated
                     + ", columnFamiliesAdded="
                     + columnFamiliesAdded
+                    + ", existingColumnFamilies="
+                    + existingColumnFamilies
                     + "}";
         }
     }

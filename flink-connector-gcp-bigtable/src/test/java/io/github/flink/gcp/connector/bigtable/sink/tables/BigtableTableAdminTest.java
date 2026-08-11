@@ -131,6 +131,7 @@ class BigtableTableAdminTest {
 
         assertThat(result.tableCreated()).isTrue();
         assertThat(result.columnFamiliesAdded()).isZero();
+        assertThat(result.existingColumnFamilies()).containsExactly("plain");
         assertThat(admin.creations).hasSize(1);
         assertThat(admin.readTableIds).isEmpty();
         assertThat(admin.modifications).isEmpty();
@@ -144,6 +145,7 @@ class BigtableTableAdminTest {
 
         assertThat(result.tableCreated()).isFalse();
         assertThat(result.columnFamiliesAdded()).isEqualTo(1);
+        assertThat(result.existingColumnFamilies()).containsExactlyInAnyOrder("existing", "added");
         assertThat(admin.creations).hasSize(1);
         assertThat(admin.readTableIds).containsExactly("orders");
         assertThat(admin.modifications)
@@ -163,6 +165,7 @@ class BigtableTableAdminTest {
 
         assertThat(result.tableCreated()).isFalse();
         assertThat(result.columnFamiliesAdded()).isEqualTo(1);
+        assertThat(result.existingColumnFamilies()).containsExactlyInAnyOrder("a", "b");
         assertThat(admin.readTableIds).containsExactly("orders", "orders");
         assertThat(admin.modifications)
                 .extracting(request -> request.toProto("p", "i"))
@@ -177,6 +180,7 @@ class BigtableTableAdminTest {
 
         assertThat(result.tableCreated()).isFalse();
         assertThat(result.columnFamiliesAdded()).isZero();
+        assertThat(result.existingColumnFamilies()).containsExactlyInAnyOrder("a", "b");
         assertThat(admin.modifications).isEmpty();
     }
 
