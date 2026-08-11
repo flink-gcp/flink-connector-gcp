@@ -1,0 +1,68 @@
+<!--
+Copyright 2026 laughingman7743
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+# ADR-0096: The Spanner table sink maps DDL rows to native mutations
+
+- Status: Accepted
+- Date: 2026-08-11
+- Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502) (under
+  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223))
+- Modules: spanner
+- Current behavior: `docs/content/docs/connectors/table/spanner.md`
+
+## Context
+
+The DataStream sink accepts native Spanner `Mutation` objects through an application serializer.
+SQL has no serializer callback, so the DDL must determine the mutation operation, native types, and primary-key encoding without weakening the DataStream sink's batching and retry contract.
+
+## Decision
+
+**The `spanner` table sink maps each physical `RowData` field directly onto one named Spanner column.**
+The common lossless mappings cover `BOOL`, `INT64`, `FLOAT32`, `FLOAT64`, `NUMERIC`, `STRING`, `BYTES`, `DATE`, `TIMESTAMP`, and arrays.
+Spanner JSON, PROTO, and ENUM cannot be distinguished from their Flink carrier types, so three explicit field-path options mark them and provide native type names where Spanner requires one.
+The declared database dialect selects GoogleSQL `JSON` or PostgreSQL `jsonb`.
+PROTO and ENUM markers are rejected for PostgreSQL databases because those named types are GoogleSQL-only.
+Markers may mark an entire array of a special type.
+Flink `ROW` is rejected because Spanner `STRUCT` is a query-result type, not a storable table column.
+
+**A declared primary key selects idempotent upserts and enables deletes.**
+`INSERT` and `UPDATE_AFTER` become `insertOrUpdate` mutations, while `DELETE` carries only the declared key columns.
+A table without a primary key is insert-only because SQL cannot construct a Spanner delete key or make replayed writes idempotent without one.
+`UPDATE_BEFORE` is rejected defensively; the planner does not send it to the advertised upsert sink.
+
+**The table options are a mapping onto the existing builders.**
+The destination fields assemble `SpannerDatabase`, the physical DDL supplies the serializer, and the eight `sink.*` options map one-for-one onto `SpannerWriterOptions`.
+The table layer keeps the DataStream sink's fail-job constraint and failed-mutation policies because a DDL cannot carry a serializable failure-handler implementation.
+
+## Evidence
+
+Measured 2026-08-11 against the pom-pinned Flink 2.2.1 and Spanner emulator 1.5.56:
+
+- The production factory planned and executed separate insert and upsert jobs against both GoogleSQL and PostgreSQL databases.
+- The schema object crosses Flink's job serialization boundary; the integration test caught and now pins that requirement.
+- Unit tests cover native scalar and composite mappings, special markers, primary-key deletes, insert-only tables, changelog modes, factory validation, and option parity with both DataStream builders.
+
+## Alternatives declined
+
+- **Infer JSON, PROTO, and ENUM from carrier types**: `STRING`, `BYTES`, and `BIGINT` are also ordinary Spanner types, so inference would silently change schemas with the same Flink DDL.
+- **Use insert-or-update without a declared key**: Spanner tables always have physical keys, but their columns and order are not available in the DDL; an extra metadata read would make planning depend on the live destination and still leave Flink without an upsert key.
+- **Expose failure handlers as strings**: the shared SPI accepts application code, not a closed enum, so a string surface would represent only an arbitrary subset and diverge from the builder.
+
+## Consequences
+
+A primary key is optional, but it changes the accepted changelog and replay behavior.
+The DDL schema must match the destination's column names and native types; this slice does not read the live schema during planning.
+The scan and lookup sources build on the same type mapping in [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503) and [#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504).

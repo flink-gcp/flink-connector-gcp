@@ -12,7 +12,10 @@ snapshot, on partitions the service planned. Both dialects, GoogleSQL and Postgr
 | Emulator integration tests, both dialects | Implemented ([#220](https://github.com/laughingman7743/flink-connector-gcp/issues/220)) |
 | DataStream bounded batch source (`PartitionQuery`, Data Boost) | Implemented ([#221](https://github.com/laughingman7743/flink-connector-gcp/issues/221)) |
 | Change streams source | Planned ([#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222)) |
-| Table API / SQL support | Planned ([#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)) |
+| Table API / SQL sink, native type mapping, and DDL factory | Implemented ([#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502)) |
+| Table API / SQL bounded scan and projection | Planned ([#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503)) |
+| Table API / SQL lookup source | Planned ([#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504)) |
+| Relocated SQL uber-jar | Planned ([#505](https://github.com/laughingman7743/flink-connector-gcp/issues/505)) |
 | Gated real-GCP integration tests | Implemented ([#224](https://github.com/laughingman7743/flink-connector-gcp/issues/224)) |
 | Change-stream CDC in SQL | Planned ([#225](https://github.com/laughingman7743/flink-connector-gcp/issues/225)) |
 
@@ -45,6 +48,8 @@ stream, deletes, dropping refused mutations, reading a key range and emulator-ba
 worked through in
 [Examples](../docs/content/docs/examples/spanner.md). Every option the sink and the source take,
 with its default, is in the [configuration reference](../docs/content/docs/reference/spanner.md).
+The SQL DDL, type mapping, primary-key behavior, and Table API options are in the
+[Spanner SQL connector guide](../docs/content/docs/connectors/table/spanner.md).
 
 ## Provenance and attribution
 
