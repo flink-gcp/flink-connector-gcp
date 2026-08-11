@@ -49,11 +49,20 @@ under a key that a serving path reads by prefix. The sink is shaped for that —
 its own row key and cells, and the sink's whole job is to get mutations there in bounded memory and
 to make a checkpoint mean something.
 
-Two properties of the service shape the design more than anything else. Mutations of **one** row
-apply atomically while mutations of different rows do not, so ordering across rows is not something
-this sink can offer or is asked for. And a write carries a **cell timestamp**, which turns
-at-least-once from a duplicate problem into a choice — the same mutation applied twice is either an
-overwrite or a second version, depending on what the serializer set.
+Two properties of the service shape the design more than anything else. The mutations inside one
+`RowMutationEntry` apply atomically to its row, while different entries do not form one atomic
+operation. A write also carries a **cell timestamp**, which turns at-least-once from a duplicate
+problem into a choice — the same mutation applied twice is either an overwrite or a second version,
+depending on what the serializer set.
+
+**Submission order is not a same-key last-write-wins guarantee.** The client batches entries into
+`MutateRows`, whose contract permits arbitrary application order even between entries for the same
+row; concurrent requests are unordered too. A 2026-08-11 real-service campaign observed zero
+reversals in 86,196 mirrored same-row pairs, but that bounded observation does not replace the
+contract. If dependent mutations need a defined winner, encode the version in the row key or split
+them into writes whose completion is awaited before the next begins. `batchElementCount(1)` only
+makes concurrent one-entry requests and does not establish order. ADR-0093 records the measurement
+and decision.
 
 ## API notes
 
@@ -781,6 +790,11 @@ between you and a new instance. Two things only this suite can show:
   and of a missing column family are pinned, and where the batch-wide rejection that the isolation
   pass answers was both found and, since [#239]({{< param BookRepo >}}/issues/239), verified to be
   answered: a good record written beside a bad one is applied, and only the bad one is routed.
+- **How same-row entries behaved in one `MutateRows` request under a bounded campaign**
+  ([#471]({{< param BookRepo >}}/issues/471), ADR-0093): 86,196 pairs across mirrored submission
+  arms and request sizes from 2 through 19,998 produced zero reversals. The probe was deliberately
+  not retained as a regression test because the service contract permits arbitrary order; a test
+  requiring zero reversals would pin an observation the connector cannot promise.
 - **The missing-family leg of [auto-creation](#table-auto-creation)**, which the emulator cannot
   drive at all (it answers `INTERNAL` where the service says `NOT_FOUND` — the table below), and
   the repair against real metadata propagation: a family the options declare but an existing table

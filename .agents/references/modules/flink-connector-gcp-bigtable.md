@@ -269,7 +269,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   because the requests one job has in flight are concurrent rather than ordered. A test that cannot
   use two jobs — the table layer's delete test, since `ChangelogNormalize` knows only what its own
   job has seen — asserts something order-independent instead. The cell timestamp is the **writer's
-  clock**, which is what makes a retry idempotent.
+  clock**, which is what makes a retry idempotent. **#471 measured but did not convert the
+  observation into a guarantee** (ADR-0093): 86,196 same-row pairs, mirrored across request sizes
+  2 through 19,998, produced zero reversals on real Bigtable. The sink retains the bulk path and
+  the caveat; a permanent test asserting submission order would contradict the service contract.
 - **Table creation takes its families from the DDL and its rule from two keys**, unioned when both
   are set, and **at least one is required** under `create-if-needed` — stricter than the DataStream
   API, because an at-least-once upsert sink writes another version on every replay. Defaulting the

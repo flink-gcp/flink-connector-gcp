@@ -435,10 +435,21 @@ ordered — measured, forcing one entry per request made a delete stop taking ef
 defined order is separate *writes*: a request whose response has been awaited before the next is
 issued, which is what successive jobs give you.
 
-A job that needs last-write-wins per key within a batch has to keep at most one row per key in
-flight — by aggregating upstream, or by putting the version in the row key. Google's own guidance
-lists "multiple mutations to the same row" under when *not* to use batch writes. Whether the sink
-should enforce it is [#471]({{< param BookRepo >}}/issues/471).
+A job that needs last-write-wins per key cannot obtain it from this sink's submission order. It can
+put the version in the row key, or separate dependent mutations into writes whose completion is
+awaited before the next begins. Upstream aggregation helps only when it emits at most one mutation
+per key for the lifetime of the write; windowed aggregation can still leave requests concurrent.
+Google's own guidance lists "multiple mutations to the same row" under when *not* to use batch
+writes.
+
+The sink does not serialize same-key entries. A real-service campaign submitted 86,196 same-row
+pairs in mirrored arms, across request sizes from 2 through 19,998 entries, and observed no
+submission-order reversals on 2026-08-11. That is evidence about the tested service behaviour, not
+a contract: the documented arbitrary-order allowance still applies, and a future service or client
+change may exercise it. Enforcing one in-flight entry per key would add key-indexed pending state
+that grows with active keys and head-of-line blocking to protect a behaviour the campaign did not
+observe; ADR-0093 records why [#471]({{< param BookRepo >}}/issues/471) therefore keeps the
+existing bulk path and this explicit caveat.
 
 ### The cell timestamp is the writer's clock
 
