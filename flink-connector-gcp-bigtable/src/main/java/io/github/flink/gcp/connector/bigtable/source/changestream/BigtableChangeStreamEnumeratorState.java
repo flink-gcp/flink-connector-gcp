@@ -35,6 +35,7 @@ public final class BigtableChangeStreamEnumeratorState {
     private final List<ChangeStreamPartitionSplit> unassignedSplits;
     private final List<ChangeStreamPartitionSplit> assignedSplits;
     private final List<PendingMerge> pendingMerges;
+    private final List<MissingPartition> missingPartitions;
 
     public BigtableChangeStreamEnumeratorState(
             boolean initialized,
@@ -43,10 +44,29 @@ public final class BigtableChangeStreamEnumeratorState {
             List<ChangeStreamPartitionSplit> unassignedSplits,
             List<ChangeStreamPartitionSplit> assignedSplits,
             List<PendingMerge> pendingMerges) {
+        this(
+                initialized,
+                startTime,
+                nextSplitId,
+                unassignedSplits,
+                assignedSplits,
+                pendingMerges,
+                Collections.emptyList());
+    }
+
+    public BigtableChangeStreamEnumeratorState(
+            boolean initialized,
+            Instant startTime,
+            long nextSplitId,
+            List<ChangeStreamPartitionSplit> unassignedSplits,
+            List<ChangeStreamPartitionSplit> assignedSplits,
+            List<PendingMerge> pendingMerges,
+            List<MissingPartition> missingPartitions) {
         Preconditions.checkArgument(nextSplitId >= 0, "nextSplitId must not be negative");
         Preconditions.checkNotNull(unassignedSplits, "unassignedSplits must not be null");
         Preconditions.checkNotNull(assignedSplits, "assignedSplits must not be null");
         Preconditions.checkNotNull(pendingMerges, "pendingMerges must not be null");
+        Preconditions.checkNotNull(missingPartitions, "missingPartitions must not be null");
         Preconditions.checkArgument(
                 initialized || (unassignedSplits.isEmpty() && assignedSplits.isEmpty()),
                 "an uninitialized enumerator cannot hold partitions");
@@ -56,6 +76,7 @@ public final class BigtableChangeStreamEnumeratorState {
         this.unassignedSplits = immutableCopy(unassignedSplits);
         this.assignedSplits = immutableCopy(assignedSplits);
         this.pendingMerges = Collections.unmodifiableList(new ArrayList<>(pendingMerges));
+        this.missingPartitions = Collections.unmodifiableList(new ArrayList<>(missingPartitions));
     }
 
     private static List<ChangeStreamPartitionSplit> immutableCopy(
@@ -87,6 +108,10 @@ public final class BigtableChangeStreamEnumeratorState {
         return pendingMerges;
     }
 
+    public List<MissingPartition> getMissingPartitions() {
+        return missingPartitions;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -101,7 +126,8 @@ public final class BigtableChangeStreamEnumeratorState {
                 && startTime.equals(other.startTime)
                 && unassignedSplits.equals(other.unassignedSplits)
                 && assignedSplits.equals(other.assignedSplits)
-                && pendingMerges.equals(other.pendingMerges);
+                && pendingMerges.equals(other.pendingMerges)
+                && missingPartitions.equals(other.missingPartitions);
     }
 
     @Override
@@ -112,6 +138,7 @@ public final class BigtableChangeStreamEnumeratorState {
                 nextSplitId,
                 unassignedSplits,
                 assignedSplits,
-                pendingMerges);
+                pendingMerges,
+                missingPartitions);
     }
 }

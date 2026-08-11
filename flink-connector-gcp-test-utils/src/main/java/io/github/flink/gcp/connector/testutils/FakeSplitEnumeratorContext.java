@@ -68,6 +68,7 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
     private final Set<Integer> readersToldNoMoreSplits = new LinkedHashSet<>();
     private final List<String> events = new ArrayList<>();
     private final Deque<Runnable> asyncCalls = new ArrayDeque<>();
+    private final List<Runnable> periodicAsyncCalls = new ArrayList<>();
 
     private final MetricListener metricListener = new MetricListener();
 
@@ -208,8 +209,27 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
             BiConsumer<T, Throwable> handler,
             long initialDelayMillis,
             long periodMillis) {
-        throw new UnsupportedOperationException(
-                "A pull-assignment enumerator makes no periodic async calls.");
+        periodicAsyncCalls.add(asyncCall(callable, handler));
+    }
+
+    /** Runs each registered periodic async callback once, without waiting for wall-clock time. */
+    public void runPeriodicAsyncCalls() {
+        for (Runnable call : new ArrayList<>(periodicAsyncCalls)) {
+            call.run();
+        }
+    }
+
+    private static <T> Runnable asyncCall(Callable<T> callable, BiConsumer<T, Throwable> handler) {
+        return () -> {
+            T result = null;
+            Throwable error = null;
+            try {
+                result = callable.call();
+            } catch (Throwable t) {
+                error = t;
+            }
+            handler.accept(result, error);
+        };
     }
 
     @Override

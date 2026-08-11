@@ -54,6 +54,9 @@ public final class BigtableMetricNames {
     public static final String CHANGE_STREAM_MUTATIONS_READ = "changeStreamMutationsRead";
     public static final String CHANGE_STREAM_HEARTBEATS_READ = "changeStreamHeartbeatsRead";
     public static final String PARTITION_LOW_WATERMARK_MILLIS = "partitionLowWatermarkMillis";
+    public static final String CHANGE_STREAM_PARTITIONS_RECONCILED =
+            "changeStreamPartitionsReconciled";
+    public static final String CHANGE_STREAM_TOKENLESS_RESTARTS = "changeStreamTokenlessRestarts";
 
     // Registered by the scan source's split enumerator (BigtableScanSplitEnumerator).
     public static final String SPLITS_ASSIGNED = "splitsAssigned";
