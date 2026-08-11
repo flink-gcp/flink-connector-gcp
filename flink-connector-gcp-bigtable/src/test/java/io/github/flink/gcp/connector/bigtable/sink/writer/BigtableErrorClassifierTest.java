@@ -44,6 +44,30 @@ class BigtableErrorClassifierTest {
     }
 
     @Test
+    void recognizesTheRealServicesMissingFamilyDescription() {
+        Throwable failure =
+                new IOException(
+                        "outer",
+                        FakeMutationBatcher.apiException(
+                                StatusCode.Code.NOT_FOUND,
+                                BigtableErrorClassifier.MISSING_COLUMN_FAMILY_DESCRIPTION));
+
+        assertThat(BigtableErrorClassifier.isMissingColumnFamily(failure)).isTrue();
+    }
+
+    @Test
+    void doesNotReadTheDescriptionFromADifferentStatusInTheChain() {
+        Throwable failure =
+                FakeMutationBatcher.apiException(
+                        StatusCode.Code.NOT_FOUND,
+                        FakeMutationBatcher.apiException(
+                                StatusCode.Code.INTERNAL,
+                                BigtableErrorClassifier.MISSING_COLUMN_FAMILY_DESCRIPTION));
+
+        assertThat(BigtableErrorClassifier.isMissingColumnFamily(failure)).isFalse();
+    }
+
+    @Test
     void findsAMissingTableAheadOfATransientStatus() {
         // The load-bearing precedence: a NOT_FOUND chain that also carries a transient status is
         // still the missing-table failure, or an outage during the incident would turn a

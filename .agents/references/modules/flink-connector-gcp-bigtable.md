@@ -94,7 +94,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   — a boolean creates the first and silently skips the rest, then dies naming undeclared column
   families (`docs/adr/0074`). A failing ensure re-arms the failed table *and every one it did not
   reach*. One `TableCreateOptions` serves every table; the budget is shared across them, so an
-  unrepairable table abandons the others' parked work.
+  unrepairable table abandons the others' parked work. A post-ensure missing-family response is
+  matched against the entry and the ensure's live-family snapshot: an absent referenced family is
+  undeclared by construction and fails immediately (#432), while an ambiguous `NOT_FOUND` retains
+  the bounded retry.
 - `ensureTable` is idempotent and **add-only**: `CreateTable` first, on `ALREADY_EXISTS`
   reconcile by reading live families and adding only the absentees in one atomic request (a
   blind add of one existing family fails the rest with it); an existing family's GC rule is

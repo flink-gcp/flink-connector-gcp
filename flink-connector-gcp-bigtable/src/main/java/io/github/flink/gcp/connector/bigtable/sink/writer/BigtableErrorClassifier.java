@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.sink.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.ExceptionUtils;
 
+import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.StatusCode;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 
@@ -76,6 +77,9 @@ import java.util.Set;
 @Internal
 final class BigtableErrorClassifier {
 
+    /** The real service's description for a mutation naming a family the table lacks. */
+    static final String MISSING_COLUMN_FAMILY_DESCRIPTION = "Requested column family not found";
+
     /** The classes a failed mutation falls into. */
     enum Kind {
         TABLE_NOT_FOUND,
@@ -120,6 +124,32 @@ final class BigtableErrorClassifier {
         return firstMatching(throwable, null) == StatusCode.Code.INVALID_ARGUMENT
                 ? Kind.ROW_LEVEL
                 : Kind.FATAL;
+    }
+
+    /**
+     * Whether a {@code NOT_FOUND} in the chain specifically says a column family is missing.
+     *
+     * <p>Bigtable does not put the family id in the description, and the client discards the
+     * response status details when it builds the per-entry exception. The writer therefore uses
+     * this only to distinguish a missing family from a missing table; the exact family comes from
+     * the entry and the metadata snapshot returned by the ensure.
+     */
+    static boolean isMissingColumnFamily(Throwable throwable) {
+        return ExceptionUtils.findThrowable(
+                        throwable,
+                        t ->
+                                t instanceof ApiException
+                                        && StatusCodes.codeOf(t) == StatusCode.Code.NOT_FOUND
+                                        && carriesMissingFamilyDescription(t.getCause()))
+                .isPresent();
+    }
+
+    /** Reads the raw gRPC cause the pinned client's per-entry exception carries. */
+    private static boolean carriesMissingFamilyDescription(@Nullable Throwable throwable) {
+        return throwable != null
+                && StatusCodes.codeOf(throwable) == StatusCode.Code.NOT_FOUND
+                && ("NOT_FOUND: " + MISSING_COLUMN_FAMILY_DESCRIPTION)
+                        .equals(throwable.getMessage());
     }
 
     /**

@@ -38,6 +38,7 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -152,7 +153,7 @@ public class BigtableTableAdmin implements TableAdmin {
                     "Created Bigtable table {} with column families {}",
                     destination,
                     options.getColumnFamilies().keySet());
-            return EnsureResult.created();
+            return EnsureResult.created(options.getColumnFamilies().keySet());
         } catch (AlreadyExistsException e) {
             LOG.info("Bigtable table {} already exists, not creating it", destination);
         }
@@ -188,7 +189,7 @@ public class BigtableTableAdmin implements TableAdmin {
             Map<String, GcRule> missing = new LinkedHashMap<>(options.getColumnFamilies());
             missing.keySet().removeAll(existing);
             if (missing.isEmpty()) {
-                return EnsureResult.familiesAdded(0);
+                return EnsureResult.familiesAdded(0, existing);
             }
             stillMissing = missing.keySet();
             try {
@@ -197,7 +198,9 @@ public class BigtableTableAdmin implements TableAdmin {
                         "Added column families {} to Bigtable table {}",
                         missing.keySet(),
                         destination);
-                return EnsureResult.familiesAdded(missing.size());
+                Set<String> afterEnsure = new LinkedHashSet<>(existing);
+                afterEnsure.addAll(missing.keySet());
+                return EnsureResult.familiesAdded(missing.size(), afterEnsure);
             } catch (AlreadyExistsException e) {
                 LOG.info(
                         "A column family of Bigtable table {} was added concurrently; re-reading"

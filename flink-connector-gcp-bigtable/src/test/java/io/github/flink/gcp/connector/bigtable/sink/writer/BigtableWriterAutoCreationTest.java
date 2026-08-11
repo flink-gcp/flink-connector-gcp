@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Timeout;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -214,6 +215,57 @@ class BigtableWriterAutoCreationTest {
     }
 
     @Test
+    void anUndeclaredMissingFamilyFailsAfterTheFirstPostEnsureVerdict() throws Exception {
+        RecordingHandler handler = new RecordingHandler();
+        BigtableWriter<String> writer = writerForFamilies(handler, "undeclared");
+        batcher.columnFamilyMissingThroughSends = Integer.MAX_VALUE;
+
+        writer.write("row-1", TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Bigtable table p.i.orders")
+                .hasMessageContaining("column families [undeclared]")
+                .hasMessageContaining("tableCreateOptions")
+                .hasStackTraceContaining(BigtableErrorClassifier.MISSING_COLUMN_FAMILY_DESCRIPTION);
+        // The initial verdict, one ensure and one re-application: the remaining four attempts and
+        // their backoffs are skipped because creation cannot add an undeclared family.
+        assertThat(admin.ensured).containsExactly(TABLE);
+        assertThat(batcher.sentRowKeys()).containsExactly(List.of("row-1"), List.of("row-1"));
+        assertThat(metricGroup.counterValue("errorClass", "NOT_FOUND", "errors")).isEqualTo(2);
+        assertThat(handler.handled).isEmpty();
+    }
+
+    @Test
+    void aDeclaredFamilyStillUsesTheRecoveryBudgetWhileMetadataPropagates() throws Exception {
+        BigtableWriter<String> writer = writerForFamilies(FailureHandler.failJob(), "cf");
+        batcher.columnFamilyMissingThroughSends = 2;
+
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(admin.ensured).containsExactly(TABLE);
+        assertThat(batcher.sentRowKeys())
+                .containsExactly(List.of("row-1"), List.of("row-1"), List.of("row-1"));
+        assertThat(writer.getParkedEntries()).isZero();
+    }
+
+    @Test
+    void anExistingUndeclaredFamilyIsNotBlamedForADeclaredFamilyPropagating() throws Exception {
+        admin.result = TableAdmin.EnsureResult.familiesAdded(1, Set.of("cf", "legacy"));
+        BigtableWriter<String> writer = writerForFamilies(FailureHandler.failJob(), "cf", "legacy");
+        batcher.columnFamilyMissingThroughSends = 2;
+
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(admin.ensured).containsExactly(TABLE);
+        assertThat(batcher.sentRowKeys())
+                .containsExactly(List.of("row-1"), List.of("row-1"), List.of("row-1"));
+        assertThat(writer.getParkedEntries()).isZero();
+    }
+
+    @Test
     void aTransientlyFailingEnsureSpendsAnAttemptRatherThanTheJob() throws Exception {
         // The admin client retries neither of its RPCs, so the recovery schedule is the only
         // thing standing between one transient creation failure and a restart.
@@ -256,7 +308,7 @@ class BigtableWriterAutoCreationTest {
 
     @Test
     void aLostRaceCountsFamiliesAddedRatherThanTablesCreated() throws Exception {
-        admin.result = TableAdmin.EnsureResult.familiesAdded(2);
+        admin.result = TableAdmin.EnsureResult.familiesAdded(2, Set.of("cf", "added-1", "added-2"));
         admin.onEnsure = () -> batcher.tableMissing = false;
         BigtableWriter<String> writer = writer(FailureHandler.failJob());
         batcher.tableMissing = true;
@@ -409,6 +461,18 @@ class BigtableWriterAutoCreationTest {
                 FAST_SCHEDULE);
     }
 
+    private BigtableWriter<String> writerForFamilies(
+            FailureHandler<? super FailedMutation> handler, String... families) {
+        return writer(
+                BigtableWriterOptions.defaults(),
+                handler,
+                CreateDisposition.CREATE_IF_NEEDED,
+                CREATE_OPTIONS,
+                (element, context) -> TABLE,
+                FAST_SCHEDULE,
+                families);
+    }
+
     /** The table the admin was last asked to ensure, for a hook clearing only that table's flag. */
     private TableDestination lastEnsured() {
         return admin.ensured.get(admin.ensured.size() - 1);
@@ -441,13 +505,28 @@ class BigtableWriterAutoCreationTest {
             TableCreateOptions createOptions,
             DestinationResolver<String> resolver,
             RetrySchedule schedule) {
+        return writer(options, handler, disposition, createOptions, resolver, schedule, "cf");
+    }
+
+    private BigtableWriter<String> writer(
+            BigtableWriterOptions options,
+            FailureHandler<? super FailedMutation> handler,
+            CreateDisposition disposition,
+            TableCreateOptions createOptions,
+            DestinationResolver<String> resolver,
+            RetrySchedule schedule,
+            String... families) {
         BigtableSinkBuilder<String> builder =
                 BigtableSink.<String>builder()
                         .destinationResolver(resolver)
                         .serializer(
-                                (element, context) ->
-                                        RowMutationEntry.create(element)
-                                                .setCell("cf", "q", element))
+                                (element, context) -> {
+                                    RowMutationEntry entry = RowMutationEntry.create(element);
+                                    for (String family : families) {
+                                        entry.setCell(family, "q", element);
+                                    }
+                                    return entry;
+                                })
                         .writerOptions(options)
                         .failedMutationHandler(handler)
                         .createDisposition(disposition);

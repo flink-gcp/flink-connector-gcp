@@ -200,8 +200,11 @@ status arrives beside it.
 **Creation only, per family.** An existing table is used as it is; the families declared in the
 options that it lacks are added, with their rules, and an existing family's garbage-collection
 rule is neither compared nor updated. The one condition creation cannot repair is a mutation
-naming a family the options do not declare — it keeps failing `NOT_FOUND` until the recovery
-budget is spent, and the failure message says so.
+naming a family the options do not declare. After ensuring the table, the sink compares a
+missing-family response with the entry and the families the ensure observed; an absent referenced
+family fails immediately with the table and family named instead of spending the remaining
+recovery attempts. A `NOT_FOUND` that does not specifically identify a missing family keeps the
+existing bounded retry behaviour ([#432]({{< param BookRepo >}}/issues/432)).
 
 **The garbage-collection rule is the decision that matters.** This sink is at-least-once: a replay
 whose serializer sets no explicit cell timestamps writes duplicate cell versions, and the family's

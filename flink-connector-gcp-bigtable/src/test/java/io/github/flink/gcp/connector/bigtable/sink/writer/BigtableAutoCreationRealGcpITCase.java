@@ -167,6 +167,32 @@ class BigtableAutoCreationRealGcpITCase extends AbstractBigtableRealGcpITCase {
         }
     }
 
+    @Test
+    void anUndeclaredMissingFamilyFailsAfterTheFirstPostEnsureVerdict() throws Exception {
+        TableDestination table = createTable("unrepairable-family");
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        table,
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        TableCreateOptions.builder().columnFamily(FAMILY).build(),
+                        handler,
+                        toFamily("undeclared"));
+
+        try {
+            writer.write("row-1", TestContexts.NO_OP);
+
+            assertThatThrownBy(() -> writer.flush(false))
+                    .hasMessageContaining(table.getTable())
+                    .hasMessageContaining("column families [undeclared]")
+                    .hasMessageContaining("tableCreateOptions")
+                    .hasStackTraceContaining("Requested column family not found");
+            assertThat(handler.handled).isEmpty();
+        } finally {
+            writer.close();
+        }
+    }
+
     /** A serializer writing every record's payload into the given family. */
     private static BigtableSerializationSchema<String> toFamily(String family) {
         return (element, context) ->
