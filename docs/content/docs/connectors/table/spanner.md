@@ -45,8 +45,18 @@ INSERT INTO orders SELECT order_id, customer, total, updated_at FROM staged_orde
 SELECT customer, total FROM orders;
 ```
 
-The plain connector jar requires its transitive dependencies on the job classpath.
-A relocated SQL uber-jar is tracked separately by [#505]({{< param BookRepo >}}/issues/505).
+Use `flink-sql-connector-gcp-spanner`, the relocated SQL uber-jar, for SQL deployments.
+Place `flink-sql-connector-gcp-spanner-<version>.jar` in Flink's `lib/` before starting the cluster,
+or load it for one SQL Client session:
+
+```sql
+ADD JAR '/path/to/flink-sql-connector-gcp-spanner-0.1.0-SNAPSHOT.jar';
+```
+
+The artifact bundles the connector and its runtime dependencies while leaving Flink APIs provided
+by the cluster. Its bundled packages are relocated so it can coexist with other connector jars and
+with application dependencies. DataStream applications should depend on
+`flink-connector-gcp-spanner` instead of the SQL uber-jar.
 
 ## Mutation behavior
 
