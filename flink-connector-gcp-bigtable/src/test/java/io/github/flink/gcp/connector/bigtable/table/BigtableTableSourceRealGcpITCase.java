@@ -47,7 +47,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * option reached the wire. And the family filter's server-side answer: a declared family the table
  * lacks fails the read with {@code NOT_FOUND} rather than answering empty, while a row-key-only
  * projection — whose keys-only chain names no family — reads the same table fine, which is what
- * shows the pruning is served by the server and not by the converter.
+ * shows the pruning is served by the server and not by the converter. Filter pushdown: the emulator
+ * can exercise the same filter proto, but only this suite proves that the service accepts the
+ * conditional cell-existence filter composed with SQL row-key bounds and projection.
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BIGTABLE_IT_PROJECT", matches = ".+")
@@ -178,5 +180,31 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
                 .satisfies(
                         thrown -> ExceptionUtils.assertThrowableWithMessage(thrown, "NOT_FOUND"));
         assertThat(collect(tEnv, "SELECT rowkey FROM bt")).containsExactly(Row.of("r1"));
+    }
+
+    @Test
+    void combinesSqlRowKeyBoundsAndAQualifierPrefilterOnTheService() throws Exception {
+        TableDestination table = createTable("table-source-filter-pushdown");
+        seedRows(table, "a0", "b0", "c0", "d0");
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                ddl(
+                        "bt",
+                        "rowkey STRING,\n  " + declaredFamily(),
+                        "table-source-filter-pushdown",
+                        "scan.row-range.start-closed",
+                        "a0",
+                        "scan.row-range.end-open",
+                        "d0"));
+
+        assertThat(
+                        collect(
+                                tEnv,
+                                "SELECT rowkey FROM bt "
+                                        + "WHERE rowkey >= 'b0' AND rowkey < 'd0' "
+                                        + "AND "
+                                        + FAMILY
+                                        + ".q = 'b0'"))
+                .containsExactly(Row.of("b0"));
     }
 }

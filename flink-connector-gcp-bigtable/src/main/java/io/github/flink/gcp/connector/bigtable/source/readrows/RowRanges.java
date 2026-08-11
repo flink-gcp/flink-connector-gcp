@@ -211,6 +211,33 @@ public final class RowRanges {
     }
 
     /**
+     * Returns whether a row key belongs to a range.
+     *
+     * <p>This is deliberately separate from {@link #cuts}: a key on a closed start belongs to the
+     * range but cannot cut a non-empty left-hand piece from it. Point lookups need membership,
+     * while split planning needs the stricter cut relation.
+     *
+     * @param range the range to test
+     * @param key the row key
+     * @return true when the range contains the key
+     */
+    public static boolean contains(ByteStringRange range, ByteString key) {
+        Preconditions.checkNotNull(range, "range must not be null");
+        Preconditions.checkNotNull(key, "key must not be null");
+        if (range.getStartBound() != BoundType.UNBOUNDED) {
+            int cmp = compareKeys(key, range.getStart());
+            if (cmp < 0 || (cmp == 0 && range.getStartBound() == BoundType.OPEN)) {
+                return false;
+            }
+        }
+        if (range.getEndBound() == BoundType.UNBOUNDED) {
+            return true;
+        }
+        int cmp = compareKeys(key, range.getEnd());
+        return cmp < 0 || (cmp == 0 && range.getEndBound() == BoundType.CLOSED);
+    }
+
+    /**
      * Returns the work a split has left after emitting a row, as a range starting just past it.
      *
      * <p>The end bound is carried over untouched and the original start bound is discarded, which
@@ -281,6 +308,121 @@ public final class RowRanges {
             }
         }
         return merged;
+    }
+
+    /**
+     * Intersects two unions of row-key ranges.
+     *
+     * <p>The inputs may overlap and arrive in any order. Each side is coalesced first, then the two
+     * sorted lists are walked once. Empty intersections are omitted; the result is therefore an
+     * empty list when the two unions share no row key.
+     *
+     * @param left the first range union
+     * @param right the second range union
+     * @return independent, coalesced ranges present in both unions
+     */
+    public static List<ByteStringRange> intersect(
+            List<ByteStringRange> left, List<ByteStringRange> right) {
+        Preconditions.checkNotNull(left, "left must not be null");
+        Preconditions.checkNotNull(right, "right must not be null");
+        List<ByteStringRange> a = coalesce(left);
+        List<ByteStringRange> b = coalesce(right);
+        List<ByteStringRange> intersections = new ArrayList<>();
+        int i = 0;
+        int j = 0;
+        while (i < a.size() && j < b.size()) {
+            ByteStringRange overlap = intersectionOf(a.get(i), b.get(j));
+            if (!isEmpty(overlap)) {
+                intersections.add(overlap);
+            }
+            int ends = compareEnds(a.get(i), b.get(j));
+            if (ends <= 0) {
+                i++;
+            }
+            if (ends >= 0) {
+                j++;
+            }
+        }
+        return coalesce(intersections);
+    }
+
+    /** Returns the possibly empty intersection of two ranges. */
+    private static ByteStringRange intersectionOf(ByteStringRange left, ByteStringRange right) {
+        ByteStringRange intersection = ByteStringRange.unbounded();
+        copyLaterStartInto(intersection, left, right);
+        copyEarlierEndInto(intersection, left, right);
+        return intersection;
+    }
+
+    /** Copies the later, narrower start bound onto {@code target}. */
+    private static void copyLaterStartInto(
+            ByteStringRange target, ByteStringRange left, ByteStringRange right) {
+        if (left.getStartBound() == BoundType.UNBOUNDED
+                && right.getStartBound() == BoundType.UNBOUNDED) {
+            return;
+        }
+        ByteStringRange source;
+        if (left.getStartBound() == BoundType.UNBOUNDED) {
+            source = right;
+        } else if (right.getStartBound() == BoundType.UNBOUNDED) {
+            source = left;
+        } else {
+            int cmp = compareKeys(left.getStart(), right.getStart());
+            if (cmp > 0) {
+                source = left;
+            } else if (cmp < 0) {
+                source = right;
+            } else {
+                ByteString key = left.getStart();
+                if (left.getStartBound() == BoundType.OPEN
+                        || right.getStartBound() == BoundType.OPEN) {
+                    target.startOpen(key);
+                } else {
+                    target.startClosed(key);
+                }
+                return;
+            }
+        }
+        if (source.getStartBound() == BoundType.OPEN) {
+            target.startOpen(source.getStart());
+        } else {
+            target.startClosed(source.getStart());
+        }
+    }
+
+    /** Copies the earlier, narrower end bound onto {@code target}. */
+    private static void copyEarlierEndInto(
+            ByteStringRange target, ByteStringRange left, ByteStringRange right) {
+        if (left.getEndBound() == BoundType.UNBOUNDED
+                && right.getEndBound() == BoundType.UNBOUNDED) {
+            return;
+        }
+        ByteStringRange source;
+        if (left.getEndBound() == BoundType.UNBOUNDED) {
+            source = right;
+        } else if (right.getEndBound() == BoundType.UNBOUNDED) {
+            source = left;
+        } else {
+            int cmp = compareKeys(left.getEnd(), right.getEnd());
+            if (cmp < 0) {
+                source = left;
+            } else if (cmp > 0) {
+                source = right;
+            } else {
+                ByteString key = left.getEnd();
+                if (left.getEndBound() == BoundType.OPEN || right.getEndBound() == BoundType.OPEN) {
+                    target.endOpen(key);
+                } else {
+                    target.endClosed(key);
+                }
+                return;
+            }
+        }
+        if (source.getEndBound() == BoundType.OPEN) {
+            target.endOpen(source.getEnd());
+        } else {
+            target.endClosed(source.getEnd());
+        }
     }
 
     /**

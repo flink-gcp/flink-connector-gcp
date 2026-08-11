@@ -174,6 +174,52 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
                         Row.of("tenant-a/r1", "alice"), Row.of("tenant-b/r1", null));
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("pointLookupModes")
+    void everyLookupModeUsesTheSameResidualPredicateAndClosedRangeStart(
+            String mode, String[] lookupOptions) throws Exception {
+        String tableId = "sql-lookup-filter-" + mode;
+        TableDestination destination = createTable(tableId, "cf1");
+        writeCell(destination, "b", "cf1", "name", "keep");
+        writeCell(destination, "c", "cf1", "name", "drop");
+        writeCell(destination, "d", "cf1", "name", "keep");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        tEnv.createTemporaryView(
+                "facts",
+                tEnv.fromDataStream(
+                        env.fromData("b", "c", "d"),
+                        Schema.newBuilder()
+                                .column("f0", DataTypes.STRING())
+                                .columnByExpression("event_time", "PROCTIME()")
+                                .build()));
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<name STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions(
+                                tableId,
+                                append(
+                                        lookupOptions,
+                                        "scan.row-range.start-closed",
+                                        "b",
+                                        "scan.row-range.end-open",
+                                        "d")));
+
+        assertThat(
+                        collect(
+                                tEnv,
+                                "SELECT f.f0, b.cf1.name FROM facts AS f "
+                                        + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time AS b "
+                                        + "ON f.f0 = b.rowkey AND b.cf1.name = 'keep'"))
+                .containsExactlyInAnyOrder(
+                        Row.of("b", "keep"), Row.of("c", null), Row.of("d", null));
+    }
+
     @Test
     void anInsertReadsBackThroughSelect() throws Exception {
         createTable("sql-select", "cf1", "cf2");
@@ -320,6 +366,56 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
         assertThat(collect(tEnv, "SELECT rowkey FROM start_only"))
                 .as("[c, *): a one-sided bound leaves the other end open")
                 .containsExactlyInAnyOrder(Row.of("c"), Row.of("c1"), Row.of("d"), Row.of("d1"));
+    }
+
+    @Test
+    void sqlRowKeyBoundsIntersectTheConfiguredRange() throws Exception {
+        TableDestination destination = createTable("sql-filter-range");
+        seedRows(destination, "a", "b", "c", "d", "e");
+        TableEnvironment tEnv = streamingTableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf ROW<q STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions(
+                                "sql-filter-range",
+                                "scan.row-range.start-closed",
+                                "a",
+                                "scan.row-range.end-open",
+                                "e"));
+
+        assertThat(collect(tEnv, "SELECT rowkey FROM bt WHERE rowkey >= 'b' AND rowkey < 'd'"))
+                .containsExactlyInAnyOrder(Row.of("b"), Row.of("c"));
+        assertThat(collect(tEnv, "SELECT rowkey FROM bt WHERE rowkey = 'a' OR rowkey = 'd'"))
+                .containsExactlyInAnyOrder(Row.of("a"), Row.of("d"));
+        assertThat(collect(tEnv, "SELECT rowkey FROM bt WHERE rowkey < 'a' AND rowkey >= 'e'"))
+                .isEmpty();
+    }
+
+    @Test
+    void qualifierPrefilterDoesNotReplaceTheSqlValuePredicate() throws Exception {
+        TableDestination destination = createTable("sql-filter-qualifier", "cf1", "cf2");
+        writeCell(destination, "match", "cf1", "name", "alice");
+        writeCell(destination, "match", "cf2", "outcome", "projected");
+        writeCell(destination, "missing-projected", "cf1", "name", "alice");
+        writeCell(destination, "wrong", "cf1", "name", "bob");
+        writeCell(destination, "sibling", "cf1", "other", "alice");
+        writeCell(destination, "sibling", "cf2", "outcome", "not-a-match");
+        TableEnvironment tEnv = streamingTableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<name STRING>,\n"
+                        + "  cf2 ROW<outcome STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions("sql-filter-qualifier"));
+
+        assertThat(collect(tEnv, "SELECT rowkey, cf2.outcome FROM bt WHERE cf1.name = 'alice'"))
+                .containsExactlyInAnyOrder(
+                        Row.of("match", "projected"), Row.of("missing-projected", null));
     }
 
     @Test

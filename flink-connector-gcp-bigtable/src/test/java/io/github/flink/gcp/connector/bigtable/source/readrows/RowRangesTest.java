@@ -156,6 +156,25 @@ class RowRangesTest {
     }
 
     @Test
+    void containsClosedBoundsAndExcludesOpenBounds() {
+        ByteStringRange closed = ByteStringRange.unbounded().startClosed("b").endClosed("y");
+        ByteStringRange open = ByteStringRange.unbounded().startOpen("b").endOpen("y");
+
+        assertThat(RowRanges.contains(closed, key("b"))).isTrue();
+        assertThat(RowRanges.contains(closed, key("y"))).isTrue();
+        assertThat(RowRanges.contains(open, key("b"))).isFalse();
+        assertThat(RowRanges.contains(open, key("y"))).isFalse();
+        assertThat(RowRanges.contains(open, key("m"))).isTrue();
+    }
+
+    @Test
+    void containsKeysOnEitherSideOfAnUnboundedRange() {
+        assertThat(RowRanges.contains(ByteStringRange.unbounded().endOpen("m"), key("a"))).isTrue();
+        assertThat(RowRanges.contains(ByteStringRange.unbounded().startClosed("m"), key("z")))
+                .isTrue();
+    }
+
+    @Test
     void truncatesToStartJustPastTheEmittedRowAndKeepsTheEnd() {
         ByteStringRange truncated = RowRanges.truncateStartOpen(range("a", "z"), key("m"));
 
@@ -294,6 +313,47 @@ class RowRangesTest {
     @Test
     void coalescesAnEmptyListToAnEmptyList() {
         assertThat(RowRanges.coalesce(java.util.Collections.emptyList())).isEmpty();
+    }
+
+    @Test
+    void intersectsTwoRangeUnionsWithoutChangingTheirInputs() {
+        List<ByteStringRange> left = Arrays.asList(range("a", "f"), range("m", "z"));
+        List<ByteStringRange> right = Arrays.asList(range("d", "p"), range("x", "zz"));
+
+        assertThat(RowRanges.intersect(left, right))
+                .containsExactly(range("d", "f"), range("m", "p"), range("x", "z"));
+        assertThat(left).containsExactly(range("a", "f"), range("m", "z"));
+        assertThat(right).containsExactly(range("d", "p"), range("x", "zz"));
+    }
+
+    @Test
+    void intersectionUsesTheNarrowerBoundAtTheSameKey() {
+        ByteStringRange closed = ByteStringRange.unbounded().startClosed("b").endClosed("y");
+        ByteStringRange open = ByteStringRange.unbounded().startOpen("b").endOpen("y");
+
+        assertThat(
+                        RowRanges.intersect(
+                                java.util.Collections.singletonList(closed),
+                                java.util.Collections.singletonList(open)))
+                .containsExactly(open);
+    }
+
+    @Test
+    void intersectionOmitsDisjointAndOpenPointRanges() {
+        assertThat(
+                        RowRanges.intersect(
+                                java.util.Collections.singletonList(range("a", "b")),
+                                java.util.Collections.singletonList(range("c", "d"))))
+                .isEmpty();
+        assertThat(
+                        RowRanges.intersect(
+                                java.util.Collections.singletonList(
+                                        ByteStringRange.unbounded()
+                                                .startClosed("a")
+                                                .endClosed("m")),
+                                java.util.Collections.singletonList(
+                                        ByteStringRange.unbounded().startOpen("m").endOpen("z"))))
+                .isEmpty();
     }
 
     @Test

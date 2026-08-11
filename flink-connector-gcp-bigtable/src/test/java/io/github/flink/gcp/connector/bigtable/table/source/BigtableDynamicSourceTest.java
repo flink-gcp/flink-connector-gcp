@@ -17,21 +17,32 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.io.GenericInputSplit;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.InputFormatProvider;
 import org.apache.flink.table.connector.source.LookupTableSource.LookupContext;
 import org.apache.flink.table.connector.source.LookupTableSource.LookupRuntimeProvider;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
 import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
 import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
+import org.apache.flink.table.expressions.CallExpression;
+import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.NestedFieldReferenceExpression;
+import org.apache.flink.table.expressions.ResolvedExpression;
+import org.apache.flink.table.expressions.ValueLiteralExpression;
+import org.apache.flink.table.functions.BuiltInFunctionDefinition;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
@@ -41,6 +52,7 @@ import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
+import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -145,6 +157,24 @@ class BigtableDynamicSourceTest {
         return DataTypes.ROW(fields);
     }
 
+    private static FieldReferenceExpression rowKey() {
+        return new FieldReferenceExpression("rowkey", DataTypes.STRING(), 0, 0);
+    }
+
+    private static NestedFieldReferenceExpression qualifier() {
+        return new NestedFieldReferenceExpression(
+                new String[] {"cf1", "a"}, new int[] {1, 0}, DataTypes.STRING());
+    }
+
+    private static ResolvedExpression literal(String value) {
+        return new ValueLiteralExpression(value);
+    }
+
+    private static CallExpression call(
+            BuiltInFunctionDefinition function, ResolvedExpression... children) {
+        return CallExpression.permanent(function, Arrays.asList(children), DataTypes.BOOLEAN());
+    }
+
     @Test
     void anUnprojectedScanRetainsEveryDeclaredFamily() {
         // The filter is applied even with no projection: families the physical table has but the
@@ -179,6 +209,169 @@ class BigtableDynamicSourceTest {
                                 .filter(FILTERS.limit().cellsPerRow(1))
                                 .filter(FILTERS.value().strip())
                                 .toProto());
+    }
+
+    @Test
+    void exactRowKeyPredicatesIntersectEachOtherAndConfiguredBounds() {
+        BigtableDynamicSource source = minimal().rangeStartClosed("a").rangeEndOpen("z").build();
+        ResolvedExpression lower =
+                call(BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL, rowKey(), literal("b"));
+        ResolvedExpression upper =
+                call(BuiltInFunctionDefinitions.LESS_THAN, rowKey(), literal("m"));
+
+        SupportsFilterPushDown.Result result = source.applyFilters(Arrays.asList(lower, upper));
+
+        assertThat(result.getAcceptedFilters()).containsExactly(lower, upper);
+        assertThat(result.getRemainingFilters()).isEmpty();
+        assertThat(rangesOf(configOf(source))).containsExactly("[b, m)");
+    }
+
+    @Test
+    void aRowKeyDisjunctionBecomesTwoDisjointRanges() {
+        BigtableDynamicSource source = minimal().build();
+        ResolvedExpression filter =
+                call(
+                        BuiltInFunctionDefinitions.OR,
+                        call(BuiltInFunctionDefinitions.LESS_THAN, rowKey(), literal("b")),
+                        call(
+                                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                                rowKey(),
+                                literal("y")));
+
+        SupportsFilterPushDown.Result result =
+                source.applyFilters(java.util.Collections.singletonList(filter));
+
+        assertThat(result.getAcceptedFilters()).containsExactly(filter);
+        assertThat(result.getRemainingFilters()).isEmpty();
+        assertThat(rangesOf(configOf(source))).containsExactly("(*, b)", "[y, *)");
+    }
+
+    @Test
+    void aLiteralOnTheLeftReversesTheRowKeyComparison() {
+        BigtableDynamicSource source = minimal().build();
+        ResolvedExpression filter =
+                call(BuiltInFunctionDefinitions.LESS_THAN, literal("b"), rowKey());
+
+        source.applyFilters(java.util.Collections.singletonList(filter));
+
+        assertThat(rangesOf(configOf(source))).containsExactly("(b, *)");
+    }
+
+    @Test
+    void inAndNotEqualsBecomeAnExactRangeUnion() {
+        BigtableDynamicSource source = minimal().build();
+        ResolvedExpression in =
+                call(
+                        BuiltInFunctionDefinitions.IN,
+                        rowKey(),
+                        literal("a"),
+                        literal("b"),
+                        literal("c"));
+        ResolvedExpression notB =
+                call(BuiltInFunctionDefinitions.NOT_EQUALS, rowKey(), literal("b"));
+
+        SupportsFilterPushDown.Result result = source.applyFilters(Arrays.asList(in, notB));
+
+        assertThat(result.getAcceptedFilters()).containsExactly(in, notB);
+        assertThat(result.getRemainingFilters()).isEmpty();
+        assertThat(rangesOf(configOf(source))).containsExactly("[a, a]", "[c, c]");
+    }
+
+    @Test
+    void aQualifierPredicatePrefiltersButRemainsForFlink() {
+        BigtableDynamicSource source = minimal().build();
+        source.applyProjection(new int[][] {{0}}, projectedType("rowkey"));
+        ResolvedExpression filter =
+                call(BuiltInFunctionDefinitions.EQUALS, qualifier(), literal("alice"));
+
+        SupportsFilterPushDown.Result result =
+                source.applyFilters(java.util.Collections.singletonList(filter));
+
+        assertThat(result.getAcceptedFilters()).containsExactly(filter);
+        assertThat(result.getRemainingFilters()).containsExactly(filter);
+        assertThat(configOf(source).getFilter().toProto())
+                .isEqualTo(
+                        FILTERS.condition(
+                                        FILTERS.chain()
+                                                .filter(FILTERS.family().exactMatch("cf1"))
+                                                .filter(FILTERS.qualifier().exactMatch("a")))
+                                .then(
+                                        FILTERS.chain()
+                                                .filter(FILTERS.limit().cellsPerRow(1))
+                                                .filter(FILTERS.value().strip()))
+                                .toProto());
+    }
+
+    @Test
+    void aNullableQualifierTestCannotPrefilterRows() {
+        BigtableDynamicSource source = minimal().build();
+        ResolvedExpression filter = call(BuiltInFunctionDefinitions.IS_NULL, qualifier());
+
+        SupportsFilterPushDown.Result result =
+                source.applyFilters(java.util.Collections.singletonList(filter));
+
+        assertThat(result.getAcceptedFilters()).isEmpty();
+        assertThat(result.getRemainingFilters()).containsExactly(filter);
+        assertThat(configOf(source).getFilter().toProto())
+                .isEqualTo(
+                        FILTERS.interleave()
+                                .filter(FILTERS.family().exactMatch("cf1"))
+                                .filter(FILTERS.family().exactMatch("cf2"))
+                                .toProto());
+    }
+
+    @Test
+    void anUnsupportedOrBranchPreventsBestEffortPushdown() {
+        BigtableDynamicSource source = minimal().build();
+        ResolvedExpression filter =
+                call(
+                        BuiltInFunctionDefinitions.OR,
+                        call(BuiltInFunctionDefinitions.EQUALS, qualifier(), literal("alice")),
+                        call(BuiltInFunctionDefinitions.IS_NULL, qualifier()));
+
+        SupportsFilterPushDown.Result result =
+                source.applyFilters(java.util.Collections.singletonList(filter));
+
+        assertThat(result.getAcceptedFilters()).isEmpty();
+        assertThat(result.getRemainingFilters()).containsExactly(filter);
+        assertThat(configOf(source).getFilter().toProto())
+                .isEqualTo(
+                        FILTERS.interleave()
+                                .filter(FILTERS.family().exactMatch("cf1"))
+                                .filter(FILTERS.family().exactMatch("cf2"))
+                                .toProto());
+    }
+
+    @Test
+    void anImpossibleRangeIntersectionUsesABlockFilter() {
+        BigtableDynamicSource source = minimal().build();
+        ResolvedExpression beforeA =
+                call(BuiltInFunctionDefinitions.LESS_THAN, rowKey(), literal("a"));
+        ResolvedExpression fromA =
+                call(BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL, rowKey(), literal("a"));
+
+        source.applyFilters(Arrays.asList(beforeA, fromA));
+
+        assertThat(configOf(source).getFilter().toProto()).isEqualTo(FILTERS.block().toProto());
+    }
+
+    @Test
+    void anEmptyRowKeyLiteralRemainsForFlinkBecauseTheSdkCannotBoundIt() {
+        ResolvedExpression equality =
+                call(BuiltInFunctionDefinitions.EQUALS, rowKey(), literal(""));
+        ResolvedExpression in =
+                call(BuiltInFunctionDefinitions.IN, rowKey(), literal(""), literal("a"));
+
+        for (ResolvedExpression filter : Arrays.asList(equality, in)) {
+            BigtableDynamicSource source = minimal().build();
+
+            SupportsFilterPushDown.Result result =
+                    source.applyFilters(java.util.Collections.singletonList(filter));
+
+            assertThat(result.getAcceptedFilters()).isEmpty();
+            assertThat(result.getRemainingFilters()).containsExactly(filter);
+            assertThat(rangesOf(configOf(source))).containsExactly("(*, *)");
+        }
     }
 
     @Test
@@ -242,11 +435,18 @@ class BigtableDynamicSourceTest {
     void copyCarriesTheProjectionState() {
         BigtableDynamicSource projected = minimal().build();
         projected.applyProjection(new int[][] {{2}}, projectedType("cf2"));
+        projected.applyFilters(
+                java.util.Collections.singletonList(
+                        call(
+                                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                                rowKey(),
+                                literal("b"))));
 
         DynamicTableSource copy = projected.copy();
 
         assertThat(copy).isEqualTo(projected);
         assertThat(((BigtableDynamicSource) copy).copy()).isEqualTo(projected);
+        assertThat(rangesOf(configOf((BigtableDynamicSource) copy))).containsExactly("[b, *)");
     }
 
     @Test
@@ -258,6 +458,72 @@ class BigtableDynamicSourceTest {
         assertThat(plain).isEqualTo(minimal().build());
         assertThat(plain.hashCode()).isEqualTo(minimal().build().hashCode());
         assertThat(projected).isNotEqualTo(plain);
+    }
+
+    @Test
+    void anEmptyExactRangeDistinguishesSources() {
+        BigtableDynamicSource plain = minimal().build();
+        BigtableDynamicSource impossible = minimal().build();
+        impossible.applyFilters(
+                java.util.Collections.singletonList(
+                        call(BuiltInFunctionDefinitions.IS_NULL, rowKey())));
+
+        assertThat(impossible).isNotEqualTo(plain);
+    }
+
+    @Test
+    void anUnrepresentableLiteralRemainsForFlink() {
+        DataType physical = DataTypes.ROW(DataTypes.FIELD("rowkey", DataTypes.INT()));
+        BigtableTableSchema schema = BigtableTableSchema.of((RowType) physical.getLogicalType());
+        FieldReferenceExpression rowKey =
+                new FieldReferenceExpression("rowkey", DataTypes.INT(), 0, 0);
+        ResolvedExpression filter =
+                call(
+                        BuiltInFunctionDefinitions.EQUALS,
+                        rowKey,
+                        new ValueLiteralExpression(new BigDecimal("2147483648")));
+
+        BigtableFilterPushDown.State state =
+                BigtableFilterPushDown.translate(
+                        schema, java.util.Collections.singletonList(filter));
+
+        assertThat(state.result().getAcceptedFilters()).isEmpty();
+        assertThat(state.result().getRemainingFilters()).containsExactly(filter);
+    }
+
+    @Test
+    void fixedWidthEqualityIncludesEveryIgnoredSuffixByte() {
+        DataType physical = DataTypes.ROW(DataTypes.FIELD("rowkey", DataTypes.INT()));
+        BigtableTableSchema schema = BigtableTableSchema.of((RowType) physical.getLogicalType());
+        FieldReferenceExpression rowKey =
+                new FieldReferenceExpression("rowkey", DataTypes.INT(), 0, 0);
+        ValueLiteralExpression seven = new ValueLiteralExpression(new BigDecimal("7"));
+        ByteString canonical = ByteString.copyFrom(new byte[] {0, 0, 0, 7});
+        ByteString suffixed = canonical.concat(ByteString.copyFrom(new byte[] {42}));
+        ByteString next = ByteString.copyFrom(new byte[] {0, 0, 0, 8});
+
+        BigtableFilterPushDown.State equal =
+                BigtableFilterPushDown.translate(
+                        schema,
+                        java.util.Collections.singletonList(
+                                call(BuiltInFunctionDefinitions.EQUALS, rowKey, seven)));
+        BigtableFilterPushDown.State notEqual =
+                BigtableFilterPushDown.translate(
+                        schema,
+                        java.util.Collections.singletonList(
+                                call(BuiltInFunctionDefinitions.NOT_EQUALS, rowKey, seven)));
+
+        assertThat(equal.rowKeyRanges())
+                .singleElement()
+                .satisfies(
+                        range -> {
+                            assertThat(RowRanges.contains(range, canonical)).isTrue();
+                            assertThat(RowRanges.contains(range, suffixed)).isTrue();
+                            assertThat(RowRanges.contains(range, next)).isFalse();
+                        });
+        assertThat(notEqual.rowKeyRanges())
+                .allSatisfy(range -> assertThat(RowRanges.contains(range, suffixed)).isFalse())
+                .anySatisfy(range -> assertThat(RowRanges.contains(range, next)).isTrue());
     }
 
     @Test
@@ -315,6 +581,77 @@ class BigtableDynamicSourceTest {
                                         .build(),
                                 0))
                 .isInstanceOf(FullCachingLookupProvider.class);
+    }
+
+    @Test
+    void aFullCacheLoaderUsesTheFilteredScanPlan() {
+        BigtableDynamicSource source =
+                minimal()
+                        .rangeStartClosed("a")
+                        .rangeEndOpen("z")
+                        .lookupOptions(
+                                lookupOptions(
+                                        "lookup.cache",
+                                        "full",
+                                        "lookup.full-cache.periodic-reload.interval",
+                                        "1 min"))
+                        .build();
+        source.applyFilters(
+                Arrays.asList(
+                        call(
+                                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                                rowKey(),
+                                literal("b")),
+                        call(BuiltInFunctionDefinitions.EQUALS, qualifier(), literal("alice"))));
+
+        FullCachingLookupProvider provider = (FullCachingLookupProvider) lookupProvider(source, 0);
+        BigtableFullCacheInputFormat inputFormat =
+                (BigtableFullCacheInputFormat)
+                        ((InputFormatProvider) provider.getScanRuntimeProvider())
+                                .createInputFormat();
+
+        assertThat(inputFormat.getRanges().stream().map(RowRanges::format))
+                .containsExactly("[b, z)");
+        assertThat(inputFormat.getFilter().toProto())
+                .isEqualTo(
+                        FILTERS.condition(
+                                        FILTERS.chain()
+                                                .filter(FILTERS.family().exactMatch("cf1"))
+                                                .filter(FILTERS.qualifier().exactMatch("a")))
+                                .then(
+                                        FILTERS.interleave()
+                                                .filter(FILTERS.family().exactMatch("cf1"))
+                                                .filter(FILTERS.family().exactMatch("cf2")))
+                                .toProto());
+    }
+
+    @Test
+    void anEmptyExactFilterMakesTheFullCacheLoaderFinishWithoutARead() throws Exception {
+        BigtableDynamicSource source =
+                minimal()
+                        .lookupOptions(
+                                lookupOptions(
+                                        "lookup.cache",
+                                        "full",
+                                        "lookup.full-cache.periodic-reload.interval",
+                                        "1 min"))
+                        .build();
+        source.applyFilters(
+                java.util.Collections.singletonList(
+                        call(BuiltInFunctionDefinitions.IS_NULL, rowKey())));
+        FullCachingLookupProvider provider = (FullCachingLookupProvider) lookupProvider(source, 0);
+        BigtableFullCacheInputFormat inputFormat =
+                (BigtableFullCacheInputFormat)
+                        ((InputFormatProvider) provider.getScanRuntimeProvider())
+                                .createInputFormat();
+
+        assertThat(inputFormat.getRanges()).isEmpty();
+        try {
+            inputFormat.open(new GenericInputSplit(0, 1));
+            assertThat(inputFormat.reachedEnd()).isTrue();
+        } finally {
+            inputFormat.close();
+        }
     }
 
     @Test

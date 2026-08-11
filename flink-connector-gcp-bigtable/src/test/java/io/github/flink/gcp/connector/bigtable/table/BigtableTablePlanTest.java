@@ -222,6 +222,85 @@ class BigtableTablePlanTest {
     }
 
     @Test
+    void exactRowKeyFiltersAreConsumedByTheTableSource() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<v STRING>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        String plan = tEnv.explainSql("SELECT cf1 FROM bt WHERE rowkey >= 'b' AND rowkey < 'm'");
+
+        assertThat(plan)
+                .contains("filter=[and(>=(rowkey")
+                .contains("<(rowkey")
+                .doesNotContain("Calc(select=[cf1]");
+
+        assertThat(tEnv.explainSql("SELECT cf1 FROM bt WHERE rowkey = ''"))
+                .contains("Calc(select=[cf1], where=[=(rowkey");
+    }
+
+    @Test
+    void aQualifierPrefilterLeavesTheSqlPredicateAsAResidual() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<v STRING>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        String plan = tEnv.explainSql("SELECT rowkey FROM bt WHERE cf1.v = 'alice'");
+
+        assertThat(plan)
+                .contains("filter=[=(cf1.v")
+                .contains("Calc(select=[rowkey], where=[=(cf1.v");
+    }
+
+    @Test
+    void equalityAccountsForDecoderAliasesAndDoesNotInventByteOrdering() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE ints (\n"
+                        + "  rowkey INT,\n"
+                        + "  cf1 ROW<v STRING>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+        tEnv.executeSql(
+                "CREATE TABLE doubles (\n"
+                        + "  rowkey DOUBLE,\n"
+                        + "  cf1 ROW<v STRING>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+        tEnv.executeSql(
+                "CREATE TABLE booleans (\n"
+                        + "  rowkey BOOLEAN,\n"
+                        + "  cf1 ROW<v STRING>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+        tEnv.executeSql(
+                "CREATE TABLE decimals (\n"
+                        + "  rowkey DECIMAL(8, 2),\n"
+                        + "  cf1 ROW<v STRING>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        assertThat(tEnv.explainSql("SELECT cf1 FROM ints WHERE rowkey = 7"))
+                .contains("filter=[=(rowkey")
+                .doesNotContain("Calc(select=[cf1]");
+        assertThat(tEnv.explainSql("SELECT cf1 FROM ints WHERE rowkey < 7"))
+                .contains("Calc(select=[cf1], where=[<(rowkey");
+        assertThat(tEnv.explainSql("SELECT cf1 FROM doubles WHERE rowkey = 0.0"))
+                .contains("Calc(select=[cf1], where=[=(rowkey");
+        assertThat(tEnv.explainSql("SELECT cf1 FROM booleans WHERE rowkey = TRUE"))
+                .contains("Calc(select=[cf1], where=[rowkey");
+        assertThat(tEnv.explainSql("SELECT cf1 FROM decimals WHERE rowkey = 7.00"))
+                .contains("Calc(select=[cf1], where=[=(rowkey");
+    }
+
+    @Test
     void aTemporalJoinUsesTheRowKeyLookupAfterProjection() {
         TableEnvironment tEnv = tableEnvironment();
         tEnv.executeSql(
@@ -248,6 +327,35 @@ class BigtableTablePlanTest {
                                         + "ON f.lookup_key = b.rowkey"))
                 .contains("LookupJoin")
                 .contains("lookup=[rowkey=lookup_key]");
+    }
+
+    @Test
+    void aTemporalJoinKeepsARightSidePredicateInTheLookupOperator() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE facts (\n"
+                        + "  lookup_key STRING,\n"
+                        + "  event_time AS PROCTIME()\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'datagen',\n"
+                        + "  'number-of-rows' = '1'\n"
+                        + ")");
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<v STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        assertThat(
+                        tEnv.explainSql(
+                                "SELECT f.lookup_key, b.cf1.v FROM facts AS f "
+                                        + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time AS b "
+                                        + "ON f.lookup_key = b.rowkey AND b.cf1.v = 'keep'"))
+                .contains("LookupJoin")
+                .contains("where=[=(cf1.v")
+                .doesNotContain("filter=[=(cf1.v");
     }
 
     @Test

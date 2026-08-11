@@ -26,6 +26,7 @@ import org.apache.flink.table.connector.source.InputFormatProvider;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
 import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
@@ -34,9 +35,11 @@ import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheT
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSource;
@@ -70,12 +73,21 @@ import java.util.Objects;
  * documented failure mode — a filter naming a column family the table lacks fails the read with
  * {@code NOT_FOUND} — the same in both cases.
  *
+ * <p><b>Filter pushdown is exact for safe row-key predicates and best-effort for cells.</b> Exact
+ * row-key ranges are intersected with the configured range union and need no residual operation. A
+ * positive family or qualifier predicate can reject rows that lack the named cell server-side, but
+ * the SQL expression remains for Flink to evaluate because the Bigtable filter does not compare the
+ * decoded value.
+ *
  * <p>The source reports the produced type it was handed, never {@code toPhysicalRowDataType()}:
  * after a projection the two differ, and the runtime rows are built to the projected shape.
  */
 @Internal
 public final class BigtableDynamicSource
-        implements ScanTableSource, LookupTableSource, SupportsProjectionPushDown {
+        implements ScanTableSource,
+                LookupTableSource,
+                SupportsProjectionPushDown,
+                SupportsFilterPushDown {
 
     private final BigtableTableSchema schema;
     private final TableDestination destination;
@@ -91,6 +103,7 @@ public final class BigtableDynamicSource
     // The projection state, mutated by applyProjection and carried by copy().
     private DataType producedDataType;
     @Nullable private int[] projectedFields;
+    private BigtableFilterPushDown.State filterState = BigtableFilterPushDown.State.empty();
 
     private BigtableDynamicSource(Builder builder) {
         this.schema = Preconditions.checkNotNull(builder.schema, "schema must not be null");
@@ -147,6 +160,12 @@ public final class BigtableDynamicSource
     }
 
     @Override
+    public SupportsFilterPushDown.Result applyFilters(List<ResolvedExpression> filters) {
+        filterState = BigtableFilterPushDown.translate(schema, filters);
+        return filterState.result();
+    }
+
+    @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext context) {
         return scanRuntimeProvider(context);
     }
@@ -157,24 +176,16 @@ public final class BigtableDynamicSource
         TypeInformation<RowData> producedTypeInfo = context.createTypeInformation(producedDataType);
         RowToRowDataConverter converter =
                 new RowToRowDataConverter(schema, projectedFields, nullStringLiteral);
+        List<ByteStringRange> ranges = readRanges();
         BigtableSourceBuilder<RowData> builder =
                 BigtableSource.<RowData>builder()
                         .table(destination)
                         .deserializer(new RowDataDeserializationSchema(converter, producedTypeInfo))
-                        .filter(FamilyProjectionFilter.of(retainedFamilies()));
-        for (String prefix : prefixes) {
-            builder.prefix(prefix);
-        }
-        if (rangeStartClosed != null || rangeEndOpen != null) {
-            // From unbounded(), so a one-sided bound is expressible; the factory has already
-            // rejected an empty-string bound, which the client would widen to the whole table.
-            ByteStringRange range = ByteStringRange.unbounded();
-            if (rangeStartClosed != null) {
-                range.startClosed(rangeStartClosed);
-            }
-            if (rangeEndOpen != null) {
-                range.endOpen(rangeEndOpen);
-            }
+                        .filter(readFilter(ranges.isEmpty()));
+        // No range means "the whole table" to the DataStream builder. An empty SQL
+        // intersection instead scans the configured bounds through a block filter.
+        List<ByteStringRange> runtimeRanges = ranges.isEmpty() ? configuredRanges() : ranges;
+        for (ByteStringRange range : runtimeRanges) {
             builder.rowRange(range);
         }
         if (appProfileId != null) {
@@ -190,9 +201,8 @@ public final class BigtableDynamicSource
     @Override
     public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
         checkLookupKey(context);
-        List<String> retainedFamilies = retainedFamilies();
-        com.google.cloud.bigtable.data.v2.models.Filters.Filter filter =
-                FamilyProjectionFilter.of(retainedFamilies);
+        List<ByteStringRange> ranges = readRanges();
+        Filters.Filter filter = readFilter(ranges.isEmpty());
         if (lookupOptions.getCacheType() == LookupCacheType.FULL) {
             return FullCachingLookupProvider.of(
                     InputFormatProvider.of(
@@ -202,7 +212,7 @@ public final class BigtableDynamicSource
                                     projectedFields,
                                     nullStringLiteral,
                                     filter,
-                                    lookupRanges(),
+                                    ranges,
                                     appProfileId,
                                     emulatorEndpoint),
                             1),
@@ -216,7 +226,7 @@ public final class BigtableDynamicSource
                             projectedFields,
                             nullStringLiteral,
                             filter,
-                            lookupRanges(),
+                            ranges,
                             appProfileId,
                             emulatorEndpoint,
                             lookupOptions.getMaxRetries());
@@ -232,7 +242,7 @@ public final class BigtableDynamicSource
                         projectedFields,
                         nullStringLiteral,
                         filter,
-                        lookupRanges(),
+                        ranges,
                         appProfileId,
                         emulatorEndpoint,
                         lookupOptions.getMaxRetries());
@@ -260,7 +270,7 @@ public final class BigtableDynamicSource
         }
     }
 
-    private List<ByteStringRange> lookupRanges() {
+    private List<ByteStringRange> configuredRanges() {
         List<ByteStringRange> ranges = new ArrayList<>();
         for (String prefix : prefixes) {
             ranges.add(ByteStringRange.prefix(prefix));
@@ -279,6 +289,25 @@ public final class BigtableDynamicSource
             ranges.add(ByteStringRange.unbounded());
         }
         return RowRanges.coalesce(ranges);
+    }
+
+    /** Returns the configured range union intersected with every exact row-key predicate. */
+    private List<ByteStringRange> readRanges() {
+        List<ByteStringRange> configured = configuredRanges();
+        List<ByteStringRange> pushed = filterState.rowKeyRanges();
+        return pushed == null ? configured : RowRanges.intersect(configured, pushed);
+    }
+
+    /** Preserves the projection while a best-effort predicate decides row membership. */
+    private Filters.Filter readFilter(boolean noRows) {
+        if (noRows) {
+            return Filters.FILTERS.block();
+        }
+        Filters.Filter projection = FamilyProjectionFilter.of(retainedFamilies());
+        Filters.Filter predicate = filterState.cellPredicate();
+        return predicate == null
+                ? projection
+                : Filters.FILTERS.condition(predicate).then(projection);
     }
 
     private ValidationException lookupKeyException() {
@@ -326,6 +355,7 @@ public final class BigtableDynamicSource
                         .producedDataType(producedDataType)
                         .build();
         copy.projectedFields = projectedFields;
+        copy.filterState = filterState;
         return copy;
     }
 
@@ -354,7 +384,8 @@ public final class BigtableDynamicSource
                 && Objects.equals(parallelism, that.parallelism)
                 && lookupOptions.equals(that.lookupOptions)
                 && producedDataType.equals(that.producedDataType)
-                && Arrays.equals(projectedFields, that.projectedFields);
+                && Arrays.equals(projectedFields, that.projectedFields)
+                && filterState.equals(that.filterState);
     }
 
     @Override
@@ -371,6 +402,7 @@ public final class BigtableDynamicSource
                 parallelism,
                 lookupOptions,
                 producedDataType,
+                filterState,
                 Arrays.hashCode(projectedFields));
     }
 
