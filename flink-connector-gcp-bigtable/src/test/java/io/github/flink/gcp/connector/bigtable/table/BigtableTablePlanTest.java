@@ -222,6 +222,64 @@ class BigtableTablePlanTest {
     }
 
     @Test
+    void aTemporalJoinUsesTheRowKeyLookupAfterProjection() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE facts (\n"
+                        + "  id STRING,\n"
+                        + "  lookup_key STRING,\n"
+                        + "  event_time AS PROCTIME()\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'datagen',\n"
+                        + "  'number-of-rows' = '1'\n"
+                        + ")");
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  cf1 ROW<v STRING>,\n"
+                        + "  rowkey STRING,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        assertThat(
+                        tEnv.explainSql(
+                                "SELECT f.id, b.cf1.v FROM facts AS f "
+                                        + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time AS b "
+                                        + "ON f.lookup_key = b.rowkey"))
+                .contains("LookupJoin")
+                .contains("lookup=[rowkey=lookup_key]");
+    }
+
+    @Test
+    void aTemporalJoinOnAColumnFamilyIsRejected() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE facts (\n"
+                        + "  lookup_value STRING,\n"
+                        + "  event_time AS PROCTIME()\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'datagen',\n"
+                        + "  'number-of-rows' = '1'\n"
+                        + ")");
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<v STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        assertThatThrownBy(
+                        () ->
+                                tEnv.explainSql(
+                                        "SELECT b.rowkey FROM facts AS f "
+                                                + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time"
+                                                + " AS b ON f.lookup_value = b.cf1.v"))
+                .isInstanceOf(RuntimeException.class)
+                .hasStackTraceContaining("row-key column 'rowkey'");
+    }
+
+    @Test
     void theDocumentationsOwnExampleIsSelectable() {
         // The read half of theDocumentationsOwnExampleParses: before the table source existed,
         // this SELECT failed with "can only be used as a sink".

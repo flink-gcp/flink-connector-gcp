@@ -19,11 +19,20 @@ package io.github.flink.gcp.connector.bigtable.table.source;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.InputFormatProvider;
+import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
+import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
+import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
+import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
+import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.Preconditions;
@@ -32,6 +41,8 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceBuilder;
+import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
+import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 
 import javax.annotation.Nullable;
@@ -43,7 +54,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * The {@code bigtable} table source: a bounded scan over the DataStream {@link BigtableSource}.
+ * The {@code bigtable} table source: a bounded scan over the DataStream {@link BigtableSource} and
+ * row-key point lookups through Bigtable's data client.
  *
  * <p>Deliberately takes no {@code ReadableConfig}, for the reason {@code BigtableDynamicSink}
  * records: a DDL option becomes a value in the factory and nowhere else.
@@ -62,7 +74,8 @@ import java.util.Objects;
  * after a projection the two differ, and the runtime rows are built to the projected shape.
  */
 @Internal
-public final class BigtableDynamicSource implements ScanTableSource, SupportsProjectionPushDown {
+public final class BigtableDynamicSource
+        implements ScanTableSource, LookupTableSource, SupportsProjectionPushDown {
 
     private final BigtableTableSchema schema;
     private final TableDestination destination;
@@ -73,6 +86,7 @@ public final class BigtableDynamicSource implements ScanTableSource, SupportsPro
     @Nullable private final String rangeEndOpen;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
+    private final BigtableLookupConfig lookupOptions;
 
     // The projection state, mutated by applyProjection and carried by copy().
     private DataType producedDataType;
@@ -91,6 +105,8 @@ public final class BigtableDynamicSource implements ScanTableSource, SupportsPro
         this.rangeEndOpen = builder.rangeEndOpen;
         this.emulatorEndpoint = builder.emulatorEndpoint;
         this.parallelism = builder.parallelism;
+        this.lookupOptions =
+                Preconditions.checkNotNull(builder.lookupOptions, "lookupOptions must not be null");
         this.producedDataType =
                 Preconditions.checkNotNull(
                         builder.producedDataType, "producedDataType must not be null");
@@ -132,6 +148,10 @@ public final class BigtableDynamicSource implements ScanTableSource, SupportsPro
 
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext context) {
+        return scanRuntimeProvider(context);
+    }
+
+    private ScanRuntimeProvider scanRuntimeProvider(DynamicTableSource.Context context) {
         // The InternalTypeInfo the planner would have built, reached through a PublicEvolving
         // interface — what keeps flink-table-runtime off this module's dependencies.
         TypeInformation<RowData> producedTypeInfo = context.createTypeInformation(producedDataType);
@@ -167,6 +187,108 @@ public final class BigtableDynamicSource implements ScanTableSource, SupportsPro
         return SourceProvider.of(source, parallelism);
     }
 
+    @Override
+    public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
+        checkLookupKey(context);
+        List<String> retainedFamilies = retainedFamilies();
+        com.google.cloud.bigtable.data.v2.models.Filters.Filter filter =
+                FamilyProjectionFilter.of(retainedFamilies);
+        if (lookupOptions.getCacheType() == LookupCacheType.FULL) {
+            return FullCachingLookupProvider.of(
+                    InputFormatProvider.of(
+                            new BigtableFullCacheInputFormat(
+                                    destination,
+                                    schema,
+                                    projectedFields,
+                                    nullStringLiteral,
+                                    filter,
+                                    lookupRanges(),
+                                    appProfileId,
+                                    emulatorEndpoint),
+                            1),
+                    lookupOptions.createFullReloadTrigger());
+        }
+        if (lookupOptions.isAsync()) {
+            BigtableRowDataAsyncLookupFunction function =
+                    new BigtableRowDataAsyncLookupFunction(
+                            destination,
+                            schema,
+                            projectedFields,
+                            nullStringLiteral,
+                            filter,
+                            lookupRanges(),
+                            appProfileId,
+                            emulatorEndpoint,
+                            lookupOptions.getMaxRetries());
+            return lookupOptions.getCacheType() == LookupCacheType.PARTIAL
+                    ? PartialCachingAsyncLookupProvider.of(
+                            function, lookupOptions.createPartialCache())
+                    : AsyncLookupFunctionProvider.of(function);
+        }
+        BigtableRowDataLookupFunction function =
+                new BigtableRowDataLookupFunction(
+                        destination,
+                        schema,
+                        projectedFields,
+                        nullStringLiteral,
+                        filter,
+                        lookupRanges(),
+                        appProfileId,
+                        emulatorEndpoint,
+                        lookupOptions.getMaxRetries());
+        return lookupOptions.getCacheType() == LookupCacheType.PARTIAL
+                ? PartialCachingLookupProvider.of(function, lookupOptions.createPartialCache())
+                : LookupFunctionProvider.of(function);
+    }
+
+    private void checkLookupKey(LookupContext context) {
+        int[][] keys = context.getKeys();
+        if (keys.length != 1 || keys[0].length != 1) {
+            throw lookupKeyException();
+        }
+        int lookupIndex = keys[0][0];
+        int producedArity =
+                projectedFields == null
+                        ? producedDataType.getChildren().size()
+                        : projectedFields.length;
+        if (lookupIndex < 0 || lookupIndex >= producedArity) {
+            throw lookupKeyException();
+        }
+        int physicalIndex = projectedFields == null ? lookupIndex : projectedFields[lookupIndex];
+        if (physicalIndex != schema.getRowKeyIndex()) {
+            throw lookupKeyException();
+        }
+    }
+
+    private List<ByteStringRange> lookupRanges() {
+        List<ByteStringRange> ranges = new ArrayList<>();
+        for (String prefix : prefixes) {
+            ranges.add(ByteStringRange.prefix(prefix));
+        }
+        if (rangeStartClosed != null || rangeEndOpen != null) {
+            ByteStringRange range = ByteStringRange.unbounded();
+            if (rangeStartClosed != null) {
+                range.startClosed(rangeStartClosed);
+            }
+            if (rangeEndOpen != null) {
+                range.endOpen(rangeEndOpen);
+            }
+            ranges.add(range);
+        }
+        if (ranges.isEmpty()) {
+            ranges.add(ByteStringRange.unbounded());
+        }
+        return RowRanges.coalesce(ranges);
+    }
+
+    private ValidationException lookupKeyException() {
+        return new ValidationException(
+                String.format(
+                        "A 'bigtable' lookup must use equality on its row-key column '%s'. No"
+                                + " other column identifies a Bigtable row.",
+                        schema.getRowKeyName()));
+    }
+
     /** The declared families the projection retains, in DDL order; all of them unprojected. */
     private List<String> retainedFamilies() {
         List<String> names = new ArrayList<>();
@@ -200,6 +322,7 @@ public final class BigtableDynamicSource implements ScanTableSource, SupportsPro
                         .rangeEndOpen(rangeEndOpen)
                         .emulatorEndpoint(emulatorEndpoint)
                         .parallelism(parallelism)
+                        .lookupOptions(lookupOptions)
                         .producedDataType(producedDataType)
                         .build();
         copy.projectedFields = projectedFields;
@@ -229,6 +352,7 @@ public final class BigtableDynamicSource implements ScanTableSource, SupportsPro
                 && Objects.equals(rangeEndOpen, that.rangeEndOpen)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
+                && lookupOptions.equals(that.lookupOptions)
                 && producedDataType.equals(that.producedDataType)
                 && Arrays.equals(projectedFields, that.projectedFields);
     }
@@ -245,6 +369,7 @@ public final class BigtableDynamicSource implements ScanTableSource, SupportsPro
                 rangeEndOpen,
                 emulatorEndpoint,
                 parallelism,
+                lookupOptions,
                 producedDataType,
                 Arrays.hashCode(projectedFields));
     }
@@ -261,6 +386,7 @@ public final class BigtableDynamicSource implements ScanTableSource, SupportsPro
         @Nullable private String rangeEndOpen;
         @Nullable private String emulatorEndpoint;
         @Nullable private Integer parallelism;
+        private BigtableLookupConfig lookupOptions;
         private DataType producedDataType;
 
         private Builder() {}
@@ -343,6 +469,15 @@ public final class BigtableDynamicSource implements ScanTableSource, SupportsPro
          */
         public Builder parallelism(@Nullable Integer parallelism) {
             this.parallelism = parallelism;
+            return this;
+        }
+
+        /**
+         * @param lookupOptions the table source's point-lookup and cache settings
+         * @return this builder
+         */
+        public Builder lookupOptions(BigtableLookupConfig lookupOptions) {
+            this.lookupOptions = lookupOptions;
             return this;
         }
 

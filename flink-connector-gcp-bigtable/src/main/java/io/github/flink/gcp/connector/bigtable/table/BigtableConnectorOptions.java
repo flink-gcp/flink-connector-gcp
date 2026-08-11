@@ -40,8 +40,8 @@ import java.util.List;
  *       getOptional(...).ifPresent(...)}, so "absent from the DDL" and "left at the connector's
  *       default" are the same state. The exception is an option the <em>table layer itself</em>
  *       owns, which has no connector default to be a second copy of: {@link #NULL_STRING_LITERAL}
- *       is the only one here, and the parity test asserts that partition exactly rather than
- *       tolerating a default anywhere.
+ *       and {@link #LOOKUP_ASYNC} are the two here, and the parity test asserts that partition
+ *       exactly rather than tolerating a default anywhere.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
  *   <li><b>There is no {@code format} option.</b> A Bigtable row is a schema this DDL describes —
@@ -50,9 +50,9 @@ import java.util.List;
  *       a format factory to decide.
  * </ol>
  *
- * <p>An enum-valued option accepts the spellings its enum's {@code toString()} returns, which are
- * hyphenated lower case: Flink matches an enum option case-insensitively on {@code toString()} and
- * normalizes nothing else.
+ * <p>An enum-valued option accepts the spelling its enum's {@code toString()} returns. Connector
+ * enums use hyphenated lower case; imported Flink lookup enums retain their underscore spelling.
+ * Flink matches enum options case-insensitively and normalizes nothing else.
  */
 @PublicEvolving
 public final class BigtableConnectorOptions {
@@ -153,6 +153,19 @@ public final class BigtableConnectorOptions {
                             "Scan up to this UTF-8 row key, exclusive. May be given without"
                                     + " 'scan.row-range.start-closed', which leaves the range open"
                                     + " below.");
+
+    // ------------------------------------------------------------------------
+    //  Lookup
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<Boolean> LOOKUP_ASYNC =
+            ConfigOptions.key("lookup.async")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether point lookups use Bigtable's asynchronous read API. Full"
+                                    + " caching is scan-backed and therefore supports synchronous"
+                                    + " lookup only.");
 
     // ------------------------------------------------------------------------
     //  Sink
