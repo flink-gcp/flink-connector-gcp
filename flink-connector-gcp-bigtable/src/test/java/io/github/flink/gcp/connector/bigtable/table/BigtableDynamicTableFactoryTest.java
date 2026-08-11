@@ -24,8 +24,12 @@ import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
+import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -34,13 +38,18 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
+import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
+import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
+import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
+import io.github.flink.gcp.connector.bigtable.table.source.BigtableDynamicSource;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -332,5 +341,129 @@ class BigtableDynamicTableFactoryTest {
         assertThatThrownBy(() -> FactoryMocks.createTableSink(schema, minimalOptions()))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("no Bigtable cell encoding");
+    }
+
+    // ------------------------------------------------------------------------
+    //  The source half
+    // ------------------------------------------------------------------------
+
+    private static DynamicTableSource source(Map<String, String> options) {
+        return FactoryMocks.createTableSource(SCHEMA, options);
+    }
+
+    /**
+     * The connector's own source configuration, as the planner would build it — the source-side
+     * mirror of {@link #built(ResolvedSchema, Map)}.
+     */
+    private static BigtableSourceConfig<?> builtSource(
+            ResolvedSchema schema, Map<String, String> options) {
+        // The provider builds the source's real clients; the endpoint is never connected to.
+        options.put("emulator-endpoint", "localhost:1");
+        SourceProvider provider =
+                (SourceProvider)
+                        ((ScanTableSource) FactoryMocks.createTableSource(schema, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        return ((BigtableReadRowsSource<?>) provider.createSource()).getConfig();
+    }
+
+    @Test
+    void buildsASourceFromTheMinimalOptions() {
+        assertThat(source(minimalOptions()))
+                .isInstanceOf(BigtableDynamicSource.class)
+                .extracting(DynamicTableSource::asSummaryString)
+                .isEqualTo("Bigtable table source");
+    }
+
+    @Test
+    void acceptsARowKeyOnlyTableForReading() {
+        // The deliberate asymmetry against rejectsATableWithNoColumnFamily: a row-key-only table
+        // is not a thing to write, but it is a legitimate thing to read, served by a keys-only
+        // filter chain.
+        ResolvedSchema schema = ResolvedSchema.of(Column.physical("rowkey", DataTypes.STRING()));
+
+        assertThat(FactoryMocks.createTableSource(schema, minimalOptions()))
+                .isInstanceOf(BigtableDynamicSource.class);
+    }
+
+    @Test
+    void rejectsAPrimaryKeyThatIsNotTheRowKeyOnTheSourceSideToo() {
+        assertThatThrownBy(
+                        () ->
+                                FactoryMocks.createTableSource(
+                                        withPrimaryKey("cf1"), minimalOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("must be its row-key column");
+    }
+
+    @Test
+    void everyScanOptionReachesTheSource() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.app-profile-id", "reader-profile");
+        options.put("scan.row-prefix", "user;web");
+        options.put("scan.row-range.start-closed", "a");
+        options.put("scan.row-range.end-open", "m");
+
+        BigtableSourceConfig<?> config = builtSource(SCHEMA, options);
+
+        assertThat(config.getAppProfileId()).isEqualTo("reader-profile");
+        assertThat(config.getRanges().stream().map(RowRanges::format).collect(Collectors.toList()))
+                .containsExactly("[a, m)", "[user, uses)", "[web, wec)");
+    }
+
+    @Test
+    void aOneSidedRangeIsAccepted() {
+        Map<String, String> startOnly = minimalOptions();
+        startOnly.put("scan.row-range.start-closed", "b");
+        assertThat(
+                        builtSource(SCHEMA, startOnly).getRanges().stream()
+                                .map(RowRanges::format)
+                                .collect(Collectors.toList()))
+                .containsExactly("[b, *)");
+
+        Map<String, String> endOnly = minimalOptions();
+        endOnly.put("scan.row-range.end-open", "b");
+        assertThat(
+                        builtSource(SCHEMA, endOnly).getRanges().stream()
+                                .map(RowRanges::format)
+                                .collect(Collectors.toList()))
+                .containsExactly("(*, b)");
+    }
+
+    @Test
+    void carriesTheSourceParallelismWhenItIsSet() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.parallelism", "5");
+        SourceProvider provider =
+                (SourceProvider)
+                        ((ScanTableSource) source(options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+
+        assertThat(provider.getParallelism()).contains(5);
+    }
+
+    @Test
+    void rejectsAnEmptyStringRangeBound() {
+        for (String key : new String[] {"scan.row-range.start-closed", "scan.row-range.end-open"}) {
+            Map<String, String> options = minimalOptions();
+            options.put(key, "");
+
+            assertThatThrownBy(() -> source(options))
+                    .as("with '%s' empty", key)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("is the empty string, which is not a row key");
+        }
+    }
+
+    @Test
+    void rejectsAnEmptyPrefixElement() {
+        Map<String, String> options = minimalOptions();
+        // Concatenated so the adjacent list separators do not read as a double semicolon to the
+        // one-semicolon style check; the value under test is a three-element list whose middle
+        // element is empty.
+        options.put("scan.row-prefix", "a;" + ";b");
+
+        assertThatThrownBy(() -> source(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("contains an empty prefix");
     }
 }

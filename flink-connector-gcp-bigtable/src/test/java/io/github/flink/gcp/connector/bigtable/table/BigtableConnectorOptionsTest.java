@@ -74,8 +74,9 @@ class BigtableConnectorOptionsTest {
         BigtableDynamicTableFactory factory = new BigtableDynamicTableFactory();
         Set<String> declared =
                 declaredOptions().stream().map(ConfigOption::key).collect(Collectors.toSet());
-        // The Flink-owned option the factory borrows rather than declaring itself.
+        // The Flink-owned options the factory borrows rather than declaring itself.
         declared.add("sink.parallelism");
+        declared.add("scan.parallelism");
 
         Set<String> fromFactory = new HashSet<>();
         factory.requiredOptions().forEach(o -> fromFactory.add(o.key()));

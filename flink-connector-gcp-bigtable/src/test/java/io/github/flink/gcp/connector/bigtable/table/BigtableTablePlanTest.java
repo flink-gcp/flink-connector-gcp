@@ -196,5 +196,45 @@ class BigtableTablePlanTest {
         assertThatThrownBy(() -> tEnv.executeSql("INSERT INTO keys_only VALUES ('r1')"))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("needs at least one column family");
+
+        // The deliberate asymmetry: the same table a write is refused over is a legitimate thing
+        // to read, served by a keys-only filter chain.
+        assertThatCode(() -> tEnv.explainSql("SELECT * FROM keys_only")).doesNotThrowAnyException();
+    }
+
+    @Test
+    void aProjectionIsPushedIntoTheScan() {
+        // The planner rewrites the scan only when the source declares the ability and accepts the
+        // push; the projected column list appearing inside the TableSourceScan node is what says
+        // applyProjection ran, rather than the planner projecting after a full read.
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<v STRING>,\n"
+                        + "  cf2 ROW<m DOUBLE>\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        assertThat(tEnv.explainSql("SELECT cf1 FROM bt")).contains("project=[cf1]");
+        assertThat(tEnv.explainSql("SELECT rowkey FROM bt")).contains("project=[rowkey]");
+        assertThat(tEnv.explainSql("SELECT rowkey, cf2 FROM bt")).contains("project=[rowkey, cf2]");
+    }
+
+    @Test
+    void theDocumentationsOwnExampleIsSelectable() {
+        // The read half of theDocumentationsOwnExampleParses: before the table source existed,
+        // this SELECT failed with "can only be used as a sink".
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE profiles (\n"
+                        + "  rowkey STRING,\n"
+                        + "  profile ROW<name STRING, email STRING>,\n"
+                        + "  usage ROW<requests BIGINT, last_seen TIMESTAMP_LTZ(3)>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        assertThatCode(() -> tEnv.explainSql("SELECT * FROM profiles")).doesNotThrowAnyException();
     }
 }

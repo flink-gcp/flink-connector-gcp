@@ -18,7 +18,10 @@ package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.LogicalType;
@@ -26,8 +29,12 @@ import org.apache.flink.table.types.logical.LogicalTypeFamily;
 import org.apache.flink.table.types.logical.TimeType;
 import org.apache.flink.table.types.logical.TimestampType;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.Arrays;
 
 /**
  * Turns a {@code RowData} field into the bytes of a Bigtable cell, and back.
@@ -75,6 +82,27 @@ public final class CellValueCodec {
          * @return the cell bytes
          */
         byte[] encode(RowData row, int pos);
+    }
+
+    /**
+     * Reads the bytes of a cell as one field of a row.
+     *
+     * <p>The mirror of {@link FieldEncoder}, returning Flink's internal data structures ({@code
+     * StringData}, {@code DecimalData}, {@code TimestampData}, boxed primitives) so the result can
+     * be placed into a {@code GenericRowData} field directly.
+     */
+    @FunctionalInterface
+    @Internal
+    public interface FieldDecoder extends Serializable {
+
+        /**
+         * Decodes the bytes of a cell.
+         *
+         * @param value the cell bytes
+         * @return the field value, in Flink's internal data format
+         */
+        @Nullable
+        Object decode(byte[] value);
     }
 
     /**
@@ -212,6 +240,76 @@ public final class CellValueCodec {
         }
     }
 
+    /**
+     * Returns a decoder that reads a null the way {@link #nullableEncoder(LogicalType, byte[])}
+     * wrote it: an empty cell for every type but a character string, where it is the {@code
+     * null-string-literal} — an empty string cell is a value in its own right and decodes as one.
+     *
+     * @param type the declared type
+     * @param nullStringBytes the {@code null-string-literal}, UTF-8 encoded
+     * @return the decoder
+     */
+    public static FieldDecoder nullableDecoder(LogicalType type, byte[] nullStringBytes) {
+        FieldDecoder decoder = decoder(type);
+        if (!type.isNullable()) {
+            return decoder;
+        }
+        if (type.is(LogicalTypeFamily.CHARACTER_STRING)) {
+            byte[] nullBytes = nullStringBytes.clone();
+            return value -> Arrays.equals(value, nullBytes) ? null : decoder.decode(value);
+        }
+        return value -> value.length == 0 ? null : decoder.decode(value);
+    }
+
+    /**
+     * Returns a decoder for a cell that is known to hold a value.
+     *
+     * @param type the declared type
+     * @return the decoder
+     */
+    public static FieldDecoder decoder(LogicalType type) {
+        // Ordered as the encoder switch above, whose layouts these reverse.
+        switch (type.getTypeRoot()) {
+            case CHAR:
+            case VARCHAR:
+                return StringData::fromBytes;
+            case BOOLEAN:
+                // Any nonzero byte reads as true, which is Bytes.toBoolean's rule — not an
+                // equality test against the 0xFF the encoder writes.
+                return value -> value[0] != 0;
+            case BINARY:
+            case VARBINARY:
+                return value -> value;
+            case DECIMAL:
+                final int precision = ((DecimalType) type).getPrecision();
+                final int scale = ((DecimalType) type).getScale();
+                return value -> DecimalData.fromBigDecimal(toBigDecimal(value), precision, scale);
+            case TINYINT:
+                return value -> value[0];
+            case SMALLINT:
+                return CellValueCodec::toShort;
+            case INTEGER:
+            case DATE:
+            case INTERVAL_YEAR_MONTH:
+            case TIME_WITHOUT_TIME_ZONE:
+                return CellValueCodec::toInt;
+            case BIGINT:
+            case INTERVAL_DAY_TIME:
+                return CellValueCodec::toLong;
+            case FLOAT:
+                return value -> Float.intBitsToFloat(toInt(value));
+            case DOUBLE:
+                return value -> Double.longBitsToDouble(toLong(value));
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                return value -> TimestampData.fromEpochMillis(toLong(value));
+            default:
+                // Unreachable through the DDL, which is checked by checkSupported above. Kept as
+                // the invariant's backstop rather than as a second user-facing message.
+                throw new IllegalStateException("No cell decoding for type " + type);
+        }
+    }
+
     // ------------------------------------------------------------------------
     //  The HBase byte layouts, reproduced
     // ------------------------------------------------------------------------
@@ -257,5 +355,38 @@ public final class CellValueCodec {
         bytes[3] = (byte) scale;
         System.arraycopy(unscaled, 0, bytes, 4, unscaled.length);
         return bytes;
+    }
+
+    /** {@code Bytes.toShort(byte[])}: two bytes, big-endian two's complement. */
+    private static short toShort(byte[] bytes) {
+        return (short) ((bytes[0] << 8) | (bytes[1] & 0xff));
+    }
+
+    /** {@code Bytes.toInt(byte[])}: four bytes, big-endian two's complement. */
+    private static int toInt(byte[] bytes) {
+        int value = 0;
+        for (int i = 0; i < 4; i++) {
+            value = (value << 8) | (bytes[i] & 0xff);
+        }
+        return value;
+    }
+
+    /** {@code Bytes.toLong(byte[])}: eight bytes, big-endian two's complement. */
+    private static long toLong(byte[] bytes) {
+        long value = 0;
+        for (int i = 0; i < 8; i++) {
+            value = (value << 8) | (bytes[i] & 0xff);
+        }
+        return value;
+    }
+
+    /**
+     * {@code Bytes.toBigDecimal(byte[])}: the stored scale is the cell's, not the column's — the
+     * decimal decoder rescales to the declared type afterwards.
+     */
+    private static BigDecimal toBigDecimal(byte[] bytes) {
+        int scale = toInt(bytes);
+        BigInteger unscaled = new BigInteger(Arrays.copyOfRange(bytes, 4, bytes.length));
+        return new BigDecimal(unscaled, scale);
     }
 }

@@ -142,6 +142,34 @@ public abstract class AbstractBigtableEmulatorITCase {
         }
     }
 
+    /**
+     * Writes one cell directly, for read tests that need a shape the sink cannot produce — an
+     * undeclared family or qualifier, or a specific cell version.
+     */
+    protected static void writeCell(
+            TableDestination destination,
+            String rowKey,
+            String family,
+            String qualifier,
+            String value) {
+        dataClient.mutateRow(
+                RowMutation.create(TableId.of(destination.getTable()), rowKey)
+                        .setCell(family, qualifier, value));
+    }
+
+    /** Writes one cell at an explicit version timestamp, in microseconds. */
+    protected static void writeCell(
+            TableDestination destination,
+            String rowKey,
+            String family,
+            String qualifier,
+            long timestampMicros,
+            String value) {
+        dataClient.mutateRow(
+                RowMutation.create(TableId.of(destination.getTable()), rowKey)
+                        .setCell(family, qualifier, timestampMicros, value));
+    }
+
     /** Returns what the emulator answers {@code SampleRowKeys} with, for the deviation suite. */
     protected static List<KeyOffset> sampleRowKeys(TableDestination destination) {
         return dataClient.sampleRowKeys(TableId.of(destination.getTable()));

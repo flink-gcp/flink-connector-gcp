@@ -21,7 +21,9 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
@@ -30,28 +32,34 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.sink.TableCreateOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.WriterOptionsMapper;
+import io.github.flink.gcp.connector.bigtable.table.source.BigtableDynamicSource;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
- * Creates the {@code bigtable} table sink from a {@code CREATE TABLE} statement's options.
+ * Creates the {@code bigtable} table sink and table source from a {@code CREATE TABLE} statement's
+ * options.
  *
  * <p>This is the only place a DDL option becomes a value. Value validation stays in the connector's
  * own builders, so a SQL user gets the same message a DataStream user does; what this class owns
  * are the checks whose message has to name <em>option keys</em> or <em>columns</em>, which a
- * builder's cannot: the shape of the DDL schema, the primary key, and a table-creation key set
- * under a disposition that creates nothing.
+ * builder's cannot: the shape of the DDL schema, the primary key, a table-creation key set under a
+ * disposition that creates nothing, and a scan bound the client would silently widen.
  *
  * <p>The identifier {@code bigtable} is also google/flink-connector-gcp's. A classpath carrying
  * both fails factory discovery loudly, which is the acceptable outcome: the natural name wins.
  *
  * <p>Nothing here reads the session configuration. The Bigtable sink is at-least-once in both
- * execution modes and has no rule that depends on the runtime mode or the checkpoint interval.
+ * execution modes, the source is a bounded scan, and neither has a rule that depends on the runtime
+ * mode or the checkpoint interval.
  */
 @Internal
-public class BigtableDynamicTableFactory implements DynamicTableSinkFactory {
+public class BigtableDynamicTableFactory
+        implements DynamicTableSinkFactory, DynamicTableSourceFactory {
 
     /** The value of {@code 'connector'} that selects this factory. */
     public static final String IDENTIFIER = "bigtable";
@@ -76,6 +84,11 @@ public class BigtableDynamicTableFactory implements DynamicTableSinkFactory {
                 Arrays.asList(
                         BigtableConnectorOptions.EMULATOR_ENDPOINT,
                         BigtableConnectorOptions.NULL_STRING_LITERAL,
+                        BigtableConnectorOptions.SCAN_APP_PROFILE_ID,
+                        BigtableConnectorOptions.SCAN_ROW_PREFIX,
+                        BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED,
+                        BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN,
+                        FactoryUtil.SOURCE_PARALLELISM,
                         BigtableConnectorOptions.SINK_APP_PROFILE_ID,
                         BigtableConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
@@ -128,6 +141,80 @@ public class BigtableDynamicTableFactory implements DynamicTableSinkFactory {
                 // planner's upsert key is the row key and a key-only delete carries it (#470).
                 .keyOnlyDeletesAreSafe(context.getPrimaryKeyIndexes().length > 0)
                 .build();
+    }
+
+    @Override
+    public DynamicTableSource createDynamicTableSource(Context context) {
+        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        helper.validate();
+
+        ReadableConfig config = helper.getOptions();
+        DataType physicalDataType = context.getPhysicalRowDataType();
+        BigtableTableSchema schema =
+                BigtableTableSchema.of((RowType) physicalDataType.getLogicalType());
+        checkPrimaryKeyIsTheRowKey(context, schema);
+        // checkSinkHasSomewhereToWrite is deliberately not applied: a row-key-only table is a
+        // legitimate thing to read, served by a keys-only filter chain.
+        List<String> prefixes =
+                config.getOptional(BigtableConnectorOptions.SCAN_ROW_PREFIX)
+                        .orElse(Collections.emptyList());
+        checkScanBounds(config, prefixes);
+
+        return BigtableDynamicSource.builder()
+                .schema(schema)
+                .destination(
+                        TableDestination.of(
+                                config.get(BigtableConnectorOptions.PROJECT),
+                                config.get(BigtableConnectorOptions.INSTANCE),
+                                config.get(BigtableConnectorOptions.TABLE)))
+                .nullStringLiteral(config.get(BigtableConnectorOptions.NULL_STRING_LITERAL))
+                .appProfileId(
+                        config.getOptional(BigtableConnectorOptions.SCAN_APP_PROFILE_ID)
+                                .orElse(null))
+                .prefixes(prefixes)
+                .rangeStartClosed(
+                        config.getOptional(BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED)
+                                .orElse(null))
+                .rangeEndOpen(
+                        config.getOptional(BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN)
+                                .orElse(null))
+                .emulatorEndpoint(
+                        config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
+                .parallelism(config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null))
+                .producedDataType(physicalDataType)
+                .build();
+    }
+
+    /**
+     * Rejects an empty-string scan bound or prefix, which the client would silently widen: an empty
+     * key is "before every row", so an empty {@code startClosed} or prefix selects the whole table
+     * and an empty {@code endOpen} selects nothing. The right spelling for "unbounded" is to leave
+     * the option unset, and an empty string in a DDL is far more likely a templating slip than that
+     * intent. An <em>inverted</em> range is left to the source builder, whose message reads fine
+     * from a WITH clause.
+     */
+    private static void checkScanBounds(ReadableConfig config, List<String> prefixes) {
+        checkNotEmpty(config, BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED);
+        checkNotEmpty(config, BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN);
+        if (prefixes.stream().anyMatch(String::isEmpty)) {
+            throw new ValidationException(
+                    String.format(
+                            "'%s' contains an empty prefix, which would select the whole table."
+                                    + " Every row is the default; leave the option unset to scan"
+                                    + " everything.",
+                            BigtableConnectorOptions.SCAN_ROW_PREFIX.key()));
+        }
+    }
+
+    private static void checkNotEmpty(ReadableConfig config, ConfigOption<String> option) {
+        if (config.getOptional(option).filter(String::isEmpty).isPresent()) {
+            throw new ValidationException(
+                    String.format(
+                            "'%s' is the empty string, which is not a row key: an empty bound"
+                                    + " means the range is unbounded on that side. Leave the"
+                                    + " option unset instead.",
+                            option.key()));
+        }
     }
 
     /**

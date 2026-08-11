@@ -39,6 +39,10 @@ abstract class BigtableTableTestBase extends AbstractBigtableEmulatorITCase {
         return TableEnvironment.create(EnvironmentSettings.inStreamingMode());
     }
 
+    static TableEnvironment batchTableEnvironment() {
+        return TableEnvironment.create(EnvironmentSettings.inBatchMode());
+    }
+
     /**
      * Renders a {@code WITH} clause for the {@code bigtable} connector: the connector, the
      * destination and the emulator endpoint are always present, and the given pairs are added on

@@ -212,7 +212,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   image). The gated table is **pre-split**; the failover ITCase scripts both seams, because one
   split cannot show a reassignment.
 
-## Table API / SQL (`docs/adr/0086`; shared rules `docs/adr/0014`)
+## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`; shared rules `docs/adr/0014`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
   setter, `getOptional(...).ifPresent(...)`, no default restated. The **one** table-owned option is
@@ -274,6 +274,23 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   are set, and **at least one is required** under `create-if-needed` — stricter than the DataStream
   API, because an at-least-once upsert sink writes another version on every replay. Defaulting the
   rule instead was declined: that would be this layer inventing a default rather than mapping one.
+- **The table source serves projection as a family filter** (`docs/adr/0092`): retained families
+  become an interleave of `exactMatch`, a projection retaining **no** family becomes the keys-only
+  chain (`cellsPerRow(1)` + `value().strip()`) — an empty interleave would drop every row, not
+  strip them — and the filter is applied even unprojected, which is what keeps undeclared families
+  off the wire for `SELECT *` and makes the declared-but-absent-family `NOT_FOUND` uniform. The
+  converter resolves the *original* schema plus a projected-index array; never re-derive a
+  narrowed `BigtableTableSchema` — `of()` rejects the rowkey-less and empty shapes a projection
+  legitimately produces. A family none of whose declared qualifiers has a cell reads as a `null`
+  field (the sink's mirror; `HBaseSerde`'s row-of-nulls declined), and the latest cell version is
+  chosen by the converter — `cellsPerColumn(1)` pushdown is a deferred follow-up, not a gap.
+  Range keys are UTF-8; the factory rejects an **empty-string** bound or prefix element because
+  the client silently widens one to the whole table. **The family filter decides row membership,
+  not only row width**: a row appears iff a retained family has a cell, and a keys-only query
+  sees every physical row — the wide-column model's row existence, pinned by the emulator ITCase.
+  HBase makes membership projection-dependent too but adds declared qualifiers individually; a
+  retained family holding only an undeclared qualifier therefore appears here and not there. The
+  compensating labelled-branch mapping was declined (ADR-0092).
 - `BigtableOptionParityTest` reflects over **three** surfaces, widening the Pub/Sub precedent (which
   reflects over options builders only), and **two** further assertions ride along: no option feeds
   two setters, and every option that feeds something other than one setter is accounted for. Adding

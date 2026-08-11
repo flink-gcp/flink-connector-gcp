@@ -24,6 +24,7 @@ import org.apache.flink.configuration.MemorySize;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * The {@code WITH} options of the {@code bigtable} table connector.
@@ -107,6 +108,51 @@ public final class BigtableConnectorOptions {
                                     + " value. This option and its default are the HBase"
                                     + " connector's, so a table written by either is readable by"
                                     + " the other.");
+
+    // ------------------------------------------------------------------------
+    //  Scan
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<String> SCAN_APP_PROFILE_ID =
+            ConfigOptions.key("scan.app-profile-id")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The app profile the scan reads under. Separate from"
+                                    + " 'sink.app-profile-id' because a Data Boost profile reads"
+                                    + " and cannot write, so one table legitimately scans and"
+                                    + " writes under different profiles.");
+
+    public static final ConfigOption<List<String>> SCAN_ROW_PREFIX =
+            ConfigOptions.key("scan.row-prefix")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Scan only the rows whose key starts with one of these UTF-8 prefixes."
+                                    + " Repeatable — the list separator is ';' — and additive with"
+                                    + " 'scan.row-range.*': overlapping selections are merged, so"
+                                    + " no row is read twice. Binary row keys have no DDL form"
+                                    + " here; a scan needing one stays on the DataStream API.");
+
+    public static final ConfigOption<String> SCAN_ROW_RANGE_START_CLOSED =
+            ConfigOptions.key("scan.row-range.start-closed")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Scan from this UTF-8 row key, inclusive. May be given without"
+                                    + " 'scan.row-range.end-open', which leaves the range open"
+                                    + " above. One range per DDL; a scan needing several uses"
+                                    + " 'scan.row-prefix' or stays on the DataStream API.");
+
+    public static final ConfigOption<String> SCAN_ROW_RANGE_END_OPEN =
+            ConfigOptions.key("scan.row-range.end-open")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Scan up to this UTF-8 row key, exclusive. May be given without"
+                                    + " 'scan.row-range.start-closed', which leaves the range open"
+                                    + " below.");
 
     // ------------------------------------------------------------------------
     //  Sink
