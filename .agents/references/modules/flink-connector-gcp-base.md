@@ -8,8 +8,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - **Main-code shared infrastructure only** — test-support code stays in
   `flink-connector-gcp-test-utils`, whose detailed guidance records the mirror-image rule. Everything
   here is `@Internal` **except `base.failure`** (a user-implemented SPI cannot be internal —
-  `docs/adr/0036`); a second public package needs the same kind of argument. **A type only moves
-  in once it has multiple consumers.**
+  `docs/adr/0036`) and `base.source.StartPosition` (the user-configured value shared by the
+  Bigtable and Spanner change-stream sources — `docs/adr/0094`). **A type only moves in once it
+  has multiple consumers.**
 - Dependencies are `flink-core` (provided) plus `gax`/`grpc-api`/`protobuf-java` (BOM-managed).
   Consumers depend on this module at **compile** scope, so it is bundled into the
   `flink-sql-connector-gcp-*` uber-jars and must be relocated there (`docs/adr/0015`), and it is
@@ -41,6 +42,14 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 ## `base.source` (`docs/adr/0083`)
 
+- `StartPosition` applies only when no source state is restored; checkpointed per-partition state
+  wins. `StartPositionResolver` captures the startup clock once, discovers retention lazily and at
+  most once, and owns the one-minute safety margin, clamp-and-WARN behavior, future rejection and
+  restore-expiry policy (`docs/adr/0094`). A fresh `latest()` is the only path that needs no
+  retention lookup. Keep service error translation and retention discovery in each connector.
+- An expired restore fails unless the builder supplied a fallback. A fallback is resolved against
+  the same startup instant and retained window, and its warning names the affected partition and
+  lost window. Never classify expiry by vendor error-message text.
 - `PullAssignmentSplitEnumerator` is the assignment protocol every **bounded, pull-assigned**
   source shares: the queue, the parked requests, `serve`, the returned splits, the one-shot
   `callAsync` plan with its `closed` guard, and the close of the seam. `start()`, `close()` and the
