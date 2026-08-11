@@ -22,9 +22,8 @@ limitations under the License.
 
 # Spanner SQL connector
 
-The `spanner` connector reads bounded Table API and SQL scans and writes rows through `flink-connector-gcp-spanner`.
+The `spanner` connector reads bounded Table API and SQL scans, serves primary-key lookup joins, and writes rows through `flink-connector-gcp-spanner`.
 It maps onto the [DataStream source and sink]({{< relref "docs/connectors/datastream/spanner" >}}), so partitioning, snapshot, batching, retry, delivery, metrics, and failure behavior remain the same.
-Lookup joins are tracked by [#504]({{< param BookRepo >}}/issues/504).
 
 ```sql
 CREATE TABLE orders (
@@ -92,6 +91,17 @@ Partition count and size are service hints, not exact split controls.
 The default timestamp bound is strong; set either a read timestamp or exact staleness, never both.
 There are deliberately no column-range partition options because Spanner chooses partition boundaries from physical storage.
 
+## Lookup behavior
+
+The source supports temporal lookup joins when the equality key contains every column of the declared `PRIMARY KEY`.
+Composite keys are encoded in the DDL declaration order even when the planner supplies the predicates in another order.
+A null key or an absent Spanner row produces no joined row.
+
+`lookup.async` chooses Spanner's synchronous `readRow` or asynchronous `readRowAsync` API.
+Flink's standard `lookup.cache = NONE` and `PARTIAL` modes are supported; `FULL` is rejected because it would require a scan-backed cache with different snapshot and refresh semantics.
+The standard partial-cache expiry, size, and missing-key options apply unchanged.
+`lookup.max-retries` retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point-read failures and counts retries after the initial request.
+
 JSON, protocol buffers, and enums share carrier types with ordinary columns, so the DDL marks them explicitly:
 
 ```sql
@@ -128,6 +138,13 @@ Every marker must resolve to exactly one physical field and no field may have mo
 | `scan.timestamp-bound.read-timestamp` | *unset* | RFC 3339 snapshot timestamp; mutually exclusive with exact staleness |
 | `scan.timestamp-bound.exact-staleness` | *unset ⇒ strong read* | Exact age of the snapshot; mutually exclusive with read timestamp |
 | `scan.parallelism` | *unset ⇒ operator parallelism* | Flink's standard source parallelism override |
+| `lookup.async` | `false` | Use asynchronous `readRowAsync` point reads instead of synchronous `readRow` |
+| `lookup.cache` | `NONE` | Flink's standard lookup cache mode; `NONE` and `PARTIAL` are supported |
+| `lookup.max-retries` | `3` | Retries after the initial point read, for transient failures only |
+| `lookup.partial-cache.expire-after-access` | *unset* | Flink's standard partial-cache access expiry |
+| `lookup.partial-cache.expire-after-write` | *unset* | Flink's standard partial-cache write expiry |
+| `lookup.partial-cache.cache-missing-key` | `true` | Whether partial cache records lookup misses |
+| `lookup.partial-cache.max-rows` | *unset* | Maximum rows retained by the partial cache |
 | `sink.buffer-flush.max-cells` | `5000` | Maps to `maxBatchCells` |
 | `sink.buffer-flush.max-mutations` | `500` | Maps to `maxBatchMutations` |
 | `sink.buffer-flush.max-size` | `1 mb` | Maps to `maxBatchBytes` |

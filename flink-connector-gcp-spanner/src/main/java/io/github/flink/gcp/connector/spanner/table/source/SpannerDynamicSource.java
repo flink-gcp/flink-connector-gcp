@@ -1,6 +1,17 @@
 /*
  * Copyright 2026 laughingman7743
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package io.github.flink.gcp.connector.spanner.table.source;
@@ -12,9 +23,15 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
+import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
+import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
+import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
@@ -28,6 +45,7 @@ import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
+import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
 import javax.annotation.Nullable;
@@ -39,9 +57,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
-/** A bounded table scan backed by the DataStream Spanner source. */
+/** A bounded table scan and primary-key point-lookup source for Spanner tables. */
 @Internal
-public final class SpannerDynamicSource implements ScanTableSource, SupportsProjectionPushDown {
+public final class SpannerDynamicSource
+        implements ScanTableSource, LookupTableSource, SupportsProjectionPushDown {
     private final SpannerTableSchemaConverter schema;
     private final SpannerDatabase database;
     private final String table;
@@ -52,6 +71,7 @@ public final class SpannerDynamicSource implements ScanTableSource, SupportsProj
     private final TimestampBound timestampBound;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
+    private final SpannerLookupConfig lookupConfig;
     private DataType producedDataType;
     @Nullable private int[] projectedFields;
 
@@ -75,7 +95,8 @@ public final class SpannerDynamicSource implements ScanTableSource, SupportsProj
                 config.getOptional(SpannerConnectorOptions.SCAN_RPC_PRIORITY).orElse(null),
                 timestampBound(config),
                 config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
-                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
+                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
+                SpannerLookupConfig.from(config));
     }
 
     private SpannerDynamicSource(
@@ -89,7 +110,8 @@ public final class SpannerDynamicSource implements ScanTableSource, SupportsProj
             @Nullable SpannerRpcPriority rpcPriority,
             TimestampBound timestampBound,
             @Nullable String emulatorEndpoint,
-            @Nullable Integer parallelism) {
+            @Nullable Integer parallelism,
+            SpannerLookupConfig lookupConfig) {
         this.schema = schema;
         this.database = database;
         this.table = table;
@@ -101,6 +123,7 @@ public final class SpannerDynamicSource implements ScanTableSource, SupportsProj
         this.timestampBound = timestampBound;
         this.emulatorEndpoint = emulatorEndpoint;
         this.parallelism = parallelism;
+        this.lookupConfig = lookupConfig;
     }
 
     private static TimestampBound timestampBound(ReadableConfig config) {
@@ -200,6 +223,82 @@ public final class SpannerDynamicSource implements ScanTableSource, SupportsProj
     }
 
     @Override
+    public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
+        int[] keyPositions = lookupKeyPositions(context);
+        if (lookupConfig.isAsync()) {
+            SpannerRowDataAsyncLookupFunction function =
+                    new SpannerRowDataAsyncLookupFunction(
+                            database,
+                            table,
+                            retainedColumns(),
+                            schema,
+                            projectedFields,
+                            keyPositions,
+                            emulatorEndpoint,
+                            lookupConfig.getMaxRetries());
+            return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
+                    ? PartialCachingAsyncLookupProvider.of(
+                            function, lookupConfig.createPartialCache())
+                    : AsyncLookupFunctionProvider.of(function);
+        }
+        SpannerRowDataLookupFunction function =
+                new SpannerRowDataLookupFunction(
+                        database,
+                        table,
+                        retainedColumns(),
+                        schema,
+                        projectedFields,
+                        keyPositions,
+                        emulatorEndpoint,
+                        lookupConfig.getMaxRetries());
+        return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
+                ? PartialCachingLookupProvider.of(function, lookupConfig.createPartialCache())
+                : LookupFunctionProvider.of(function);
+    }
+
+    private int[] lookupKeyPositions(LookupContext context) {
+        int[][] keys = context.getKeys();
+        int[] primaryKeyIndexes = schema.getPrimaryKeyIndexes();
+        if (primaryKeyIndexes.length == 0 || keys.length != primaryKeyIndexes.length) {
+            throw lookupKeyException();
+        }
+        int[] positions = new int[primaryKeyIndexes.length];
+        Arrays.fill(positions, -1);
+        for (int keyPosition = 0; keyPosition < keys.length; keyPosition++) {
+            if (keys[keyPosition].length != 1) {
+                throw lookupKeyException();
+            }
+            int producedIndex = keys[keyPosition][0];
+            int producedArity = producedDataType.getChildren().size();
+            if (producedIndex < 0 || producedIndex >= producedArity) {
+                throw lookupKeyException();
+            }
+            int physicalIndex =
+                    projectedFields == null ? producedIndex : projectedFields[producedIndex];
+            int primaryPosition = indexOf(primaryKeyIndexes, physicalIndex);
+            if (primaryPosition < 0 || positions[primaryPosition] >= 0) {
+                throw lookupKeyException();
+            }
+            positions[primaryPosition] = keyPosition;
+        }
+        return positions;
+    }
+
+    private static int indexOf(int[] values, int wanted) {
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == wanted) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static ValidationException lookupKeyException() {
+        return new ValidationException(
+                "A Spanner lookup requires equality predicates for every declared PRIMARY KEY column.");
+    }
+
+    @Override
     public DynamicTableSource copy() {
         SpannerDynamicSource copy =
                 new SpannerDynamicSource(
@@ -213,7 +312,8 @@ public final class SpannerDynamicSource implements ScanTableSource, SupportsProj
                         rpcPriority,
                         timestampBound,
                         emulatorEndpoint,
-                        parallelism);
+                        parallelism,
+                        lookupConfig);
         copy.projectedFields = projectedFields == null ? null : projectedFields.clone();
         return copy;
     }
@@ -243,6 +343,7 @@ public final class SpannerDynamicSource implements ScanTableSource, SupportsProj
                 && timestampBound.equals(that.timestampBound)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
+                && lookupConfig.equals(that.lookupConfig)
                 && Arrays.equals(projectedFields, that.projectedFields);
     }
 
@@ -260,6 +361,7 @@ public final class SpannerDynamicSource implements ScanTableSource, SupportsProj
                 timestampBound,
                 emulatorEndpoint,
                 parallelism,
+                lookupConfig,
                 Arrays.hashCode(projectedFields));
     }
 }

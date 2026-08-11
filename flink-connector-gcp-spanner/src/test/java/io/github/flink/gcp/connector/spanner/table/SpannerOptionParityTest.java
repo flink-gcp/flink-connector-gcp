@@ -143,6 +143,7 @@ class SpannerOptionParityTest {
                         "scan.rpc-priority",
                         "scan.timestamp-bound.read-timestamp",
                         "scan.timestamp-bound.exact-staleness",
+                        "lookup.async",
                         "sink.buffer-flush.max-cells",
                         "sink.buffer-flush.max-mutations",
                         "sink.buffer-flush.max-size",

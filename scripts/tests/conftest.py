@@ -65,3 +65,8 @@ def check_metric_docs():
 @pytest.fixture(scope="session")
 def check_skill_frontmatter():
     return load_script("check-skill-frontmatter.py")
+
+
+@pytest.fixture(scope="session")
+def check_java_license_headers():
+    return load_script("check-java-license-headers.py")

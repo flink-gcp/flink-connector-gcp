@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -74,6 +75,13 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SCAN_RPC_PRIORITY,
                         SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_READ_TIMESTAMP,
                         SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_EXACT_STALENESS,
+                        SpannerConnectorOptions.LOOKUP_ASYNC,
+                        LookupOptions.CACHE_TYPE,
+                        LookupOptions.MAX_RETRIES,
+                        LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_ACCESS,
+                        LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE,
+                        LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY,
+                        LookupOptions.PARTIAL_CACHE_MAX_ROWS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_CELLS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_MUTATIONS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
