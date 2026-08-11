@@ -546,10 +546,18 @@ def test_repository_layout_shares_skills_and_keeps_guidance_bounded(
 ):
     canonical = tmp_path / ".agents" / "skills"
     canonical.mkdir(parents=True)
+    (canonical / "project-memory").mkdir()
+    (canonical / "project-memory" / "SKILL.md").write_text(
+        "---\nname: project-memory\ndescription: Find memory.\n---\n",
+        encoding="utf-8",
+    )
     compatibility = tmp_path / ".claude" / "skills"
     compatibility.parent.mkdir()
     compatibility.symlink_to("../.agents/skills")
-    (tmp_path / "AGENTS.md").write_text("# Guidance\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(
+        "# Guidance\n\nBefore planning non-trivial repository work, use `$project-memory`.\n",
+        encoding="utf-8",
+    )
     (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
     module = tmp_path / "flink-connector-gcp-alpha"
     module.mkdir()
@@ -564,7 +572,10 @@ def test_repository_layout_rejects_a_copied_claude_skill_tree(
 ):
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
     (tmp_path / ".claude" / "skills").mkdir(parents=True)
-    (tmp_path / "AGENTS.md").write_text("# Guidance\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(
+        "# Guidance\n\nBefore planning non-trivial repository work, use `$project-memory`.\n",
+        encoding="utf-8",
+    )
     (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
 
     problems = check_skill_frontmatter.check_repository_layout(tmp_path)
@@ -576,10 +587,19 @@ def test_repository_layout_rejects_oversized_nested_guidance_and_fake_import(
 ):
     canonical = tmp_path / ".agents" / "skills"
     canonical.mkdir(parents=True)
+    (canonical / "project-memory").mkdir()
+    (canonical / "project-memory" / "SKILL.md").write_text(
+        "---\nname: project-memory\ndescription: Find memory.\n---\n",
+        encoding="utf-8",
+    )
     compatibility = tmp_path / ".claude" / "skills"
     compatibility.parent.mkdir()
     compatibility.symlink_to("../.agents/skills")
-    (tmp_path / "AGENTS.md").write_text("x" * (16 * 1024), encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(
+        "Before planning non-trivial repository work, use `$project-memory`.\n"
+        + "x" * (16 * 1024),
+        encoding="utf-8",
+    )
     (tmp_path / "CLAUDE.md").write_text(
         "# mentions @AGENTS.md only\n", encoding="utf-8"
     )
@@ -591,6 +611,27 @@ def test_repository_layout_rejects_oversized_nested_guidance_and_fake_import(
     problems = check_skill_frontmatter.check_repository_layout(tmp_path)
     assert any("over the" in problem for problem in problems)
     assert sum("must import @AGENTS.md" in problem for problem in problems) == 2
+
+
+def test_repository_layout_requires_the_project_memory_bridge(
+    check_skill_frontmatter, tmp_path
+):
+    canonical = tmp_path / ".agents" / "skills"
+    canonical.mkdir(parents=True)
+    compatibility = tmp_path / ".claude" / "skills"
+    compatibility.parent.mkdir()
+    compatibility.symlink_to("../.agents/skills")
+    (tmp_path / "AGENTS.md").write_text(
+        "# Guidance\n\nDo not use $project-memory.\n", encoding="utf-8"
+    )
+    (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+
+    problems = check_skill_frontmatter.check_repository_layout(tmp_path)
+
+    assert any("bridge skill is missing" in problem for problem in problems)
+    assert any(
+        "must route agents to $project-memory" in problem for problem in problems
+    )
 
 
 def test_mcp_config_requires_parseable_matching_servers(

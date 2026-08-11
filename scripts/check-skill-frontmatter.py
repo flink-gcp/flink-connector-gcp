@@ -109,6 +109,9 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKILLS = ROOT / ".agents" / "skills"
 AGENT_GUIDANCE_LIMIT = 32 * 1024
+PROJECT_MEMORY_ROUTE = (
+    "Before planning non-trivial repository work, use `$project-memory`"
+)
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -287,10 +290,19 @@ def check_repository_layout(root: pathlib.Path) -> list[str]:
     elif compatibility.resolve() != canonical.resolve():
         problems.append(f"{compatibility}: does not resolve to {canonical}")
 
+    memory_skill = canonical / "project-memory" / "SKILL.md"
+    if not memory_skill.is_file():
+        problems.append(
+            f"{memory_skill}: the shared local-memory bridge skill is missing"
+        )
+
     root_guidance = root / "AGENTS.md"
     if not root_guidance.is_file():
         problems.append(f"{root_guidance}: repository guidance is missing")
         return problems
+    guidance_lines = root_guidance.read_text(encoding="utf-8").splitlines()
+    if not any(line.startswith(PROJECT_MEMORY_ROUTE) for line in guidance_lines):
+        problems.append(f"{root_guidance}: must route agents to $project-memory")
     guidance_files = sorted(
         path
         for path in root.rglob("AGENTS.md")
