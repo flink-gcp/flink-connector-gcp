@@ -20,7 +20,9 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
@@ -28,15 +30,17 @@ import org.apache.flink.table.types.logical.RowType;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
 import io.github.flink.gcp.connector.spanner.table.sink.WriterOptionsMapper;
+import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
-/** Creates the {@code spanner} table sink from a SQL DDL. */
+/** Creates the {@code spanner} table source and sink from a SQL DDL. */
 @Internal
-public final class SpannerDynamicTableFactory implements DynamicTableSinkFactory {
+public final class SpannerDynamicTableFactory
+        implements DynamicTableSinkFactory, DynamicTableSourceFactory {
 
     public static final String IDENTIFIER = "spanner";
 
@@ -64,6 +68,12 @@ public final class SpannerDynamicTableFactory implements DynamicTableSinkFactory
                         SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS,
                         SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES,
                         SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES,
+                        SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
+                        SpannerConnectorOptions.SCAN_PARTITION_SIZE,
+                        SpannerConnectorOptions.SCAN_DATA_BOOST_ENABLED,
+                        SpannerConnectorOptions.SCAN_RPC_PRIORITY,
+                        SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_READ_TIMESTAMP,
+                        SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_EXACT_STALENESS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_CELLS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_MUTATIONS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
@@ -72,7 +82,8 @@ public final class SpannerDynamicTableFactory implements DynamicTableSinkFactory
                         SpannerConnectorOptions.SINK_RETRY_INITIAL_BACKOFF,
                         SpannerConnectorOptions.SINK_RETRY_MAX_BACKOFF,
                         SpannerConnectorOptions.SINK_RETRY_MAX_ATTEMPTS,
-                        FactoryUtil.SINK_PARALLELISM));
+                        FactoryUtil.SINK_PARALLELISM,
+                        FactoryUtil.SOURCE_PARALLELISM));
     }
 
     @Override
@@ -106,5 +117,37 @@ public final class SpannerDynamicTableFactory implements DynamicTableSinkFactory
                         config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
                 .build();
+    }
+
+    @Override
+    public DynamicTableSource createDynamicTableSource(Context context) {
+        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        helper.validate();
+        ReadableConfig config = helper.getOptions();
+        DataType physicalType = context.getPhysicalRowDataType();
+        SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
+        return new SpannerDynamicSource(
+                schema,
+                SpannerDatabase.of(
+                        config.get(SpannerConnectorOptions.PROJECT),
+                        config.get(SpannerConnectorOptions.INSTANCE),
+                        config.get(SpannerConnectorOptions.DATABASE)),
+                config.get(SpannerConnectorOptions.TABLE),
+                physicalType,
+                config);
+    }
+
+    private static SpannerTableSchemaConverter createSchema(
+            Context context, ReadableConfig config, DataType physicalType) {
+        return SpannerTableSchemaConverter.of(
+                (RowType) physicalType.getLogicalType(),
+                context.getPrimaryKeyIndexes(),
+                config.get(SpannerConnectorOptions.DIALECT),
+                config.getOptional(SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS)
+                        .orElse(Collections.emptyList()),
+                config.getOptional(SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES)
+                        .orElse(Collections.emptyMap()),
+                config.getOptional(SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES)
+                        .orElse(Collections.emptyMap()));
     }
 }

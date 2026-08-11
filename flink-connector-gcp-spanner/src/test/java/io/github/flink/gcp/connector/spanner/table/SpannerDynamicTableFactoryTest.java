@@ -23,14 +23,21 @@ import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
+import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
+import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
+import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
 import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
+import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -38,6 +45,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -145,5 +153,101 @@ class SpannerDynamicTableFactoryTest {
         assertThatThrownBy(() -> sink(SCHEMA, options))
                 .hasStackTraceContaining("unknown field paths")
                 .hasStackTraceContaining("missing");
+    }
+
+    private static DynamicTableSource source(ResolvedSchema schema, Map<String, String> options) {
+        return FactoryMocks.createTableSource(schema, options);
+    }
+
+    private static SpannerSourceConfig<?> builtSource(
+            ResolvedSchema schema, Map<String, String> options) {
+        SourceProvider provider =
+                (SourceProvider)
+                        ((ScanTableSource) source(schema, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        return ((SpannerBatchReadSource<?>) provider.createSource()).getConfig();
+    }
+
+    @Test
+    void buildsTheConnectorsOwnBoundedSource() {
+        DynamicTableSource dynamic = source(SCHEMA, options());
+        SpannerSourceConfig<?> config = builtSource(SCHEMA, options());
+
+        assertThat(dynamic).isInstanceOf(SpannerDynamicSource.class);
+        assertThat(config.getDatabase())
+                .isEqualTo(SpannerDatabase.of("my-project", "my-instance", "my-database"));
+        assertThat(config.getReadOperation().getColumns()).containsExactly("id", "name");
+        assertThat(config.getTimestampBound().getMode().name()).isEqualTo("STRONG");
+    }
+
+    @Test
+    void mapsEveryScanOptionAndSourceParallelism() {
+        Map<String, String> options = options();
+        options.put("scan.partition.max-partitions", "12");
+        options.put("scan.partition.size", "2 mb");
+        options.put("scan.data-boost-enabled", "true");
+        options.put("scan.rpc-priority", "low");
+        options.put("scan.timestamp-bound.exact-staleness", "15 s");
+        options.put("scan.parallelism", "3");
+        ScanTableSource source = (ScanTableSource) source(SCHEMA, options);
+        SourceProvider provider =
+                (SourceProvider) source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        SpannerSourceConfig<?> config =
+                ((SpannerBatchReadSource<?>) provider.createSource()).getConfig();
+
+        assertThat(config.getPartitionOptions().getMaxPartitions()).isEqualTo(12);
+        assertThat(config.getPartitionOptions().getPartitionSizeBytes())
+                .isEqualTo(2L * 1024 * 1024);
+        assertThat(config.isDataBoostEnabled()).isTrue();
+        assertThat(config.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
+        assertThat(config.getTimestampBound().getExactStaleness(TimeUnit.SECONDS)).isEqualTo(15);
+        assertThat(provider.getParallelism()).contains(3);
+        assertThat(source.copy()).isEqualTo(source).hasSameHashCodeAs(source);
+    }
+
+    @Test
+    void projectionChangesThePhysicalReadAndZeroProjectionUsesACarrier() {
+        SpannerDynamicSource projected = (SpannerDynamicSource) source(SCHEMA, options());
+        projected.applyProjection(
+                new int[][] {{1}}, DataTypes.ROW(DataTypes.FIELD("name", DataTypes.STRING())));
+        assertThat(built(projected).getReadOperation().getColumns()).containsExactly("name");
+
+        SpannerDynamicSource zero = (SpannerDynamicSource) source(SCHEMA, options());
+        zero.applyProjection(new int[0][], DataTypes.ROW());
+        assertThat(built(zero).getReadOperation().getColumns()).containsExactly("id");
+    }
+
+    private static SpannerSourceConfig<?> built(SpannerDynamicSource source) {
+        SourceProvider provider =
+                (SourceProvider) source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        return ((SpannerBatchReadSource<?>) provider.createSource()).getConfig();
+    }
+
+    @Test
+    void rejectsConflictingTimestampBounds() {
+        Map<String, String> options = options();
+        options.put("scan.timestamp-bound.read-timestamp", "2026-08-11T00:00:00Z");
+        options.put("scan.timestamp-bound.exact-staleness", "1 s");
+
+        assertThatThrownBy(() -> source(SCHEMA, options))
+                .hasStackTraceContaining("mutually exclusive");
+    }
+
+    @Test
+    void mapsAReadTimestampAndRejectsInvalidSnapshotBounds() {
+        Map<String, String> timestamp = options();
+        timestamp.put("scan.timestamp-bound.read-timestamp", "2026-08-11T00:00:00.123456789Z");
+        assertThat(builtSource(SCHEMA, timestamp).getTimestampBound().getReadTimestamp().toString())
+                .isEqualTo("2026-08-11T00:00:00.123456789Z");
+
+        Map<String, String> invalidTimestamp = options();
+        invalidTimestamp.put("scan.timestamp-bound.read-timestamp", "not-a-timestamp");
+        assertThatThrownBy(() -> source(SCHEMA, invalidTimestamp))
+                .hasStackTraceContaining("Invalid scan timestamp");
+
+        Map<String, String> zeroStaleness = options();
+        zeroStaleness.put("scan.timestamp-bound.exact-staleness", "0 s");
+        assertThatThrownBy(() -> source(SCHEMA, zeroStaleness))
+                .hasStackTraceContaining("exact-staleness must be positive");
     }
 }

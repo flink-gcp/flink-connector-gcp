@@ -81,6 +81,37 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription("Field paths to fully qualified Spanner ENUM type names.");
 
+    public static final ConfigOption<Long> SCAN_PARTITION_MAX_PARTITIONS =
+            ConfigOptions.key("scan.partition.max-partitions")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription("The desired maximum number of read partitions.");
+    public static final ConfigOption<MemorySize> SCAN_PARTITION_SIZE =
+            ConfigOptions.key("scan.partition.size")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription("The desired size of one read partition.");
+    public static final ConfigOption<Boolean> SCAN_DATA_BOOST_ENABLED =
+            ConfigOptions.key("scan.data-boost-enabled")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription("Whether reads use Spanner Data Boost compute.");
+    public static final ConfigOption<SpannerRpcPriority> SCAN_RPC_PRIORITY =
+            ConfigOptions.key("scan.rpc-priority")
+                    .enumType(SpannerRpcPriority.class)
+                    .noDefaultValue()
+                    .withDescription("The LOW, MEDIUM, or HIGH priority of scan RPCs.");
+    public static final ConfigOption<String> SCAN_TIMESTAMP_BOUND_READ_TIMESTAMP =
+            ConfigOptions.key("scan.timestamp-bound.read-timestamp")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("An RFC 3339 timestamp at which to read the table.");
+    public static final ConfigOption<Duration> SCAN_TIMESTAMP_BOUND_EXACT_STALENESS =
+            ConfigOptions.key("scan.timestamp-bound.exact-staleness")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("How stale the read snapshot must be; unset means strong.");
+
     public static final ConfigOption<Integer> SINK_BUFFER_FLUSH_MAX_CELLS =
             ConfigOptions.key("sink.buffer-flush.max-cells")
                     .intType()
