@@ -6,6 +6,12 @@
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package io.github.flink.gcp.connector.spanner.table;
@@ -32,5 +38,28 @@ class SpannerTablePlanTest {
         assertThat(table.explainSql("SELECT name FROM people"))
                 .contains(
                         "TableSourceScan(table=[[default_catalog, default_database, people, project=[name]]], fields=[name])");
+    }
+
+    @Test
+    void temporalJoinUsesTheCompleteCompositePrimaryKeyLookup() {
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.executeSql(
+                "CREATE TABLE facts (region STRING, account BIGINT, event_time AS PROCTIME()) "
+                        + "WITH ('connector'='datagen', 'number-of-rows'='1')");
+        table.executeSql(
+                "CREATE TABLE accounts (region STRING, account BIGINT, name STRING, "
+                        + "PRIMARY KEY (region, account) NOT ENFORCED) WITH ("
+                        + "'connector'='spanner', 'project'='p', 'instance'='i', "
+                        + "'database'='d', 'table'='accounts')");
+
+        assertThat(
+                        table.explainSql(
+                                "SELECT a.name FROM facts AS f LEFT JOIN accounts "
+                                        + "FOR SYSTEM_TIME AS OF f.event_time AS a "
+                                        + "ON f.account = a.account AND f.region = a.region"))
+                .contains("LookupJoin")
+                .contains("region=region")
+                .contains("account=account");
     }
 }

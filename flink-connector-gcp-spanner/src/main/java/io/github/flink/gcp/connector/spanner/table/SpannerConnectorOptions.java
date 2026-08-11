@@ -112,6 +112,12 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription("How stale the read snapshot must be; unset means strong.");
 
+    public static final ConfigOption<Boolean> LOOKUP_ASYNC =
+            ConfigOptions.key("lookup.async")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription("Whether point lookups use Spanner's asynchronous read API.");
+
     public static final ConfigOption<Integer> SINK_BUFFER_FLUSH_MAX_CELLS =
             ConfigOptions.key("sink.buffer-flush.max-cells")
                     .intType()

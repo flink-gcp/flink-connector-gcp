@@ -142,9 +142,9 @@ jobs:
         with:
           tool: just
 
-      # Runs the full lifecycle: spotless/checkstyle (validate), compile,
-      # unit tests (test), packaging, integration tests (integration-test)
-      # and the apache-rat license-header check (verify) — over the modules
+      # Runs the exact Java-header check followed by the full lifecycle:
+      # spotless/checkstyle (validate), compile, unit tests (test), packaging,
+      # integration tests (integration-test) and apache-rat (verify) — over the modules
       # the changes job selected (empty args = the whole reactor; the
       # interpolation is weekly.yaml's passthrough shape). Integration tests
       # use testcontainers-based emulators and require no cloud credentials,

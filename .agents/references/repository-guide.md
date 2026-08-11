@@ -153,6 +153,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   that filter (the poms, the `NOTICE.template`s). The direction the tests are aimed at is a
   checker quietly finding *less* than it should — that reads exactly like a clean tree — so
   each rule is pinned by a case that fails when the rule is removed
+- `just check-java-license-headers` — every Java source starts with a complete copyright-bearing
+  or ASF Apache-2.0 header. RAT identifies the licence family from a distinctive line and remains
+  the whole-tree coverage; this check closes the narrower completeness gap with no allowlist or
+  judgment. It runs at the start of `just verify`, and its parser tests use synthetic trees
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
   the **rendered** markdown — `docs/content/`, `docs/adr/` and the READMEs, never agent
@@ -486,13 +490,13 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
 
 - Files written for this project carry the plain Apache-2.0 header
   (`Copyright 2026 laughingman7743`). Files copied from Apache projects keep their ASF header.
-  apache-rat enforces this (configuration overridden in the root POM; new unheaderable file
-  types need a rat exclude there) — and enforces *those two headers*, not "an Apache licence is
-  mentioned somewhere", since #255 turned rat's built-in matchers off. They had been approving a
-  file for carrying the bare licence URL, so a header could lose its first line and still pass.
-  Still **not** checked, deliberately: the contents of the copyright line, and which of the two
-  headers a given file carries. A third header would need its own configured pattern — which is
-  the point at which someone decides whether it belongs here at all
+  Apache RAT enforces the approved licence families over the whole tree (configuration overridden
+  in the root POM; new unheaderable file types need a RAT exclude there), but its matcher identifies
+  a family from one distinctive line and therefore cannot prove that the surrounding notice is
+  complete. `just check-java-license-headers` closes that gap for Java by requiring the full
+  copyright-bearing or ASF form before Maven runs. Still not checked for non-Java files: the contents of the
+  copyright line, and which of the two headers a given file carries. A third header would need a
+  deliberate checker and RAT change
 - When adapting Apache-2.0 code from other projects (Beam, Dataproc connector,
   google/flink-connector-gcp, java-bigquerystorage, apache/flink-connector-gcp-pubsub):
   record the provenance in the module README and the repository `NOTICE`, and keep original

@@ -57,14 +57,20 @@ default:
 # options, not this project's commands — so they are not the same thing.
 alias help := default
 
-# Runs spotless/checkstyle (validate), unit tests, integration tests, packaging
-# and the apache-rat license-header check. Extra arguments go to Maven, which is
+# Runs the exact Java-header check, then spotless/checkstyle (validate), unit tests,
+# integration tests, packaging and apache-rat. Extra arguments go to Maven, which is
 # how the weekly version matrix selects a Flink version — passing none means the
 # version pinned in pom.xml.
 #
 # Full build: format and license checks, unit tests, integration tests.
 verify *args:
+    @just check-java-license-headers
     {{ mvn }} {{ args }} verify
+
+# RAT identifies the approved licence family from one distinctive line. This stricter
+# check holds every Java source to a complete copyright-bearing or ASF header.
+check-java-license-headers:
+    python3 scripts/check-java-license-headers.py
 
 # A 1.x version also selects the flink1 compat source root (see the
 # flink.compat property in pom.xml) — forgetting that flag by hand is exactly
