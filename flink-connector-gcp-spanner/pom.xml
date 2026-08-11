@@ -46,6 +46,13 @@ limitations under the License.
             <artifactId>flink-connector-base</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <!-- Dynamic table factory, RowData and logical types. The Flink distribution
+                 supplies this at runtime; the future SQL uber-jar must not bundle it. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Shared connector infrastructure: the failure-handler SPI (#37), the retry
              schedule (#61), the option checks (#381) and the emulator endpoint. -->
@@ -139,6 +146,31 @@ limitations under the License.
             <!-- Local executor backing the MiniCluster job integration tests. -->
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-clients</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- FactoryMocks, for driving the table factory without a planner. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- TableEnvironment for the SQL sink integration tests. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-api-java-bridge</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Planner implementation loaded behind TableEnvironment. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-planner-loader</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- RowData runtime types used by planner-generated test code. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-runtime</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

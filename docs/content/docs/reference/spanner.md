@@ -31,6 +31,12 @@ knobs, and they are not decoration: the Spanner client library does not retry th
 at all, so the sink owns the whole retry loop. See
 [Retries]({{< relref "docs/connectors/datastream/spanner" >}}#retries-belong-to-the-sink).
 
+## Spanner Table API / SQL
+
+The `spanner` factory requires `project`, `instance`, `database`, and `table`.
+Unset sink options inherit the corresponding `SpannerWriterOptions` default documented below.
+The complete DDL option table, schema mapping, and primary-key behavior are on the [Spanner SQL page]({{< relref "docs/connectors/table/spanner" >}}).
+
 ## `SpannerSink.builder()`
 
 | Option | Default | What it does |
