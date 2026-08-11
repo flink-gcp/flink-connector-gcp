@@ -28,7 +28,7 @@ import org.apache.flink.api.connector.sink2.Sink;
  * createWriter(Sink.InitContext)} abstract while Flink 2.x removed the type outright, so no
  * single source file can satisfy both compilers — the 1.20 variant carries a compile-only default
  * for it, and everything else in the module stays one copy. See the version policy in the root
- * {@code CLAUDE.md} and issue #32.
+ * {@code AGENTS.md} and issue #32.
  */
 @Internal
 public interface CrossVersionSink<InputT> extends Sink<InputT> {}

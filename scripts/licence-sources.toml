@@ -21,7 +21,7 @@
 # Every artifact whose (merged) licence is not Apache-2.0 must appear in
 # exactly one entry's artifacts list; check-notice.py fails otherwise, which
 # is the prompt to curate a new entry here (see
-# .claude/skills/curate-licence-source/ for the fallback ladder). Artifacts
+# .agents/skills/curate-licence-source/ for the fallback ladder). Artifacts
 # are named groupId:artifactId, shared across modules and versions — the sha
 # pin is what detects an upstream text change, not the version.
 #

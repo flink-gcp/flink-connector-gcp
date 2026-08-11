@@ -240,7 +240,7 @@ often HTML pages or bare templates, and the script rejects HTML outright). A fet
 hashing to its pin fails: upstream changed, a human reviews. This replaced an earlier state
 where five texts had been curl'd from repository heads chosen by hand — wrong provenance, and
 the reason the pin exists. **Curating a new entry follows a fixed fallback ladder** (printed by
-the failure message, and the judgment calls are `.claude/skills/curate-licence-source/`): (1) a
+the failure message, and the judgment calls are `.agents/skills/curate-licence-source/`): (1) a
 licence file inside the artifact's own jar; (2) the publisher's repository at the tag matching
 the bundled version; (3) the publisher's repository head only when it is frozen (archived) or no
 version tag exists, with the reason in the note; and there is no rung 4 — a generic template is

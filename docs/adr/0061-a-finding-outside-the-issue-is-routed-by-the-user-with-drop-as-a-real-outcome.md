@@ -23,7 +23,7 @@ limitations under the License.
   [#322](https://github.com/laughingman7743/flink-connector-gcp/pull/322))
 - Issues: —
 - Modules: all (workflow)
-- Current behavior: root `CLAUDE.md` § Workflow rules (the imperative form)
+- Current behavior: root `AGENTS.md` § Workflow rules (the imperative form)
 
 ## Decision
 

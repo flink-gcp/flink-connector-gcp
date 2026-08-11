@@ -15,7 +15,7 @@
 """Tests for scripts/check-skill-frontmatter.py (ADR-0069).
 
 Synthetic trees in tmp_path, per this repository's rule for checker tests — a
-real-tree assertion would put .claude/skills/ under every path filter that
+real-tree assertion would put .agents/skills/ under every path filter that
 matters, and `just lint` already runs the checker over the real tree.
 
 The direction that matters is the checker quietly finding *less* than it
@@ -461,6 +461,11 @@ def test_main_returns_one_and_annotates_when_a_skill_is_broken(
     # fully green — the silent failure this checker exists to prevent.
     _skill(tmp_path, "alpha", "name: alpha\ndescription: Ends at the diff: here.")
     monkeypatch.setattr(check_skill_frontmatter, "SKILLS", tmp_path)
+    monkeypatch.setattr(check_skill_frontmatter, "check_openai_metadata", lambda _: [])
+    monkeypatch.setattr(
+        check_skill_frontmatter, "check_repository_layout", lambda _: []
+    )
+    monkeypatch.setattr(check_skill_frontmatter, "check_mcp_config", lambda _: [])
 
     assert check_skill_frontmatter.main() == 1
     assert "::error::" in capsys.readouterr().err
@@ -471,6 +476,11 @@ def test_main_returns_zero_on_a_clean_tree(
 ):
     _good(tmp_path)
     monkeypatch.setattr(check_skill_frontmatter, "SKILLS", tmp_path)
+    monkeypatch.setattr(check_skill_frontmatter, "check_openai_metadata", lambda _: [])
+    monkeypatch.setattr(
+        check_skill_frontmatter, "check_repository_layout", lambda _: []
+    )
+    monkeypatch.setattr(check_skill_frontmatter, "check_mcp_config", lambda _: [])
 
     assert check_skill_frontmatter.main() == 0
     assert "::error::" not in capsys.readouterr().err
@@ -490,3 +500,118 @@ def test_a_skill_directory_with_no_skill_md_fails(check_skill_frontmatter, tmp_p
     assert len(problems) == 1
     assert "no SKILL.md" in problems[0]
     assert "beta" in problems[0]
+
+
+def test_codex_metadata_is_required_and_names_the_skill(
+    check_skill_frontmatter, tmp_path
+):
+    skill = _good(tmp_path, "alpha")
+    metadata = skill.parent / "agents" / "openai.yaml"
+    assert (
+        "metadata is missing"
+        in check_skill_frontmatter.check_openai_metadata(tmp_path)[0]
+    )
+
+    metadata.parent.mkdir()
+    metadata.write_text(
+        "interface:\n"
+        '  display_name: "Alpha"\n'
+        '  short_description: "Perform the alpha workflow safely"\n'
+        '  default_prompt: "Use $alpha to perform this workflow."\n',
+        encoding="utf-8",
+    )
+
+    assert check_skill_frontmatter.check_openai_metadata(tmp_path) == []
+
+    metadata.write_text(
+        metadata.read_text(encoding="utf-8").replace("$alpha", "$beta"),
+        encoding="utf-8",
+    )
+    problems = check_skill_frontmatter.check_openai_metadata(tmp_path)
+    assert len(problems) == 1
+    assert "must mention $alpha" in problems[0]
+
+    metadata.write_text(
+        metadata.read_text(encoding="utf-8").replace("$beta", "$alpha-next"),
+        encoding="utf-8",
+    )
+    assert (
+        "must mention $alpha"
+        in check_skill_frontmatter.check_openai_metadata(tmp_path)[0]
+    )
+
+
+def test_repository_layout_shares_skills_and_keeps_guidance_bounded(
+    check_skill_frontmatter, tmp_path
+):
+    canonical = tmp_path / ".agents" / "skills"
+    canonical.mkdir(parents=True)
+    compatibility = tmp_path / ".claude" / "skills"
+    compatibility.parent.mkdir()
+    compatibility.symlink_to("../.agents/skills")
+    (tmp_path / "AGENTS.md").write_text("# Guidance\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+    module = tmp_path / "flink-connector-gcp-alpha"
+    module.mkdir()
+    (module / "AGENTS.md").write_text("# Module\n", encoding="utf-8")
+    (module / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+
+    assert check_skill_frontmatter.check_repository_layout(tmp_path) == []
+
+
+def test_repository_layout_rejects_a_copied_claude_skill_tree(
+    check_skill_frontmatter, tmp_path
+):
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    (tmp_path / "AGENTS.md").write_text("# Guidance\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+
+    problems = check_skill_frontmatter.check_repository_layout(tmp_path)
+    assert any("must be a symlink" in problem for problem in problems)
+
+
+def test_repository_layout_rejects_oversized_nested_guidance_and_fake_import(
+    check_skill_frontmatter, tmp_path
+):
+    canonical = tmp_path / ".agents" / "skills"
+    canonical.mkdir(parents=True)
+    compatibility = tmp_path / ".claude" / "skills"
+    compatibility.parent.mkdir()
+    compatibility.symlink_to("../.agents/skills")
+    (tmp_path / "AGENTS.md").write_text("x" * (16 * 1024), encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text(
+        "# mentions @AGENTS.md only\n", encoding="utf-8"
+    )
+    nested = tmp_path / "flink-sql-connector-gcp-alpha"
+    nested.mkdir()
+    (nested / "AGENTS.md").write_text("x" * (17 * 1024), encoding="utf-8")
+    (nested / "CLAUDE.md").write_text("@AGENTS.md.old\n", encoding="utf-8")
+
+    problems = check_skill_frontmatter.check_repository_layout(tmp_path)
+    assert any("over the" in problem for problem in problems)
+    assert sum("must import @AGENTS.md" in problem for problem in problems) == 2
+
+
+def test_mcp_config_requires_parseable_matching_servers(
+    check_skill_frontmatter, tmp_path
+):
+    codex = tmp_path / ".codex" / "config.toml"
+    codex.parent.mkdir()
+    codex.write_text(
+        '[mcp_servers.context7]\nurl = "https://mcp.context7.com/mcp"\n'
+        '[mcp_servers.serena]\ncommand = "mise"\n'
+        'args = ["serena-agent==1.7.0", "--project-from-cwd", "--context=codex",'
+        ' "--add-mode", "no-memories"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / ".mcp.json").write_text(
+        '{"mcpServers":{"context7":{"url":"https://mcp.context7.com/mcp"},'
+        '"serena":{"command":"mise","args":["serena-agent==1.7.0",'
+        '"--project-from-cwd","--context=claude-code","--add-mode","no-memories"]}}}',
+        encoding="utf-8",
+    )
+    assert check_skill_frontmatter.check_mcp_config(tmp_path) == []
+
+    (tmp_path / ".mcp.json").write_text("{", encoding="utf-8")
+    assert "cannot load Claude" in check_skill_frontmatter.check_mcp_config(tmp_path)[0]

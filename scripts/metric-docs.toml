@@ -31,7 +31,7 @@
 # name Flink itself provides, is usually the real answer. Both are
 # `key = "reason"`, and the reason says why this is *not* a row.
 #
-# `.claude/skills/curate-metric-docs/` is the procedure for every failure this
+# `.agents/skills/curate-metric-docs/` is the procedure for every failure this
 # file can produce, including which of the two an entry belongs in.
 #
 # Modules are mapped, not individual classes, on purpose: a module's whole

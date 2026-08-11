@@ -35,7 +35,7 @@ import java.util.Objects;
  * are sink options, because they choose a path to the data rather than the data's address.
  *
  * <p>This type sits at the module root rather than under {@code sink} because the scan source will
- * take the same value ({@code #216}); the module's {@code CLAUDE.md} records that deviation.
+ * take the same value ({@code #216}); the module's detailed agent guidance records that deviation.
  *
  * <p>Instances are immutable and cheap to reuse.
  */

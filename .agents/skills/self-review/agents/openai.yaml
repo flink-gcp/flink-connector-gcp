@@ -1,0 +1,4 @@
+interface:
+  display_name: "Self-review Round One"
+  short_description: "Review a draft PR against its stated behavior"
+  default_prompt: "Use $self-review to run round one of the draft pull request review."

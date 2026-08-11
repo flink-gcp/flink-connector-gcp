@@ -86,7 +86,7 @@ public interface MutationBatcher extends AutoCloseable {
      * batcher's lifetime, never clearing them, so {@code close()} rebuilds them into one exception
      * — every failure by count, though only the first 50 messages of each kind, which it keeps in
      * an {@code EvictingQueue}. #325 measured the other connectors' clients for the same shape; the
-     * rule, and what has it, are in the root {@code CLAUDE.md}.
+     * rule, and what has it, are in the detailed repository guidance.
      */
     @Override
     void close() throws Exception;

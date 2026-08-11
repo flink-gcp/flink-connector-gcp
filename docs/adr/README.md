@@ -13,7 +13,7 @@ How the three documentation homes divide (the boundary is recorded in
 |---|---|
 | Current behavior, and the rationale a user needs to operate it | `docs/content/` pages |
 | The decision event: evidence, declined alternatives, supersession history | `docs/adr/` |
-| Behavioral rules a Claude session must follow | `CLAUDE.md` (root and per module), as imperative rules pointing here |
+| Behavioral rules an AI coding agent must follow | `AGENTS.md` (root and per module), as imperative rules pointing here |
 
 ## When an ADR is written or updated
 
@@ -26,11 +26,11 @@ requests touch it at none of them**:
 2. **The pull request that implements a settled decision carries the ADR in its diff**, reviewed
    together with the code it justifies. The trigger is not the pull request but the residue it
    leaves: **an ADR is owed exactly where, before this archive existed, a decision record would
-   have been owed to a `CLAUDE.md`, README or docs page** — an alternative was weighed and
+   have been owed to agent guidance, README or a docs page** — an alternative was weighed and
    declined, a constraint was measured, a shape was chosen that a later reader must not re-argue
    without engaging the reasoning. A bug fix, a feature that follows existing decisions, or a
    docs change leaves no such residue and writes nothing here — for most PRs the self-review
-   question "would this change otherwise owe a record to a CLAUDE.md or docs page?" answers no.
+   question "would this change otherwise owe a record to agent guidance or a docs page?" answers no.
 3. **A later pull request that extends or reverses the decision updates the archive in its own
    diff**: a refinement edits the existing ADR in place, a reversal adds a new ADR and flips the
    old one's status (see Lifecycle below).
@@ -197,3 +197,4 @@ Template:
 | [0088](0088-the-spanner-e2e-suite-creates-an-ephemeral-standard-edition-instance-per-gated-class.md) | The Spanner E2E suite creates an ephemeral Standard-edition instance per gated class | Accepted | 2026-08-10 | [#224](https://github.com/laughingman7743/flink-connector-gcp/issues/224), [#441](https://github.com/laughingman7743/flink-connector-gcp/issues/441) | spanner (tests), opentofu, scripts |
 | [0089](0089-a-query-job-is-reused-under-a-name-keyed-id-inside-an-opt-in-window.md) | A query job is reused under a name-keyed id, inside an opt-in window | Accepted | 2026-08-10 | [#477](https://github.com/laughingman7743/flink-connector-gcp/issues/477) | bigquery, test-utils |
 | [0090](0090-the-bigquery-source-stays-on-avro-because-flink-consumes-records-one-at-a-time.md) | The BigQuery source stays on Avro, because Flink consumes records one at a time | Accepted | 2026-08-11 | [#393](https://github.com/laughingman7743/flink-connector-gcp/issues/393), [#64](https://github.com/laughingman7743/flink-connector-gcp/issues/64) | bigquery |
+| [0091](0091-codex-and-claude-code-share-one-agent-guidance-surface.md) | Codex and Claude Code share one agent-guidance surface | Accepted | 2026-08-11 | — | all (workflow/tooling) |

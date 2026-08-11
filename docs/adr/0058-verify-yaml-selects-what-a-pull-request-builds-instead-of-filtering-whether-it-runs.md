@@ -101,7 +101,7 @@ workflow-level filter. The pieces:
   ignore *rule* into order-sensitive `paths-ignore` negations.
 - The deriver, the gate and the checkers carry pytest suites (`just test-scripts`; [#243],
   [#249]), whose synthetic-tree rule and real-repo exception are recorded with the Build rules
-  in the root `CLAUDE.md`.
+  in the root `AGENTS.md`.
 
 [#88]: https://github.com/laughingman7743/flink-connector-gcp/issues/88
 [#111]: https://github.com/laughingman7743/flink-connector-gcp/issues/111

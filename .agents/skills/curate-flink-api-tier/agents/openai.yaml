@@ -1,0 +1,4 @@
+interface:
+  display_name: "Curate Flink API Tier"
+  short_description: "Resolve Flink API stability audit decisions"
+  default_prompt: "Use $curate-flink-api-tier to resolve this Flink API tier audit failure."

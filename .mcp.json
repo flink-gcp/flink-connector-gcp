@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "serena": {
+      "type": "stdio",
+      "command": "mise",
+      "args": [
+        "x",
+        "uv",
+        "--",
+        "uvx",
+        "--from",
+        "serena-agent==1.7.0",
+        "serena",
+        "start-mcp-server",
+        "--project-from-cwd",
+        "--context=claude-code",
+        "--add-mode",
+        "no-memories"
+      ]
+    }
+  }
+}

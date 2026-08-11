@@ -22,7 +22,7 @@ limitations under the License.
   [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317))
 - Issues: —
 - Modules: all (workflow)
-- Current behavior: root `CLAUDE.md` § Workflow rules (the imperative form, with the review
+- Current behavior: root `AGENTS.md` § Workflow rules (the imperative form, with the review
   tooling)
 
 ## Decision
@@ -74,8 +74,8 @@ the commit message.
   framework behaviour, deployment, or "this is the only way", not for a typo fix.
 - Findings *and* deferrals, with their reasons, are recorded as a PR comment; recording is
   not routing, which ADR-0061 governs.
-- **The rounds are carried by two project skills**, `.claude/skills/self-review/` and
-  `.claude/skills/self-review-round-two/`, rather than by a built-in command. Claude Code's
+- **The rounds are carried by two project skills**, `.agents/skills/self-review/` and
+  `.agents/skills/self-review-round-two/`, rather than by a built-in command. Claude Code's
   `/code-review` — and `/review`, an alias of it since v2.1.223 — is marked
   `disable-model-invocation` by design, so it cannot be started on Claude's behalf or scheduled;
   a decision this repository requires on *every* draft PR cannot rest on a command only the user

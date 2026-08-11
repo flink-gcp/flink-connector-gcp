@@ -21,7 +21,7 @@ limitations under the License.
   2026-07-26 ([#119], [#121], [#125])
 - Issues: [#63], [#119], [#121], [#125], [#280]
 - Modules: all connector modules
-- Current behavior: root `CLAUDE.md` § Package layout convention (the imperative form)
+- Current behavior: root `AGENTS.md` § Package layout convention (the imperative form)
 
 ## Context
 

@@ -78,7 +78,7 @@ floor-build, install, fingerprint, ceiling-rerun with nothing recompiled, diff. 
 step (root pom + each connector a SQL uber-jar bundles + the base module every connector
 compiles against + the test-utils module every module's tests depend on) exists because the
 goal-only rerun cannot resolve inter-module dependencies from the reactor — the same mechanism
-the licence-goal-through-a-phase rule (root `CLAUDE.md` § Build) guards against, and the one
+the licence-goal-through-a-phase rule (root `AGENTS.md` § Build) guards against, and the one
 that bit this very ceiling rerun through the SQL uber-jar ([#181]). Run by hand it primes
 `~/.m2` with `io.github.flink-gcp` SNAPSHOTs; the recipe comment carries the cleanup line.
 Reproducing a red weekly `binary_compat` locally with this recipe is the first move when the

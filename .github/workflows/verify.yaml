@@ -15,7 +15,7 @@ on:
     # merge otherwise pays runner minutes for nothing (raised by the owner on
     # #176/#178, right after a billing cut — private-repo minutes are metered).
     # paths-ignore rather than paths: everything else must keep running this.
-    # READMEs and CLAUDE.md files are here because apache-rat excludes exactly
+    # READMEs, AGENTS.md and CLAUDE.md files are here because apache-rat excludes exactly
     # those patterns (see the root pom), so skipping them cannot hide a missing
     # licence header; docs/ markdown is deliberately NOT here, because rat does
     # scan it and this workflow is its only pre-merge check.
@@ -32,8 +32,13 @@ on:
       - '.github/workflows/tofu-apply.yaml'
       - '.github/workflows/tofu-list.yaml'
       - '**/README.md'
+      - '**/AGENTS.md'
       - '**/CLAUDE.md'
+      - '.agents/**'
       - '.claude/**'
+      - '.codex/**'
+      - '.serena/**'
+      - '.mcp.json'
       - '.github/PULL_REQUEST_TEMPLATE.md'
   workflow_dispatch:
 
@@ -234,7 +239,7 @@ jobs:
   # The Flink API tier audit (issue #103): fails when the main sources add a
   # dependency on an @Internal, @Experimental or unannotated Flink type
   # without a reasoned allowlist entry in scripts/flink-api-tiers.toml (see
-  # .claude/skills/curate-flink-api-tier/ for how to respond).
+  # .agents/skills/curate-flink-api-tier/ for how to respond).
   #
   # A job here rather than a step in lint.yaml (decided with the user on the
   # pull request that added it): the audit's inputs — the Java main sources
@@ -299,7 +304,7 @@ jobs:
   # The configuration reference check (issue #89): fails when a builder option
   # or a Table API ConfigOption is added, renamed or removed without the page
   # documenting it following along, in either direction (see
-  # .claude/skills/curate-option-docs/ for how to respond to each failure).
+  # .agents/skills/curate-option-docs/ for how to respond to each failure).
   #
   # A job here for the same reason as api_tiers above, plus one of its own: its
   # inputs are the Java main sources *and* docs/content/, and pull requests
@@ -329,7 +334,7 @@ jobs:
   # The metrics-table check (issue #296): fails when a metric is registered,
   # renamed or removed without the DataStream page's `Metric`-headed tables
   # following along, in either direction, or documented as the wrong kind (see
-  # .claude/skills/curate-metric-docs/ for how to respond to each failure). It
+  # .agents/skills/curate-metric-docs/ for how to respond to each failure). It
   # also holds the mechanical half of the #280 naming rule — no `num`-prefixed
   # name — and the inventory property that every registration goes through a
   # *MetricNames constant.

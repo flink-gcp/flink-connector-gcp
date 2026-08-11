@@ -140,7 +140,7 @@ format:
 #
 # The install step exists because the rerun, being goal-only, cannot resolve
 # inter-module dependencies from the reactor — the same mechanism the licence
-# goal's phase rule guards against (see CLAUDE.md under Build). Each SQL
+# goal's phase rule guards against (see AGENTS.md under Build). Each SQL
 # uber-jar bundles its connector (#138, the repository's first inter-module
 # dependency; #290 added the BigQuery pair), so without the install the rerun
 # dies resolving it (#181) — and excluding those modules instead would drop the
@@ -429,7 +429,7 @@ check-metric-docs:
     scripts/check-metric-docs.py
 
 # A goal on its own, and the one place in this repository where that is right.
-# The licence-goal rule in CLAUDE.md — a goal-only invocation selects the reactor
+# The licence-goal rule in AGENTS.md — a goal-only invocation selects the reactor
 # modules without building them, so a module cannot resolve its siblings — does
 # not reach this goal: javadoc:aggregate *forks* the compile phase across the
 # whole reactor, so flink-connector-gcp-base is built in the same session and

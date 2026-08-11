@@ -58,6 +58,9 @@ Flink logo are trademarks of the Apache Software Foundation.
 
 ## Acknowledgements
 
-Development of this project is assisted by [Claude](https://claude.com/) under
-[Claude for OSS](https://claude.com/contact-sales/claude-for-oss), Anthropic's support program
-for open-source developers.
+- Development of this project is assisted by [Claude](https://claude.com/) under
+  [Claude for OSS](https://claude.com/contact-sales/claude-for-oss), Anthropic's support program
+  for open-source developers.
+- Development of this project is also assisted by [Codex](https://openai.com/codex/) under
+  [Codex for Open Source](https://openai.com/form/codex-for-oss/), OpenAI's support program for
+  open-source maintainers.

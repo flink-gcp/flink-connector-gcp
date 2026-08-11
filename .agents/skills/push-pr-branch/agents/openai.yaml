@@ -1,0 +1,4 @@
+interface:
+  display_name: "Push PR Branch Safely"
+  short_description: "Rebase, squash, inspect, and push a PR branch"
+  default_prompt: "Use $push-pr-branch to safely prepare and push this pull request branch."
