@@ -197,6 +197,15 @@ public abstract class AbstractBigtableRealGcpITCase {
         return TableDestination.of(PROJECT, instanceId, tableId);
     }
 
+    /** Creates a table whose Change Streams history is retained for one day. */
+    protected static TableDestination createChangeStreamTable(String tableId) {
+        tableAdmin.createTable(
+                CreateTableRequest.of(tableId)
+                        .addFamily(FAMILY)
+                        .addChangeStreamRetention(org.threeten.bp.Duration.ofHours(24)));
+        return TableDestination.of(PROJECT, instanceId, tableId);
+    }
+
     /** Returns a destination in the ephemeral instance without creating the table. */
     protected static TableDestination tableDestination(String tableId) {
         return TableDestination.of(PROJECT, instanceId, tableId);

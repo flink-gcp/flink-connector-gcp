@@ -22,8 +22,10 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.source.StartPosition;
+import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.bigtable.source.changestream.MissingPartition;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.changestream.TestChangeStreamTokens;
@@ -31,8 +33,10 @@ import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Optional;
@@ -389,6 +393,55 @@ class BigtableChangeStreamSplitEnumeratorTest {
         enumerator.close();
 
         assertThat(client.closeCalls()).isEqualTo(1);
+    }
+
+    @Test
+    void periodicReconciliationRestoresCheckpointedTokenlessTimer() throws Exception {
+        Instant now = Instant.parse("2026-08-11T12:00:00Z");
+        BigtableChangeStreamEnumeratorState restored =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        now.minusSeconds(60),
+                        7,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.singletonList(
+                                new MissingPartition(
+                                        WHOLE,
+                                        now.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE),
+                                        now.minusSeconds(90))));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(WHOLE),
+                        StartPosition.latest(),
+                        Optional.empty(),
+                        restored,
+                        false,
+                        true,
+                        Clock.fixed(now, ZoneOffset.UTC));
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+
+        context.runPeriodicAsyncCalls();
+
+        assertThat(context.assignedSplits(0))
+                .singleElement()
+                .satisfies(
+                        split -> {
+                            assertThat(split.splitId()).isEqualTo("change-stream-7");
+                            assertThat(split.getContinuationTokens()).isEmpty();
+                            assertThat(split.getLowWatermark()).isEqualTo(now.minusSeconds(90));
+                        });
+        assertThat(enumerator.snapshotState(1).getMissingPartitions()).isEmpty();
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED))
+                .isEqualTo(1);
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_TOKENLESS_RESTARTS))
+                .isEqualTo(1);
+        enumerator.close();
     }
 
     @Test

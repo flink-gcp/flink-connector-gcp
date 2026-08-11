@@ -93,7 +93,8 @@ public final class BigtableChangeStreamSource<T>
                 config.startPosition,
                 java.util.Optional.ofNullable(config.resumeFallback),
                 restored,
-                config.endTime != null);
+                config.endTime != null,
+                true);
     }
 
     @Override

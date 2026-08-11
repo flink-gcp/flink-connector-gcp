@@ -26,6 +26,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.CollectingSourceOutput;
@@ -84,8 +85,11 @@ class BigtableChangeStreamRecordEmitterTest {
 
         assertThat(output.records()).isEmpty();
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
-        assertThat(context.sourceEvents()).hasSize(1);
-        PartitionTransitionEvent event = (PartitionTransitionEvent) context.sourceEvents().get(0);
+        assertThat(context.sourceEvents()).hasSize(2);
+        PartitionProgressEvent progress = (PartitionProgressEvent) context.sourceEvents().get(0);
+        assertThat(progress.getLowWatermark()).isEqualTo(watermark);
+        assertThat(progress.getContinuationToken().getToken()).isEqualTo("heartbeat");
+        PartitionTransitionEvent event = (PartitionTransitionEvent) context.sourceEvents().get(1);
         assertThat(event.getLowWatermark()).isEqualTo(watermark);
         assertThat(event.getSuccessors()).hasSize(1);
         assertThat(event.getSuccessors().get(0).getContinuationToken().getToken())

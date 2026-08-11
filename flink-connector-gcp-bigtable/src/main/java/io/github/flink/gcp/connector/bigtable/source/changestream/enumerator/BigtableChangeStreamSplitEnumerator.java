@@ -36,6 +36,8 @@ import io.github.flink.gcp.connector.base.source.StartPositionResolver;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.bigtable.source.changestream.MissingPartition;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
@@ -45,6 +47,8 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -72,20 +76,30 @@ public final class BigtableChangeStreamSplitEnumerator
     private final StartPosition startPosition;
     private final Optional<StartPosition> resumeFallback;
     private final boolean bounded;
+    private final boolean reconciliationEnabled;
+    private final Clock clock;
     @Nullable private final BigtableChangeStreamEnumeratorState restoredState;
 
     private final Deque<ChangeStreamPartitionSplit> unassigned = new ArrayDeque<>();
     private final Map<String, ChangeStreamPartitionSplit> assigned = new LinkedHashMap<>();
     private final List<PendingMerge> pendingMerges = new ArrayList<>();
+    private final List<MissingPartition> missingPartitions = new ArrayList<>();
+    private final ChangeStreamPartitionReconciler reconciler =
+            new ChangeStreamPartitionReconciler();
     private final Set<Integer> waitingReaders = new LinkedHashSet<>();
     private final List<DeferredAction> deferredActions = new ArrayList<>();
 
     private Counter splitsAssigned = new ThreadSafeSimpleCounter();
     private Counter splitsReturned = new ThreadSafeSimpleCounter();
+    private Counter partitionsReconciled = new ThreadSafeSimpleCounter();
+    private Counter tokenlessRestarts = new ThreadSafeSimpleCounter();
     private boolean initialized;
+    private boolean boundedComplete;
     private volatile boolean closed;
     private Instant resolvedStartTime = Instant.EPOCH;
     private long nextSplitId;
+    @Nullable private volatile Duration reconciliationRetention;
+    @Nullable private volatile Instant reconciliationRetentionFetchedAt;
 
     public BigtableChangeStreamSplitEnumerator(
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
@@ -93,7 +107,7 @@ public final class BigtableChangeStreamSplitEnumerator
             StartPosition startPosition,
             Optional<StartPosition> resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState) {
-        this(context, client, startPosition, resumeFallback, restoredState, false);
+        this(context, client, startPosition, resumeFallback, restoredState, false, false);
     }
 
     public BigtableChangeStreamSplitEnumerator(
@@ -103,6 +117,37 @@ public final class BigtableChangeStreamSplitEnumerator
             Optional<StartPosition> resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState,
             boolean bounded) {
+        this(context, client, startPosition, resumeFallback, restoredState, bounded, false);
+    }
+
+    public BigtableChangeStreamSplitEnumerator(
+            SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            ChangeStreamCoordinatorClient client,
+            StartPosition startPosition,
+            Optional<StartPosition> resumeFallback,
+            @Nullable BigtableChangeStreamEnumeratorState restoredState,
+            boolean bounded,
+            boolean reconciliationEnabled) {
+        this(
+                context,
+                client,
+                startPosition,
+                resumeFallback,
+                restoredState,
+                bounded,
+                reconciliationEnabled,
+                Clock.systemUTC());
+    }
+
+    BigtableChangeStreamSplitEnumerator(
+            SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            ChangeStreamCoordinatorClient client,
+            StartPosition startPosition,
+            Optional<StartPosition> resumeFallback,
+            @Nullable BigtableChangeStreamEnumeratorState restoredState,
+            boolean bounded,
+            boolean reconciliationEnabled,
+            Clock clock) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.client = Preconditions.checkNotNull(client, "client must not be null");
         this.startPosition =
@@ -111,6 +156,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 Preconditions.checkNotNull(resumeFallback, "resumeFallback must not be null");
         this.restoredState = restoredState;
         this.bounded = bounded;
+        this.reconciliationEnabled = reconciliationEnabled;
+        this.clock = Preconditions.checkNotNull(clock, "clock must not be null");
     }
 
     @Override
@@ -163,7 +210,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 restoredNextSplitId,
                 restoredUnassigned,
                 restoredAssigned,
-                restoredMerges);
+                restoredMerges,
+                restoredState.getMissingPartitions());
     }
 
     private List<ChangeStreamPartitionSplit> resolveRestored(
@@ -198,6 +246,7 @@ public final class BigtableChangeStreamSplitEnumerator
             assigned.put(split.splitId(), split);
         }
         pendingMerges.addAll(initialization.pendingMerges);
+        missingPartitions.addAll(initialization.missingPartitions);
         initialized = true;
         LOG.info(
                 "Initialized Bigtable Change Streams at {} with {} unassigned, {} assigned, and"
@@ -215,6 +264,108 @@ public final class BigtableChangeStreamSplitEnumerator
         for (int subtaskId : waiting) {
             assignOrWait(subtaskId);
         }
+        if (reconciliationEnabled) {
+            context.callAsync(
+                    this::reconciliationScan,
+                    this::onReconciled,
+                    java.time.Duration.ofSeconds(10).toMillis(),
+                    java.time.Duration.ofSeconds(10).toMillis());
+        }
+    }
+
+    private ReconciliationScan reconciliationScan() throws Exception {
+        Duration retention = reconciliationRetention;
+        Instant fetchedAt = reconciliationRetentionFetchedAt;
+        Instant now = Instant.now(clock);
+        if (retention == null
+                || fetchedAt == null
+                || fetchedAt.plus(Duration.ofMinutes(5)).isBefore(now)) {
+            retention = client.retention();
+            reconciliationRetention = retention;
+            reconciliationRetentionFetchedAt = now;
+        }
+        return new ReconciliationScan(client.generateInitialPartitions(), retention);
+    }
+
+    private void onReconciled(@Nullable ReconciliationScan scan, @Nullable Throwable error) {
+        if (closed) {
+            return;
+        }
+        if (boundedComplete) {
+            return;
+        }
+        if (error != null) {
+            LOG.warn("Bigtable Change Streams partition reconciliation scan failed.", error);
+            return;
+        }
+        List<ChangeStreamPartitionSplit> ledger = new ArrayList<>(unassigned);
+        ledger.addAll(assigned.values());
+        ChangeStreamPartitionReconciler.Result result =
+                reconciler.reconcile(
+                        Preconditions.checkNotNull(scan, "reconciliation scan must not be null")
+                                .partitions,
+                        ledger,
+                        pendingMerges,
+                        missingPartitions,
+                        Instant.now(clock),
+                        ledgerLowWatermark());
+        missingPartitions.clear();
+        missingPartitions.addAll(result.missing);
+        for (ChangeStreamPartitionReconciler.Recovery recovery : result.recoveries) {
+            pendingMerges.removeIf(
+                    merge ->
+                            recovery.tokens.containsAll(merge.getContinuationTokens())
+                                    || (recovery.tokenless
+                                            && RowRanges.format(merge.getPartition())
+                                                    .equals(RowRanges.format(recovery.partition))));
+            Instant recoveryLowWatermark =
+                    recovery.tokenless
+                            ? clampToRetention(
+                                    recovery.lowWatermark, scan.retention, Instant.now(clock))
+                            : recovery.lowWatermark;
+            unassigned.add(
+                    new ChangeStreamPartitionSplit(
+                            splitId(nextSplitId++),
+                            recovery.partition,
+                            recovery.tokens,
+                            recoveryLowWatermark));
+            partitionsReconciled.inc();
+            if (recovery.tokenless) {
+                tokenlessRestarts.inc();
+                LOG.warn(
+                        "Restarting missing Bigtable Change Streams partition {} without a"
+                                + " continuation token at low watermark {} after {}.",
+                        RowRanges.format(recovery.partition),
+                        recoveryLowWatermark,
+                        ChangeStreamPartitionReconciler.TOKENLESS_GRACE);
+            }
+        }
+        serveWaitingReaders();
+    }
+
+    private static Instant clampToRetention(Instant lowWatermark, Duration retention, Instant now) {
+        Instant earliest = now.minus(retention).plusSeconds(60);
+        return lowWatermark.isBefore(earliest) ? earliest : lowWatermark;
+    }
+
+    private Instant ledgerLowWatermark() {
+        Instant low = null;
+        for (ChangeStreamPartitionSplit split : unassigned) {
+            if (low == null || split.getLowWatermark().isBefore(low)) {
+                low = split.getLowWatermark();
+            }
+        }
+        for (ChangeStreamPartitionSplit split : assigned.values()) {
+            if (low == null || split.getLowWatermark().isBefore(low)) {
+                low = split.getLowWatermark();
+            }
+        }
+        for (PendingMerge merge : pendingMerges) {
+            if (low == null || merge.getLowWatermark().isBefore(low)) {
+                low = merge.getLowWatermark();
+            }
+        }
+        return low == null ? resolvedStartTime : low;
     }
 
     @Override
@@ -279,6 +430,20 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     private void handleSourceEventInitialized(int subtaskId, SourceEvent sourceEvent) {
+        if (sourceEvent instanceof PartitionProgressEvent) {
+            PartitionProgressEvent progress = (PartitionProgressEvent) sourceEvent;
+            ChangeStreamPartitionSplit current = assigned.get(progress.getSplitId());
+            if (current != null && progress.getLowWatermark().isAfter(current.getLowWatermark())) {
+                assigned.put(
+                        current.splitId(),
+                        new ChangeStreamPartitionSplit(
+                                current.splitId(),
+                                current.getPartition(),
+                                Collections.singletonList(progress.getContinuationToken()),
+                                progress.getLowWatermark()));
+            }
+            return;
+        }
         if (!(sourceEvent instanceof PartitionTransitionEvent)) {
             throw new IllegalArgumentException(
                     "Unsupported Bigtable Change Streams source event " + sourceEvent + ".");
@@ -399,9 +564,15 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     private boolean signalBoundedCompletionIfDrained() {
-        if (!bounded || !unassigned.isEmpty() || !assigned.isEmpty() || !pendingMerges.isEmpty()) {
+        if (!bounded
+                || boundedComplete
+                || !unassigned.isEmpty()
+                || !assigned.isEmpty()
+                || !pendingMerges.isEmpty()
+                || !missingPartitions.isEmpty()) {
             return false;
         }
+        boundedComplete = true;
         for (int subtaskId : context.registeredReaders().keySet()) {
             context.signalNoMoreSplits(subtaskId);
         }
@@ -421,7 +592,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 nextSplitId,
                 new ArrayList<>(unassigned),
                 new ArrayList<>(assigned.values()),
-                pendingMerges);
+                pendingMerges,
+                missingPartitions);
     }
 
     private void registerMetrics() {
@@ -435,6 +607,14 @@ public final class BigtableChangeStreamSplitEnumerator
         splitsReturned =
                 metricGroup.counter(
                         BigtableMetricNames.SPLITS_RETURNED, new ThreadSafeSimpleCounter());
+        partitionsReconciled =
+                metricGroup.counter(
+                        BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED,
+                        new ThreadSafeSimpleCounter());
+        tokenlessRestarts =
+                metricGroup.counter(
+                        BigtableMetricNames.CHANGE_STREAM_TOKENLESS_RESTARTS,
+                        new ThreadSafeSimpleCounter());
         metricGroup.setUnassignedSplitsGauge(() -> (long) unassigned.size());
     }
 
@@ -459,18 +639,21 @@ public final class BigtableChangeStreamSplitEnumerator
         private final List<ChangeStreamPartitionSplit> unassigned;
         private final List<ChangeStreamPartitionSplit> assigned;
         private final List<PendingMerge> pendingMerges;
+        private final List<MissingPartition> missingPartitions;
 
         private Initialization(
                 Instant startTime,
                 long nextSplitId,
                 List<ChangeStreamPartitionSplit> unassigned,
                 List<ChangeStreamPartitionSplit> assigned,
-                List<PendingMerge> pendingMerges) {
+                List<PendingMerge> pendingMerges,
+                List<MissingPartition> missingPartitions) {
             this.startTime = startTime;
             this.nextSplitId = nextSplitId;
             this.unassigned = unassigned;
             this.assigned = assigned;
             this.pendingMerges = pendingMerges;
+            this.missingPartitions = missingPartitions;
         }
 
         private static Initialization fresh(
@@ -480,6 +663,7 @@ public final class BigtableChangeStreamSplitEnumerator
                     nextSplitId,
                     partitions,
                     Collections.emptyList(),
+                    Collections.emptyList(),
                     Collections.emptyList());
         }
 
@@ -488,8 +672,20 @@ public final class BigtableChangeStreamSplitEnumerator
                 long nextSplitId,
                 List<ChangeStreamPartitionSplit> unassigned,
                 List<ChangeStreamPartitionSplit> assigned,
-                List<PendingMerge> pendingMerges) {
-            return new Initialization(startTime, nextSplitId, unassigned, assigned, pendingMerges);
+                List<PendingMerge> pendingMerges,
+                List<MissingPartition> missingPartitions) {
+            return new Initialization(
+                    startTime, nextSplitId, unassigned, assigned, pendingMerges, missingPartitions);
+        }
+    }
+
+    private static final class ReconciliationScan {
+        private final List<ByteStringRange> partitions;
+        private final Duration retention;
+
+        private ReconciliationScan(List<ByteStringRange> partitions, Duration retention) {
+            this.partitions = partitions;
+            this.retention = retention;
         }
     }
 

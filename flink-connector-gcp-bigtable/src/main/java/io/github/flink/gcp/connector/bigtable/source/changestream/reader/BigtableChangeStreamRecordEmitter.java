@@ -30,6 +30,7 @@ import com.google.cloud.bigtable.data.v2.models.CloseStream;
 import com.google.cloud.bigtable.data.v2.models.Heartbeat;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 
@@ -86,6 +87,11 @@ public final class BigtableChangeStreamRecordEmitter<T>
             state.advance(
                     heartbeat.getChangeStreamContinuationToken(),
                     heartbeat.getEstimatedLowWatermarkTime());
+            context.sendSourceEventToCoordinator(
+                    new PartitionProgressEvent(
+                            state.toSplit().splitId(),
+                            heartbeat.getChangeStreamContinuationToken(),
+                            heartbeat.getEstimatedLowWatermarkTime()));
             metrics.heartbeat(heartbeat.getEstimatedLowWatermarkTime());
             return;
         }

@@ -34,7 +34,7 @@ import java.util.List;
 public final class BigtableChangeStreamEnumeratorStateSerializer
         implements SimpleVersionedSerializer<BigtableChangeStreamEnumeratorState> {
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int INITIAL_BUFFER_SIZE = 4096;
 
     @Override
@@ -61,13 +61,19 @@ public final class BigtableChangeStreamEnumeratorStateSerializer
             }
             ChangeStreamPartitionSplitSerializer.writeInstant(out, merge.getLowWatermark());
         }
+        out.writeInt(state.getMissingPartitions().size());
+        for (MissingPartition missing : state.getMissingPartitions()) {
+            ChangeStreamPartitionSplitSerializer.writePartition(out, missing.getPartition());
+            ChangeStreamPartitionSplitSerializer.writeInstant(out, missing.getFirstObserved());
+            ChangeStreamPartitionSplitSerializer.writeInstant(out, missing.getLowWatermark());
+        }
         return out.getCopyOfBuffer();
     }
 
     @Override
     public BigtableChangeStreamEnumeratorState deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != VERSION) {
+        if (version != 1 && version != VERSION) {
             throw new IOException(
                     "Unsupported Bigtable change-stream enumerator state serialization version "
                             + version
@@ -104,8 +110,27 @@ public final class BigtableChangeStreamEnumeratorStateSerializer
                             tokens,
                             ChangeStreamPartitionSplitSerializer.readInstant(in)));
         }
+        List<MissingPartition> missingPartitions = new ArrayList<>();
+        if (version >= 2) {
+            int missingCount =
+                    ChangeStreamPartitionSplitSerializer.readCount(in, "missing partition");
+            missingPartitions = new ArrayList<>(Math.min(missingCount, 1024));
+            for (int i = 0; i < missingCount; i++) {
+                missingPartitions.add(
+                        new MissingPartition(
+                                ChangeStreamPartitionSplitSerializer.readPartition(in),
+                                ChangeStreamPartitionSplitSerializer.readInstant(in),
+                                ChangeStreamPartitionSplitSerializer.readInstant(in)));
+            }
+        }
         return new BigtableChangeStreamEnumeratorState(
-                initialized, startTime, nextSplitId, unassigned, assigned, pendingMerges);
+                initialized,
+                startTime,
+                nextSplitId,
+                unassigned,
+                assigned,
+                pendingMerges,
+                missingPartitions);
     }
 
     private static void writeSplits(

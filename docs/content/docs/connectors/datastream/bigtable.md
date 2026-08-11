@@ -614,9 +614,8 @@ a configured `appProfileId` reaches the client, which the gated real-GCP suite a
 - Read-ahead and paging knobs. How many rows one fetch hands to the task thread is a fixed internal
   bound — a correctness floor that lets a checkpoint land inside a long range — rather than a knob,
   and turning it into one needs a measurement rather than a preference.
-- Change-stream reconciliation after a missing topology event remains in
-  [#512]({{< param BookRepo >}}/issues/512). Reading and writing this table from SQL exist today, on the
-  [Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page — its
+- Reading and writing this table from SQL exist today, on the [Bigtable SQL
+  connector]({{< relref "docs/connectors/table/bigtable" >}}) page — its
   `ScanTableSource` maps onto this source; a lookup join over it is
   [#460]({{< param BookRepo >}}/issues/460).
 
@@ -647,6 +646,20 @@ Each mutation is handed to `BigtableChangeStreamDeserializationSchema` and may p
 records. Every produced record carries the mutation's commit time as its Flink timestamp. A
 heartbeat produces no record but advances the checkpointed continuation token and low watermark.
 `CloseStream` transfers successor partitions and their tokens to the coordinator.
+
+The coordinator also compares the live service keyspace with its checkpointed assigned,
+unassigned, and pending-merge ledger every 10 seconds. A missing partition is checkpointed with
+its first-observed time. Compatible parent tokens may reconstruct it after two minutes; only after
+20 minutes without a complete token set does the connector restart the remainder at its tracked
+low watermark, emit a WARN, and increment `changeStreamTokenlessRestarts`. These intervals are
+internal protocol constants rather than public tuning options.
+
+Change Streams cover every column family. Garbage-collection changes can therefore appear beside
+application writes. Bigtable preserves the service's per-partition order, but records from
+different partitions have no connector-imposed global order. Delivery is at least once across a
+failure between downstream emission and the next completed checkpoint, so side effects should be
+idempotent. A savepoint is the supported cross-job handoff: starting a separate job at a wall-clock
+time is not an exact continuation-token transfer.
 
 Watermark generation remains the job's `WatermarkStrategy`; the source does not emit service low
 watermarks as Flink watermarks. For a quiet stream, configure idleness on that strategy so one idle
@@ -741,6 +754,8 @@ Registered on the source reader's and the split enumerator's metric groups:
 | `numRecordsIn` | counter (Flink standard) | records handed downstream. With a one-to-many deserializer this is neither `rowsRead` nor `rowsRead` minus `recordsSkipped` |
 | `splitsAssigned` | counter | splits handed to a reader. On the enumerator, so one set per job |
 | `splitsReturned` | counter | splits a failed reader gave back. On the enumerator |
+| `changeStreamPartitionsReconciled` | counter | missing service partitions reconstructed from tokens or a tracked low watermark. On the enumerator |
+| `changeStreamTokenlessRestarts` | counter | reconciliations that had to restart without a continuation token after the long grace period. On the enumerator |
 | `rowKeySamplesTaken` | counter | `SampleRowKeys` calls, on the enumerator: `1` on a fresh start, `0` after a restore. Anything else means the plan was recomputed, which would renumber the splits the readers hold |
 | `unassignedSplits` | gauge (Flink standard) | splits planned but not yet handed out. On the enumerator |
 
@@ -753,7 +768,6 @@ for a table's sections and say nothing about how many rows are left inside a ran
 
 Not implemented, each with its issue rather than a promise:
 
-- reading a changelog — change streams are [#35]({{< param BookRepo >}}/issues/35);
 - a lookup join from SQL — a `LookupTableSource` is
   [#460]({{< param BookRepo >}}/issues/460). Scanning and writing from SQL exist, each with its
   own `RowData` schema, on the

@@ -14,7 +14,7 @@ BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable and Spanner.
 | `flink-connector-gcp-pubsub` | Cloud Pub/Sub sink (dynamic topic destinations) and source |
 | `flink-sql-connector-gcp-pubsub` | The Pub/Sub connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 | `flink-connector-gcp-cloudtasks` | Cloud Tasks sink |
-| `flink-connector-gcp-bigtable` | Bigtable sink (bulk row mutations, with dynamic per-record table destinations) and a bounded scan source |
+| `flink-connector-gcp-bigtable` | Bigtable sink, bounded scan source, and Change Streams source (implemented in #35) |
 | `flink-sql-connector-gcp-bigtable` | The Bigtable connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 | `flink-connector-gcp-spanner` | Spanner sink and bounded source (both dialects), with a Table API / SQL sink |
 

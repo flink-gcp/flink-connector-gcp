@@ -16,12 +16,16 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream;
 
+import org.apache.flink.core.memory.DataOutputSerializer;
+
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -56,7 +60,12 @@ class BigtableChangeStreamEnumeratorStateSerializerTest {
                         4,
                         Collections.singletonList(unassigned),
                         Collections.singletonList(assigned),
-                        Collections.singletonList(merge));
+                        Collections.singletonList(merge),
+                        Collections.singletonList(
+                                new MissingPartition(
+                                        ByteStringRange.create("c", "d"),
+                                        watermark.minusSeconds(120),
+                                        watermark.minusSeconds(10))));
         BigtableChangeStreamEnumeratorStateSerializer serializer =
                 new BigtableChangeStreamEnumeratorStateSerializer();
 
@@ -64,5 +73,79 @@ class BigtableChangeStreamEnumeratorStateSerializerTest {
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(state));
 
         assertThat(restored).isEqualTo(state);
+    }
+
+    @Test
+    void restoresVersionOneStateWithNoMissingPartitionTimers() throws IOException {
+        Instant start = Instant.parse("2026-08-11T00:00:00Z");
+        BigtableChangeStreamEnumeratorState legacy =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        start,
+                        1,
+                        Collections.singletonList(
+                                new ChangeStreamPartitionSplit(
+                                        "change-stream-0",
+                                        ByteStringRange.unbounded(),
+                                        Collections.emptyList(),
+                                        start)),
+                        Collections.singletonList(
+                                new ChangeStreamPartitionSplit(
+                                        "change-stream-assigned",
+                                        ByteStringRange.create("a", "z"),
+                                        Collections.singletonList(
+                                                TestChangeStreamTokens.token(
+                                                        ByteStringRange.create("a", "z"),
+                                                        "assigned")),
+                                        start.plusSeconds(1))),
+                        Collections.singletonList(
+                                new PendingMerge(
+                                        ByteStringRange.unbounded(),
+                                        Collections.singletonList(
+                                                TestChangeStreamTokens.token(
+                                                        ByteStringRange.unbounded(), "merge")),
+                                        start.minusSeconds(1))));
+        BigtableChangeStreamEnumeratorStateSerializer serializer =
+                new BigtableChangeStreamEnumeratorStateSerializer();
+        byte[] versionOne = serializeVersionOne(legacy);
+
+        BigtableChangeStreamEnumeratorState restored = serializer.deserialize(1, versionOne);
+
+        assertThat(restored.getUnassignedSplits()).isEqualTo(legacy.getUnassignedSplits());
+        assertThat(restored.getAssignedSplits()).isEqualTo(legacy.getAssignedSplits());
+        assertThat(restored.getPendingMerges()).isEqualTo(legacy.getPendingMerges());
+        assertThat(restored.getStartTime()).isEqualTo(start);
+        assertThat(restored.getNextSplitId()).isEqualTo(1);
+        assertThat(restored.getMissingPartitions()).isEmpty();
+    }
+
+    private static byte[] serializeVersionOne(BigtableChangeStreamEnumeratorState state)
+            throws IOException {
+        DataOutputSerializer out = new DataOutputSerializer(1024);
+        out.writeBoolean(state.isInitialized());
+        ChangeStreamPartitionSplitSerializer.writeInstant(out, state.getStartTime());
+        out.writeLong(state.getNextSplitId());
+        writeSplits(out, state.getUnassignedSplits());
+        writeSplits(out, state.getAssignedSplits());
+        out.writeInt(state.getPendingMerges().size());
+        for (PendingMerge merge : state.getPendingMerges()) {
+            ChangeStreamPartitionSplitSerializer.writePartition(out, merge.getPartition());
+            out.writeInt(merge.getContinuationTokens().size());
+            for (ChangeStreamContinuationToken token : merge.getContinuationTokens()) {
+                byte[] bytes = token.toByteString().toByteArray();
+                out.writeInt(bytes.length);
+                out.write(bytes);
+            }
+            ChangeStreamPartitionSplitSerializer.writeInstant(out, merge.getLowWatermark());
+        }
+        return out.getCopyOfBuffer();
+    }
+
+    private static void writeSplits(
+            DataOutputSerializer out, List<ChangeStreamPartitionSplit> splits) throws IOException {
+        out.writeInt(splits.size());
+        for (ChangeStreamPartitionSplit split : splits) {
+            ChangeStreamPartitionSplitSerializer.writeSplit(out, split);
+        }
     }
 }
