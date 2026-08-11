@@ -163,3 +163,16 @@ which timestamp window, how many versions of a cell — all of it is expressible
 The SQL layer's `scan.*` options map onto this builder — the
 [Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page carries that
 surface, and its projection pushdown is what supplies `filter(...)` there.
+
+## `BigtableChangeStreamSource.builder()`
+
+| Option | Default | What it does |
+|---|---|---|
+| `table` | **required** | The change-stream-enabled table to read |
+| `deserializer` | **required** | Turns each `ChangeStreamMutation` into zero or more records |
+| `appProfileId` | **required** | A single-cluster-routing application profile used by every change-stream RPC |
+| `startPosition` | `StartPosition.latest()` | The position used only for a fresh job: latest, earliest, an absolute instant, or a duration ago |
+| `resumeFallback` | — | Explicitly restarts an expired checkpointed partition at this position after clearing its stale token. Without it, an expired restore fails |
+| `endTime` | — | Stops at this instant and makes the source bounded. Without it, the source is continuous |
+
+There is no emulator option because the Bigtable emulator implements neither change-stream RPC.

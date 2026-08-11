@@ -71,6 +71,7 @@ public final class BigtableChangeStreamSplitEnumerator
     private final ChangeStreamCoordinatorClient client;
     private final StartPosition startPosition;
     private final Optional<StartPosition> resumeFallback;
+    private final boolean bounded;
     @Nullable private final BigtableChangeStreamEnumeratorState restoredState;
 
     private final Deque<ChangeStreamPartitionSplit> unassigned = new ArrayDeque<>();
@@ -92,6 +93,16 @@ public final class BigtableChangeStreamSplitEnumerator
             StartPosition startPosition,
             Optional<StartPosition> resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState) {
+        this(context, client, startPosition, resumeFallback, restoredState, false);
+    }
+
+    public BigtableChangeStreamSplitEnumerator(
+            SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            ChangeStreamCoordinatorClient client,
+            StartPosition startPosition,
+            Optional<StartPosition> resumeFallback,
+            @Nullable BigtableChangeStreamEnumeratorState restoredState,
+            boolean bounded) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.client = Preconditions.checkNotNull(client, "client must not be null");
         this.startPosition =
@@ -99,6 +110,7 @@ public final class BigtableChangeStreamSplitEnumerator
         this.resumeFallback =
                 Preconditions.checkNotNull(resumeFallback, "resumeFallback must not be null");
         this.restoredState = restoredState;
+        this.bounded = bounded;
     }
 
     @Override
@@ -220,6 +232,9 @@ public final class BigtableChangeStreamSplitEnumerator
         }
         ChangeStreamPartitionSplit split = unassigned.poll();
         if (split == null) {
+            if (signalBoundedCompletionIfDrained()) {
+                return;
+            }
             waitingReaders.add(subtaskId);
             return;
         }
@@ -241,8 +256,9 @@ public final class BigtableChangeStreamSplitEnumerator
 
     private void addSplitsBackInitialized(List<ChangeStreamPartitionSplit> splits) {
         for (ChangeStreamPartitionSplit split : splits) {
-            assigned.remove(split.splitId());
-            unassigned.add(split);
+            if (assigned.remove(split.splitId()) != null) {
+                unassigned.add(split);
+            }
         }
         splitsReturned.inc(splits.size());
         serveWaitingReaders();
@@ -283,6 +299,7 @@ public final class BigtableChangeStreamSplitEnumerator
                     transition.getLowWatermark());
         }
         serveWaitingReaders();
+        signalBoundedCompletionIfDrained();
     }
 
     private void acceptSuccessor(
@@ -381,8 +398,23 @@ public final class BigtableChangeStreamSplitEnumerator
         }
     }
 
+    private boolean signalBoundedCompletionIfDrained() {
+        if (!bounded || !unassigned.isEmpty() || !assigned.isEmpty() || !pendingMerges.isEmpty()) {
+            return false;
+        }
+        for (int subtaskId : context.registeredReaders().keySet()) {
+            context.signalNoMoreSplits(subtaskId);
+        }
+        waitingReaders.clear();
+        return true;
+    }
+
     @Override
     public BigtableChangeStreamEnumeratorState snapshotState(long checkpointId) {
+        Preconditions.checkState(
+                initialized,
+                "Bigtable Change Streams initialization is still outstanding; retry the"
+                        + " checkpoint after its deferred reader actions have been replayed.");
         return new BigtableChangeStreamEnumeratorState(
                 initialized,
                 resolvedStartTime,
