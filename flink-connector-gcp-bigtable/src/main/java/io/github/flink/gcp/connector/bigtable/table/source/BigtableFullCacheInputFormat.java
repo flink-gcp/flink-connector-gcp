@@ -31,6 +31,7 @@ import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 
 import javax.annotation.Nullable;
@@ -74,6 +75,14 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
         this.converter = new RowToRowDataConverter(schema, projectedFields, nullStringLiteral);
     }
 
+    Filters.Filter getFilter() {
+        return filter;
+    }
+
+    List<ByteStringRange> getRanges() {
+        return RowRanges.copyAll(ranges);
+    }
+
     @Override
     public void open(GenericInputSplit split) throws IOException {
         super.open(split);
@@ -89,7 +98,9 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
                             BigtableDataClients.settings(destination, appProfileId, endpoint)
                                     .build());
             remainingRanges = ranges.iterator();
-            advanceRange();
+            if (remainingRanges.hasNext()) {
+                advanceRange();
+            }
         } catch (RuntimeException e) {
             close();
             throw e;

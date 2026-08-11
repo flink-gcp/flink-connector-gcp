@@ -18,7 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11
-- Issues: [#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459) (under
+- Issues: [#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459),
+  [#518](https://github.com/laughingman7743/flink-connector-gcp/issues/518) (under
   [#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217); ADR-0086 holds the
   shared table layer, ADR-0080 the DataStream scan source it maps onto)
 - Modules: bigtable
@@ -116,6 +117,40 @@ or prefix to the whole table, and an empty `end-open` to nothing — and a DDL e
 more likely a templating slip than either intent. An *inverted* range stays with the builder's own
 rejection, whose message reads fine from a `WITH` clause.
 
+### Filter-pushdown refinement (Issue #518)
+
+**Safe row-key predicates become exact ranges and are removed from the residual plan.**
+Equality, inequality, `IN`, null tests and conjunctions or disjunctions made entirely from those
+forms translate against a direct row-key field and a non-null literal.
+Equality is safe for variable-width `VARCHAR` and `VARBINARY` keys and for fixed-width integer and
+temporal keys.
+The latter use a prefix range because the HBase-compatible decoder ignores bytes after the declared
+width; a singleton would miss suffix-bearing keys that decode to the same SQL value.
+An empty `VARCHAR` or `VARBINARY` literal remains residual because the SDK normalises an empty
+range bound to unbounded while the emulator, unlike the service, accepts an empty row key.
+`CHAR`, `BINARY`, `BOOLEAN`, `DECIMAL`, `FLOAT` and `DOUBLE` remain residual because padding,
+noncanonical true bytes, decimal scales, signed zero or `NaN` can make more than one byte sequence
+represent the same SQL value.
+Ordering is safe only for `VARCHAR` and `VARBINARY`; signed numeric and temporal byte encodings do
+not sort in SQL order.
+The configured prefixes and range remain a union, and the runtime reads its intersection with all
+exact SQL ranges.
+An empty intersection is represented by a blocking filter because omitting every range from the
+DataStream builder means the whole table, not no table.
+
+**Positive family and qualifier predicates become necessary cell-existence prefilters, never the
+final SQL answer.**
+The source accepts such an expression on a best-effort basis and also returns it as remaining, as
+`SupportsFilterPushDown` permits.
+The Bigtable condition can reject a row with no matching family or qualifier, while Flink retains
+authority over decoded values, nulls and the latest visible version.
+Raw value filters are not pushed: lexicographic encoded bytes do not implement every SQL
+comparison, the codec maps some bytes to null, and Bigtable may test a version SQL would not expose.
+The existence predicate becomes the condition and the existing projection filter its true branch,
+so predicate evaluation never replaces the columns the residual operation needs.
+The service documents conditional row filters as non-atomic and potentially poor-performing; the
+user documentation presents the optimization as best effort rather than a latency guarantee.
+
 ## Evidence
 
 Measured 2026-08-11 against `google-cloud-bigtable` 2.80.0 and the pom-pinned `flink.version`
@@ -128,6 +163,9 @@ file):
   would change the wire visibly rather than silently.
 - **`exactMatch` quotes RE2 metacharacters**: a family named `a.b` produces
   `family_name_regex_filter: "a\\.b"`, not a pattern also matching `axb`. Pinned.
+- **The pinned client's `ConditionFilter` warning sets the performance claim**: its javadoc says
+  predicate and branches are not atomic and that the filter may perform poorly.
+  The connector uses only a true branch, but does not turn that warning into a speed guarantee.
 - **The keys-only chain works against both the emulator and the service**: the emulator ITCase
   reads a row-key-only DDL and a `COUNT(*)`; the gated suite's absent-family pair shows the
   pruning is the server's — `SELECT *` over a DDL declaring a family the table lacks fails with
@@ -136,6 +174,11 @@ file):
 - **Split planning and `scan.app-profile-id` are gated-suite-only** (ADR-0080's rule applied): the
   emulator models no tablets and ignores profiles, so the gated class reads a pre-split table
   through SQL and carries the missing-profile control.
+- **Filter translation is pinned at three layers**: source-unit tests inspect ranges and filter
+  protos, planner tests distinguish exact consumption from a residual cell predicate, and the
+  emulator suite checks the returned rows and configured-range intersection.
+  The gated suite verifies that real Bigtable accepts the condition/projection composition with SQL
+  row-key bounds.
 
 ## Alternatives declined
 
@@ -154,6 +197,9 @@ file):
   soften an error the service reports precisely (ADR-0080's reasoning, unchanged by SQL).
 - **A `ScanOptionsMapper`** — ADR-0080 records the scan source has no options object, so there is
   nothing for a mapper to build; the factory reads the four keys inline.
+- **Raw cell-value filters** — unsafe across codec nulls, byte ordering and multiple cell versions.
+- **Claiming a conditional existence filter is always faster** — the service explicitly warns that
+  conditional filters can perform poorly.
 
 ## Consequences
 
@@ -167,3 +213,5 @@ file):
   borrowed like `sink.parallelism`.
 - The lookup half of the Table API ([#460](https://github.com/laughingman7743/flink-connector-gcp/issues/460)) builds on this source: the projection's family
   filter is what its point reads will carry.
+- A filtered bounded scan and the FULL-cache loader created from that source share the same exact
+  range intersection and best-effort cell predicate, refined in ADR-0095.

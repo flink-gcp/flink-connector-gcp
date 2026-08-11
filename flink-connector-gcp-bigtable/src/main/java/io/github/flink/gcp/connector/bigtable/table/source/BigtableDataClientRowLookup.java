@@ -103,6 +103,6 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
     }
 
     private boolean isInRange(ByteString rowKey) {
-        return ranges.stream().anyMatch(range -> RowRanges.cuts(range, rowKey));
+        return ranges.stream().anyMatch(range -> RowRanges.contains(range, rowKey));
     }
 }

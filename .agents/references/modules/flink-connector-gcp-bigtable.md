@@ -315,6 +315,21 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   HBase makes membership projection-dependent too but adds declared qualifiers individually; a
   retained family holding only an undeclared qualifier therefore appears here and not there. The
   compensating labelled-branch mapping was declined (ADR-0092).
+- **Filter pushdown is exact for safe row-key predicates and best-effort for cells** (#518,
+  refinements in `docs/adr/0092` and `docs/adr/0095`). Direct field-literal equality, inequality,
+  `IN` and null tests become row ranges when their byte representation is exact. Ordering is
+  limited to `VARCHAR` and `VARBINARY`. Fixed-width integer and temporal equality uses a prefix
+  range because their decoders ignore suffix bytes. An empty string or binary literal remains
+  residual because the SDK cannot bound the empty key that the emulator accepts. `CHAR`, `BINARY`,
+  `BOOLEAN`, `DECIMAL` and floating point remain residual. Configured prefixes and the configured range remain a union,
+  then intersect with exact SQL ranges. Positive family or qualifier predicates become
+  necessary existence filters but also remain residual: never push raw values across codec nulls,
+  byte-order differences or cell versions. Compose the existence predicate as a conditional whose
+  true branch is the projection filter, and preserve that plan in a FULL loader created from the
+  filtered source. Flink 2.2 keeps extra temporal-join predicates in `LookupJoin.where` rather than
+  passing them to this ability; all cache modes evaluate that residual. Point lookup membership
+  uses `RowRanges.contains`, not the stricter split-planning `cuts`; a closed-start key belongs to
+  the range.
 - `BigtableOptionParityTest` reflects over **three** surfaces, widening the Pub/Sub precedent (which
   reflects over options builders only), and **two** further assertions ride along: no option feeds
   two setters, and every option that feeds something other than one setter is accounted for. Adding

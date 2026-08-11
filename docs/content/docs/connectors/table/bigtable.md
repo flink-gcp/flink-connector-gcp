@@ -221,6 +221,52 @@ row.
 the newest per qualifier. A qualifier the declared family holds but the DDL does not name is
 ignored.
 
+### Filter pushdown
+
+The source consumes row-key predicates exactly when the SQL comparison has the same ordering as
+the HBase-compatible byte encoding.
+Exact equality, inequality and `IN` predicates become one or more Bigtable row ranges.
+`AND` intersects ranges, and `OR` unions them.
+The ranges configured by `scan.row-prefix` and `scan.row-range.*` are first treated as one union,
+then intersected with the SQL ranges.
+The same final ranges and filters serve the bounded scan and a FULL-cache loader created from that
+filtered source plan.
+
+| Row-key type | `=`, `<>`, `IN` | `<`, `<=`, `>`, `>=` | `IS NULL`, `IS NOT NULL` |
+|---|---|---|---|
+| `VARCHAR`, `VARBINARY` | Exact pushdown | Exact pushdown | Exact pushdown |
+| Integer, date, time, timestamp and interval types | Exact pushdown | Evaluated by Flink | Exact pushdown |
+| `CHAR`, `BINARY`, `BOOLEAN`, `DECIMAL`, `FLOAT`, `DOUBLE` | Evaluated by Flink | Evaluated by Flink | Exact pushdown |
+
+Fixed-width integer and temporal decoders ignore suffix bytes, so equality uses a key-prefix range
+rather than only the canonical encoded key.
+Their encodings do not preserve signed SQL order.
+An empty `VARCHAR` or `VARBINARY` literal remains with Flink: the SDK cannot express an empty-key
+range, and although the service rejects empty row keys, the emulator accepts them.
+Fixed-width character and binary values may require SQL padding, a nonzero byte decodes as boolean
+true, decimal encodings carry their own scale, and floating point has signed-zero and `NaN`
+semantics.
+Those many-to-one or noncanonical cases remain with Flink.
+An expression outside the table, including a cast or computed expression around the row key,
+stays with Flink unless the planner has already reduced it to a supported field-literal form.
+
+Positive predicates on a family or qualifier use a **best-effort cell-existence prefilter**.
+For example, `cf1 IS NOT NULL`, `cf1.name IS NOT NULL`, `cf1.name = 'alice'` and
+`cf1.name IN ('alice', 'bob')` can avoid returning rows that have no relevant cell.
+The source reports the same SQL expression as a residual filter, so Flink still compares the
+decoded value and applies its null semantics.
+`IS NULL`, `NOT`, an `OR` with an unsupported branch and other predicates that cannot yield a
+necessary positive existence test stay entirely with Flink.
+
+The connector deliberately does not push raw cell-value comparisons.
+Bigtable compares encoded bytes rather than decoded SQL values, an empty or sentinel cell may
+decode as `NULL`, and a row may hold several timestamped versions while SQL sees only the latest.
+Those differences make a raw value filter unsafe as the final SQL answer.
+The existence prefilter is composed with projection through a Bigtable conditional row filter;
+Google documents conditional filters as non-atomic and warns that they can perform poorly.
+Treat this pushdown as an opportunity to reduce returned rows, not as a guarantee that every
+cell predicate makes a read faster.
+
 ### What a read produces
 
 The cell bytes decode by the same [type mapping](#type-mapping) the write side uses, and nulls
@@ -249,6 +295,9 @@ additive — overlapping selections are merged, so no row is read twice. Keys ar
 binary-key form and several ranges in one DDL are follow-ups noted in the option descriptions.
 An empty-string bound or prefix is rejected: the client would silently widen it to the whole
 table, and "scan everything" is spelled by leaving the option unset.
+Supported SQL row-key predicates further intersect this configured union.
+An empty intersection returns no rows rather than widening back to the configured range or the
+whole table.
 
 ### Lookup joins
 
@@ -269,6 +318,12 @@ for asynchronous point reads. A missing Bigtable row produces no lookup result, 
 keeps the input row with null lookup columns and an inner join drops it. Both forms apply the same
 family projection filter as a scan and use `scan.app-profile-id`; a Data Boost application profile
 cannot serve the point-read modes.
+Flink does not currently pass an additional right-side temporal-join predicate through
+`SupportsFilterPushDown`.
+It keeps that expression in the lookup operator, where NONE, PARTIAL and FULL modes evaluate the
+same residual predicate.
+Configured `scan.row-prefix` and `scan.row-range.*` bounds still apply to point reads and FULL-cache
+contents.
 
 `lookup.cache = PARTIAL` uses Flink's standard on-demand lookup cache around either the synchronous
 or asynchronous function. Configure at least one of `lookup.partial-cache.max-rows`,

@@ -18,7 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11
-- Issues: [#460](https://github.com/laughingman7743/flink-connector-gcp/issues/460) (under
+- Issues: [#460](https://github.com/laughingman7743/flink-connector-gcp/issues/460),
+  [#518](https://github.com/laughingman7743/flink-connector-gcp/issues/518) (under
   [#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217))
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
@@ -62,6 +63,17 @@ retain the scan client's retry behavior.
 No connector metrics are added. Flink's cache implementations and the Bigtable client retain
 ownership of their metrics.
 
+Issue #518 makes a pushed source plan available to the FULL-cache loader without rebuilding or
+dropping its range intersection, projection or best-effort cell-existence predicate.
+Flink 2.2 keeps an additional right-side temporal-join predicate in `LookupJoin.where`; it does not
+invoke `SupportsFilterPushDown` for that expression.
+NONE, PARTIAL and FULL evaluate that same lookup residual and therefore expose the same rows, while
+configured scan ranges continue to constrain both point reads and FULL-cache contents.
+Point-range membership is distinct from split planning: a key equal to a closed start belongs to
+the range even though it cannot split a non-empty left side from that range.
+The lookup path now uses the shared membership operation instead of the stricter split-cut
+operation, correcting the prior rejection of a closed-start key.
+
 ## Consequences
 
 - Only row-key equality can plan as a Bigtable lookup join; family-field and composite lookups fail
@@ -70,6 +82,10 @@ ownership of their metrics.
   point reads. All lookup forms reuse `scan.app-profile-id` rather than adding a second profile key.
 - The emulator suite executes hits and misses through sync, async, PARTIAL and FULL providers; the
   planner suite pins lookup selection after a reordered projection.
+- One parameterized emulator case carries the same lookup residual and configured closed-start
+  range through sync, async, PARTIAL and FULL providers.
+- A source-unit test inspects the FULL loader directly and pins that an already accepted scan
+  filter keeps its range intersection and condition/projection composition.
 
 ## Alternatives declined
 
