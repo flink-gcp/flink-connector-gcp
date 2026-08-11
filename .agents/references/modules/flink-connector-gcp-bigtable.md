@@ -215,6 +215,24 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   image). The gated table is **pre-split**; the failover ITCase scripts both seams, because one
   split cannot show a reassignment.
 
+## Change Streams source (`docs/adr/0094`, `0097`)
+
+- **The enumerator is the metadata store.** It checkpoints unassigned and assigned partitions,
+  pending merge targets, the resolved start time and a monotonic split-id counter; there is no
+  Beam-style metadata table or change-stream name. A restored plan never calls
+  `GenerateInitialChangeStreamPartitions` again.
+- **A merge target waits for coverage, not a token count.** Every `CloseStream` contributes a token
+  whose own partition range names its parent; only a coalesced set covering the entire target can
+  become one split with the full token list. A split is the same rule's one-token case.
+- **The native SDK surface is accepted deliberately.** `GenerateInitialChangeStreamPartitions`,
+  `ReadChangeStream`, `ReadChangeStreamQuery` and the record models carry an Apache-Beam-only
+  `@InternalApi` annotation in the pinned client. Reread that fact on every client upgrade, as
+  ADR-0041 requires for the sink's checked SDK facts.
+- **The application profile is required and single-cluster.** Preflight rejects a visible
+  multi-cluster policy; missing permission to read profile metadata does not add a new requirement,
+  and the reader translates the service rejection instead. Start-position and restore-expiry
+  behavior is ADR-0094's shared contract.
+
 ## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`; shared rules `docs/adr/0014`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
