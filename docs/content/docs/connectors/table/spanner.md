@@ -22,9 +22,9 @@ limitations under the License.
 
 # Spanner SQL connector
 
-The `spanner` connector writes Table API and SQL rows through `flink-connector-gcp-spanner`.
-It maps onto the [DataStream sink]({{< relref "docs/connectors/datastream/spanner" >}}), so batching, retry, delivery, metrics, and failure behavior remain the same.
-Bounded scans and lookup joins are tracked by [#503]({{< param BookRepo >}}/issues/503) and [#504]({{< param BookRepo >}}/issues/504).
+The `spanner` connector reads bounded Table API and SQL scans and writes rows through `flink-connector-gcp-spanner`.
+It maps onto the [DataStream source and sink]({{< relref "docs/connectors/datastream/spanner" >}}), so partitioning, snapshot, batching, retry, delivery, metrics, and failure behavior remain the same.
+Lookup joins are tracked by [#504]({{< param BookRepo >}}/issues/504).
 
 ```sql
 CREATE TABLE orders (
@@ -42,6 +42,8 @@ CREATE TABLE orders (
 );
 
 INSERT INTO orders SELECT order_id, customer, total, updated_at FROM staged_orders;
+
+SELECT customer, total FROM orders;
 ```
 
 The plain connector jar requires its transitive dependencies on the job classpath.
@@ -79,6 +81,17 @@ The mapping is recursive for arrays, and nullable Flink values become null Spann
 Plain `TIMESTAMP` is rejected because it has no time-zone semantics; use `TIMESTAMP_LTZ` for an instant.
 Other decimal precisions and scales are rejected because mapping them to `NUMERIC` would not be lossless.
 
+## Scan behavior
+
+The source is bounded and reads the table through Spanner `partitionRead` at one shared snapshot.
+Top-level projection is pushed into the requested Spanner column list, so unused columns do not cross the network.
+Nested projection is not advertised.
+If the planner requests no physical column, the connector reads the first declared column as a carrier but emits zero-field rows in the requested shape.
+
+Partition count and size are service hints, not exact split controls.
+The default timestamp bound is strong; set either a read timestamp or exact staleness, never both.
+There are deliberately no column-range partition options because Spanner chooses partition boundaries from physical storage.
+
 JSON, protocol buffers, and enums share carrier types with ordinary columns, so the DDL marks them explicitly:
 
 ```sql
@@ -108,6 +121,13 @@ Every marker must resolve to exactly one physical field and no field may have mo
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |
 | `schema.proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
 | `schema.enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |
+| `scan.partition.max-partitions` | *unset* | Desired maximum partition count passed to Spanner as a hint |
+| `scan.partition.size` | *unset* | Desired partition size passed to Spanner as a hint |
+| `scan.data-boost-enabled` | `false` | Whether scans use Data Boost compute |
+| `scan.rpc-priority` | *unset ⇒ Spanner default* | Priority of scan RPCs |
+| `scan.timestamp-bound.read-timestamp` | *unset* | RFC 3339 snapshot timestamp; mutually exclusive with exact staleness |
+| `scan.timestamp-bound.exact-staleness` | *unset ⇒ strong read* | Exact age of the snapshot; mutually exclusive with read timestamp |
+| `scan.parallelism` | *unset ⇒ operator parallelism* | Flink's standard source parallelism override |
 | `sink.buffer-flush.max-cells` | `5000` | Maps to `maxBatchCells` |
 | `sink.buffer-flush.max-mutations` | `500` | Maps to `maxBatchMutations` |
 | `sink.buffer-flush.max-size` | `1 mb` | Maps to `maxBatchBytes` |

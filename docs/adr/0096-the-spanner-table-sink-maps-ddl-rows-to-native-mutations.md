@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0096: The Spanner table sink maps DDL rows to native mutations
+# ADR-0096: The Spanner table connector maps DDL rows to native values
 
 - Status: Accepted
 - Date: 2026-08-11
-- Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502) (under
+- Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502), [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503) (under
   [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223))
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
@@ -47,6 +47,12 @@ A table without a primary key is insert-only because SQL cannot construct a Span
 The destination fields assemble `SpannerDatabase`, the physical DDL supplies the serializer, and the eight `sink.*` options map one-for-one onto `SpannerWriterOptions`.
 The table layer keeps the DataStream sink's fail-job constraint and failed-mutation policies because a DDL cannot carry a serializable failure-handler implementation.
 
+**The table source is a bounded `partitionRead` and pushes down top-level projection.**
+The retained DDL columns become the read operation's column list and the converter emits the projected shape in planner order.
+When the planner retains no physical column, the first DDL column is a carrier for the read while conversion emits zero-field rows.
+Nested projection is not advertised, and no range option is exposed because Spanner plans partitions from physical storage rather than from a user-selected column.
+Partition hints, Data Boost, RPC priority, snapshot bounds, and source parallelism map directly onto the existing source builder.
+
 ## Evidence
 
 Measured 2026-08-11 against the pom-pinned Flink 2.2.1 and Spanner emulator 1.5.56:
@@ -54,6 +60,7 @@ Measured 2026-08-11 against the pom-pinned Flink 2.2.1 and Spanner emulator 1.5.
 - The production factory planned and executed separate insert and upsert jobs against both GoogleSQL and PostgreSQL databases.
 - The schema object crosses Flink's job serialization boundary; the integration test caught and now pins that requirement.
 - Unit tests cover native scalar and composite mappings, special markers, primary-key deletes, insert-only tables, changelog modes, factory validation, and option parity with both DataStream builders.
+- Source tests pin projection order, zero-column carrier reads, native-to-`RowData` conversion, mutually exclusive snapshot options, and both emulator dialects.
 
 ## Alternatives declined
 
@@ -65,4 +72,4 @@ Measured 2026-08-11 against the pom-pinned Flink 2.2.1 and Spanner emulator 1.5.
 
 A primary key is optional, but it changes the accepted changelog and replay behavior.
 The DDL schema must match the destination's column names and native types; this slice does not read the live schema during planning.
-The scan and lookup sources build on the same type mapping in [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503) and [#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504).
+The lookup source builds on the same type mapping in [#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504).

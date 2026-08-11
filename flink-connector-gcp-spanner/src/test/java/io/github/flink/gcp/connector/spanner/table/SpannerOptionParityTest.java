@@ -21,6 +21,7 @@ import org.apache.flink.configuration.Configuration;
 
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkBuilder;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
+import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -97,7 +98,34 @@ class SpannerOptionParityTest {
     }
 
     @Test
-    void everyDeclaredOptionHasAHomeInThisFirstSlice() {
+    void everySourceBuilderSetterIsMappedOrSuppliedByTheTableLayer() {
+        assertThat(publicSettersOf(SpannerSourceBuilder.class))
+                .containsExactlyInAnyOrder(
+                        "database",
+                        "readOperation",
+                        "deserializer",
+                        "timestampBound",
+                        "maxPartitions",
+                        "partitionSizeBytes",
+                        "dataBoostEnabled",
+                        "rpcPriority",
+                        "emulatorEndpoint");
+
+        // The database and read operation come from destination options and the projected DDL;
+        // the planner supplies the RowData deserializer. Every remaining setter has one option.
+        assertThat(declaredKeys())
+                .contains(
+                        "scan.timestamp-bound.read-timestamp",
+                        "scan.timestamp-bound.exact-staleness",
+                        "scan.partition.max-partitions",
+                        "scan.partition.size",
+                        "scan.data-boost-enabled",
+                        "scan.rpc-priority",
+                        "emulator-endpoint");
+    }
+
+    @Test
+    void everyDeclaredOptionHasAHomeInTheTableConnector() {
         assertThat(declaredKeys())
                 .containsExactlyInAnyOrder(
                         "project",
@@ -109,6 +137,12 @@ class SpannerOptionParityTest {
                         "schema.json-field-paths",
                         "schema.proto-type-names",
                         "schema.enum-type-names",
+                        "scan.partition.max-partitions",
+                        "scan.partition.size",
+                        "scan.data-boost-enabled",
+                        "scan.rpc-priority",
+                        "scan.timestamp-bound.read-timestamp",
+                        "scan.timestamp-bound.exact-staleness",
                         "sink.buffer-flush.max-cells",
                         "sink.buffer-flush.max-mutations",
                         "sink.buffer-flush.max-size",
