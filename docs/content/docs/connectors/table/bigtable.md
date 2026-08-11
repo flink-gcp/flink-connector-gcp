@@ -26,7 +26,7 @@ The `bigtable` connector reads and writes a table in Cloud Bigtable through the 
 `flink-connector-gcp-bigtable`. It is a mapping onto the DataStream sink and scan source documented
 in [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) — that page carries the design,
 the delivery guarantees and the error handling; this one carries the DDL surface. Per-feature
-status is in the module README. A lookup join is [#460]({{< param BookRepo >}}/issues/460).
+status is in the module README.
 
 `sink.parallelism` and `scan.parallelism` come from Flink's own `FactoryUtil` rather than from this
 connector. There is no `format` option: a Bigtable row is a schema this DDL describes, cell by
@@ -250,13 +250,46 @@ binary-key form and several ranges in one DDL are follow-ups noted in the option
 An empty-string bound or prefix is rejected: the client would silently widen it to the whole
 table, and "scan everything" is spelled by leaving the option unset.
 
-Every option maps onto one builder setter of the DataStream API, which stays the source of truth.
-An option left out of the DDL leaves that setter uncalled, so its default is whatever the connector
-or the SDK already uses — the default is never restated here. The full list of defaults is in the
-[configuration reference]({{< relref "docs/reference/bigtable" >}}).
+### Lookup joins
 
-The one exception is `null-string-literal`, which configures this layer's own cell codec rather
-than a builder, and so carries its default here.
+The table supports processing-time temporal joins by equality on its row-key column. The lookup
+key is interpreted after projection, so the row key may appear anywhere in the DDL and the query
+may reorder the lookup table's output. Composite keys, nested family fields and predicates that do
+not include row-key equality are rejected when the join is planned.
+
+```sql
+SELECT e.event_id, p.profile.name
+FROM events AS e
+LEFT JOIN profiles FOR SYSTEM_TIME AS OF e.proc_time AS p
+  ON e.user_id = p.rowkey;
+```
+
+By default each input row performs a synchronous Bigtable point read. Set `lookup.async = true`
+for asynchronous point reads. A missing Bigtable row produces no lookup result, so a left join
+keeps the input row with null lookup columns and an inner join drops it. Both forms apply the same
+family projection filter as a scan and use `scan.app-profile-id`; a Data Boost application profile
+cannot serve the point-read modes.
+
+`lookup.cache = PARTIAL` uses Flink's standard on-demand lookup cache around either the synchronous
+or asynchronous function. Configure at least one of `lookup.partial-cache.max-rows`,
+`lookup.partial-cache.expire-after-access` or `lookup.partial-cache.expire-after-write` with it.
+`lookup.cache = FULL` loads the projected table through a bounded scan into each lookup task; choose
+`PERIODIC` with `lookup.full-cache.periodic-reload.interval`, or `TIMED` with
+`lookup.full-cache.timed-reload.iso-time`. FULL is synchronous by definition, so combining it with
+`lookup.async = true` is rejected. Its scan may use a Data Boost profile. Scan prefix and range
+bounds apply consistently to point reads and FULL-cache contents.
+
+Point reads retry only `DEADLINE_EXCEEDED`, `UNAVAILABLE` and `ABORTED`. `lookup.max-retries`
+counts retries after the first attempt and defaults to 3. Other failures surface immediately. The
+connector adds no lookup-specific metrics; Flink owns cache metrics and the Bigtable client owns
+RPC metrics.
+
+Scan, connection and write options map onto builder setters of the DataStream API, which stays their
+source of truth. Lookup options are table-layer or Flink-owned instead. An option left out of the
+DDL leaves the corresponding setter or lookup setting untouched; the full list of defaults is in
+the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
+
+`null-string-literal` also belongs to the table layer because it configures its cell codec.
 
 ### Destination
 
@@ -277,6 +310,23 @@ than a builder, and so carries its default here.
 | `scan.row-range.start-closed` | String | The inclusive UTF-8 start key of the one `rowRange(...)` the scan carries. Either bound may be given alone |
 | `scan.row-range.end-open` | String | The exclusive UTF-8 end key of that range |
 | `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
+
+### Lookup
+
+| Option | Type | Meaning |
+|---|---|---|
+| `lookup.async` | Boolean | Use asynchronous point reads; defaults to `false`. Cannot be combined with FULL caching |
+| `lookup.cache` | Enum | Flink's cache mode: `NONE`, `PARTIAL` or `FULL` |
+| `lookup.max-retries` | Integer | Retries after the initial point read for transient failures; defaults to `3` |
+| `lookup.partial-cache.expire-after-access` | Duration | Standard PARTIAL-cache access expiry |
+| `lookup.partial-cache.expire-after-write` | Duration | Standard PARTIAL-cache write expiry |
+| `lookup.partial-cache.cache-missing-key` | Boolean | Whether PARTIAL caches misses |
+| `lookup.partial-cache.max-rows` | Long | Maximum PARTIAL-cache rows |
+| `lookup.full-cache.reload-strategy` | Enum | FULL reload strategy: `PERIODIC` or `TIMED` |
+| `lookup.full-cache.periodic-reload.interval` | Duration | Interval for periodic FULL reloads |
+| `lookup.full-cache.periodic-reload.schedule-mode` | Enum | Periodic schedule mode: `FIXED_DELAY` or `FIXED_RATE` |
+| `lookup.full-cache.timed-reload.iso-time` | String | Local ISO time for a timed FULL reload |
+| `lookup.full-cache.timed-reload.interval-in-days` | Integer | Days between timed FULL reloads |
 
 ### Sink
 

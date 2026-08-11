@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 
 import org.junit.jupiter.api.Test;
 
@@ -44,7 +45,27 @@ class BigtableConnectorOptionsTest {
      * default: there is no connector-side default for them to be a second copy of.
      */
     private static final Set<String> TABLE_OWNED =
-            new HashSet<>(Arrays.asList(BigtableConnectorOptions.NULL_STRING_LITERAL.key()));
+            new HashSet<>(
+                    Arrays.asList(
+                            BigtableConnectorOptions.NULL_STRING_LITERAL.key(),
+                            BigtableConnectorOptions.LOOKUP_ASYNC.key()));
+
+    private static final Set<String> FLINK_OWNED =
+            new HashSet<>(
+                    Arrays.asList(
+                            "sink.parallelism",
+                            "scan.parallelism",
+                            LookupOptions.CACHE_TYPE.key(),
+                            LookupOptions.MAX_RETRIES.key(),
+                            LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_ACCESS.key(),
+                            LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE.key(),
+                            LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY.key(),
+                            LookupOptions.PARTIAL_CACHE_MAX_ROWS.key(),
+                            LookupOptions.FULL_CACHE_RELOAD_STRATEGY.key(),
+                            LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL.key(),
+                            LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE.key(),
+                            LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME.key(),
+                            LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS.key()));
 
     private static List<ConfigOption<?>> declaredOptions() {
         return DeclaredOptions.all();
@@ -75,8 +96,7 @@ class BigtableConnectorOptionsTest {
         Set<String> declared =
                 declaredOptions().stream().map(ConfigOption::key).collect(Collectors.toSet());
         // The Flink-owned options the factory borrows rather than declaring itself.
-        declared.add("sink.parallelism");
-        declared.add("scan.parallelism");
+        declared.addAll(FLINK_OWNED);
 
         Set<String> fromFactory = new HashSet<>();
         factory.requiredOptions().forEach(o -> fromFactory.add(o.key()));
@@ -106,6 +126,20 @@ class BigtableConnectorOptionsTest {
                                 assertThat(option.hasDefaultValue())
                                         .as("option '%s' carries a default", option.key())
                                         .isEqualTo(TABLE_OWNED.contains(option.key())));
+    }
+
+    @Test
+    void everyFlinkOwnedOptionIsAcceptedWithoutBeingRedeclared() {
+        BigtableDynamicTableFactory factory = new BigtableDynamicTableFactory();
+        Set<String> accepted =
+                factory.optionalOptions().stream()
+                        .map(ConfigOption::key)
+                        .collect(Collectors.toSet());
+        Set<String> declared =
+                declaredOptions().stream().map(ConfigOption::key).collect(Collectors.toSet());
+
+        assertThat(accepted).containsAll(FLINK_OWNED);
+        assertThat(declared).doesNotContainAnyElementsOf(FLINK_OWNED);
     }
 
     @Test

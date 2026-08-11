@@ -175,6 +175,10 @@ class BigtableOptionParityTest {
                 "the cell codec's null marker; the DataStream API has no serializer to configure"
                         + " here, since a DataStream user writes their own");
         map.put(
+                BigtableConnectorOptions.LOOKUP_ASYNC.key(),
+                "selects the table runtime provider shape; the DataStream scan source has no"
+                        + " lookup concept");
+        map.put(
                 BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS.key(),
                 "builds the GcRule every created family takes");
         map.put(

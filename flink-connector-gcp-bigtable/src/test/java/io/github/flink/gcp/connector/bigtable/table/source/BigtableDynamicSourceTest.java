@@ -16,9 +16,18 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.LookupTableSource.LookupContext;
+import org.apache.flink.table.connector.source.LookupTableSource.LookupRuntimeProvider;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
+import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
+import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
@@ -27,15 +36,18 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
+import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import static com.google.cloud.bigtable.data.v2.models.Filters.FILTERS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * What the source hands the DataStream builder, read back through {@code
@@ -63,7 +75,50 @@ class BigtableDynamicSourceTest {
                 // application-default credentials on a machine that has them and fail in CI on one
                 // that does not. The endpoint is never connected to.
                 .emulatorEndpoint("localhost:1")
+                .lookupOptions(BigtableLookupConfig.from(new Configuration()))
                 .producedDataType(PHYSICAL);
+    }
+
+    private static BigtableLookupConfig lookupOptions(String... entries) {
+        Configuration config = new Configuration();
+        for (int i = 0; i < entries.length; i += 2) {
+            config.setString(entries[i], entries[i + 1]);
+        }
+        return BigtableLookupConfig.from(config);
+    }
+
+    private static LookupRuntimeProvider lookupProvider(BigtableDynamicSource source, int key) {
+        return source.getLookupRuntimeProvider(lookupContext(new int[][] {{key}}));
+    }
+
+    private static LookupContext lookupContext(int[][] keys) {
+        return (LookupContext)
+                Proxy.newProxyInstance(
+                        LookupContext.class.getClassLoader(),
+                        new Class<?>[] {LookupContext.class},
+                        (proxy, method, arguments) -> {
+                            switch (method.getName()) {
+                                case "getKeys":
+                                    return keys;
+                                case "createTypeInformation":
+                                    if (arguments[0] instanceof DataType) {
+                                        return ScanRuntimeProviderContext.INSTANCE
+                                                .createTypeInformation((DataType) arguments[0]);
+                                    }
+                                    return ScanRuntimeProviderContext.INSTANCE
+                                            .createTypeInformation(
+                                                    (org.apache.flink.table.types.logical
+                                                                    .LogicalType)
+                                                            arguments[0]);
+                                case "createDataStructureConverter":
+                                    return ScanRuntimeProviderContext.INSTANCE
+                                            .createDataStructureConverter((DataType) arguments[0]);
+                                case "preferCustomShuffle":
+                                    return false;
+                                default:
+                                    throw new UnsupportedOperationException(method.toString());
+                            }
+                        });
     }
 
     private static BigtableSourceConfig<?> configOf(BigtableDynamicSource source) {
@@ -203,5 +258,89 @@ class BigtableDynamicSourceTest {
         assertThat(plain).isEqualTo(minimal().build());
         assertThat(plain.hashCode()).isEqualTo(minimal().build().hashCode());
         assertThat(projected).isNotEqualTo(plain);
+    }
+
+    @Test
+    void selectsExactlyOneProviderShapeForEveryPointLookupMode() {
+        assertThat(lookupProvider(minimal().build(), 0))
+                .isInstanceOf(LookupFunctionProvider.class)
+                .isNotInstanceOf(AsyncLookupFunctionProvider.class);
+
+        assertThat(
+                        lookupProvider(
+                                minimal()
+                                        .lookupOptions(lookupOptions("lookup.async", "true"))
+                                        .build(),
+                                0))
+                .isInstanceOf(AsyncLookupFunctionProvider.class)
+                .isNotInstanceOf(LookupFunctionProvider.class);
+
+        assertThat(
+                        lookupProvider(
+                                minimal()
+                                        .lookupOptions(
+                                                lookupOptions(
+                                                        "lookup.cache",
+                                                        "partial",
+                                                        "lookup.partial-cache.max-rows",
+                                                        "10"))
+                                        .build(),
+                                0))
+                .isInstanceOf(PartialCachingLookupProvider.class);
+
+        assertThat(
+                        lookupProvider(
+                                minimal()
+                                        .lookupOptions(
+                                                lookupOptions(
+                                                        "lookup.async",
+                                                        "true",
+                                                        "lookup.cache",
+                                                        "partial",
+                                                        "lookup.partial-cache.max-rows",
+                                                        "10"))
+                                        .build(),
+                                0))
+                .isInstanceOf(PartialCachingAsyncLookupProvider.class);
+
+        assertThat(
+                        lookupProvider(
+                                minimal()
+                                        .lookupOptions(
+                                                lookupOptions(
+                                                        "lookup.cache",
+                                                        "full",
+                                                        "lookup.full-cache.periodic-reload.interval",
+                                                        "1 min"))
+                                        .build(),
+                                0))
+                .isInstanceOf(FullCachingLookupProvider.class);
+    }
+
+    @Test
+    void lookupKeysIndexThePostProjectionRow() {
+        BigtableDynamicSource projected = minimal().build();
+        projected.applyProjection(new int[][] {{2}, {0}}, projectedType("cf2", "rowkey"));
+
+        assertThat(lookupProvider(projected, 1)).isInstanceOf(LookupFunctionProvider.class);
+        assertThatThrownBy(() -> lookupProvider(projected, 0))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("row-key column 'rowkey'");
+    }
+
+    @Test
+    void rejectsACompositeOrNestedLookupKey() {
+        BigtableDynamicSource source = minimal().build();
+
+        assertThatThrownBy(
+                        () ->
+                                source.getLookupRuntimeProvider(
+                                        lookupContext(new int[][] {{0}, {1}})))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("row-key column 'rowkey'");
+        assertThatThrownBy(
+                        () -> source.getLookupRuntimeProvider(lookupContext(new int[][] {{1, 0}})))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("row-key column 'rowkey'");
     }
 }

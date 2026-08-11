@@ -16,17 +16,26 @@
 
 package io.github.flink.gcp.connector.bigtable.table;
 
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,6 +60,118 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
             it.forEachRemaining(rows::add);
         }
         return rows;
+    }
+
+    private static String[] append(String[] options, String... additions) {
+        String[] combined = Arrays.copyOf(options, options.length + additions.length);
+        System.arraycopy(additions, 0, combined, options.length, additions.length);
+        return combined;
+    }
+
+    private static Stream<Arguments> pointLookupModes() {
+        return Stream.of(
+                Arguments.of("sync", new String[0]),
+                Arguments.of("async", new String[] {"lookup.async", "true"}),
+                Arguments.of(
+                        "async-partial",
+                        new String[] {
+                            "lookup.async",
+                            "true",
+                            "lookup.cache",
+                            "PARTIAL",
+                            "lookup.partial-cache.max-rows",
+                            "10"
+                        }),
+                Arguments.of(
+                        "partial",
+                        new String[] {
+                            "lookup.cache", "PARTIAL", "lookup.partial-cache.max-rows", "10"
+                        }),
+                Arguments.of(
+                        "full",
+                        new String[] {
+                            "lookup.cache",
+                            "FULL",
+                            "lookup.full-cache.periodic-reload.interval",
+                            "1 h"
+                        }));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("pointLookupModes")
+    void aTemporalJoinReadsHitsAndMissesInEveryLookupMode(String mode, String[] lookupOptions)
+            throws Exception {
+        String tableId = "sql-lookup-" + mode;
+        TableDestination destination = createTable(tableId, "cf1");
+        writeCell(destination, "r1", "cf1", "name", "alice");
+        writeCell(destination, "r2", "cf1", "name", "bob");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        tEnv.createTemporaryView(
+                "facts",
+                tEnv.fromDataStream(
+                        env.fromData("r1", "missing", "r2"),
+                        Schema.newBuilder()
+                                .column("f0", DataTypes.STRING())
+                                .columnByExpression("event_time", "PROCTIME()")
+                                .build()));
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  cf1 ROW<name STRING>,\n"
+                        + "  rowkey STRING,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions(tableId, lookupOptions));
+
+        assertThat(
+                        collect(
+                                tEnv,
+                                "SELECT f.f0, b.cf1.name FROM facts AS f "
+                                        + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time AS b "
+                                        + "ON f.f0 = b.rowkey"))
+                .containsExactlyInAnyOrder(
+                        Row.of("r1", "alice"), Row.of("missing", null), Row.of("r2", "bob"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("pointLookupModes")
+    void everyLookupModeHonorsTheConfiguredScanRanges(String mode, String[] lookupOptions)
+            throws Exception {
+        String tableId = "sql-lookup-range-" + mode;
+        TableDestination destination = createTable(tableId, "cf1");
+        writeCell(destination, "tenant-a/r1", "cf1", "name", "alice");
+        writeCell(destination, "tenant-b/r1", "cf1", "name", "bob");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        tEnv.createTemporaryView(
+                "facts",
+                tEnv.fromDataStream(
+                        env.fromData("tenant-a/r1", "tenant-b/r1"),
+                        Schema.newBuilder()
+                                .column("f0", DataTypes.STRING())
+                                .columnByExpression("event_time", "PROCTIME()")
+                                .build()));
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<name STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions(
+                                tableId, append(lookupOptions, "scan.row-prefix", "tenant-a/")));
+
+        assertThat(
+                        collect(
+                                tEnv,
+                                "SELECT f.f0, b.cf1.name FROM facts AS f "
+                                        + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time AS b "
+                                        + "ON f.f0 = b.rowkey"))
+                .containsExactlyInAnyOrder(
+                        Row.of("tenant-a/r1", "alice"), Row.of("tenant-b/r1", null));
     }
 
     @Test

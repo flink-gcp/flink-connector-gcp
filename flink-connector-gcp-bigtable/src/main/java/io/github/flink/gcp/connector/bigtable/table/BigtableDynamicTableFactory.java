@@ -22,6 +22,7 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -89,6 +90,18 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED,
                         BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN,
                         FactoryUtil.SOURCE_PARALLELISM,
+                        BigtableConnectorOptions.LOOKUP_ASYNC,
+                        LookupOptions.CACHE_TYPE,
+                        LookupOptions.MAX_RETRIES,
+                        LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_ACCESS,
+                        LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE,
+                        LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY,
+                        LookupOptions.PARTIAL_CACHE_MAX_ROWS,
+                        LookupOptions.FULL_CACHE_RELOAD_STRATEGY,
+                        LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL,
+                        LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE,
+                        LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME,
+                        LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS,
                         BigtableConnectorOptions.SINK_APP_PROFILE_ID,
                         BigtableConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
@@ -181,6 +194,7 @@ public class BigtableDynamicTableFactory
                 .emulatorEndpoint(
                         config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null))
+                .lookupOptions(BigtableLookupConfig.from(config))
                 .producedDataType(physicalDataType)
                 .build();
     }

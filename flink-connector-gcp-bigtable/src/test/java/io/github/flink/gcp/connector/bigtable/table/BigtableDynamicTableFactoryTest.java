@@ -411,6 +411,37 @@ class BigtableDynamicTableFactoryTest {
     }
 
     @Test
+    void acceptsEveryStandardLookupCacheOption() {
+        Map<String, String> options = minimalOptions();
+        options.put("lookup.cache", "partial");
+        options.put("lookup.max-retries", "4");
+        options.put("lookup.partial-cache.expire-after-access", "1 min");
+        options.put("lookup.partial-cache.expire-after-write", "2 min");
+        options.put("lookup.partial-cache.cache-missing-key", "false");
+        options.put("lookup.partial-cache.max-rows", "100");
+        options.put("lookup.full-cache.reload-strategy", "timed");
+        options.put("lookup.full-cache.periodic-reload.interval", "5 min");
+        options.put("lookup.full-cache.periodic-reload.schedule-mode", "FIXED_RATE");
+        options.put("lookup.full-cache.timed-reload.iso-time", "10:15Z");
+        options.put("lookup.full-cache.timed-reload.interval-in-days", "2");
+
+        assertThat(source(options)).isInstanceOf(BigtableDynamicSource.class);
+    }
+
+    @Test
+    void rejectsFullCachingWithAsyncLookupWhenTheSourceIsPlanned() {
+        Map<String, String> options = minimalOptions();
+        options.put("lookup.async", "true");
+        options.put("lookup.cache", "full");
+        options.put("lookup.full-cache.periodic-reload.interval", "1 min");
+
+        assertThatThrownBy(() -> source(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("'lookup.async' cannot be true")
+                .hasStackTraceContaining("'lookup.cache' is FULL");
+    }
+
+    @Test
     void aOneSidedRangeIsAccepted() {
         Map<String, String> startOnly = minimalOptions();
         startOnly.put("scan.row-range.start-closed", "b");
