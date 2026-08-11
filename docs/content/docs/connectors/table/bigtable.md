@@ -344,7 +344,8 @@ source of truth. Lookup options are table-layer or Flink-owned instead. An optio
 DDL leaves the corresponding setter or lookup setting untouched; the full list of defaults is in
 the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
 
-`null-string-literal` also belongs to the table layer because it configures its cell codec.
+`null-string-literal`, `lookup.async` and `sink.cell-timestamp.truncate-to-millis` belong to the
+table layer because they configure its codec or runtime shape rather than a DataStream builder.
 
 ### Destination
 
@@ -389,6 +390,7 @@ the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
 |---|---|---|
 | `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
+| `sink.cell-timestamp.truncate-to-millis` | Boolean | Whether the connector drops the sub-millisecond part of writable `timestamp` metadata before sending it; defaults to `false`. Disabled, the connector preserves the value and Bigtable validates its millisecond granularity |
 | `sink.batching.element-count` | Long | `BigtableWriterOptions.batchElementCount(...)`. Counts **entries** — one row's mutations — not mutations |
 | `sink.batching.byte-size` | MemorySize | `BigtableWriterOptions.batchByteSize(...)` |
 | `sink.in-flight.max-entries` | Integer | `BigtableWriterOptions.maxInFlightEntries(...)` |
@@ -556,13 +558,49 @@ that grows with active keys and head-of-line blocking to protect a behaviour the
 observe; ADR-0093 records why [#471]({{< param BookRepo >}}/issues/471) therefore keeps the
 existing bulk path and this explicit caveat.
 
-### The cell timestamp is the writer's clock
+### Cell timestamps
 
-A cell is written with the TaskManager's wall clock at the moment the mutation is built, not with a
-server-side timestamp. That is the client library's default and the right one here: a retried
-mutation rewrites the same cell version rather than adding a new one, which is what keeps an
-at-least-once retry idempotent. The consequence is that cell version ordering follows the writer's
-clock, so a clock that steps backwards can leave a newer value behind an older one.
+The sink exposes writable metadata named `timestamp` with type `TIMESTAMP_LTZ(6)`.
+One value is applied to every cell written by that row; a delete ignores it because `deleteRow`
+has no cell timestamp.
+
+```sql
+CREATE TABLE profiles_with_event_time (
+  rowkey STRING,
+  profile ROW<name STRING, email STRING>,
+  cell_timestamp TIMESTAMP_LTZ(6) METADATA FROM 'timestamp',
+  PRIMARY KEY (rowkey) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'profiles'
+);
+
+INSERT INTO profiles_with_event_time
+SELECT user_id, ROW(name, email), event_time FROM staged_profiles;
+```
+
+Flink casts the metadata column to the advertised `TIMESTAMP_LTZ(6)` type before the sink runtime
+receives it.
+A declaration below precision 6, such as `TIMESTAMP_LTZ(3)`, is widened without adding fractional
+digits.
+A declaration above precision 6, such as `TIMESTAMP_LTZ(9)`, is truncated to microseconds by that
+cast, independently of `sink.cell-timestamp.truncate-to-millis`.
+
+An absent metadata column or a `NULL` value keeps the existing path: the Bigtable client stamps the
+mutation from the TaskManager's wall clock when the mutation is built.
+The same `RowMutationEntry` is reused by the client when it retries an RPC, so that retry rewrites
+the same cell version.
+A Flink recovery serializes the record again, however, and therefore takes a new writer-clock value.
+Use a stable event timestamp from the record when the same version must be addressed across job
+replay.
+
+Bigtable stores timestamps as epoch microseconds but accepts values only at millisecond granularity.
+By default, `sink.cell-timestamp.truncate-to-millis` is `false`: the connector sends the explicit
+microsecond value unchanged and lets Bigtable reject a value whose last three digits are nonzero.
+Set the option to `true` to opt into dropping those three digits before the mutation is sent.
+This is truncation, not rounding; every cell written by the row receives the same truncated value.
 
 ### Three record-level rejections
 
@@ -594,8 +632,11 @@ the population this model serves has nowhere else to go.
 pinned to exact byte arrays by a golden-vector test rather than round-tripped through this
 connector's own code, which would pass while the interop was broken.
 
-**No metadata columns.** The one piece of envelope a mutation has is the cell timestamp; a writable
-one is [#473]({{< param BookRepo >}}/issues/473). A cell written by this sink takes the writer's clock, as above.
+**The writable metadata surface contains only the cell timestamp.** It applies one value to every
+cell of the row and deliberately does not timestamp deletes.
+The opt-in truncation option exists because the SQL type can carry microseconds while Bigtable
+accepts only millisecond-aligned values; preserving the user's explicit value and letting the
+service validate it remains the default.
 
 **Per-record table routing has no SQL surface.** A DDL names one table. Writing to several is a
 `STATEMENT SET` of `INSERT`s, one per table, which is what SQL already offers.

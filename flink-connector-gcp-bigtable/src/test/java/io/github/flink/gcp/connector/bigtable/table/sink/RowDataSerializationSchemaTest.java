@@ -20,6 +20,7 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
@@ -59,7 +60,7 @@ class RowDataSerializationSchemaTest {
                                     .getLogicalType());
 
     private static final RowDataSerializationSchema SERIALIZER =
-            new RowDataSerializationSchema(SCHEMA, "NULL");
+            new RowDataSerializationSchema(SCHEMA, "NULL", false, false);
 
     private static RowData row(RowKind kind, Object key, Object cf1, Object cf2) {
         GenericRowData row = GenericRowData.of(key, cf1, cf2);
@@ -71,6 +72,17 @@ class RowDataSerializationSchemaTest {
         RowMutationEntry entry = SERIALIZER.serialize(row, null);
         assertThat(entry).isNotNull();
         return entry.toProto();
+    }
+
+    private static RowData rowWithTimestamp(RowKind kind, Object timestamp) {
+        GenericRowData row =
+                GenericRowData.of(
+                        StringData.fromString("r1"),
+                        GenericRowData.of(StringData.fromString("v"), 7L),
+                        GenericRowData.of(true),
+                        timestamp);
+        row.setRowKind(kind);
+        return row;
     }
 
     @Test
@@ -123,6 +135,97 @@ class RowDataSerializationSchemaTest {
         // neither row kind controls. Measured as a real flake — 2 failures in 15 runs — before
         // this narrowed to what the test actually claims.
         assertThat(cells(update)).isEqualTo(cells(insert));
+    }
+
+    @Test
+    void explicitTimestampMetadataIsAppliedToEveryCellAtMicrosecondPrecision() throws Exception {
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(SCHEMA, "NULL", true, false);
+
+        MutateRowsRequest.Entry entry =
+                serializer
+                        .serialize(
+                                rowWithTimestamp(
+                                        RowKind.INSERT,
+                                        TimestampData.fromEpochMillis(1_700L, 123_456)),
+                                null)
+                        .toProto();
+
+        assertThat(entry.getMutationsList())
+                .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
+                .containsOnly(1_700_123L)
+                .hasSize(3);
+    }
+
+    @Test
+    void truncationDropsOnlyTheSubMillisecondPartOfExplicitMetadata() throws Exception {
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(SCHEMA, "NULL", true, true);
+
+        MutateRowsRequest.Entry entry =
+                serializer
+                        .serialize(
+                                rowWithTimestamp(
+                                        RowKind.INSERT,
+                                        TimestampData.fromEpochMillis(1_700L, 123_456)),
+                                null)
+                        .toProto();
+
+        assertThat(entry.getMutationsList())
+                .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
+                .containsOnly(1_700_000L);
+    }
+
+    @Test
+    void nullTimestampMetadataKeepsTheWriterClockPath() throws Exception {
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(SCHEMA, "NULL", true, true);
+
+        long beforeMillis = System.currentTimeMillis();
+        MutateRowsRequest.Entry entry =
+                serializer.serialize(rowWithTimestamp(RowKind.INSERT, null), null).toProto();
+        long afterMillis = System.currentTimeMillis();
+
+        assertThat(entry.getMutationsList())
+                .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
+                .allSatisfy(
+                        timestamp ->
+                                assertThat(timestamp)
+                                        .isBetween(beforeMillis * 1_000L, afterMillis * 1_000L));
+        assertThat(entry.getMutationsList())
+                .extracting(mutation -> mutation.getSetCell().getTimestampMicros() % 1_000L)
+                .containsOnly(0L);
+    }
+
+    @Test
+    void aDeleteIgnoresTimestampMetadata() throws Exception {
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(SCHEMA, "NULL", true, false);
+
+        MutateRowsRequest.Entry entry =
+                serializer
+                        .serialize(rowWithTimestamp(RowKind.DELETE, "not-a-timestamp"), null)
+                        .toProto();
+
+        assertThat(entry.getMutationsList())
+                .singleElement()
+                .satisfies(m -> assertThat(m.hasDeleteFromRow()).isTrue());
+    }
+
+    @Test
+    void timestampMetadataOutsideEpochMicrosecondsIsRejected() {
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(SCHEMA, "NULL", true, false);
+
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        rowWithTimestamp(
+                                                RowKind.INSERT,
+                                                TimestampData.fromEpochMillis(Long.MAX_VALUE)),
+                                        null))
+                .hasMessageContaining("'timestamp' metadata value")
+                .hasMessageContaining("outside the range of epoch microseconds");
     }
 
     private static List<String> cells(MutateRowsRequest.Entry entry) {
@@ -278,7 +381,7 @@ class RowDataSerializationSchemaTest {
         GenericRowData row = GenericRowData.of(1L, GenericRowData.of(StringData.fromString("v")));
 
         RowMutationEntry entry =
-                new RowDataSerializationSchema(schema, "NULL").serialize(row, null);
+                new RowDataSerializationSchema(schema, "NULL", false, false).serialize(row, null);
 
         assertThat(entry.toProto().getRowKey())
                 .isEqualTo(ByteString.copyFrom(new byte[] {0, 0, 0, 0, 0, 0, 0, 1}));

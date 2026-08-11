@@ -110,6 +110,43 @@ class BigtableTablePlanTest {
     }
 
     @Test
+    void writableTimestampMetadataAtOtherPrecisionsIsCastToMicroseconds() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt3 (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf ROW<v STRING>,\n"
+                        + "  cell_timestamp TIMESTAMP_LTZ(3) METADATA FROM 'timestamp'\n"
+                        + ") "
+                        + WITH_CLAUSE);
+        tEnv.executeSql(
+                "CREATE TABLE bt9 (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf ROW<v STRING>,\n"
+                        + "  cell_timestamp TIMESTAMP_LTZ(9) METADATA FROM 'timestamp'\n"
+                        + ") "
+                        + WITH_CLAUSE);
+
+        String millisPlan =
+                tEnv.explainSql(
+                        "INSERT INTO bt3 VALUES ('r1', ROW('v'),"
+                                + " CAST('2023-11-14 22:13:20.123' AS TIMESTAMP_LTZ(3)))");
+        String nanosPlan =
+                tEnv.explainSql(
+                        "INSERT INTO bt9 VALUES ('r1', ROW('v'),"
+                                + " CAST('2023-11-14 22:13:20.123456789' AS TIMESTAMP_LTZ(9)))");
+
+        assertThat(millisPlan)
+                .contains("TIMESTAMP_WITH_LOCAL_TIME_ZONE(6)")
+                .doesNotContain("TIMESTAMP_WITH_LOCAL_TIME_ZONE(3)");
+        assertThat(nanosPlan)
+                .contains("20.123456")
+                .contains("TIMESTAMP_WITH_LOCAL_TIME_ZONE(6)")
+                .doesNotContain("20.123456789")
+                .doesNotContain("TIMESTAMP_WITH_LOCAL_TIME_ZONE(9)");
+    }
+
+    @Test
     void theRowIsCompletedForADeleteAndForNothingElse() {
         // #470. Without a declared key the planner keys its upserts on whatever the query is
         // unique by — here 'id', a column the Bigtable table does not even have — so a key-only

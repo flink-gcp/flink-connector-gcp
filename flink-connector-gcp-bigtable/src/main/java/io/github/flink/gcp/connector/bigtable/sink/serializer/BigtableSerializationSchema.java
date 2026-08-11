@@ -42,11 +42,12 @@ import java.io.Serializable;
  * }</pre>
  *
  * <p><b>Cell timestamps decide what a replay does.</b> The sink is at-least-once, so a record may
- * be written twice after a failure. A {@code setCell} carrying an explicit timestamp overwrites the
- * same cell on the second write; one that leaves the timestamp to the server writes a second cell
- * version instead, which the table's garbage-collection policy then decides the fate of. Setting
- * the timestamp from the record — the event time, or {@code context.timestamp()} — is what makes a
- * replay idempotent.
+ * be written twice after a failure. A {@code setCell} carrying a stable timestamp from the record —
+ * the event time, or {@code context.timestamp()} — addresses the same cell version after Flink
+ * serializes the record again. The three-argument {@code setCell} instead stamps the mutation from
+ * the writer's wall clock: the client reuses that mutation for its own RPC retries, but a Flink
+ * recovery builds a new one with a new timestamp and can add another cell version. The table's
+ * garbage-collection policy then decides the fate of that version.
  *
  * <p>Returning {@code null} skips the record: it is written nowhere and is not a failure. Every
  * serializer of this connector family reads {@code null} that way, and so does the {@code

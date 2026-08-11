@@ -160,6 +160,11 @@ public final class BigtableTableSchema {
         return families;
     }
 
+    /** Returns the physical row's field count: its row key and its column families. */
+    public int getFieldCount() {
+        return families.size() + 1;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {

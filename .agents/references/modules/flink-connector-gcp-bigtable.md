@@ -236,10 +236,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`; shared rules `docs/adr/0014`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
-  setter, `getOptional(...).ifPresent(...)`, no default restated. The **one** table-owned option is
-  `null-string-literal`, which has no builder behind it, and `BigtableConnectorOptionsTest` asserts
-  that partition **exactly** rather than exempting it — a mapped option gaining a default and a
-  table-owned one losing its own both fail.
+  setter, `getOptional(...).ifPresent(...)`, no default restated. The **three** table-owned options
+  are `null-string-literal`, `lookup.async` and `sink.cell-timestamp.truncate-to-millis`, which have
+  no builder default behind them, and `BigtableConnectorOptionsTest` asserts that partition
+  **exactly** rather than exempting it — a mapped option gaining a default and a table-owned one
+  losing its own both fail.
 - **The DDL model and the cell encoding are Flink's HBase connector's, and the encoding is
   normative** — one atomic column is the row key, every `ROW<...>` column is a family, cell bytes
   are `Bytes` as `HBaseSerde` applies them. `HBaseSerde` is the interop target, **not**
@@ -289,8 +290,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   #470's follow-up, one entry per request made a delete stop taking effect on the 1.20 build,
   because the requests one job has in flight are concurrent rather than ordered. A test that cannot
   use two jobs — the table layer's delete test, since `ChangelogNormalize` knows only what its own
-  job has seen — asserts something order-independent instead. The cell timestamp is the **writer's
-  clock**, which is what makes a retry idempotent. **#471 measured but did not convert the
+  job has seen — asserts something order-independent instead. Writable `timestamp` metadata is a
+  nullable `TIMESTAMP_LTZ(6)` applied identically to every cell a row writes and ignored by a
+  delete; absent or null metadata keeps the three-argument `setCell` writer clock. The client
+  reuses one mutation for its own retry, but Flink replay serializes again, so replay idempotence
+  requires a stable explicit record timestamp. Bigtable validates millisecond granularity by
+  default; `sink.cell-timestamp.truncate-to-millis=true` explicitly opts into dropping the final
+  three microsecond digits. **#471 measured but did not convert the
   observation into a guarantee** (ADR-0093): 86,196 same-row pairs, mirrored across request sizes
   2 through 19,998, produced zero reversals on real Bigtable. The sink retains the bulk path and
   the caveat; a permanent test asserting submission order would contradict the service contract.
@@ -330,7 +336,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   passing them to this ability; all cache modes evaluate that residual. Point lookup membership
   uses `RowRanges.contains`, not the stricter split-planning `cuts`; a closed-start key belongs to
   the range.
-- `BigtableOptionParityTest` reflects over **three** surfaces, widening the Pub/Sub precedent (which
+- `BigtableOptionParityTest` reflects over **four** surfaces, widening the Pub/Sub precedent (which
   reflects over options builders only), and **two** further assertions ride along: no option feeds
   two setters, and every option that feeds something other than one setter is accounted for. Adding
   a setter to `BigtableSinkBuilder` now costs either an option or an exemption carrying its reason;

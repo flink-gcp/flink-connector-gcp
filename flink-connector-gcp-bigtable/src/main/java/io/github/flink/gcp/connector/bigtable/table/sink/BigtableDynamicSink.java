@@ -21,7 +21,9 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
@@ -35,6 +37,8 @@ import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 
 import javax.annotation.Nullable;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -44,11 +48,10 @@ import java.util.Objects;
  * place, {@link io.github.flink.gcp.connector.bigtable.table.BigtableDynamicTableFactory the
  * factory}, so this class has no configuration vocabulary at all.
  *
- * <p>Two abilities are <b>not</b> implemented. {@code SupportsPartitioning}: a Bigtable table is
- * partitioned by row-key range, which the service chooses and moves on its own, so there is nothing
- * a {@code PARTITIONED BY} clause could name. {@code SupportsWritingMetadata}: the one piece of
- * envelope a mutation has is the cell timestamp, which is deferred to a follow-up issue rather than
- * being decided under this one.
+ * <p>{@code SupportsPartitioning} is not implemented: a Bigtable table is partitioned by row-key
+ * range, which the service chooses and moves on its own, so there is nothing a {@code PARTITIONED
+ * BY} clause could name. {@link SupportsWritingMetadata} exposes the timestamp shared by every cell
+ * the row writes.
  *
  * <p>Built through {@link #builder()} rather than a constructor, for the reason {@code
  * BigQueryDynamicSink} records: a positional list is repeated four times over — the constructor,
@@ -56,7 +59,7 @@ import java.util.Objects;
  * the repetitions agree, and its trailing arguments here were two nullables and a boolean.
  */
 @Internal
-public final class BigtableDynamicSink implements DynamicTableSink {
+public final class BigtableDynamicSink implements DynamicTableSink, SupportsWritingMetadata {
 
     private final BigtableTableSchema schema;
     private final TableDestination destination;
@@ -68,6 +71,8 @@ public final class BigtableDynamicSink implements DynamicTableSink {
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
     private final boolean keyOnlyDeletesAreSafe;
+    private final boolean truncateCellTimestampToMillis;
+    private boolean timestampMetadataSelected;
 
     private BigtableDynamicSink(Builder builder) {
         this.schema = Preconditions.checkNotNull(builder.schema, "schema must not be null");
@@ -84,6 +89,8 @@ public final class BigtableDynamicSink implements DynamicTableSink {
         this.emulatorEndpoint = builder.emulatorEndpoint;
         this.parallelism = builder.parallelism;
         this.keyOnlyDeletesAreSafe = builder.keyOnlyDeletesAreSafe;
+        this.truncateCellTimestampToMillis = builder.truncateCellTimestampToMillis;
+        this.timestampMetadataSelected = builder.timestampMetadataSelected;
     }
 
     /**
@@ -93,6 +100,16 @@ public final class BigtableDynamicSink implements DynamicTableSink {
      */
     public static Builder builder() {
         return new Builder();
+    }
+
+    @Override
+    public Map<String, DataType> listWritableMetadata() {
+        return WritableMetadata.listAll();
+    }
+
+    @Override
+    public void applyWritableMetadata(List<String> metadataKeys, DataType consumedDataType) {
+        this.timestampMetadataSelected = metadataKeys.contains(WritableMetadata.TIMESTAMP.getKey());
     }
 
     @Override
@@ -131,7 +148,12 @@ public final class BigtableDynamicSink implements DynamicTableSink {
         BigtableSinkBuilder<RowData> builder =
                 BigtableSink.<RowData>builder()
                         .table(destination)
-                        .serializer(new RowDataSerializationSchema(schema, nullStringLiteral))
+                        .serializer(
+                                new RowDataSerializationSchema(
+                                        schema,
+                                        nullStringLiteral,
+                                        timestampMetadataSelected,
+                                        truncateCellTimestampToMillis))
                         .writerOptions(writerOptions);
         if (appProfileId != null) {
             builder.appProfileId(appProfileId);
@@ -162,6 +184,8 @@ public final class BigtableDynamicSink implements DynamicTableSink {
                 .emulatorEndpoint(emulatorEndpoint)
                 .parallelism(parallelism)
                 .keyOnlyDeletesAreSafe(keyOnlyDeletesAreSafe)
+                .truncateCellTimestampToMillis(truncateCellTimestampToMillis)
+                .timestampMetadataSelected(timestampMetadataSelected)
                 .build();
     }
 
@@ -188,7 +212,9 @@ public final class BigtableDynamicSink implements DynamicTableSink {
                 && Objects.equals(tableCreateOptions, that.tableCreateOptions)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
-                && keyOnlyDeletesAreSafe == that.keyOnlyDeletesAreSafe;
+                && keyOnlyDeletesAreSafe == that.keyOnlyDeletesAreSafe
+                && truncateCellTimestampToMillis == that.truncateCellTimestampToMillis
+                && timestampMetadataSelected == that.timestampMetadataSelected;
     }
 
     @Override
@@ -203,7 +229,9 @@ public final class BigtableDynamicSink implements DynamicTableSink {
                 tableCreateOptions,
                 emulatorEndpoint,
                 parallelism,
-                keyOnlyDeletesAreSafe);
+                keyOnlyDeletesAreSafe,
+                truncateCellTimestampToMillis,
+                timestampMetadataSelected);
     }
 
     /** Collects the sink's values, so no caller has to keep a positional list in order. */
@@ -219,6 +247,8 @@ public final class BigtableDynamicSink implements DynamicTableSink {
         @Nullable private String emulatorEndpoint;
         @Nullable private Integer parallelism;
         private boolean keyOnlyDeletesAreSafe;
+        private boolean truncateCellTimestampToMillis;
+        private boolean timestampMetadataSelected;
 
         private Builder() {}
 
@@ -313,6 +343,25 @@ public final class BigtableDynamicSink implements DynamicTableSink {
          */
         public Builder keyOnlyDeletesAreSafe(boolean keyOnlyDeletesAreSafe) {
             this.keyOnlyDeletesAreSafe = keyOnlyDeletesAreSafe;
+            return this;
+        }
+
+        /**
+         * @param truncateCellTimestampToMillis whether explicit cell timestamps lose their
+         *     sub-millisecond part before being sent
+         * @return this builder
+         */
+        public Builder truncateCellTimestampToMillis(boolean truncateCellTimestampToMillis) {
+            this.truncateCellTimestampToMillis = truncateCellTimestampToMillis;
+            return this;
+        }
+
+        /**
+         * @param timestampMetadataSelected whether the consumed row carries timestamp metadata
+         * @return this builder
+         */
+        Builder timestampMetadataSelected(boolean timestampMetadataSelected) {
+            this.timestampMetadataSelected = timestampMetadataSelected;
             return this;
         }
 

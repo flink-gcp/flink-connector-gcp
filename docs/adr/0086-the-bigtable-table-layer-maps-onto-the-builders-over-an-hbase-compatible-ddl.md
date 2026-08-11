@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0086: The Bigtable table layer maps onto the builders over an HBase-compatible DDL
 
 - Status: Accepted
-- Date: 2026-08-10
+- Date: 2026-08-10; revised by [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473) (2026-08-11)
 - Issues: [#458](https://github.com/laughingman7743/flink-connector-gcp/issues/458) (under
   [#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217); ADR-0014 holds the
-  shared mapping rules)
+  shared mapping rules), [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
 
@@ -146,6 +146,18 @@ last of which would otherwise reach the service as a mutation-less entry and com
 uniformly to every family. At least one is **required** under `create-if-needed`, which the
 DataStream API does not require.
 
+**The table sink exposes nullable writable `timestamp` metadata as `TIMESTAMP_LTZ(6)`**
+([#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473)).
+A non-null value is converted to epoch microseconds and applied identically to every cell written
+by the row; a delete ignores it because `deleteRow` has no cell timestamp.
+An absent metadata column or a null value retains the three-argument `setCell` path and therefore
+the writer's clock.
+Bigtable accepts only millisecond-aligned timestamps even though its mutation API carries
+microseconds.
+The table-owned `sink.cell-timestamp.truncate-to-millis` option defaults to `false`, preserving an
+explicit value unchanged so the service validates a mismatch.
+Setting it to `true` opts into dropping the sub-millisecond part before the mutation is sent.
+
 **`BigtableOptionParityTest` covers three surfaces rather than the options builders alone**:
 `BigtableWriterOptions.Builder`, whose every knob has a key and which carries no exemption;
 `BigtableSinkBuilder`, carrying an exemption set whose entries state why a setter has no DDL form;
@@ -202,7 +214,9 @@ Measured 2026-08-10 against the pom-pinned `flink.version` 2.2.1 sources jars,
 - **Defaulting the rule to `maxVersions(1)` instead of requiring one.** That would be the table
   layer inventing a default rather than mapping one, which is exactly what ADR-0014's
   no-default-restated rule exists to prevent.
-- **Metadata columns for the cell timestamp** — deferred rather than decided here; [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473).
+- **Silently truncating every explicit timestamp by default.** It would make a write succeed by
+  changing a user-supplied version without an explicit choice; truncation is therefore opt-in and
+  the service's granularity validation remains the default.
 - **`SupportsPartitioning`** — a Bigtable table is partitioned by row-key range, which the service
   chooses and moves; there is nothing a `PARTITIONED BY` clause could name.
 
@@ -225,10 +239,12 @@ knows only what its own job has seen — the assertion has to be order-independe
 `aKeyOnlyDeleteRemovesTheRowWhenNoPrimaryKeyIsDeclared` asserts that the job *completes*, which is
 exactly what #470 bought, and leaves the row's final state unasserted.
 
-**The cell timestamp is the writer's clock**, not the server's: the client library's three-argument
-`setCell` stamps `System.currentTimeMillis()`, which is what makes a retried mutation rewrite the
-same version rather than add one. Idempotent retry is worth more here than monotonicity, and the
-docs page says which the user gets.
+**The cell timestamp is the writer's clock only when writable metadata is absent or null.**
+The client library's three-argument `setCell` stamps `System.currentTimeMillis()` while constructing
+the mutation, and its RPC retry reuses that mutation and rewrites the same version.
+A Flink recovery serializes the record again and takes a new writer-clock value, so idempotence
+across job replay requires a stable explicit timestamp from the record.
+When supplied, that value owns cell version ordering and the TaskManager clock no longer does.
 
 `sink.max-consecutive-rejections` is mapped but inert from SQL: a DDL has no failure-policy option,
 so the sink always fails the job on the first confirmed rejection. Mapping it anyway keeps the
