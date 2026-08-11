@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ConfigOption;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigtable.source.BigtableSourceBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -54,9 +55,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * carrying an exemption set, and each entry states why the setter has no DDL form; because the
  * assertion is a set equality against the union, an exemption that stops being true fails too.
  *
- * <p>{@code BigtableSourceBuilder} is not covered yet — the {@code scan.*} surface arrives with the
- * table source, and covering it here first would mean exempting every one of its setters with a
- * reason that is scheduled to stop being true.
+ * <p>Four surfaces: the writer options, the sink builder, the table-creation options, and — since
+ * the {@code scan.*} options arrived with the table source — {@code BigtableSourceBuilder}. The
+ * destination and the emulator endpoint legitimately feed both directions' builders, so the
+ * no-two-setters rule holds within each direction and the cross-direction overlap is pinned to
+ * exactly those keys.
  */
 class BigtableOptionParityTest {
 
@@ -115,6 +118,39 @@ class BigtableOptionParityTest {
         return Collections.unmodifiableMap(map);
     }
 
+    /** {@code BigtableSourceBuilder}: the setters a {@code WITH} clause can reach. */
+    private static final Map<String, ConfigOption<?>> SOURCE_BUILDER = sourceBuilder();
+
+    private static Map<String, ConfigOption<?>> sourceBuilder() {
+        Map<String, ConfigOption<?>> map = new LinkedHashMap<>();
+        // 'project' and 'instance' reach this same setter through TableDestination.of, as on the
+        // sink side.
+        map.put("table", BigtableConnectorOptions.TABLE);
+        map.put("prefix", BigtableConnectorOptions.SCAN_ROW_PREFIX);
+        map.put("appProfileId", BigtableConnectorOptions.SCAN_APP_PROFILE_ID);
+        map.put("emulatorEndpoint", BigtableConnectorOptions.EMULATOR_ENDPOINT);
+        return Collections.unmodifiableMap(map);
+    }
+
+    /** {@code BigtableSourceBuilder}: the setters no {@code WITH} clause can reach, and why. */
+    private static final Map<String, String> SOURCE_BUILDER_NO_DDL = sourceBuilderExemptions();
+
+    private static Map<String, String> sourceBuilderExemptions() {
+        Map<String, String> map = new LinkedHashMap<>();
+        map.put(
+                "deserializer",
+                "the table layer supplies RowDataDeserializationSchema, built from the DDL schema");
+        map.put(
+                "filter",
+                "the projection pushdown supplies the family filter; per-cell filtering has no DDL"
+                        + " surface");
+        map.put(
+                "rowRange",
+                "fed by the two scan.row-range.* keys, which build the one ByteStringRange it"
+                        + " takes");
+        return Collections.unmodifiableMap(map);
+    }
+
     /** {@code TableCreateOptions.Builder}: the one setter, which the DDL feeds structurally. */
     private static final Map<String, String> TABLE_CREATE_NO_DDL =
             Collections.singletonMap(
@@ -144,6 +180,12 @@ class BigtableOptionParityTest {
         map.put(
                 BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE.key(),
                 "builds the GcRule every created family takes");
+        map.put(
+                BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED.key(),
+                "builds the one ByteStringRange that rowRange(...) takes");
+        map.put(
+                BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN.key(),
+                "builds the one ByteStringRange that rowRange(...) takes");
         return Collections.unmodifiableMap(map);
     }
 
@@ -189,14 +231,46 @@ class BigtableOptionParityTest {
     }
 
     @Test
-    void noOptionFeedsTwoSetters() {
-        List<String> keys =
+    void everySourceBuilderKnobIsMappedOrExempt() {
+        Set<String> expected = new LinkedHashSet<>(SOURCE_BUILDER.keySet());
+        expected.addAll(SOURCE_BUILDER_NO_DDL.keySet());
+
+        assertThat(publicSettersOf(BigtableSourceBuilder.class)).isEqualTo(expected);
+    }
+
+    @Test
+    void noOptionFeedsTwoSettersOfOneDirection() {
+        List<String> sinkKeys =
                 java.util.stream.Stream.concat(
                                 WRITER_OPTIONS.values().stream(), SINK_BUILDER.values().stream())
                         .map(ConfigOption::key)
                         .collect(Collectors.toList());
+        List<String> sourceKeys =
+                SOURCE_BUILDER.values().stream()
+                        .map(ConfigOption::key)
+                        .collect(Collectors.toList());
 
-        assertThat(keys).doesNotHaveDuplicates();
+        assertThat(sinkKeys).doesNotHaveDuplicates();
+        assertThat(sourceKeys).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void theDirectionsShareExactlyTheDestinationAndTheEmulator() {
+        // 'table' and 'emulator-endpoint' feed a setter on each direction's builder, and nothing
+        // else may: a sink.* key reaching the source builder — or the reverse — is a wiring slip.
+        Set<String> sinkKeys = new HashSet<>();
+        WRITER_OPTIONS.values().forEach(o -> sinkKeys.add(o.key()));
+        SINK_BUILDER.values().forEach(o -> sinkKeys.add(o.key()));
+        Set<String> shared =
+                SOURCE_BUILDER.values().stream()
+                        .map(ConfigOption::key)
+                        .filter(sinkKeys::contains)
+                        .collect(Collectors.toSet());
+
+        assertThat(shared)
+                .containsExactlyInAnyOrder(
+                        BigtableConnectorOptions.TABLE.key(),
+                        BigtableConnectorOptions.EMULATOR_ENDPOINT.key());
     }
 
     @Test
@@ -204,6 +278,7 @@ class BigtableOptionParityTest {
         Set<String> mapped = new HashSet<>();
         WRITER_OPTIONS.values().forEach(o -> mapped.add(o.key()));
         SINK_BUILDER.values().forEach(o -> mapped.add(o.key()));
+        SOURCE_BUILDER.values().forEach(o -> mapped.add(o.key()));
         mapped.addAll(NOT_A_SETTER.keySet());
 
         Set<String> declared = declaredKeys();

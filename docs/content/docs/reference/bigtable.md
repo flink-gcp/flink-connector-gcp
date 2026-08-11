@@ -159,3 +159,7 @@ knob until a measurement asks otherwise. Both are under
 **Per-cell shaping is the filter's job, not a knob's.** Which families and qualifiers to return,
 which timestamp window, how many versions of a cell — all of it is expressible through
 `filter(...)`, which is why the source has no separate options for any of it.
+
+The SQL layer's `scan.*` options map onto this builder — the
+[Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page carries that
+surface, and its projection pushdown is what supplies `filter(...)` there.

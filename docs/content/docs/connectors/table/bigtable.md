@@ -22,19 +22,16 @@ limitations under the License.
 
 # Bigtable SQL Connector
 
-The `bigtable` connector writes a table to Cloud Bigtable through the module
-`flink-connector-gcp-bigtable`. It is a mapping onto the DataStream sink documented in
-[Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) — that page carries the design, the
-delivery guarantees and the error handling; this one carries the DDL surface. Per-feature status is
-in the module README.
+The `bigtable` connector reads and writes a table in Cloud Bigtable through the module
+`flink-connector-gcp-bigtable`. It is a mapping onto the DataStream sink and scan source documented
+in [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) — that page carries the design,
+the delivery guarantees and the error handling; this one carries the DDL surface. Per-feature
+status is in the module README. A lookup join is [#460]({{< param BookRepo >}}/issues/460).
 
-**The table is write-only for now.** A `SELECT` over one fails with "Connector 'bigtable' can only
-be used as a sink"; reading is [#459]({{< param BookRepo >}}/issues/459) and a lookup join is
-[#460]({{< param BookRepo >}}/issues/460).
-
-`sink.parallelism` comes from Flink's own `FactoryUtil` rather than from this connector. There is no
-`format` option: a Bigtable row is a schema this DDL describes, cell by cell, and the cell encoding
-is the HBase ecosystem's rather than a choice, so there is nothing for a format factory to decide.
+`sink.parallelism` and `scan.parallelism` come from Flink's own `FactoryUtil` rather than from this
+connector. There is no `format` option: a Bigtable row is a schema this DDL describes, cell by
+cell, and the cell encoding is the HBase ecosystem's rather than a choice, so there is nothing for
+a format factory to decide.
 
 A column family is a *column name*, so it has to be a legal SQL identifier — a reserved word such as
 `identity` needs backticks, or a different name.
@@ -54,6 +51,9 @@ CREATE TABLE profiles (
 
 INSERT INTO profiles
 SELECT user_id, ROW(name, email), ROW(requests, last_seen) FROM staged_profiles;
+
+-- A bounded scan of the same table; only the families the query reads leave the server.
+SELECT rowkey, profile FROM profiles;
 ```
 
 ## Getting the connector onto the classpath
@@ -180,7 +180,75 @@ connector cannot encode is accepted and the first `INSERT INTO` over it fails. T
 wrapped in Flink's own "Unable to create a sink for writing table ..." — the actionable sentence is
 in the cause.
 
-## Options
+## Reading
+
+A `SELECT` is a **bounded scan** over the DataStream source — the same split planning, resumption
+and metrics that [page]({{< relref "docs/connectors/datastream/bigtable" >}}) describes — and it
+works in both batch and streaming jobs. The design record is
+[ADR-0092](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0092-the-bigtable-table-source-serves-projection-as-a-family-filter.md).
+
+**Projection is pushed to the server as a family filter.** The query's retained column families
+become a filter the scan carries, so an unread family never leaves the server. A query that reads
+no family at all — `SELECT rowkey`, `SELECT COUNT(*)` — scans keys only: one cell per row, its
+value stripped, since Bigtable has no row without a cell. The projection is by whole columns; a
+retained family always arrives as its full declared `ROW`.
+
+The filter is applied whether or not the query projects, naming exactly the declared families.
+Two consequences:
+
+- A family the physical table has but the DDL does not declare is never read.
+- **A family the DDL declares but the table lacks fails the scan** with the service's `NOT_FOUND`
+  ("Requested column family not found"). The source does not pre-validate the DDL against the
+  table — that would cost every scan a metadata read to soften an error the service already
+  reports precisely. A row-key-only query still answers, its keys-only filter naming no family.
+
+**Which rows a query sees follows from the storage model.** A Bigtable row exists while it has a
+cell, so a query that reads families returns the rows with at least one cell in a family it reads
+— a row whose every *read* family is empty has nothing for the server-side filter to return and
+does not appear. `SELECT *` includes a row holding data in any declared family, with the empty
+ones `NULL`; a narrower projection can exclude that same row; and a query reading no family —
+`SELECT rowkey`, `COUNT(*)` — sees every physical row, including one whose cells all live in
+families the DDL never declared. Which columns a query selects therefore also decides which rows
+it sees. This is the wide-column model's row existence, not an artifact of the pushdown. Flink's
+HBase connector also makes row membership projection-dependent, but selects each declared
+qualifier; this connector filters at the family boundary, so a row holding only an undeclared
+qualifier in a read family appears here with that family `NULL` where HBase omits it. Projecting
+the row key alongside a family does not change membership: once a query reads a family, only rows
+with a cell in a read family appear. A keys-only query is the SQL shape that sees every physical
+row.
+
+**The latest version of each cell is read.** Bigtable stores timestamped versions; the scan takes
+the newest per qualifier. A qualifier the declared family holds but the DDL does not name is
+ignored.
+
+### What a read produces
+
+The cell bytes decode by the same [type mapping](#type-mapping) the write side uses, and nulls
+reverse the write-side convention: an empty cell is `NULL` — except in a character-string column,
+where the `null-string-literal` is `NULL` and an empty cell is an empty string. A column family
+none of whose declared qualifiers has a cell is a `NULL` field, mirroring the sink, whose null
+family writes no cells; a family with some cells is a `ROW` whose absent qualifiers are null.
+(Flink's HBase connector differs here: it always builds the nested row.)
+
+Two more read-side facts worth knowing:
+
+- **A decimal wider than its column reads as `NULL`.** A cell whose value does not fit the
+  declared `DECIMAL(p, s)` decodes as a SQL `NULL` rather than failing — the HBase connector's
+  behaviour, silently aliased onto the null convention. A fixed-width cell shorter than its
+  declared layout, by contrast, fails the scan with a message naming the cell and its row. As in
+  HBase's `Bytes` decoder, trailing bytes after a complete fixed-width value are ignored.
+- **Declare a qualifier `NOT NULL` only when every row carries the cell.** The read path cannot
+  manufacture a value for an absent cell, so sparse data under a `NOT NULL` column hands the
+  planner a null it was told cannot exist; an *empty* cell there fails the scan outright, the
+  plain decoder having no null to offer.
+
+### Bounding the scan
+
+`scan.row-prefix` and the `scan.row-range.*` pair bound the scan by row key, server-side, and are
+additive — overlapping selections are merged, so no row is read twice. Keys are UTF-8 text; a
+binary-key form and several ranges in one DDL are follow-ups noted in the option descriptions.
+An empty-string bound or prefix is rejected: the client would silently widen it to the whole
+table, and "scan everything" is spelled by leaving the option unset.
 
 Every option maps onto one builder setter of the DataStream API, which stays the source of truth.
 An option left out of the DDL leaves that setter uncalled, so its default is whatever the connector
@@ -198,13 +266,23 @@ than a builder, and so carries its default here.
 | `instance` | String | The instance part of `table(...)` |
 | `table` | String | The table part of `table(...)`. One SQL table writes to one Bigtable table: per-record routing has no SQL surface and stays on the DataStream API |
 | `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port` — parsed when the planner builds the sink, so a malformed value fails there |
-| `null-string-literal` | String | The cell value that stands for a null in a character-string column; defaults to `null`. Not a builder setter: it configures the cell codec this layer supplies. Every other type writes a null as an empty cell |
+| `null-string-literal` | String | The cell value that stands for a null in a character-string column; defaults to `null`. Not a builder setter: it configures the cell codec this layer supplies, in both directions. Every other type writes a null as an empty cell |
+
+### Scan
+
+| Option | Type | Maps to |
+|---|---|---|
+| `scan.app-profile-id` | String | `BigtableSource.builder()`'s `appProfileId(...)`. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
+| `scan.row-prefix` | List of String | `prefix(...)`, once per element. UTF-8 prefixes, `;`-separated, additive with the range |
+| `scan.row-range.start-closed` | String | The inclusive UTF-8 start key of the one `rowRange(...)` the scan carries. Either bound may be given alone |
+| `scan.row-range.end-open` | String | The exclusive UTF-8 end key of that range |
+| `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
 
 ### Sink
 
 | Option | Type | Maps to |
 |---|---|---|
-| `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so once reading arrives ([#459]({{< param BookRepo >}}/issues/459)) one table can legitimately scan and write under different profiles |
+| `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.batching.element-count` | Long | `BigtableWriterOptions.batchElementCount(...)`. Counts **entries** — one row's mutations — not mutations |
 | `sink.batching.byte-size` | MemorySize | `BigtableWriterOptions.batchByteSize(...)` |
@@ -287,6 +365,9 @@ a zero-length value are the **same bytes** in a `BINARY`, `VARBINARY` or `BYTES`
 character string gets a marker — so a column that must tell them apart needs the distinction encoded
 in the value. And a character string whose value happens to equal `null-string-literal` reads back
 as a null; pick a literal the data cannot contain.
+
+A read reverses the convention through the same option —
+[What a read produces](#what-a-read-produces) above.
 
 ## Delivery guarantees
 
@@ -403,10 +484,20 @@ one is [#473]({{< param BookRepo >}}/issues/473). A cell written by this sink ta
 **Per-record table routing has no SQL surface.** A DDL names one table. Writing to several is a
 `STATEMENT SET` of `INSERT`s, one per table, which is what SQL already offers.
 
+**Projection pushdown is family pruning, served by one filter**
+([ADR-0092](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0092-the-bigtable-table-source-serves-projection-as-a-family-filter.md)).
+Bigtable's read API takes a filter per scan, so a projection is a filter to build rather than an
+index list to apply client-side; the edge the ADR pins is the projection retaining no family,
+which must become a keys-only chain and not an empty filter. Qualifier-level pruning and a
+latest-version filter are compatible follow-ups the ADR names.
+
 ## Testing
 
-The emulator suite drives `CREATE TABLE` and `INSERT INTO` through the production factory, with the
-emulator endpoint interpolated into the DDL rather than injected through a test-only factory, and
-reads the rows back with its own client. What the emulator cannot show is covered by the gated
-real-GCP suite: the client-construction path that authenticates with application-default
-credentials, and `sink.app-profile-id`, which the emulator ignores entirely.
+The emulator suite drives `CREATE TABLE`, `INSERT INTO` and `SELECT` through the production
+factory, with the emulator endpoint interpolated into the DDL rather than injected through a
+test-only factory, and seeds or reads rows with its own client. What the emulator cannot show is
+covered by the gated real-GCP suite: the client-construction path that authenticates with
+application-default credentials; `sink.app-profile-id` and `scan.app-profile-id`, which the
+emulator ignores entirely; split planning, which needs a pre-split real table because the emulator
+models no tablets; and the family filter's server-side `NOT_FOUND` for a declared family the table
+lacks, which the emulator answers with an empty result instead.

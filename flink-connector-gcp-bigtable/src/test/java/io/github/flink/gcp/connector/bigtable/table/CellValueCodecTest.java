@@ -40,13 +40,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Pins the cell encoding to exact bytes, one vector per type.
+ * Pins the cell encoding and decoding to exact bytes, one vector per type.
  *
  * <p>The encoding is the HBase ecosystem's and exists to be byte-compatible with it, so a test that
  * only round-tripped through this connector's own code would pass while the interop it was chosen
  * for was broken. Each expectation below is therefore a literal, written as hex, and was computed
  * from {@code org.apache.hadoop.hbase.util.Bytes} 2.6.6 as {@code HBaseSerde} 4.0.0-1.19 applies
- * it.
+ * it; the decode half reads the same literals back rather than whatever the encode half produced.
  */
 class CellValueCodecTest {
 
@@ -95,12 +95,24 @@ class CellValueCodecTest {
                 CellValueCodec.encoder(type.getLogicalType()).encode(GenericRowData.of(value), 0));
     }
 
+    private static Object decodeHex(DataType type, String hexBytes) {
+        return CellValueCodec.decoder(type.getLogicalType()).decode(fromHex(hexBytes));
+    }
+
     private static String hex(byte[] bytes) {
         StringBuilder out = new StringBuilder(bytes.length * 2);
         for (byte b : bytes) {
             out.append(String.format("%02x", b));
         }
         return out.toString();
+    }
+
+    private static byte[] fromHex(String hexBytes) {
+        byte[] bytes = new byte[hexBytes.length() / 2];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = (byte) Integer.parseInt(hexBytes.substring(i * 2, i * 2 + 2), 16);
+        }
+        return bytes;
     }
 
     @Nested
@@ -203,6 +215,107 @@ class CellValueCodecTest {
         }
     }
 
+    /**
+     * The same vectors read back. Each expectation decodes the literal bytes the encoding half
+     * pins, so the two halves are held to one interop rather than merely to each other.
+     */
+    @Nested
+    class DecodeVectors {
+
+        @Test
+        void aStringDecodesFromItsUtf8Bytes() {
+            assertThat(decodeHex(DataTypes.STRING(), "616263"))
+                    .isEqualTo(StringData.fromString("abc"));
+            assertThat(decodeHex(DataTypes.STRING(), "e38182"))
+                    .isEqualTo(StringData.fromString("あ"));
+        }
+
+        @Test
+        void anyNonzeroByteDecodesAsTrue() {
+            // Bytes.toBoolean's rule is a zero test, not an equality test against the 0xFF this
+            // encoder writes — a cell written as 0x01 by another client still reads as true.
+            assertThat(decodeHex(DataTypes.BOOLEAN(), "ff")).isEqualTo(true);
+            assertThat(decodeHex(DataTypes.BOOLEAN(), "01")).isEqualTo(true);
+            assertThat(decodeHex(DataTypes.BOOLEAN(), "00")).isEqualTo(false);
+        }
+
+        @Test
+        void binaryIsPassedThroughUnchanged() {
+            assertThat(decodeHex(DataTypes.BYTES(), "01fe"))
+                    .isEqualTo(new byte[] {0x01, (byte) 0xfe});
+        }
+
+        @Test
+        void aDecimalDecodesItsStoredScaleThenRescales() {
+            assertThat(decodeHex(DataTypes.DECIMAL(5, 2), "00000002" + "3039"))
+                    .isEqualTo(DecimalData.fromBigDecimal(new BigDecimal("123.45"), 5, 2));
+            assertThat(decodeHex(DataTypes.DECIMAL(5, 2), "00000002" + "9c"))
+                    .isEqualTo(DecimalData.fromBigDecimal(new BigDecimal("-1.00"), 5, 2));
+            // A cell written at another scale still reads: the stored scale is the cell's, and
+            // the value is rescaled to the declared column type afterwards.
+            assertThat(decodeHex(DataTypes.DECIMAL(5, 2), "00000001" + "04d2"))
+                    .isEqualTo(DecimalData.fromBigDecimal(new BigDecimal("123.4"), 5, 2));
+        }
+
+        @Test
+        void aDecimalTooWideForTheDeclaredTypeDecodesAsNull() {
+            // DecimalData.fromBigDecimal answers an overflow with null, so a cell holding
+            // 12345678.90 read through DECIMAL(5, 2) is a SQL NULL — silently aliased onto the
+            // null convention, exactly as Flink's HBase connector reads it. Pinned so the
+            // behaviour is a documented choice rather than an accident; the docs page states it.
+            assertThat(decodeHex(DataTypes.DECIMAL(5, 2), "00000002" + "499602d2")).isNull();
+        }
+
+        @Test
+        void aTinyintIsItsOneByte() {
+            assertThat(decodeHex(DataTypes.TINYINT(), "2a")).isEqualTo((byte) 42);
+            assertThat(decodeHex(DataTypes.TINYINT(), "ff")).isEqualTo((byte) -1);
+        }
+
+        @Test
+        void integralsDecodeBigEndianTwosComplement() {
+            assertThat(decodeHex(DataTypes.SMALLINT(), "0102")).isEqualTo((short) 258);
+            assertThat(decodeHex(DataTypes.SMALLINT(), "fffe")).isEqualTo((short) -2);
+            assertThat(decodeHex(DataTypes.INT(), "00010203")).isEqualTo(66051);
+            assertThat(decodeHex(DataTypes.INT(), "fffffffe")).isEqualTo(-2);
+            assertThat(decodeHex(DataTypes.BIGINT(), "0000000000000001")).isEqualTo(1L);
+            assertThat(decodeHex(DataTypes.BIGINT(), "fffffffffffffffe")).isEqualTo(-2L);
+        }
+
+        @Test
+        void aFixedWidthDecoderIgnoresTrailingBytesLikeHBaseBytes() {
+            // Bytes.toShort/toInt/toLong(byte[]) read exactly their declared width from offset
+            // zero and ignore a longer array's tail. Preserve that interoperability detail while
+            // still rejecting a value too short to hold the declared layout.
+            assertThat(decodeHex(DataTypes.SMALLINT(), "01027f")).isEqualTo((short) 258);
+            assertThat(decodeHex(DataTypes.INT(), "000102037f")).isEqualTo(66051);
+            assertThat(decodeHex(DataTypes.BIGINT(), "00000000000000017f")).isEqualTo(1L);
+        }
+
+        @Test
+        void floatingPointDecodesItsIeee754Bits() {
+            assertThat(decodeHex(DataTypes.FLOAT(), "3f800000")).isEqualTo(1.0f);
+            assertThat(decodeHex(DataTypes.DOUBLE(), "3ff0000000000000")).isEqualTo(1.0d);
+        }
+
+        @Test
+        void temporalsDecodeTheirIntegralLayouts() {
+            assertThat(decodeHex(DataTypes.DATE(), "00004d0b")).isEqualTo(19723);
+            assertThat(decodeHex(DataTypes.TIME(3), "0036ee80")).isEqualTo(3_600_000);
+            assertThat(decodeHex(DataTypes.TIMESTAMP(3), "0000018bcfe56800"))
+                    .isEqualTo(TimestampData.fromEpochMillis(1_700_000_000_000L));
+            assertThat(decodeHex(DataTypes.TIMESTAMP_LTZ(3), "0000018bcfe56800"))
+                    .isEqualTo(TimestampData.fromEpochMillis(1_700_000_000_000L));
+        }
+
+        @Test
+        void intervalsDecodeTheirUnderlyingIntegral() {
+            assertThat(decodeHex(DataTypes.INTERVAL(DataTypes.MONTH()), "0000000e")).isEqualTo(14);
+            assertThat(decodeHex(DataTypes.INTERVAL(DataTypes.SECOND(3)), "00000000000005dc"))
+                    .isEqualTo(1_500L);
+        }
+    }
+
     @Nested
     class Nulls {
 
@@ -250,6 +363,58 @@ class CellValueCodecTest {
                     .isEqualTo(new byte[] {'x'});
             assertThatThrownBy(() -> encoder.encode(GenericRowData.of((Object) null), 0))
                     .isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        void theNullStringLiteralDecodesAsNull() {
+            LogicalType type = DataTypes.STRING().getLogicalType();
+
+            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(NULL_STRING))
+                    .isNull();
+        }
+
+        @Test
+        void anEmptyCellDecodesAsNullForEveryTypeButAString() {
+            LogicalType type = DataTypes.BIGINT().getLogicalType();
+
+            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(new byte[0]))
+                    .isNull();
+            // BYTES too, although an empty byte array is — like the empty string — a value in its
+            // own right: only a character string gets the literal marker, so for BYTES a null and
+            // a zero-length value are the same bytes, the collision the docs page names.
+            assertThat(
+                            CellValueCodec.nullableDecoder(
+                                            DataTypes.BYTES().getLogicalType(), NULL_STRING)
+                                    .decode(new byte[0]))
+                    .isNull();
+        }
+
+        @Test
+        void anEmptyCellDecodesAsAnEmptyString() {
+            // The reason a string's null is the literal rather than the empty cell: an empty
+            // string is a value in its own right, and this is where that pays off on the way out.
+            LogicalType type = DataTypes.STRING().getLogicalType();
+
+            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(new byte[0]))
+                    .isEqualTo(StringData.fromString(""));
+        }
+
+        @Test
+        void aPresentValueIsUnaffectedByTheNullUnwrapper() {
+            LogicalType type = DataTypes.STRING().getLogicalType();
+
+            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(new byte[] {'x'}))
+                    .isEqualTo(StringData.fromString("x"));
+        }
+
+        @Test
+        void aNotNullColumnGetsThePlainDecoder() {
+            // The decode mirror of the branch above: a NOT NULL string column never wrote the
+            // null literal, so bytes that happen to equal it are that text, not a null.
+            LogicalType type = DataTypes.STRING().notNull().getLogicalType();
+
+            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(NULL_STRING))
+                    .isEqualTo(StringData.fromString("NULL"));
         }
     }
 
@@ -307,16 +472,32 @@ class CellValueCodecTest {
         }
 
         @Test
-        void theTwoSwitchesAgreeOnEveryTypeRoot() {
-            // checkSupported and encoder are parallel switches over LogicalTypeRoot with nothing
-            // holding them in step: a root added to one alone is either unreachable or reaches the
-            // IllegalStateException backstop at plan time, in a message written for neither a user
-            // nor a maintainer. This walks every root and requires the two to answer the same way.
+        void theThreeSwitchesAgreeOnEveryTypeRoot() {
+            // checkSupported, encoder and decoder are parallel switches over LogicalTypeRoot with
+            // nothing holding them in step: a root added to one alone is either unreachable or
+            // reaches the IllegalStateException backstop at plan time, in a message written for
+            // neither a user nor a maintainer. This walks every root and requires the three to
+            // answer the same way.
+            // The roots with no constructible sample above — structured or user-defined types no
+            // switch names. Pinned as an allowlist rather than skipped silently, so a new
+            // LogicalTypeRoot arriving in a Flink upgrade fails the walk until a sample — and so
+            // an agreement check — exists for it. A subset, not an equality: the supported range
+            // spans Flink majors and the newer roots (DESCRIPTOR, VARIANT) are absent on 1.20.
+            java.util.Set<LogicalTypeRoot> unsampled =
+                    java.util.EnumSet.complementOf(java.util.EnumSet.copyOf(SAMPLES.keySet()));
+            assertThat(unsampled)
+                    .extracting(Enum::name)
+                    .isSubsetOf(
+                            "DISTINCT_TYPE",
+                            "STRUCTURED_TYPE",
+                            "RAW",
+                            "SYMBOL",
+                            "UNRESOLVED",
+                            "DESCRIPTOR",
+                            "VARIANT");
             for (LogicalTypeRoot root : LogicalTypeRoot.values()) {
                 LogicalType type = SAMPLES.get(root);
                 if (type == null) {
-                    // A root with no constructible sample here — a structured or user-defined
-                    // type. Neither switch names one, so there is nothing for them to disagree on.
                     continue;
                 }
                 boolean checked = true;
@@ -331,7 +512,14 @@ class CellValueCodecTest {
                 } catch (IllegalStateException e) {
                     encodable = false;
                 }
-                assertThat(encodable).as("root %s", root).isEqualTo(checked);
+                boolean decodable = true;
+                try {
+                    CellValueCodec.decoder(type);
+                } catch (IllegalStateException e) {
+                    decodable = false;
+                }
+                assertThat(encodable).as("encoder for root %s", root).isEqualTo(checked);
+                assertThat(decodable).as("decoder for root %s", root).isEqualTo(checked);
             }
         }
 

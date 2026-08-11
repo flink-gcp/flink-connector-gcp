@@ -602,10 +602,11 @@ a configured `appProfileId` reaches the client, which the gated real-GCP suite a
 - Read-ahead and paging knobs. How many rows one fetch hands to the task thread is a fixed internal
   bound — a correctness floor that lets a checkpoint land inside a long range — rather than a knob,
   and turning it into one needs a measurement rather than a preference.
-- Change streams: [#35]({{< param BookRepo >}}/issues/35). Reading this table from SQL — a
-  `ScanTableSource` over this source — is [#459]({{< param BookRepo >}}/issues/459), and a lookup
-  join over it is [#460]({{< param BookRepo >}}/issues/460); writing from SQL exists today, on the
-  [Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page.
+- Change streams: [#35]({{< param BookRepo >}}/issues/35). Reading and writing this table from SQL
+  exist today, on the
+  [Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page — its
+  `ScanTableSource` maps onto this source; a lookup join over it is
+  [#460]({{< param BookRepo >}}/issues/460).
 
 ## Metrics
 
@@ -705,9 +706,9 @@ for a table's sections and say nothing about how many rows are left inside a ran
 Not implemented, each with its issue rather than a promise:
 
 - reading a changelog — change streams are [#35]({{< param BookRepo >}}/issues/35);
-- reading from SQL — a `ScanTableSource` is [#459]({{< param BookRepo >}}/issues/459) and a
-  `LookupTableSource` is [#460]({{< param BookRepo >}}/issues/460). Writing from SQL, with its own
-  `RowData` serializer, is on the
+- a lookup join from SQL — a `LookupTableSource` is
+  [#460]({{< param BookRepo >}}/issues/460). Scanning and writing from SQL exist, each with its
+  own `RowData` schema, on the
   [Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page;
 - conditional and read-modify-write mutations (`checkAndMutateRow`, `readModifyWriteRow`). These are
   request-response primitives rather than a write path a sink batches: each is one RPC whose result

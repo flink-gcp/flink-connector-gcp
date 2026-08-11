@@ -150,9 +150,10 @@ DataStream API does not require.
 `BigtableWriterOptions.Builder`, whose every knob has a key and which carries no exemption;
 `BigtableSinkBuilder`, carrying an exemption set whose entries state why a setter has no DDL form;
 and `TableCreateOptions.Builder`, whose one setter is wholly exempt, the families being the DDL's
-`ROW<...>` columns rather than a key. `BigtableSourceBuilder` waits for the `scan.*` surface to
-arrive with [#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459) — exempting
-every one of its setters first would mean writing reasons scheduled to stop being true. Two further
+`ROW<...>` columns rather than a key. `BigtableSourceBuilder` waited for the `scan.*` surface —
+exempting every one of its setters first would have meant writing reasons scheduled to stop being
+true — and joined as the fourth surface when
+[#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459) landed (ADR-0092). Two further
 assertions ride along: no option feeds two setters, and the declared options equal the mapped ones
 in **both** directions, so an option with no home fails and so does a table entry naming a key that
 no longer exists.

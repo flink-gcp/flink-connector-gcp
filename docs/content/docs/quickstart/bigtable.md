@@ -160,8 +160,8 @@ KEY` also needs an `ON CONFLICT` clause, which the SQL connector page below expl
 client, put the `flink-sql-connector-gcp-bigtable` uber-jar in Flink's `lib/` —
 it carries the connector and its whole runtime tree, relocated. The full `WITH` surface, the cell
 encodings and the type mapping are on the
-[Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page. Reading a table from
-SQL is [#459]({{< param BookRepo >}}/issues/459).
+[Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page — a `SELECT` over
+the same DDL reads the table back, with the scan options that page carries.
 
 ## Next
 
