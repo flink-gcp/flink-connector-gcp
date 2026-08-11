@@ -104,6 +104,7 @@ public class BigtableDynamicTableFactory
                         LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS,
                         BigtableConnectorOptions.SINK_APP_PROFILE_ID,
                         BigtableConnectorOptions.SINK_CREATE_DISPOSITION,
+                        BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE,
                         BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT,
@@ -146,6 +147,8 @@ public class BigtableDynamicTableFactory
                 .createDisposition(
                         config.getOptional(BigtableConnectorOptions.SINK_CREATE_DISPOSITION)
                                 .orElse(null))
+                .truncateCellTimestampToMillis(
+                        config.get(BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS))
                 .tableCreateOptions(TableCreateOptionsMapper.map(config, schema))
                 .emulatorEndpoint(
                         config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null))

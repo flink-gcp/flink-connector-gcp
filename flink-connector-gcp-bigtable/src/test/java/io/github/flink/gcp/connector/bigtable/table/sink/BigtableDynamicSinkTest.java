@@ -22,6 +22,7 @@ import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.types.RowKind;
 
@@ -33,6 +34,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 
 /**
  * What the sink tells the planner, and what survives a {@code copy()}.
@@ -106,6 +108,37 @@ class BigtableDynamicSinkTest {
         assertThat(sink(withRowKeyAsPrimaryKey()).getChangelogMode(ChangelogMode.insertOnly()))
                 .as("with the row key declared as PRIMARY KEY")
                 .isEqualTo(ChangelogMode.insertOnly());
+    }
+
+    @Test
+    void listsTheCellTimestampMetadataAtMicrosecondPrecision() {
+        assertThat(((SupportsWritingMetadata) sink(SCHEMA)).listWritableMetadata())
+                .containsExactly(entry("timestamp", DataTypes.TIMESTAMP_LTZ(6).nullable()));
+    }
+
+    @Test
+    void aCopyKeepsTheSelectedMetadataAndTruncationPolicy() {
+        Map<String, String> truncatingOptions = options();
+        truncatingOptions.put("sink.cell-timestamp.truncate-to-millis", "true");
+        SupportsWritingMetadata selected =
+                (SupportsWritingMetadata) FactoryMocks.createTableSink(SCHEMA, truncatingOptions);
+        selected.applyWritableMetadata(
+                Collections.singletonList("timestamp"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                        DataTypes.FIELD(
+                                "cf1", DataTypes.ROW(DataTypes.FIELD("q1", DataTypes.STRING()))),
+                        DataTypes.FIELD("timestamp", DataTypes.TIMESTAMP_LTZ(6))));
+        DynamicTableSink original = (DynamicTableSink) selected;
+
+        assertThat(original.copy()).isEqualTo(original).hasSameHashCodeAs(original);
+
+        DynamicTableSink unselected = FactoryMocks.createTableSink(SCHEMA, truncatingOptions);
+        assertThat(original).isNotEqualTo(unselected);
+
+        SupportsWritingMetadata preserving = (SupportsWritingMetadata) sink(SCHEMA);
+        preserving.applyWritableMetadata(Collections.singletonList("timestamp"), DataTypes.ROW());
+        assertThat(original).isNotEqualTo(preserving);
     }
 
     @Test

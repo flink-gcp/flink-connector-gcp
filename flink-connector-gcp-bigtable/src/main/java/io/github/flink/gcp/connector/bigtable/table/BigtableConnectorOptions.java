@@ -39,9 +39,10 @@ import java.util.List;
  *   <li><b>Every option is declared without a default</b>, and the factory applies it with {@code
  *       getOptional(...).ifPresent(...)}, so "absent from the DDL" and "left at the connector's
  *       default" are the same state. The exception is an option the <em>table layer itself</em>
- *       owns, which has no connector default to be a second copy of: {@link #NULL_STRING_LITERAL}
- *       and {@link #LOOKUP_ASYNC} are the two here, and the parity test asserts that partition
- *       exactly rather than tolerating a default anywhere.
+ *       owns, which has no connector default to be a second copy of: {@link #NULL_STRING_LITERAL},
+ *       {@link #LOOKUP_ASYNC} and {@link #SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS} are the three
+ *       here, and the parity test asserts that partition exactly rather than tolerating a default
+ *       anywhere.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
  *   <li><b>There is no {@code format} option.</b> A Bigtable row is a schema this DDL describes —
@@ -189,6 +190,17 @@ public final class BigtableConnectorOptions {
                             "Whether a missing table is created with the column families the DDL"
                                     + " declares, or the write fails. Creating requires at least"
                                     + " one 'sink.table-create.gc-rule.*' key.");
+
+    public static final ConfigOption<Boolean> SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS =
+            ConfigOptions.key("sink.cell-timestamp.truncate-to-millis")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether a writable 'timestamp' metadata value loses its"
+                                    + " sub-millisecond part before being sent. Disabled by"
+                                    + " default, so the connector never changes an explicit"
+                                    + " timestamp without an opt-in; Bigtable then rejects a"
+                                    + " value that does not match its millisecond granularity.");
 
     public static final ConfigOption<Integer> SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS =
             ConfigOptions.key("sink.table-create.gc-rule.max-versions")

@@ -34,6 +34,7 @@ import com.google.cloud.bigtable.data.v2.models.RowCell;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.Test;
 
+import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.List;
 
@@ -60,6 +61,18 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
                 + withClause;
     }
 
+    private static String timestampDdl(int precision, String withClause) {
+        return "CREATE TABLE bt (\n"
+                + "  rowkey STRING,\n"
+                + "  cf ROW<cell_value STRING>,\n"
+                + "  cell_timestamp TIMESTAMP_LTZ("
+                + precision
+                + ") METADATA FROM 'timestamp',\n"
+                + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                + ") "
+                + withClause;
+    }
+
     private static String cell(Row row, String family, String qualifier) {
         return cellBytes(row, family, qualifier) == null
                 ? null
@@ -71,6 +84,12 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         List<RowCell> cells = row.getCells(family, qualifier);
         assertThat(cells).as("cell %s:%s of row %s", family, qualifier, row.getKey()).hasSize(1);
         return cells.get(0).getValue().toByteArray();
+    }
+
+    private static long cellTimestamp(Row row, String family, String qualifier) {
+        List<RowCell> cells = row.getCells(family, qualifier);
+        assertThat(cells).as("cell %s:%s of row %s", family, qualifier, row.getKey()).hasSize(1);
+        return cells.get(0).getTimestamp();
     }
 
     @Test
@@ -93,6 +112,46 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         assertThat(cellBytes(rows.get(0), "cf2", "flag")).isEqualTo(new byte[] {(byte) 0xff});
         assertThat(cell(rows.get(1), "cf1", "name")).isEqualTo("bob");
         assertThat(cellBytes(rows.get(1), "cf2", "flag")).isEqualTo(new byte[] {0});
+    }
+
+    @Test
+    void writesCellTimestampMetadataDeclaredAtMillisecondPrecision() throws Exception {
+        TableDestination destination = createTable("sql-timestamp", "cf");
+        TableEnvironment tEnv = streamingTableEnvironment();
+        tEnv.executeSql(timestampDdl(3, withOptions("sql-timestamp")));
+
+        tEnv.executeSql(
+                        "INSERT INTO bt VALUES"
+                                + " ('r1', ROW('v'),"
+                                + " TO_TIMESTAMP_LTZ(1700000000000, 3))")
+                .await();
+
+        Row row = readRows(destination).get(0);
+        assertThat(cellTimestamp(row, "cf", "cell_value")).isEqualTo(1_700_000_000_000_000L);
+    }
+
+    @Test
+    void truncatesAnExplicitCellTimestampOnlyWhenEnabled() throws Exception {
+        TableDestination destination = createTable("sql-timestamp-truncate", "cf");
+        TableEnvironment tEnv = streamingTableEnvironment();
+        tEnv.getConfig().setLocalTimeZone(ZoneId.of("UTC"));
+        tEnv.executeSql(
+                timestampDdl(
+                        9,
+                        withOptions(
+                                "sql-timestamp-truncate",
+                                "sink.cell-timestamp.truncate-to-millis",
+                                "true")));
+
+        tEnv.executeSql(
+                        "INSERT INTO bt VALUES"
+                                + " ('r1', ROW('v'),"
+                                + " CAST('2023-11-14 22:13:20.123456789'"
+                                + " AS TIMESTAMP_LTZ(9)))")
+                .await();
+
+        Row row = readRows(destination).get(0);
+        assertThat(cellTimestamp(row, "cf", "cell_value")).isEqualTo(1_700_000_000_123_000L);
     }
 
     @Test

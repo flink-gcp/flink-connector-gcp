@@ -24,9 +24,14 @@ import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
@@ -109,13 +114,17 @@ class BigtableDynamicTableFactoryTest {
      */
     private static BigtableMutateRowsSink<?> built(
             ResolvedSchema schema, Map<String, String> options) {
+        return built(FactoryMocks.createTableSink(schema, options));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static BigtableMutateRowsSink<RowData> built(DynamicTableSink tableSink) {
         Sink<?> sink =
                 ((SinkV2Provider)
-                                FactoryMocks.createTableSink(schema, options)
-                                        .getSinkRuntimeProvider(
-                                                new SinkRuntimeProviderContext(false)))
+                                tableSink.getSinkRuntimeProvider(
+                                        new SinkRuntimeProviderContext(false)))
                         .createSink();
-        return (BigtableMutateRowsSink<?>) sink;
+        return (BigtableMutateRowsSink<RowData>) sink;
     }
 
     @Test
@@ -181,9 +190,50 @@ class BigtableDynamicTableFactoryTest {
         options.put("sink.batching.element-count", "250");
         options.put("sink.create-disposition", "create-if-needed");
         options.put("sink.table-create.gc-rule.max-versions", "2");
+        options.put("sink.cell-timestamp.truncate-to-millis", "true");
         DynamicTableSink original = sink(options);
 
         assertThat(original.copy()).isEqualTo(original).hasSameHashCodeAs(original);
+    }
+
+    @Test
+    void cellTimestampTruncationOptionReachesTheSink() {
+        Map<String, String> truncatingOptions = minimalOptions();
+        truncatingOptions.put("sink.cell-timestamp.truncate-to-millis", "true");
+
+        assertThat(sink(truncatingOptions)).isNotEqualTo(sink(minimalOptions()));
+    }
+
+    @Test
+    void theDefaultTimestampOptionPreservesMicrosecondsInTheRuntimeSerializer() throws Exception {
+        SupportsWritingMetadata metadataSink = (SupportsWritingMetadata) sink(minimalOptions());
+        metadataSink.applyWritableMetadata(
+                Collections.singletonList("timestamp"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                        DataTypes.FIELD(
+                                "cf1",
+                                DataTypes.ROW(
+                                        DataTypes.FIELD("q1", DataTypes.STRING()),
+                                        DataTypes.FIELD("q2", DataTypes.BIGINT()))),
+                        DataTypes.FIELD("timestamp", DataTypes.TIMESTAMP_LTZ(6))));
+        GenericRowData row =
+                GenericRowData.of(
+                        StringData.fromString("r1"),
+                        GenericRowData.of(StringData.fromString("v"), 7L),
+                        TimestampData.fromEpochMillis(1_700L, 123_456));
+
+        BigtableMutateRowsSink<RowData> runtimeSink = built((DynamicTableSink) metadataSink);
+
+        assertThat(
+                        runtimeSink
+                                .getConfig()
+                                .getSerializer()
+                                .serialize(row, null)
+                                .toProto()
+                                .getMutationsList())
+                .extracting(mutation -> mutation.getSetCell().getTimestampMicros())
+                .containsOnly(1_700_123L);
     }
 
     @Test

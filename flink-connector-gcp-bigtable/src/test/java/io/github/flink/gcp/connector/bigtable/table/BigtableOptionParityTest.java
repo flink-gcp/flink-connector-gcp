@@ -142,8 +142,8 @@ class BigtableOptionParityTest {
                 "the table layer supplies RowDataDeserializationSchema, built from the DDL schema");
         map.put(
                 "filter",
-                "the projection pushdown supplies the family filter; per-cell filtering has no DDL"
-                        + " surface");
+                "projection and filter pushdown compose the runtime filter; no WITH option maps"
+                        + " directly to this setter");
         map.put(
                 "rowRange",
                 "fed by the two scan.row-range.* keys, which build the one ByteStringRange it"
@@ -184,6 +184,9 @@ class BigtableOptionParityTest {
         map.put(
                 BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE.key(),
                 "builds the GcRule every created family takes");
+        map.put(
+                BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS.key(),
+                "configures the table layer's timestamp metadata serializer");
         map.put(
                 BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED.key(),
                 "builds the one ByteStringRange that rowRange(...) takes");

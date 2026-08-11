@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.table.sink;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.types.RowKind;
 
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
@@ -38,7 +39,9 @@ import java.util.List;
  * value is null, which become an empty cell, or the {@code null-string-literal} for a character
  * string. Writing them rather than skipping them is what makes the row read back as the DDL says it
  * should: a qualifier left unwritten would keep whatever an earlier version of the row put there. A
- * whole column family that is null writes no cells at all, since there is no value to encode.
+ * whole column family that is null writes no cells at all, since there is no value to encode. When
+ * the DDL selects writable {@code timestamp} metadata, its non-null value is applied to every cell
+ * this row writes; a null value keeps the client library's writer-clock path.
  *
  * <p>A delete removes the entire row, not the declared qualifiers one by one. The row key is the
  * primary key of an upsert sink, so "this key is gone" is what a {@code -D} means here; deleting
@@ -69,16 +72,27 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
     private final String rowKeyName;
     private final CellValueCodec.FieldEncoder rowKeyEncoder;
     private final Family[] families;
+    private final int timestampMetadataIndex;
+    private final boolean truncateCellTimestampToMillis;
 
     /**
      * Creates the schema from the table's DDL model.
      *
      * @param schema the parsed DDL model
      * @param nullStringLiteral the cell value that stands for a null character string
+     * @param timestampMetadataSelected whether the consumed row carries timestamp metadata
+     * @param truncateCellTimestampToMillis whether explicit timestamps lose their sub-millisecond
+     *     part before being sent
      */
-    RowDataSerializationSchema(BigtableTableSchema schema, String nullStringLiteral) {
+    RowDataSerializationSchema(
+            BigtableTableSchema schema,
+            String nullStringLiteral,
+            boolean timestampMetadataSelected,
+            boolean truncateCellTimestampToMillis) {
         this.rowKeyIndex = schema.getRowKeyIndex();
         this.rowKeyName = schema.getRowKeyName();
+        this.timestampMetadataIndex = timestampMetadataSelected ? schema.getFieldCount() : -1;
+        this.truncateCellTimestampToMillis = truncateCellTimestampToMillis;
         // The plain encoder, not the nullable one: a null row key is rejected below rather than
         // encoded as an empty cell.
         this.rowKeyEncoder = CellValueCodec.encoder(schema.getRowKeyType());
@@ -104,6 +118,9 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
         if (kind == RowKind.DELETE) {
             return entry.deleteRow();
         }
+        boolean hasExplicitTimestamp =
+                timestampMetadataIndex >= 0 && !element.isNullAt(timestampMetadataIndex);
+        long timestampMicros = hasExplicitTimestamp ? timestampMicros(element) : 0L;
         int written = 0;
         for (Family family : families) {
             if (element.isNullAt(family.index)) {
@@ -111,10 +128,12 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
             }
             RowData cells = element.getRow(family.index, family.qualifiers.length);
             for (int i = 0; i < family.qualifiers.length; i++) {
-                entry.setCell(
-                        family.name,
-                        family.qualifiers[i],
-                        ByteString.copyFrom(family.encoders[i].encode(cells, i)));
+                ByteString value = ByteString.copyFrom(family.encoders[i].encode(cells, i));
+                if (hasExplicitTimestamp) {
+                    entry.setCell(family.name, family.qualifiers[i], timestampMicros, value);
+                } else {
+                    entry.setCell(family.name, family.qualifiers[i], value);
+                }
             }
             written += family.qualifiers.length;
         }
@@ -130,6 +149,21 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
                             entry.toProto().getRowKey().toStringUtf8()));
         }
         return entry;
+    }
+
+    private long timestampMicros(RowData element) throws IOException {
+        TimestampData timestamp = element.getTimestamp(timestampMetadataIndex, 6);
+        try {
+            long millis = Math.multiplyExact(timestamp.getMillisecond(), 1_000L);
+            if (truncateCellTimestampToMillis) {
+                return millis;
+            }
+            return Math.addExact(millis, timestamp.getNanoOfMillisecond() / 1_000L);
+        } catch (ArithmeticException e) {
+            throw new IOException(
+                    "The 'timestamp' metadata value is outside the range of epoch microseconds.",
+                    e);
+        }
     }
 
     private ByteString rowKey(RowData element) throws IOException {
