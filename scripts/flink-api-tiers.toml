@@ -21,7 +21,7 @@
 # dependency when it is added, not in relitigating the ones below.
 #
 # How to react when the check fails (the judgment ladder lives in
-# .claude/skills/curate-flink-api-tier/):
+# .agents/skills/curate-flink-api-tier/):
 #   - a new type appears in the failure: prefer a stable alternative (for
 #     the utility classes, inlining a few lines beats a new entry); if the
 #     dependency is genuinely unavoidable, add an entry whose reason says
@@ -126,7 +126,7 @@ noted as such on issue #103."""
 # documented design decisions in the BigQuery sink: the FILE_LOADS pre-commit
 # topology (issue #14) and the buffered-stream exactly-once sink's identity
 # pre-commit topology used as a validation hook (issue #30). Both are
-# recorded in flink-connector-gcp-bigquery/CLAUDE.md and the BigQuery docs
+# recorded in the BigQuery detailed agent guidance and the BigQuery docs
 # page.
 # ---------------------------------------------------------------------------
 

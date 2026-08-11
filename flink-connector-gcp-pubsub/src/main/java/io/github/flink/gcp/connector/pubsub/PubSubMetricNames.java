@@ -27,7 +27,7 @@ import org.apache.flink.annotation.Internal;
  * convention is held across connectors — a name that means the same thing in two connectors should
  * be spelled the same way, and a diff of these files is what shows it. The convention itself (a
  * counter names the event, a gauge names the state, and neither takes Flink's {@code num} prefix)
- * is recorded in the base module's {@code CLAUDE.md}.
+ * is recorded in the base module's detailed agent guidance.
  *
  * <p>What is <em>not</em> here: Flink's standard names, which come from {@code
  * SinkWriterMetricGroup} and {@code SourceReaderMetricGroup} accessors rather than from a name, and

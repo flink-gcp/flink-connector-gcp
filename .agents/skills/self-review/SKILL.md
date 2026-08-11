@@ -16,14 +16,14 @@ asking for review, calling the PR ready, marking it ready-for-review — may hap
 rounds have.
 
 **Round one asks whether the code does what the description says**, taking the PR description as
-the specification. It is mandatory on every draft PR (root `CLAUDE.md` § Workflow rules;
+the specification. It is mandatory on every draft PR (root `AGENTS.md` § GitHub workflow;
 `docs/adr/0060`), it applies simplification and efficiency findings rather than correctness ones
 only, and it is followed by `self-review-round-two` before the PR is called ready.
 
-Do not confuse it with the built-in `/code-review` (and its alias `/review`). Those are marked
-`disable-model-invocation` — **only the user can start them**, and they cannot be scheduled or
-invoked on your behalf. They are a useful second opinion to *ask the user for*; they are not this
-round, and this round does not wait for them.
+In Claude Code, do not confuse this with the built-in `/code-review` (and its alias `/review`).
+Only the user can start those commands. They can provide a second opinion when the user chooses
+to run them, but they are not this round and this round does not wait for them. Codex has no
+equivalent slash command; use the passes below directly.
 
 ## What to review
 
@@ -47,12 +47,11 @@ sweep:
 | **Public API and simplification** | A type or method that need not be public, a knob whose name is wrong, duplication that a call to something existing removes, a shape that is more general than any caller needs, altitude (does this belong at this layer?) |
 | **Test quality and flakiness** | A test that passes for the wrong reason, a sleep, an assertion that cannot fail, a fake modelling less — or more — than the vendor does, a test whose failure message would not locate the defect |
 
-If the session permits the Agent tool, run the three as separate subagents **in parallel**, each
-given only its own lens and told to return findings as `file:line`, a one-sentence claim, and a
-concrete failure scenario. If it does not — several sessions are configured that way — run the
-three passes yourself, sequentially, re-reading the diff for each. Say which of the two you did
-when you record the round; a single combined pass is a different, weaker thing and must not be
-reported as three lenses.
+If the session supports subagents, run the three as separate subagents **in parallel**, each given
+only its own lens and told to return findings as `file:line`, a one-sentence claim, and a concrete
+failure scenario. If it does not, run the three passes yourself, sequentially, re-reading the diff
+for each. Say which of the two you did when you record the round; a single combined pass is a
+different, weaker thing and must not be reported as three lenses.
 
 ## Verify before acting
 

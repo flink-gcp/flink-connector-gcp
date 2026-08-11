@@ -138,4 +138,5 @@ fails naming it. Whether to relocate is a real decision, not a default:
   the reason instead).
 
 Read the relocation comments in `flink-sql-connector-gcp-pubsub/pom.xml` and
-the module `CLAUDE.md` before choosing; both record the measured failure modes.
+`.agents/references/modules/flink-connector-gcp-pubsub.md` before choosing; both record the
+measured failure modes.

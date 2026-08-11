@@ -26,7 +26,7 @@ limitations under the License.
 ## Context
 
 [#32] was opened to plan a Flink 1.20 (1.x LTS) support **branch** and its backport process,
-the plan the root `CLAUDE.md` had recorded as this repository's intention. Before committing
+the plan the root `AGENTS.md` had recorded as this repository's intention. Before committing
 to a second branch to maintain, the actual API delta between 1.20 and 2.x for the surface
 these connectors touch was measured.
 

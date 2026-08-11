@@ -1,6 +1,6 @@
 ---
 name: curate-metric-docs
-description: Decide how to respond when `just check-metric-docs` / `scripts/check-metric-docs.py` fails. Use on "but no `Metric`-headed table names it", "names X, which <module> does not register", "documented as a counter/gauge but ... registers it as a", "marked (Flink standard) but ... registers it", "registers a counter/gauge by a name outside the module's *MetricNames.java inventory", "takes Flink's `num` prefix", "uses <Class> but no `Metric`-headed table documents", "registers metrics but no [[connectors]] entry maps it", or when adding a connector, a metric, or a metrics table. Covers where a row goes, what its Type and Meaning columns may say, and the opposite directions [exempt] and [extra] point in.
+description: Decide how to respond when `just check-metric-docs` / `scripts/check-metric-docs.py` fails. Use on "but no `Metric`-headed table names it", "names X, which MODULE does not register", "documented as a counter/gauge but ... registers it as a", "marked (Flink standard) but ... registers it", "registers a counter/gauge by a name outside the module's *MetricNames.java inventory", "takes Flink's `num` prefix", "uses CLASS but no `Metric`-headed table documents", "registers metrics but no [[connectors]] entry maps it", or when adding a connector, a metric, or a metrics table. Covers where a row goes, what its Type and Meaning columns may say, and the opposite directions [exempt] and [extra] point in.
 ---
 
 # Curate a metrics-table decision

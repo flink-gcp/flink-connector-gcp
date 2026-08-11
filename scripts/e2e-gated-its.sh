@@ -162,7 +162,7 @@ case "${1:-}" in
         # own message. This side has no javadoc exemption to make — the literal
         # is short enough to appear in prose — so a class whose *comment*
         # quotes @Tag("gated") reads as tagged: document the convention in a
-        # CLAUDE.md rather than in javadoc, as the base classes do.
+        # AGENTS.md rather than in javadoc, as the base classes do.
         tagged=$(grep -rl --include='*.java' '@Tag("gated")' ./*/src/test/java | sort) || true
         if [ -n "$tagged" ]; then
             while IFS= read -r src; do

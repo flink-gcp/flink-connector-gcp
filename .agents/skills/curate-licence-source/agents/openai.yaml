@@ -1,0 +1,4 @@
+interface:
+  display_name: "Curate Licence Source"
+  short_description: "Resolve shaded dependency licensing decisions"
+  default_prompt: "Use $curate-licence-source to resolve this shaded dependency licence failure."

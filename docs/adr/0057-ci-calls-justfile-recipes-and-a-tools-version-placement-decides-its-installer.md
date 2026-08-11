@@ -21,7 +21,7 @@ limitations under the License.
   [#113](https://github.com/laughingman7743/flink-connector-gcp/pull/113))
 - Issues: [#111], [#132]
 - Modules: all (build/CI)
-- Current behavior: root `CLAUDE.md` § Build (the imperative rules), `justfile`
+- Current behavior: root `AGENTS.md` § Build (the imperative rules), `justfile`
 
 ## Decision
 

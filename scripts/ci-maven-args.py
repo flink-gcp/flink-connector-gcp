@@ -37,7 +37,7 @@ The mapping is derived, never configured, in the e2e-gated-its.sh tradition
 
 Each changed file is classified by the first matching rule:
 
-1. **Ignored** — any `README.md` or `CLAUDE.md` (apache-rat's exclude list
+1. **Ignored** — any `README.md`, `AGENTS.md` or `CLAUDE.md` (apache-rat's exclude list
    carries exactly those patterns, so skipping them loses no licence-header
    check), `opentofu/**`, `tfaction-root.yaml` and the three tofu workflows
    (the tfaction workflows check those), and everything under `.github/` that
@@ -140,14 +140,17 @@ POM_NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 
 # Rule 1 above: the pull-request half of the Maven workflow's paths-ignore. Keep in
 # sync with the push trigger's paths-ignore in .github/workflows/verify.yaml.
-IGNORED_BASENAMES = {"README.md", "CLAUDE.md"}
-# .claude/ is the harness's own directory — skills, settings, worktrees. No build
-# reads it, and rat excludes every dot-directory (`**/.*/**` in the root pom), so
-# like .github/ below it does not even buy the root-only rat run. Named here
-# because editing a skill is a routine change (ADR-0069 made it more so), and
-# without this rule a one-word fix to a description forced the full reactor.
-IGNORED_PREFIXES = ("opentofu/", ".claude/")
+# The dot-directories are agent harness configuration — shared skills, MCP,
+# Serena, settings and worktrees. No Maven build reads them, and rat excludes
+# every dot-directory (`**/.*/**` in the root pom), so like .github/ below they
+# do not even buy the root-only rat run. Named here because editing agent
+# guidance is a routine change and must not force the full reactor.
+IGNORED_BASENAMES = {"README.md", "AGENTS.md", "CLAUDE.md"}
+# .claude/ is the compatibility surface; .agents/ is the canonical guidance.
+# .codex/ and .serena/ configure their respective local tools.
+IGNORED_PREFIXES = ("opentofu/", ".agents/", ".claude/", ".codex/", ".serena/")
 IGNORED_FILES = {
+    ".mcp.json",
     "tfaction-root.yaml",
     ".github/workflows/tofu-plan.yaml",
     ".github/workflows/tofu-apply.yaml",

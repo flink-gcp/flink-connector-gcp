@@ -41,12 +41,12 @@ documentation homes:
 
 - `docs/content/` pages keep current behavior and the rationale a **user** needs — unchanged.
 - `docs/adr/` keeps the decision **event**: evidence, declined alternatives, supersession.
-- `CLAUDE.md` files keep the imperative **rules** a session must follow, each a few lines ending
-  in a pointer to the ADR or docs section that carries the record. `CLAUDE.md` files auto-load
-  (root always, module files on touch) and ADRs never do, so `CLAUDE.md` must stay sufficient
+- `AGENTS.md` files keep the imperative **rules** a session must follow, each a few lines ending
+  in a pointer to the ADR or docs section that carries the record. Agent guidance auto-loads
+  (root always, module files on touch) and ADRs never do, so `AGENTS.md` must stay sufficient
   for compliance — and only for compliance.
 
-Where a docs page already carries a decision's full operative record, the `CLAUDE.md` entry
+Where a docs page already carries a decision's full operative record, the `AGENTS.md` entry
 becomes a pointer to that page and **no ADR is written** — an ADR exists for what a user page
 must not carry (declined alternatives, incidents, internal/CI/test decisions), not as a third
 copy.
@@ -56,7 +56,7 @@ touch it: design discussion stays on the issue (the `Design (settled YYYY-MM-DD)
 which may simply say "Settled — see ADR-NNNN" once the file exists); the PR that implements a
 settled decision carries the ADR in its diff; and a later PR that extends the decision edits
 the same ADR in place. **The trigger is the residue, not the pull request: an ADR is owed
-exactly where, before this archive, a decision record would have been owed to a `CLAUDE.md`,
+exactly where, before this archive, a decision record would have been owed to agent guidance,
 README or docs page** — something was weighed and declined, measured, or chosen in a way a
 later reader must not re-argue without engaging the reasoning. Granularity is the decision
 *cluster*, not the pull request — a design evolving across several issues stays one file.
@@ -100,5 +100,5 @@ both directions.
   push-trigger paths list the directory.
 - The hand-maintained index table in `docs/adr/README.md` is the discovery surface; keeping it
   current is part of adding an ADR.
-- Migration of the existing `CLAUDE.md` corpus is incremental, one source file per pull request,
-  each leaving the tree consistent (a decision is either fully migrated or untouched).
+- The original detailed `CLAUDE.md` corpus is retained under `.agents/references/`; concise
+  `AGENTS.md` files route sessions to those records without loading the entire corpus by default.

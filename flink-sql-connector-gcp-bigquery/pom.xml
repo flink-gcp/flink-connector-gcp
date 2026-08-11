@@ -235,7 +235,7 @@
                                      The full argument, the survey of projects that do the same,
                                      and the measurement that rejected exempting grpc-netty-shaded
                                      instead are recorded once, in
-                                     flink-connector-gcp-pubsub/CLAUDE.md. What matters here is
+                                     .agents/references/modules/flink-connector-gcp-pubsub.md. What matters here is
                                      that this jar and that one must be able to share a classpath,
                                      which is the case that exemption would have broken first.
 

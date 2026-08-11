@@ -21,7 +21,7 @@ limitations under the License.
   [#242](https://github.com/laughingman7743/flink-connector-gcp/pull/242), under [#209])
 - Issues: [#209]
 - Modules: all connectors (tests)
-- Current behavior: root `CLAUDE.md` § Cross-connector contracts
+- Current behavior: root `AGENTS.md` § Cross-connector contracts
 
 ## Decision
 

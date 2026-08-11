@@ -106,7 +106,7 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
      * it, so a second report here only adds a competing exception to a teardown the first one is
      * already causing — which is why {@link PubSubNotifyingPullSubscriber} absorbs the one its
      * client raises (#325). The repository-wide rule this is an instance of, and what was measured
-     * about the other connectors' clients, are in the root {@code CLAUDE.md}.
+     * about the other connectors' clients, are in the detailed repository guidance.
      *
      * <p>A failure the client raises <em>during</em> this teardown is a different case, and this
      * contract does not require it to be raised either (#351). Nothing has consumed it — the reader

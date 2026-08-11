@@ -206,7 +206,7 @@ public final class BoundedShutdown implements AutoCloseable {
      * The counter this teardown was handed, so a caller's wiring can be asserted by identity rather
      * than by driving a give-up and observing an increment — which is a footrace against the
      * freshly started thread, not a deterministic test. Widened for that reason specifically, per
-     * the rule beside {@link #timeout()}'s justification in the module's CLAUDE.md.
+     * the rule beside {@link #timeout()}'s justification in the module's detailed guidance.
      */
     @VisibleForTesting
     public LongAdder abandonedCounter() {

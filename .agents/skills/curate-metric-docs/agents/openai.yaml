@@ -1,0 +1,4 @@
+interface:
+  display_name: "Curate Metric Docs"
+  short_description: "Reconcile metrics code and documentation tables"
+  default_prompt: "Use $curate-metric-docs to resolve this metric documentation audit failure."

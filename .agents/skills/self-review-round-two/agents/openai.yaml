@@ -1,0 +1,4 @@
+interface:
+  display_name: "Self-review Round Two"
+  short_description: "Audit whether a pull request description is true"
+  default_prompt: "Use $self-review-round-two to audit the pull request claims before it is ready."

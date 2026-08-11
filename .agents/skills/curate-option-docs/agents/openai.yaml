@@ -1,0 +1,4 @@
+interface:
+  display_name: "Curate Option Docs"
+  short_description: "Reconcile connector options and reference tables"
+  default_prompt: "Use $curate-option-docs to resolve this option documentation audit failure."

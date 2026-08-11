@@ -30,7 +30,7 @@
 # `key = "reason"`, and the reason says why this is *not* a row, since that is
 # what the next person has to re-judge.
 #
-# `.claude/skills/curate-option-docs/` is the procedure for every failure this
+# `.agents/skills/curate-option-docs/` is the procedure for every failure this
 # file can produce, including which of the two an entry belongs in.
 #
 # Modules are mapped, not individual classes, on purpose: a new *Options class

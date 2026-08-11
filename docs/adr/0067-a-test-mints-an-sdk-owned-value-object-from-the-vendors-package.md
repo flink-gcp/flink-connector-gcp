@@ -20,7 +20,7 @@ limitations under the License.
 - Date: 2026-08-08
 - Issues: [#337]
 - Modules: bigquery (tests); the rule is cross-connector
-- Current behavior: root `CLAUDE.md` § Cross-connector contracts
+- Current behavior: root `AGENTS.md` § Cross-connector contracts
 
 ## Decision
 

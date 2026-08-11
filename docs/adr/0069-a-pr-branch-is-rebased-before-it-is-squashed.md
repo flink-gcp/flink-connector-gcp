@@ -22,7 +22,7 @@ limitations under the License.
   came out of that PR's own failure, and no issue was ever filed for it. `—` was the alternative
   and says less.
 - Modules: all (workflow)
-- Current behavior: `.claude/skills/push-pr-branch/`, root `CLAUDE.md` § Workflow rules
+- Current behavior: `.agents/skills/push-pr-branch/`, root `AGENTS.md` § Workflow rules
 
 ## Context / Evidence
 
@@ -69,7 +69,7 @@ git fetch origin && git rebase origin/main          # then reset --soft is a mov
 git diff --diff-filter=D --name-only origin/main    # empty, or every path deliberate
 ```
 
-The procedure, its recovery path and the reasoning live in `.claude/skills/push-pr-branch/`, which
+The procedure, its recovery path and the reasoning live in `.agents/skills/push-pr-branch/`, which
 the workflow rule names; `git reset --soft $(git merge-base HEAD origin/main)` is the equivalent
 safe form when a rebase is genuinely unwanted.
 

@@ -105,7 +105,14 @@ def classify(mod, files):
     [
         "README.md",
         "a/README.md",
+        "AGENTS.md",
+        "a/AGENTS.md",
         "a/deep/CLAUDE.md",
+        ".agents/skills/self-review/SKILL.md",
+        ".claude/skills",
+        ".codex/config.toml",
+        ".serena/project.yml",
+        ".mcp.json",
         "opentofu/main.tf",
         "tfaction-root.yaml",
         ".github/workflows/tofu-plan.yaml",
@@ -478,12 +485,12 @@ def test_modes_are_mutually_exclusive():
 
 
 def test_a_skill_edit_builds_nothing(tmp_path):
-    # .claude/ is the harness's own directory: no build reads it and rat excludes
+    # .agents/ is the canonical harness directory: no build reads it and rat excludes
     # every dot-directory, so a one-word fix to a skill description must not cost
     # the full reactor — which it did until ADR-0069 made skills a routine edit
     # surface and the measurement was taken.
     out = outputs(
-        run_cli("--files", json.dumps([".claude/skills/push-pr-branch/SKILL.md"]))
+        run_cli("--files", json.dumps([".agents/skills/push-pr-branch/SKILL.md"]))
     )
 
     assert out["maven_args"] == ""
@@ -500,7 +507,7 @@ def test_a_skill_edit_beside_a_module_change_still_builds_that_module(tmp_path):
             "--files",
             json.dumps(
                 [
-                    ".claude/skills/push-pr-branch/SKILL.md",
+                    ".agents/skills/push-pr-branch/SKILL.md",
                     "flink-connector-gcp-cloudtasks/src/main/java/X.java",
                 ]
             ),

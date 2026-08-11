@@ -16,7 +16,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Hold every `.claude/skills/*/SKILL.md` to frontmatter that is strict YAML.
+"""Hold every `.agents/skills/*/SKILL.md` to frontmatter that is strict YAML.
 
 **What this does and does not claim.** It enforces a house style, not Claude
 Code's own requirement. `self-review-round-two` shipped with an unquoted
@@ -98,14 +98,17 @@ is the whole of #388 that survives it.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import sys
+import tomllib
 
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKILLS = ROOT / ".claude" / "skills"
+SKILLS = ROOT / ".agents" / "skills"
+AGENT_GUIDANCE_LIMIT = 32 * 1024
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -239,8 +242,151 @@ def check(skills_dir: pathlib.Path) -> list[str]:
     return problems
 
 
+def check_openai_metadata(skills_dir: pathlib.Path) -> list[str]:
+    """Return problems with Codex's UI metadata for the canonical skills."""
+    problems: list[str] = []
+    for skill_dir in sorted(path.parent for path in skills_dir.glob("*/SKILL.md")):
+        path = skill_dir / "agents" / "openai.yaml"
+        if not path.is_file():
+            problems.append(f"{path}: Codex skill metadata is missing")
+            continue
+        try:
+            data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+        except yaml.YAMLError as e:
+            problems.append(
+                f"{path}: metadata is not valid YAML ({str(e).splitlines()[0]})"
+            )
+            continue
+        interface = data.get("interface") if isinstance(data, dict) else None
+        if not isinstance(interface, dict):
+            problems.append(f"{path}: interface mapping is missing")
+            continue
+        for key in ("display_name", "short_description", "default_prompt"):
+            if not str(interface.get(key) or "").strip():
+                problems.append(f"{path}: interface.{key} is missing or empty")
+        prompt = str(interface.get("default_prompt") or "")
+        invocation = re.compile(rf"(?<![\w-])\${re.escape(skill_dir.name)}(?![\w-])")
+        if invocation.search(prompt) is None:
+            problems.append(
+                f"{path}: interface.default_prompt must mention ${skill_dir.name}"
+            )
+    return problems
+
+
+def check_repository_layout(root: pathlib.Path) -> list[str]:
+    """Return problems with the shared Codex/Claude repository layout."""
+    problems: list[str] = []
+    canonical = root / ".agents" / "skills"
+    compatibility = root / ".claude" / "skills"
+    if not compatibility.is_symlink():
+        problems.append(f"{compatibility}: must be a symlink to ../.agents/skills")
+    elif compatibility.readlink() != pathlib.Path("../.agents/skills"):
+        problems.append(
+            f"{compatibility}: points to {compatibility.readlink()}, expected ../.agents/skills"
+        )
+    elif compatibility.resolve() != canonical.resolve():
+        problems.append(f"{compatibility}: does not resolve to {canonical}")
+
+    root_guidance = root / "AGENTS.md"
+    if not root_guidance.is_file():
+        problems.append(f"{root_guidance}: repository guidance is missing")
+        return problems
+    guidance_files = sorted(
+        path
+        for path in root.rglob("AGENTS.md")
+        if not any(
+            part.startswith(".") or part == "target"
+            for part in path.relative_to(root).parts
+        )
+    )
+    for guidance in guidance_files:
+        scoped = [root_guidance]
+        if guidance != root_guidance:
+            scoped.extend(
+                parent / "AGENTS.md"
+                for parent in guidance.parents
+                if parent != root and (parent / "AGENTS.md").is_file()
+            )
+        combined = sum(path.stat().st_size for path in dict.fromkeys(scoped))
+        if combined > AGENT_GUIDANCE_LIMIT:
+            problems.append(
+                f"{guidance}: root plus scoped guidance is {combined} bytes, over the"
+                f" {AGENT_GUIDANCE_LIMIT}-byte Codex default"
+            )
+        wrapper = guidance.with_name("CLAUDE.md")
+        imports = (
+            []
+            if not wrapper.is_file()
+            else [
+                line.strip()
+                for line in wrapper.read_text(encoding="utf-8").splitlines()
+            ]
+        )
+        if "@AGENTS.md" not in imports:
+            problems.append(f"{wrapper}: must import @AGENTS.md for Claude Code")
+    return problems
+
+
+def check_mcp_config(root: pathlib.Path) -> list[str]:
+    """Return syntax and cross-client problems in the project MCP configuration."""
+    problems: list[str] = []
+    codex_path = root / ".codex" / "config.toml"
+    claude_path = root / ".mcp.json"
+    try:
+        codex = tomllib.loads(codex_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        return [f"{codex_path}: cannot load Codex MCP configuration ({e})"]
+    try:
+        claude = json.loads(claude_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return [f"{claude_path}: cannot load Claude MCP configuration ({e})"]
+
+    codex_servers = codex.get("mcp_servers", {})
+    claude_servers = claude.get("mcpServers", {})
+    if set(codex_servers) != {"context7", "serena"}:
+        problems.append(
+            f"{codex_path}: MCP servers must be exactly context7 and serena"
+        )
+    if set(claude_servers) != {"context7", "serena"}:
+        problems.append(
+            f"{claude_path}: MCP servers must be exactly context7 and serena"
+        )
+    for servers, path in ((codex_servers, codex_path), (claude_servers, claude_path)):
+        context7 = servers.get("context7", {})
+        if context7.get("url") != "https://mcp.context7.com/mcp":
+            problems.append(
+                f"{path}: context7 must use the anonymous remote MCP endpoint"
+            )
+        serena = servers.get("serena", {})
+        args = serena.get("args", [])
+        required = (
+            "serena-agent==1.7.0",
+            "--project-from-cwd",
+            "--add-mode",
+            "no-memories",
+        )
+        if serena.get("command") != "mise" or any(
+            value not in args for value in required
+        ):
+            problems.append(
+                f"{path}: serena must use pinned 1.7.0 from the cwd in no-memories mode"
+            )
+    codex_args = codex_servers.get("serena", {}).get("args", [])
+    claude_args = claude_servers.get("serena", {}).get("args", [])
+    if "--context=codex" not in codex_args:
+        problems.append(f"{codex_path}: serena must use the codex context")
+    if "--context=claude-code" not in claude_args:
+        problems.append(f"{claude_path}: serena must use the claude-code context")
+    return problems
+
+
 def main() -> int:
-    problems = check(SKILLS)
+    problems = [
+        *check(SKILLS),
+        *check_openai_metadata(SKILLS),
+        *check_repository_layout(ROOT),
+        *check_mcp_config(ROOT),
+    ]
     for problem in problems:
         print(f"::error::{problem}", file=sys.stderr)
     if problems:

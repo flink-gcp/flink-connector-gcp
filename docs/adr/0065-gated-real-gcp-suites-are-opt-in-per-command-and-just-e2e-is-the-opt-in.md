@@ -20,7 +20,7 @@ limitations under the License.
 - Date: 2026-08-02 ([#245])
 - Issues: [#245]
 - Modules: all connectors (tests/CI)
-- Current behavior: root `CLAUDE.md` § Build (`just e2e`, `just check-gated-tags`)
+- Current behavior: root `AGENTS.md` § Build (`just e2e`, `just check-gated-tags`)
 
 ## Context
 

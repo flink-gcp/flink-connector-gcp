@@ -1,0 +1,31 @@
+# Project-scoped MCP servers shared by the Codex CLI, app, and IDE extension.
+# Codex loads this file only after the repository is trusted. Keep credentials in
+# personal configuration or environment variables, never here.
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+required = false
+default_tools_approval_mode = "approve"
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+
+[mcp_servers.serena]
+command = "mise"
+args = [
+  "x",
+  "uv",
+  "--",
+  "uvx",
+  "--from",
+  "serena-agent==1.7.0",
+  "serena",
+  "start-mcp-server",
+  "--project-from-cwd",
+  "--context=codex",
+  "--add-mode",
+  "no-memories",
+]
+required = false
+startup_timeout_sec = 60
+tool_timeout_sec = 120
+default_tools_approval_mode = "writes"

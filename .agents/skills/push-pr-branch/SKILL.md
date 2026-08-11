@@ -87,6 +87,11 @@ genuinely removes and the commit message says so.
 Rebuilding beats untangling. A rebase whose conflicts are all in files you never touched is a
 signal to start over, not to resolve.
 
+The recovery below resets the worktree and is destructive. Before running it, resolve the exact
+branch and owned-file list with read-only commands, preserve the current commit on the backup
+branch, and obtain the user's explicit approval for the hard reset. Never substitute an unresolved
+variable, glob, repository root, or home directory for the targets shown here.
+
 ```bash
 BASE=$(git merge-base HEAD origin/main)             # what this branch actually started from
 
@@ -117,5 +122,5 @@ lives in the author's head at squash time, which is where this procedure runs. A
 need that intent restated as an allowlist or a declaration, for a defect whose real cure is not
 using `reset --soft` on a moving ref.
 
-Related: root `CLAUDE.md` § Workflow rules, `docs/adr/0069`, and `.claude/skills/self-review/`,
+Related: root `CLAUDE.md` § Workflow rules, `docs/adr/0069`, and `.agents/skills/self-review/`,
 whose fix-up commits are the most common reason a branch is squashed a second time.

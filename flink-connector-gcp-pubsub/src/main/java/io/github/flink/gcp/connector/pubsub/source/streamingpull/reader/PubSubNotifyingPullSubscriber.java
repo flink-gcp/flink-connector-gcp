@@ -480,7 +480,7 @@ public class PubSubNotifyingPullSubscriber implements NotifyingPullSubscriber {
      * failure listener already recorded as {@link #permanentError} and {@link #pullMessages}
      * already reported, wrapped in an {@link IOException}. Propagating it would report one failure
      * twice — the contract {@link NotifyingPullSubscriber#close()} states, and the repository-wide
-     * rule the root {@code CLAUDE.md} carries (#325). Measured on {@code google-cloud-pubsub}
+     * rule the detailed repository guidance carries (#325). Measured on {@code google-cloud-pubsub}
      * 1.152.0, api-common 2.65.0 and Guava 33.5.0.
      *
      * <p><b>The catch is wider than that one case, and the other two are not repeats of
