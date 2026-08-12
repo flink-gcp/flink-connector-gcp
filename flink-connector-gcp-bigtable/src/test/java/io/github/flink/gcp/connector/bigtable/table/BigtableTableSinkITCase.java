@@ -51,6 +51,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class BigtableTableSinkITCase extends BigtableTableTestBase {
 
+    private static String sinkOptions(String tableId, String... keysAndValues) {
+        String[] options = new String[keysAndValues.length + 2];
+        options[0] = "sink.insert-only-input-mode";
+        options[1] = "insert-only";
+        System.arraycopy(keysAndValues, 0, options, 2, keysAndValues.length);
+        return withOptions(tableId, options);
+    }
+
     private static String ddl(String withClause) {
         return "CREATE TABLE bt (\n"
                 + "  rowkey STRING,\n"
@@ -96,7 +104,7 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
     void writesEveryDeclaredCellOfEveryRow() throws Exception {
         TableDestination destination = createTable("sql-insert", "cf1", "cf2");
         TableEnvironment tEnv = streamingTableEnvironment();
-        tEnv.executeSql(ddl(withOptions("sql-insert")));
+        tEnv.executeSql(ddl(sinkOptions("sql-insert")));
 
         tEnv.executeSql(
                         "INSERT INTO bt VALUES"
@@ -118,7 +126,7 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
     void writesCellTimestampMetadataDeclaredAtMillisecondPrecision() throws Exception {
         TableDestination destination = createTable("sql-timestamp", "cf");
         TableEnvironment tEnv = streamingTableEnvironment();
-        tEnv.executeSql(timestampDdl(3, withOptions("sql-timestamp")));
+        tEnv.executeSql(timestampDdl(3, sinkOptions("sql-timestamp")));
 
         tEnv.executeSql(
                         "INSERT INTO bt VALUES"
@@ -138,7 +146,7 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         tEnv.executeSql(
                 timestampDdl(
                         9,
-                        withOptions(
+                        sinkOptions(
                                 "sql-timestamp-truncate",
                                 "sink.cell-timestamp.truncate-to-millis",
                                 "true")));
@@ -158,7 +166,7 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
     void aNullStringCellTakesTheConfiguredLiteral() throws Exception {
         TableDestination destination = createTable("sql-null", "cf1", "cf2");
         TableEnvironment tEnv = streamingTableEnvironment();
-        tEnv.executeSql(ddl(withOptions("sql-null", "null-string-literal", "<none>")));
+        tEnv.executeSql(ddl(sinkOptions("sql-null", "null-string-literal", "<none>")));
 
         tEnv.executeSql(
                         "INSERT INTO bt VALUES"
@@ -176,7 +184,7 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
     void aLaterWriteForTheSameKeyOverwritesTheEarlierOne() throws Exception {
         TableDestination destination = createTable("sql-overwrite", "cf1", "cf2");
         TableEnvironment tEnv = streamingTableEnvironment();
-        tEnv.executeSql(ddl(withOptions("sql-overwrite")));
+        tEnv.executeSql(ddl(sinkOptions("sql-overwrite")));
 
         // Two jobs, not two rows of one VALUES. Bigtable applies the entries of a MutateRows
         // request "in arbitrary order (even between entries for the same row)" — its own proto
@@ -204,7 +212,7 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         // INVALID_ARGUMENT naming neither the row nor the reason.
         createTable("sql-empty-mutation", "cf1", "cf2");
         TableEnvironment tEnv = streamingTableEnvironment();
-        tEnv.executeSql(ddl(withOptions("sql-empty-mutation")));
+        tEnv.executeSql(ddl(sinkOptions("sql-empty-mutation")));
 
         assertThatThrownBy(() -> tEnv.executeSql("INSERT INTO bt (rowkey) VALUES ('r1')").await())
                 .hasStackTraceContaining("Every column family of the row with key 'r1' is null");
@@ -215,12 +223,11 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         TableDestination destination = createTable("sql-delete", "cf1", "cf2");
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
-        // No ON CONFLICT clause and no escape option, and on Flink 2.3 that is load-bearing
-        // rather than lucky (#488): the source view's declared primary key 'k' gives the planner
-        // an upsert key, the SELECT maps it onto the sink's PRIMARY KEY, and FLIP-558's demand
-        // fires only when the two differ — measured, this statement plans on 2.3.0 with no
-        // materializer. A retract source with no declared key would meet the demand instead.
-        tEnv.executeSql(ddl(withOptions("sql-delete")));
+        // The shared sink DDL selects the insert-only compatibility mode so the plain INSERT jobs
+        // above remain portable. This updating query is deliberately unaffected by that setting:
+        // its declared key maps onto the sink PRIMARY KEY, so it plans on 2.3 without a clause or
+        // materializer as well.
+        tEnv.executeSql(ddl(sinkOptions("sql-delete")));
         tEnv.executeSql(
                         "INSERT INTO bt VALUES"
                                 + " ('keep', ROW('alice', CAST(7 AS BIGINT)), ROW(true)),"
@@ -286,7 +293,7 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         TableEnvironment tEnv = streamingTableEnvironment();
         tEnv.executeSql(
                 ddl(
-                        withOptions(
+                        sinkOptions(
                                 "sql-created",
                                 "sink.create-disposition",
                                 "create-if-needed",
@@ -317,7 +324,7 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
                         + "  cf1 ROW<name STRING>,\n"
                         + "  PRIMARY KEY (k) NOT ENFORCED\n"
                         + ") "
-                        + withOptions("sql-bigint-key"));
+                        + sinkOptions("sql-bigint-key"));
 
         tEnv.executeSql("INSERT INTO bt VALUES (CAST(1 AS BIGINT), ROW('alice'))").await();
 
@@ -339,7 +346,7 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
                         + "  rowkey STRING,\n"
                         + "  cf1 ROW<name STRING>\n"
                         + ") "
-                        + withOptions("sql-keyonly-delete"));
+                        + sinkOptions("sql-keyonly-delete"));
 
         // An upsert source keyed on 'id', which is *not* the row-key column, whose delete carries
         // that key and nothing else — the shape an upsert source emits. #470: while the sink

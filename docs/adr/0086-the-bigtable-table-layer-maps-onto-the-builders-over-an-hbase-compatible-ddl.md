@@ -16,7 +16,7 @@ limitations under the License.
 
 # ADR-0086: The Bigtable table layer maps onto the builders over an HBase-compatible DDL
 
-- Status: Accepted
+- Status: Superseded by ADR-0102
 - Date: 2026-08-10; revised by [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473) (2026-08-11),
   [#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543) (2026-08-12)
 - Issues: [#458](https://github.com/laughingman7743/flink-connector-gcp/issues/458) (under

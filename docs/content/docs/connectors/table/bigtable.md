@@ -46,7 +46,8 @@ CREATE TABLE profiles (
   'connector' = 'bigtable',
   'project' = 'my-project',
   'instance' = 'my-instance',
-  'table' = 'profiles'
+  'table' = 'profiles',
+  'sink.insert-only-input-mode' = 'insert-only'
 );
 
 INSERT INTO profiles
@@ -148,8 +149,9 @@ tells the planner a delete may carry the upsert key alone — that key *is* the 
 else is needed. With none declared, the planner keys its upserts on whatever the query happens to be
 unique by, which need not be the row-key column at all, so the sink asks for whole rows and the
 planner completes each one before the delete reaches it. That completion is a `ChangelogNormalize`,
-which keeps state proportional to the keyspace. A query that carries no deletes gets neither, so an
-insert-only job pays nothing either way.
+which keeps state proportional to the keyspace. For this delete-completion decision, a query that
+carries no deletes needs no `ChangelogNormalize` either way. Flink 2.3's separate conflict-strategy
+state for insert-only input is covered under [delivery guarantees](#delivery-guarantees).
 
 **A completed delete is completed from what the job has seen.** `ChangelogNormalize` holds the last
 row per key in Flink state, so a `-D` for a key this job never inserted has nothing to complete from
@@ -358,9 +360,10 @@ source of truth. Lookup options are table-layer or Flink-owned instead. An optio
 DDL leaves the corresponding setter or lookup setting untouched; the full list of defaults is in
 the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
 
-`null-string-literal`, `scan.row-key-encoding`, `lookup.async` and
-`sink.cell-timestamp.truncate-to-millis` belong to the table layer because they configure its codec
-or runtime shape rather than a DataStream builder.
+`null-string-literal`, `scan.row-key-encoding`, `lookup.async`,
+`sink.cell-timestamp.truncate-to-millis` and `sink.insert-only-input-mode` belong to the table layer
+because they configure its codec, runtime shape or planner contract rather than a DataStream
+builder.
 
 ### Destination
 
@@ -408,6 +411,7 @@ or runtime shape rather than a DataStream builder.
 |---|---|---|
 | `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
+| `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement |
 | `sink.cell-timestamp.truncate-to-millis` | Boolean | Whether the connector drops the sub-millisecond part of writable `timestamp` metadata before sending it; defaults to `false`. Disabled, the connector preserves the value and Bigtable validates its millisecond granularity |
 | `sink.batching.element-count` | Long | `BigtableWriterOptions.batchElementCount(...)`. Counts **entries** — one row's mutations — not mutations |
 | `sink.batching.byte-size` | MemorySize | `BigtableWriterOptions.batchByteSize(...)` |
@@ -496,54 +500,51 @@ A read reverses the convention through the same option —
 
 ## Delivery guarantees
 
-The sink is **at-least-once** and its changelog mode for an updating query is **upsert**. A
-Bigtable write is an upsert on the row key by construction — `setCell` overwrites — and there is no
-retract path to offer instead, so an updating query is accepted rather than rejected; an
-insert-only query is consumed as plain inserts. On Flink 2.x the upsert mode says a delete
-may carry the upsert key alone only when the DDL declares the primary key, which is what makes that
-key the row key; [The schema](#the-schema) above has the consequence for a job. Flink 1.20 has no
-such distinction and always completes the row first.
+The sink is **at-least-once** and advertises **upsert** by default, including when the requested
+input contains inserts alone. A Bigtable write is an upsert on the row key by construction —
+`setCell` overwrites — and there is no retract path to offer instead. On Flink 2.x the upsert mode
+says a delete may carry the upsert key alone only when the DDL declares the primary key, which is
+what makes that key the row key; [The schema](#the-schema) above has the consequence for a job.
+Flink 1.20 has no such distinction and always completes the row first.
 
 A `-D` deletes the **whole row**, not the declared qualifiers one by one. The row key is the primary
 key, so "this key is gone" is what a delete means here; removing only the declared cells would leave
 a row behind made of whatever else was in it.
 
-### Flink 2.3 demands ON CONFLICT of some updating queries
+### Flink 2.3 may demand ON CONFLICT
 
 Flink 2.3
 ([FLIP-558](https://cwiki.apache.org/confluence/display/FLINK/FLIP-558%3A+Improvements+to+SinkUpsertMaterializer+and+changelog+disorder))
-refuses to plan an updating query into a sink table declaring a `PRIMARY KEY` when the query's
-upsert key differs from that key — or when it cannot infer one at all, as for a source declaring
-no key — unless the `INSERT` carries one of the `ON CONFLICT DO DEDUPLICATE` / `DO ERROR` /
-`DO NOTHING` clauses Flink 2.3 introduces. The refusal is the planner's, not this connector's:
-rows with different upsert keys mapping to one primary key reach the sink in no defined order,
-and Flink 2.3 asks the query to say what that should mean instead of materializing silently. An
-updating query whose upsert key *is* the primary key — a keyed changelog or upsert source whose
-key column the query maps onto the row key — plans with no clause, exactly as on 2.2.
+refuses to plan into an upsert sink table declaring a `PRIMARY KEY` when the query's upsert key
+differs from that key — or when it cannot infer one at all, as for `INSERT INTO .. VALUES` — unless
+the statement carries one of the `ON CONFLICT DO DEDUPLICATE` / `DO ERROR` / `DO NOTHING` clauses
+Flink 2.3 introduces. The refusal is the planner's, not this connector's: rows with different
+upsert keys mapping to one primary key reach the sink in no defined order, and Flink 2.3 asks the
+query to say what that should mean instead of materializing silently. An updating query whose
+upsert key *is* the primary key plans with no clause, exactly as on 2.2.
 
-An **insert-only query never meets the demand**: the sink tells the planner it consumes an append
-query as plain inserts ([#488]({{< param BookRepo >}}/issues/488)), which is what keeps every
-insert-only example on this page planning on 2.3 exactly as it does on 2.2 and 1.20. Flink's own
-HBase connector answers the same way, echoing back the kinds its input carries.
+The default `sink.insert-only-input-mode = upsert` applies that rule to an insert-only input too.
+It exposes all three conflict strategies and reflects the physical write, which overwrites a row
+with the same key. On an insert-only input, `DO DEDUPLICATE` adds no materializer and leaves those
+writes on the ordinary overwrite path. `DO NOTHING` keeps the first row the *job* observes per key
+and `DO ERROR` fails when the job observes a conflict; both require watermarks. Neither inspects
+Bigtable, so `DO NOTHING` is not an atomic insert-if-absent — a fresh job, expired state or cleared
+state can overwrite an existing row.
 
-The answer costs one thing, and only for an insert-only statement: such a statement cannot carry
-an `ON CONFLICT` clause into this sink, the planner rejecting the clause for a sink that accepts
-only inserts. An updating query is unaffected and may carry any of the three. Measured on 2.3.0,
-what an insert-only statement loses per behaviour: `DO DEDUPLICATE` loses nothing, the planner
-already treating it as a no-op on append input — the plan is the one a plain `INSERT` gets, and
-overwriting is what a Bigtable write does anyway. `DO NOTHING` (keep the first row per key) and
-`DO ERROR` (fail on a conflicting key) are genuinely unavailable; both also require every source
-table to declare a watermark, wherever they are used. An append query needing first-wins
-semantics deduplicates in the query instead — and note that `DO NOTHING` would not mean "leave an
-existing Bigtable row alone" in any case, since it compares against the job's own state rather
-than the table. Whether to offer a way back to it is
-[#496]({{< param BookRepo >}}/issues/496).
+For a plain insert that must use the same DDL on Flink 1.20, 2.2 and 2.3, set
+`sink.insert-only-input-mode = insert-only`. This table-local compatibility mode restores the
+append answer introduced by [#488]({{< param BookRepo >}}/issues/488), so the statement plans
+without the 2.3-only clause. In exchange, Flink rejects an `ON CONFLICT` clause on that insert-only
+statement because the sink has advertised only INSERT changes. Updating inputs remain upsert and
+are unaffected by the option.
 
-An updating query that must also run on 2.2 or 1.20 cannot write the clause, which those parsers
-reject; the cross-version spelling is the configuration behind the check:
-`table.exec.sink.require-on-conflict` = `false`, which restores the older versions' silent
-materialization (a `SinkUpsertMaterializer` keyed on the primary key). The older versions do not
-have the option and ignore it.
+`table.exec.sink.require-on-conflict = false` is the supported planner-wide alternative. It lets
+2.3 plan a statement without the clause while leaving this sink in upsert mode; measured on 2.3.0,
+the plain insert plan then carries `upsertMaterialize=[true]`, while the connector's `insert-only`
+mode carries no materializer. Flink 1.20 and 2.2 do not define the setting and ignore it. Prefer
+the connector option when the compatibility decision belongs to one Bigtable table and the extra
+keyed state is not wanted; use the Flink setting when relaxing the check for every sink planned by
+the session is intentional.
 
 ### Two rows for one key in one batch have no defined winner
 
@@ -592,7 +593,8 @@ CREATE TABLE profiles_with_event_time (
   'connector' = 'bigtable',
   'project' = 'my-project',
   'instance' = 'my-instance',
-  'table' = 'profiles'
+  'table' = 'profiles',
+  'sink.insert-only-input-mode' = 'insert-only'
 );
 
 INSERT INTO profiles_with_event_time

@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.InsertOnlyInputMode;
 
 import javax.annotation.Nullable;
 
@@ -56,7 +57,7 @@ import java.util.Objects;
  * <p>Built through {@link #builder()} rather than a constructor, for the reason {@code
  * BigQueryDynamicSink} records: a positional list is repeated four times over — the constructor,
  * {@link #copy()}, {@link #equals(Object)} and {@link #hashCode()} — with no compiler check that
- * the repetitions agree, and its trailing arguments here were two nullables and a boolean.
+ * the repetitions agree, and this one carries several nullable and policy values.
  */
 @Internal
 public final class BigtableDynamicSink implements DynamicTableSink, SupportsWritingMetadata {
@@ -72,6 +73,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
     private final boolean keyOnlyDeletesAreSafe;
+    private final InsertOnlyInputMode insertOnlyInputMode;
     private final boolean truncateCellTimestampToMillis;
     private boolean timestampMetadataSelected;
 
@@ -91,6 +93,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         this.emulatorEndpoint = builder.emulatorEndpoint;
         this.parallelism = builder.parallelism;
         this.keyOnlyDeletesAreSafe = builder.keyOnlyDeletesAreSafe;
+        this.insertOnlyInputMode =
+                Preconditions.checkNotNull(
+                        builder.insertOnlyInputMode, "insertOnlyInputMode must not be null");
         this.truncateCellTimestampToMillis = builder.truncateCellTimestampToMillis;
         this.timestampMetadataSelected = builder.timestampMetadataSelected;
     }
@@ -116,17 +121,11 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
 
     @Override
     public ChangelogMode getChangelogMode(ChangelogMode requestedMode) {
-        // An insert-only query is consumed as inserts, and saying so is load-bearing on Flink
-        // 2.3+ (#488): FLIP-558 dropped the planner's own insert-only-input early return from its
-        // upsert-materialize analysis, so an upsert answer here sends even a plain INSERT INTO ..
-        // VALUES over a PRIMARY KEY'd table into the upsert-key comparison, which fails it with
-        // "please specify an ON CONFLICT clause" whenever the planner cannot infer an upsert key.
-        // An append answer takes the analysis's surviving sink-is-append early return instead —
-        // measured against the 2.2.1 and 2.3.0 planner sources; on 2.2 and 1.20 the planner's
-        // input-is-append early return made the two answers equivalent, so no plan changes there.
-        // The cost, measured on 2.3.0: an insert-only statement cannot carry an ON CONFLICT
-        // clause into this sink, the planner rejecting the clause for an append sink.
-        if (requestedMode.containsOnly(RowKind.INSERT)) {
+        // The compatibility mode restores #488's append answer for a statement that cannot carry
+        // Flink 2.3's ON CONFLICT syntax. It is deliberately narrow: an updating query must still
+        // expose Bigtable's physical upsert behavior so the planner can complete and order it.
+        if (requestedMode.containsOnly(RowKind.INSERT)
+                && insertOnlyInputMode == InsertOnlyInputMode.INSERT_ONLY) {
             return ChangelogMode.insertOnly();
         }
         // For an updating query, a Bigtable write is an upsert on the row key by construction:
@@ -190,6 +189,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 .emulatorEndpoint(emulatorEndpoint)
                 .parallelism(parallelism)
                 .keyOnlyDeletesAreSafe(keyOnlyDeletesAreSafe)
+                .insertOnlyInputMode(insertOnlyInputMode)
                 .truncateCellTimestampToMillis(truncateCellTimestampToMillis)
                 .timestampMetadataSelected(timestampMetadataSelected)
                 .build();
@@ -220,6 +220,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
                 && keyOnlyDeletesAreSafe == that.keyOnlyDeletesAreSafe
+                && insertOnlyInputMode == that.insertOnlyInputMode
                 && truncateCellTimestampToMillis == that.truncateCellTimestampToMillis
                 && timestampMetadataSelected == that.timestampMetadataSelected;
     }
@@ -238,6 +239,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 emulatorEndpoint,
                 parallelism,
                 keyOnlyDeletesAreSafe,
+                insertOnlyInputMode,
                 truncateCellTimestampToMillis,
                 timestampMetadataSelected);
     }
@@ -256,6 +258,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         @Nullable private String emulatorEndpoint;
         @Nullable private Integer parallelism;
         private boolean keyOnlyDeletesAreSafe;
+        private InsertOnlyInputMode insertOnlyInputMode;
         private boolean truncateCellTimestampToMillis;
         private boolean timestampMetadataSelected;
 
@@ -361,6 +364,15 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
          */
         public Builder keyOnlyDeletesAreSafe(boolean keyOnlyDeletesAreSafe) {
             this.keyOnlyDeletesAreSafe = keyOnlyDeletesAreSafe;
+            return this;
+        }
+
+        /**
+         * @param insertOnlyInputMode the mode advertised for an insert-only requested changelog
+         * @return this builder
+         */
+        public Builder insertOnlyInputMode(InsertOnlyInputMode insertOnlyInputMode) {
+            this.insertOnlyInputMode = insertOnlyInputMode;
             return this;
         }
 

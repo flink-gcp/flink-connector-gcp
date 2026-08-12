@@ -50,6 +50,7 @@ class BigtableConnectorOptionsTest {
                             BigtableConnectorOptions.NULL_STRING_LITERAL.key(),
                             BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING.key(),
                             BigtableConnectorOptions.LOOKUP_ASYNC.key(),
+                            BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE.key(),
                             BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS.key()));
 
     private static final Set<String> FLINK_OWNED =
@@ -128,6 +129,14 @@ class BigtableConnectorOptionsTest {
                                 assertThat(option.hasDefaultValue())
                                         .as("option '%s' carries a default", option.key())
                                         .isEqualTo(TABLE_OWNED.contains(option.key())));
+    }
+
+    @Test
+    void insertOnlyInputModeDefaultsToUpsert() {
+        assertThat(BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE.defaultValue())
+                .isEqualTo(InsertOnlyInputMode.UPSERT);
+        assertThat(InsertOnlyInputMode.UPSERT).hasToString("upsert");
+        assertThat(InsertOnlyInputMode.INSERT_ONLY).hasToString("insert-only");
     }
 
     @Test
