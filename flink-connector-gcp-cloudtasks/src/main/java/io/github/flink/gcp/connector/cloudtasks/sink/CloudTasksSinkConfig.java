@@ -41,6 +41,7 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
     @Nullable private final TaskIdExtractor<? super T> taskIdExtractor;
     private final CloudTasksWriterOptions writerOptions;
     private final FailureHandler<? super FailedTask> failedTaskHandler;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     CloudTasksSinkConfig(
@@ -49,12 +50,14 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
             @Nullable TaskIdExtractor<? super T> taskIdExtractor,
             CloudTasksWriterOptions writerOptions,
             FailureHandler<? super FailedTask> failedTaskHandler,
+            @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.taskIdExtractor = taskIdExtractor;
         this.writerOptions = writerOptions;
         this.failedTaskHandler = failedTaskHandler;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -84,6 +87,12 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
     /** Returns the policy for tasks that terminally fail. */
     public FailureHandler<? super FailedTask> getFailedTaskHandler() {
         return failedTaskHandler;
+    }
+
+    /** Returns the service-account key-file path, or {@code null} for ADC. */
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     /** Returns the emulator endpoint, or {@code null} for production Cloud Tasks. */

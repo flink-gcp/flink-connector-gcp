@@ -122,8 +122,11 @@ For GKE, configure Workload Identity Federation for GKE; for Dataproc or Compute
 the intended service account.
 Service account key files work through `GOOGLE_APPLICATION_CREDENTIALS`, but workload identity is
 the better answer wherever it is available.
-Pub/Sub also accepts an explicit service-account key-file path on its DataStream builders and as a
-Table option; its [deployment note]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment) covers the process, Kubernetes and rotation requirements.
+Pub/Sub and Cloud Tasks also accept an explicit service-account key-file path on their DataStream
+builders; Pub/Sub exposes the same setting as a Table option.
+Their deployment notes cover the process, Kubernetes and rotation requirements for
+[Pub/Sub]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment) and
+[Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}#credential-file-deployment).
 
 Two environment facts a first run trips over:
 

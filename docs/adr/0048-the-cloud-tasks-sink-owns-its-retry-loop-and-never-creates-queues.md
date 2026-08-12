@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-25 ([#23] design, [#24] implementation via PR
-  [#107](https://github.com/laughingman7743/flink-connector-gcp/pull/107))
-- Issues: [#23], [#24], [#25]
+  [#107](https://github.com/laughingman7743/flink-connector-gcp/pull/107)); revised 2026-08-12
+  ([#545])
+- Issues: [#23], [#24], [#25], [#545]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md`
 
@@ -61,8 +62,17 @@ limitations under the License.
   stage whose `withBody(SerializationSchema<T>)` binds the record type, so the chain infers `T`
   without a witness; `withUrl(...)` gives per-record URLs. The body is sent **only under
   POST/PUT/PATCH** — Cloud Tasks errors on a body under any other method.
+- Production uses application-default credentials unless `serviceAccountKeyFile(path)` selects a
+  service-account JSON key. Only the path enters the job graph; each writer loads and scopes the
+  key when it starts, so every eligible TaskManager must see the same path. Missing, malformed and
+  non-service-account credentials fail with one sanitized message that carries no path, key
+  material or parser cause. Emulator mode stays plaintext and credential-free, and the builder
+  rejects configuring both modes. The loader stays internal to the Cloud Tasks module: its scope
+  and failure identify this client family, while a shared public provider surface would admit
+  credential forms outside the connector contract.
 - At-least-once, stateless writer, flush on checkpoint.
 
 [#23]: https://github.com/laughingman7743/flink-connector-gcp/issues/23
 [#24]: https://github.com/laughingman7743/flink-connector-gcp/issues/24
 [#25]: https://github.com/laughingman7743/flink-connector-gcp/issues/25
+[#545]: https://github.com/laughingman7743/flink-connector-gcp/issues/545

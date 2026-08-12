@@ -101,11 +101,45 @@ Sink<OrderEvent> sink =
   `QueueDestination` instances.
 - The location is part of the destination because queues are regional and a project may hold
   queues in several regions.
+- `serviceAccountKeyFile(path)` selects a service-account JSON key when application-default
+  credentials cannot select the required identity.
+  The writer reads and scopes the file when it starts, so the path itself, rather than parsed
+  credentials, is the only credential setting serialized in the job graph.
+  The setter accepts a file path only, not raw or Base64-encoded JSON, access tokens, user
+  credentials or custom provider classes.
+  A read or parse failure reports neither the path, key material nor the parser cause.
+  It is rejected beside `emulatorEndpoint(...)`, whose channel carries no credentials.
 - `emulatorEndpoint("host:port")` points the sink at a Cloud Tasks emulator over a plaintext
   channel with no credentials, so it must only ever be used against an emulator — never against
   production Cloud Tasks. The setter parses it, so a malformed value is rejected at `build()` on
   the client rather than surfacing as a connection failure on a task manager
   ([#235]({{< param BookRepo >}}/issues/235)).
+
+The service account used to create a task is separate from any OIDC or OAuth identity configured
+on that task.
+The first authenticates the Flink writer to the Cloud Tasks API; the second is a token that Cloud
+Tasks attaches when it later calls the task's HTTP target.
+
+## Credential file deployment
+
+> **Authentication recommendation.** Google recommends [avoiding service-account keys whenever possible](https://cloud.google.com/iam/docs/best-practices-service-accounts#choose-when-to-use).
+> Prefer keyless application-default credentials from an attached service account or Workload Identity over a service-account key file.
+> Use `serviceAccountKeyFile(path)` only when the job must select an explicit service account that the process environment cannot provide.
+>
+> On Kubernetes, store the JSON key in a `Secret` and mount it as a read-only volume at the same absolute container path in every pod that may run the sink writer.
+> This path is inside the container, not a path that merely exists on the Kubernetes node.
+> Do not store credential material in a `ConfigMap` or a connector option.
+> Mount the Secret directory rather than one file through `subPath` when in-place rotation is expected, because Kubernetes does not update a Secret mounted with `subPath`.
+>
+> On a session cluster, the same path must remain readable by every eligible TaskManager process, including replacement or newly allocated TaskManagers.
+> Each writer reads the file once when it starts.
+> Replacing or rotating the mounted file does not hot-reload credentials.
+> Wait until a normally projected Secret has updated in every eligible pod before restarting the affected job; with a `subPath` mount, recreate the affected pods or cluster first.
+> Replace the key in every workload that uses it and validate those workloads before disabling the replaced key.
+> Monitor them after disabling it, then delete it after confirming that they still work, following Google's [service-account key rotation guidance](https://cloud.google.com/iam/docs/key-rotation#process).
+>
+> Mounting several job-specific keys into one shared session cluster weakens isolation because co-located jobs share the cluster environment.
+> Prefer an application/per-job cluster with Workload Identity when jobs require separate identities.
 
 ## Targets
 

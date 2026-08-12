@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.cloudtasks.sink;
 
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.util.InstantiationUtil;
 
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
@@ -30,6 +31,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link CloudTasksSinkBuilder}. */
 class CloudTasksSinkBuilderTest {
+
+    private static final String SERVICE_ACCOUNT_KEY_FILE =
+            "/var/run/secrets/gcp/service-account.json";
 
     private static final QueueDestination QUEUE =
             QueueDestination.of("my-project", "asia-northeast1", "webhooks");
@@ -51,6 +55,7 @@ class CloudTasksSinkBuilderTest {
         assertThat(config.getWriterOptions()).isEqualTo(CloudTasksWriterOptions.defaults());
         // Naming is opt-in: the default is unnamed tasks at full create speed.
         assertThat(config.getTaskIdExtractor()).isNull();
+        assertThat(config.getServiceAccountKeyFile()).isNull();
         assertThat(config.getEmulatorEndpoint()).isNull();
     }
 
@@ -74,6 +79,22 @@ class CloudTasksSinkBuilderTest {
         assertThat(config.getWriterOptions()).isSameAs(options);
         assertThat(config.getEmulatorEndpoint())
                 .isEqualTo(EmulatorEndpoint.parse("localhost:8123"));
+    }
+
+    @Test
+    void carriesTheServiceAccountKeyFileThroughJobGraphSerialization() throws Exception {
+        Sink<String> sink =
+                CloudTasksSink.<String>builder()
+                        .queue(QUEUE)
+                        .serializer(SERIALIZER)
+                        .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                        .build();
+
+        Sink<String> restored =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(sink), getClass().getClassLoader());
+
+        assertThat(config(restored).getServiceAccountKeyFile()).isEqualTo(SERVICE_ACCOUNT_KEY_FILE);
     }
 
     @Test
@@ -157,6 +178,12 @@ class CloudTasksSinkBuilderTest {
         assertThatThrownBy(() -> builder.failedTaskHandler(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("failedTaskHandler must not be null");
+        assertThatThrownBy(() -> builder.serviceAccountKeyFile(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("serviceAccountKeyFile must not be null");
+        assertThatThrownBy(() -> builder.serviceAccountKeyFile(" \t"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("serviceAccountKeyFile must not be blank");
         assertThatThrownBy(() -> builder.emulatorEndpoint(null))
                 .isInstanceOf(NullPointerException.class);
         // Parsed at the setter, so a typo fails on the client rather than at connect time; the
@@ -164,6 +191,36 @@ class CloudTasksSinkBuilderTest {
         assertThatThrownBy(() -> builder.emulatorEndpoint("localhost8123"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("emulatorEndpoint must be host:port, was 'localhost8123'");
+    }
+
+    @Test
+    void rejectsAServiceAccountKeyFileFollowedByAnEmulatorEndpoint() {
+        assertThatThrownBy(
+                        () ->
+                                CloudTasksSink.<String>builder()
+                                        .queue(QUEUE)
+                                        .serializer(SERIALIZER)
+                                        .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                                        .emulatorEndpoint("localhost:8123")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)")
+                .hasMessageContaining("emulatorEndpoint(...)");
+    }
+
+    @Test
+    void rejectsAnEmulatorEndpointFollowedByAServiceAccountKeyFile() {
+        assertThatThrownBy(
+                        () ->
+                                CloudTasksSink.<String>builder()
+                                        .queue(QUEUE)
+                                        .serializer(SERIALIZER)
+                                        .emulatorEndpoint("localhost:8123")
+                                        .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)")
+                .hasMessageContaining("emulatorEndpoint(...)");
     }
 
     @SuppressWarnings("unchecked")

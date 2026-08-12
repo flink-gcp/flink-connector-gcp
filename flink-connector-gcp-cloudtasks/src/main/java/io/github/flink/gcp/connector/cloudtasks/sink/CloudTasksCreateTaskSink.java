@@ -61,7 +61,10 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
-        return createWriter(context, new DefaultTaskCreatorFactory(config.getEmulatorEndpoint()));
+        return createWriter(
+                context,
+                new DefaultTaskCreatorFactory(
+                        config.getServiceAccountKeyFile(), config.getEmulatorEndpoint()));
     }
 
     /**
