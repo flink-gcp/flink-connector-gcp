@@ -176,8 +176,8 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                             + subscription
                             + " to "
                             + timestamp
-                            + ". Seeking needs the pubsub.subscriptions.update permission"
-                            + " (roles/pubsub.editor).",
+                            + ". Seeking needs the pubsub.subscriptions.consume permission"
+                            + " (roles/pubsub.subscriber).",
                     e);
         } finally {
             closeQuietly(client);

@@ -412,7 +412,7 @@ class PubSubSplitEnumeratorTest {
     @Test
     void aFailingSeekFailsTheJob() {
         FakeSubscriptionAdmin admin = admin(SUB_A);
-        admin.seekFailure = new IOException("no pubsub.subscriptions.update permission");
+        admin.seekFailure = new IOException("no pubsub.subscriptions.consume permission");
         FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
         PubSubSplitEnumerator enumerator =
                 new PubSubSplitEnumerator(context, earliestRetained(SUB_A), admin, null);
@@ -421,7 +421,7 @@ class PubSubSplitEnumeratorTest {
         assertThatThrownBy(context::runAsyncCalls)
                 .isInstanceOf(FlinkRuntimeException.class)
                 .rootCause()
-                .hasMessage("no pubsub.subscriptions.update permission");
+                .hasMessage("no pubsub.subscriptions.consume permission");
     }
 
     @Test
