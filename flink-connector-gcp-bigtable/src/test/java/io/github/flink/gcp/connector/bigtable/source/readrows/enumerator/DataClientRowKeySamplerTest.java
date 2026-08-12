@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.enumerator;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -45,7 +46,7 @@ class DataClientRowKeySamplerTest {
     private static final TableDestination TABLE = TableDestination.of("p", "i", "orders");
 
     @Test
-    void carriesTheApplicationProfileAndTheEmulatorEndpointToTheClient() {
+    void carriesTheApplicationProfileAndTheEmulatorEndpointToTheClient() throws Exception {
         BigtableDataSettings settings =
                 new DataClientRowKeySampler(
                                 "boost-profile", EmulatorEndpoint.parse("bigtable.example:9035"))
@@ -71,7 +72,7 @@ class DataClientRowKeySamplerTest {
     }
 
     @Test
-    void theBuilderWiresTheApplicationProfileIntoThisSeam() {
+    void theBuilderWiresTheApplicationProfileIntoThisSeam() throws Exception {
         // Constructing a sampler by hand, as the test above does, cannot see the builder's wiring:
         // a build() that passed null here would leave every other unit test green and be caught
         // only by a gated run against a billed instance.
@@ -81,6 +82,16 @@ class DataClientRowKeySamplerTest {
                                 .getSampler();
 
         assertThat(sampler.settings(TABLE).getAppProfileId()).isEqualTo("boost-profile");
+    }
+
+    @Test
+    void injectsTheRuntimeCredentialProvider() throws Exception {
+        DataClientRowKeySampler sampler = new DataClientRowKeySampler(null, null);
+        NoCredentialsProvider provider = NoCredentialsProvider.create();
+        sampler.setCredentialsOverride(provider);
+
+        assertThat(sampler.settings(TABLE).getStubSettings().getCredentialsProvider())
+                .isSameAs(provider);
     }
 
     @Test

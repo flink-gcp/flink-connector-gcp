@@ -17,11 +17,15 @@
 package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.ServerStream;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.ReadChangeStreamQuery;
+import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -39,11 +43,19 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
     private static final long serialVersionUID = 1L;
 
     private final String appProfileId;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private transient volatile BigtableDataClient client;
+    @Nullable private transient CredentialsProvider credentialsOverride;
     private transient volatile boolean closed;
 
     public DataClientChangeStreamOpener(String appProfileId) {
+        this(appProfileId, null);
+    }
+
+    public DataClientChangeStreamOpener(
+            String appProfileId, @Nullable String serviceAccountKeyFile) {
         this.appProfileId = appProfileId;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
@@ -79,12 +91,16 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
                 throw new IOException("The Bigtable change-stream opener was already closed.");
             }
             if (client == null) {
-                client =
-                        BigtableDataClient.create(
-                                BigtableDataClients.settings(table, appProfileId, null).build());
+                client = BigtableDataClient.create(settings(table));
             }
             return client;
         }
+    }
+
+    /** Builds the stream settings, exposed so tests can verify runtime credentials. */
+    @VisibleForTesting
+    BigtableDataSettings settings(TableDestination table) throws IOException {
+        return BigtableDataClients.settings(table, appProfileId, null, credentials()).build();
     }
 
     @Override
@@ -98,6 +114,19 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
         if (toClose != null) {
             toClose.close();
         }
+    }
+
+    /** Supplies the provider loaded when the TaskManager creates the source reader. */
+    public void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
+        this.credentialsOverride = credentialsOverride;
+    }
+
+    @Nullable
+    private CredentialsProvider credentials() throws IOException {
+        if (credentialsOverride == null && serviceAccountKeyFile != null) {
+            credentialsOverride = BigtableCredentials.loadData(serviceAccountKeyFile);
+        }
+        return credentialsOverride;
     }
 
     private static final class ServerChangeStream implements ChangeStream {

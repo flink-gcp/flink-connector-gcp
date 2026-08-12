@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 
@@ -55,12 +56,15 @@ public final class BigtableDataClients {
      *     instance's default
      * @param emulatorEndpoint the emulator to connect to (plaintext, no credentials), or {@code
      *     null} for production Bigtable
+     * @param credentialsOverride the runtime-loaded service-account provider, or {@code null} to
+     *     preserve application-default credentials
      * @return the settings builder, for the caller to tune and build
      */
     public static BigtableDataSettings.Builder settings(
             TableDestination destination,
             @Nullable String appProfileId,
-            @Nullable EmulatorEndpoint emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable CredentialsProvider credentialsOverride) {
         Preconditions.checkNotNull(destination, "destination must not be null");
         BigtableDataSettings.Builder settings =
                 emulatorEndpoint == null
@@ -68,6 +72,12 @@ public final class BigtableDataClients {
                         : BigtableDataSettings.newBuilderForEmulator(
                                 emulatorEndpoint.getHost(), emulatorEndpoint.getPort());
         settings.setProjectId(destination.getProject()).setInstanceId(destination.getInstance());
+        if (credentialsOverride != null) {
+            Preconditions.checkArgument(
+                    emulatorEndpoint == null,
+                    "credentialsOverride cannot be combined with an emulator endpoint");
+            settings.setCredentialsProvider(credentialsOverride);
+        }
         if (appProfileId != null) {
             settings.setAppProfileId(appProfileId);
         }

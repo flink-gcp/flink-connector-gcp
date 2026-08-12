@@ -147,6 +147,7 @@ class BigtableDynamicTableFactoryTest {
                         resolver -> assertThat(resolver.getDestination()).isEqualTo(DESTINATION));
         assertThat(sink.getConfig().getWriterOptions()).isEqualTo(BigtableWriterOptions.defaults());
         assertThat(sink.getConfig().getAppProfileId()).isNull();
+        assertThat(sink.getConfig().getServiceAccountKeyFile()).isNull();
         assertThat(sink.getConfig().getEmulatorEndpoint()).isNull();
         assertThat(sink.getConfig().getTableCreateOptions()).isNull();
     }
@@ -176,6 +177,15 @@ class BigtableDynamicTableFactoryTest {
         // minutes of retrying against the wrong host and would blame a hung job.
         assertThat(sink.getConfig().getEmulatorEndpoint())
                 .isEqualTo(EmulatorEndpoint.parse("localhost:8086"));
+    }
+
+    @Test
+    void carriesTheServiceAccountKeyFileToTheSinkRuntime() {
+        Map<String, String> options = minimalOptions();
+        options.put("service-account-key-file", "/var/run/secrets/bigtable.json");
+
+        assertThat(built(SCHEMA, options).getConfig().getServiceAccountKeyFile())
+                .isEqualTo("/var/run/secrets/bigtable.json");
     }
 
     @Test
@@ -300,6 +310,27 @@ class BigtableDynamicTableFactoryTest {
     }
 
     @Test
+    void rejectsBlankOrEmulatorCombinedCredentialOptionsForBothDirections() {
+        for (java.util.function.Function<Map<String, String>, ?> direction :
+                Arrays.<java.util.function.Function<Map<String, String>, ?>>asList(
+                        BigtableDynamicTableFactoryTest::sink,
+                        BigtableDynamicTableFactoryTest::source)) {
+            Map<String, String> blank = minimalOptions();
+            blank.put("service-account-key-file", "  ");
+            assertThatThrownBy(() -> direction.apply(blank))
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("must not be blank");
+
+            Map<String, String> emulator = minimalOptions();
+            emulator.put("service-account-key-file", "key.json");
+            emulator.put("emulator-endpoint", "localhost:8086");
+            assertThatThrownBy(() -> direction.apply(emulator))
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("cannot be combined");
+        }
+    }
+
+    @Test
     void rejectsAPrimaryKeyThatIsNotTheRowKey() {
         ResolvedSchema schema = withPrimaryKey("cf1");
 
@@ -409,8 +440,10 @@ class BigtableDynamicTableFactoryTest {
      */
     private static BigtableSourceConfig<?> builtSource(
             ResolvedSchema schema, Map<String, String> options) {
-        // The provider builds the source's real clients; the endpoint is never connected to.
-        options.put("emulator-endpoint", "localhost:1");
+        // The endpoint is never connected to. A credential path is mutually exclusive with it.
+        if (!options.containsKey("service-account-key-file")) {
+            options.put("emulator-endpoint", "localhost:1");
+        }
         SourceProvider provider =
                 (SourceProvider)
                         ((ScanTableSource) FactoryMocks.createTableSource(schema, options))
@@ -451,6 +484,7 @@ class BigtableDynamicTableFactoryTest {
     void everyScanOptionReachesTheSource() {
         Map<String, String> options = minimalOptions();
         options.put("scan.app-profile-id", "reader-profile");
+        options.put("service-account-key-file", "/var/run/secrets/bigtable.json");
         options.put("scan.row-prefix", "user;web");
         options.put("scan.row-range.start-closed", "a");
         options.put("scan.row-range.end-open", "m");
@@ -459,6 +493,7 @@ class BigtableDynamicTableFactoryTest {
         BigtableSourceConfig<?> config = builtSource(SCHEMA, options);
 
         assertThat(config.getAppProfileId()).isEqualTo("reader-profile");
+        assertThat(config.getServiceAccountKeyFile()).isEqualTo("/var/run/secrets/bigtable.json");
         assertThat(config.getRanges().stream().map(RowRanges::format).collect(Collectors.toList()))
                 .containsExactly("[a, m)", "[q, s)", "[user, uses)", "[web, wec)", "[x, z)");
     }

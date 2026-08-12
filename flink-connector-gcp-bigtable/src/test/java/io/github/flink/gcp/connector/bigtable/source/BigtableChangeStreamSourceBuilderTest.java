@@ -102,15 +102,34 @@ class BigtableChangeStreamSourceBuilderTest {
 
     @Test
     void sourceConfigurationSurvivesJobSubmissionSerialization() throws Exception {
-        BigtableChangeStreamSource<ChangeStreamMutation> source = minimal().build();
+        BigtableChangeStreamSource<ChangeStreamMutation> source =
+                minimal().serviceAccountKeyFile("/var/run/secrets/bigtable.json").build();
 
         byte[] serialized = InstantiationUtil.serializeObject(source);
         Object restored =
                 InstantiationUtil.deserializeObject(serialized, getClass().getClassLoader());
 
         assertThat(restored).isInstanceOf(BigtableChangeStreamSource.class);
-        assertThat(((BigtableChangeStreamSource<?>) restored).getBoundedness())
-                .isEqualTo(Boundedness.CONTINUOUS_UNBOUNDED);
+        BigtableChangeStreamSource<?> restoredSource = (BigtableChangeStreamSource<?>) restored;
+        assertThat(restoredSource.getBoundedness()).isEqualTo(Boundedness.CONTINUOUS_UNBOUNDED);
+        assertThat(restoredSource.getConfig().getServiceAccountKeyFile())
+                .isEqualTo("/var/run/secrets/bigtable.json");
+    }
+
+    @Test
+    void rejectsNullOrBlankServiceAccountKeyFile() {
+        assertThatThrownBy(
+                        () ->
+                                BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+                                        .serviceAccountKeyFile(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("serviceAccountKeyFile must not be null");
+        assertThatThrownBy(
+                        () ->
+                                BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+                                        .serviceAccountKeyFile(" \t"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("serviceAccountKeyFile must not be blank");
     }
 
     private static BigtableChangeStreamSourceBuilder<ChangeStreamMutation> minimal() {

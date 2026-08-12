@@ -56,6 +56,7 @@ public final class BigtableRowDataLookupFunction extends LookupFunction {
             Filters.Filter filter,
             List<ByteStringRange> ranges,
             @Nullable String appProfileId,
+            @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
             int maxRetries) {
         this(
@@ -64,7 +65,12 @@ public final class BigtableRowDataLookupFunction extends LookupFunction {
                 nullStringLiteral,
                 maxRetries,
                 new BigtableDataClientRowLookup(
-                        destination, filter, ranges, appProfileId, emulatorEndpoint));
+                        destination,
+                        filter,
+                        ranges,
+                        appProfileId,
+                        serviceAccountKeyFile,
+                        emulatorEndpoint));
     }
 
     @VisibleForTesting

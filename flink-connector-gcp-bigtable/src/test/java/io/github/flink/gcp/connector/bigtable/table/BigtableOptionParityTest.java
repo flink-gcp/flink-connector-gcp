@@ -92,6 +92,7 @@ class BigtableOptionParityTest {
         // accounting test below is what keeps them from going unnoticed.
         map.put("table", BigtableConnectorOptions.TABLE);
         map.put("appProfileId", BigtableConnectorOptions.SINK_APP_PROFILE_ID);
+        map.put("serviceAccountKeyFile", BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE);
         map.put("emulatorEndpoint", BigtableConnectorOptions.EMULATOR_ENDPOINT);
         map.put("createDisposition", BigtableConnectorOptions.SINK_CREATE_DISPOSITION);
         return Collections.unmodifiableMap(map);
@@ -128,6 +129,7 @@ class BigtableOptionParityTest {
         map.put("table", BigtableConnectorOptions.TABLE);
         map.put("prefix", BigtableConnectorOptions.SCAN_ROW_PREFIX);
         map.put("appProfileId", BigtableConnectorOptions.SCAN_APP_PROFILE_ID);
+        map.put("serviceAccountKeyFile", BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE);
         map.put("emulatorEndpoint", BigtableConnectorOptions.EMULATOR_ENDPOINT);
         return Collections.unmodifiableMap(map);
     }
@@ -269,9 +271,9 @@ class BigtableOptionParityTest {
     }
 
     @Test
-    void theDirectionsShareExactlyTheDestinationAndTheEmulator() {
-        // 'table' and 'emulator-endpoint' feed a setter on each direction's builder, and nothing
-        // else may: a sink.* key reaching the source builder — or the reverse — is a wiring slip.
+    void theDirectionsShareExactlyDestinationCredentialsAndEmulator() {
+        // These three shared keys feed a setter on each direction's builder, and nothing else may:
+        // a sink.* key reaching the source builder — or the reverse — is a wiring slip.
         Set<String> sinkKeys = new HashSet<>();
         WRITER_OPTIONS.values().forEach(o -> sinkKeys.add(o.key()));
         SINK_BUILDER.values().forEach(o -> sinkKeys.add(o.key()));
@@ -284,6 +286,7 @@ class BigtableOptionParityTest {
         assertThat(shared)
                 .containsExactlyInAnyOrder(
                         BigtableConnectorOptions.TABLE.key(),
+                        BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key(),
                         BigtableConnectorOptions.EMULATOR_ENDPOINT.key());
     }
 

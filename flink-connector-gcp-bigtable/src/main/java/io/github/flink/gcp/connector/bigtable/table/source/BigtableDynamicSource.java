@@ -94,6 +94,7 @@ public final class BigtableDynamicSource
     private final TableDestination destination;
     private final String nullStringLiteral;
     @Nullable private final String appProfileId;
+    @Nullable private final String serviceAccountKeyFile;
     private final List<ByteString> prefixes;
     @Nullable private final ByteString rangeStartClosed;
     @Nullable private final ByteString rangeEndOpen;
@@ -115,6 +116,7 @@ public final class BigtableDynamicSource
                 Preconditions.checkNotNull(
                         builder.nullStringLiteral, "nullStringLiteral must not be null");
         this.appProfileId = builder.appProfileId;
+        this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.prefixes = builder.prefixes;
         this.rangeStartClosed = builder.rangeStartClosed;
         this.rangeEndOpen = builder.rangeEndOpen;
@@ -194,6 +196,9 @@ public final class BigtableDynamicSource
         if (appProfileId != null) {
             builder.appProfileId(appProfileId);
         }
+        if (serviceAccountKeyFile != null) {
+            builder.serviceAccountKeyFile(serviceAccountKeyFile);
+        }
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
@@ -217,6 +222,7 @@ public final class BigtableDynamicSource
                                     filter,
                                     ranges,
                                     appProfileId,
+                                    serviceAccountKeyFile,
                                     emulatorEndpoint),
                             1),
                     lookupOptions.createFullReloadTrigger());
@@ -231,6 +237,7 @@ public final class BigtableDynamicSource
                             filter,
                             ranges,
                             appProfileId,
+                            serviceAccountKeyFile,
                             emulatorEndpoint,
                             lookupOptions.getMaxRetries());
             return lookupOptions.getCacheType() == LookupCacheType.PARTIAL
@@ -247,6 +254,7 @@ public final class BigtableDynamicSource
                         filter,
                         ranges,
                         appProfileId,
+                        serviceAccountKeyFile,
                         emulatorEndpoint,
                         lookupOptions.getMaxRetries());
         return lookupOptions.getCacheType() == LookupCacheType.PARTIAL
@@ -350,6 +358,7 @@ public final class BigtableDynamicSource
                         .destination(destination)
                         .nullStringLiteral(nullStringLiteral)
                         .appProfileId(appProfileId)
+                        .serviceAccountKeyFile(serviceAccountKeyFile)
                         .prefixes(prefixes)
                         .rangeStartClosed(rangeStartClosed)
                         .rangeEndOpen(rangeEndOpen)
@@ -382,6 +391,7 @@ public final class BigtableDynamicSource
                 && destination.equals(that.destination)
                 && nullStringLiteral.equals(that.nullStringLiteral)
                 && Objects.equals(appProfileId, that.appProfileId)
+                && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && prefixes.equals(that.prefixes)
                 && Objects.equals(rangeStartClosed, that.rangeStartClosed)
                 && Objects.equals(rangeEndOpen, that.rangeEndOpen)
@@ -401,6 +411,7 @@ public final class BigtableDynamicSource
                 destination,
                 nullStringLiteral,
                 appProfileId,
+                serviceAccountKeyFile,
                 prefixes,
                 rangeStartClosed,
                 rangeEndOpen,
@@ -420,6 +431,7 @@ public final class BigtableDynamicSource
         private TableDestination destination;
         private String nullStringLiteral;
         @Nullable private String appProfileId;
+        @Nullable private String serviceAccountKeyFile;
         private List<ByteString> prefixes = Collections.emptyList();
         @Nullable private ByteString rangeStartClosed;
         @Nullable private ByteString rangeEndOpen;
@@ -464,6 +476,15 @@ public final class BigtableDynamicSource
          */
         public Builder appProfileId(@Nullable String appProfileId) {
             this.appProfileId = appProfileId;
+            return this;
+        }
+
+        /**
+         * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
+         * @return this builder
+         */
+        public Builder serviceAccountKeyFile(@Nullable String serviceAccountKeyFile) {
+            this.serviceAccountKeyFile = serviceAccountKeyFile;
             return this;
         }
 

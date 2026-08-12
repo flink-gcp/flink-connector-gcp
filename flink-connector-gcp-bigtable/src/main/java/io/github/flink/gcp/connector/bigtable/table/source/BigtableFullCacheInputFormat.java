@@ -24,12 +24,14 @@ import org.apache.flink.table.data.RowData;
 
 import com.google.api.gax.rpc.ServerStream;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
@@ -53,6 +55,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
     private final Filters.Filter filter;
     private final List<ByteStringRange> ranges;
     @Nullable private final String appProfileId;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
     private final RowToRowDataConverter converter;
     @Nullable private final RowStreamOpener rowStreamOpener;
@@ -69,6 +72,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
             Filters.Filter filter,
             List<ByteStringRange> ranges,
             @Nullable String appProfileId,
+            @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint) {
         this(
                 destination,
@@ -78,6 +82,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
                 filter,
                 ranges,
                 appProfileId,
+                serviceAccountKeyFile,
                 emulatorEndpoint,
                 null);
     }
@@ -93,10 +98,36 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
             @Nullable String appProfileId,
             @Nullable String emulatorEndpoint,
             @Nullable RowStreamOpener rowStreamOpener) {
+        this(
+                destination,
+                schema,
+                projectedFields,
+                nullStringLiteral,
+                filter,
+                ranges,
+                appProfileId,
+                null,
+                emulatorEndpoint,
+                rowStreamOpener);
+    }
+
+    @VisibleForTesting
+    BigtableFullCacheInputFormat(
+            TableDestination destination,
+            BigtableTableSchema schema,
+            @Nullable int[] projectedFields,
+            String nullStringLiteral,
+            Filters.Filter filter,
+            List<ByteStringRange> ranges,
+            @Nullable String appProfileId,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable String emulatorEndpoint,
+            @Nullable RowStreamOpener rowStreamOpener) {
         this.destination = destination;
         this.filter = filter;
         this.ranges = ranges;
         this.appProfileId = appProfileId;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.converter = new RowToRowDataConverter(schema, projectedFields, nullStringLiteral);
         this.rowStreamOpener = rowStreamOpener;
@@ -119,21 +150,27 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
         }
         try {
             if (rowStreamOpener == null) {
-                EmulatorEndpoint endpoint =
-                        emulatorEndpoint == null ? null : EmulatorEndpoint.parse(emulatorEndpoint);
-                client =
-                        BigtableDataClient.create(
-                                BigtableDataClients.settings(destination, appProfileId, endpoint)
-                                        .build());
+                client = BigtableDataClient.create(settings());
             }
             remainingRanges = ranges.iterator();
             if (remainingRanges.hasNext()) {
                 advanceRange();
             }
-        } catch (RuntimeException e) {
+        } catch (IOException | RuntimeException e) {
             close();
             throw e;
         }
+    }
+
+    private BigtableDataSettings settings() throws IOException {
+        EmulatorEndpoint endpoint =
+                emulatorEndpoint == null ? null : EmulatorEndpoint.parse(emulatorEndpoint);
+        return BigtableDataClients.settings(
+                        destination,
+                        appProfileId,
+                        endpoint,
+                        BigtableCredentials.loadData(serviceAccountKeyFile))
+                .build();
     }
 
     @Override

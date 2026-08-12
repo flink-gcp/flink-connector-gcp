@@ -18,7 +18,9 @@ package io.github.flink.gcp.connector.bigtable.sink.tables;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.Preconditions;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.AlreadyExistsException;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
@@ -81,10 +83,11 @@ public class BigtableTableAdmin implements TableAdmin {
     private static final Logger LOG = LoggerFactory.getLogger(BigtableTableAdmin.class);
 
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final CredentialsProvider credentialsOverride;
 
     /** Creates an admin using application-default credentials. */
     public BigtableTableAdmin() {
-        this(null);
+        this(null, null);
     }
 
     /**
@@ -94,7 +97,17 @@ public class BigtableTableAdmin implements TableAdmin {
      *     for production Bigtable with application-default credentials
      */
     public BigtableTableAdmin(@Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(emulatorEndpoint, null);
+    }
+
+    public BigtableTableAdmin(
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable CredentialsProvider credentialsOverride) {
+        Preconditions.checkArgument(
+                emulatorEndpoint == null || credentialsOverride == null,
+                "credentialsOverride cannot be combined with an emulator endpoint");
         this.emulatorEndpoint = emulatorEndpoint;
+        this.credentialsOverride = credentialsOverride;
     }
 
     @Override
@@ -300,17 +313,25 @@ public class BigtableTableAdmin implements TableAdmin {
 
     private BigtableTableAdminClient newClient(TableDestination destination) throws IOException {
         try {
-            BigtableTableAdminSettings.Builder settings =
-                    emulatorEndpoint == null
-                            ? BigtableTableAdminSettings.newBuilder()
-                            : BigtableTableAdminSettings.newBuilderForEmulator(
-                                    emulatorEndpoint.getHost(), emulatorEndpoint.getPort());
-            return BigtableTableAdminClient.create(
-                    settings.setProjectId(destination.getProject())
-                            .setInstanceId(destination.getInstance())
-                            .build());
+            return BigtableTableAdminClient.create(settings(destination));
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Bigtable admin client", e);
         }
+    }
+
+    /** Builds the admin settings, exposed so tests can verify credential injection. */
+    @VisibleForTesting
+    BigtableTableAdminSettings settings(TableDestination destination) throws IOException {
+        BigtableTableAdminSettings.Builder settings =
+                emulatorEndpoint == null
+                        ? BigtableTableAdminSettings.newBuilder()
+                        : BigtableTableAdminSettings.newBuilderForEmulator(
+                                emulatorEndpoint.getHost(), emulatorEndpoint.getPort());
+        if (credentialsOverride != null) {
+            settings.setCredentialsProvider(credentialsOverride);
+        }
+        return settings.setProjectId(destination.getProject())
+                .setInstanceId(destination.getInstance())
+                .build();
     }
 }

@@ -41,6 +41,7 @@ public final class BigtableSinkConfig<T> implements Serializable {
     @Nullable private final String appProfileId;
     private final BigtableWriterOptions writerOptions;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final CreateDisposition createDisposition;
     @Nullable private final TableCreateOptions tableCreateOptions;
@@ -51,6 +52,7 @@ public final class BigtableSinkConfig<T> implements Serializable {
             @Nullable String appProfileId,
             BigtableWriterOptions writerOptions,
             FailureHandler<? super FailedMutation> failedMutationHandler,
+            @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             CreateDisposition createDisposition,
             @Nullable TableCreateOptions tableCreateOptions) {
@@ -59,6 +61,7 @@ public final class BigtableSinkConfig<T> implements Serializable {
         this.appProfileId = appProfileId;
         this.writerOptions = writerOptions;
         this.failedMutationHandler = failedMutationHandler;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.createDisposition = createDisposition;
         this.tableCreateOptions = tableCreateOptions;
@@ -91,6 +94,12 @@ public final class BigtableSinkConfig<T> implements Serializable {
     /** Returns the policy for mutations that terminally fail. */
     public FailureHandler<? super FailedMutation> getFailedMutationHandler() {
         return failedMutationHandler;
+    }
+
+    /** Returns the service-account key-file path, or {@code null} to use ADC. */
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     /** Returns the emulator endpoint, or {@code null} for production Bigtable. */

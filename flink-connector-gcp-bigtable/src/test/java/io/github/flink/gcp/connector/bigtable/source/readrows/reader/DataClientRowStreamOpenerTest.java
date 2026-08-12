@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.reader;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
@@ -45,7 +46,7 @@ class DataClientRowStreamOpenerTest {
     private static final TableDestination TABLE = TableDestination.of("p", "i", "orders");
 
     @Test
-    void carriesTheApplicationProfileAndTheEmulatorEndpointToTheClient() {
+    void carriesTheApplicationProfileAndTheEmulatorEndpointToTheClient() throws Exception {
         BigtableDataSettings settings =
                 new DataClientRowStreamOpener(
                                 "boost-profile", EmulatorEndpoint.parse("bigtable.example:9035"))
@@ -71,7 +72,7 @@ class DataClientRowStreamOpenerTest {
     }
 
     @Test
-    void theBuilderWiresTheApplicationProfileIntoThisSeam() {
+    void theBuilderWiresTheApplicationProfileIntoThisSeam() throws Exception {
         // The reader's half of the same gap: both seams build their own client, so a profile that
         // reached only one of them would plan the scan on one kind of compute and run it on
         // another.
@@ -81,6 +82,16 @@ class DataClientRowStreamOpenerTest {
                                 .getOpener();
 
         assertThat(opener.settings(TABLE).getAppProfileId()).isEqualTo("boost-profile");
+    }
+
+    @Test
+    void injectsTheRuntimeCredentialProvider() throws Exception {
+        DataClientRowStreamOpener opener = new DataClientRowStreamOpener(null, null);
+        NoCredentialsProvider provider = NoCredentialsProvider.create();
+        opener.setCredentialsOverride(provider);
+
+        assertThat(opener.settings(TABLE).getStubSettings().getCredentialsProvider())
+                .isSameAs(provider);
     }
 
     @Test

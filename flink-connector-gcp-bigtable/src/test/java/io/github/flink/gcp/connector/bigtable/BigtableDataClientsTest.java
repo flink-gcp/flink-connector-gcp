@@ -16,12 +16,14 @@
 
 package io.github.flink.gcp.connector.bigtable;
 
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link BigtableDataClients} — the emulator-versus-credentials branch both directions of
@@ -38,7 +40,8 @@ class BigtableDataClientsTest {
 
     @Test
     void carriesTheProjectAndInstanceButNotTheTable() {
-        BigtableDataSettings settings = BigtableDataClients.settings(TABLE, null, null).build();
+        BigtableDataSettings settings =
+                BigtableDataClients.settings(TABLE, null, null, null).build();
 
         assertThat(settings.getProjectId()).isEqualTo("p");
         assertThat(settings.getInstanceId()).isEqualTo("i");
@@ -47,14 +50,15 @@ class BigtableDataClientsTest {
     @Test
     void carriesTheApplicationProfileWhenOneIsSet() {
         BigtableDataSettings settings =
-                BigtableDataClients.settings(TABLE, "batch-profile", null).build();
+                BigtableDataClients.settings(TABLE, "batch-profile", null, null).build();
 
         assertThat(settings.getAppProfileId()).isEqualTo("batch-profile");
     }
 
     @Test
     void leavesTheInstancesDefaultProfileInPlaceWhenNoneIsSet() {
-        BigtableDataSettings settings = BigtableDataClients.settings(TABLE, null, null).build();
+        BigtableDataSettings settings =
+                BigtableDataClients.settings(TABLE, null, null, null).build();
 
         // The client spells "the instance's own default" as an empty profile id.
         assertThat(settings.getAppProfileId()).isEmpty();
@@ -65,7 +69,8 @@ class BigtableDataClientsTest {
         // Built with no credentials on the machine: the credentials provider is resolved when a
         // client is created, not when the settings are built, which is what lets a job graph be
         // assembled anywhere.
-        BigtableDataSettings settings = BigtableDataClients.settings(TABLE, null, null).build();
+        BigtableDataSettings settings =
+                BigtableDataClients.settings(TABLE, null, null, null).build();
 
         assertThat(settings.getStubSettings().getEndpoint())
                 .isEqualTo("bigtable.googleapis.com:443");
@@ -75,7 +80,7 @@ class BigtableDataClientsTest {
     void pointsAtTheEmulatorOverAPlaintextChannelWithNoCredentials() {
         BigtableDataSettings settings =
                 BigtableDataClients.settings(
-                                TABLE, null, EmulatorEndpoint.parse("bigtable.example:9035"))
+                                TABLE, null, EmulatorEndpoint.parse("bigtable.example:9035"), null)
                         .build();
 
         assertThat(settings.getStubSettings().getEndpoint()).isEqualTo("bigtable.example:9035");
@@ -89,9 +94,33 @@ class BigtableDataClientsTest {
                 BigtableDataClients.settings(
                                 TABLE,
                                 "batch-profile",
-                                EmulatorEndpoint.parse("bigtable.example:9035"))
+                                EmulatorEndpoint.parse("bigtable.example:9035"),
+                                null)
                         .build();
 
         assertThat(settings.getAppProfileId()).isEqualTo("batch-profile");
+    }
+
+    @Test
+    void injectsTheRuntimeCredentialProviderInProductionMode() {
+        NoCredentialsProvider provider = NoCredentialsProvider.create();
+
+        BigtableDataSettings settings =
+                BigtableDataClients.settings(TABLE, null, null, provider).build();
+
+        assertThat(settings.getStubSettings().getCredentialsProvider()).isSameAs(provider);
+    }
+
+    @Test
+    void refusesCredentialsInEmulatorMode() {
+        assertThatThrownBy(
+                        () ->
+                                BigtableDataClients.settings(
+                                        TABLE,
+                                        null,
+                                        EmulatorEndpoint.parse("localhost:9035"),
+                                        NoCredentialsProvider.create()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("credentialsOverride cannot be combined with an emulator endpoint");
     }
 }

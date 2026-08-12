@@ -24,6 +24,7 @@ import com.google.api.core.ApiFuture;
 import com.google.api.gax.batching.Batcher;
 import com.google.api.gax.batching.BatchingException;
 import com.google.api.gax.batching.BatchingSettings;
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
@@ -78,6 +79,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
     @Nullable private final String appProfileId;
     private final BigtableWriterOptions writerOptions;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final CredentialsProvider credentialsOverride;
 
     /**
      * The clients built so far, one per (project, instance), in creation order so a close reports
@@ -103,9 +105,18 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
             @Nullable String appProfileId,
             BigtableWriterOptions writerOptions,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(appProfileId, writerOptions, emulatorEndpoint, null);
+    }
+
+    public DefaultMutationBatcherFactory(
+            @Nullable String appProfileId,
+            BigtableWriterOptions writerOptions,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable CredentialsProvider credentialsOverride) {
         this.appProfileId = appProfileId;
         this.writerOptions = writerOptions;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.credentialsOverride = credentialsOverride;
     }
 
     @Override
@@ -193,7 +204,8 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
     @VisibleForTesting
     BigtableDataSettings settings(TableDestination destination) {
         BigtableDataSettings.Builder settings =
-                BigtableDataClients.settings(destination, appProfileId, emulatorEndpoint);
+                BigtableDataClients.settings(
+                        destination, appProfileId, emulatorEndpoint, credentialsOverride);
         applyBatchThresholds(settings);
         return settings.build();
     }

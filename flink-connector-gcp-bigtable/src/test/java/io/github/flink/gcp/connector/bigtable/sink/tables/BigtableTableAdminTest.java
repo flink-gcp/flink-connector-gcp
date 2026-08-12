@@ -16,12 +16,14 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.tables;
 
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.AlreadyExistsException;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.admin.v2.models.GCRules;
 import com.google.cloud.bigtable.admin.v2.models.ModifyColumnFamiliesRequest;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
@@ -49,6 +51,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BigtableTableAdminTest {
 
     private static final TableDestination TABLE = TableDestination.of("p", "i", "orders");
+
+    @Test
+    void injectsTheRuntimeCredentialProvider() throws Exception {
+        NoCredentialsProvider provider = NoCredentialsProvider.create();
+
+        assertThat(new BigtableTableAdmin(null, provider).settings(TABLE).getCredentialsProvider())
+                .isSameAs(provider);
+    }
+
+    @Test
+    void rejectsCredentialsWithAnEmulatorEndpoint() {
+        assertThatThrownBy(
+                        () ->
+                                new BigtableTableAdmin(
+                                        EmulatorEndpoint.parse("localhost:8086"),
+                                        NoCredentialsProvider.create()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot be combined with an emulator endpoint");
+    }
 
     @Test
     void translatesEveryFamilyIntoTheCreationRequest() {

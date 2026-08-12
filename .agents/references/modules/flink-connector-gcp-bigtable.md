@@ -359,6 +359,21 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the whole surface this layer needs, up to `DefaultLookupCache`, is in it, so `flink-table-runtime`
   stays test scope and nothing here needs a `flink-api-tiers.toml` entry.
 
+## Explicit service-account credentials (`docs/adr/0086`)
+
+- ADC remains the default.
+  `serviceAccountKeyFile(...)` and the shared Table option `service-account-key-file` carry only a
+  path through Flink serialization; never serialize parsed credentials, key JSON or a provider.
+- Load and scope the service-account key at each runtime client-creation boundary.
+  Share one loaded provider across every client family that component owns: sink data and
+  table-admin; scan sampling and reading; lookup data clients including FULL cache; Change Streams
+  coordinator data, table-admin and instance-admin; and reader stream and restore clients.
+- A configured path must be nonblank and is mutually exclusive with emulator mode.
+  Credential-loading failures use the stable sanitized message and carry no cause, path or key
+  material.
+- Adding another Bigtable client family requires extending the module-local credential loader's
+  scope union and adding a direct settings-injection assertion.
+
 ## E2E and emulator (`docs/adr/0044`)
 
 - The gated suite creates an ephemeral instance per gated **class** (`flink-it-<epoch>-<runId>`
