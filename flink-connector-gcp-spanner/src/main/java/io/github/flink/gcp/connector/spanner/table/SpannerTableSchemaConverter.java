@@ -118,15 +118,12 @@ public final class SpannerTableSchemaConverter implements Serializable {
                 return Type.float64();
             case DECIMAL:
                 DecimalType decimal = (DecimalType) logicalType;
-                if (decimal.getPrecision() != 38 || decimal.getScale() != 9) {
-                    String nativeType =
-                            dialect == Dialect.POSTGRESQL
-                                    ? "PostgreSQL numeric"
-                                    : "GoogleSQL NUMERIC";
+                if (dialect == Dialect.GOOGLE_STANDARD_SQL
+                        && (decimal.getPrecision() != 38 || decimal.getScale() != 9)) {
                     throw unsupported(
                             path,
                             logicalType,
-                            "The connector supports only DECIMAL(38, 9) for " + nativeType + ".");
+                            "The connector supports only DECIMAL(38, 9) for GoogleSQL NUMERIC.");
                 }
                 return dialect == Dialect.POSTGRESQL ? Type.pgNumeric() : Type.numeric();
             case CHAR:

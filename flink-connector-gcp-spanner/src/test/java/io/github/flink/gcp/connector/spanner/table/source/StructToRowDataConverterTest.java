@@ -20,6 +20,7 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.ByteArray;
@@ -40,6 +41,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class StructToRowDataConverterTest {
 
@@ -203,6 +205,151 @@ class StructToRowDataConverterTest {
         assertThat(array.getDecimal(0, 38, 9).toBigDecimal()).isEqualByComparingTo("12.340000000");
         assertThat(array.isNullAt(1)).isTrue();
         assertThat(array.getDecimal(2, 38, 9).toBigDecimal()).isEqualByComparingTo("56.780000000");
+    }
+
+    @Test
+    void convertsOnlyExactlyRepresentablePostgresqlNumericsAndPreservesNulls() {
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("boundary", DataTypes.DECIMAL(5, 2)),
+                                        DataTypes.FIELD("trailing", DataTypes.DECIMAL(5, 2)),
+                                        DataTypes.FIELD("missing", DataTypes.DECIMAL(5, 2)),
+                                        DataTypes.FIELD(
+                                                "amounts",
+                                                DataTypes.ARRAY(DataTypes.DECIMAL(5, 2))),
+                                        DataTypes.FIELD(
+                                                "missing_amounts",
+                                                DataTypes.ARRAY(DataTypes.DECIMAL(5, 2))))
+                                .getLogicalType();
+        SpannerTableSchemaConverter schema = postgresqlSchema(type);
+        Struct struct =
+                Struct.newBuilder()
+                        .set("boundary")
+                        .to(Value.pgNumeric("999.99"))
+                        .set("trailing")
+                        .to(Value.pgNumeric("1.2300"))
+                        .set("missing")
+                        .to(Value.pgNumeric(null))
+                        .set("amounts")
+                        .to(Value.pgNumericArray(Arrays.asList("2.50", null, "-999.99")))
+                        .set("missing_amounts")
+                        .to(Value.pgNumericArray(null))
+                        .build();
+
+        RowData row = new StructToRowDataConverter(schema, null).convert(struct);
+
+        assertThat(row.getDecimal(0, 5, 2).toBigDecimal()).isEqualByComparingTo("999.99");
+        assertThat(row.getDecimal(1, 5, 2).toBigDecimal()).isEqualByComparingTo("1.23");
+        assertThat(row.isNullAt(2)).isTrue();
+        ArrayData amounts = row.getArray(3);
+        assertThat(amounts.getDecimal(0, 5, 2).toBigDecimal()).isEqualByComparingTo("2.50");
+        assertThat(amounts.isNullAt(1)).isTrue();
+        assertThat(amounts.getDecimal(2, 5, 2).toBigDecimal()).isEqualByComparingTo("-999.99");
+        assertThat(row.isNullAt(4)).isTrue();
+    }
+
+    @Test
+    void rejectsPostgresqlNumericPrecisionOverflowInsteadOfReturningNull() {
+        StructToRowDataConverter converter =
+                postgresqlDecimalConverter("amount", DataTypes.DECIMAL(5, 2));
+
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        Struct.newBuilder()
+                                                .set("amount")
+                                                .to(Value.pgNumeric("1000.00"))
+                                                .build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'amount'")
+                .hasMessageContaining("DECIMAL(5, 2)")
+                .hasMessageContaining("precision")
+                .hasMessageNotContaining("1000.00");
+    }
+
+    @Test
+    void rejectsPostgresqlNumericScaleLossInsteadOfRounding() {
+        StructToRowDataConverter converter =
+                postgresqlDecimalConverter("amount", DataTypes.DECIMAL(5, 2));
+
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        Struct.newBuilder()
+                                                .set("amount")
+                                                .to(Value.pgNumeric("1.234"))
+                                                .build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'amount'")
+                .hasMessageContaining("DECIMAL(5, 2)")
+                .hasMessageContaining("rounding")
+                .hasMessageNotContaining("1.234");
+    }
+
+    @Test
+    void rejectsPostgresqlNumericNaNWithColumnContext() {
+        StructToRowDataConverter converter =
+                postgresqlDecimalConverter("amount", DataTypes.DECIMAL(5, 2));
+
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        Struct.newBuilder()
+                                                .set("amount")
+                                                .to(Value.pgNumeric(Value.NAN))
+                                                .build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'amount'")
+                .hasMessageContaining("DECIMAL(5, 2)")
+                .hasMessageContaining("NaN");
+    }
+
+    @Test
+    void rejectsUnrepresentablePostgresqlNumericArrayElements() {
+        StructToRowDataConverter converter =
+                postgresqlDecimalConverter("amounts", DataTypes.ARRAY(DataTypes.DECIMAL(5, 2)));
+
+        assertThatThrownBy(() -> converter.convert(pgNumericArray("amounts", "1000.00")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'amounts'")
+                .hasMessageContaining("DECIMAL(5, 2)")
+                .hasMessageContaining("precision")
+                .hasMessageNotContaining("1000.00");
+        assertThatThrownBy(() -> converter.convert(pgNumericArray("amounts", "1.234")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'amounts'")
+                .hasMessageContaining("DECIMAL(5, 2)")
+                .hasMessageContaining("rounding")
+                .hasMessageNotContaining("1.234");
+        assertThatThrownBy(() -> converter.convert(pgNumericArray("amounts", Value.NAN)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'amounts'")
+                .hasMessageContaining("DECIMAL(5, 2)")
+                .hasMessageContaining("NaN");
+    }
+
+    private static StructToRowDataConverter postgresqlDecimalConverter(
+            String name, DataType dataType) {
+        RowType type = (RowType) DataTypes.ROW(DataTypes.FIELD(name, dataType)).getLogicalType();
+        return new StructToRowDataConverter(postgresqlSchema(type), null);
+    }
+
+    private static SpannerTableSchemaConverter postgresqlSchema(RowType type) {
+        return SpannerTableSchemaConverter.of(
+                type,
+                new int[0],
+                Dialect.POSTGRESQL,
+                Collections.emptyList(),
+                Collections.emptyMap(),
+                Collections.emptyMap());
+    }
+
+    private static Struct pgNumericArray(String name, String value) {
+        return Struct.newBuilder()
+                .set(name)
+                .to(Value.pgNumericArray(Collections.singletonList(value)))
+                .build();
     }
 
     private static Value numeric(Dialect dialect, String value) {

@@ -37,6 +37,8 @@ import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -64,13 +66,20 @@ final class StructToRowDataConverter implements Serializable {
         for (int i = 0; i < columns.size(); i++) {
             SpannerTableSchemaConverter.Column column = columns.get(i);
             Value value = struct.getValue(column.getName());
-            row.setField(i, convertValue(value, column.getLogicalType(), column.getSpannerType()));
+            row.setField(
+                    i,
+                    convertValue(
+                            value,
+                            column.getLogicalType(),
+                            column.getSpannerType(),
+                            column.getName()));
         }
         return row;
     }
 
     @Nullable
-    private static Object convertValue(Value value, LogicalType logicalType, Type spannerType) {
+    private static Object convertValue(
+            Value value, LogicalType logicalType, Type spannerType, String columnName) {
         if (value.isNull()) {
             return null;
         }
@@ -85,10 +94,10 @@ final class StructToRowDataConverter implements Serializable {
             case FLOAT64:
                 return value.getFloat64();
             case NUMERIC:
+                return convertDecimal(value.getNumeric(), (DecimalType) logicalType, columnName);
             case PG_NUMERIC:
-                DecimalType decimal = (DecimalType) logicalType;
-                return DecimalData.fromBigDecimal(
-                        value.getNumeric(), decimal.getPrecision(), decimal.getScale());
+                return convertPostgresqlDecimal(
+                        value.getString(), (DecimalType) logicalType, columnName);
             case STRING:
                 return StringData.fromString(value.getString());
             case JSON:
@@ -110,14 +119,16 @@ final class StructToRowDataConverter implements Serializable {
                         timestamp.getNanos() % 1_000_000);
             case ARRAY:
                 return new GenericArrayData(
-                        convertArray(value, logicalType, spannerType.getArrayElementType()));
+                        convertArray(
+                                value, logicalType, spannerType.getArrayElementType(), columnName));
             default:
                 throw new IllegalArgumentException(
                         "Unsupported Spanner result type: " + spannerType);
         }
     }
 
-    private static Object[] convertArray(Value value, LogicalType logicalType, Type elementType) {
+    private static Object[] convertArray(
+            Value value, LogicalType logicalType, Type elementType, String columnName) {
         List<?> values;
         switch (elementType.getCode()) {
             case BOOL:
@@ -134,8 +145,10 @@ final class StructToRowDataConverter implements Serializable {
                 values = value.getFloat64Array();
                 break;
             case NUMERIC:
-            case PG_NUMERIC:
                 values = value.getNumericArray();
+                break;
+            case PG_NUMERIC:
+                values = value.getStringArray();
                 break;
             case STRING:
                 values = value.getStringArray();
@@ -166,18 +179,21 @@ final class StructToRowDataConverter implements Serializable {
         for (int i = 0; i < values.size(); i++) {
             Object item = values.get(i);
             converted[i] =
-                    item == null ? null : convertArrayItem(item, elementLogicalType, elementType);
+                    item == null
+                            ? null
+                            : convertArrayItem(item, elementLogicalType, elementType, columnName);
         }
         return converted;
     }
 
-    private static Object convertArrayItem(Object item, LogicalType logicalType, Type type) {
+    private static Object convertArrayItem(
+            Object item, LogicalType logicalType, Type type, String columnName) {
         switch (type.getCode()) {
             case NUMERIC:
+                return convertDecimal((BigDecimal) item, (DecimalType) logicalType, columnName);
             case PG_NUMERIC:
-                DecimalType decimal = (DecimalType) logicalType;
-                return DecimalData.fromBigDecimal(
-                        (java.math.BigDecimal) item, decimal.getPrecision(), decimal.getScale());
+                return convertPostgresqlDecimal(
+                        (String) item, (DecimalType) logicalType, columnName);
             case STRING:
             case JSON:
             case PG_JSONB:
@@ -198,5 +214,52 @@ final class StructToRowDataConverter implements Serializable {
             default:
                 return item;
         }
+    }
+
+    private static DecimalData convertPostgresqlDecimal(
+            String value, DecimalType decimal, String columnName) {
+        if (Value.NAN.equals(value)) {
+            throw decimalConversionFailure(
+                    columnName,
+                    decimal,
+                    "PostgreSQL numeric NaN has no Flink DECIMAL representation.");
+        }
+        final BigDecimal parsed;
+        try {
+            parsed = new BigDecimal(value);
+        } catch (NumberFormatException ignored) {
+            throw decimalConversionFailure(
+                    columnName,
+                    decimal,
+                    "The PostgreSQL numeric value is not a supported decimal representation.");
+        }
+        return convertDecimal(parsed, decimal, columnName);
+    }
+
+    private static DecimalData convertDecimal(
+            BigDecimal value, DecimalType decimal, String columnName) {
+        final BigDecimal scaled;
+        try {
+            scaled = value.setScale(decimal.getScale(), RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException ignored) {
+            throw decimalConversionFailure(
+                    columnName, decimal, "Representing the value would require rounding.");
+        }
+        if (scaled.precision() > decimal.getPrecision()) {
+            throw decimalConversionFailure(
+                    columnName, decimal, "The value exceeds the declared precision.");
+        }
+        return DecimalData.fromBigDecimal(scaled, decimal.getPrecision(), decimal.getScale());
+    }
+
+    private static IllegalArgumentException decimalConversionFailure(
+            String columnName, DecimalType decimal, String reason) {
+        return new IllegalArgumentException(
+                "Spanner column '"
+                        + columnName
+                        + "' cannot be represented exactly as Flink "
+                        + decimal.asSummaryString()
+                        + ". "
+                        + reason);
     }
 }

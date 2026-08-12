@@ -222,19 +222,75 @@ class RowDataSerializationSchemaTest {
         assertThat(nullArray.isNull()).isTrue();
     }
 
+    @Test
+    void convertsPostgresqlDecimalShapesToExactPgNumericStrings() {
+        RowType rowType =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("amount", DataTypes.DECIMAL(10, 2)),
+                                        DataTypes.FIELD(
+                                                "amounts",
+                                                DataTypes.ARRAY(DataTypes.DECIMAL(18, 4))))
+                                .getLogicalType();
+        SpannerTableSchemaConverter tableSchema =
+                SpannerTableSchemaConverter.of(
+                        rowType,
+                        new int[0],
+                        Dialect.POSTGRESQL,
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        DecimalData amount = DecimalData.fromBigDecimal(new BigDecimal("12.34"), 10, 2);
+        DecimalData small = DecimalData.fromBigDecimal(new BigDecimal("0.0100"), 18, 4);
+        DecimalData boundary =
+                DecimalData.fromBigDecimal(new BigDecimal("-12345678901234.5678"), 18, 4);
+        GenericRowData row =
+                GenericRowData.of(
+                        amount, new GenericArrayData(new Object[] {small, null, boundary}));
+
+        com.google.cloud.spanner.Value scalar =
+                RowDataToSpannerValueConverter.convert(
+                        row,
+                        0,
+                        rowType.getTypeAt(0),
+                        tableSchema.getColumns().get(0).getSpannerType());
+        com.google.cloud.spanner.Value array =
+                RowDataToSpannerValueConverter.convert(
+                        row,
+                        1,
+                        rowType.getTypeAt(1),
+                        tableSchema.getColumns().get(1).getSpannerType());
+
+        assertThat(scalar.getType()).isEqualTo(Type.pgNumeric());
+        assertThat(scalar.getString()).isEqualTo("12.34");
+        assertThat(array.getType()).isEqualTo(Type.array(Type.pgNumeric()));
+        assertThat(array.getStringArray()).containsExactly("0.0100", null, "-12345678901234.5678");
+    }
+
     private static final class ValueAssertions {
         private static void assertNumeric(
                 com.google.cloud.spanner.Value value, Dialect dialect, String expected) {
             assertThat(value.getType()).isEqualTo(numericType(dialect));
-            assertThat(value.getNumeric()).isEqualByComparingTo(expected);
+            if (dialect == Dialect.POSTGRESQL) {
+                assertThat(value.getString()).isEqualTo(expected);
+            } else {
+                assertThat(value.getNumeric()).isEqualByComparingTo(expected);
+            }
         }
 
         private static void assertNumericArray(
                 com.google.cloud.spanner.Value value, Dialect dialect) {
             assertThat(value.getType()).isEqualTo(Type.array(numericType(dialect)));
-            assertThat(value.getNumericArray())
-                    .containsExactly(
-                            new BigDecimal("12.340000000"), null, new BigDecimal("56.780000000"));
+            if (dialect == Dialect.POSTGRESQL) {
+                assertThat(value.getStringArray())
+                        .containsExactly("12.340000000", null, "56.780000000");
+            } else {
+                assertThat(value.getNumericArray())
+                        .containsExactly(
+                                new BigDecimal("12.340000000"),
+                                null,
+                                new BigDecimal("56.780000000"));
+            }
         }
 
         private static Type numericType(Dialect dialect) {

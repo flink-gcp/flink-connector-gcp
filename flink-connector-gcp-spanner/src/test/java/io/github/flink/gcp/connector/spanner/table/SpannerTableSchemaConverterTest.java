@@ -23,8 +23,6 @@ import org.apache.flink.table.types.logical.RowType;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Type;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -120,14 +118,17 @@ class SpannerTableSchemaConverterTest {
     }
 
     @Test
-    void postgresqlDecimalsUsePgNumericForScalarsAndArrays() {
+    void postgresqlAcceptsRepresentativeFlinkDecimalShapesAsPgNumeric() {
         RowType row =
                 (RowType)
                         DataTypes.ROW(
-                                        DataTypes.FIELD("amount", DataTypes.DECIMAL(38, 9)),
+                                        DataTypes.FIELD("one_digit", DataTypes.DECIMAL(1, 0)),
+                                        DataTypes.FIELD("fraction", DataTypes.DECIMAL(10, 2)),
+                                        DataTypes.FIELD("scale_only", DataTypes.DECIMAL(18, 18)),
+                                        DataTypes.FIELD("integer", DataTypes.DECIMAL(38, 0)),
                                         DataTypes.FIELD(
                                                 "amounts",
-                                                DataTypes.ARRAY(DataTypes.DECIMAL(38, 9))))
+                                                DataTypes.ARRAY(DataTypes.DECIMAL(10, 2))))
                                 .getLogicalType();
 
         SpannerTableSchemaConverter schema =
@@ -141,30 +142,55 @@ class SpannerTableSchemaConverterTest {
 
         assertThat(schema.getColumns())
                 .extracting(SpannerTableSchemaConverter.Column::getSpannerType)
-                .containsExactly(Type.pgNumeric(), Type.array(Type.pgNumeric()));
+                .containsExactly(
+                        Type.pgNumeric(),
+                        Type.pgNumeric(),
+                        Type.pgNumeric(),
+                        Type.pgNumeric(),
+                        Type.array(Type.pgNumeric()));
     }
 
-    @ParameterizedTest
-    @EnumSource(Dialect.class)
-    void reportsUnsupportedDecimalShapesAsAConnectorLimit(Dialect dialect) {
-        RowType row =
+    @Test
+    void googleSqlAcceptsOnlyDecimal38Scale9() {
+        RowType supported =
                 (RowType)
-                        DataTypes.ROW(DataTypes.FIELD("amount", DataTypes.DECIMAL(10, 2)))
+                        DataTypes.ROW(DataTypes.FIELD("amount", DataTypes.DECIMAL(38, 9)))
                                 .getLogicalType();
 
-        assertThatThrownBy(
-                        () ->
-                                SpannerTableSchemaConverter.of(
-                                        row,
-                                        new int[0],
-                                        dialect,
-                                        Collections.emptyList(),
-                                        Collections.emptyMap(),
-                                        Collections.emptyMap()))
-                .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("connector supports only DECIMAL(38, 9)")
-                .hasMessageContaining(
-                        dialect == Dialect.POSTGRESQL ? "PostgreSQL numeric" : "GoogleSQL NUMERIC");
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        supported,
+                        new int[0],
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+
+        assertThat(schema.getColumns().get(0).getSpannerType()).isEqualTo(Type.numeric());
+
+        for (org.apache.flink.table.types.DataType unsupported :
+                Arrays.asList(
+                        DataTypes.DECIMAL(1, 0),
+                        DataTypes.DECIMAL(10, 2),
+                        DataTypes.DECIMAL(18, 18),
+                        DataTypes.DECIMAL(38, 0))) {
+            RowType row =
+                    (RowType)
+                            DataTypes.ROW(DataTypes.FIELD("amount", unsupported)).getLogicalType();
+            assertThatThrownBy(
+                            () ->
+                                    SpannerTableSchemaConverter.of(
+                                            row,
+                                            new int[0],
+                                            Dialect.GOOGLE_STANDARD_SQL,
+                                            Collections.emptyList(),
+                                            Collections.emptyMap(),
+                                            Collections.emptyMap()))
+                    .as("GoogleSQL must reject %s", unsupported)
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("connector supports only DECIMAL(38, 9)")
+                    .hasMessageContaining("GoogleSQL NUMERIC");
+        }
     }
 
     @Test

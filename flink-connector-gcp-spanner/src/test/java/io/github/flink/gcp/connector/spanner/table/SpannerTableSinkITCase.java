@@ -66,21 +66,48 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 TableEnvironment.create(
                         EnvironmentSettings.newInstance().inStreamingMode().build());
         sink.executeSql(numericTableDdl("numeric_sink", database, dialect));
-        sink.executeSql(
-                        "INSERT INTO numeric_sink VALUES "
-                                + "(1, CAST(12.340000000 AS DECIMAL(38, 9))), "
-                                + "(2, CAST(NULL AS DECIMAL(38, 9)))")
-                .await();
+        if (dialect == Dialect.POSTGRESQL) {
+            sink.executeSql(
+                            "INSERT INTO numeric_sink VALUES "
+                                    + "(1, CAST(12.34 AS DECIMAL(10, 2)), "
+                                    + "CAST(0.123456789012345678 AS DECIMAL(18, 18))), "
+                                    + "(2, CAST(NULL AS DECIMAL(10, 2)), "
+                                    + "CAST(NULL AS DECIMAL(18, 18)))")
+                    .await();
+        } else {
+            sink.executeSql(
+                            "INSERT INTO numeric_sink VALUES "
+                                    + "(1, CAST(12.340000000 AS DECIMAL(38, 9))), "
+                                    + "(2, CAST(NULL AS DECIMAL(38, 9)))")
+                    .await();
+        }
 
         TableEnvironment source =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         source.executeSql(numericTableDdl("numeric_source", database, dialect));
-        try (CloseableIterator<Row> rows =
-                source.executeSql("SELECT id, amount FROM numeric_source ORDER BY id").collect()) {
-            assertThat(rows)
-                    .toIterable()
-                    .containsExactly(
-                            Row.of(1L, new java.math.BigDecimal("12.340000000")), Row.of(2L, null));
+        if (dialect == Dialect.POSTGRESQL) {
+            try (CloseableIterator<Row> rows =
+                    source.executeSql("SELECT id, amount, fraction FROM numeric_source ORDER BY id")
+                            .collect()) {
+                assertThat(rows)
+                        .toIterable()
+                        .containsExactly(
+                                Row.of(
+                                        1L,
+                                        new java.math.BigDecimal("12.34"),
+                                        new java.math.BigDecimal("0.123456789012345678")),
+                                Row.of(2L, null, null));
+            }
+        } else {
+            try (CloseableIterator<Row> rows =
+                    source.executeSql("SELECT id, amount FROM numeric_source ORDER BY id")
+                            .collect()) {
+                assertThat(rows)
+                        .toIterable()
+                        .containsExactly(
+                                Row.of(1L, new java.math.BigDecimal("12.340000000")),
+                                Row.of(2L, null));
+            }
         }
     }
 
@@ -99,7 +126,8 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
-                    "CREATE TABLE numeric_records (id bigint NOT NULL PRIMARY KEY, amount numeric)");
+                    "CREATE TABLE numeric_records ("
+                            + "id bigint NOT NULL PRIMARY KEY, amount numeric, fraction numeric)");
         }
         return createDatabase(
                 dialect,
@@ -138,7 +166,9 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 + tableName
                 + " (\n"
                 + "  id BIGINT,\n"
-                + "  amount DECIMAL(38, 9),\n"
+                + (dialect == Dialect.POSTGRESQL
+                        ? "  amount DECIMAL(10, 2),\n  fraction DECIMAL(18, 18),\n"
+                        : "  amount DECIMAL(38, 9),\n")
                 + "  PRIMARY KEY (id) NOT ENFORCED\n"
                 + ") WITH (\n"
                 + "  'connector' = 'spanner',\n"
