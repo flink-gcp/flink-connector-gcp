@@ -197,6 +197,9 @@ class BigtableOptionParityTest {
         map.put(
                 BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN.key(),
                 "builds the one ByteStringRange that rowRange(...) takes");
+        map.put(
+                BigtableConnectorOptions.SCAN_ROW_RANGES.key(),
+                "builds every ByteStringRange that repeated rowRange(...) calls take");
         return Collections.unmodifiableMap(map);
     }
 

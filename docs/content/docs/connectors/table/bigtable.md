@@ -227,8 +227,8 @@ The source consumes row-key predicates exactly when the SQL comparison has the s
 the HBase-compatible byte encoding.
 Exact equality, inequality and `IN` predicates become one or more Bigtable row ranges.
 `AND` intersects ranges, and `OR` unions them.
-The ranges configured by `scan.row-prefix` and `scan.row-range.*` are first treated as one union,
-then intersected with the SQL ranges.
+The ranges configured by `scan.row-prefix`, `scan.row-range.*` and `scan.row-ranges` are first
+treated as one union, then intersected with the SQL ranges.
 The same final ranges and filters serve the bounded scan and a FULL-cache loader created from that
 filtered source plan.
 
@@ -290,8 +290,17 @@ Two more read-side facts worth knowing:
 
 ### Bounding the scan
 
-`scan.row-prefix` and the `scan.row-range.*` pair bound the scan by row key, server-side, and are
-additive — overlapping selections are merged, so no row is read twice.
+`scan.row-prefix`, the legacy `scan.row-range.*` pair and `scan.row-ranges` bound the scan by row
+key, server-side, and are additive — overlapping or adjacent selections are merged, so no row is
+read twice.
+`scan.row-ranges` uses semicolon-separated closed-start, open-end entries such as
+`[account-a,account-m);[account-q,)`.
+Either endpoint may be omitted, but not both.
+Use a backslash before `\`, `;`, `,`, `[`, `]`, `(` or `)` when that character belongs to a UTF-8
+endpoint rather than to the range grammar.
+The `\\` sequence is the complete input for one literal backslash; it needs no additional prefix.
+Malformed, empty, equal or inverted entries fail table validation with their one-based entry
+number.
 `scan.row-key-encoding = UTF8`, the default, preserves the original text behavior.
 Set it to `BASE64` to express exact binary keys using canonical padded RFC 4648 standard Base64.
 The Base64 mode rejects the URL-safe alphabet, whitespace, missing or non-canonical padding, and
@@ -327,8 +336,8 @@ Flink does not currently pass an additional right-side temporal-join predicate t
 `SupportsFilterPushDown`.
 It keeps that expression in the lookup operator, where NONE, PARTIAL and FULL modes evaluate the
 same residual predicate.
-Configured `scan.row-prefix` and `scan.row-range.*` bounds still apply to point reads and FULL-cache
-contents.
+Configured `scan.row-prefix`, `scan.row-range.*` and `scan.row-ranges` bounds still apply to point
+reads and FULL-cache contents.
 
 `lookup.cache = PARTIAL` uses Flink's standard on-demand lookup cache around either the synchronous
 or asynchronous function. Configure at least one of `lookup.partial-cache.max-rows`,
@@ -368,10 +377,11 @@ or runtime shape rather than a DataStream builder.
 | Option | Type | Maps to |
 |---|---|---|
 | `scan.app-profile-id` | String | `BigtableSource.builder()`'s `appProfileId(...)`. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
-| `scan.row-key-encoding` | Enum | How the three row-key bound options are decoded: `UTF8` (default) or canonical padded RFC 4648 standard `BASE64` |
-| `scan.row-prefix` | List of String | `prefix(...)`, once per decoded element. `;`-separated and additive with the range |
-| `scan.row-range.start-closed` | String | The inclusive decoded start key of the one `rowRange(...)` the scan carries. Either bound may be given alone |
+| `scan.row-key-encoding` | Enum | How row-key prefixes and range endpoints are decoded: `UTF8` (default) or canonical padded RFC 4648 standard `BASE64` |
+| `scan.row-prefix` | List of String | `prefix(...)`, once per decoded element. `;`-separated and additive with every range |
+| `scan.row-range.start-closed` | String | The inclusive decoded start key of the legacy single `rowRange(...)`. Either bound may be given alone |
 | `scan.row-range.end-open` | String | The exclusive decoded end key of that range |
+| `scan.row-ranges` | String | Additional `[start,end)` ranges separated by unescaped `;`. Either endpoint may be omitted. Backslash escapes grammar characters inside UTF-8 endpoints |
 | `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
 
 ### Lookup

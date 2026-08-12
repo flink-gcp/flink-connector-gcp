@@ -143,7 +143,7 @@ public final class BigtableConnectorOptions {
                     .withDescription(
                             "Scan only the rows whose key starts with one of these prefixes."
                                     + " Repeatable — the list separator is ';' — and additive with"
-                                    + " 'scan.row-range.*': overlapping selections are merged, so"
+                                    + " every configured range: overlapping selections are merged, so"
                                     + " no row is read twice. 'scan.row-key-encoding' controls"
                                     + " whether each element is UTF-8 text or Base64.");
 
@@ -155,8 +155,7 @@ public final class BigtableConnectorOptions {
                             "Scan from this row key, inclusive. 'scan.row-key-encoding' controls"
                                     + " whether it is UTF-8 text or Base64. May be given without"
                                     + " 'scan.row-range.end-open', which leaves the range open"
-                                    + " above. One range per DDL; a scan needing several uses"
-                                    + " 'scan.row-prefix' or stays on the DataStream API.");
+                                    + " above. Additional ranges use 'scan.row-ranges'.");
 
     public static final ConfigOption<String> SCAN_ROW_RANGE_END_OPEN =
             ConfigOptions.key("scan.row-range.end-open")
@@ -167,6 +166,19 @@ public final class BigtableConnectorOptions {
                                     + " whether it is UTF-8 text or Base64. May be given without"
                                     + " 'scan.row-range.start-closed', which leaves the range open"
                                     + " below.");
+
+    public static final ConfigOption<String> SCAN_ROW_RANGES =
+            ConfigOptions.key("scan.row-ranges")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "A semicolon-separated union of closed-start, open-end row-key"
+                                    + " ranges, for example '[a,m);[q,)'. Either endpoint may be"
+                                    + " omitted, but not both. Backslash escapes '\\', ';', ',',"
+                                    + " '[', ']', '(' and ')' inside an endpoint. The ranges are"
+                                    + " additive with 'scan.row-prefix' and 'scan.row-range.*',"
+                                    + " and 'scan.row-key-encoding' controls how each endpoint is"
+                                    + " decoded.");
 
     // ------------------------------------------------------------------------
     //  Lookup

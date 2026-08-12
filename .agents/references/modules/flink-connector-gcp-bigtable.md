@@ -325,8 +325,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   chosen by the converter — `cellsPerColumn(1)` pushdown is a deferred follow-up, not a gap.
   Range keys default to UTF-8; `scan.row-key-encoding=BASE64` accepts only canonical padded RFC
   4648 standard Base64 and retains the decoded `ByteString` across scans and every lookup cache
-  mode. The factory rejects a bound or prefix element that decodes empty because the client
-  silently widens one to the whole table. **The family filter decides row membership,
+  mode. `scan.row-ranges` is a semicolon-separated union of `[start,end)` entries with backslash
+  escapes for grammar characters; one endpoint may be omitted, and diagnostics name the one-based
+  entry. It is additive with prefixes and the legacy single-range pair before the existing
+  normalization. The factory rejects a bound or prefix element that decodes empty because the
+  client silently widens one to the whole table. **The family filter decides row membership,
   not only row width**: a row appears iff a retained family has a cell, and a keys-only query
   sees every physical row — the wide-column model's row existence, pinned by the emulator ITCase.
   HBase makes membership projection-dependent too but adds declared qualifiers individually; a
@@ -338,8 +341,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   limited to `VARCHAR` and `VARBINARY`. Fixed-width integer and temporal equality uses a prefix
   range because their decoders ignore suffix bytes. An empty string or binary literal remains
   residual because the SDK cannot bound the empty key that the emulator accepts. `CHAR`, `BINARY`,
-  `BOOLEAN`, `DECIMAL` and floating point remain residual. Configured prefixes and the configured range remain a union,
-  then intersect with exact SQL ranges. Positive family or qualifier predicates become
+  `BOOLEAN`, `DECIMAL` and floating point remain residual. Configured prefixes and configured
+  ranges remain a union, then intersect with exact SQL ranges. Positive family or qualifier predicates become
   necessary existence filters but also remain residual: never push raw values across codec nulls,
   byte-order differences or cell versions. Compose the existence predicate as a conditional whose
   true branch is the projection filter, and preserve that plan in a FULL loader created from the

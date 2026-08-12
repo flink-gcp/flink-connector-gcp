@@ -394,6 +394,30 @@ class BigtableDynamicSourceTest {
     }
 
     @Test
+    void multipleRangesAreAdditiveAndCoalescedWithEveryConfiguredSelection() {
+        BigtableSourceConfig<?> config =
+                configOf(
+                        minimal()
+                                .prefixes(java.util.Collections.singletonList(key("user")))
+                                .rangeStartClosed(key("a"))
+                                .rangeEndOpen(key("m"))
+                                .rowRanges(
+                                        Arrays.asList(
+                                                ByteStringRange.unbounded()
+                                                        .startClosed("f")
+                                                        .endOpen("q"),
+                                                ByteStringRange.unbounded()
+                                                        .startClosed("q")
+                                                        .endOpen("s"),
+                                                ByteStringRange.unbounded()
+                                                        .startClosed("web")
+                                                        .endOpen("wez")))
+                                .build());
+
+        assertThat(rangesOf(config)).containsExactly("[a, s)", "[user, uses)", "[web, wez)");
+    }
+
+    @Test
     void aOneSidedRangeLeavesTheOtherEndOpen() {
         assertThat(rangesOf(configOf(minimal().rangeStartClosed(key("b")).build())))
                 .containsExactly("[b, *)");
@@ -485,6 +509,21 @@ class BigtableDynamicSourceTest {
         assertThat(plain).isEqualTo(minimal().build());
         assertThat(plain.hashCode()).isEqualTo(minimal().build().hashCode());
         assertThat(projected).isNotEqualTo(plain);
+    }
+
+    @Test
+    void configuredRowRangesDistinguishSources() {
+        BigtableDynamicSource plain = minimal().build();
+        BigtableDynamicSource bounded =
+                minimal()
+                        .rowRanges(
+                                java.util.Collections.singletonList(
+                                        ByteStringRange.unbounded()
+                                                .startClosed(key("a"))
+                                                .endOpen(key("z"))))
+                        .build();
+
+        assertThat(bounded).isNotEqualTo(plain);
     }
 
     @Test
