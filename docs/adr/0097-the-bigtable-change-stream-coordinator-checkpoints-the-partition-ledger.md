@@ -18,7 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11
-- Issues: [#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35), [#510](https://github.com/laughingman7743/flink-connector-gcp/issues/510)
+- Issues: [#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35),
+  [#510](https://github.com/laughingman7743/flink-connector-gcp/issues/510),
+  [#533](https://github.com/laughingman7743/flink-connector-gcp/issues/533)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`
 
@@ -59,6 +61,18 @@ coordinator preflights the routing policy when the principal can read it; a data
 principal is allowed through and the reader translates the service rejection if the profile is
 multi-cluster.
 
+The reader reconstructs every SDK-bound partition as an explicit closed-start/open-end range before
+building either a `ReadChangeStream` request or a continuation token. Empty boundary keys mean
+negative or positive infinity in this API, but their protobuf oneof cases must still be set. The
+connector's general-purpose range copy normalizes an empty key to an unbounded model value, so it
+remains safe for internal range algebra and is deliberately not the SDK representation.
+
+The built-in `ChangeStreamMutationDeserializationSchema` supplies a dedicated Flink serializer.
+The SDK model is immutable and implements Java serialization, but Flink otherwise chooses
+reflective Kryo, whose collection serializer tries to add entries to the model's immutable list.
+Copies can therefore retain the immutable instance, while network edges use the model's declared
+Java-serialization contract.
+
 ## Evidence
 
 - In java-bigtable 2.80.0, `ReadChangeStreamQuery.continuationTokens` accepts a list and is mutually
@@ -67,6 +81,23 @@ multi-cluster.
   exposes the token's partition range, which is what proves that a merge target is complete.
 - `Table.getChangeStreamRetention()` exposes the configured retention to the connector, while a
   fresh `latest()` avoids that admin read through ADR-0094's lazy lookup.
+- The first real-service run on 2026-08-12 rejected a partition whose boundary oneofs had been
+  cleared with `INVALID_ARGUMENT: partition.row_range must be the form of [start_key, end_key)`.
+  java-bigtable 2.80.0 and Apache Beam both preserve `ByteStringRange.create(empty, empty)`, which
+  sets the required closed/open cases while using empty values for the unbounded keyspace.
+- The next real-service run reached the mutation stream and exposed the same normalized range at
+  `ChangeStreamContinuationToken.create` as `IllegalStateException: Start is unbounded`; all
+  connector-created SDK ranges therefore share the same boundary conversion.
+- After that fix, the live stream emitted a service mutation but default Kryo copying failed with
+  `UnsupportedOperationException` while rebuilding its immutable `entries`; the built-in schema's
+  serializer now round-trips an SDK mutation without reflective collection access.
+- The following live run completed a checkpoint and entered the fixture's controlled failure. Its
+  generic `RichMapFunction` then erased the schema's output type before the collect network edge;
+  the gated fixture now declares that output type explicitly so recovery uses the same serializer.
+- The final production-service run on 2026-08-12 used instance
+  `flink-it-1786493698-968f3051`, observed all 100 seeded rows, completed a checkpoint, triggered the
+  one controlled failure, recovered without loss, and completed at the bounded end time in 132.3
+  seconds. The instance returned `NOT_FOUND` immediately after teardown.
 - Unit tests round-trip pending merge state, prove one token cannot release a two-parent merge,
   prove restore does not generate new initial partitions, and prove expired coordinator-held state
   fails unless fallback was opted in.

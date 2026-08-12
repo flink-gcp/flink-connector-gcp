@@ -22,7 +22,9 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.CloseStream;
+import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import org.junit.jupiter.api.Test;
@@ -57,7 +59,9 @@ class BigtableChangeStreamSplitReaderTest {
                         TestChangeStreamRecords.close("child"));
         BigtableChangeStreamSplitReader reader = reader(opener);
         reader.handleSplitsChanges(
-                new SplitsAddition<>(Collections.singletonList(split(Collections.emptyList()))));
+                new SplitsAddition<>(
+                        Collections.singletonList(
+                                split(ByteStringRange.unbounded(), Collections.emptyList()))));
 
         RecordsWithSplitIds<ChangeStreamRecord> records = reader.fetch();
 
@@ -109,7 +113,18 @@ class BigtableChangeStreamSplitReaderTest {
             assertThat(drain(reader.fetch())).singleElement().isInstanceOf(CloseStream.class);
             assertThat(opener.opened.get(1).getContinuationTokens())
                     .singleElement()
-                    .satisfies(token -> assertThat(token.getToken()).isEqualTo("latest-token"));
+                    .satisfies(
+                            token -> {
+                                assertThat(token.getToken()).isEqualTo("latest-token");
+                                assertThat(token.getPartition().getStartBound())
+                                        .isEqualTo(BoundType.CLOSED);
+                                assertThat(token.getPartition().getStart())
+                                        .isEqualTo(ByteString.copyFromUtf8("a"));
+                                assertThat(token.getPartition().getEndBound())
+                                        .isEqualTo(BoundType.OPEN);
+                                assertThat(token.getPartition().getEnd())
+                                        .isEqualTo(ByteString.copyFromUtf8("z"));
+                            });
         } finally {
             reader.close();
             executor.shutdownNow();
@@ -122,11 +137,13 @@ class BigtableChangeStreamSplitReaderTest {
     }
 
     private static ChangeStreamPartitionSplit split(List<ChangeStreamContinuationToken> tokens) {
+        return split(ByteStringRange.create("a", "z"), tokens);
+    }
+
+    private static ChangeStreamPartitionSplit split(
+            ByteStringRange partition, List<ChangeStreamContinuationToken> tokens) {
         return new ChangeStreamPartitionSplit(
-                "change-stream-0",
-                ByteStringRange.create("a", "z"),
-                tokens,
-                Instant.parse("2026-08-11T00:00:00Z"));
+                "change-stream-0", partition, tokens, Instant.parse("2026-08-11T00:00:00Z"));
     }
 
     private static List<ChangeStreamRecord> drain(RecordsWithSplitIds<ChangeStreamRecord> records) {

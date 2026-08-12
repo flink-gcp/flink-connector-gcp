@@ -69,11 +69,13 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                         .toArray(String[]::new);
         seedRows(table, expected);
         Instant end = Instant.now().plusSeconds(30);
+        ChangeStreamMutationDeserializationSchema deserializer =
+                new ChangeStreamMutationDeserializationSchema();
         BigtableChangeStreamSource<ChangeStreamMutation> source =
                 BigtableChangeStreamSource.<ChangeStreamMutation>builder()
                         .table(table)
                         .appProfileId(APP_PROFILE)
-                        .deserializer(new ChangeStreamMutationDeserializationSchema())
+                        .deserializer(deserializer)
                         .startPosition(StartPosition.at(start))
                         .endTime(end)
                         .build();
@@ -92,6 +94,7 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                 environment
                         .fromSource(source, WatermarkStrategy.noWatermarks(), "change-stream")
                         .map(new FailAfterACompletedCheckpoint())
+                        .returns(deserializer.getProducedType())
                         .executeAndCollect()) {
             mutations.forEachRemaining(mutation -> keys.add(mutation.getRowKey().toStringUtf8()));
         }

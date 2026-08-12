@@ -232,6 +232,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   multi-cluster policy; missing permission to read profile metadata does not add a new requirement,
   and the reader translates the service rejection instead. Start-position and restore-expiry
   behavior is ADR-0094's shared contract.
+- **The service partition always goes onto the wire as `[closed start, open end)`, even when an
+  endpoint is empty.** The SDK uses an empty key for an infinite endpoint but the service still
+  requires the protobuf boundary oneof to be set. `RowRanges.copyOf` intentionally normalizes the
+  empty key for internal algebra, so the reader reconstructs the explicit boundary pair before
+  building either a `ReadChangeStream` request or an SDK continuation token (#533).
+- **The built-in raw-mutation deserializer supplies its own serializer.** SDK mutations contain
+  immutable collection implementations that Flink's reflective Kryo path cannot copy. The
+  `ChangeStreamMutationDeserializationSchema` therefore treats the immutable model as copy-safe and
+  uses its Java-serialization contract for network boundaries (#533).
 
 ## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`; shared rules `docs/adr/0014`)
 

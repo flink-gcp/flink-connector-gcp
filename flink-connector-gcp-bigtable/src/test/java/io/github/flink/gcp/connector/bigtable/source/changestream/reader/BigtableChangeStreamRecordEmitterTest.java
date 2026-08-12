@@ -22,6 +22,7 @@ import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 import org.apache.flink.util.Collector;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
+import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -63,8 +64,15 @@ class BigtableChangeStreamRecordEmitterTest {
 
         assertThat(output.records()).containsExactly("row");
         assertThat(output.timestamps()).containsExactly(commit.toEpochMilli());
-        assertThat(state.toSplit().getContinuationTokens().get(0).getToken())
-                .isEqualTo("mutation-token");
+        assertThat(state.toSplit().getContinuationTokens().get(0))
+                .satisfies(
+                        token -> {
+                            assertThat(token.getToken()).isEqualTo("mutation-token");
+                            assertThat(token.getPartition().getStartBound())
+                                    .isEqualTo(BoundType.CLOSED);
+                            assertThat(token.getPartition().getEndBound())
+                                    .isEqualTo(BoundType.OPEN);
+                        });
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
         assertThat(counter(BigtableMetricNames.CHANGE_STREAM_MUTATIONS_READ)).isEqualTo(1);
         assertThat(gauge(BigtableMetricNames.PARTITION_LOW_WATERMARK_MILLIS))
@@ -150,7 +158,7 @@ class BigtableChangeStreamRecordEmitterTest {
         return new ChangeStreamPartitionSplitState(
                 new ChangeStreamPartitionSplit(
                         "change-stream-0",
-                        ByteStringRange.create("a", "z"),
+                        ByteStringRange.unbounded(),
                         Collections.emptyList(),
                         Instant.EPOCH));
     }
