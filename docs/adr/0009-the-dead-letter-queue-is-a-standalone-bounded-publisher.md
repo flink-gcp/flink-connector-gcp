@@ -18,10 +18,11 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 ([#211]); flush bound added 2026-08-06 ([#321]); metrics added 2026-08-08
-  ([#329]), the longest-wait gauge 2026-08-09 ([#405])
-- Issues: [#211] (the [#37] series), [#321], [#329], [#405]
+  ([#329]), the longest-wait gauge 2026-08-09 ([#405]); explicit service-account key file
+  2026-08-12 ([#546])
+- Issues: [#211] (the [#37] series), [#321], [#329], [#405], [#546]
 - Modules: pubsub (driven by any connector's `FailureHandler`)
-- Current behavior: the three datastream pages' dead-lettering sections, and `pubsub.md`'s
+- Current behavior: the four datastream pages' dead-lettering sections, and `pubsub.md`'s
   "Dead-letter metrics"
 
 ## Decision
@@ -60,6 +61,17 @@ Decisions worth keeping from [#211]:
   real publisher and stranding a gax executor in the test JVM.
 - The topic is never auto-created: a dead-letter destination created on the fly is one nothing
   is consuming.
+- **Credentials are configured independently from the host connector** ([#546]).
+  An absent setting leaves application-default credentials in effect.
+  `serviceAccountKeyFile(path)` selects only a service-account JSON key and stores only its path in
+  the serialized queue; each host sink writer loads and scopes it when `open()` creates the direct
+  SDK publisher.
+  The queue does not inherit the host connector's identity because the serialized shared
+  `FailureHandler` contract carries no host credential configuration, and a separate dead-letter
+  identity is a valid deployment.
+  Emulator mode remains a separate plaintext, credential-free mode and is rejected beside the
+  key path.
+  Raw or Base64-encoded JSON, access tokens, user credentials and a public provider SPI stay out.
 
 **The flush is bounded on the wait side, by one deadline per wait rather than one per publish**
 ([#321]). `Builder.flushTimeout(Duration)`, 60 s, covering both waits — `flush()`, which runs at
@@ -197,3 +209,4 @@ each of the four carries `deadLetter` in its name.
 [#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
 [#334]: https://github.com/laughingman7743/flink-connector-gcp/issues/334
 [#405]: https://github.com/laughingman7743/flink-connector-gcp/issues/405
+[#546]: https://github.com/laughingman7743/flink-connector-gcp/issues/546

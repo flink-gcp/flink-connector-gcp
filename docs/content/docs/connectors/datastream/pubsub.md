@@ -673,9 +673,18 @@ PubSubSink.<String>builder()
         .build();
 ```
 
+`PubSubDeadLetterQueue.builder().serviceAccountKeyFile(path)` selects credentials for the dead-letter
+publisher independently of this Pub/Sub sink's `serviceAccountKeyFile(path)` setting.
+Each sink writer reads the DLQ file when it opens the queue, so the path must be readable on every
+TaskManager that can run the sink.
+If the DLQ setting is absent, the queue uses application-default credentials even when the host
+sink uses an explicit key file.
+The [credential file deployment](#credential-file-deployment) note covers Kubernetes Secret
+mounts, session clusters and rotation.
+
 | Attribute | Value |
 |---|---|
-| `dlq-connector` | `bigquery`, `pubsub` or `cloudtasks` |
+| `dlq-connector` | `bigquery`, `bigtable`, `pubsub` or `cloudtasks` |
 | `dlq-destination` | the resource the element was bound for |
 | `dlq-error` | the failure description, truncated to Pub/Sub's 1024-byte attribute-value limit and marked with `...` |
 | `dlq-timestamp` | when the element was offered, ISO-8601 |

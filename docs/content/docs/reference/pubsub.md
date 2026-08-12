@@ -192,6 +192,7 @@ each option is *for*, and how to size the two budgets against a checkpoint inter
 | Option | Default | What it does |
 |---|---|---|
 | `topic` | **required** | Publishes every dead letter to one topic, which must already exist — this queue never creates one |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when each host sink writer opens the queue. Every eligible TaskManager must see the same path. Independent of the host connector's credentials and rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment) |
 | `maxOutstandingMessages` | `1000` | How many publishes may be outstanding before an offer waits for them. `WRITE_THROUGH` (`0`) publishes each element synchronously, the narrowest loss window at one round trip per element; `UNBOUNDED` (`-1`) buffers until the flush |
 | `flushTimeout` | 60 s | How long **one wait** for outstanding publishes may take — the wait in `flush()`, and the one an offer makes when the bound above is full. One deadline per wait rather than per publish, and there is no unbounded setting. Expiry throws, failing the checkpoint or the task |
 | `shutdownTimeout` | 30 s | How long the queue's own close waits for its publisher. Spent *after* the sink's own `shutdownTimeout`, so keep the sum under Flink's `task.cancellation.timeout` (180 s by default) |

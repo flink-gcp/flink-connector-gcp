@@ -65,11 +65,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   on a character boundary; the cause chain stays out of the envelope.
 - Both its budgets (`shutdownTimeout`, `flushTimeout`) are wait-side, one deadline per wait —
   never one per future — and both reject a `Duration` too large for `toNanos()`. Expiry throws;
-  futures are not cancelled. Its five knobs are documented once, as a
+  futures are not cancelled. Its six knobs are documented once, as a
   `## PubSubDeadLetterQueue.builder()` section of `reference/pubsub.md`, with the other three
   reference pages linking to it; the datastream pages' dead-lettering prose keeps what they are
   *for*. `check-option-docs` reaches the class only because `option-docs.toml` names its file in
   pubsub's `sources` — nothing about the file matches `SOURCE_GLOBS` (#328).
+- Its optional service-account key path is independent of the host connector's credentials.
+  The queue loads the service-account-only credential in `open()`, so the path, rather than parsed
+  credentials, crosses the job graph and every eligible TaskManager must mount it.
+  An absent path leaves ADC in effect; emulator mode remains plaintext and credential-free and is
+  rejected beside the key path (#546).
 - **Its five metrics register on the *host* sink writer's group** (#329, #405) — the only group
   `FailureHandlerContext` carries — so a BigQuery job reports them beside BigQuery's own, which is
   why every one of the names carries `deadLetter`. They are `PubSubMetricNames`', by the argument
