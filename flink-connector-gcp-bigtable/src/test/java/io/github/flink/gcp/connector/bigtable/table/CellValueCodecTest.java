@@ -482,7 +482,8 @@ class CellValueCodecTest {
             // switch names. Pinned as an allowlist rather than skipped silently, so a new
             // LogicalTypeRoot arriving in a Flink upgrade fails the walk until a sample — and so
             // an agreement check — exists for it. A subset, not an equality: the supported range
-            // spans Flink majors and the newer roots (DESCRIPTOR, VARIANT) are absent on 1.20.
+            // spans Flink majors and the newer roots cannot all be named from this shared source:
+            // DESCRIPTOR and VARIANT are absent on 1.20, and BITMAP is absent on 1.20 and 2.2.
             java.util.Set<LogicalTypeRoot> unsampled =
                     java.util.EnumSet.complementOf(java.util.EnumSet.copyOf(SAMPLES.keySet()));
             assertThat(unsampled)
@@ -494,7 +495,8 @@ class CellValueCodecTest {
                             "SYMBOL",
                             "UNRESOLVED",
                             "DESCRIPTOR",
-                            "VARIANT");
+                            "VARIANT",
+                            "BITMAP");
             for (LogicalTypeRoot root : LogicalTypeRoot.values()) {
                 LogicalType type = SAMPLES.get(root);
                 if (type == null) {
