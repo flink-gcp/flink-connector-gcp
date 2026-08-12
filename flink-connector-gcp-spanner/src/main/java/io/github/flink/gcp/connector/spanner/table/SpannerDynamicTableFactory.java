@@ -29,6 +29,7 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
 import io.github.flink.gcp.connector.spanner.table.sink.WriterOptionsMapper;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
@@ -66,6 +67,7 @@ public final class SpannerDynamicTableFactory
                 Arrays.asList(
                         SpannerConnectorOptions.EMULATOR_ENDPOINT,
                         SpannerConnectorOptions.DIALECT,
+                        SpannerConnectorOptions.SCHEMA,
                         SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS,
                         SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS,
                         SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES,
@@ -103,6 +105,7 @@ public final class SpannerDynamicTableFactory
         ReadableConfig config = helper.getOptions();
         DataType physicalType = context.getPhysicalRowDataType();
         SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
+        SpannerTableName table = tableName(config);
 
         return SpannerDynamicSink.builder()
                 .schema(schema)
@@ -111,7 +114,7 @@ public final class SpannerDynamicTableFactory
                                 config.get(SpannerConnectorOptions.PROJECT),
                                 config.get(SpannerConnectorOptions.INSTANCE),
                                 config.get(SpannerConnectorOptions.DATABASE)))
-                .table(config.get(SpannerConnectorOptions.TABLE))
+                .table(table.apiName())
                 .writerOptions(WriterOptionsMapper.map(config))
                 .emulatorEndpoint(
                         config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
@@ -135,6 +138,13 @@ public final class SpannerDynamicTableFactory
                 config.get(SpannerConnectorOptions.TABLE),
                 physicalType,
                 config);
+    }
+
+    private static SpannerTableName tableName(ReadableConfig config) {
+        return SpannerTableName.of(
+                config.getOptional(SpannerConnectorOptions.SCHEMA).orElse(null),
+                config.get(SpannerConnectorOptions.TABLE),
+                config.get(SpannerConnectorOptions.DIALECT));
     }
 
     private static SpannerTableSchemaConverter createSchema(

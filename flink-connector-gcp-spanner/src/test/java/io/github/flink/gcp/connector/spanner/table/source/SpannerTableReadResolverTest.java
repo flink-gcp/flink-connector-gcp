@@ -31,6 +31,7 @@ import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Statement;
+import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
@@ -96,6 +97,20 @@ class SpannerTableReadResolverTest {
     }
 
     @Test
+    void keepsSameNamedAccessPathsInDifferentSchemasDistinct() throws Exception {
+        SpannerTableReadResolver analytics = namedResolver("analytics");
+        SpannerTableReadResolver archive = namedResolver("archive");
+
+        SpannerReadOperation analyticsRead = analytics.resolve(secondaryMetadata(false));
+        SpannerReadOperation archiveRead = archive.resolve(secondaryMetadata(false));
+
+        assertThat(analyticsRead.getTable()).isEqualTo("analytics.records");
+        assertThat(analyticsRead.getIndex()).isEqualTo("analytics.records_by_score");
+        assertThat(archiveRead.getTable()).isEqualTo("archive.records");
+        assertThat(archiveRead.getIndex()).isEqualTo("archive.records_by_score");
+    }
+
+    @Test
     void rejectsADeclaredPrimaryKeyThatDoesNotMatchLiveMetadata() {
         SpannerTableReadResolver resolver =
                 resolver(null, Collections.singletonList("name"), false, emptyRuntime());
@@ -143,6 +158,42 @@ class SpannerTableReadResolverTest {
     }
 
     @Test
+    void distinguishesAMissingSchemaFromAMissingAccessPath() {
+        SpannerTableName table =
+                SpannerTableName.of("analytics", "records", Dialect.GOOGLE_STANDARD_SQL);
+        SpannerTableReadResolver resolver =
+                new SpannerTableReadResolver(
+                        SCHEMA,
+                        table,
+                        table.accessPath("records_by_score", "scan.index"),
+                        Collections.singletonList("score"),
+                        false,
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        emptyRuntime());
+
+        assertThatThrownBy(
+                        () ->
+                                resolver.resolve(
+                                        SpannerTableReadResolver.IndexMetadata.missingSchema()))
+                .hasMessageContaining("Spanner schema")
+                .hasMessageContaining("analytics")
+                .hasMessageContaining("was not found");
+    }
+
+    @Test
+    void parsesAnExistingSchemaWithAMissingAccessPathFromTheLeftJoinRow() {
+        SpannerTableReadResolver.IndexMetadata metadata =
+                SpannerTableReadResolver.IndexMetadata.read(
+                        resultSet(new Object[] {"analytics", null, null, null, null, null, null}),
+                        Dialect.GOOGLE_STANDARD_SQL);
+
+        assertThatThrownBy(() -> namedResolver("analytics").resolve(metadata))
+                .hasMessageContaining("access path")
+                .hasMessageContaining("was not found")
+                .hasMessageNotContaining("Spanner schema");
+    }
+
+    @Test
     void nullFilteredIndexesRequireFiltersThatExcludeNullKeyRows() throws Exception {
         SpannerTableReadResolver unsafe =
                 resolver(
@@ -164,24 +215,48 @@ class SpannerTableReadResolverTest {
     }
 
     @Test
-    void metadataQueriesUseOnlyTheSupportedDefaultSchema() {
+    void metadataQueriesBindTheRequestedSchemaTableAndIndex() {
         Statement google =
                 SpannerTableReadResolver.metadataQuery(
-                        Dialect.GOOGLE_STANDARD_SQL, "records", "PRIMARY_KEY");
+                        Dialect.GOOGLE_STANDARD_SQL, "analytics", "records", "PRIMARY_KEY");
+        Statement defaultGoogle =
+                SpannerTableReadResolver.metadataQuery(
+                        Dialect.GOOGLE_STANDARD_SQL, "", "records", "PRIMARY_KEY");
         Statement postgres =
                 SpannerTableReadResolver.metadataQuery(
-                        Dialect.POSTGRESQL, "records", "records_by_score");
+                        Dialect.POSTGRESQL, "analytics", "records", "records_by_score");
+        Statement defaultPostgres =
+                SpannerTableReadResolver.metadataQuery(
+                        Dialect.POSTGRESQL, "public", "records", "PRIMARY_KEY");
 
         assertThat(google.getSql())
+                .contains("INFORMATION_SCHEMA.SCHEMATA")
                 .contains("INFORMATION_SCHEMA.INDEXES")
-                .contains("i.TABLE_SCHEMA = ''")
+                .contains("LOWER(s.SCHEMA_NAME) = LOWER(@schema_name)")
+                .contains("@schema_name")
                 .contains("@table_name")
                 .contains("@index_name");
+        assertThat(google.getParameters().get("schema_name").getString()).isEqualTo("analytics");
+        assertThat(google.getParameters().get("table_name").getString()).isEqualTo("records");
+        assertThat(google.getParameters().get("index_name").getString()).isEqualTo("PRIMARY_KEY");
         assertThat(postgres.getSql())
+                .contains("information_schema.schemata")
                 .contains("information_schema.indexes")
-                .contains("i.table_schema = 'public'")
+                .contains("WHERE s.schema_name = $1")
                 .contains("$1")
-                .contains("$2");
+                .contains("$2")
+                .contains("$3");
+        assertThat(postgres.getParameters().get("p1").getString()).isEqualTo("analytics");
+        assertThat(postgres.getParameters().get("p2").getString()).isEqualTo("records");
+        assertThat(postgres.getParameters().get("p3").getString()).isEqualTo("records_by_score");
+        assertThat(defaultGoogle.getParameters().get("schema_name").getString()).isEmpty();
+        assertThat(defaultGoogle.getParameters().get("table_name").getString())
+                .isEqualTo("records");
+        assertThat(defaultGoogle.getParameters().get("index_name").getString())
+                .isEqualTo("PRIMARY_KEY");
+        assertThat(defaultPostgres.getParameters().get("p1").getString()).isEqualTo("public");
+        assertThat(defaultPostgres.getParameters().get("p2").getString()).isEqualTo("records");
+        assertThat(defaultPostgres.getParameters().get("p3").getString()).isEqualTo("PRIMARY_KEY");
     }
 
     @Test
@@ -189,8 +264,12 @@ class SpannerTableReadResolverTest {
         SpannerTableReadResolver.IndexMetadata metadata =
                 SpannerTableReadResolver.IndexMetadata.read(
                         resultSet(
-                                new Object[] {"READ_WRITE", "YES", "score", 1L, "ASC", "YES"},
-                                new Object[] {"READ_WRITE", "YES", "name", null, null, "YES"}),
+                                new Object[] {
+                                    "public", "READ_WRITE", "YES", "score", 1L, "ASC", "YES"
+                                },
+                                new Object[] {
+                                    "public", "READ_WRITE", "YES", "name", null, null, "YES"
+                                }),
                         Dialect.POSTGRESQL);
         SpannerTableReadResolver unsafe =
                 resolver(
@@ -232,12 +311,28 @@ class SpannerTableReadResolverTest {
             SpannerFilterPushDown.RuntimeState filters) {
         return new SpannerTableReadResolver(
                 SCHEMA,
-                "records",
-                index,
+                SpannerTableName.of(null, "records", Dialect.GOOGLE_STANDARD_SQL),
+                index == null
+                        ? null
+                        : SpannerTableName.of(null, "records", Dialect.GOOGLE_STANDARD_SQL)
+                                .accessPath(index, "scan.index"),
                 columns,
                 zeroColumnProjection,
                 Dialect.GOOGLE_STANDARD_SQL,
                 filters);
+    }
+
+    private static SpannerTableReadResolver namedResolver(String schema) {
+        SpannerTableName table =
+                SpannerTableName.of(schema, "records", Dialect.GOOGLE_STANDARD_SQL);
+        return new SpannerTableReadResolver(
+                SCHEMA,
+                table,
+                table.accessPath("records_by_score", "scan.index"),
+                Collections.singletonList("score"),
+                false,
+                Dialect.GOOGLE_STANDARD_SQL,
+                emptyRuntime());
     }
 
     private static SpannerTableReadResolver.IndexMetadata primaryMetadata() {

@@ -25,6 +25,7 @@ import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolver;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
@@ -47,8 +48,8 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
     private static final String PRIMARY_KEY = "PRIMARY_KEY";
 
     private final SpannerTableSchemaConverter schema;
-    private final String table;
-    @Nullable private final String index;
+    private final SpannerTableName table;
+    @Nullable private final SpannerTableName.AccessPathName index;
     private final List<String> projectedColumns;
     private final boolean zeroColumnProjection;
     private final Dialect dialect;
@@ -56,8 +57,8 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
 
     SpannerTableReadResolver(
             SpannerTableSchemaConverter schema,
-            String table,
-            @Nullable String index,
+            SpannerTableName table,
+            @Nullable SpannerTableName.AccessPathName index,
             List<String> projectedColumns,
             boolean zeroColumnProjection,
             Dialect dialect,
@@ -74,7 +75,12 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
     @Override
     public SpannerReadOperation resolve(DatabaseClient client, Timestamp readTimestamp)
             throws IOException {
-        Statement statement = metadataQuery(dialect, table, index == null ? PRIMARY_KEY : index);
+        Statement statement =
+                metadataQuery(
+                        dialect,
+                        table.schema(),
+                        table.table(),
+                        index == null ? PRIMARY_KEY : index.catalogName());
         try (ReadContext context = client.singleUse(TimestampBound.ofReadTimestamp(readTimestamp));
                 ResultSet rows = context.executeQuery(statement)) {
             return resolve(IndexMetadata.read(rows, dialect));
@@ -83,15 +89,21 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
                     "Failed to read Spanner index metadata for "
                             + accessPath()
                             + " on table '"
-                            + table
+                            + table.apiName()
                             + "'.",
                     e);
         }
     }
 
     SpannerReadOperation resolve(IndexMetadata metadata) throws IOException {
+        if (!metadata.schemaExists()) {
+            throw new IOException(
+                    "Spanner schema '"
+                            + table.schema()
+                            + "' was not found or is not visible to this job.");
+        }
         if (!metadata.exists()) {
-            throw invalid("was not found in the default schema or is not visible to this job");
+            throw invalid("was not found or is not visible to this job");
         }
         if (index != null && !"READ_WRITE".equals(metadata.indexState)) {
             throw invalid(
@@ -155,8 +167,9 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
             keys = KeySet.all();
         }
         return index == null
-                ? SpannerReadOperation.read(table, keys, columns)
-                : SpannerReadOperation.readUsingIndex(table, index, keys, columns);
+                ? SpannerReadOperation.read(table.apiName(), keys, columns)
+                : SpannerReadOperation.readUsingIndex(
+                        table.apiName(), index.apiName(), keys, columns);
     }
 
     private void validateDeclaredPrimaryKey(List<SpannerFilterPushDown.KeyPart> live)
@@ -198,47 +211,63 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
                 "Spanner access path "
                         + accessPath()
                         + " on table '"
-                        + table
+                        + table.apiName()
                         + "' "
                         + reason
                         + ".");
     }
 
     private String accessPath() {
-        return index == null ? "PRIMARY_KEY" : "index '" + index + "'";
+        return index == null ? "PRIMARY_KEY" : "index '" + index.apiName() + "'";
     }
 
-    static Statement metadataQuery(Dialect dialect, String table, String index) {
+    static Statement metadataQuery(Dialect dialect, String schema, String table, String index) {
         String sql;
+        String schemaParameter;
         String tableParameter;
         String indexParameter;
         switch (dialect) {
             case GOOGLE_STANDARD_SQL:
                 sql =
-                        "SELECT i.INDEX_STATE, i.IS_NULL_FILTERED, c.COLUMN_NAME,"
+                        "SELECT s.SCHEMA_NAME, i.INDEX_STATE, i.IS_NULL_FILTERED, c.COLUMN_NAME,"
                                 + " c.ORDINAL_POSITION, c.COLUMN_ORDERING, c.IS_NULLABLE"
-                                + " FROM INFORMATION_SCHEMA.INDEXES AS i"
-                                + " JOIN INFORMATION_SCHEMA.INDEX_COLUMNS AS c"
-                                + " USING (TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, INDEX_NAME)"
-                                + " WHERE i.TABLE_CATALOG = '' AND i.TABLE_SCHEMA = ''"
-                                + " AND i.TABLE_NAME = @table_name"
-                                + " AND i.INDEX_NAME = @index_name"
+                                + " FROM INFORMATION_SCHEMA.SCHEMATA AS s"
+                                + " LEFT JOIN INFORMATION_SCHEMA.INDEXES AS i"
+                                + " ON i.TABLE_CATALOG = s.CATALOG_NAME"
+                                + " AND i.TABLE_SCHEMA = s.SCHEMA_NAME"
+                                + " AND LOWER(i.TABLE_NAME) = LOWER(@table_name)"
+                                + " AND LOWER(i.INDEX_NAME) = LOWER(@index_name)"
+                                + " LEFT JOIN INFORMATION_SCHEMA.INDEX_COLUMNS AS c"
+                                + " ON c.TABLE_CATALOG = i.TABLE_CATALOG"
+                                + " AND c.TABLE_SCHEMA = i.TABLE_SCHEMA"
+                                + " AND c.TABLE_NAME = i.TABLE_NAME"
+                                + " AND c.INDEX_NAME = i.INDEX_NAME"
+                                + " WHERE s.CATALOG_NAME = ''"
+                                + " AND LOWER(s.SCHEMA_NAME) = LOWER(@schema_name)"
                                 + " ORDER BY c.ORDINAL_POSITION, c.COLUMN_NAME";
+                schemaParameter = "schema_name";
                 tableParameter = "table_name";
                 indexParameter = "index_name";
                 break;
             case POSTGRESQL:
                 sql =
-                        "SELECT i.index_state, i.is_null_filtered, c.column_name,"
+                        "SELECT s.schema_name, i.index_state, i.is_null_filtered, c.column_name,"
                                 + " c.ordinal_position, c.column_ordering, c.is_nullable"
-                                + " FROM information_schema.indexes AS i"
-                                + " JOIN information_schema.index_columns AS c"
-                                + " USING (table_catalog, table_schema, table_name, index_name)"
-                                + " WHERE i.table_schema = 'public'"
-                                + " AND i.table_name = $1 AND i.index_name = $2"
+                                + " FROM information_schema.schemata AS s"
+                                + " LEFT JOIN information_schema.indexes AS i"
+                                + " ON i.table_catalog = s.catalog_name"
+                                + " AND i.table_schema = s.schema_name"
+                                + " AND i.table_name = $2 AND i.index_name = $3"
+                                + " LEFT JOIN information_schema.index_columns AS c"
+                                + " ON c.table_catalog = i.table_catalog"
+                                + " AND c.table_schema = i.table_schema"
+                                + " AND c.table_name = i.table_name"
+                                + " AND c.index_name = i.index_name"
+                                + " WHERE s.schema_name = $1"
                                 + " ORDER BY c.ordinal_position, c.column_name";
-                tableParameter = "p1";
-                indexParameter = "p2";
+                schemaParameter = "p1";
+                tableParameter = "p2";
+                indexParameter = "p3";
                 break;
             default:
                 throw new IllegalStateException(
@@ -248,6 +277,8 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
                                 + " only.");
         }
         return Statement.newBuilder(sql)
+                .bind(schemaParameter)
+                .to(schema)
                 .bind(tableParameter)
                 .to(table)
                 .bind(indexParameter)
@@ -281,20 +312,23 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
 
     @Override
     public String toString() {
-        return accessPath() + " of table " + table;
+        return accessPath() + " of table " + table.apiName();
     }
 
     static final class IndexMetadata {
+        private final boolean schemaExists;
         @Nullable private final String indexState;
         private final boolean nullFiltered;
         private final List<IndexColumn> keyColumns;
         private final Set<String> readableColumns;
 
         private IndexMetadata(
+                boolean schemaExists,
                 @Nullable String indexState,
                 boolean nullFiltered,
                 List<IndexColumn> keyColumns,
                 Set<String> readableColumns) {
+            this.schemaExists = schemaExists;
             this.indexState = indexState;
             this.nullFiltered = nullFiltered;
             this.keyColumns = Collections.unmodifiableList(new ArrayList<>(keyColumns));
@@ -303,36 +337,38 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
         }
 
         static IndexMetadata read(ResultSet rows, Dialect dialect) {
+            boolean schemaExists = false;
             @Nullable String state = null;
             boolean nullFiltered = false;
             List<IndexColumn> keys = new ArrayList<>();
             Set<String> readable = new java.util.LinkedHashSet<>();
             while (rows.next()) {
-                if (!rows.isNull(0)) {
-                    state = rows.getString(0);
-                }
+                schemaExists = !rows.isNull(0);
                 if (!rows.isNull(1)) {
+                    state = rows.getString(1);
+                }
+                if (!rows.isNull(2)) {
                     nullFiltered =
                             dialect == Dialect.GOOGLE_STANDARD_SQL
-                                    ? rows.getBoolean(1)
-                                    : "YES".equals(rows.getString(1));
+                                    ? rows.getBoolean(2)
+                                    : "YES".equals(rows.getString(2));
                 }
-                if (rows.isNull(2)) {
+                if (rows.isNull(3)) {
                     continue;
                 }
-                String name = rows.getString(2);
+                String name = rows.getString(3);
                 readable.add(name);
-                if (!rows.isNull(3) && !rows.isNull(4)) {
+                if (!rows.isNull(4) && !rows.isNull(5)) {
                     keys.add(
                             new IndexColumn(
                                     name,
-                                    rows.getLong(3),
-                                    rows.getString(4),
-                                    !rows.isNull(5) && "YES".equals(rows.getString(5))));
+                                    rows.getLong(4),
+                                    rows.getString(5),
+                                    !rows.isNull(6) && "YES".equals(rows.getString(6))));
                 }
             }
             keys.sort(Comparator.comparingLong(column -> column.ordinal));
-            return new IndexMetadata(state, nullFiltered, keys, readable);
+            return new IndexMetadata(schemaExists, state, nullFiltered, keys, readable);
         }
 
         static IndexMetadata of(
@@ -340,7 +376,16 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
                 boolean nullFiltered,
                 List<IndexColumn> keyColumns,
                 Set<String> readableColumns) {
-            return new IndexMetadata(indexState, nullFiltered, keyColumns, readableColumns);
+            return new IndexMetadata(true, indexState, nullFiltered, keyColumns, readableColumns);
+        }
+
+        static IndexMetadata missingSchema() {
+            return new IndexMetadata(
+                    false, null, false, Collections.emptyList(), Collections.emptySet());
+        }
+
+        private boolean schemaExists() {
+            return schemaExists;
         }
 
         private boolean exists() {

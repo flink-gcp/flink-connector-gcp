@@ -139,6 +139,29 @@ class SpannerLookupSourceTest {
     }
 
     @Test
+    void passesTheQualifiedTableToSyncAndAsyncPointReads() {
+        LookupFunctionProvider sync =
+                (LookupFunctionProvider)
+                        provider(config("schema", "analytics"), new int[][] {{0}, {1}});
+        AsyncLookupFunctionProvider async =
+                (AsyncLookupFunctionProvider)
+                        provider(
+                                config("schema", "analytics", "lookup.async", "true"),
+                                new int[][] {{0}, {1}});
+
+        assertThat(((SpannerRowDataLookupFunction) sync.createLookupFunction()).rowLookup())
+                .isInstanceOfSatisfying(
+                        SpannerDatabaseRowLookup.class,
+                        lookup -> assertThat(lookup.table()).isEqualTo("analytics.people"));
+        assertThat(
+                        ((SpannerRowDataAsyncLookupFunction) async.createAsyncLookupFunction())
+                                .rowLookup())
+                .isInstanceOfSatisfying(
+                        SpannerDatabaseRowLookup.class,
+                        lookup -> assertThat(lookup.table()).isEqualTo("analytics.people"));
+    }
+
+    @Test
     void requiresAllPrimaryKeyColumnsAndAcceptsPlannerKeyOrder() {
         assertThat(provider(config(), new int[][] {{1}, {0}}))
                 .isInstanceOf(LookupFunctionProvider.class);

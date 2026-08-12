@@ -42,6 +42,40 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
 
     @ParameterizedTest
+    @MethodSource("namedSchemaCases")
+    void writesScansAndLooksUpANamedSchema(Dialect dialect, boolean async, boolean quoted)
+            throws Exception {
+        SpannerDatabase database = namedSchemaDatabase(dialect, quoted);
+        TableEnvironment sink =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        sink.executeSql(namedSchemaTableDdl("named_sink", database, dialect, async, quoted));
+        sink.executeSql("INSERT INTO named_sink VALUES (1, 'Ada'), (2, 'Grace')").await();
+
+        TableEnvironment source =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        source.getConfig().set("parallelism.default", "1");
+        source.executeSql(namedSchemaTableDdl("named_source", database, dialect, async, quoted));
+
+        assertThat(rows(source, "SELECT id FROM named_source WHERE name = 'Grace'"))
+                .containsExactly(Row.of(2L));
+
+        source.executeSql(
+                "CREATE TABLE named_facts (id BIGINT, event_time AS PROCTIME()) WITH ("
+                        + "'connector'='datagen', 'number-of-rows'='2', "
+                        + "'fields.id.kind'='sequence', 'fields.id.start'='1', "
+                        + "'fields.id.end'='2')");
+        assertThat(
+                        rows(
+                                source,
+                                "SELECT f.id, s.name FROM named_facts AS f LEFT JOIN named_source "
+                                        + "FOR SYSTEM_TIME AS OF f.event_time AS s "
+                                        + "ON f.id = s.id ORDER BY f.id"))
+                .extracting(row -> row.getField(1))
+                .containsExactly("Ada", "Grace");
+    }
+
+    @ParameterizedTest
     @MethodSource("lookupCases")
     void looksUpCompositeHitsAndMissesInBothDialects(Dialect dialect, boolean async)
             throws Exception {
@@ -126,6 +160,16 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                         dialect ->
                                 Stream.of(
                                         Arguments.of(dialect, false), Arguments.of(dialect, true)));
+    }
+
+    private static Stream<Arguments> namedSchemaCases() {
+        return lookupCases()
+                .flatMap(
+                        arguments ->
+                                Stream.of(
+                                        Arguments.of(arguments.get()[0], arguments.get()[1], false),
+                                        Arguments.of(
+                                                arguments.get()[0], arguments.get()[1], true)));
     }
 
     @ParameterizedTest
@@ -268,6 +312,35 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 "CREATE INDEX records_by_name ON records (name) STORING (metadata)");
     }
 
+    private static SpannerDatabase namedSchemaDatabase(Dialect dialect, boolean quoted)
+            throws Exception {
+        String schema = namedIdentifier(dialect, quoted, "analytics", "QuotedAnalytics");
+        String table = namedIdentifier(dialect, quoted, "records", "QuotedRecords");
+        String index = namedIdentifier(dialect, quoted, "records_by_name", "QuotedRecordsByName");
+        if (dialect == Dialect.POSTGRESQL) {
+            return createDatabase(
+                    dialect,
+                    "CREATE SCHEMA " + schema,
+                    "CREATE TABLE "
+                            + schema
+                            + "."
+                            + table
+                            + " ("
+                            + "id bigint NOT NULL PRIMARY KEY, name varchar(64))",
+                    "CREATE INDEX " + index + " ON " + schema + "." + table + " (name)");
+        }
+        return createDatabase(
+                dialect,
+                "CREATE SCHEMA " + schema,
+                "CREATE TABLE "
+                        + schema
+                        + "."
+                        + table
+                        + " ("
+                        + "id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)",
+                "CREATE INDEX " + schema + "." + index + " ON " + schema + "." + table + " (name)");
+    }
+
     private static Value json(Dialect dialect, String value) {
         return dialect == Dialect.POSTGRESQL ? Value.pgJsonb(value) : Value.json(value);
     }
@@ -333,6 +406,62 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + emulatorEndpoint()
                 + "'\n"
                 + ")";
+    }
+
+    private static String namedSchemaTableDdl(
+            String tableName,
+            SpannerDatabase database,
+            Dialect dialect,
+            boolean async,
+            boolean quoted) {
+        String schema = namedIdentifier(dialect, quoted, "analytics", "QuotedAnalytics");
+        String table = namedIdentifier(dialect, quoted, "records", "QuotedRecords");
+        String index = namedIdentifier(dialect, quoted, "records_by_name", "QuotedRecordsByName");
+        return "CREATE TABLE "
+                + tableName
+                + " (\n"
+                + "  id BIGINT,\n"
+                + "  name STRING,\n"
+                + "  PRIMARY KEY (id) NOT ENFORCED\n"
+                + ") WITH (\n"
+                + "  'connector' = 'spanner',\n"
+                + "  'project' = '"
+                + database.getProject()
+                + "',\n"
+                + "  'instance' = '"
+                + database.getInstance()
+                + "',\n"
+                + "  'database' = '"
+                + database.getDatabase()
+                + "',\n"
+                + "  'schema' = '"
+                + schema
+                + "',\n"
+                + "  'table' = '"
+                + table
+                + "',\n"
+                + "  'scan.index' = '"
+                + index
+                + "',\n"
+                + "  'dialect' = '"
+                + dialect.name()
+                + "',\n"
+                + "  'lookup.async' = '"
+                + async
+                + "',\n"
+                + "  'emulator-endpoint' = '"
+                + emulatorEndpoint()
+                + "'\n"
+                + ")";
+    }
+
+    private static String namedIdentifier(
+            Dialect dialect, boolean quoted, String unquoted, String quotedName) {
+        if (!quoted) {
+            return unquoted;
+        }
+        char quote = dialect == Dialect.POSTGRESQL ? '"' : '`';
+        return quote + quotedName + quote;
     }
 
     private static String uuidLookupTableDdl(

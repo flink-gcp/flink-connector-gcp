@@ -79,14 +79,16 @@ final class SpannerServiceAdapter implements SpannerDatabaseAccess {
 
     @Override
     public CellWeights readCellWeights() throws IOException {
+        Dialect databaseDialect;
         String sql;
         try {
-            sql = InformationSchemaCellWeights.queryFor(dialect.get());
+            databaseDialect = dialect.get();
+            sql = InformationSchemaCellWeights.queryFor(databaseDialect);
         } catch (SpannerException e) {
             throw new IOException("Failed to read the dialect of " + description + ".", e);
         }
         try (ResultSet resultSet = executeQuery.apply(sql)) {
-            return InformationSchemaCellWeights.read(resultSet);
+            return InformationSchemaCellWeights.read(resultSet, databaseDialect);
         } catch (SpannerException e) {
             throw new IOException(
                     "Failed to read the mutation-cell weights of "

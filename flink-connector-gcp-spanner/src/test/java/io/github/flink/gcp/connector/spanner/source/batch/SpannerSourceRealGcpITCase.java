@@ -21,6 +21,9 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
 import com.google.cloud.spanner.BatchClient;
@@ -47,6 +50,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,6 +60,7 @@ import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -62,6 +69,7 @@ import java.util.Set;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -80,6 +88,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * here is a measurement of this scale and not evidence about a large one. That is worth having
  * anyway — it is what a reader of the docs page needs in order to know the hints are hints — and it
  * is a better answer than seeding gigabytes to make a number look impressive.
+ *
+ * <p>Issue #573 also keeps the Table API's named-schema path here so both dialects exercise writes,
+ * bounded index scans, and synchronous and asynchronous lookups on the same billed instance this
+ * class already owns.
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "SPANNER_IT_PROJECT", matches = ".+")
@@ -93,6 +105,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     private static final int SEED_BATCH = 500;
 
     private static SpannerDatabase database;
+    private static Map<Dialect, SpannerDatabase> namedSchemaDatabases;
 
     @BeforeAll
     static void createAndSeedDatabase() throws Exception {
@@ -117,6 +130,10 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         }
         if (!rows.isEmpty()) {
             client(database).write(rows);
+        }
+        namedSchemaDatabases = new EnumMap<>(Dialect.class);
+        for (Dialect dialect : Dialect.values()) {
+            namedSchemaDatabases.put(dialect, createNamedSchemaDatabase(dialect));
         }
     }
 
@@ -265,6 +282,47 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                 .containsExactlyInAnyOrderElementsOf(allIds());
     }
 
+    @ParameterizedTest
+    @MethodSource("namedSchemaCases")
+    void tableApiUsesANamedSchemaForWritesScansAndLookups(Dialect dialect, boolean quoted)
+            throws Exception {
+        SpannerDatabase namedSchemaDatabase = namedSchemaDatabases.get(dialect);
+        TableEnvironment sink =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        sink.executeSql(
+                namedSchemaTableDdl("named_sink", namedSchemaDatabase, dialect, false, quoted));
+        sink.executeSql("INSERT INTO named_sink VALUES (1, 'Ada'), (2, 'Grace')").await();
+
+        TableEnvironment source =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        source.getConfig().set("parallelism.default", "1");
+        source.executeSql(
+                namedSchemaTableDdl("named_source", namedSchemaDatabase, dialect, false, quoted));
+        assertThat(tableRows(source, "SELECT id FROM named_source WHERE name = 'Grace'"))
+                .containsExactly(Row.of(2L));
+
+        source.executeSql(
+                "CREATE TABLE named_facts (id BIGINT, event_time AS PROCTIME()) WITH ("
+                        + "'connector'='datagen', 'number-of-rows'='2', "
+                        + "'fields.id.kind'='sequence', 'fields.id.start'='1', "
+                        + "'fields.id.end'='2')");
+        assertThat(lookupNames(source, "named_source")).containsExactly("Ada", "Grace");
+
+        source.executeSql(
+                namedSchemaTableDdl(
+                        "named_async_source", namedSchemaDatabase, dialect, true, quoted));
+        assertThat(lookupNames(source, "named_async_source")).containsExactly("Ada", "Grace");
+    }
+
+    private static Stream<Arguments> namedSchemaCases() {
+        return Stream.of(Dialect.values())
+                .flatMap(
+                        dialect ->
+                                Stream.of(
+                                        Arguments.of(dialect, false), Arguments.of(dialect, true)));
+    }
+
     // ---------------------------------------------------------------- helpers
 
     /** Plans the query and reports what the service said, for the table this test logs. */
@@ -337,6 +395,99 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
             collected.forEachRemaining(ids::add);
         }
         return ids;
+    }
+
+    private static SpannerDatabase createNamedSchemaDatabase(Dialect dialect) throws Exception {
+        if (dialect == Dialect.POSTGRESQL) {
+            return createDatabase(
+                    dialect,
+                    "CREATE SCHEMA analytics",
+                    "CREATE TABLE analytics.records ("
+                            + "id bigint NOT NULL PRIMARY KEY, name varchar(64))",
+                    "CREATE INDEX records_by_name ON analytics.records (name)",
+                    "CREATE SCHEMA \"QuotedAnalytics\"",
+                    "CREATE TABLE \"QuotedAnalytics\".\"QuotedRecords\" ("
+                            + "id bigint NOT NULL PRIMARY KEY, name varchar(64))",
+                    "CREATE INDEX \"QuotedRecordsByName\" ON"
+                            + " \"QuotedAnalytics\".\"QuotedRecords\" (name)");
+        }
+        return createDatabase(
+                dialect,
+                "CREATE SCHEMA analytics",
+                "CREATE TABLE analytics.records ("
+                        + "id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)",
+                "CREATE INDEX analytics.records_by_name ON analytics.records (name)",
+                "CREATE SCHEMA `QuotedAnalytics`",
+                "CREATE TABLE `QuotedAnalytics`.`QuotedRecords` ("
+                        + "id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)",
+                "CREATE INDEX `QuotedAnalytics`.`QuotedRecordsByName` ON"
+                        + " `QuotedAnalytics`.`QuotedRecords` (name)");
+    }
+
+    private static String namedSchemaTableDdl(
+            String tableName,
+            SpannerDatabase namedSchemaDatabase,
+            Dialect dialect,
+            boolean async,
+            boolean quoted) {
+        String schema = namedIdentifier(dialect, quoted, "analytics", "QuotedAnalytics");
+        String table = namedIdentifier(dialect, quoted, "records", "QuotedRecords");
+        String index = namedIdentifier(dialect, quoted, "records_by_name", "QuotedRecordsByName");
+        return "CREATE TABLE "
+                + tableName
+                + " (id BIGINT, name STRING, PRIMARY KEY (id) NOT ENFORCED) WITH ("
+                + "'connector'='spanner', "
+                + "'project'='"
+                + namedSchemaDatabase.getProject()
+                + "', "
+                + "'instance'='"
+                + namedSchemaDatabase.getInstance()
+                + "', "
+                + "'database'='"
+                + namedSchemaDatabase.getDatabase()
+                + "', "
+                + "'schema'='"
+                + schema
+                + "', 'table'='"
+                + table
+                + "', "
+                + "'scan.index'='"
+                + index
+                + "', 'dialect'='"
+                + dialect.name()
+                + "', 'lookup.async'='"
+                + async
+                + "')";
+    }
+
+    private static String namedIdentifier(
+            Dialect dialect, boolean quoted, String unquoted, String quotedName) {
+        if (!quoted) {
+            return unquoted;
+        }
+        char quote = dialect == Dialect.POSTGRESQL ? '"' : '`';
+        return quote + quotedName + quote;
+    }
+
+    private static List<Row> tableRows(TableEnvironment table, String sql) throws Exception {
+        List<Row> rows = new ArrayList<>();
+        try (CloseableIterator<Row> collected = table.executeSql(sql).collect()) {
+            collected.forEachRemaining(rows::add);
+        }
+        return rows;
+    }
+
+    private static List<String> lookupNames(TableEnvironment table, String source)
+            throws Exception {
+        return tableRows(
+                        table,
+                        "SELECT f.id, s.name FROM named_facts AS f LEFT JOIN "
+                                + source
+                                + " FOR SYSTEM_TIME AS OF f.event_time AS s "
+                                + "ON f.id = s.id ORDER BY f.id")
+                .stream()
+                .map(row -> (String) row.getField(1))
+                .collect(Collectors.toList());
     }
 
     /** Reads the one column these tests select. */

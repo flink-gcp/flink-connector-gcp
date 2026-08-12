@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0096: The Spanner table connector maps DDL rows to native values
 
 - Status: Accepted
-- Date: 2026-08-11
+- Date: 2026-08-11, revised 2026-08-12
 - Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502), [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503), [#527](https://github.com/laughingman7743/flink-connector-gcp/issues/527), [#528](https://github.com/laughingman7743/flink-connector-gcp/issues/528), [#529](https://github.com/laughingman7743/flink-connector-gcp/issues/529), [#563](https://github.com/laughingman7743/flink-connector-gcp/issues/563) (under
-  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223))
+  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)), [#573](https://github.com/laughingman7743/flink-connector-gcp/issues/573)
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 
@@ -53,6 +53,16 @@ A table without a primary key is insert-only because SQL cannot construct a Span
 The destination fields assemble `SpannerDatabase`, the physical DDL supplies the serializer, and the eight `sink.*` options map one-for-one onto `SpannerWriterOptions`.
 The table layer keeps the DataStream sink's fail-job constraint and failed-mutation policies because a DDL cannot carry a serializable failure-handler implementation.
 
+**The optional `schema` value qualifies every Table API data path.**
+The sink mutations, bounded source reads, and lookup point reads use the same dialect-specific fully qualified table name.
+When `schema` is set, the schema, table, and secondary-index options each contain one identifier component rather than a prequalified name.
+PostgreSQL unquoted components fold to lower case and quoted components preserve case, while GoogleSQL schema-object components are case-insensitive.
+Quoted values use the dialect's canonical delimiter escape: PostgreSQL doubles a double quote, and GoogleSQL backslash-escapes a backtick or backslash.
+The connector checks only that each value is non-blank, structurally one component, and canonically quoted.
+It decodes each component to its catalog spelling before assembling the fully qualified native data-API name; SQL delimiters are not part of that name.
+It does not copy Spanner's evolving character, length, or keyword rules into the connector: bounded-scan catalog resolution uses `INFORMATION_SCHEMA`, and the native Mutation and lookup APIs remain authoritative for their names.
+Leaving `schema` unset preserves the former empty GoogleSQL schema and PostgreSQL `public` behavior.
+
 **The table source is a bounded `partitionRead` and pushes down top-level projection.**
 The retained DDL columns become the read operation's column list and the converter emits the projected shape in planner order.
 The same converter serves bounded scans and both lookup modes, including the exact decimal conversion rule.
@@ -64,7 +74,7 @@ Partition hints, Data Boost, RPC priority, snapshot bounds, and source paralleli
 The source translates equality and ordered comparisons over consecutive key columns into native `KeySet` points and lexicographic ranges.
 A complete primary-key equality and a leading equality prefix, optionally followed by one range column, are exact, so Flink need not evaluate them again.
 Unsupported or non-leading predicates remain residual.
-When `scan.index` is set, the source resolves key order, direction, readiness, null filtering, and readable columns from the live default-schema `INFORMATION_SCHEMA` at the batch transaction's exact snapshot.
+When `scan.index` is set, the source resolves schema existence, key order, direction, readiness, null filtering, and readable columns from the live `INFORMATION_SCHEMA` at the batch transaction's exact snapshot.
 Secondary-index filtering is best effort, so every candidate remains a Flink residual.
 The job fails when the named index is absent, not `READ_WRITE`, unsafe for nullable key rows, or cannot return the requested and residual columns; it never silently falls back to the base table.
 
@@ -77,6 +87,7 @@ Measured 2026-08-11 against the pom-pinned Flink 2.2.1 and Spanner emulator 1.5.
 - Unit tests cover native scalar and composite mappings, special markers, primary-key deletes, insert-only tables, changelog modes, factory validation, and option parity with both DataStream builders.
 - Source tests pin projection order, zero-column carrier reads, native-to-`RowData` conversion, mutually exclusive snapshot options, and both emulator dialects.
 - Filter tests pin exact primary-key points and ranges, descending index bounds, residual ownership, null-filter safety, lookup gating, and deferred-read serialization.
+- Named-schema tests pin dialect parsing, qualified sink and source paths, schema-aware metadata bindings, and distinct all-schema cell weights.
 - Issue #563 adds PostgreSQL decimal coverage for multiple Flink shapes, exact scalar and array conversion, nulls, overflow, scale loss, NaN, and production sink-to-bounded-source round trips.
 - Issue #527 adds native UUID scalar, array, null, primary-key, scan, and synchronous and asynchronous lookup coverage for both emulator dialects.
 
@@ -94,4 +105,4 @@ The DDL schema must match the destination's column names and native types; this 
 Changing a physical `STRING` column to `UUID` requires a coordinated database migration and DDL option update; the connector neither validates existing rows in advance nor changes the live schema.
 Because PostgreSQL DDL does not constrain a `numeric` column to the Flink declaration, a stored value outside that declaration fails the scan or lookup with the physical column name and declared decimal shape.
 The lookup source builds on the same type mapping in [#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504).
-Configured secondary indexes currently resolve only in the empty GoogleSQL schema and PostgreSQL `public`; supporting named schemas requires an explicit schema option and identifier contract.
+The table connector does not create schemas or qualify a table from a multipart `table` value when `schema` is set.

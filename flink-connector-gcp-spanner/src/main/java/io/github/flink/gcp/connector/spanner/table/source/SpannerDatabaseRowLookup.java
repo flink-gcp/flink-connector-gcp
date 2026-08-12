@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.spanner.table.source;
 
+import org.apache.flink.annotation.VisibleForTesting;
+
 import com.google.api.core.ApiFuture;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
@@ -50,6 +52,12 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
         this.table = table;
         this.columns = columns;
         this.emulatorEndpoint = emulatorEndpoint;
+    }
+
+    /** Returns the exact table passed to the Spanner point-read APIs. */
+    @VisibleForTesting
+    String table() {
+        return table;
     }
 
     @Override

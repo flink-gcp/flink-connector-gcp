@@ -26,16 +26,20 @@ import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 
+import com.google.cloud.spanner.Dialect;
+import com.google.cloud.spanner.Mutation;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
+import io.github.flink.gcp.connector.spanner.table.sink.RowDataSerializationSchema;
 import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 import org.junit.jupiter.api.Test;
@@ -98,6 +102,51 @@ class SpannerDynamicTableFactoryTest {
         assertThat(sink.getConfig().getDatabase())
                 .isEqualTo(SpannerDatabase.of("my-project", "my-instance", "my-database"));
         assertThat(sink.getConfig().getWriterOptions().getMaxBatchCells()).isEqualTo(5_000);
+    }
+
+    @Test
+    void qualifiesNamedSchemaSinksAndScans() throws Exception {
+        Map<String, String> options = options();
+        options.put("schema", "analytics");
+
+        SpannerMutationsSink<?> sink = built(SCHEMA, options);
+        Mutation mutation =
+                ((RowDataSerializationSchema) sink.getConfig().getSerializer())
+                        .serialize(GenericRowData.of(1L, null), null);
+        SpannerSourceConfig<?> source = builtSource(SCHEMA, options);
+
+        assertThat(mutation.getTable()).isEqualTo("analytics.people");
+        assertThat(source.getReadOperation().getTable()).isEqualTo("analytics.people");
+    }
+
+    @Test
+    void appliesPostgresqlIdentifierFoldingToNamedSchemaPaths() {
+        Map<String, String> options = options();
+        options.put("dialect", Dialect.POSTGRESQL.name());
+        options.put("schema", "Analytics");
+        options.put("table", "People");
+        options.put("scan.index", "ByName");
+
+        SpannerSourceConfig<?> source = builtSource(SCHEMA, options);
+
+        assertThat(source.getReadOperation().toString())
+                .contains("analytics.people")
+                .contains("analytics.byname");
+    }
+
+    @Test
+    void rejectsMalformedNamedSchemaComponentsDuringFactoryValidation() {
+        Map<String, String> multipartTable = options();
+        multipartTable.put("schema", "analytics");
+        multipartTable.put("table", "analytics.people");
+        assertThatThrownBy(() -> source(SCHEMA, multipartTable))
+                .hasStackTraceContaining("table must be one non-blank GoogleSQL identifier");
+
+        Map<String, String> multipartIndex = options();
+        multipartIndex.put("schema", "analytics");
+        multipartIndex.put("scan.index", "analytics.by_name");
+        assertThatThrownBy(() -> source(SCHEMA, multipartIndex))
+                .hasStackTraceContaining("scan.index must be one non-blank GoogleSQL identifier");
     }
 
     @Test

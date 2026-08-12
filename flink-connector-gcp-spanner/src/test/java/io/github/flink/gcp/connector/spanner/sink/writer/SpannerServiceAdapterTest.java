@@ -51,6 +51,7 @@ class SpannerServiceAdapterTest {
 
     private static final Type INDEX_ROW =
             Type.struct(
+                    Type.StructField.of("s", Type.string()),
                     Type.StructField.of("t", Type.string()),
                     Type.StructField.of("c", Type.string()),
                     Type.StructField.of("i", Type.string()));
@@ -136,16 +137,22 @@ class SpannerServiceAdapterTest {
     @Test
     void readsTheWeightsWithTheQueryTheDialectAsksFor() throws Exception {
         List<String> queries = new ArrayList<>();
+        AtomicInteger dialectReads = new AtomicInteger();
         SpannerServiceAdapter adapter =
                 new SpannerServiceAdapter(
                         "db",
-                        () -> Dialect.POSTGRESQL,
+                        () -> {
+                            dialectReads.incrementAndGet();
+                            return Dialect.POSTGRESQL;
+                        },
                         sql -> {
                             queries.add(sql);
                             return ResultSets.forRows(
                                     INDEX_ROW,
                                     List.of(
                                             Struct.newBuilder()
+                                                    .set("s")
+                                                    .to("public")
                                                     .set("t")
                                                     .to("orders")
                                                     .set("c")
@@ -161,6 +168,7 @@ class SpannerServiceAdapterTest {
 
         assertThat(queries)
                 .containsExactly(InformationSchemaCellWeights.queryFor(Dialect.POSTGRESQL));
+        assertThat(dialectReads).hasValue(1);
         assertThat(weights.knows("orders")).isTrue();
     }
 

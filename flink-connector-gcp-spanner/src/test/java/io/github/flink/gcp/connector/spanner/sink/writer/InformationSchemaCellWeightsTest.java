@@ -37,6 +37,7 @@ class InformationSchemaCellWeightsTest {
 
     private static final Type ROW_TYPE =
             Type.struct(
+                    Type.StructField.of("table_schema", Type.string()),
                     Type.StructField.of("table_name", Type.string()),
                     Type.StructField.of("column_name", Type.string()),
                     Type.StructField.of("index_name", Type.string()));
@@ -50,23 +51,27 @@ class InformationSchemaCellWeightsTest {
     }
 
     @Test
-    void scopesTheGoogleSqlQueryToTheDefaultSchemaAndSkipsThePrimaryKey() {
+    void readsAllGoogleSqlUserSchemasAndSkipsThePrimaryKey() {
         String sql = InformationSchemaCellWeights.queryFor(Dialect.GOOGLE_STANDARD_SQL);
 
         assertThat(sql)
                 .contains("INFORMATION_SCHEMA.INDEX_COLUMNS")
                 .contains("TABLE_CATALOG = ''")
-                .contains("TABLE_SCHEMA = ''")
+                .contains("TABLE_SCHEMA NOT IN ('INFORMATION_SCHEMA', 'SPANNER_SYS')")
+                .doesNotContain("TABLE_SCHEMA = ''")
                 .contains("INDEX_NAME != 'PRIMARY_KEY'");
     }
 
     @Test
-    void scopesThePostgresQueryToThePublicSchemaAndSkipsThePrimaryKey() {
+    void readsAllPostgresUserSchemasAndSkipsThePrimaryKey() {
         String sql = InformationSchemaCellWeights.queryFor(Dialect.POSTGRESQL);
 
         assertThat(sql)
                 .contains("information_schema.index_columns")
-                .contains("table_schema = 'public'")
+                .contains(
+                        "table_schema NOT IN"
+                                + " ('pg_catalog', 'information_schema', 'SPANNER_SYS')")
+                .doesNotContain("table_schema = 'public'")
                 .contains("index_name != 'PRIMARY_KEY'");
     }
 
@@ -74,15 +79,42 @@ class InformationSchemaCellWeightsTest {
     void buildsWeightsFromTheRowsTheQueryReturns() {
         ResultSet resultSet =
                 rows(
-                        row("Orders", "Total", "OrdersByTotal"),
-                        row("Orders", "Note", "OrdersByTotalAndNote"),
-                        row("Orders", "Total", "OrdersByTotalAndNote"));
+                        row("", "Orders", "Total", "OrdersByTotal"),
+                        row("", "Orders", "Note", "OrdersByTotalAndNote"),
+                        row("", "Orders", "Total", "OrdersByTotalAndNote"));
 
-        CellWeights weights = InformationSchemaCellWeights.read(resultSet);
+        CellWeights weights =
+                InformationSchemaCellWeights.read(resultSet, Dialect.GOOGLE_STANDARD_SQL);
 
         assertThat(weights.knows("Orders")).isTrue();
         assertThat(weights.weigh(Mutation.newInsertBuilder("Orders").set("Total").to(1L).build()))
                 .isEqualTo(3);
+    }
+
+    @Test
+    void buildsIndependentWeightsForEveryReturnedSchema() {
+        ResultSet resultSet =
+                rows(
+                        row("sales", "Orders", "Total", "OrdersByTotal"),
+                        row("archive", "Orders", "Note", "OrdersByNote"));
+
+        CellWeights weights =
+                InformationSchemaCellWeights.read(resultSet, Dialect.GOOGLE_STANDARD_SQL);
+
+        assertThat(
+                        weights.weigh(
+                                Mutation.newInsertBuilder("sales.Orders")
+                                        .set("Total")
+                                        .to(1L)
+                                        .build()))
+                .isEqualTo(2);
+        assertThat(
+                        weights.weigh(
+                                Mutation.newInsertBuilder("archive.Orders")
+                                        .set("Note")
+                                        .to("kept")
+                                        .build()))
+                .isEqualTo(2);
     }
 
     @Test
@@ -92,12 +124,14 @@ class InformationSchemaCellWeightsTest {
         // with it.
         ResultSet resultSet =
                 rows(
-                        row("Orders", null, "OrdersByTotal"),
-                        row(null, "Total", "OrdersByTotal"),
-                        row("Orders", "Total", null),
-                        row("Orders", "Total", "OrdersByTotal"));
+                        row("", "Orders", null, "OrdersByTotal"),
+                        row("", null, "Total", "OrdersByTotal"),
+                        row(null, "Orders", "Total", "OrdersByTotal"),
+                        row("", "Orders", "Total", null),
+                        row("", "Orders", "Total", "OrdersByTotal"));
 
-        CellWeights weights = InformationSchemaCellWeights.read(resultSet);
+        CellWeights weights =
+                InformationSchemaCellWeights.read(resultSet, Dialect.GOOGLE_STANDARD_SQL);
 
         assertThat(weights.weigh(Mutation.newInsertBuilder("Orders").set("Total").to(1L).build()))
                 .isEqualTo(2);
@@ -105,7 +139,8 @@ class InformationSchemaCellWeightsTest {
 
     @Test
     void anEmptyResultMeansNoIndexesAtAll() {
-        CellWeights weights = InformationSchemaCellWeights.read(rows());
+        CellWeights weights =
+                InformationSchemaCellWeights.read(rows(), Dialect.GOOGLE_STANDARD_SQL);
 
         assertThat(weights.indexedTableCount()).isZero();
         assertThat(weights.weigh(Mutation.newInsertBuilder("Orders").set("Total").to(1L).build()))
@@ -117,8 +152,10 @@ class InformationSchemaCellWeightsTest {
         return ResultSets.forRows(ROW_TYPE, list);
     }
 
-    private static Struct row(String table, String column, String index) {
+    private static Struct row(String schema, String table, String column, String index) {
         return Struct.newBuilder()
+                .set("table_schema")
+                .to(schema)
                 .set("table_name")
                 .to(table)
                 .set("column_name")

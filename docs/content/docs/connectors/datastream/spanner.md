@@ -139,17 +139,18 @@ in cells decides that), and raising `maxBatchCells` spends the headroom above.
 `maxBatchCells` is counted the way Spanner counts a mutation. A written column costs one cell for
 the table plus one for every secondary index that contains it — as a key column or as a `STORING`
 column, since both rewrite an index entry — and a delete costs one plus the table's index entries.
-The index part is a property of the schema, so the sink reads it from the database's
-`INFORMATION_SCHEMA` once, when the writer opens. That read needs `spanner.databases.select` as well
-as write access. On a wide row that count is a better proxy for the request's size than a mutation
-count is, which is why the sink keeps it rather than counting mutations alone.
+The index part is a property of the schema, so the sink reads it from the database's `INFORMATION_SCHEMA` once, when the writer opens.
+The read covers every visible user schema and keeps the schema in each table's identity, so equal short table names in different schemas receive independent weights.
+GoogleSQL names match case-insensitively, while PostgreSQL catalog names preserve the distinction created by quoted identifiers.
+`Mutation.getTable()` carries a native data-API name rather than SQL syntax, so a named-schema serializer supplies the decoded `schema.table` catalog name without backticks or double quotes.
+That read needs `spanner.databases.select` as well as write access.
+On a wide row that count is a better proxy for the request's size than a mutation count is, which is why the sink keeps it rather than counting mutations alone.
 
 Two consequences worth knowing:
 
-- **A table the sink did not see is counted without its index entries** — one created after the job
-  started, or one in a named schema rather than the default one. That undercounts, and the default
-  `maxBatchCells` of 5,000 is deliberately 16 times under the 80,000 ceiling so the undercount has
-  room. Raising the limit toward 80,000 removes that room.
+- **A table the sink did not see is counted without its index entries** — one created after the job started, or one hidden from the writer's database role.
+  That undercounts, and the default `maxBatchCells` of 5,000 is deliberately 16 times under the 80,000 ceiling so the undercount has room.
+  Raising the limit toward 80,000 removes that room.
 - **The byte limit is an estimate.** The client library exposes no public way to size a `Mutation`
   as it goes on the wire, so the sink adds up the values it can see and ignores framing — about
   sixty bytes a mutation, measured — and so it reads low. The default of 1 MiB sits 100 times under
@@ -666,6 +667,7 @@ Everything above runs in an ordinary build. What only the service can answer run
 opt-in suite ([#224]({{< param BookRepo >}}/issues/224)): the rejection statuses and their per-group
 reporting, the mutation-cell weights read from the service's own `INFORMATION_SCHEMA` in both
 dialects, how many partitions Spanner plans and for which query shapes, and Data Boost end to end.
+The source class also verifies named-schema Table API writes, bounded index scans, and synchronous and asynchronous lookups in both dialects without creating another billed instance.
 It is also the only place the connector's clients are built over application-default credentials
 rather than an emulator endpoint.
 

@@ -19,11 +19,12 @@ package io.github.flink.gcp.connector.spanner.sink.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
+import io.github.flink.gcp.connector.spanner.SpannerTableName;
 
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -36,31 +37,34 @@ import java.util.Set;
  * table plus one for each index containing it, and the index part is what {@link
  * InformationSchemaCellWeights} reads out of the database.
  *
- * <p>Names are matched case-insensitively. Spanner will not let two tables (or two columns of one
- * table) differ only in case, so folding costs nothing and it stops a serializer that spells a
- * table {@code orders} while the schema says {@code Orders} from silently losing its index weights.
+ * <p>Names use dialect semantics: GoogleSQL names are matched case-insensitively, while PostgreSQL
+ * unquoted names fold to lower case and quoted names preserve case. The schema is part of a table's
+ * identity.
  *
  * <p>A table the weights do not know — one created after the writer opened, or living in a named
- * schema rather than the default one — is counted <em>without</em> its index entries, which
- * undercounts. That is what the default {@code maxBatchCells} headroom is for; see {@link
+ * schema that appeared after the writer opened — is counted <em>without</em> its index entries,
+ * which undercounts. That is what the default {@code maxBatchCells} headroom is for; see {@link
  * io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions}.
- *
- * <p>Instances are immutable.
  */
 @Internal
 public final class CellWeights {
 
-    private static final CellWeights EMPTY = new CellWeights(new HashMap<>(), new HashMap<>());
+    private static final CellWeights EMPTY =
+            new CellWeights(Dialect.GOOGLE_STANDARD_SQL, new HashMap<>(), new HashMap<>());
 
-    /** Lower-cased table name to lower-cased column name to the number of indexes containing it. */
+    private final Dialect dialect;
+
+    /** Qualified table key to column key to the number of indexes containing it. */
     private final Map<String, Map<String, Integer>> indexesPerColumn;
 
-    /** Lower-cased table name to the number of secondary indexes on it. */
+    /** Qualified table key to the number of secondary indexes on it. */
     private final Map<String, Integer> indexesPerTable;
 
     private CellWeights(
+            Dialect dialect,
             Map<String, Map<String, Integer>> indexesPerColumn,
             Map<String, Integer> indexesPerTable) {
+        this.dialect = dialect;
         this.indexesPerColumn = indexesPerColumn;
         this.indexesPerTable = indexesPerTable;
     }
@@ -80,7 +84,12 @@ public final class CellWeights {
      * @return a new builder
      */
     static Builder builder() {
-        return new Builder();
+        return builder(Dialect.GOOGLE_STANDARD_SQL);
+    }
+
+    /** Creates a builder whose keys follow the database dialect. */
+    static Builder builder(Dialect dialect) {
+        return new Builder(dialect);
     }
 
     /**
@@ -90,7 +99,7 @@ public final class CellWeights {
      * @return the cell count, at least one
      */
     int weigh(Mutation mutation) {
-        String table = fold(mutation.getTable());
+        String table = tableKey(mutation.getTable());
         if (mutation.getOperation() == Mutation.Op.DELETE) {
             // One for the row, plus one index entry per index on the table. A delete over a key
             // *range* costs the one only once, plus an index entry per index per row it matches —
@@ -104,7 +113,9 @@ public final class CellWeights {
         for (String column : mutation.getColumns()) {
             cells += 1;
             if (columns != null) {
-                cells += columns.getOrDefault(fold(column), 0);
+                cells +=
+                        columns.getOrDefault(
+                                SpannerTableName.catalogIdentifierKey(column, dialect), 0);
             }
         }
         // A write mutation always names its primary key, so this is only reachable through a
@@ -115,7 +126,7 @@ public final class CellWeights {
     /** Returns whether the weights carry index information for the table. */
     @VisibleForTesting
     boolean knows(String table) {
-        return indexesPerTable.containsKey(fold(table));
+        return indexesPerTable.containsKey(tableKey(table));
     }
 
     /** Returns how many indexed tables the weights carry, for the writer's open-time log line. */
@@ -123,8 +134,13 @@ public final class CellWeights {
         return indexesPerTable.size();
     }
 
-    private static String fold(String name) {
-        return name.toLowerCase(Locale.ROOT);
+    private String tableKey(String table) {
+        try {
+            return SpannerTableName.nativeApiKey(table, dialect);
+        } catch (IllegalArgumentException ignored) {
+            String defaultSchema = dialect == Dialect.POSTGRESQL ? "public" : "";
+            return SpannerTableName.catalogKey(defaultSchema, table, dialect);
+        }
     }
 
     @Override
@@ -138,8 +154,11 @@ public final class CellWeights {
 
         private final Map<String, Map<String, Set<String>>> rows = new HashMap<>();
         private final Map<String, Set<String>> tableIndexes = new HashMap<>();
+        private final Dialect dialect;
 
-        private Builder() {}
+        private Builder(Dialect dialect) {
+            this.dialect = dialect;
+        }
 
         /**
          * Records that {@code indexName} covers {@code column} of {@code table} — either as a key
@@ -151,11 +170,19 @@ public final class CellWeights {
          * @return this builder
          */
         Builder indexColumn(String table, String column, String indexName) {
-            String foldedTable = fold(table);
-            rows.computeIfAbsent(foldedTable, t -> new HashMap<>())
-                    .computeIfAbsent(fold(column), c -> new HashSet<>())
-                    .add(indexName);
-            tableIndexes.computeIfAbsent(foldedTable, t -> new HashSet<>()).add(indexName);
+            String defaultSchema = dialect == Dialect.POSTGRESQL ? "public" : "";
+            return indexColumn(defaultSchema, table, column, indexName);
+        }
+
+        /** Records one index-column row including its schema. */
+        Builder indexColumn(String schema, String table, String column, String indexName) {
+            String tableKey = SpannerTableName.catalogKey(schema, table, dialect);
+            String columnKey = SpannerTableName.catalogIdentifierKey(column, dialect);
+            String indexKey = SpannerTableName.catalogIdentifierKey(indexName, dialect);
+            rows.computeIfAbsent(tableKey, t -> new HashMap<>())
+                    .computeIfAbsent(columnKey, c -> new HashSet<>())
+                    .add(indexKey);
+            tableIndexes.computeIfAbsent(tableKey, t -> new HashSet<>()).add(indexKey);
             return this;
         }
 
@@ -174,7 +201,7 @@ public final class CellWeights {
                     });
             Map<String, Integer> indexesPerTable = new HashMap<>();
             tableIndexes.forEach((table, indexes) -> indexesPerTable.put(table, indexes.size()));
-            return new CellWeights(indexesPerColumn, indexesPerTable);
+            return new CellWeights(dialect, indexesPerColumn, indexesPerTable);
         }
     }
 }
