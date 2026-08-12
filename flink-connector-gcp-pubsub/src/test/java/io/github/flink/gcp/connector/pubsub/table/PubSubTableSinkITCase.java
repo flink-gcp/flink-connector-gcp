@@ -54,7 +54,9 @@ class PubSubTableSinkITCase extends PubSubTableTestBase {
                                 "format",
                                 "json",
                                 "sink.message-ordering.enabled",
-                                "true"));
+                                "true",
+                                "sink.parallelism",
+                                "2"));
 
         tEnv.executeSql(
                         "INSERT INTO events VALUES"

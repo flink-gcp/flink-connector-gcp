@@ -430,19 +430,26 @@ The source's changelog mode is **the format's**, not a hard-coded insert-only, s
 over Pub/Sub works. The transport is still at-least-once — a redelivered `-U` is a real possibility,
 which is a property of the pipeline to design around rather than one this connector can remove.
 
-### Ordering from SQL needs `sink.parallelism` = `1`
+### Ordering keys are routed to one writer
 
-Pub/Sub orders an ordering key's messages only among publishes from one client, and the sink owns
-one publisher per writer subtask. The DataStream API answers that with a `keyBy` on the ordering
-key before the sink; **SQL has no equivalent**. `DISTRIBUTED BY` is rejected because this sink does
-not implement `SupportsBucketing`, and nothing else keys the sink's input, so at any parallelism
-above one two rows sharing an ordering key may be published by two subtasks and arrive out of
-order.
+When a table writes the `ordering-key` metadata column, the connector partitions its input before
+the sink so every non-empty ordering key reaches one writer subtask.
+This happens automatically at any sink parallelism; `DISTRIBUTED BY` and `INTO n BUCKETS` are not
+part of the contract.
+`sink.parallelism` controls only the number of sink writers and therefore the number of Pub/Sub
+publishers.
 
-Until that is addressed ([#143]({{< param BookRepo >}}/issues/143)), a table that writes the
-`ordering-key` metadata column and actually depends on the order must also set
-`'sink.parallelism' = '1'`. The connector does not enforce this: a single-subtask-per-key
-distribution arranged upstream is legitimate, and the sink cannot tell the difference.
+A null or empty ordering key means that the message is unordered.
+The connector spreads those rows across writers instead of routing all of them to one empty-key
+hotspot.
+With one sink writer no partitioning exchange is needed.
+
+At higher parallelism the correctness guarantee has a cost: selecting the metadata column inserts
+a network shuffle even when the upstream query already happens to have a compatible distribution.
+One hot ordering key still goes through one writer and one Pub/Sub ordering-key sequence, so adding
+writers cannot increase that key's throughput.
+Choose `sink.parallelism` for the number and skew of ordering keys, publisher resource use, and the
+extra shuffle rather than treating it as a bucket count.
 
 ### Inserts only
 

@@ -48,7 +48,8 @@
 # helpers in src/main/java so siblings can consume the plain jar at test scope,
 # which is exactly why they are audited here like any other main source.
 # flink-avro owns GenericRecordAvroTypeInfo, the one type the BigQuery source's
-# GenericRecord deserializer needs (issue #390).
+# GenericRecord deserializer needs (issue #390). flink-table-api-java-bridge owns
+# DataStreamSinkProvider, used by the Pub/Sub table sink's ordering-key route (#143).
 artifacts = [
     "flink-annotations",
     "flink-core",
@@ -57,6 +58,7 @@ artifacts = [
     "flink-runtime",
     "flink-connector-base",
     "flink-table-common",
+    "flink-table-api-java-bridge",
     "flink-test-utils",
     "flink-avro",
 ]

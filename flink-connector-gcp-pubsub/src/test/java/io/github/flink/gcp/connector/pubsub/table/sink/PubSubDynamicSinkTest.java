@@ -17,13 +17,22 @@
 package io.github.flink.gcp.connector.pubsub.table.sink;
 
 import org.apache.flink.api.common.serialization.SerializationSchema;
+import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSink;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.transformations.PartitionTransformation;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.format.EncodingFormat;
+import org.apache.flink.table.connector.sink.DataStreamSinkProvider;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
 
@@ -35,6 +44,10 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -117,6 +130,31 @@ class PubSubDynamicSinkTest {
         return sink(PubSubPublisherOptions.builder().enableMessageOrdering(true).build());
     }
 
+    private static PubSubDynamicSink distributedSink(Integer parallelism) {
+        return new PubSubDynamicSink(
+                PHYSICAL_DATA_TYPE,
+                FORMAT,
+                TOPIC,
+                null,
+                null,
+                PubSubPublisherOptions.builder().enableMessageOrdering(true).build(),
+                null,
+                null,
+                parallelism);
+    }
+
+    private static DataStream<RowData> oneRowInput(StreamExecutionEnvironment environment) {
+        return environment
+                .fromSequence(0, 0)
+                .map(
+                        ignored ->
+                                (RowData)
+                                        GenericRowData.of(
+                                                StringData.fromString("id"),
+                                                StringData.fromString("key")))
+                .returns(RowData.class);
+    }
+
     @Test
     void listsTheMetadataItCanWriteInDeclarationOrder() {
         assertThat(sink().listWritableMetadata())
@@ -156,7 +194,7 @@ class PubSubDynamicSinkTest {
         // The provider is only reachable after metadata has been applied in a real plan, so this is
         // the one place the metadata-to-serializer wiring runs outside the emulator IT.
         assertThat(sink.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false)))
-                .isInstanceOf(SinkV2Provider.class);
+                .isInstanceOf(DataStreamSinkProvider.class);
     }
 
     @Test
@@ -200,6 +238,116 @@ class PubSubDynamicSinkTest {
 
         assertThat(provider).isInstanceOf(SinkV2Provider.class);
         assertThat(((SinkV2Provider) provider).createSink()).isNotNull();
+    }
+
+    @Test
+    void anOrderingKeyColumnBuildsAKeyedDataStreamProvider() {
+        PubSubDynamicSink sink = distributedSink(3);
+        sink.applyWritableMetadata(Collections.singletonList("ordering-key"), CONSUMED_DATA_TYPE);
+
+        DynamicTableSink.SinkRuntimeProvider runtimeProvider =
+                sink.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false));
+
+        assertThat(runtimeProvider).isInstanceOf(DataStreamSinkProvider.class);
+        DataStreamSinkProvider provider = (DataStreamSinkProvider) runtimeProvider;
+        assertThat(provider.getParallelism()).contains(3);
+
+        StreamExecutionEnvironment environment =
+                StreamExecutionEnvironment.getExecutionEnvironment();
+        DataStream<RowData> input = oneRowInput(environment);
+        DataStreamSink<?> attached = provider.consumeDataStream(name -> Optional.empty(), input);
+        Transformation<?> inputToWriter = attached.getTransformation().getInputs().get(0);
+
+        assertThat(attached.getTransformation().getParallelism()).isEqualTo(3);
+        assertThat(inputToWriter).isInstanceOf(PartitionTransformation.class);
+        assertThat(((PartitionTransformation<?>) inputToWriter).getPartitioner().toString())
+                .isEqualTo("HASH");
+    }
+
+    @Test
+    void aSingleWriterNeedsNoOrderingShuffle() {
+        PubSubDynamicSink sink = distributedSink(1);
+        sink.applyWritableMetadata(Collections.singletonList("ordering-key"), CONSUMED_DATA_TYPE);
+        DataStreamSinkProvider provider =
+                (DataStreamSinkProvider)
+                        sink.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false));
+        StreamExecutionEnvironment environment =
+                StreamExecutionEnvironment.getExecutionEnvironment();
+        DataStream<RowData> input = oneRowInput(environment);
+
+        DataStreamSink<?> attached = provider.consumeDataStream(name -> Optional.empty(), input);
+
+        assertThat(attached.getTransformation().getParallelism()).isOne();
+        assertThat(attached.getTransformation().getInputs().get(0))
+                .isNotInstanceOf(PartitionTransformation.class);
+    }
+
+    @Test
+    void anUnsetSinkParallelismUsesTheExecutionEnvironmentParallelism() {
+        PubSubDynamicSink sink = distributedSink(null);
+        sink.applyWritableMetadata(Collections.singletonList("ordering-key"), CONSUMED_DATA_TYPE);
+        DataStreamSinkProvider provider =
+                (DataStreamSinkProvider)
+                        sink.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false));
+        StreamExecutionEnvironment environment =
+                StreamExecutionEnvironment.getExecutionEnvironment().setParallelism(3);
+        DataStream<RowData> input = oneRowInput(environment);
+        input.getTransformation().setParallelism(1);
+
+        DataStreamSink<?> attached = provider.consumeDataStream(name -> Optional.empty(), input);
+
+        assertThat(attached.getTransformation().getParallelism()).isEqualTo(3);
+        assertThat(attached.getTransformation().getInputs().get(0))
+                .isInstanceOf(PartitionTransformation.class);
+    }
+
+    @Test
+    void theOrderingKeySelectorKeepsEqualNonEmptyKeysTogetherAndSpreadsUnkeyedRows()
+            throws Exception {
+        PubSubDynamicSink.OrderingKeySelector selector =
+                new PubSubDynamicSink.OrderingKeySelector(1);
+
+        assertThat(
+                        selector.getKey(
+                                GenericRowData.of(
+                                        StringData.fromString("a"), StringData.fromString("key"))))
+                .isEqualTo(
+                        selector.getKey(
+                                GenericRowData.of(
+                                        StringData.fromString("b"), StringData.fromString("key"))));
+        String firstOrderingKey =
+                selector.getKey(
+                        GenericRowData.of(
+                                StringData.fromString("a"), StringData.fromString("key")));
+        assertThat(
+                        selector.getKey(
+                                GenericRowData.of(
+                                        StringData.fromString("c"),
+                                        StringData.fromString("other"))))
+                .isNotEqualTo(firstOrderingKey);
+        Set<Integer> unkeyedWriters =
+                IntStream.range(0, 128)
+                        .mapToObj(
+                                i -> {
+                                    RowData row =
+                                            i % 2 == 0
+                                                    ? GenericRowData.of(
+                                                            StringData.fromString("null-" + i),
+                                                            null)
+                                                    : GenericRowData.of(
+                                                            StringData.fromString("empty-" + i),
+                                                            StringData.fromString(""));
+                                    try {
+                                        String key = selector.getKey(row);
+                                        return KeyGroupRangeAssignment.assignKeyToParallelOperator(
+                                                key, 128, 4);
+                                    } catch (Exception e) {
+                                        throw new AssertionError(e);
+                                    }
+                                })
+                        .collect(Collectors.toSet());
+
+        assertThat(unkeyedWriters).containsExactlyInAnyOrder(0, 1, 2, 3);
     }
 
     @Test
