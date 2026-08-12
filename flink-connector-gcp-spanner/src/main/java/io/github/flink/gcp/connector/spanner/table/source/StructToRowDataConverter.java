@@ -104,6 +104,8 @@ final class StructToRowDataConverter implements Serializable {
                 return StringData.fromString(value.getJson());
             case PG_JSONB:
                 return StringData.fromString(value.getPgJsonb());
+            case UUID:
+                return StringData.fromString(value.getUuid().toString());
             case BYTES:
             case PROTO:
                 return value.getBytes().toByteArray();
@@ -159,6 +161,9 @@ final class StructToRowDataConverter implements Serializable {
             case PG_JSONB:
                 values = value.getPgJsonbArray();
                 break;
+            case UUID:
+                values = value.getUuidArray();
+                break;
             case BYTES:
             case PROTO:
                 values = value.getBytesArray();
@@ -198,6 +203,8 @@ final class StructToRowDataConverter implements Serializable {
             case JSON:
             case PG_JSONB:
                 return StringData.fromString((String) item);
+            case UUID:
+                return StringData.fromString(((java.util.UUID) item).toString());
             case BYTES:
             case PROTO:
                 return ((ByteArray) item).toByteArray();

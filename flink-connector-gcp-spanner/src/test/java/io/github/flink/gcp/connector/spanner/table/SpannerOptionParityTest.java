@@ -45,11 +45,15 @@ class SpannerOptionParityTest {
                         Map.of(
                                 "schema.json-field-paths",
                                 "metadata;nested.payload",
+                                "schema.uuid-field-paths",
+                                "id;nested.id",
                                 "schema.proto-type-names",
                                 "event:example.Event,nested.event:example.Nested"));
 
         assertThat(options.get(SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS))
                 .containsExactly("metadata", "nested.payload");
+        assertThat(options.get(SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS))
+                .containsExactly("id", "nested.id");
         assertThat(options.get(SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES))
                 .containsExactlyInAnyOrderEntriesOf(
                         Map.of("event", "example.Event", "nested.event", "example.Nested"));
@@ -135,6 +139,7 @@ class SpannerOptionParityTest {
                         "dialect",
                         "emulator-endpoint",
                         "schema.json-field-paths",
+                        "schema.uuid-field-paths",
                         "schema.proto-type-names",
                         "schema.enum-type-names",
                         "scan.partition.max-partitions",

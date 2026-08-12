@@ -41,8 +41,10 @@ import java.time.LocalDate;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RowDataSerializationSchemaTest {
 
@@ -158,7 +160,8 @@ class RowDataSerializationSchemaTest {
                                         GenericRowData.of(2L),
                                         0,
                                         DataTypes.BIGINT().getLogicalType(),
-                                        Type.protoEnum("example.State"))
+                                        Type.protoEnum("example.State"),
+                                        "state")
                                 .getInt64())
                 .isEqualTo(2L);
     }
@@ -192,7 +195,8 @@ class RowDataSerializationSchemaTest {
                         populated,
                         0,
                         rowType.getTypeAt(0),
-                        tableSchema.getColumns().get(0).getSpannerType()),
+                        tableSchema.getColumns().get(0).getSpannerType(),
+                        "amount"),
                 dialect,
                 "12.340000000");
         ValueAssertions.assertNumericArray(
@@ -200,7 +204,8 @@ class RowDataSerializationSchemaTest {
                         populated,
                         1,
                         rowType.getTypeAt(1),
-                        tableSchema.getColumns().get(1).getSpannerType()),
+                        tableSchema.getColumns().get(1).getSpannerType(),
+                        "amounts"),
                 dialect);
 
         GenericRowData nulls = GenericRowData.of(null, null);
@@ -209,13 +214,15 @@ class RowDataSerializationSchemaTest {
                         nulls,
                         0,
                         rowType.getTypeAt(0),
-                        tableSchema.getColumns().get(0).getSpannerType());
+                        tableSchema.getColumns().get(0).getSpannerType(),
+                        "amount");
         com.google.cloud.spanner.Value nullArray =
                 RowDataToSpannerValueConverter.convert(
                         nulls,
                         1,
                         rowType.getTypeAt(1),
-                        tableSchema.getColumns().get(1).getSpannerType());
+                        tableSchema.getColumns().get(1).getSpannerType(),
+                        "amounts");
         assertThat(nullScalar.getType()).isEqualTo(ValueAssertions.numericType(dialect));
         assertThat(nullScalar.isNull()).isTrue();
         assertThat(nullArray.getType()).isEqualTo(Type.array(ValueAssertions.numericType(dialect)));
@@ -253,18 +260,123 @@ class RowDataSerializationSchemaTest {
                         row,
                         0,
                         rowType.getTypeAt(0),
-                        tableSchema.getColumns().get(0).getSpannerType());
+                        tableSchema.getColumns().get(0).getSpannerType(),
+                        "amount");
         com.google.cloud.spanner.Value array =
                 RowDataToSpannerValueConverter.convert(
                         row,
                         1,
                         rowType.getTypeAt(1),
-                        tableSchema.getColumns().get(1).getSpannerType());
+                        tableSchema.getColumns().get(1).getSpannerType(),
+                        "amounts");
 
         assertThat(scalar.getType()).isEqualTo(Type.pgNumeric());
         assertThat(scalar.getString()).isEqualTo("12.34");
         assertThat(array.getType()).isEqualTo(Type.array(Type.pgNumeric()));
         assertThat(array.getStringArray()).containsExactly("0.0100", null, "-12345678901234.5678");
+    }
+
+    @Test
+    void convertsUuidScalarsArraysNullsAndPrimaryKeyDeletes() throws Exception {
+        RowType rowType =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.STRING()),
+                                        DataTypes.FIELD(
+                                                "related", DataTypes.ARRAY(DataTypes.STRING())))
+                                .getLogicalType();
+        SpannerTableSchemaConverter tableSchema =
+                SpannerTableSchemaConverter.of(
+                        rowType,
+                        new int[] {0},
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        java.util.Arrays.asList("id", "related"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        GenericRowData row =
+                GenericRowData.of(
+                        StringData.fromString("F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6"),
+                        new GenericArrayData(
+                                new Object[] {
+                                    StringData.fromString("00000000-0000-0000-0000-000000000000"),
+                                    null,
+                                    StringData.fromString("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")
+                                }));
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(tableSchema, "records");
+
+        Mutation mutation = serializer.serialize(row, null);
+        assertThat(mutation.asMap().get("id").getUuid())
+                .isEqualTo(UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6"));
+        assertThat(mutation.asMap().get("related").getUuidArray())
+                .containsExactly(
+                        UUID.fromString("00000000-0000-0000-0000-000000000000"),
+                        null,
+                        UUID.fromString("ffffffff-ffff-ffff-ffff-ffffffffffff"));
+
+        row.setRowKind(RowKind.DELETE);
+        assertThat(serializer.serialize(row, null).getKeySet().getKeys())
+                .containsExactly(Key.of(UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")));
+
+        SpannerTableSchemaConverter nullableSchema =
+                SpannerTableSchemaConverter.of(
+                        rowType,
+                        new int[0],
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        java.util.Arrays.asList("id", "related"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        Mutation nulls =
+                new RowDataSerializationSchema(nullableSchema, "records")
+                        .serialize(GenericRowData.of(null, null), null);
+        assertThat(nulls.asMap().get("id").isNull()).isTrue();
+        assertThat(nulls.asMap().get("related").isNull()).isTrue();
+    }
+
+    @Test
+    void rejectsInvalidUuidScalarAndArrayTextWithTheColumnPosition() {
+        RowType rowType =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.STRING()),
+                                        DataTypes.FIELD(
+                                                "related", DataTypes.ARRAY(DataTypes.STRING())))
+                                .getLogicalType();
+        SpannerTableSchemaConverter tableSchema =
+                SpannerTableSchemaConverter.of(
+                        rowType,
+                        new int[0],
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        java.util.Arrays.asList("id", "related"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(tableSchema, "records");
+
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        GenericRowData.of(StringData.fromString("1-1-1-1-1"), null),
+                                        null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'id'");
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        GenericRowData.of(
+                                                null,
+                                                new GenericArrayData(
+                                                        new Object[] {
+                                                            StringData.fromString(
+                                                                    "00000000-0000-0000-0000-000000000000"),
+                                                            StringData.fromString("invalid")
+                                                        })),
+                                        null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'related[1]'");
     }
 
     private static final class ValueAssertions {

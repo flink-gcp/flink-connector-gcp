@@ -33,6 +33,7 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.Type;
 import com.google.cloud.spanner.Value;
+import io.github.flink.gcp.connector.spanner.table.UuidStringParser;
 
 import javax.annotation.Nullable;
 
@@ -47,12 +48,14 @@ final class RowDataToSpannerValueConverter {
 
     private RowDataToSpannerValueConverter() {}
 
-    static Value convert(RowData row, int index, LogicalType logicalType, Type spannerType) {
+    static Value convert(
+            RowData row, int index, LogicalType logicalType, Type spannerType, String columnName) {
         Object value = RowData.createFieldGetter(logicalType, index).getFieldOrNull(row);
-        return convertValue(value, logicalType, spannerType);
+        return convertValue(value, logicalType, spannerType, columnName);
     }
 
-    static Object keyPart(RowData row, int index, LogicalType logicalType, Type spannerType) {
+    static Object keyPart(
+            RowData row, int index, LogicalType logicalType, Type spannerType, String columnName) {
         Object value = RowData.createFieldGetter(logicalType, index).getFieldOrNull(row);
         if (value == null) {
             return null;
@@ -74,6 +77,8 @@ final class RowDataToSpannerValueConverter {
             case JSON:
             case PG_JSONB:
                 return value.toString();
+            case UUID:
+                return UuidStringParser.parse(value.toString(), columnName);
             case BYTES:
             case PROTO:
                 return ByteArray.copyFrom((byte[]) value);
@@ -88,9 +93,9 @@ final class RowDataToSpannerValueConverter {
     }
 
     private static Value convertValue(
-            @Nullable Object value, LogicalType logicalType, Type spannerType) {
+            @Nullable Object value, LogicalType logicalType, Type spannerType, String columnName) {
         if (spannerType.getCode() == Type.Code.ARRAY) {
-            return arrayValue((ArrayData) value, (ArrayType) logicalType, spannerType);
+            return arrayValue((ArrayData) value, (ArrayType) logicalType, spannerType, columnName);
         }
         switch (spannerType.getCode()) {
             case BOOL:
@@ -116,6 +121,11 @@ final class RowDataToSpannerValueConverter {
                 return Value.json(value == null ? null : value.toString());
             case PG_JSONB:
                 return Value.pgJsonb(value == null ? null : value.toString());
+            case UUID:
+                return Value.uuid(
+                        value == null
+                                ? null
+                                : UuidStringParser.parse(value.toString(), columnName));
             case BYTES:
                 return Value.bytes(value == null ? null : ByteArray.copyFrom((byte[]) value));
             case PROTO:
@@ -146,13 +156,14 @@ final class RowDataToSpannerValueConverter {
                                     row,
                                     i,
                                     rowType.getTypeAt(i),
-                                    spannerType.getStructFields().get(i).getType()));
+                                    spannerType.getStructFields().get(i).getType(),
+                                    rowType.getFieldNames().get(i)));
         }
         return Value.struct(builder.build());
     }
 
     private static Value arrayValue(
-            @Nullable ArrayData array, ArrayType arrayType, Type spannerType) {
+            @Nullable ArrayData array, ArrayType arrayType, Type spannerType, String columnName) {
         Type elementType = spannerType.getArrayElementType();
         if (array == null) {
             return nullArray(elementType);
@@ -162,14 +173,16 @@ final class RowDataToSpannerValueConverter {
         List<Object> values = new ArrayList<>(array.size());
         for (int i = 0; i < array.size(); i++) {
             Object element = getter.getElementOrNull(array, i);
-            values.add(toArrayElement(element, logicalElement, elementType));
+            values.add(
+                    toArrayElement(
+                            element, logicalElement, elementType, columnName + "[" + i + "]"));
         }
         return populatedArray(elementType, values);
     }
 
     @Nullable
     private static Object toArrayElement(
-            @Nullable Object value, LogicalType logicalType, Type spannerType) {
+            @Nullable Object value, LogicalType logicalType, Type spannerType, String columnName) {
         if (value == null) {
             return null;
         }
@@ -187,6 +200,8 @@ final class RowDataToSpannerValueConverter {
             case JSON:
             case PG_JSONB:
                 return ((StringData) value).toString();
+            case UUID:
+                return UuidStringParser.parse(((StringData) value).toString(), columnName);
             case BYTES:
             case PROTO:
                 return ByteArray.copyFrom((byte[]) value);
@@ -228,6 +243,8 @@ final class RowDataToSpannerValueConverter {
                 return Value.jsonArray((List<String>) (List<?>) values);
             case PG_JSONB:
                 return Value.pgJsonbArray((List<String>) (List<?>) values);
+            case UUID:
+                return Value.uuidArray((List<java.util.UUID>) (List<?>) values);
             case BYTES:
                 return Value.bytesArray((List<ByteArray>) (List<?>) values);
             case PROTO:

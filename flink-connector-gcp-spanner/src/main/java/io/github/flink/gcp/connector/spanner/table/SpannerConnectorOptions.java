@@ -70,6 +70,12 @@ public final class SpannerConnectorOptions {
                     .asList()
                     .noDefaultValue()
                     .withDescription("Field paths whose STRING values use Spanner JSON.");
+    public static final ConfigOption<List<String>> SCHEMA_UUID_FIELD_PATHS =
+            ConfigOptions.key("schema.uuid-field-paths")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription("Field paths whose STRING values use native Spanner UUID.");
     public static final ConfigOption<Map<String, String>> SCHEMA_PROTO_TYPE_NAMES =
             ConfigOptions.key("schema.proto-type-names")
                     .mapType()

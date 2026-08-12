@@ -61,7 +61,26 @@ public final class SpannerTableSchemaConverter implements Serializable {
             List<String> jsonPaths,
             Map<String, String> protoTypes,
             Map<String, String> enumTypes) {
-        Markers markers = new Markers(jsonPaths, protoTypes, enumTypes);
+        return of(
+                rowType,
+                primaryKeyIndexes,
+                dialect,
+                jsonPaths,
+                Collections.emptyList(),
+                protoTypes,
+                enumTypes);
+    }
+
+    /** Parses and validates one physical table schema, including native UUID markers. */
+    public static SpannerTableSchemaConverter of(
+            RowType rowType,
+            int[] primaryKeyIndexes,
+            Dialect dialect,
+            List<String> jsonPaths,
+            List<String> uuidPaths,
+            Map<String, String> protoTypes,
+            Map<String, String> enumTypes) {
+        Markers markers = new Markers(jsonPaths, uuidPaths, protoTypes, enumTypes);
         List<Column> columns = new ArrayList<>(rowType.getFieldCount());
         for (int i = 0; i < rowType.getFieldCount(); i++) {
             String name = rowType.getFieldNames().get(i);
@@ -84,7 +103,12 @@ public final class SpannerTableSchemaConverter implements Serializable {
         String proto = markers.proto(path);
         String enumType = markers.enumType(path);
         boolean json = markers.json(path);
-        int specialCount = (proto != null ? 1 : 0) + (enumType != null ? 1 : 0) + (json ? 1 : 0);
+        boolean uuid = markers.uuid(path);
+        int specialCount =
+                (proto != null ? 1 : 0)
+                        + (enumType != null ? 1 : 0)
+                        + (json ? 1 : 0)
+                        + (uuid ? 1 : 0);
         if (specialCount > 1) {
             throw new ValidationException(
                     "Field path '" + path + "' has more than one special Spanner type marker.");
@@ -105,6 +129,9 @@ public final class SpannerTableSchemaConverter implements Serializable {
         if (json) {
             Type jsonType = dialect == Dialect.POSTGRESQL ? Type.pgJsonb() : Type.json();
             return markedScalarOrArray(path, logicalType, jsonType, "JSON", "STRING");
+        }
+        if (uuid) {
+            return markedScalarOrArray(path, logicalType, Type.uuid(), "UUID", "STRING");
         }
 
         switch (logicalType.getTypeRoot()) {
@@ -226,7 +253,8 @@ public final class SpannerTableSchemaConverter implements Serializable {
                     || code == Type.Code.STRING
                     || code == Type.Code.BYTES
                     || code == Type.Code.TIMESTAMP
-                    || code == Type.Code.DATE)) {
+                    || code == Type.Code.DATE
+                    || code == Type.Code.UUID)) {
                 throw new ValidationException(
                         "PRIMARY KEY column '"
                                 + columns.get(index).name
@@ -323,13 +351,18 @@ public final class SpannerTableSchemaConverter implements Serializable {
 
     private static final class Markers {
         private final Set<String> json;
+        private final Set<String> uuid;
         private final Map<String, String> proto;
         private final Map<String, String> enumTypes;
         private final Set<String> consumed = new LinkedHashSet<>();
 
         private Markers(
-                List<String> json, Map<String, String> proto, Map<String, String> enumTypes) {
+                List<String> json,
+                List<String> uuid,
+                Map<String, String> proto,
+                Map<String, String> enumTypes) {
             this.json = new LinkedHashSet<>(json);
+            this.uuid = new LinkedHashSet<>(uuid);
             this.proto = new LinkedHashMap<>(proto);
             this.enumTypes = new LinkedHashMap<>(enumTypes);
         }
@@ -348,6 +381,13 @@ public final class SpannerTableSchemaConverter implements Serializable {
             return proto.get(path);
         }
 
+        private boolean uuid(String path) {
+            if (uuid.contains(path)) {
+                consumed.add(path);
+            }
+            return uuid.contains(path);
+        }
+
         private String enumType(String path) {
             if (enumTypes.containsKey(path)) {
                 consumed.add(path);
@@ -357,6 +397,7 @@ public final class SpannerTableSchemaConverter implements Serializable {
 
         private void checkAllConsumed() {
             Set<String> declared = new LinkedHashSet<>(json);
+            declared.addAll(uuid);
             declared.addAll(proto.keySet());
             declared.addAll(enumTypes.keySet());
             declared.removeAll(consumed);

@@ -39,6 +39,7 @@ import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -162,6 +163,54 @@ class StructToRowDataConverterTest {
         assertThat(projected.getArity()).isEqualTo(1);
         assertThat(projected.getString(0).toString()).isEqualTo("Ada");
         assertThat(empty.getArity()).isZero();
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void convertsUuidScalarsArraysAndNullsToCanonicalLowercase(Dialect dialect) {
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.STRING()),
+                                        DataTypes.FIELD(
+                                                "related", DataTypes.ARRAY(DataTypes.STRING())),
+                                        DataTypes.FIELD("missing", DataTypes.STRING()))
+                                .getLogicalType();
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        type,
+                        new int[0],
+                        dialect,
+                        Collections.emptyList(),
+                        Arrays.asList("id", "related", "missing"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        Struct struct =
+                Struct.newBuilder()
+                        .set("id")
+                        .to(Value.uuid(UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")))
+                        .set("related")
+                        .to(
+                                Value.uuidArray(
+                                        Arrays.asList(
+                                                UUID.fromString(
+                                                        "00000000-0000-0000-0000-000000000000"),
+                                                null,
+                                                UUID.fromString(
+                                                        "ffffffff-ffff-ffff-ffff-ffffffffffff"))))
+                        .set("missing")
+                        .to(Value.uuid(null))
+                        .build();
+
+        RowData row = new StructToRowDataConverter(schema, null).convert(struct);
+
+        assertThat(row.getString(0).toString()).isEqualTo("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
+        assertThat(row.getArray(1).getString(0).toString())
+                .isEqualTo("00000000-0000-0000-0000-000000000000");
+        assertThat(row.getArray(1).isNullAt(1)).isTrue();
+        assertThat(row.getArray(1).getString(2).toString())
+                .isEqualTo("ffffffff-ffff-ffff-ffff-ffffffffffff");
+        assertThat(row.isNullAt(2)).isTrue();
     }
 
     @ParameterizedTest

@@ -67,7 +67,8 @@ public final class RowDataSerializationSchema
                                     row,
                                     column.getIndex(),
                                     column.getLogicalType(),
-                                    column.getSpannerType()));
+                                    column.getSpannerType(),
+                                    column.getName()));
         }
         return builder.build();
     }
@@ -78,7 +79,11 @@ public final class RowDataSerializationSchema
             SpannerTableSchemaConverter.Column column = schema.getColumns().get(index);
             key.appendObject(
                     RowDataToSpannerValueConverter.keyPart(
-                            row, index, column.getLogicalType(), column.getSpannerType()));
+                            row,
+                            index,
+                            column.getLogicalType(),
+                            column.getSpannerType(),
+                            column.getName()));
         }
         return key.build();
     }
