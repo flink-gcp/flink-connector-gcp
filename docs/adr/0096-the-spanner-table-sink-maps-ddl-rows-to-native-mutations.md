@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11
-- Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502), [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503) (under
+- Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502), [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503), [#528](https://github.com/laughingman7743/flink-connector-gcp/issues/528) (under
   [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223))
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
@@ -31,7 +31,10 @@ SQL has no serializer callback, so the DDL must determine the mutation operation
 ## Decision
 
 **The `spanner` table sink maps each physical `RowData` field directly onto one named Spanner column.**
-The common lossless mappings cover `BOOL`, `INT64`, `FLOAT32`, `FLOAT64`, `NUMERIC`, `STRING`, `BYTES`, `DATE`, `TIMESTAMP`, and arrays.
+The common lossless mappings cover `BOOL`, `INT64`, `FLOAT32`, `FLOAT64`, `STRING`, `BYTES`, `DATE`, `TIMESTAMP`, and one-dimensional arrays.
+`DECIMAL(38, 9)` maps to GoogleSQL `NUMERIC` or PostgreSQL `numeric`, whose client types and value factories are distinct.
+The connector keeps that one Flink decimal shape for both dialects even though PostgreSQL `numeric` permits other precisions and scales.
+The connector rejects nested arrays and key types excluded by Spanner's [GoogleSQL](https://cloud.google.com/spanner/docs/reference/standard-sql/data-types) and [PostgreSQL](https://cloud.google.com/spanner/docs/reference/postgresql/data-types) type contracts before it creates a runtime provider.
 Spanner JSON, PROTO, and ENUM cannot be distinguished from their Flink carrier types, so three explicit field-path options mark them and provide native type names where Spanner requires one.
 The declared database dialect selects GoogleSQL `JSON` or PostgreSQL `jsonb`.
 PROTO and ENUM markers are rejected for PostgreSQL databases because those named types are GoogleSQL-only.

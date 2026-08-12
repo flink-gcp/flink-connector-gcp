@@ -30,11 +30,14 @@ import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -157,5 +160,64 @@ class StructToRowDataConverterTest {
         assertThat(projected.getArity()).isEqualTo(1);
         assertThat(projected.getString(0).toString()).isEqualTo("Ada");
         assertThat(empty.getArity()).isZero();
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void convertsNumericScalarsNullsAndArraysForEachDialect(Dialect dialect) {
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("amount", DataTypes.DECIMAL(38, 9)),
+                                        DataTypes.FIELD("missing", DataTypes.DECIMAL(38, 9)),
+                                        DataTypes.FIELD(
+                                                "amounts",
+                                                DataTypes.ARRAY(DataTypes.DECIMAL(38, 9))))
+                                .getLogicalType();
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        type,
+                        new int[0],
+                        dialect,
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        Value amount = numeric(dialect, "12.340000000");
+        Value missing = numeric(dialect, null);
+        Value amounts = numericArray(dialect, Arrays.asList("12.340000000", null, "56.780000000"));
+        Struct struct =
+                Struct.newBuilder()
+                        .set("amount")
+                        .to(amount)
+                        .set("missing")
+                        .to(missing)
+                        .set("amounts")
+                        .to(amounts)
+                        .build();
+
+        RowData row = new StructToRowDataConverter(schema, null).convert(struct);
+
+        assertThat(row.getDecimal(0, 38, 9).toBigDecimal()).isEqualByComparingTo("12.340000000");
+        assertThat(row.isNullAt(1)).isTrue();
+        ArrayData array = row.getArray(2);
+        assertThat(array.getDecimal(0, 38, 9).toBigDecimal()).isEqualByComparingTo("12.340000000");
+        assertThat(array.isNullAt(1)).isTrue();
+        assertThat(array.getDecimal(2, 38, 9).toBigDecimal()).isEqualByComparingTo("56.780000000");
+    }
+
+    private static Value numeric(Dialect dialect, String value) {
+        return dialect == Dialect.POSTGRESQL
+                ? Value.pgNumeric(value)
+                : Value.numeric(value == null ? null : new BigDecimal(value));
+    }
+
+    private static Value numericArray(Dialect dialect, List<String> values) {
+        if (dialect == Dialect.POSTGRESQL) {
+            return Value.pgNumericArray(values);
+        }
+        return Value.numericArray(
+                values.stream()
+                        .map(value -> value == null ? null : new BigDecimal(value))
+                        .collect(java.util.stream.Collectors.toList()));
     }
 }

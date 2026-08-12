@@ -105,6 +105,11 @@ final class RowDataToSpannerValueConverter {
                 return Value.float64((Double) value);
             case NUMERIC:
                 return Value.numeric(value == null ? null : ((DecimalData) value).toBigDecimal());
+            case PG_NUMERIC:
+                return Value.pgNumeric(
+                        value == null
+                                ? null
+                                : ((DecimalData) value).toBigDecimal().toPlainString());
             case STRING:
                 return Value.string(value == null ? null : value.toString());
             case JSON:
@@ -176,6 +181,8 @@ final class RowDataToSpannerValueConverter {
                 return value;
             case NUMERIC:
                 return ((DecimalData) value).toBigDecimal();
+            case PG_NUMERIC:
+                return ((DecimalData) value).toBigDecimal().toPlainString();
             case STRING:
             case JSON:
             case PG_JSONB:
@@ -213,6 +220,8 @@ final class RowDataToSpannerValueConverter {
                 return Value.float64Array((List<Double>) (List<?>) values);
             case NUMERIC:
                 return Value.numericArray((List<java.math.BigDecimal>) (List<?>) values);
+            case PG_NUMERIC:
+                return Value.pgNumericArray((List<String>) (List<?>) values);
             case STRING:
                 return Value.stringArray((List<String>) (List<?>) values);
             case JSON:

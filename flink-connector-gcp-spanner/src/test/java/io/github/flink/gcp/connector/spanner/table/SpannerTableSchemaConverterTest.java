@@ -23,6 +23,8 @@ import org.apache.flink.table.types.logical.RowType;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -115,6 +117,99 @@ class SpannerTableSchemaConverterTest {
                         Collections.emptyMap());
 
         assertThat(schema.getColumns().get(0).getSpannerType()).isEqualTo(Type.pgJsonb());
+    }
+
+    @Test
+    void postgresqlDecimalsUsePgNumericForScalarsAndArrays() {
+        RowType row =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("amount", DataTypes.DECIMAL(38, 9)),
+                                        DataTypes.FIELD(
+                                                "amounts",
+                                                DataTypes.ARRAY(DataTypes.DECIMAL(38, 9))))
+                                .getLogicalType();
+
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        row,
+                        new int[0],
+                        Dialect.POSTGRESQL,
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+
+        assertThat(schema.getColumns())
+                .extracting(SpannerTableSchemaConverter.Column::getSpannerType)
+                .containsExactly(Type.pgNumeric(), Type.array(Type.pgNumeric()));
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void reportsUnsupportedDecimalShapesAsAConnectorLimit(Dialect dialect) {
+        RowType row =
+                (RowType)
+                        DataTypes.ROW(DataTypes.FIELD("amount", DataTypes.DECIMAL(10, 2)))
+                                .getLogicalType();
+
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableSchemaConverter.of(
+                                        row,
+                                        new int[0],
+                                        dialect,
+                                        Collections.emptyList(),
+                                        Collections.emptyMap(),
+                                        Collections.emptyMap()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("connector supports only DECIMAL(38, 9)")
+                .hasMessageContaining(
+                        dialect == Dialect.POSTGRESQL ? "PostgreSQL numeric" : "GoogleSQL NUMERIC");
+    }
+
+    @Test
+    void rejectsFloat32PrimaryKeys() {
+        RowType row =
+                (RowType)
+                        DataTypes.ROW(DataTypes.FIELD("ratio", DataTypes.FLOAT())).getLogicalType();
+
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableSchemaConverter.of(
+                                        row,
+                                        new int[] {0},
+                                        Dialect.GOOGLE_STANDARD_SQL,
+                                        Collections.emptyList(),
+                                        Collections.emptyMap(),
+                                        Collections.emptyMap()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("PRIMARY KEY column 'ratio'")
+                .hasMessageContaining("FLOAT32");
+    }
+
+    @Test
+    void rejectsNestedArraysWithThePhysicalFieldPath() {
+        RowType row =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD(
+                                                "matrix",
+                                                DataTypes.ARRAY(
+                                                        DataTypes.ARRAY(DataTypes.BIGINT()))))
+                                .getLogicalType();
+
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableSchemaConverter.of(
+                                        row,
+                                        new int[0],
+                                        Dialect.GOOGLE_STANDARD_SQL,
+                                        Collections.emptyList(),
+                                        Collections.emptyMap(),
+                                        Collections.emptyMap()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Column 'matrix'")
+                .hasMessageContaining("ARRAY elements cannot be another ARRAY");
     }
 
     @Test

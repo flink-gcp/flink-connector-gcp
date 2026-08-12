@@ -119,10 +119,16 @@ public final class SpannerTableSchemaConverter implements Serializable {
             case DECIMAL:
                 DecimalType decimal = (DecimalType) logicalType;
                 if (decimal.getPrecision() != 38 || decimal.getScale() != 9) {
+                    String nativeType =
+                            dialect == Dialect.POSTGRESQL
+                                    ? "PostgreSQL numeric"
+                                    : "GoogleSQL NUMERIC";
                     throw unsupported(
-                            path, logicalType, "Spanner NUMERIC requires DECIMAL(38, 9).");
+                            path,
+                            logicalType,
+                            "The connector supports only DECIMAL(38, 9) for " + nativeType + ".");
                 }
-                return Type.numeric();
+                return dialect == Dialect.POSTGRESQL ? Type.pgNumeric() : Type.numeric();
             case CHAR:
             case VARCHAR:
                 return Type.string();
@@ -141,6 +147,12 @@ public final class SpannerTableSchemaConverter implements Serializable {
                 }
                 return Type.timestamp();
             case ARRAY:
+                if (((ArrayType) logicalType)
+                        .getElementType()
+                        .is(org.apache.flink.table.types.logical.LogicalTypeRoot.ARRAY)) {
+                    throw unsupported(
+                            path, logicalType, "Spanner ARRAY elements cannot be another ARRAY.");
+                }
                 return Type.array(
                         toSpannerType(
                                 path + "[]",
@@ -212,7 +224,6 @@ public final class SpannerTableSchemaConverter implements Serializable {
             Type.Code code = columns.get(index).spannerType.getCode();
             if (!(code == Type.Code.BOOL
                     || code == Type.Code.INT64
-                    || code == Type.Code.FLOAT32
                     || code == Type.Code.FLOAT64
                     || code == Type.Code.NUMERIC
                     || code == Type.Code.STRING
