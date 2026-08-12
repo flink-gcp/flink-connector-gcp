@@ -80,7 +80,8 @@ Spanner's [GoogleSQL data types](https://cloud.google.com/spanner/docs/reference
 | `BOOLEAN` | `BOOL` |
 | `BIGINT` | `INT64` |
 | `FLOAT` / `DOUBLE` | `FLOAT32` / `FLOAT64` |
-| `DECIMAL(38, 9)` | GoogleSQL `NUMERIC` / PostgreSQL `numeric` |
+| `DECIMAL(38, 9)` | GoogleSQL `NUMERIC` |
+| `DECIMAL(p, s)` | PostgreSQL `numeric` |
 | `CHAR` / `VARCHAR` / `STRING` | `STRING` |
 | `BINARY` / `VARBINARY` / `BYTES` | `BYTES` |
 | `DATE` | `DATE` |
@@ -91,8 +92,12 @@ The mapping applies to one-dimensional array elements, and nullable Flink values
 Nested arrays are rejected because neither Spanner dialect permits an array whose element is another array.
 `ROW` is rejected because Spanner `STRUCT` cannot be stored in a table column.
 Plain `TIMESTAMP` is rejected because it has no time-zone semantics; use `TIMESTAMP_LTZ` for an instant.
-The connector currently accepts only `DECIMAL(38, 9)` for both dialects; this exactly matches GoogleSQL `NUMERIC`, while PostgreSQL `numeric` itself permits other precisions and scales.
-`FLOAT` cannot be a primary-key column in either dialect, and PostgreSQL `DECIMAL(38, 9)` cannot be a primary-key column because PostgreSQL `numeric` is not a key type.
+GoogleSQL accepts only `DECIMAL(38, 9)`, which exactly matches its fixed `NUMERIC` precision and scale.
+PostgreSQL accepts every Flink-supported `DECIMAL(p, s)`, but the physical `numeric` column is wider than Flink's maximum precision of 38 and has no DDL-level precision or scale modifier.
+On reads, a PostgreSQL numeric value must fit the declared Flink precision without reducing non-zero fractional digits; trailing fractional zeros may be removed without changing the value.
+Precision overflow, scale loss, and PostgreSQL numeric `NaN` fail conversion instead of rounding or turning a non-null value into null.
+The error names the physical column and declared Flink shape without including the stored value.
+`FLOAT` cannot be a primary-key column in either dialect, and no PostgreSQL decimal can be a primary-key column because PostgreSQL `numeric` is not a key type.
 
 ## Scan behavior
 

@@ -41,6 +41,7 @@ import com.google.cloud.spanner.ErrorCode;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.SpannerExceptionFactory;
 import com.google.cloud.spanner.Struct;
+import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
@@ -73,6 +74,18 @@ class SpannerLookupSourceTest {
                     (RowType) PHYSICAL.getLogicalType(),
                     new int[] {0, 1},
                     Dialect.GOOGLE_STANDARD_SQL,
+                    Collections.emptyList(),
+                    Collections.emptyMap(),
+                    Collections.emptyMap());
+    private static final SpannerTableSchemaConverter POSTGRESQL_DECIMAL_SCHEMA =
+            SpannerTableSchemaConverter.of(
+                    (RowType)
+                            DataTypes.ROW(
+                                            DataTypes.FIELD("id", DataTypes.BIGINT().notNull()),
+                                            DataTypes.FIELD("amount", DataTypes.DECIMAL(5, 2)))
+                                    .getLogicalType(),
+                    new int[] {0},
+                    Dialect.POSTGRESQL,
                     Collections.emptyList(),
                     Collections.emptyMap(),
                     Collections.emptyMap());
@@ -173,6 +186,64 @@ class SpannerLookupSourceTest {
         assertThat(function.lookup(GenericRowData.of(null, StringData.fromString("us")))).isEmpty();
         function.close();
         assertThat(lookup.closed).isTrue();
+    }
+
+    @Test
+    void syncAndAsyncLookupsUseExactPostgresqlDecimalConversion() {
+        Struct exact = Struct.newBuilder().set("amount").to(Value.pgNumeric("12.34")).build();
+        SpannerRowDataLookupFunction sync =
+                new SpannerRowDataLookupFunction(
+                        POSTGRESQL_DECIMAL_SCHEMA,
+                        new int[] {1},
+                        new int[] {0},
+                        0,
+                        new FakeLookup(exact));
+        SpannerRowDataAsyncLookupFunction async =
+                new SpannerRowDataAsyncLookupFunction(
+                        POSTGRESQL_DECIMAL_SCHEMA,
+                        new int[] {1},
+                        new int[] {0},
+                        0,
+                        new FakeLookup(exact));
+
+        assertThat(sync.lookup(GenericRowData.of(1L)))
+                .singleElement()
+                .satisfies(
+                        row ->
+                                assertThat(row.getDecimal(0, 5, 2).toBigDecimal())
+                                        .isEqualByComparingTo("12.34"));
+        assertThat(async.asyncLookup(GenericRowData.of(1L)).join())
+                .singleElement()
+                .satisfies(
+                        row ->
+                                assertThat(row.getDecimal(0, 5, 2).toBigDecimal())
+                                        .isEqualByComparingTo("12.34"));
+
+        Struct overflow = Struct.newBuilder().set("amount").to(Value.pgNumeric("1000.00")).build();
+        SpannerRowDataLookupFunction overflowingSync =
+                new SpannerRowDataLookupFunction(
+                        POSTGRESQL_DECIMAL_SCHEMA,
+                        new int[] {1},
+                        new int[] {0},
+                        0,
+                        new FakeLookup(overflow));
+        SpannerRowDataAsyncLookupFunction overflowingAsync =
+                new SpannerRowDataAsyncLookupFunction(
+                        POSTGRESQL_DECIMAL_SCHEMA,
+                        new int[] {1},
+                        new int[] {0},
+                        0,
+                        new FakeLookup(overflow));
+
+        assertThatThrownBy(() -> overflowingSync.lookup(GenericRowData.of(1L)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'amount'")
+                .hasMessageContaining("DECIMAL(5, 2)");
+        assertThatThrownBy(() -> overflowingAsync.asyncLookup(GenericRowData.of(1L)).join())
+                .isInstanceOf(CompletionException.class)
+                .hasCauseInstanceOf(IllegalArgumentException.class)
+                .hasRootCauseMessage(
+                        "Spanner column 'amount' cannot be represented exactly as Flink DECIMAL(5, 2). The value exceeds the declared precision.");
     }
 
     @Test
