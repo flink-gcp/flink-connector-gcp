@@ -72,7 +72,7 @@ class PubSubTableAutoCreateITCase extends PubSubTableTestBase {
                                 subscription.getSubscription(),
                                 "format",
                                 "json",
-                                "scan.auto-create.topic",
+                                "scan.auto-create.topics." + subscription.getSubscription(),
                                 topic,
                                 "scan.auto-create.ack-deadline",
                                 "45 s",
@@ -93,6 +93,47 @@ class PubSubTableAutoCreateITCase extends PubSubTableTestBase {
         List<Row> rows = collect(result, 2, r -> r.getField("id"));
 
         assertThat(rows).extracting(r -> r.getField("id")).containsAll(Arrays.asList("a", "b"));
+    }
+
+    @Test
+    void createsSeveralSubscriptionsWithTheirOwnTopicsAndConsumesThem() throws Exception {
+        TopicDestination ordersTopic = createTopic("table-multi-orders-topic");
+        TopicDestination returnsTopic = createTopic("table-multi-returns-topic");
+        SubscriptionDestination orders =
+                SubscriptionDestination.of(PROJECT, "table-multi-orders-sub");
+        SubscriptionDestination returns =
+                SubscriptionDestination.of(PROJECT, "table-multi-returns-sub");
+        assertThat(subscriptionExists(orders)).isFalse();
+        assertThat(subscriptionExists(returns)).isFalse();
+
+        TableEnvironment tEnv = checkpointingTableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE events (id STRING) "
+                        + withOptions(
+                                "subscription",
+                                orders.getSubscription() + ";" + returns.getSubscription(),
+                                "format",
+                                "json",
+                                "scan.auto-create.topics." + orders.getSubscription(),
+                                ordersTopic.getTopic(),
+                                "scan.auto-create.topics." + returns.getSubscription(),
+                                returnsTopic.getTopic()));
+
+        TableResult result = tEnv.executeSql("SELECT id FROM events");
+        awaitSubscription(orders);
+        awaitSubscription(returns);
+
+        assertThat(describeSubscription(orders).getTopic()).isEqualTo(ordersTopic.toTopicPath());
+        assertThat(describeSubscription(returns).getTopic()).isEqualTo(returnsTopic.toTopicPath());
+
+        publish(ordersTopic.getTopic(), "{\"id\":\"order\"}");
+        publish(returnsTopic.getTopic(), "{\"id\":\"return\"}");
+
+        List<Row> rows = collect(result, 2, r -> r.getField("id"));
+
+        assertThat(rows)
+                .extracting(r -> r.getField("id"))
+                .containsExactlyInAnyOrder("order", "return");
     }
 
     @Test

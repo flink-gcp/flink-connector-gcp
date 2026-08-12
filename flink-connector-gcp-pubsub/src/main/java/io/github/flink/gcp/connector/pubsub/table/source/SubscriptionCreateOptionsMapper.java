@@ -23,19 +23,23 @@ import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
-
-import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
- * Builds {@link SubscriptionCreateOptions} from the table options.
+ * Builds per-subscription {@link SubscriptionCreateOptions} from the table options.
  *
  * <p>Under the same contract as {@code SubscriberOptionsMapper}: every knob is applied with {@code
  * getOptional(...).ifPresent(...)}, no default is introduced, and value validation is left to the
@@ -43,18 +47,17 @@ import java.util.Optional;
  * this options object's setters do not take a {@code ConfigOption}'s shape, so the rules below
  * exist here and nowhere else.
  *
- * <p><b>Auto-creation is authorized by {@code scan.auto-create.topic} and requires exactly one
- * subscription.</b> The DataStream API keys creation settings by subscription because they carry
- * the topic binding, and a flat DDL namespace cannot express one object per subscription. Sharing
- * one across several is the hazard the API exists to prevent: Pub/Sub delivers a complete copy of a
- * topic's stream to every subscription of it, so the source would emit each message once per
- * subscription with nothing reporting an error. One precondition makes that inexpressible.
+ * <p><b>Auto-creation is authorized by {@code scan.auto-create.topics}.</b> Its map keys must match
+ * the {@code subscription} list exactly, and each value supplies that subscription's topic binding.
+ * The remaining creation settings apply to every map entry. Keeping only the topic binding per
+ * subscription avoids sharing one binding across subscriptions, which would make Pub/Sub deliver a
+ * complete copy of one topic's stream through each of them.
  *
  * <p><b>{@code expiration-ttl} and {@code never-expire} are rejected together here, and only
  * here.</b> On the builder they are last-writer-wins — each setter clears the other — which is
  * sensible for a call sequence and meaningless for a {@code WITH} clause, where the two keys carry
  * no order. There is no builder exception to defer to, so this check is the only thing between a
- * contradictory DDL and a subscription created with whichever value the mapper happened to read
+ * contradictory DDL and subscriptions created with whichever value the mapper happened to read
  * last.
  *
  * <p><b>The dead-letter options are required together.</b> Defaulting the attempt count here would
@@ -63,11 +66,8 @@ import java.util.Optional;
 @Internal
 public final class SubscriptionCreateOptionsMapper {
 
-    /**
-     * The options that only mean anything alongside {@code scan.auto-create.topic}. Set without it,
-     * they would be read by nothing at all, so they are rejected rather than ignored.
-     */
-    private static final List<ConfigOption<?>> REQUIRE_TOPIC =
+    /** Options that have no meaning unless the topic map authorizes subscription creation. */
+    private static final List<ConfigOption<?>> REQUIRE_TOPICS =
             Arrays.asList(
                     PubSubConnectorOptions.SCAN_AUTO_CREATE_ACK_DEADLINE,
                     PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_ORDERING_ENABLED,
@@ -82,26 +82,85 @@ public final class SubscriptionCreateOptionsMapper {
     private SubscriptionCreateOptionsMapper() {}
 
     /**
-     * Maps the table options onto the settings a missing subscription is created with.
+     * Maps the table options onto the settings each missing subscription is created with.
      *
      * @param config the table options
-     * @return the creation settings, or {@code null} when {@code scan.auto-create.topic} is absent,
-     *     which leaves the subscription required to exist already
+     * @return creation settings keyed by subscription, or an empty map when every subscription is
+     *     required to exist already
      */
-    @Nullable
-    public static SubscriptionCreateOptions map(ReadableConfig config) {
-        Optional<String> topic = config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPIC);
-        if (!topic.isPresent()) {
+    public static Map<SubscriptionDestination, SubscriptionCreateOptions> map(
+            ReadableConfig config) {
+        Optional<Map<String, String>> configuredTopics =
+                config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS);
+        if (!configuredTopics.isPresent()) {
             checkNoOrphanedOptions(config);
-            return null;
+            return Collections.emptyMap();
         }
-        checkExactlyOneSubscription(config);
+
+        Map<String, String> topics = configuredTopics.get();
+        if (topics.isEmpty()) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' must map at least one subscription to a topic.",
+                            PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS.key()));
+        }
+
+        List<String> subscriptions =
+                config.getOptional(PubSubConnectorOptions.SUBSCRIPTION)
+                        .orElse(Collections.emptyList());
+        checkTopicKeys(subscriptions, topics);
 
         String project = config.get(PubSubConnectorOptions.PROJECT);
-        SubscriptionCreateOptions.Builder builder =
-                SubscriptionCreateOptions.builder()
-                        .topic(TopicDestination.of(project, topic.get()));
+        Map<SubscriptionDestination, SubscriptionCreateOptions> mapped = new LinkedHashMap<>();
+        for (String subscription : subscriptions) {
+            SubscriptionCreateOptions.Builder builder =
+                    SubscriptionCreateOptions.builder()
+                            .topic(TopicDestination.of(project, topics.get(subscription)));
+            applySharedSettings(config, project, builder);
+            mapped.put(SubscriptionDestination.of(project, subscription), builder.build());
+        }
+        return Collections.unmodifiableMap(mapped);
+    }
 
+    private static void checkNoOrphanedOptions(ReadableConfig config) {
+        List<String> orphaned = new ArrayList<>();
+        for (ConfigOption<?> option : REQUIRE_TOPICS) {
+            if (config.getOptional(option).isPresent()) {
+                orphaned.add(option.key());
+            }
+        }
+        if (!orphaned.isEmpty()) {
+            throw new ValidationException(
+                    String.format(
+                            "Options %s configure subscriptions this table never creates, because"
+                                    + " '%s' is not set. Setting that option is what authorizes"
+                                    + " creating missing subscriptions; without it every"
+                                    + " subscription must already exist, and existing ones keep"
+                                    + " their own settings.",
+                            orphaned, PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS.key()));
+        }
+    }
+
+    private static void checkTopicKeys(List<String> subscriptions, Map<String, String> topics) {
+        Set<String> expected = new LinkedHashSet<>(subscriptions);
+        Set<String> missing = new TreeSet<>(expected);
+        missing.removeAll(topics.keySet());
+        Set<String> unexpected = new TreeSet<>(topics.keySet());
+        unexpected.removeAll(expected);
+        if (!missing.isEmpty() || !unexpected.isEmpty()) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' must have exactly the subscription names in option '%s'"
+                                    + " as its keys. Missing keys: %s. Unexpected keys: %s.",
+                            PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS.key(),
+                            PubSubConnectorOptions.SUBSCRIPTION.key(),
+                            missing,
+                            unexpected));
+        }
+    }
+
+    private static void applySharedSettings(
+            ReadableConfig config, String project, SubscriptionCreateOptions.Builder builder) {
         config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_ACK_DEADLINE)
                 .ifPresent(builder::ackDeadline);
         config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_ORDERING_ENABLED)
@@ -112,51 +171,8 @@ public final class SubscriptionCreateOptionsMapper {
                 .ifPresent(builder::retainAckedMessages);
         config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_FILTER)
                 .ifPresent(builder::filter);
-
         applyExpiration(config, builder);
         applyDeadLetterPolicy(config, project, builder);
-
-        return builder.build();
-    }
-
-    private static void checkNoOrphanedOptions(ReadableConfig config) {
-        List<String> orphaned = new ArrayList<>();
-        for (ConfigOption<?> option : REQUIRE_TOPIC) {
-            if (config.getOptional(option).isPresent()) {
-                orphaned.add(option.key());
-            }
-        }
-        if (!orphaned.isEmpty()) {
-            throw new ValidationException(
-                    String.format(
-                            "Options %s configure a subscription this table never creates, because"
-                                    + " '%s' is not set. Setting that option is what authorizes"
-                                    + " creating a missing subscription; without it the"
-                                    + " subscription must already exist, and an existing one keeps"
-                                    + " its own settings.",
-                            orphaned, PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPIC.key()));
-        }
-    }
-
-    private static void checkExactlyOneSubscription(ReadableConfig config) {
-        List<String> subscriptions =
-                config.getOptional(PubSubConnectorOptions.SUBSCRIPTION)
-                        .orElse(Collections.emptyList());
-        if (subscriptions.size() > 1) {
-            throw new ValidationException(
-                    String.format(
-                            "Option '%s' cannot be combined with several subscriptions, but '%s'"
-                                    + " named %s: %s. Creation settings carry the topic binding, so"
-                                    + " one set of them would bind every subscription to the same"
-                                    + " topic — and Pub/Sub delivers a complete copy of a topic's"
-                                    + " stream to each of its subscriptions, so this table would"
-                                    + " emit every message once per subscription with nothing"
-                                    + " reporting an error. Give each subscription its own table.",
-                            PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPIC.key(),
-                            PubSubConnectorOptions.SUBSCRIPTION.key(),
-                            subscriptions.size(),
-                            subscriptions));
-        }
     }
 
     private static void applyExpiration(

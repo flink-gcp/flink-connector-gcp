@@ -19,7 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-07-26/27 ([#135], [#136], [#137], settled under [#47]); sink creation settings
   2026-07-27 ([#153]); [#140] closed as not needed 2026-08-09; explicit service-account key
-  file 2026-08-12 ([#139]); SQL ordering-key routing 2026-08-12 ([#143])
+  file 2026-08-12 ([#139]); SQL ordering-key routing 2026-08-12 ([#143]); multi-subscription
+  auto-creation 2026-08-12 ([#152])
 - Issues: [#47] (split into [#135]–[#138]), [#139], [#140], [#143], [#152], [#153]
 - Modules: pubsub (`table`, `table.sink`, `table.source`)
 - Current behavior: `docs/content/docs/connectors/table/pubsub.md`
@@ -111,23 +112,29 @@ which is what keeps that true once the key names are grouped (`sink.batching.*`,
   means default. `StartPosition.of(Mode, Instant)` raises both pairing errors, so the mapper
   delegates; the one rule it owns is a **timestamp with no mode**, where `of` is never reached
   and the option would otherwise be read by nothing. Same reasoning gives "a
-  `scan.auto-create.*` knob without `scan.auto-create.topic` is rejected, not ignored".
+  `scan.auto-create.*` knob without `scan.auto-create.topics` is rejected, not ignored".
 - **`expirationTtl` versus `neverExpire` has no builder backstop** — the issue assumed one, and
   the builder is in fact last-writer-wins, each setter clearing the other, which is right for a
   call sequence and meaningless for a `WITH` clause. So the table layer rejects the pair *only*
   here, and that check is load-bearing rather than a nicer message; the builder was deliberately
   left as it is. `never-expire = false` calls nothing, since the setter takes no argument and
   `false` is already the state.
-- **Auto-creation requires exactly one subscription**: settings are per destination and carry
-  the topic binding, N options objects are inexpressible in a flat DDL namespace, and sharing
-  one would duplicate every message with nothing reporting an error. The precondition is checked
-  in the mapper and again in `PubSubDynamicSource`'s constructor, which is the code that indexes
-  the list. A `scan.auto-create.topics` `mapType()` extension for N>1 is deferred to [#152]. The
-  builder's own cross-checks then reach SQL users unchanged, which
-  `carriesTheCreationSettingsAndTheStartPositionIntoTheBuiltSource` and its sibling prove — the
-  create options and the start position are otherwise invisible from outside the built `Source`,
-  and a mutant that dropped the start position on the way to the builder survived every unit
-  test until they read it back through `PubSubStreamingPullSource.getConfig()`.
+- **Auto-creation maps each subscription to its own topic** ([#152]):
+  `scan.auto-create.topics` is a `mapType()` rendered canonically as one prefixed entry per
+  subscription, such as `scan.auto-create.topics.orders-sub = orders-topic`.
+  Its key set must equal `subscription` exactly; all other creation options are shared across the
+  resulting `SubscriptionCreateOptions` objects.
+  An absent map requires every subscription to exist, while a present map authorizes creation of
+  any missing subscription; topics are still never created.
+  The invariant is checked in the mapper and again in `PubSubDynamicSource`'s constructor, which
+  is the code that indexes the list.
+  The builder's own cross-checks remain in force after the table mapping, but `FactoryUtil` wraps a
+  factory failure in a `ValidationException` that adds table context and retains the original cause.
+  `carriesTheCreationSettingsAndTheStartPositionIntoTheBuiltSource` and its sibling prove the
+  settings reach those checks — the create options and the start position are otherwise invisible
+  from outside the built `Source`, and a mutant that dropped the start position on the way to the
+  builder survived every unit test until they read it back through
+  `PubSubStreamingPullSource.getConfig()`.
 - **The two directions spell resource creation differently on purpose** (the question [#136]
   left open). They are not one feature: a topic needs no configuration to exist, so the sink
   gates creation with a `CreateDisposition` enum and "create with defaults" is meaningful; a
@@ -158,7 +165,7 @@ which is what keeps that true once the key names are grouped (`sink.batching.*`,
   declined record here and on the docs page is the anchor, and a future issue needs a real
   consumer-side use case.
 - **The source never creates a topic.** There is no `createTopic` in the `source` package, so
-  `scan.auto-create.topic` names a topic that must already exist, while the sink's
+  `scan.auto-create.topics` names topics that must already exist, while the sink's
   `create-if-needed` does create one — the same two words meaning opposite things across one
   DDL, which is why both user-facing documents say so outright. A sink-created topic without
   creation settings takes every `Topic` field's service default, message retention among them,

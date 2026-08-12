@@ -137,10 +137,13 @@ class PubSubDynamicSourceTest {
     private static final List<SubscriptionDestination> SUBSCRIPTIONS =
             Collections.singletonList(SubscriptionDestination.of("my-project", "my-sub"));
 
-    private static final SubscriptionCreateOptions CREATE_OPTIONS =
+    private static final SubscriptionCreateOptions CREATE_OPTION =
             SubscriptionCreateOptions.builder()
                     .topic(TopicDestination.of("my-project", "my-topic"))
                     .build();
+
+    private static final Map<SubscriptionDestination, SubscriptionCreateOptions> CREATE_OPTIONS =
+            Collections.singletonMap(SUBSCRIPTIONS.get(0), CREATE_OPTION);
 
     private static PubSubDynamicSource source() {
         return source(TestDecodingFormat.plain());
@@ -151,7 +154,7 @@ class PubSubDynamicSourceTest {
                 PHYSICAL_DATA_TYPE,
                 fmt,
                 SUBSCRIPTIONS,
-                null,
+                Collections.emptyMap(),
                 null,
                 null,
                 null,
@@ -256,7 +259,7 @@ class PubSubDynamicSourceTest {
                                 DataTypes.ROW(DataTypes.FIELD("other", DataTypes.INT())),
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
-                                null,
+                                Collections.emptyMap(),
                                 null,
                                 null,
                                 null,
@@ -275,7 +278,7 @@ class PubSubDynamicSourceTest {
                                 TestDecodingFormat.plain(),
                                 Collections.singletonList(
                                         SubscriptionDestination.of("my-project", "other-sub")),
-                                null,
+                                Collections.emptyMap(),
                                 null,
                                 null,
                                 null,
@@ -299,7 +302,7 @@ class PubSubDynamicSourceTest {
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
-                                null,
+                                Collections.emptyMap(),
                                 StartPosition.latest(),
                                 null,
                                 null,
@@ -311,7 +314,7 @@ class PubSubDynamicSourceTest {
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
-                                null,
+                                Collections.emptyMap(),
                                 null,
                                 OrderingMode.PER_KEY,
                                 null,
@@ -323,7 +326,7 @@ class PubSubDynamicSourceTest {
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
-                                null,
+                                Collections.emptyMap(),
                                 null,
                                 null,
                                 DeserializationFailurePolicy.DROP,
@@ -335,7 +338,7 @@ class PubSubDynamicSourceTest {
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
-                                null,
+                                Collections.emptyMap(),
                                 null,
                                 null,
                                 null,
@@ -347,7 +350,7 @@ class PubSubDynamicSourceTest {
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
-                                null,
+                                Collections.emptyMap(),
                                 null,
                                 null,
                                 null,
@@ -359,7 +362,7 @@ class PubSubDynamicSourceTest {
                                 PHYSICAL_DATA_TYPE,
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
-                                null,
+                                Collections.emptyMap(),
                                 null,
                                 null,
                                 null,
@@ -384,7 +387,7 @@ class PubSubDynamicSourceTest {
                 PHYSICAL_DATA_TYPE,
                 TestDecodingFormat.plain(),
                 SUBSCRIPTIONS,
-                null,
+                Collections.emptyMap(),
                 startPosition,
                 null,
                 null,
@@ -394,19 +397,19 @@ class PubSubDynamicSourceTest {
     }
 
     @Test
-    void rejectsCreationSettingsForMoreThanOneSubscription() {
-        // The settings carry a topic binding, so they belong to one subscription. The factory's
-        // mapper rejects this first; the constructor is what makes the invariant local, since it is
-        // the one that indexes the list.
+    void rejectsCreationSettingsThatDoNotCoverEverySubscription() {
+        SubscriptionDestination first = SubscriptionDestination.of("my-project", "a");
+        SubscriptionDestination second = SubscriptionDestination.of("my-project", "b");
+        Map<SubscriptionDestination, SubscriptionCreateOptions> incompleteCreateOptions =
+                Collections.singletonMap(first, CREATE_OPTION);
+
         assertThatThrownBy(
                         () ->
                                 new PubSubDynamicSource(
                                         PHYSICAL_DATA_TYPE,
                                         TestDecodingFormat.plain(),
-                                        Arrays.asList(
-                                                SubscriptionDestination.of("my-project", "a"),
-                                                SubscriptionDestination.of("my-project", "b")),
-                                        CREATE_OPTIONS,
+                                        Arrays.asList(first, second),
+                                        incompleteCreateOptions,
                                         null,
                                         null,
                                         null,
@@ -414,7 +417,7 @@ class PubSubDynamicSourceTest {
                                         null,
                                         null))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("one subscription");
+                .hasMessageContaining("keyed by every subscription");
     }
 
     @Test
@@ -434,7 +437,7 @@ class PubSubDynamicSourceTest {
                         PHYSICAL_DATA_TYPE,
                         new DecodingTestFormat(),
                         SUBSCRIPTIONS,
-                        null,
+                        Collections.emptyMap(),
                         null,
                         OrderingMode.PER_KEY,
                         DeserializationFailurePolicy.DROP,
@@ -485,7 +488,47 @@ class PubSubDynamicSourceTest {
         PubSubSourceConfig<?> config = ((PubSubStreamingPullSource<?>) built).getConfig();
         assertThat(config.getStartPosition()).isEqualTo(StartPosition.earliestRetained());
         assertThat(config.getCreateOptions())
-                .containsExactly(entry(SUBSCRIPTIONS.get(0), CREATE_OPTIONS));
+                .containsExactly(entry(SUBSCRIPTIONS.get(0), CREATE_OPTION));
+    }
+
+    @Test
+    void carriesDistinctCreationSettingsForEverySubscriptionIntoTheBuiltSource() {
+        SubscriptionDestination orders = SubscriptionDestination.of("my-project", "orders");
+        SubscriptionDestination returns = SubscriptionDestination.of("my-project", "returns");
+        SubscriptionCreateOptions ordersOptions =
+                SubscriptionCreateOptions.builder()
+                        .topic(TopicDestination.of("my-project", "orders-topic"))
+                        .build();
+        SubscriptionCreateOptions returnsOptions =
+                SubscriptionCreateOptions.builder()
+                        .topic(TopicDestination.of("my-project", "returns-topic"))
+                        .build();
+        Map<SubscriptionDestination, SubscriptionCreateOptions> options = new LinkedHashMap<>();
+        options.put(orders, ordersOptions);
+        options.put(returns, returnsOptions);
+
+        PubSubDynamicSource source =
+                new PubSubDynamicSource(
+                        PHYSICAL_DATA_TYPE,
+                        new DecodingTestFormat(),
+                        Arrays.asList(orders, returns),
+                        options,
+                        null,
+                        null,
+                        null,
+                        PubSubSubscriberOptions.defaults(),
+                        null,
+                        null);
+
+        Source<RowData, ?, ?> built =
+                ((SourceProvider)
+                                source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                        .createSource();
+
+        PubSubSourceConfig<?> config = ((PubSubStreamingPullSource<?>) built).getConfig();
+        assertThat(config.getSubscriptions()).containsExactly(orders, returns);
+        assertThat(config.getCreateOptions())
+                .containsExactly(entry(orders, ordersOptions), entry(returns, returnsOptions));
     }
 
     @Test
@@ -496,7 +539,7 @@ class PubSubDynamicSourceTest {
                                                 PHYSICAL_DATA_TYPE,
                                                 new DecodingTestFormat(),
                                                 SUBSCRIPTIONS,
-                                                null,
+                                                Collections.emptyMap(),
                                                 null,
                                                 null,
                                                 null,
@@ -545,7 +588,7 @@ class PubSubDynamicSourceTest {
                         PHYSICAL_DATA_TYPE,
                         new DecodingTestFormat(),
                         SUBSCRIPTIONS,
-                        null,
+                        Collections.emptyMap(),
                         null,
                         null,
                         null,

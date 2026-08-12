@@ -44,10 +44,12 @@ import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * A table source consuming rows from one or more Pub/Sub subscriptions.
@@ -66,7 +68,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
     private final DataType physicalDataType;
     private final DecodingFormat<DeserializationSchema<RowData>> decodingFormat;
     private final List<SubscriptionDestination> subscriptions;
-    @Nullable private final SubscriptionCreateOptions createOptions;
+    private final Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions;
     @Nullable private final StartPosition startPosition;
     @Nullable private final OrderingMode orderingMode;
     @Nullable private final DeserializationFailurePolicy deserializationFailurePolicy;
@@ -87,9 +89,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
      * @param physicalDataType the row type of the table's physical columns
      * @param decodingFormat the format decoding the payload
      * @param subscriptions the subscriptions to consume, at least one
-     * @param createOptions the settings a missing subscription is created with, or {@code null} to
-     *     require it to exist; exactly one subscription when it is given, since the settings carry
-     *     the topic binding
+     * @param createOptions the settings each missing subscription is created with, keyed by every
+     *     subscription, or an empty map to require all subscriptions to exist
      * @param startPosition where to start consuming, or {@code null} to leave the source's own
      *     default
      * @param orderingMode the ordering mode, or {@code null} to leave the source's own default
@@ -103,7 +104,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
             DataType physicalDataType,
             DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
             List<SubscriptionDestination> subscriptions,
-            @Nullable SubscriptionCreateOptions createOptions,
+            Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions,
             @Nullable StartPosition startPosition,
             @Nullable OrderingMode orderingMode,
             @Nullable DeserializationFailurePolicy deserializationFailurePolicy,
@@ -129,7 +130,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
             DataType physicalDataType,
             DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
             List<SubscriptionDestination> subscriptions,
-            @Nullable SubscriptionCreateOptions createOptions,
+            Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions,
             @Nullable StartPosition startPosition,
             @Nullable OrderingMode orderingMode,
             @Nullable DeserializationFailurePolicy deserializationFailurePolicy,
@@ -146,12 +147,20 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                         new ArrayList<>(
                                 Preconditions.checkNotNull(
                                         subscriptions, "subscriptions must not be null")));
+        this.createOptions =
+                Collections.unmodifiableMap(
+                        new LinkedHashMap<>(
+                                Preconditions.checkNotNull(
+                                        createOptions, "createOptions must not be null")));
+        Set<SubscriptionDestination> distinctSubscriptions = new HashSet<>(this.subscriptions);
         Preconditions.checkArgument(
-                createOptions == null || this.subscriptions.size() == 1,
-                "Creation settings carry a topic binding, so they belong to one subscription, but"
-                        + " %s were given.",
-                this.subscriptions.size());
-        this.createOptions = createOptions;
+                this.createOptions.isEmpty()
+                        || (this.createOptions.size() == distinctSubscriptions.size()
+                                && this.createOptions.keySet().equals(distinctSubscriptions)),
+                "Creation settings must be empty or keyed by every subscription, but subscriptions"
+                        + " were %s and creation settings were keyed by %s.",
+                this.subscriptions,
+                this.createOptions.keySet());
         this.startPosition = startPosition;
         this.orderingMode = orderingMode;
         this.deserializationFailurePolicy = deserializationFailurePolicy;
@@ -228,12 +237,14 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                                 new RowDataDeserializationSchema(
                                         physical, selected, producedTypeInfo))
                         .subscriberOptions(subscriberOptions);
-        if (createOptions != null) {
-            // The two-argument form is what authorises creating the subscription, and it takes one
-            // destination; the constructor has already checked there is exactly one.
-            builder.subscription(subscriptions.get(0), createOptions);
-        } else {
+        if (createOptions.isEmpty()) {
             builder.subscriptions(subscriptions);
+        } else {
+            // Iterating the subscription list preserves the user's split order while the map gives
+            // every destination its own topic binding.
+            for (SubscriptionDestination subscription : subscriptions) {
+                builder.subscription(subscription, createOptions.get(subscription));
+            }
         }
         if (startPosition != null) {
             builder.startPosition(startPosition);
@@ -291,7 +302,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
         return physicalDataType.equals(that.physicalDataType)
                 && decodingFormat.equals(that.decodingFormat)
                 && subscriptions.equals(that.subscriptions)
-                && Objects.equals(createOptions, that.createOptions)
+                && createOptions.equals(that.createOptions)
                 && Objects.equals(startPosition, that.startPosition)
                 && orderingMode == that.orderingMode
                 && deserializationFailurePolicy == that.deserializationFailurePolicy

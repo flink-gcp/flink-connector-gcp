@@ -22,6 +22,7 @@ import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 import org.junit.jupiter.api.Test;
 
@@ -40,25 +41,18 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /** Tests for {@link SubscriptionCreateOptionsMapper}. */
 class SubscriptionCreateOptionsMapperTest {
 
-    /**
-     * Every {@code SubscriptionCreateOptions.Builder} setter and the option or options that feed
-     * it, written out because the key names are grouped and no naming rule derives one from the
-     * other. The reflection test below is what makes the table exhaustive.
-     *
-     * <p>Unlike the other two mappers this is a setter to <em>set</em> of options: {@code
-     * deadLetterPolicy} takes two arguments and so needs two, and {@code neverExpire} takes none
-     * and so needs a boolean of its own beside the duration it contradicts.
-     */
+    /** Every builder setter and the option or options that feed it. */
     private static final Map<String, List<ConfigOption<?>>> SETTER_TO_OPTIONS =
             new LinkedHashMap<>();
 
     static {
         SETTER_TO_OPTIONS.put(
-                "topic", Collections.singletonList(PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPIC));
+                "topic", Collections.singletonList(PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS));
         SETTER_TO_OPTIONS.put(
                 "ackDeadline",
                 Collections.singletonList(PubSubConnectorOptions.SCAN_AUTO_CREATE_ACK_DEADLINE));
@@ -115,9 +109,6 @@ class SubscriptionCreateOptionsMapperTest {
         assertThat(new HashSet<>(keys)).hasSize(10);
     }
 
-    /**
-     * The key of the single option the named setter is fed by, so the table above is load-bearing.
-     */
     private static String key(String setter) {
         List<ConfigOption<?>> options = SETTER_TO_OPTIONS.get(setter);
         assertThat(options).as("%s is fed by more than one option", setter).hasSize(1);
@@ -128,6 +119,10 @@ class SubscriptionCreateOptionsMapperTest {
         return SETTER_TO_OPTIONS.get(setter).get(index).key();
     }
 
+    private static String topicKey(String subscription) {
+        return key("topic") + "." + subscription;
+    }
+
     /** A configuration with the two options every source needs, plus whatever is added to it. */
     private static Map<String, String> baseOptions() {
         Map<String, String> options = new HashMap<>();
@@ -136,36 +131,96 @@ class SubscriptionCreateOptionsMapperTest {
         return options;
     }
 
-    private static SubscriptionCreateOptions map(Map<String, String> options) {
+    private static Map<SubscriptionDestination, SubscriptionCreateOptions> map(
+            Map<String, String> options) {
         return SubscriptionCreateOptionsMapper.map(Configuration.fromMap(options));
     }
 
-    @Test
-    void anAbsentTopicLeavesTheSubscriptionRequiredToExist() {
-        assertThat(map(baseOptions())).isNull();
-        assertThat(SubscriptionCreateOptionsMapper.map(new Configuration())).isNull();
+    private static SubscriptionCreateOptions onlyValue(
+            Map<SubscriptionDestination, SubscriptionCreateOptions> mapped) {
+        assertThat(mapped).hasSize(1);
+        return mapped.values().iterator().next();
     }
 
     @Test
-    void aTopicAloneCreatesWithNothingButTheBinding() {
+    void anAbsentTopicMapLeavesEverySubscriptionRequiredToExist() {
+        assertThat(map(baseOptions())).isEmpty();
+        assertThat(SubscriptionCreateOptionsMapper.map(new Configuration())).isEmpty();
+    }
+
+    @Test
+    void aSinglePrefixEntryCreatesWithNothingButItsBinding() {
         Map<String, String> options = baseOptions();
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
 
         assertThat(map(options))
-                .isEqualTo(
-                        SubscriptionCreateOptions.builder()
-                                .topic(TopicDestination.of("my-project", "my-topic"))
-                                .build());
+                .containsExactly(
+                        entry(
+                                SubscriptionDestination.of("my-project", "my-sub"),
+                                SubscriptionCreateOptions.builder()
+                                        .topic(TopicDestination.of("my-project", "my-topic"))
+                                        .build()));
+    }
+
+    @Test
+    void packedMapSyntaxSeparatesSeveralEntriesWithCommas() {
+        Map<String, String> options = baseOptions();
+        options.put(PubSubConnectorOptions.SUBSCRIPTION.key(), "orders;refunds");
+        options.put(key("topic"), "orders:orders-topic,refunds:refunds-topic");
+
+        Map<SubscriptionDestination, SubscriptionCreateOptions> mapped = map(options);
+
+        assertThat(mapped)
+                .extractingByKey(SubscriptionDestination.of("my-project", "orders"))
+                .extracting(SubscriptionCreateOptions::getTopic)
+                .isEqualTo(TopicDestination.of("my-project", "orders-topic"));
+        assertThat(mapped)
+                .extractingByKey(SubscriptionDestination.of("my-project", "refunds"))
+                .extracting(SubscriptionCreateOptions::getTopic)
+                .isEqualTo(TopicDestination.of("my-project", "refunds-topic"));
+    }
+
+    @Test
+    void eachSubscriptionGetsItsOwnTopicAndTheSharedSettings() {
+        Map<String, String> options = baseOptions();
+        options.put(PubSubConnectorOptions.SUBSCRIPTION.key(), "orders;refunds");
+        options.put(topicKey("orders"), "orders-topic");
+        options.put(topicKey("refunds"), "refunds-topic");
+        options.put(key("ackDeadline"), "60 s");
+        options.put(key("filter"), "attributes.kind = \"event\"");
+
+        Map<SubscriptionDestination, SubscriptionCreateOptions> mapped = map(options);
+
+        assertThat(mapped)
+                .extractingByKey(SubscriptionDestination.of("my-project", "orders"))
+                .satisfies(
+                        creation -> {
+                            assertThat(creation.getTopic())
+                                    .isEqualTo(TopicDestination.of("my-project", "orders-topic"));
+                            assertThat(creation.getAckDeadline()).isEqualTo(Duration.ofSeconds(60));
+                            assertThat(creation.getFilter())
+                                    .isEqualTo("attributes.kind = \"event\"");
+                        });
+        assertThat(mapped)
+                .extractingByKey(SubscriptionDestination.of("my-project", "refunds"))
+                .satisfies(
+                        creation -> {
+                            assertThat(creation.getTopic())
+                                    .isEqualTo(TopicDestination.of("my-project", "refunds-topic"));
+                            assertThat(creation.getAckDeadline()).isEqualTo(Duration.ofSeconds(60));
+                            assertThat(creation.getFilter())
+                                    .isEqualTo("attributes.kind = \"event\"");
+                        });
     }
 
     @Test
     void resolvesBothTopicNamesAgainstTheProject() {
         Map<String, String> options = baseOptions();
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
         options.put(key("deadLetterPolicy", 0), "my-dlq");
         options.put(key("deadLetterPolicy", 1), "7");
 
-        SubscriptionCreateOptions mapped = map(options);
+        SubscriptionCreateOptions mapped = onlyValue(map(options));
 
         assertThat(mapped.getTopic()).isEqualTo(TopicDestination.of("my-project", "my-topic"));
         assertThat(mapped.getDeadLetterTopic())
@@ -176,7 +231,7 @@ class SubscriptionCreateOptionsMapperTest {
     @Test
     void mapsEveryOptionOntoItsKnob() {
         Map<String, String> options = baseOptions();
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
         options.put(key("ackDeadline"), "60 s");
         options.put(key("enableMessageOrdering"), "true");
         options.put(key("messageRetention"), "3 d");
@@ -186,7 +241,7 @@ class SubscriptionCreateOptionsMapperTest {
         options.put(key("deadLetterPolicy", 1), "5");
         options.put(key("filter"), "attributes.kind = \"order\"");
 
-        SubscriptionCreateOptions mapped = map(options);
+        SubscriptionCreateOptions mapped = onlyValue(map(options));
 
         assertThat(mapped.getTopic()).isEqualTo(TopicDestination.of("my-project", "my-topic"));
         assertThat(mapped.getAckDeadline()).isEqualTo(Duration.ofSeconds(60));
@@ -204,10 +259,10 @@ class SubscriptionCreateOptionsMapperTest {
     @Test
     void anOptionLeftOutStaysUnsetRatherThanTakingAValue() {
         Map<String, String> options = baseOptions();
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
         options.put(key("ackDeadline"), "45 s");
 
-        SubscriptionCreateOptions mapped = map(options);
+        SubscriptionCreateOptions mapped = onlyValue(map(options));
 
         assertThat(mapped.getAckDeadline()).isEqualTo(Duration.ofSeconds(45));
         assertThat(mapped.getMessageRetention()).isNull();
@@ -221,25 +276,20 @@ class SubscriptionCreateOptionsMapperTest {
     @Test
     void neverExpireIsAppliedOnlyWhenItIsTrue() {
         Map<String, String> options = baseOptions();
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
         options.put(key("neverExpire"), "true");
 
-        assertThat(map(options).isNeverExpire()).isTrue();
+        assertThat(onlyValue(map(options)).isNeverExpire()).isTrue();
 
         options.put(key("neverExpire"), "false");
 
-        // The setter takes no argument, so 'false' can only mean "leave the expiration alone" —
-        // which is what not calling it does, and is also the builder's own default.
-        assertThat(map(options).isNeverExpire()).isFalse();
+        assertThat(onlyValue(map(options)).isNeverExpire()).isFalse();
     }
 
     @Test
     void aTtlAlongsideNeverExpireIsRejected() {
-        // On the builder these two are last-writer-wins, each setter clearing the other. A WITH
-        // clause has no call order for that to resolve, so this is the only place the contradiction
-        // is caught at all.
         Map<String, String> options = baseOptions();
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
         options.put(key("expirationTtl"), "31 d");
         options.put(key("neverExpire"), "true");
 
@@ -252,17 +302,17 @@ class SubscriptionCreateOptionsMapperTest {
     @Test
     void aTtlAlongsideAnExplicitlyFalseNeverExpireIsFine() {
         Map<String, String> options = baseOptions();
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
         options.put(key("expirationTtl"), "31 d");
         options.put(key("neverExpire"), "false");
 
-        assertThat(map(options).getExpirationTtl()).isEqualTo(Duration.ofDays(31));
+        assertThat(onlyValue(map(options)).getExpirationTtl()).isEqualTo(Duration.ofDays(31));
     }
 
     @Test
     void aDeadLetterTopicWithoutAnAttemptCountIsRejected() {
         Map<String, String> options = baseOptions();
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
         options.put(key("deadLetterPolicy", 0), "my-dlq");
 
         assertThatThrownBy(() -> map(options))
@@ -273,7 +323,7 @@ class SubscriptionCreateOptionsMapperTest {
     @Test
     void anAttemptCountWithoutADeadLetterTopicIsRejected() {
         Map<String, String> options = baseOptions();
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
         options.put(key("deadLetterPolicy", 1), "5");
 
         assertThatThrownBy(() -> map(options))
@@ -282,31 +332,43 @@ class SubscriptionCreateOptionsMapperTest {
     }
 
     @Test
-    void severalSubscriptionsWithAutoCreationAreRejected() {
+    void aMissingSubscriptionKeyIsRejected() {
         Map<String, String> options = baseOptions();
-        options.put(PubSubConnectorOptions.SUBSCRIPTION.key(), "orders;returns");
-        options.put(key("topic"), "my-topic");
+        options.put(PubSubConnectorOptions.SUBSCRIPTION.key(), "orders;refunds");
+        options.put(topicKey("orders"), "orders-topic");
 
         assertThatThrownBy(() -> map(options))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining(key("topic"))
-                // The rationale is the point: without it this reads like an arbitrary restriction
-                // rather than the duplication it prevents.
-                .hasMessageContaining("complete copy")
-                .hasMessageContaining("once per subscription");
+                .hasMessageContaining("Missing keys: [refunds]")
+                .hasMessageContaining("Unexpected keys: []");
     }
 
     @Test
-    void oneSubscriptionWithAutoCreationIsAccepted() {
+    void anUnexpectedSubscriptionKeyIsRejected() {
         Map<String, String> options = baseOptions();
-        options.put(PubSubConnectorOptions.SUBSCRIPTION.key(), "orders");
-        options.put(key("topic"), "my-topic");
+        options.put(topicKey("my-sub"), "my-topic");
+        options.put(topicKey("other-sub"), "other-topic");
 
-        assertThat(map(options)).isNotNull();
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Missing keys: []")
+                .hasMessageContaining("Unexpected keys: [other-sub]");
     }
 
     @Test
-    void aCreationKnobWithoutATopicIsRejectedRatherThanIgnored() {
+    void anExplicitlyEmptyTopicMapIsRejected() {
+        Configuration config = new Configuration();
+        config.set(PubSubConnectorOptions.PROJECT, "my-project");
+        config.set(PubSubConnectorOptions.SUBSCRIPTION, Collections.singletonList("my-sub"));
+        config.set(PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS, Collections.emptyMap());
+
+        assertThatThrownBy(() -> SubscriptionCreateOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("must map at least one subscription");
+    }
+
+    @Test
+    void aCreationKnobWithoutTopicsIsRejectedRatherThanIgnored() {
         for (Map.Entry<String, List<ConfigOption<?>>> entry : SETTER_TO_OPTIONS.entrySet()) {
             if ("topic".equals(entry.getKey())) {
                 continue;
@@ -316,19 +378,15 @@ class SubscriptionCreateOptionsMapperTest {
                 options.put(option.key(), valueFor(option));
 
                 assertThatThrownBy(() -> map(options))
-                        .as("'%s' set without an auto-create topic", option.key())
+                        .as("'%s' set without auto-create topics", option.key())
                         .isInstanceOf(ValidationException.class)
                         .hasMessageContaining(option.key())
-                        .hasMessageContaining(PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPIC.key());
+                        .hasMessageContaining(PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS.key());
             }
         }
     }
 
-    /**
-     * A parseable value per option, so the loop above can set one at a time. Spelled out rather
-     * than derived from the option's type: a new option with no entry here fails the loop, which is
-     * the reminder to decide whether it too is meaningless without a topic.
-     */
+    /** A parseable value per shared option, kept explicit so a new one needs a decision here. */
     private static final Map<String, String> SAMPLE_VALUES = new HashMap<>();
 
     static {

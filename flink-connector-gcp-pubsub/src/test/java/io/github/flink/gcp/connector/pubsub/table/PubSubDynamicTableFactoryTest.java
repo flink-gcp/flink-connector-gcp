@@ -406,7 +406,7 @@ class PubSubDynamicTableFactoryTest {
     @Test
     void buildsASourceFromAFullAutoCreationBlock() {
         Map<String, String> options = minimalSourceOptions();
-        options.put("scan.auto-create.topic", "my-topic");
+        options.put("scan.auto-create.topics.my-sub", "my-topic");
         options.put("scan.auto-create.ack-deadline", "60 s");
         options.put("scan.auto-create.message-ordering.enabled", "true");
         options.put("scan.auto-create.message-retention", "3 d");
@@ -437,14 +437,62 @@ class PubSubDynamicTableFactoryTest {
     }
 
     @Test
-    void rejectsAutoCreationAcrossSeveralSubscriptions() {
+    void buildsASourceWithDistinctTopicsForSeveralSubscriptions() {
         Map<String, String> options = minimalSourceOptions();
         options.put("subscription", "orders;returns");
+        options.put("scan.auto-create.topics.orders", "orders-topic");
+        options.put("scan.auto-create.topics.returns", "returns-topic");
+
+        assertThat(
+                        ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(SourceProvider.class);
+    }
+
+    @Test
+    void buildsASourceWithSeveralPackedTopicMappings() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("subscription", "orders;returns");
+        options.put("scan.auto-create.topics", "orders:orders-topic,returns:returns-topic");
+
+        assertThat(
+                        ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(SourceProvider.class);
+    }
+
+    @Test
+    void rejectsMixingPackedAndPrefixedTopicMappings() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.auto-create.topics", "my-sub:old-topic");
+        options.put("scan.auto-create.topics.my-sub", "new-topic");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("either the packed map syntax or prefixed map entries")
+                .hasStackTraceContaining("not both");
+    }
+
+    @Test
+    void rejectsAutoCreationWhenATopicMappingIsMissing() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("subscription", "orders;returns");
+        options.put("scan.auto-create.topics.orders", "orders-topic");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Missing keys: [returns]");
+    }
+
+    @Test
+    void rejectsTheRemovedSingularAutoCreateTopicOption() {
+        Map<String, String> options = minimalSourceOptions();
         options.put("scan.auto-create.topic", "my-topic");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
                 .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("once per subscription");
+                .hasStackTraceContaining("Unsupported options")
+                .hasStackTraceContaining("scan.auto-create.topic");
     }
 
     @Test
@@ -464,7 +512,7 @@ class PubSubDynamicTableFactoryTest {
         // whose DDL configures its scan half.
         Map<String, String> options = minimalSinkOptions();
         options.putAll(minimalSourceOptions());
-        options.put("scan.auto-create.topic", "my-topic");
+        options.put("scan.auto-create.topics.my-sub", "my-topic");
         options.put("scan.startup.mode", "earliest-retained");
 
         assertThat(FactoryMocks.createTableSink(SCHEMA, options))

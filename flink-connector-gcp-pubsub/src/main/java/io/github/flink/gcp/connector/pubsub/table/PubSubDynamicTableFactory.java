@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -97,7 +98,7 @@ public class PubSubDynamicTableFactory
                         PubSubConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT,
                         PubSubConnectorOptions.SCAN_STARTUP_MODE,
                         PubSubConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
-                        PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPIC,
+                        PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS,
                         PubSubConnectorOptions.SCAN_AUTO_CREATE_ACK_DEADLINE,
                         PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_ORDERING_ENABLED,
                         PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_RETENTION,
@@ -171,6 +172,7 @@ public class PubSubDynamicTableFactory
 
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
+        validateAutoCreateTopicsSyntax(context);
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
         DecodingFormat<DeserializationSchema<RowData>> decodingFormat =
                 helper.discoverDecodingFormat(
@@ -207,6 +209,21 @@ public class PubSubDynamicTableFactory
                 config.getOptional(PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
                 config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
+    }
+
+    private static void validateAutoCreateTopicsSyntax(Context context) {
+        String option = PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS.key();
+        Map<String, String> rawOptions = context.getCatalogTable().getOptions();
+        boolean hasPackedMap = rawOptions.containsKey(option);
+        boolean hasPrefixedEntry =
+                rawOptions.keySet().stream().anyMatch(key -> key.startsWith(option + "."));
+        if (hasPackedMap && hasPrefixedEntry) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' must use either the packed map syntax or prefixed map"
+                                    + " entries, not both.",
+                            option));
+        }
     }
 
     private static void validateCredentialsMode(ReadableConfig config) {

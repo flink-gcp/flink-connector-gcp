@@ -270,7 +270,7 @@ under the same "absent means default" rule as the sink.
 
 | Option | Type | Maps to |
 |---|---|---|
-| `subscription` | String list, required to read | `subscriptions(...)` |
+| `subscription` | String list, `;`-separated, required to read | `subscriptions(...)` |
 | `scan.ordering-mode` | `none` \| `per-key` | `orderingMode` |
 | `scan.deserialization-failure-policy` | `fail` \| `drop` \| `nack` | `deserializationFailurePolicy` |
 | `scan.flow-control.max-outstanding-element-count` | Long | `flowControlMaxOutstandingElementCount` |
@@ -287,7 +287,7 @@ under the same "absent means default" rule as the sink.
 | `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout` |
 | `scan.startup.mode` | `continue-from-subscription` \| `earliest-retained` \| `latest` \| `timestamp` | `StartPosition.of(mode, ...)` |
 | `scan.startup.timestamp-millis` | Long, required by and only by `timestamp` | the instant of `StartPosition.of(...)` |
-| `scan.auto-create.topic` | String | `topic(...)` — and setting it is what authorizes creating the subscription |
+| `scan.auto-create.topics` | Map<String, String> | each subscription key maps to its `topic(...)` — see [Subscription auto-creation](#subscription-auto-creation-maps-every-subscription-to-its-topic) for both accepted syntaxes |
 | `scan.auto-create.ack-deadline` | Duration | `ackDeadline` |
 | `scan.auto-create.message-ordering.enabled` | Boolean | `enableMessageOrdering` |
 | `scan.auto-create.message-retention` | Duration | `messageRetention` |
@@ -359,20 +359,23 @@ backlog unless the subscription itself sets `scan.auto-create.retain-acked-messa
 sink's table set `sink.auto-create.message-retention` when it created the topic
 ([#153]({{< param BookRepo >}}/issues/153)).
 
-### Subscription auto-creation covers one subscription
+### Subscription auto-creation maps every subscription to its topic
 
-Setting `scan.auto-create.topic` is what authorizes creating a missing subscription, and it binds
-that subscription to the named topic. Without it, every subscription named by `subscription` must
-already exist and the job fails at startup if one does not. An existing subscription is used exactly
-as it is configured: these settings apply to creation only, and are neither applied to it nor
-compared against it.
+Setting `scan.auto-create.topics` is what authorizes creating missing subscriptions.
+Each map key is a subscription name and its value is the topic that subscription is bound to.
+Without the map, every subscription named by `subscription` must already exist and the job fails at
+startup if one does not.
+An existing subscription is used exactly as it is configured: these settings apply to creation
+only, and are neither applied to it nor compared against it.
 
-**Only the subscription is created. The topic must already exist** — `scan.auto-create.topic` names
-the topic to bind to, not one to create, and neither it nor
-`scan.auto-create.dead-letter.topic` is created on your behalf. This is the opposite of
-`sink.create-disposition`, which does create a missing topic, so the two halves of one DDL do not
-mean the same thing by "create": a source cannot invent a topic, because which topic to consume is
-the whole question.
+**Only subscriptions are created. Every mapped topic must already exist.**
+`scan.auto-create.topics` names topics to bind to, not topics to create, and neither they nor
+`scan.auto-create.dead-letter.topic` are created on your behalf.
+This is the opposite of `sink.create-disposition`, which does create a missing topic, so the two
+halves of one DDL do not mean the same thing by "create": a source cannot invent a topic, because
+which topic to consume is the whole question.
+
+For one subscription, use one prefixed map entry:
 
 ```sql
 CREATE TABLE orders (
@@ -382,20 +385,50 @@ CREATE TABLE orders (
   'project' = 'my-project',
   'subscription' = 'orders-sub',
   'format' = 'json',
-  'scan.auto-create.topic' = 'orders',
+  'scan.auto-create.topics.orders-sub' = 'orders',
   'scan.auto-create.ack-deadline' = '60 s',
   'scan.auto-create.retain-acked-messages' = 'true'
 );
 ```
 
-**`scan.auto-create.topic` requires `subscription` to name exactly one subscription**, and a table
-naming several is rejected. The settings carry the topic binding, so one set of them would bind
-every subscription to the same topic — and Pub/Sub delivers a complete copy of a topic's stream to
-each of its subscriptions, so such a table would emit every message once per subscription with
-nothing reporting an error. Several auto-created subscriptions therefore mean several tables; a map
-option that would lift the restriction is deferred to
-[#152]({{< param BookRepo >}}/issues/152). Multi-subscription tables are unaffected when the
-subscriptions already exist.
+For several subscriptions, give each one its own entry under the same option prefix:
+
+```sql
+CREATE TABLE events (
+  id STRING
+) WITH (
+  'connector' = 'pubsub',
+  'project' = 'my-project',
+  'subscription' = 'orders-sub;refunds-sub',
+  'format' = 'json',
+  'scan.auto-create.topics.orders-sub' = 'orders',
+  'scan.auto-create.topics.refunds-sub' = 'refunds',
+  'scan.auto-create.ack-deadline' = '60 s'
+);
+```
+
+The prefixed form above is recommended because each DDL line names one subscription-to-topic
+binding.
+Flink also accepts the whole map in one option:
+
+```sql
+'subscription' = 'orders-sub;refunds-sub',
+'scan.auto-create.topics' = 'orders-sub:orders,refunds-sub:refunds'
+```
+
+These options use different separators.
+Flink splits the `subscription` list on `;`, but splits packed map entries on `,` and each entry's
+key from its value on `:`.
+For one subscription, the packed map has one pair and therefore no comma:
+`'scan.auto-create.topics' = 'orders-sub:orders'`.
+Do not separate packed map entries with `;`.
+Use either prefixed entries or the packed map in one table; configuring both forms is rejected
+because Flink otherwise gives the packed value precedence and silently ignores prefixed entries.
+
+The map's key set must match `subscription` exactly.
+A missing key would leave one subscription without a topic binding, while an unexpected key would
+configure a subscription this table never consumes, so either is rejected during validation.
+The other `scan.auto-create.*` settings are shared and applied to every missing subscription.
 
 Three further rules, each because the option shape and the setter shape differ:
 
@@ -404,7 +437,7 @@ Three further rules, each because the option shape and the setter shape differ:
   contradiction.
 - `scan.auto-create.dead-letter.topic` and `scan.auto-create.dead-letter.max-delivery-attempts` are
   **required together**. Defaulting the attempt count would be a redelivery limit nobody chose.
-- A `scan.auto-create.*` option set without `scan.auto-create.topic` is **rejected rather than
+- A `scan.auto-create.*` option set without `scan.auto-create.topics` is **rejected rather than
   ignored**, since nothing would read it.
 
 Both topic names are bare names resolved against `project`, like `topic` on the sink side.
@@ -504,17 +537,18 @@ accepting the literal `never` — both invent a magic value, and the string one 
 parsing as well. Inventing a `max-delivery-attempts` default would likewise put back the third
 state, between "configured" and "default", that this option design exists to remove.
 
-**Auto-creation covers one subscription rather than resolving the ambiguity.** The DataStream API
-keys creation settings by subscription because they carry the topic binding, and a flat DDL
-namespace cannot express one object per subscription. Rather than pick a rule for sharing them,
-`scan.auto-create.topic` requires `subscription` to name exactly one — one precondition makes the
-duplication hazard inexpressible. Lifting it needs a map option, and the DDL that would take is a
-configuration file rather than SQL; deferred to
-[#152]({{< param BookRepo >}}/issues/152).
+**Auto-creation maps only the topic binding per subscription.**
+The DataStream API keys creation settings by subscription because every subscription carries its
+own topic binding.
+`scan.auto-create.topics` expresses that one differing value as a map through Flink's standard
+prefixed map syntax, while the remaining creation settings stay scalar and shared.
+Requiring the map keys to equal the configured subscriptions prevents both an unbound subscription
+and a silently unused binding without duplicating every setting for every subscription
+([#152]({{< param BookRepo >}}/issues/152)).
 
 **The two directions gate resource creation differently, and that is not an oversight.** The sink
 gates topic creation with `sink.create-disposition`, an enum; the source has no disposition option
-at all, and the presence of `scan.auto-create.topic` is the authorization. A topic needs no
+at all, and the presence of `scan.auto-create.topics` is the authorization. A topic needs no
 configuration to exist, so "create with defaults" means something for it; a subscription without a
 topic binding is not a subscription, so it cannot. The creation *settings*, on the other hand, are
 spelled alike on purpose — `sink.auto-create.*` beside `scan.auto-create.*`
