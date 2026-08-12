@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
@@ -137,7 +138,8 @@ public final class BigtableLookupConfig implements Serializable {
         }
     }
 
-    private Configuration asConfiguration() {
+    @VisibleForTesting
+    Configuration asConfiguration() {
         Configuration config = new Configuration();
         config.set(BigtableConnectorOptions.LOOKUP_ASYNC, async);
         config.set(LookupOptions.CACHE_TYPE, cacheType);
