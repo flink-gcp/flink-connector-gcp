@@ -116,7 +116,7 @@ Its partition lifecycle, checkpoint recovery, and delivery semantics are under [
 |---|---|---|
 | `database` | **required** | The database containing the change stream |
 | `changeStreamName` | **required** | The change stream whose generated read function each partition query calls |
-| `deserializer` | **required** | Turns a `DataChangeRecord` into an output record, or into `null` to skip it |
+| `deserializer` | **required** | Emits zero or more output records from each `DataChangeRecord` through a Flink `Collector` |
 | `startPosition` | `StartPosition.latest()` | Where a fresh ledger begins. Absolute, latest, and relative start positions resolve once on the coordinator |
 | `resumeFallback` | *unset ⇒ fail an expired restore* | Where to restart after restored partition positions fall outside retention. Setting it permits discarding the whole stale partition ledger and can lose the unavailable interval |
 | `absentRetentionFallback` | `7 days` | Retention to assume when `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` has no explicit retention row. It must be longer than the one-minute safety margin used at the moving retention boundary |

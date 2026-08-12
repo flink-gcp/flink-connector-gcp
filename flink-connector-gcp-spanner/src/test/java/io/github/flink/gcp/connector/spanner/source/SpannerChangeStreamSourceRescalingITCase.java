@@ -29,6 +29,7 @@ import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
@@ -254,8 +255,8 @@ class SpannerChangeStreamSourceRescalingITCase {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public String deserialize(DataChangeRecord record) {
-            return record.getRecordSequence();
+        public void deserialize(DataChangeRecord record, Collector<String> out) {
+            out.collect(record.getRecordSequence());
         }
 
         @Override

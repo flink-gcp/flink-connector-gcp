@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.spanner.source;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
+import org.apache.flink.util.Collector;
 import org.apache.flink.util.InstantiationUtil;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
@@ -270,8 +271,8 @@ class SpannerChangeStreamSourceBuilderTest {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public Long deserialize(DataChangeRecord record) {
-            return record.getCommitTimestamp().getEpochSecond();
+        public void deserialize(DataChangeRecord record, Collector<Long> out) {
+            out.collect(record.getCommitTimestamp().getEpochSecond());
         }
 
         @Override

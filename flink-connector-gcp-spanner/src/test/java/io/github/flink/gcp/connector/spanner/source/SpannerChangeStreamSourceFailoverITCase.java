@@ -30,6 +30,7 @@ import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.Collector;
 
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
@@ -160,11 +161,12 @@ class SpannerChangeStreamSourceFailoverITCase extends AbstractSpannerEmulatorITC
         private static final long serialVersionUID = 1L;
 
         @Override
-        public Long deserialize(DataChangeRecord record) {
-            return JsonParser.parseString(record.getMods().get(0).getKeysJson())
-                    .getAsJsonObject()
-                    .get("id")
-                    .getAsLong();
+        public void deserialize(DataChangeRecord record, Collector<Long> out) {
+            out.collect(
+                    JsonParser.parseString(record.getMods().get(0).getKeysJson())
+                            .getAsJsonObject()
+                            .get("id")
+                            .getAsLong());
         }
 
         @Override

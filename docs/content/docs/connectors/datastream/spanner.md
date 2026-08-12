@@ -447,8 +447,10 @@ Changing source parallelism redistributes checkpointed split ownership only when
 
 ### Records and schema changes
 
-The deserializer receives one `DataChangeRecord` for every data-change record returned by Spanner.
+After output filtering, the deserializer receives each data-change record that was not table-filtered or skipped by `skipMessagesWithoutChange` as one `DataChangeRecord` and emits zero or more output records through a Flink `Collector`.
 It includes the commit timestamp, transaction and partition counts, record sequence, transaction tag, table, modification type, value-capture type, watched column descriptors, and row modifications.
+Every output collected from the same data-change record carries that record's commit timestamp as its Flink event timestamp.
+The collector is valid only during that deserializer call; emit synchronously and do not retain it.
 
 Each `Mod` exposes keys, new values, and old values as normalized JSON with object members sorted recursively.
 An empty optional means that Spanner omitted that member, while a present `"null"` means that the member was present as JSON `null`.
@@ -458,7 +460,8 @@ Each column keeps the complete recursive type descriptor as normalized JSON with
 Nested array descriptors, annotations, `TOKENLIST`, and service codes added before a client-library release therefore survive deserialization and Java serialization.
 The record's own `valueCaptureType` and `columnTypes` describe the configuration and schema in effect when that change was captured, so a running job can cross both kinds of change without rebuilding the source.
 
-Returning `null` from the deserializer skips that data-change record and increments `recordsSkipped`.
+Returning successfully without emitting output skips that data-change record and increments `recordsSkipped` once.
+If deserialization fails, the split progress does not advance, so recovery can replay the data-change record under the source's at-least-once contract.
 Heartbeats and child-partitions records do not call the user deserializer.
 
 ### Output filters
@@ -603,8 +606,8 @@ Registered on the split enumerator's coordinator group and on each source reader
 | `unassignedSplits` | gauge (Flink standard) | Scheduled partitions no reader holds yet |
 | `changeStreamPartitionsDiscovered` | counter | Child partition tokens first accepted into the coordinator ledger |
 | `unassignedChangeStreamPartitionLagMillis` | gauge | Wall-clock lag of the oldest scheduled partition no reader owns, or zero when none are scheduled |
-| `numRecordsIn` | counter (Flink standard) | Deserialized data-change records handed downstream |
-| `recordsSkipped` | counter | Data-change records whose deserializer returned `null` |
+| `numRecordsIn` | counter (Flink standard) | Output records the deserializer handed downstream |
+| `recordsSkipped` | counter | Data-change records for which the deserializer returned successfully without emitting output |
 | `changeStreamRecordsFilteredByTable` | counter | Data-change records removed by table filters before deserialization |
 | `changeStreamRecordsSkippedWithoutChange` | counter | Data-change records skipped because column projection left no reported non-key values |
 | `changeStreamColumnOccurrencesFiltered` | counter | Column metadata and old/new value members removed from records passed to the deserializer |

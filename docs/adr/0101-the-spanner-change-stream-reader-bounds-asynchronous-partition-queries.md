@@ -21,7 +21,8 @@ limitations under the License.
 - Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
   [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536),
   [#551](https://github.com/laughingman7743/flink-connector-gcp/issues/551),
-  [#554](https://github.com/laughingman7743/flink-connector-gcp/issues/554)
+  [#554](https://github.com/laughingman7743/flink-connector-gcp/issues/554),
+  [#581](https://github.com/laughingman7743/flink-connector-gcp/issues/581)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)
 
@@ -39,7 +40,7 @@ A restored query can therefore resume inclusively and repeat its timestamp bound
 
 ## Decision
 
-`SpannerChangeStreamSource` is a continuous FLIP-27 source with a nullable-return deserialization SPI over the connector-owned `DataChangeRecord` model.
+`SpannerChangeStreamSource` is a continuous FLIP-27 source with a collector-based, zero-to-many deserialization SPI over the connector-owned `DataChangeRecord` model.
 The model carries every documented data-change field.
 It stores each recursive column type descriptor as normalized JSON with object members sorted recursively and keeps an absent mod value distinct from an explicit JSON `null`.
 
@@ -53,7 +54,9 @@ Its callback hands over one record, completion, or failure and returns `PAUSE`; 
 This one-slot handover bounds memory and keeps all Flink output and coordinator events on the task thread.
 
 The GoogleSQL and PostgreSQL decoders map their physical results into the same internal record variants.
-Data records go through the user deserializer and carry the commit timestamp as their Flink event timestamp.
+Data records that pass the output filters go through the user deserializer, which may emit zero or more outputs through a Flink `Collector`.
+Every output from one data record carries that record's commit timestamp as its Flink event timestamp, and returning successfully without emitting increments `recordsSkipped` once.
+The reader advances split progress only after deserialization returns successfully, so a failure retains the record for at-least-once replay.
 Heartbeat records advance a per-split watermark.
 Child-partitions records become coordinator events, and successful query completion becomes a separate partition-finished event.
 A query error fails the task without reporting completion or dropping the split.
@@ -83,7 +86,7 @@ The source emits commit timestamps and split watermarks through Flink's source o
 ## Evidence
 
 Decoder fixtures cover every data field, recursive type descriptors, `TOKENLIST`, an unknown future code, absent versus explicit JSON `null`, heartbeats, and child partitions for both dialect shapes.
-Reader tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, watermarks, child-before-finish ordering, nullable deserialization, query failure, and bounded completion.
+Reader tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, zero-, one-, and multi-output deserialization, commit timestamps, failure-before-progress, watermarks, child-before-finish ordering, query failure, and bounded completion.
 Filter tests cover full-match identifiers, table-local column names, primary-key retention, consistent metadata and mod projection, empty-projection delivery and skipping, restored progress with changed filters, and distinct counters.
 Metric tests use a deterministic clock to cover query lifecycle, queue and heartbeat transitions, future timestamps, and overflow without waiting on wall-clock time.
 The source rescaling test restores six partition queries through parallelism one, three, and one, proves an even scale-out at two slots per reader, and proves a later scale-in preserves the positions of four queued splits.

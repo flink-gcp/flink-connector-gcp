@@ -24,6 +24,7 @@ import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
+import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
@@ -144,6 +145,27 @@ class SpannerChangeStreamReaderTest {
     }
 
     @Test
+    void oneDataChangeCanEmitSeveralRecordsAtItsCommitTimestamp() throws Exception {
+        reader = reader(1, new FanOutDeserializer());
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
+
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("7", START.plusSeconds(1))));
+        reader.pollNext(output);
+
+        assertThat(output.records).containsExactly("before-7", "after-7");
+        assertThat(output.timestamps)
+                .containsExactly(
+                        START.plusSeconds(1).toEpochMilli(), START.plusSeconds(1).toEpochMilli());
+        assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
+        assertThat(reader.snapshotState(1).get(0).getCurrentPosition())
+                .isEqualTo(START.plusSeconds(1));
+    }
+
+    @Test
     void heartbeatAdvancesWatermarkAndChildEventPrecedesSuccessfulCompletion() throws Exception {
         reader = reader(1, new SequenceDeserializer());
         SpannerChangeStreamPartitionSplit initial =
@@ -227,16 +249,23 @@ class SpannerChangeStreamReaderTest {
     }
 
     @Test
-    void nullDeserializerResultSkipsButStillCheckpointsProgress() throws Exception {
-        reader = reader(1, new SkippingDeserializer());
+    void zeroEmissionsAfterOutputSkipButStillCheckpointProgress() throws Exception {
+        reader = reader(1, new FirstOnlyDeserializer());
         reader.addSplits(Collections.singletonList(split("a")));
         reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
 
         client.record(
                 "change-stream-token:a",
-                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(4))));
-        reader.pollNext(new TrackingOutput<>());
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(3))));
+        reader.pollNext(output);
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("2", START.plusSeconds(4))));
+        reader.pollNext(output);
 
+        assertThat(output.records).containsExactly("1");
+        assertThat(output.timestamps).containsExactly(START.plusSeconds(3).toEpochMilli());
         assertThat(
                         metrics.getCounter(SpannerMetricNames.RECORDS_SKIPPED)
                                 .orElseThrow(AssertionError::new)
@@ -244,6 +273,26 @@ class SpannerChangeStreamReaderTest {
                 .isEqualTo(1);
         assertThat(reader.snapshotState(1).get(0).getCurrentPosition())
                 .isEqualTo(START.plusSeconds(4));
+    }
+
+    @Test
+    void deserializerFailureDoesNotAdvanceSplitProgress() throws Exception {
+        reader = reader(1, new FailingAfterEmitDeserializer());
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
+
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(4))));
+        assertThatThrownBy(() -> reader.pollNext(output))
+                .isInstanceOf(IOException.class)
+                .hasMessage("broken deserializer");
+        assertThat(output.records).containsExactly("partial-1");
+        assertThat(reader.snapshotState(1).get(0).getCurrentPosition()).isEqualTo(START);
+        assertThat(context.sourceEvents())
+                .noneMatch(event -> event instanceof PartitionProgressEvent);
+        assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
     }
 
     @Test
@@ -500,8 +549,8 @@ class SpannerChangeStreamReaderTest {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public String deserialize(DataChangeRecord record) {
-            return record.getRecordSequence();
+        public void deserialize(DataChangeRecord record, Collector<String> out) {
+            out.collect(record.getRecordSequence());
         }
 
         @Override
@@ -510,14 +559,52 @@ class SpannerChangeStreamReaderTest {
         }
     }
 
-    private static final class SkippingDeserializer
+    private static final class FirstOnlyDeserializer
+            implements SpannerChangeStreamDeserializationSchema<String> {
+
+        private static final long serialVersionUID = 1L;
+        private boolean emitted;
+
+        @Override
+        public void deserialize(DataChangeRecord record, Collector<String> out) {
+            if (!emitted) {
+                out.collect(record.getRecordSequence());
+                emitted = true;
+            }
+        }
+
+        @Override
+        public TypeInformation<String> getProducedType() {
+            return TypeInformation.of(String.class);
+        }
+    }
+
+    private static final class FanOutDeserializer
             implements SpannerChangeStreamDeserializationSchema<String> {
 
         private static final long serialVersionUID = 1L;
 
         @Override
-        public String deserialize(DataChangeRecord record) {
-            return null;
+        public void deserialize(DataChangeRecord record, Collector<String> out) {
+            out.collect("before-" + record.getRecordSequence());
+            out.collect("after-" + record.getRecordSequence());
+        }
+
+        @Override
+        public TypeInformation<String> getProducedType() {
+            return TypeInformation.of(String.class);
+        }
+    }
+
+    private static final class FailingAfterEmitDeserializer
+            implements SpannerChangeStreamDeserializationSchema<String> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public void deserialize(DataChangeRecord record, Collector<String> out) throws IOException {
+            out.collect("partial-" + record.getRecordSequence());
+            throw new IOException("broken deserializer");
         }
 
         @Override
@@ -534,9 +621,9 @@ class SpannerChangeStreamReaderTest {
         private final List<DataChangeRecord> records = new ArrayList<>();
 
         @Override
-        public String deserialize(DataChangeRecord record) {
+        public void deserialize(DataChangeRecord record, Collector<String> out) {
             records.add(record);
-            return record.getRecordSequence();
+            out.collect(record.getRecordSequence());
         }
 
         @Override

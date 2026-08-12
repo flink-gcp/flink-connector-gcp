@@ -22,6 +22,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.Collector;
 
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
@@ -243,8 +244,8 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
         private static final long serialVersionUID = 1L;
 
         @Override
-        public DataChangeRecord deserialize(DataChangeRecord record) {
-            return record;
+        public void deserialize(DataChangeRecord record, Collector<DataChangeRecord> out) {
+            out.collect(record);
         }
 
         @Override
